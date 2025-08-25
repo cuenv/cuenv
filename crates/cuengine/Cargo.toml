@@ -1,0 +1,38 @@
+[package]
+name = "cuengine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Go-Rust FFI bridge for CUE evaluation with production-ready features"
+
+[lints]
+workspace = true
+
+[dependencies]
+cuenv-core = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+lru = "0.12"
+parking_lot = "0.12"
+
+[build-dependencies]
+cc = "1.0"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "evaluation_benchmarks"
+harness = false
+
+[features]
+default = []
+nix-build = []
