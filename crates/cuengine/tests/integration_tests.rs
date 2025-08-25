@@ -3,9 +3,9 @@
 //! These tests focus on memory management, concurrency safety,
 //! and proper resource cleanup across the FFI boundary.
 
-#![allow(unsafe_code)]  // Testing FFI requires unsafe code
+#![allow(unsafe_code)] // Testing FFI requires unsafe code
 
-use cuengine::{evaluate_cue_package, CStringPtr};
+use cuengine::{CStringPtr, evaluate_cue_package};
 use std::ffi::CString;
 use std::fs;
 use std::sync::{Arc, Barrier};
@@ -169,8 +169,10 @@ env: {{
             Ok(json) => {
                 // Verify we got the right data
                 // The JSON wraps everything in an "env" object
-                assert!(json.contains(&format!("value_{file_index}")) || json.contains("env"),
-                        "Expected value_{file_index} or env in JSON: {json}");
+                assert!(
+                    json.contains(&format!("value_{file_index}")) || json.contains("env"),
+                    "Expected value_{file_index} or env in JSON: {json}"
+                );
             }
             Err(_) => {
                 // FFI might not be available - that's acceptable
@@ -183,7 +185,6 @@ env: {{
 
     // If we complete without crashes or OOM, memory management is working
 }
-
 
 /// Test FFI error handling with various invalid inputs
 #[test]

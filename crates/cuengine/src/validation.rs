@@ -1,6 +1,6 @@
 //! Input validation functions
 
-use cuenv_core::{Error, Result, Limits};
+use cuenv_core::{Error, Limits, Result};
 use std::path::Path;
 
 /// Validate a directory path
@@ -12,36 +12,39 @@ use std::path::Path;
 pub fn validate_path(path: &Path, limits: &Limits) -> Result<()> {
     // Check path exists
     if !path.exists() {
-        return Err(Error::validation(
-            format!("Path does not exist: {}", path.display())
-        ));
+        return Err(Error::validation(format!(
+            "Path does not exist: {}",
+            path.display()
+        )));
     }
-    
+
     // Check path is a directory
     if !path.is_dir() {
-        return Err(Error::validation(
-            format!("Path is not a directory: {}", path.display())
-        ));
+        return Err(Error::validation(format!(
+            "Path is not a directory: {}",
+            path.display()
+        )));
     }
-    
+
     // Check path length
     if let Some(path_str) = path.to_str() {
         if path_str.len() > limits.max_path_length {
-            return Err(Error::validation(
-                format!("Path exceeds maximum length of {} characters", limits.max_path_length)
-            ));
+            return Err(Error::validation(format!(
+                "Path exceeds maximum length of {} characters",
+                limits.max_path_length
+            )));
         }
     }
-    
+
     // Check for path traversal attempts
     for component in path.components() {
         if let std::path::Component::ParentDir = component {
             return Err(Error::validation(
-                "Path contains parent directory traversal (..)"
+                "Path contains parent directory traversal (..)",
             ));
         }
     }
-    
+
     Ok(())
 }
 
@@ -56,28 +59,31 @@ pub fn validate_package_name(name: &str, limits: &Limits) -> Result<()> {
     if name.is_empty() {
         return Err(Error::validation("Package name cannot be empty"));
     }
-    
+
     if name.len() > limits.max_package_name_length {
-        return Err(Error::validation(
-            format!("Package name exceeds maximum length of {} characters", 
-                    limits.max_package_name_length)
-        ));
+        return Err(Error::validation(format!(
+            "Package name exceeds maximum length of {} characters",
+            limits.max_package_name_length
+        )));
     }
-    
+
     // Check for valid package name characters
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(Error::validation(
-            "Package name contains invalid characters (only alphanumeric, underscore, and hyphen allowed)"
+            "Package name contains invalid characters (only alphanumeric, underscore, and hyphen allowed)",
         ));
     }
-    
+
     // Check first character is alphabetic
     if !name.chars().next().unwrap().is_alphabetic() {
         return Err(Error::validation(
-            "Package name must start with an alphabetic character"
+            "Package name must start with an alphabetic character",
         ));
     }
-    
+
     Ok(())
 }
 
@@ -88,10 +94,11 @@ pub fn validate_package_name(name: &str, limits: &Limits) -> Result<()> {
 /// Returns an error if the output exceeds the maximum size limit
 pub fn validate_output(output: &str, limits: &Limits) -> Result<()> {
     if output.len() > limits.max_output_size {
-        return Err(Error::validation(
-            format!("Output exceeds maximum size of {} bytes", limits.max_output_size)
-        ));
+        return Err(Error::validation(format!(
+            "Output exceeds maximum size of {} bytes",
+            limits.max_output_size
+        )));
     }
-    
+
     Ok(())
 }

@@ -7,12 +7,15 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+edition = "2024"
+authors = ["cuenv Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/cuenv/cuenv"
 homepage = "https://github.com/cuenv/cuenv"
 documentation = "https://docs.rs/cuenv"
+readme = "README.md"
+keywords = ["cue", "configuration", "validation", "ffi"]
+categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
 cuenv-core = { path = "crates/cuenv-core", version = "0.1.0" }

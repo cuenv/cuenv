@@ -1,0 +1,27 @@
+{
+  "release-type": "simple",
+  "packages": {
+    "crates/cuenv-core": {
+      "release-type": "rust",
+      "component": "cuenv-core",
+      "package-name": "cuenv-core",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true
+    },
+    "crates/cuengine": {
+      "release-type": "rust", 
+      "component": "cuengine",
+      "package-name": "cuengine",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true
+    }
+  },
+  "plugins": [
+    "cargo-workspace"
+  ],
+  "group-pull-request-title-pattern": "chore: release ${version}",
+  "separate-pull-requests": false,
+  "skip-github-release": false,
+  "draft": false,
+  "prerelease": false
+}

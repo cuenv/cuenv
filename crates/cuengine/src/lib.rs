@@ -4,9 +4,9 @@
 //! It handles all FFI operations, memory management, and error handling for
 //! calling Go functions from Rust.
 
-#![allow(unsafe_code)]  // Required for FFI with Go
-#![allow(clippy::missing_safety_doc)]  // Safety is documented inline
-#![allow(clippy::missing_panics_doc)]  // Panics are documented where relevant
+#![allow(unsafe_code)] // Required for FFI with Go
+#![allow(clippy::missing_safety_doc)] // Safety is documented inline
+#![allow(clippy::missing_panics_doc)] // Panics are documented where relevant
 
 pub mod builder;
 pub mod cache;
@@ -22,7 +22,6 @@ use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::Path;
 
-
 /// RAII wrapper for C strings returned from FFI
 /// Ensures proper cleanup when the wrapper goes out of scope
 pub struct CStringPtr {
@@ -33,16 +32,16 @@ impl CStringPtr {
     /// Creates a new wrapper from a raw pointer
     ///
     /// # Safety
-    /// 
+    ///
     /// The caller must ensure that:
     /// - `ptr` is either null or a valid pointer returned from `cue_eval_package`
     /// - The pointer has not been freed already
     /// - The pointer will not be used after this wrapper is dropped
     /// - No other thread is accessing this pointer
     /// - The memory pointed to by `ptr` will remain valid for the lifetime of this wrapper
-    /// 
+    ///
     /// # FFI Contract
-    /// 
+    ///
     /// This function expects that the Go side:
     /// - Returns either null or a valid C string pointer
     /// - Allocates memory that must be freed with `cue_free_string`
@@ -60,7 +59,7 @@ impl CStringPtr {
     /// Converts the C string to a Rust &str
     ///
     /// # Safety
-    /// 
+    ///
     /// This function is safe to call when:
     /// - The wrapped pointer is not null (checked with `debug_assert`)
     /// - The pointer points to a valid null-terminated C string
@@ -139,7 +138,6 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     let c_package = CString::new(package_name)
         .map_err(|e| Error::ffi("cue_eval_package", format!("Invalid package name: {e}")))?;
 
-    
     // Safety: cue_eval_package is an FFI function that:
     // - Takes two valid C string pointers (guaranteed by CString::as_ptr())
     // - Returns either null or a valid pointer to a C string
@@ -327,10 +325,14 @@ env: {
                 // If it works, verify the JSON contains our values
                 println!("Got JSON response: {json}");
                 // The JSON wraps everything in an "env" object
-                assert!(json.contains("env"), 
-                        "JSON should contain env field. Got: {json}");
-                assert!(json.contains("TEST_VAR") || json.contains("test_value"), 
-                        "JSON should contain test values. Got: {json}");
+                assert!(
+                    json.contains("env"),
+                    "JSON should contain env field. Got: {json}"
+                );
+                assert!(
+                    json.contains("TEST_VAR") || json.contains("test_value"),
+                    "JSON should contain test values. Got: {json}"
+                );
             }
         }
     }
@@ -405,8 +407,10 @@ env: {
                     // If FFI is available, all calls should succeed
                     // Check for either TEST or env field (JSON structure may vary)
                     // The JSON wraps everything in an "env" object
-                    assert!(json.contains("env"), 
-                            "JSON should contain env field. Got: {json}");
+                    assert!(
+                        json.contains("env"),
+                        "JSON should contain env field. Got: {json}"
+                    );
                 }
                 Err(error) => {
                     // If FFI isn't available, error should be consistent
