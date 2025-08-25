@@ -37,4 +37,29 @@
     gh                 # GitHub CLI for release automation
     jq                 # JSON processing for scripts
   ];
+  
+  # Code formatting with treefmt
+  treefmt = {
+    enable = true;
+    projectRoot = ./.;
+    
+    programs = {
+      rustfmt.enable = true;
+      gofmt.enable = true;
+      nixpkgs-fmt.enable = true;
+      prettier = {
+        enable = true;
+        includes = [
+          "*.json"
+          "*.yml"
+          "*.yaml"
+          "*.md"
+        ];
+        excludes = [
+          "Cargo.lock"
+          "*.toml"
+        ];
+      };
+    };
+  };
 }

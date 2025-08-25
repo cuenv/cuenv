@@ -79,7 +79,9 @@ impl CStringPtr {
             "Attempted to convert null pointer to string"
         );
 
-        let cstr = CStr::from_ptr(self.ptr);
+        // SAFETY: We've verified the pointer is not null via debug_assert
+        // The caller must ensure the pointer points to a valid C string
+        let cstr = unsafe { CStr::from_ptr(self.ptr) };
         cstr.to_str().map_err(|e| {
             Error::ffi(
                 "cue_eval_package",
@@ -106,7 +108,7 @@ impl Drop for CStringPtr {
 }
 
 #[link(name = "cue_bridge")]
-extern "C" {
+unsafe extern "C" {
     fn cue_eval_package(dir_path: *const c_char, package_name: *const c_char) -> *mut c_char;
     fn cue_free_string(s: *mut c_char);
 }
