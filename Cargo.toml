@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cuenv-core",
+    "crates/cuengine",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cuenv/cuenv"
+homepage = "https://github.com/cuenv/cuenv"
+documentation = "https://docs.rs/cuenv"
+
+[workspace.dependencies]
+cuenv-core = { path = "crates/cuenv-core", version = "0.1.0" }
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+libc = "0.2"
+
+# Testing dependencies
+proptest = "1.0"
+criterion = "0.5"
+tempfile = "3.0"
+tokio = { version = "1.0", features = ["full"] }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
