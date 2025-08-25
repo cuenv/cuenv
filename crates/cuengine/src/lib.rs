@@ -21,12 +21,7 @@ pub use retry::RetryConfig;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::path::Path;
-use std::sync::Mutex;
 
-// Global mutex to ensure FFI calls don't run concurrently.
-// The Go CUE library or our FFI bridge appears to have thread-safety issues.
-// Without this mutex, tests fail when run in parallel but pass with --test-threads=1
-static FFI_MUTEX: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
 
 /// RAII wrapper for C strings returned from FFI
 /// Ensures proper cleanup when the wrapper goes out of scope
@@ -144,8 +139,6 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     let c_package = CString::new(package_name)
         .map_err(|e| Error::ffi("cue_eval_package", format!("Invalid package name: {e}")))?;
 
-    // Acquire mutex for thread safety
-    let _guard = FFI_MUTEX.lock().unwrap();
     
     // Safety: cue_eval_package is an FFI function that:
     // - Takes two valid C string pointers (guaranteed by CString::as_ptr())
