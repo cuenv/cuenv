@@ -14,17 +14,27 @@
   };
   languages.cue.enable = true;
   languages.nix.enable = true;
+  
+  # Add Go language support (required for cuengine FFI)
+  languages.go = {
+    enable = true;
+    package = pkgs.go_1_24;
+  };
 
   packages = with pkgs; [
-    # Adds the set-version command
+    # Existing tools
     cargo-edit
-    # Find unused crates
     cargo-machete
-    # Find outdated crates
     cargo-outdated
-    # Code coverage tool
     cargo-llvm-cov
-    # LLVM tools for coverage
     llvmPackages.bintools
+    
+    # CI/CD tools
+    cargo-audit        # Security vulnerability scanning
+    cargo-nextest      # Faster test runner for CI
+    cargo-release      # Release automation helper
+    git                # Required for release-please
+    gh                 # GitHub CLI for release automation
+    jq                 # JSON processing for scripts
   ];
 }

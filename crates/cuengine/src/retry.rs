@@ -1,8 +1,8 @@
 //! Retry logic with exponential backoff
 
 use cuenv_core::Result;
-use std::time::Duration;
 use std::thread;
+use std::time::Duration;
 
 /// Configuration for retry behavior
 pub struct RetryConfig {
@@ -38,10 +38,10 @@ where
 {
     let mut attempt = 0;
     let mut delay = config.initial_delay;
-    
+
     loop {
         attempt += 1;
-        
+
         match operation() {
             Ok(result) => return Ok(result),
             Err(e) if attempt >= config.max_attempts => return Err(e),
@@ -49,12 +49,15 @@ where
                 // Log the retry attempt
                 tracing::warn!(
                     "Operation failed (attempt {}/{}): {}. Retrying in {:?}",
-                    attempt, config.max_attempts, e, delay
+                    attempt,
+                    config.max_attempts,
+                    e,
+                    delay
                 );
-                
+
                 // Sleep before retry
                 thread::sleep(delay);
-                
+
                 // Calculate next delay with exponential backoff
                 let next_delay = delay.mul_f32(config.exponential_base);
                 delay = next_delay.min(config.max_delay);

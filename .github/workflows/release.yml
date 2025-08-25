@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: ["Release Please"]
+    types: [completed]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.get-release.outputs.release_created }}
+      tag_name: ${{ steps.get-release.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Get release information
+        id: get-release
+        run: |
+          # Check if a release was just created by looking at recent releases
+          LATEST_RELEASE=$(gh release list --limit 1 --json tagName,publishedAt --jq '.[0]')
+          if [ "$LATEST_RELEASE" != "null" ]; then
+            TAG_NAME=$(echo "$LATEST_RELEASE" | jq -r '.tagName')
+            PUBLISHED_AT=$(echo "$LATEST_RELEASE" | jq -r '.publishedAt')
+            
+            # Check if release was created in the last 5 minutes
+            CURRENT_TIME=$(date -u +%s)
+            RELEASE_TIME=$(date -u -d "$PUBLISHED_AT" +%s)
+            TIME_DIFF=$((CURRENT_TIME - RELEASE_TIME))
+            
+            if [ $TIME_DIFF -lt 300 ]; then
+              echo "release_created=true" >> $GITHUB_OUTPUT
+              echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+            else
+              echo "release_created=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "release_created=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: check-release
+    if: needs.check-release.outputs.release_created == 'true'
+    # Enable OIDC for trusted publishing to crates.io
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: cachix/install-nix-action@v24
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - uses: cachix/cachix-action@v12
+        with:
+          name: devenv
+      
+      - name: Install devenv
+        run: nix profile install --accept-flake-config nixpkgs#devenv
+      
+      - name: Build devenv
+        run: devenv shell
+      
+      # Pre-build Go bridge to avoid Go dependency during crates.io publish
+      - name: Pre-build Go bridge
+        run: |
+          cd crates/cuengine
+          devenv shell -- go build -buildmode=c-archive -o target/release/libcue_bridge.a bridge.go
+          cp libcue_bridge.h target/release/
+        
+      - name: Verify workspace builds
+        run: devenv shell -- cargo build --workspace --release
+      
+      - name: Run final tests
+        run: devenv shell -- cargo nextest run --workspace --release
+      
+      - name: Dry run publish cuenv-core
+        run: devenv shell -- cargo publish --dry-run -p cuenv-core
+      
+      # Get trusted publishing token for cuenv-core
+      - name: Authenticate with crates.io (cuenv-core)
+        uses: crates-io/crates-io-auth-action@v1
+        with:
+          crate: cuenv-core
+      
+      - name: Publish cuenv-core to crates.io
+        run: devenv shell -- cargo publish -p cuenv-core
+      
+      - name: Wait for crates.io indexing
+        run: sleep 300  # Wait 5 minutes for crates.io to index cuenv-core
+      
+      - name: Dry run publish cuengine
+        run: devenv shell -- cargo publish --dry-run -p cuengine
+      
+      # Get trusted publishing token for cuengine
+      - name: Authenticate with crates.io (cuengine)
+        uses: crates-io/crates-io-auth-action@v1
+        with:
+          crate: cuengine
+      
+      - name: Publish cuengine to crates.io
+        run: devenv shell -- cargo publish -p cuengine
+
+  build-release-artifacts:
+    runs-on: ${{ matrix.os }}
+    needs: check-release
+    if: needs.check-release.outputs.release_created == 'true'
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: cachix/install-nix-action@v24
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+        if: matrix.os != 'windows-latest'
+      
+      - uses: cachix/cachix-action@v12
+        with:
+          name: devenv
+        if: matrix.os != 'windows-latest'
+      
+      - name: Install devenv (Unix)
+        run: nix profile install --accept-flake-config nixpkgs#devenv
+        if: matrix.os != 'windows-latest'
+      
+      - name: Install Rust (Windows)
+        uses: dtolnay/rust-toolchain@stable
+        if: matrix.os == 'windows-latest'
+      
+      - name: Install Go (Windows)
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.24'
+        if: matrix.os == 'windows-latest'
+      
+      - name: Build devenv (Unix)
+        run: devenv shell
+        if: matrix.os != 'windows-latest'
+      
+      - name: Build release (Unix)
+        run: devenv shell -- cargo build --workspace --release
+        if: matrix.os != 'windows-latest'
+      
+      - name: Build release (Windows)
+        run: cargo build --workspace --release
+        if: matrix.os == 'windows-latest'
+      
+      - name: Create archive (Unix)
+        run: |
+          mkdir -p release-artifacts
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            tar czf "release-artifacts/cuenv-${{ needs.check-release.outputs.tag_name }}-${{ matrix.target }}.tar.gz" \
+              -C target/release \
+              $(ls target/release/ | grep -E '^(cuenv|cuengine)$' || true)
+          fi
+        if: matrix.os != 'windows-latest'
+      
+      - name: Create archive (Windows)
+        run: |
+          mkdir release-artifacts
+          Compress-Archive -Path "target/release/*.exe" -DestinationPath "release-artifacts/cuenv-${{ needs.check-release.outputs.tag_name }}-${{ matrix.target }}.zip"
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+      
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-${{ matrix.target }}
+          path: release-artifacts/*
+
+  upload-release-assets:
+    runs-on: ubuntu-latest
+    needs: [check-release, build-release-artifacts]
+    if: needs.check-release.outputs.release_created == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+      
+      - name: Upload release assets
+        run: |
+          for artifact_dir in artifacts/release-*; do
+            if [ -d "$artifact_dir" ]; then
+              for file in "$artifact_dir"/*; do
+                if [ -f "$file" ]; then
+                  gh release upload "${{ needs.check-release.outputs.tag_name }}" "$file"
+                fi
+              done
+            fi
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
