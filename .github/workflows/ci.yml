@@ -11,8 +11,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  lint:
-    name: Lint and Format
+  lint-and-format:
+    name: lint-and-format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,13 +32,13 @@ jobs:
         run: devenv shell
       
       - name: Check formatting
-        run: devenv shell -- cargo fmt --all -- --check
+        run: devenv shell -- treefmt --fail-on-change
       
       - name: Run clippy
         run: devenv shell -- cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  test:
-    name: Test Suite
+  test-suite:
+    name: test-suite
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -137,8 +137,8 @@ jobs:
           go test -v ./...
         if: matrix.os == 'windows-latest'
 
-  security:
-    name: Security Audit
+  security-audit:
+    name: security-audit
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -161,7 +161,7 @@ jobs:
         run: devenv shell -- cargo audit
 
   coverage:
-    name: Coverage
+    name: coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -190,7 +190,7 @@ jobs:
           fail_ci_if_error: true
 
   benchmarks:
-    name: Benchmarks
+    name: benchmarks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -214,7 +214,7 @@ jobs:
         continue-on-error: true  # Don't fail CI on benchmark regression initially
       
       - name: Store benchmark result
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
           path: target/criterion/
