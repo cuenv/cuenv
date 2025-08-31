@@ -1,6 +1,6 @@
 //! Tests for retry logic with exponential backoff
 
-use cuengine::retry::{RetryConfig, with_retry};
+use cuengine::retry::{with_retry, RetryConfig};
 use cuenv_core::Error;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -182,12 +182,10 @@ fn test_retry_with_different_error_types() {
         Err::<String, Error>(Error::Timeout { seconds: 5 })
     });
     assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Timeout after 5 seconds")
-    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Timeout after 5 seconds"));
 }
 
 #[test]

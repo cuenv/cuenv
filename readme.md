@@ -17,6 +17,7 @@ cuenv is a next-generation build toolchain that brings type safety and powerful 
 Unlike traditional build tools, cuenv leverages CUE's ability to compose and validate configuration across directory hierarchies, making it particularly well-suited for monorepos and complex project structures. With integrated Nix support, security isolation, and extensible secret management, cuenv provides a complete development environment solution.
 
 **Perfect for:**
+
 - Monorepos requiring consistent environment management
 - Teams needing type-safe configuration
 - Projects with complex build dependencies
@@ -26,17 +27,17 @@ Unlike traditional build tools, cuenv leverages CUE's ability to compose and val
 
 ## Features
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| ✅ **CUE Evaluation Engine** | Complete | Fast, reliable CUE evaluation with Rust performance |
-| 🚧 **CLI Interface** | In Development | Task execution and environment management |
-| 🚧 **Typed Environments** | In Development | Compose environment constraints from CUE modules |
-| 🚧 **Task Orchestration** | In Development | Parallel/sequential execution with smart dependencies |
-| 🚧 **Nix Integration** | In Development | Automatic software provisioning via Nix flakes |
-| 🚧 **Secret Management** | In Development | Extensible resolvers for 1Password, AWS, GCP, etc. |
-| 📋 **Security Isolation** | Planned | Linux namespaces, landlock, eBPF integration |
-| 🚧 **Shell Integration** | In Development | Smart hooks for bash, fish, zsh, nushell |
-| 🚧 **Dev Tool Integration** | In Development | Seamless Devenv and Flox compatibility |
+| Feature                      | Status         | Description                                           |
+| ---------------------------- | -------------- | ----------------------------------------------------- |
+| ✅ **CUE Evaluation Engine** | Complete       | Fast, reliable CUE evaluation with Rust performance   |
+| 🚧 **CLI Interface**         | In Development | Task execution and environment management             |
+| 🚧 **Typed Environments**    | In Development | Compose environment constraints from CUE modules      |
+| 🚧 **Task Orchestration**    | In Development | Parallel/sequential execution with smart dependencies |
+| 🚧 **Nix Integration**       | In Development | Automatic software provisioning via Nix flakes        |
+| 🚧 **Secret Management**     | In Development | Extensible resolvers for 1Password, AWS, GCP, etc.    |
+| 📋 **Security Isolation**    | Planned        | Linux namespaces, landlock, eBPF integration          |
+| 🚧 **Shell Integration**     | In Development | Smart hooks for bash, fish, zsh, nushell              |
+| 🚧 **Dev Tool Integration**  | In Development | Seamless Devenv and Flox compatibility                |
 
 **Legend:** ✅ Complete • 🚧 In Development • 📋 Planned
 
@@ -73,7 +74,7 @@ env: {
     NODE_ENV: "development" | "staging" | "production"
     PORT:     >0 & <65536 & *3000
     DEBUG:    bool | *false
-    
+
     // Environment-specific overrides
     environment: production: {
         NODE_ENV: "production"
@@ -90,7 +91,7 @@ tasks: {
         inputs:      ["src/**/*", "package.json"]
         outputs:     ["dist/**/*"]
     }
-    
+
     test: {
         description: "Run tests in parallel"
         unit: {
@@ -99,7 +100,7 @@ tasks: {
             inputs:  ["src/**/*.test.js"]
         }
         integration: {
-            command: "npm" 
+            command: "npm"
             args:    ["run", "test:integration"]
             inputs:  ["tests/**/*"]
         }
@@ -134,7 +135,7 @@ cuenv uses CUE's constraint system to provide type-safe environment management:
 ```cue
 import (
     "github.com/myorg/postgres/schema"
-    "github.com/myorg/redis/schema" 
+    "github.com/myorg/redis/schema"
 )
 
 // Compose environment constraints from multiple modules
@@ -164,8 +165,8 @@ tasks: {
             {command: "kubectl", args: ["apply", "-f", "k8s/"]}
         ]
     }
-    
-    // Object structure = parallel execution  
+
+    // Object structure = parallel execution
     test: {
         description: "Run all tests"
         unit:        {command: "npm", args: ["run", "test:unit"]}
@@ -193,8 +194,8 @@ Extensible secret resolution with multiple providers:
     name:   string
     resolver: #ExecResolver & {
         command: "aws"
-        args: ["secretsmanager", "get-secret-value", 
-               "--region", region, "--secret-id", name, 
+        args: ["secretsmanager", "get-secret-value",
+               "--region", region, "--secret-id", name,
                "--query", "SecretString", "--output", "text"]
     }
 }
@@ -219,14 +220,14 @@ hooks: {
     onEnter: [
         // Load Nix environment
         schema.#NixFlake & {preload: true},
-        
+
         // Custom initialization
         {
             command: "echo"
             args: ["Entering cuenv environment..."]
         }
     ]
-    
+
     onExit: [
         {
             command: "echo"
@@ -249,7 +250,7 @@ cuenv task build                     # Run build task
 cuenv task test.unit                 # Run specific subtask
 cuenv task --parallel build test    # Run multiple tasks
 
-# Environment management  
+# Environment management
 cuenv env                            # Show current environment
 cuenv env --environment production  # Switch to production
 cuenv exec -- npm start             # Execute with loaded env
@@ -267,13 +268,13 @@ cuenv --trace-output task deploy     # Enable tracing
 
 ### Global Options
 
-| Option | Description |
-|--------|-------------|
-| `--env, -e` | Environment to use (dev, staging, production) |
-| `--cache` | Cache mode (off, read, read-write, write) |  
-| `--capability, -c` | Enable specific capabilities |
-| `--audit` | Run in audit mode for security analysis |
-| `--output-format` | Output format (tui, spinner, simple, tree) |
+| Option             | Description                                   |
+| ------------------ | --------------------------------------------- |
+| `--env, -e`        | Environment to use (dev, staging, production) |
+| `--cache`          | Cache mode (off, read, read-write, write)     |
+| `--capability, -c` | Enable specific capabilities                  |
+| `--audit`          | Run in audit mode for security analysis       |
+| `--output-format`  | Output format (tui, spinner, simple, tree)    |
 
 ---
 
@@ -296,6 +297,7 @@ myproject/
 ```
 
 **Root `env.cue`:**
+
 ```cue
 package cuenv
 
@@ -331,9 +333,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v22
       - run: curl -fsSL https://cuenv.sh/install | sh
-      - run: cuenv task ci.quality  # Run quality checks
-      - run: cuenv task ci.test     # Run all tests
-      - run: cuenv task ci.build    # Build artifacts
+      - run: cuenv task ci.quality # Run quality checks
+      - run: cuenv task ci.test # Run all tests
+      - run: cuenv task ci.build # Build artifacts
 ```
 
 ### Custom Secret Resolvers 🚧
@@ -347,7 +349,7 @@ Extend cuenv with your own secret providers:
     field:      string
     resolver: #ExecResolver & {
         command: "vault"
-        args: ["kv", "get", "-address=\(vault_addr)", 
+        args: ["kv", "get", "-address=\(vault_addr)",
                "-field=\(field)", path]
     }
 }
@@ -370,7 +372,7 @@ env: {
 The core of cuenv is `cuengine`, a high-performance CUE evaluation engine written in Rust with Go FFI integration:
 
 - **Performance**: Native Rust performance with optimized caching
-- **Memory Safety**: Zero-copy string handling and safe FFI boundaries  
+- **Memory Safety**: Zero-copy string handling and safe FFI boundaries
 - **Reliability**: Comprehensive error handling and recovery
 - **Extensibility**: Plugin architecture for custom functions
 
@@ -388,7 +390,7 @@ Intelligent caching system for fast repeated evaluations:
 Multi-layered security approach (planned):
 
 - **Linux Namespaces**: Process, network, and filesystem isolation
-- **Landlock**: Fine-grained filesystem access control  
+- **Landlock**: Fine-grained filesystem access control
 - **eBPF Integration**: System call monitoring and filtering
 - **Capability System**: Principle of least privilege
 - **Audit Logging**: Comprehensive security event tracking
@@ -397,16 +399,16 @@ Multi-layered security approach (planned):
 
 ## Comparison
 
-| Feature | cuenv | Make | Bazel | Taskfile | direnv |
-|---------|-------|------|-------|----------|--------|
-| Type Safety | ✅ CUE constraints | ❌ | ✅ BUILD files | ❌ | ❌ |
-| Monorepo Support | ✅ Native | ⚠️ Basic | ✅ Excellent | ⚠️ Basic | ⚠️ Per-directory |
-| Environment Management | ✅ Typed + Secrets | ❌ | ❌ | ❌ | ✅ Basic |
-| Task Dependencies | ✅ Smart | ✅ | ✅ Advanced | ✅ Basic | ❌ |
-| Parallel Execution | ✅ | ⚠️ -j flag | ✅ | ⚠️ Limited | ❌ |
-| Caching | ✅ Content-aware | ❌ | ✅ Advanced | ❌ | ❌ |
-| Security Isolation | 📋 Planned | ❌ | ✅ Sandboxing | ❌ | ❌ |
-| Shell Integration | 🚧 | ❌ | ❌ | ❌ | ✅ |
+| Feature                | cuenv              | Make       | Bazel          | Taskfile   | direnv           |
+| ---------------------- | ------------------ | ---------- | -------------- | ---------- | ---------------- |
+| Type Safety            | ✅ CUE constraints | ❌         | ✅ BUILD files | ❌         | ❌               |
+| Monorepo Support       | ✅ Native          | ⚠️ Basic   | ✅ Excellent   | ⚠️ Basic   | ⚠️ Per-directory |
+| Environment Management | ✅ Typed + Secrets | ❌         | ❌             | ❌         | ✅ Basic         |
+| Task Dependencies      | ✅ Smart           | ✅         | ✅ Advanced    | ✅ Basic   | ❌               |
+| Parallel Execution     | ✅                 | ⚠️ -j flag | ✅             | ⚠️ Limited | ❌               |
+| Caching                | ✅ Content-aware   | ❌         | ✅ Advanced    | ❌         | ❌               |
+| Security Isolation     | 📋 Planned         | ❌         | ✅ Sandboxing  | ❌         | ❌               |
+| Shell Integration      | 🚧                 | ❌         | ❌             | ❌         | ✅               |
 
 ---
 
@@ -415,18 +417,21 @@ Multi-layered security approach (planned):
 ### Current Phase: Alpha
 
 **Production Ready:**
+
 - ✅ CUE evaluation engine with comprehensive test suite
 - ✅ FFI bridge between Rust and Go
 - ✅ Caching and retry mechanisms
 - ✅ Input validation and error handling
 
 **In Active Development:**
+
 - 🚧 CLI interface and task runner
 - 🚧 Shell integration and hooks
 - 🚧 Secret management framework
 - 🚧 Nix integration layer
 
 **Planned Features:**
+
 - 📋 Security isolation (namespaces, landlock)
 - 📋 Web UI and monitoring
 - 📋 SaaS offering for teams
@@ -475,7 +480,7 @@ cuenv/
 │   │   ├── src/
 │   │   ├── bridge.go       # Go FFI bridge
 │   │   └── tests/
-│   ├── cuenv-core/         # Shared types and utilities  
+│   ├── cuenv-core/         # Shared types and utilities
 │   └── cuenv-cli/          # CLI interface (upcoming)
 ├── examples/               # CUE configuration examples
 └── docs/                   # Documentation
@@ -507,4 +512,4 @@ Licensed under the [GNU Affero General Public License v3.0](LICENSE).
 
 ---
 
-*Built with ❤️ for the open source community*
+_Built with ❤️ for the open source community_
