@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/cuenv-core",
     "crates/cuengine",
+    "crates/cuenv-cli",
 ]
 
 [workspace.package]
@@ -19,17 +20,25 @@ categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
 cuenv-core = { path = "crates/cuenv-core", version = "0.1.0" }
+cuengine = { path = "crates/cuengine", version = "0.1.0" }
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 libc = "0.2"
+tokio = { version = "1.0", features = ["full"] }
+clap = { version = "4.0", features = ["derive", "env"] }
+ratatui = "0.29"
+crossterm = "0.28"
+miette = { version = "7.0", features = ["fancy"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 # Testing dependencies
 proptest = "1.0"
 criterion = "0.5"
 tempfile = "3.0"
-tokio = { version = "1.0", features = ["full"] }
 
 [workspace.lints.rust]
 unsafe_code = "warn"

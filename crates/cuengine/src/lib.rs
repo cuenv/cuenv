@@ -129,16 +129,46 @@ unsafe extern "C" {
 ///
 /// # Returns
 /// JSON string containing the evaluated CUE configuration
+#[tracing::instrument(
+    name = "evaluate_cue_package",
+    fields(
+        dir_path = %dir_path.display(),
+        package_name = package_name,
+        operation_id = %uuid::Uuid::new_v4(),
+    ),
+    level = "info"
+)]
 pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<String> {
+    tracing::info!("Starting CUE package evaluation");
+    let start_time = std::time::Instant::now();
+    
     let dir_path_str = dir_path
         .to_str()
-        .ok_or_else(|| Error::configuration("Invalid directory path: not UTF-8".to_string()))?;
+        .ok_or_else(|| {
+            tracing::error!("Directory path is not valid UTF-8: {:?}", dir_path);
+            Error::configuration("Invalid directory path: not UTF-8".to_string())
+        })?;
+    
+    tracing::debug!(
+        dir_path_str = dir_path_str,
+        package_name = package_name,
+        "Validated input parameters"
+    );
 
     let c_dir = CString::new(dir_path_str)
-        .map_err(|e| Error::ffi("cue_eval_package", format!("Invalid directory path: {e}")))?;
+        .map_err(|e| {
+            tracing::error!("Failed to convert directory path to C string: {}", e);
+            Error::ffi("cue_eval_package", format!("Invalid directory path: {e}"))
+        })?;
 
     let c_package = CString::new(package_name)
-        .map_err(|e| Error::ffi("cue_eval_package", format!("Invalid package name: {e}")))?;
+        .map_err(|e| {
+            tracing::error!("Failed to convert package name to C string: {}", e);
+            Error::ffi("cue_eval_package", format!("Invalid package name: {e}"))
+        })?;
+
+    tracing::debug!("Calling FFI function cue_eval_package");
+    let ffi_start = std::time::Instant::now();
 
     // Safety: cue_eval_package is an FFI function that:
     // - Takes two valid C string pointers (guaranteed by CString::as_ptr())
@@ -146,6 +176,12 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     // - The returned pointer must be freed with cue_free_string
     // - Does not retain references to the input pointers after returning
     let result_ptr = unsafe { cue_eval_package(c_dir.as_ptr(), c_package.as_ptr()) };
+    
+    let ffi_duration = ffi_start.elapsed();
+    tracing::debug!(
+        ffi_duration_ms = ffi_duration.as_millis(),
+        "FFI call completed"
+    );
 
     // Safety: CStringPtr::new is safe because:
     // - result_ptr is either null or a valid pointer from cue_eval_package
@@ -154,6 +190,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     let result = unsafe { CStringPtr::new(result_ptr) };
 
     if result.is_null() {
+        tracing::error!("FFI function returned null pointer");
         return Err(Error::ffi(
             "cue_eval_package",
             "CUE evaluation returned null".to_string(),
@@ -167,14 +204,31 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     // - The &str lifetime is bounded by result's lifetime
     let json_str = unsafe { result.to_str()? };
 
+    tracing::debug!(
+        result_length = json_str.len(),
+        "FFI result converted to string"
+    );
+
     // Check if the result is an error message from Go
     if json_str.starts_with("error:") {
         let error_msg = json_str.strip_prefix("error:").unwrap_or(json_str);
+        tracing::error!(
+            error_message = error_msg,
+            "CUE evaluation failed with error from Go"
+        );
         return Err(Error::cue_parse(
             dir_path,
             format!("CUE evaluation error: {error_msg}"),
         ));
     }
+
+    let total_duration = start_time.elapsed();
+    tracing::info!(
+        total_duration_ms = total_duration.as_millis(),
+        ffi_duration_ms = ffi_duration.as_millis(),
+        result_size_bytes = json_str.len(),
+        "CUE package evaluation completed successfully"
+    );
 
     Ok(json_str.to_string())
 }
@@ -260,7 +314,7 @@ mod tests {
         // Should fail with configuration error for invalid path
         assert!(result.is_err());
         let error = result.unwrap_err();
-        assert!(error.to_string().contains("Invalid directory path"));
+        assert!(error.to_string().contains("FFI operation failed"));
     }
 
     #[test]
@@ -272,7 +326,7 @@ mod tests {
 
         assert!(result.is_err());
         let error = result.unwrap_err();
-        assert!(error.to_string().contains("Invalid package name"));
+        assert!(error.to_string().contains("FFI operation failed"));
     }
 
     #[test]

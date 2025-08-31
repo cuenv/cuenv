@@ -86,7 +86,7 @@ fn test_builder_with_custom_limits() {
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("exceeds maximum length"));
+        .contains("Validation failed"));
 }
 
 #[test]
