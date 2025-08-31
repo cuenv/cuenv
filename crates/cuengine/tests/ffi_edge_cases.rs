@@ -1,6 +1,6 @@
 //! Tests for FFI edge cases and error paths
 
-use cuengine::{CStringPtr, evaluate_cue_package};
+use cuengine::{evaluate_cue_package, CStringPtr};
 use std::ffi::CString;
 use std::path::Path;
 use tempfile::TempDir;
@@ -23,11 +23,9 @@ fn test_cstring_ptr_invalid_utf8() {
 
     // Verify error message
     let error = result.unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("failed to convert C string to UTF-8")
-    );
+    assert!(error
+        .to_string()
+        .contains("failed to convert C string to UTF-8"));
 
     // Prevent the wrapper from freeing our stack-allocated bytes
     std::mem::forget(wrapper);

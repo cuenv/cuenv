@@ -2,9 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -44,7 +44,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, 1.82.0]  # MSRV - Edition 2024 requires 1.82+
+        rust: [stable, 1.82.0] # MSRV - Edition 2024 requires 1.82+
 
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +73,7 @@ jobs:
       - name: Install Go (Windows)
         uses: actions/setup-go@v4
         with:
-          go-version: '1.24'
+          go-version: "1.24"
         if: matrix.os == 'windows-latest'
 
       - name: Cache cargo registry
@@ -211,7 +211,7 @@ jobs:
 
       - name: Run benchmarks
         run: devenv shell -- cargo bench --workspace --no-fail-fast
-        continue-on-error: true  # Don't fail CI on benchmark regression initially
+        continue-on-error: true # Don't fail CI on benchmark regression initially
 
       - name: Store benchmark result
         uses: actions/upload-artifact@v4

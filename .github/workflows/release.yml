@@ -95,7 +95,7 @@ jobs:
         run: devenv shell -- cargo publish -p cuenv-core
 
       - name: Wait for crates.io indexing
-        run: sleep 300  # Wait 5 minutes for crates.io to index cuenv-core
+        run: sleep 300 # Wait 5 minutes for crates.io to index cuenv-core
 
       - name: Dry run publish cuengine
         run: devenv shell -- cargo publish --dry-run -p cuengine
@@ -151,7 +151,7 @@ jobs:
       - name: Install Go (Windows)
         uses: actions/setup-go@v4
         with:
-          go-version: '1.24'
+          go-version: "1.24"
         if: matrix.os == 'windows-latest'
 
       - name: Build devenv (Unix)

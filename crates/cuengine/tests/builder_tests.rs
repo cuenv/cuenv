@@ -83,12 +83,10 @@ fn test_builder_with_custom_limits() {
     let too_long_package = "a".repeat(51);
     let result = evaluator.evaluate(temp_dir.path(), &too_long_package);
     assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("exceeds maximum length")
-    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("exceeds maximum length"));
 }
 
 #[test]

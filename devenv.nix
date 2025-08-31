@@ -14,7 +14,7 @@
   };
   languages.cue.enable = true;
   languages.nix.enable = true;
-  
+
   # Add Go language support (required for cuengine FFI)
   languages.go = {
     enable = true;
@@ -28,38 +28,16 @@
     cargo-outdated
     cargo-llvm-cov
     llvmPackages.bintools
-    
+
     # CI/CD tools
-    cargo-audit        # Security vulnerability scanning
-    cargo-nextest      # Faster test runner for CI
-    cargo-release      # Release automation helper
-    git                # Required for release-please
-    gh                 # GitHub CLI for release automation
-    jq                 # JSON processing for scripts
+    cargo-audit # Security vulnerability scanning
+    cargo-nextest # Faster test runner for CI
+    cargo-release # Release automation helper
+    git # Required for release-please
+    gh # GitHub CLI for release automation
+    jq # JSON processing for scripts
+    prettier # Formatter for JSON/Markdown
+    nixpkgs-fmt # Formatter for Nix
+    treefmt # Format everything
   ];
-  
-  # Code formatting with treefmt
-  treefmt = {
-    enable = true;
-    projectRoot = ./.;
-    
-    programs = {
-      rustfmt.enable = true;
-      gofmt.enable = true;
-      nixpkgs-fmt.enable = true;
-      prettier = {
-        enable = true;
-        includes = [
-          "*.json"
-          "*.yml"
-          "*.yaml"
-          "*.md"
-        ];
-        excludes = [
-          "Cargo.lock"
-          "*.toml"
-        ];
-      };
-    };
-  };
 }

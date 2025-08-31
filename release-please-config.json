@@ -9,16 +9,14 @@
       "bump-minor-pre-major": true
     },
     "crates/cuengine": {
-      "release-type": "rust", 
+      "release-type": "rust",
       "component": "cuengine",
       "package-name": "cuengine",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true
     }
   },
-  "plugins": [
-    "cargo-workspace"
-  ],
+  "plugins": ["cargo-workspace"],
   "group-pull-request-title-pattern": "chore: release ${version}",
   "separate-pull-requests": false,
   "skip-github-release": false,

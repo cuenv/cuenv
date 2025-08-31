@@ -26,7 +26,7 @@ func createTestCueDir(t *testing.T, packageName string, content string) (string,
 	if strings.Contains(packageName, "..") || strings.Contains(packageName, "/") || strings.Contains(packageName, "\\") {
 		t.Fatalf("Invalid package name: %s (contains path traversal characters)", packageName)
 	}
-	
+
 	// Validate content size to prevent resource exhaustion
 	if len(content) > 1024*1024 { // 1MB limit
 		t.Fatalf("Content too large: %d bytes (max 1MB)", len(content))
@@ -39,13 +39,13 @@ func createTestCueDir(t *testing.T, packageName string, content string) (string,
 
 	// Create env.cue file with safe filename
 	cueFile := filepath.Join(tempDir, "env.cue")
-	
+
 	// Validate final path is within temp directory
 	if !strings.HasPrefix(cueFile, tempDir) {
 		os.RemoveAll(tempDir)
 		t.Fatalf("Path traversal detected in file path")
 	}
-	
+
 	fullContent := "package " + packageName + "\n\n" + content
 	if err := os.WriteFile(cueFile, []byte(fullContent), 0644); err != nil {
 		os.RemoveAll(tempDir)
@@ -374,7 +374,7 @@ tasks: {
 	defer cleanup()
 
 	result := callCueEvalPackage(tempDir, "cuenv")
-	
+
 	// Parse the JSON to check for errors
 	var data map[string]interface{}
 	if err := json.Unmarshal([]byte(result), &data); err != nil {
@@ -398,7 +398,7 @@ tasks: {
 	// The critical test: check if the JSON string contains the fields in the right order
 	// Since Go maps are unordered, we need to check the JSON string directly
 	expectedOrder := []string{"first", "second", "third", "fourth"}
-	
+
 	// Find the positions of each field name in the JSON string
 	positions := make(map[string]int)
 	for _, field := range expectedOrder {
@@ -415,7 +415,7 @@ tasks: {
 	for i := 1; i < len(expectedOrder); i++ {
 		prevField := expectedOrder[i-1]
 		currField := expectedOrder[i]
-		
+
 		if positions[prevField] >= positions[currField] {
 			t.Errorf("Field ordering incorrect: %s (pos %d) should come before %s (pos %d)",
 				prevField, positions[prevField], currField, positions[currField])
@@ -454,7 +454,7 @@ tasks: {
 
 	// Parse the same content multiple times and ensure consistent ordering
 	var allResults []string
-	
+
 	for i := 0; i < 5; i++ {
 		result := callCueEvalPackage(tempDir, "cuenv")
 		allResults = append(allResults, result)
@@ -466,7 +466,7 @@ tasks: {
 			t.Errorf("Inconsistent result on iteration %d", i+1)
 			t.Logf("First result: %s", allResults[0])
 			t.Logf("Different result: %s", allResults[i])
-			
+
 			// Show where they differ
 			if len(allResults[0]) == len(allResults[i]) {
 				for j := 0; j < len(allResults[0]); j++ {
