@@ -1,0 +1,32 @@
+[package]
+name = "cuenv-cli"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Event-driven CLI with inline TUI for cuenv"
+
+[[bin]]
+name = "cuenv"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+cuenv-core = { workspace = true }
+cuengine = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }

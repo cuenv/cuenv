@@ -14,3 +14,4 @@ description = "Core types and error handling for the cuenv ecosystem"
 [dependencies]
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+miette = { workspace = true }

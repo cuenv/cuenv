@@ -122,12 +122,11 @@ impl CueEvaluator {
     /// or if the CUE evaluation fails
     pub fn evaluate(&self, dir_path: &Path, package_name: &str) -> Result<String> {
         // Check cache first
-        if let Some(ref cache) = self.cache {
-            if let Some(cached) = cache.get(dir_path, package_name) {
+        if let Some(ref cache) = self.cache
+            && let Some(cached) = cache.get(dir_path, package_name) {
                 tracing::debug!("Cache hit for {}:{}", dir_path.display(), package_name);
                 return Ok(cached);
             }
-        }
 
         // Validate inputs
         crate::validation::validate_path(dir_path, &self.limits)?;
