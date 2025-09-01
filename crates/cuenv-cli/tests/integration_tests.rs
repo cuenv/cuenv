@@ -256,3 +256,88 @@ fn test_correlation_id_uniqueness() {
         (_, Err(e2)) => panic!("Second command failed: {e2}"),
     }
 }
+#[test]
+fn test_env_print_command_basic() {
+    let result = run_cuenv_command(&["env", "print", "--path", "/home/rawkode/Code/src/github.com/cuenv/cuenv/examples/env-basic", "--package", "examples"]);
+    
+    match result {
+        Ok((stdout, stderr, success)) => {
+            if !success {
+                println!("stdout: {}", stdout);
+                println!("stderr: {}", stderr);
+            }
+            assert!(success, "Command should succeed");
+            assert!(stdout.contains("DATABASE_URL=postgres://localhost/mydb"));
+            assert!(stdout.contains("DEBUG=true"));
+            assert!(stdout.contains("PORT=3000"));
+            assert!(stdout.contains("BASE_URL=https://api.example.com"));
+            assert!(stdout.contains("API_ENDPOINT=https://api.example.com/v1"));
+        }
+        Err(e) => panic!("Failed to run cuenv env print: {e}"),
+    }
+}
+
+#[test]
+fn test_env_print_command_json_format() {
+    let result = run_cuenv_command(&["env", "print", "--path", "/home/rawkode/Code/src/github.com/cuenv/cuenv/examples/env-basic", "--package", "examples", "--format", "json"]);
+    
+    match result {
+        Ok((stdout, _stderr, success)) => {
+            assert!(success, "Command should succeed");
+            
+            // Parse as JSON to verify it's valid JSON
+            let parsed: serde_json::Value = serde_json::from_str(&stdout)
+                .expect("Output should be valid JSON");
+            
+            assert_eq!(parsed["DATABASE_URL"], "postgres://localhost/mydb");
+            assert_eq!(parsed["DEBUG"], true);
+            assert_eq!(parsed["PORT"], 3000);
+            assert_eq!(parsed["BASE_URL"], "https://api.example.com");
+            assert_eq!(parsed["API_ENDPOINT"], "https://api.example.com/v1");
+        }
+        Err(e) => panic!("Failed to run cuenv env print with JSON format: {e}"),
+    }
+}
+
+#[test]
+fn test_env_print_command_with_short_path_flag() {
+    let result = run_cuenv_command(&["env", "print", "-p", "/home/rawkode/Code/src/github.com/cuenv/cuenv/examples/env-basic", "--package", "examples"]);
+    
+    match result {
+        Ok((stdout, _stderr, success)) => {
+            assert!(success, "Command should succeed with short path flag");
+            assert!(stdout.contains("DATABASE_URL="));
+            assert!(stdout.contains("DEBUG="));
+            assert!(stdout.contains("PORT="));
+        }
+        Err(e) => panic!("Failed to run cuenv env print with short path flag: {e}"),
+    }
+}
+
+#[test]
+fn test_env_print_command_invalid_path() {
+    let result = run_cuenv_command(&["env", "print", "--path", "nonexistent/path", "--package", "examples"]);
+    
+    match result {
+        Ok((_stdout, _stderr, success)) => {
+            assert!(!success, "Command should fail with invalid path");
+        }
+        Err(_) => {
+            // Command failed to execute, which is also acceptable for invalid paths
+        }
+    }
+}
+
+#[test]
+fn test_env_print_command_invalid_package() {
+    let result = run_cuenv_command(&["env", "print", "--path", "examples/env-basic", "--package", "nonexistent"]);
+    
+    match result {
+        Ok((_stdout, _stderr, success)) => {
+            assert!(!success, "Command should fail with invalid package");
+        }
+        Err(_) => {
+            // Command failed to execute, which is also acceptable for invalid packages
+        }
+    }
+}

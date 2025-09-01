@@ -24,12 +24,35 @@ pub struct Cli {
 pub enum Commands {
     #[command(about = "Show version information")]
     Version,
+    #[command(about = "Environment variable operations")]
+    Env {
+        #[command(subcommand)]
+        subcommand: EnvCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EnvCommands {
+    #[command(about = "Print environment variables from CUE package")]
+    Print {
+        #[arg(long, short = 'p', help = "Path to directory containing CUE files", default_value = ".")]
+        path: String,
+        #[arg(long, help = "Name of the CUE package to evaluate", default_value = "cuenv")]
+        package: String,
+        #[arg(long, help = "Output format (env, json)", default_value = "env")]
+        format: String,
+    },
 }
 
 impl From<Commands> for Command {
     fn from(cmd: Commands) -> Self {
         match cmd {
             Commands::Version => Command::Version,
+            Commands::Env { subcommand } => match subcommand {
+                EnvCommands::Print { path, package, format } => {
+                    Command::EnvPrint { path, package, format }
+                }
+            },
         }
     }
 }
@@ -137,5 +160,83 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.kind() == clap::error::ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn test_env_print_command_default() {
+        let cli = Cli::try_parse_from(&["cuenv", "env", "print"]).unwrap();
+        
+        if let Commands::Env { subcommand } = cli.command {
+            if let EnvCommands::Print { path, package, format } = subcommand {
+                assert_eq!(path, ".");
+                assert_eq!(package, "cuenv");
+                assert_eq!(format, "env");
+            } else {
+                panic!("Expected Print subcommand");
+            }
+        } else {
+            panic!("Expected Env command");
+        }
+    }
+
+    #[test]
+    fn test_env_print_command_with_options() {
+        let cli = Cli::try_parse_from(&[
+            "cuenv", "env", "print", 
+            "--path", "examples/env-basic",
+            "--package", "examples",
+            "--format", "json"
+        ]).unwrap();
+        
+        if let Commands::Env { subcommand } = cli.command {
+            if let EnvCommands::Print { path, package, format } = subcommand {
+                assert_eq!(path, "examples/env-basic");
+                assert_eq!(package, "examples");
+                assert_eq!(format, "json");
+            } else {
+                panic!("Expected Print subcommand");
+            }
+        } else {
+            panic!("Expected Env command");
+        }
+    }
+
+    #[test]
+    fn test_env_print_command_short_path() {
+        let cli = Cli::try_parse_from(&[
+            "cuenv", "env", "print", "-p", "test/path"
+        ]).unwrap();
+        
+        if let Commands::Env { subcommand } = cli.command {
+            if let EnvCommands::Print { path, package, format } = subcommand {
+                assert_eq!(path, "test/path");
+                assert_eq!(package, "cuenv"); // default
+                assert_eq!(format, "env"); // default
+            } else {
+                panic!("Expected Print subcommand");
+            }
+        } else {
+            panic!("Expected Env command");
+        }
+    }
+
+    #[test]
+    fn test_env_command_conversion() {
+        let env_cmd = Commands::Env { 
+            subcommand: EnvCommands::Print {
+                path: "test".to_string(),
+                package: "pkg".to_string(),
+                format: "json".to_string(),
+            }
+        };
+        let command: Command = env_cmd.into();
+        
+        if let Command::EnvPrint { path, package, format } = command {
+            assert_eq!(path, "test");
+            assert_eq!(package, "pkg");
+            assert_eq!(format, "json");
+        } else {
+            panic!("Expected EnvPrint command");
+        }
     }
 }
