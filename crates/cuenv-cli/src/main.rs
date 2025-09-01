@@ -88,7 +88,7 @@ async fn run_cli() -> miette::Result<()> {
 
 #[instrument]
 async fn parse_args() -> miette::Result<crate::cli::Cli> {
-    let start = std::time::Instant::now();
+    let _start = std::time::Instant::now();
     let cli = parse();
     
     // CLI arguments parsed
@@ -98,7 +98,7 @@ async fn parse_args() -> miette::Result<crate::cli::Cli> {
 
 #[instrument]
 async fn execute_command(command: Command) -> miette::Result<()> {
-    let start = std::time::Instant::now();
+    let _start = std::time::Instant::now();
     
     match command {
         Command::Version => {
@@ -134,7 +134,7 @@ async fn execute_version_command() -> miette::Result<()> {
     perf_guard.finish(true);
     
     // Log performance summary
-    let summary = performance::registry().get_summary();
+    let _summary = performance::registry().get_summary();
     // Performance summary
     
     Ok(())
@@ -167,7 +167,7 @@ async fn execute_env_print_command(path: String, package: String, format: String
     }
     
     // Log performance summary
-    let summary = performance::registry().get_summary();
+    let _summary = performance::registry().get_summary();
     // Performance summary
     
     Ok(())

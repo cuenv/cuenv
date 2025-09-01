@@ -1,7 +1,7 @@
 pub mod version;
 pub mod env;
 
-use crate::events::{Event, EventSender};
+use crate::events::{_Event as Event, _EventSender as EventSender};
 use cuenv_core::Result;
 use tokio::time::{sleep, Duration};
 use tracing::{event, Level};
@@ -16,11 +16,11 @@ pub enum Command {
     },
 }
 
-pub struct CommandExecutor {
+pub struct _CommandExecutor {
     event_sender: EventSender,
 }
 
-impl CommandExecutor {
+impl _CommandExecutor {
     pub fn new(event_sender: EventSender) -> Self {
         Self { event_sender }
     }

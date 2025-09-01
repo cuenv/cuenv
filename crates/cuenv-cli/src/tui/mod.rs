@@ -15,9 +15,9 @@ use ratatui::{
     Terminal,
 };
 use tracing::{event, Level};
-use crate::events::Event;
+use crate::events::_Event as Event;
 
-pub struct InlineTui {
+pub struct _InlineTui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     start_line: u16,
     height: u16,
@@ -25,7 +25,7 @@ pub struct InlineTui {
 }
 
 #[derive(Debug, Clone)]
-pub struct TuiState {
+pub struct _TuiState {
     pub command: Option<String>,
     pub progress: f32,
     pub message: String,
@@ -34,7 +34,7 @@ pub struct TuiState {
     pub success: Option<bool>,
 }
 
-impl Default for TuiState {
+impl Default for _TuiState {
     fn default() -> Self {
         Self {
             command: None,
@@ -47,7 +47,7 @@ impl Default for TuiState {
     }
 }
 
-impl InlineTui {
+impl _InlineTui {
     pub fn new() -> io::Result<Self> {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
@@ -87,7 +87,7 @@ impl InlineTui {
         Ok(())
     }
 
-    pub fn render(&mut self, state: &TuiState) -> io::Result<()> {
+    pub fn render(&mut self, state: &_TuiState) -> io::Result<()> {
         // Rate limit renders to avoid flicker
         if self.last_render.elapsed() < Duration::from_millis(50) {
             return Ok(());
@@ -182,15 +182,15 @@ impl InlineTui {
     }
 }
 
-pub struct TuiManager {
-    tui: InlineTui,
-    state: TuiState,
+pub struct _TuiManager {
+    tui: _InlineTui,
+    state: _TuiState,
 }
 
-impl TuiManager {
+impl _TuiManager {
     pub fn new() -> io::Result<Self> {
-        let tui = InlineTui::new()?;
-        let state = TuiState::default();
+        let tui = _InlineTui::new()?;
+        let state = _TuiState::default();
         
         Ok(Self { tui, state })
     }
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn test_tui_state_default() {
-        let state = TuiState::default();
+        let state = _TuiState::default();
         
         assert!(state.command.is_none());
         assert_eq!(state.progress, 0.0);
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_tui_state_clone() {
-        let mut state = TuiState::default();
+        let mut state = _TuiState::default();
         state.command = Some("test_command".to_string());
         state.progress = 0.5;
         state.message = "Processing...".to_string();
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_tui_manager_event_command_start() {
-        let mut state = TuiState::default();
+        let mut state = _TuiState::default();
         let event = Event::CommandStart { command: "build".to_string() };
         
         // Simulate the logic from handle_event
@@ -298,8 +298,7 @@ mod tests {
 
     #[test]
     fn test_tui_manager_event_command_progress() {
-        let mut state = TuiState::default();
-        state.command = Some("build".to_string());
+        let mut state = _TuiState { command: Some("build".to_string()), ..Default::default() };
         
         let event = Event::CommandProgress { 
             command: "build".to_string(), 
@@ -308,23 +307,19 @@ mod tests {
         };
         
         // Simulate the logic from handle_event
-        match event {
-            Event::CommandProgress { progress, message, .. } => {
-                state.progress = progress;
-                state.message = message.clone();
-            }
-            _ => {}
+        if let Event::CommandProgress { progress, message, .. } = event {
+            state.progress = progress;
+            state.message = message.clone();
         }
         
-        assert_eq!(state.progress, 0.75);
+        assert!((state.progress - 0.75).abs() < f32::EPSILON);
         assert_eq!(state.message, "Compiling...");
         assert!(!state.is_complete);
     }
 
     #[test]
     fn test_tui_manager_event_command_complete_success() {
-        let mut state = TuiState::default();
-        state.command = Some("build".to_string());
+        let mut state = _TuiState { command: Some("build".to_string()), ..Default::default() };
         
         let event = Event::CommandComplete { 
             command: "build".to_string(), 
@@ -333,17 +328,14 @@ mod tests {
         };
         
         // Simulate the logic from handle_event (matching actual implementation)
-        match event {
-            Event::CommandComplete { success, output, .. } => {
-                state.progress = 1.0;
-                state.is_complete = true;
-                state.success = Some(success);
-                state.message = if success { "Complete" } else { "Failed" }.to_string();
-                if !output.is_empty() {
-                    state.output.push(output.clone());
-                }
+        if let Event::CommandComplete { success, output, .. } = event {
+            state.progress = 1.0;
+            state.is_complete = true;
+            state.success = Some(success);
+            state.message = if success { "Complete" } else { "Failed" }.to_string();
+            if !output.is_empty() {
+                state.output.push(output.clone());
             }
-            _ => {}
         }
         
         assert!((state.progress - 1.0).abs() < f32::EPSILON);
@@ -355,8 +347,7 @@ mod tests {
 
     #[test]
     fn test_tui_manager_event_command_complete_failure() {
-        let mut state = TuiState::default();
-        state.command = Some("build".to_string());
+        let mut state = _TuiState { command: Some("build".to_string()), ..Default::default() };
         
         let event = Event::CommandComplete { 
             command: "build".to_string(), 
@@ -365,17 +356,14 @@ mod tests {
         };
         
         // Simulate the logic from handle_event
-        match event {
-            Event::CommandComplete { success, output, .. } => {
-                state.progress = 1.0;
-                state.is_complete = true;
-                state.success = Some(success);
-                state.message = if success { "Complete" } else { "Failed" }.to_string();
-                if !output.is_empty() {
-                    state.output.push(output.clone());
-                }
+        if let Event::CommandComplete { success, output, .. } = event {
+            state.progress = 1.0;
+            state.is_complete = true;
+            state.success = Some(success);
+            state.message = if success { "Complete" } else { "Failed" }.to_string();
+            if !output.is_empty() {
+                state.output.push(output.clone());
             }
-            _ => {}
         }
         
         assert!((state.progress - 1.0).abs() < f32::EPSILON);
@@ -387,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_tui_manager_multiple_output_lines() {
-        let mut state = TuiState::default();
+        let mut state = _TuiState::default();
         
         // Add multiple output lines
         let outputs = [
@@ -408,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_progress_values() {
-        let mut state = TuiState::default();
+        let mut state = _TuiState::default();
         
         // Test various progress values
         let progress_values = vec![0.0, 0.25, 0.5, 0.75, 1.0];
@@ -421,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_tui_state_debug_format() {
-        let state = TuiState {
+        let state = _TuiState {
             command: Some("test".to_string()),
             progress: 0.5,
             message: "Testing...".to_string(),
@@ -439,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_event_handling_sequence() {
-        let mut state = TuiState::default();
+        let mut state = _TuiState::default();
         
         // Simulate a complete command sequence
         let events = vec![
@@ -485,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_empty_output_not_added() {
-        let mut state = TuiState::default();
+        let mut state = _TuiState::default();
         
         let event = Event::CommandComplete { 
             command: "test".to_string(), 

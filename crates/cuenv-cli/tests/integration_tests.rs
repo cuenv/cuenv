@@ -26,6 +26,19 @@ fn run_cuenv_command(args: &[&str]) -> Result<(String, String, bool), Box<dyn st
     Ok((stdout, stderr, success))
 }
 
+/// Get the path to the test examples directory
+fn get_test_examples_path() -> String {
+    // Use the CARGO_MANIFEST_DIR environment variable to get the project root
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    // Go up two levels from crates/cuenv-cli to the project root
+    let project_root = std::path::Path::new(manifest_dir)
+        .parent()  // crates
+        .and_then(|p| p.parent())  // project root
+        .expect("Failed to find project root");
+    
+    project_root.join("examples/env-basic").to_string_lossy().to_string()
+}
+
 #[test]
 fn test_version_command_basic() {
     let result = run_cuenv_command(&["version"]);
@@ -258,13 +271,14 @@ fn test_correlation_id_uniqueness() {
 }
 #[test]
 fn test_env_print_command_basic() {
-    let result = run_cuenv_command(&["env", "print", "--path", "/home/rawkode/Code/src/github.com/cuenv/cuenv/examples/env-basic", "--package", "examples"]);
+    let test_path = get_test_examples_path();
+    let result = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "examples"]);
     
     match result {
         Ok((stdout, stderr, success)) => {
             if !success {
-                println!("stdout: {}", stdout);
-                println!("stderr: {}", stderr);
+                println!("stdout: {stdout}");
+                println!("stderr: {stderr}");
             }
             assert!(success, "Command should succeed");
             assert!(stdout.contains("DATABASE_URL=postgres://localhost/mydb"));
@@ -279,7 +293,8 @@ fn test_env_print_command_basic() {
 
 #[test]
 fn test_env_print_command_json_format() {
-    let result = run_cuenv_command(&["env", "print", "--path", "/home/rawkode/Code/src/github.com/cuenv/cuenv/examples/env-basic", "--package", "examples", "--format", "json"]);
+    let test_path = get_test_examples_path();
+    let result = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "examples", "--format", "json"]);
     
     match result {
         Ok((stdout, _stderr, success)) => {
@@ -301,7 +316,8 @@ fn test_env_print_command_json_format() {
 
 #[test]
 fn test_env_print_command_with_short_path_flag() {
-    let result = run_cuenv_command(&["env", "print", "-p", "/home/rawkode/Code/src/github.com/cuenv/cuenv/examples/env-basic", "--package", "examples"]);
+    let test_path = get_test_examples_path();
+    let result = run_cuenv_command(&["env", "print", "-p", &test_path, "--package", "examples"]);
     
     match result {
         Ok((stdout, _stderr, success)) => {
@@ -318,13 +334,10 @@ fn test_env_print_command_with_short_path_flag() {
 fn test_env_print_command_invalid_path() {
     let result = run_cuenv_command(&["env", "print", "--path", "nonexistent/path", "--package", "examples"]);
     
-    match result {
-        Ok((_stdout, _stderr, success)) => {
-            assert!(!success, "Command should fail with invalid path");
-        }
-        Err(_) => {
-            // Command failed to execute, which is also acceptable for invalid paths
-        }
+    if let Ok((_stdout, _stderr, success)) = result {
+        assert!(!success, "Command should fail with invalid path");
+    } else {
+        // Command failed to execute, which is also acceptable for invalid paths
     }
 }
 
@@ -332,12 +345,26 @@ fn test_env_print_command_invalid_path() {
 fn test_env_print_command_invalid_package() {
     let result = run_cuenv_command(&["env", "print", "--path", "examples/env-basic", "--package", "nonexistent"]);
     
+    if let Ok((_stdout, _stderr, success)) = result {
+        assert!(!success, "Command should fail with invalid package");
+    } else {
+        // Command failed to execute, which is also acceptable for invalid packages
+    }
+}
+
+#[test]
+fn test_env_print_command_unsupported_format() {
+    let test_path = get_test_examples_path();
+    let result = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "examples", "--format", "yaml"]);
+    
     match result {
-        Ok((_stdout, _stderr, success)) => {
-            assert!(!success, "Command should fail with invalid package");
+        Ok((stdout, stderr, success)) => {
+            assert!(!success, "Command should fail with unsupported format");
+            // Check that the error message mentions the unsupported format
+            let combined_output = format!("{}{}", stdout, stderr);
+            assert!(combined_output.contains("Unsupported format") || combined_output.contains("yaml"), 
+                "Error message should mention unsupported format 'yaml'");
         }
-        Err(_) => {
-            // Command failed to execute, which is also acceptable for invalid packages
-        }
+        Err(e) => panic!("Failed to run cuenv env print: {e}"),
     }
 }
