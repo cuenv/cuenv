@@ -104,6 +104,9 @@ async fn execute_command(command: Command) -> miette::Result<()> {
         Command::Version => {
             execute_version_command().await?;
         }
+        Command::EnvPrint { path, package, format } => {
+            execute_env_print_command(path, package, format).await?;
+        }
     }
     
     // Command executed successfully
@@ -129,6 +132,39 @@ async fn execute_version_command() -> miette::Result<()> {
     
     // Version information displayed
     perf_guard.finish(true);
+    
+    // Log performance summary
+    let summary = performance::registry().get_summary();
+    // Performance summary
+    
+    Ok(())
+}
+
+#[instrument]
+async fn execute_env_print_command(path: String, package: String, format: String) -> miette::Result<()> {
+    let mut perf_guard = performance::PerformanceGuard::new("env_print_command");
+    perf_guard.add_metadata("command_type", "env_print");
+    perf_guard.add_metadata("package", &package);
+    perf_guard.add_metadata("format", &format);
+    
+    // Executing env print command
+    
+    let output = measure_perf!("env_print_execution", {
+        commands::env::execute_env_print(&path, &package, &format).await
+    });
+    
+    match output {
+        Ok(result) => {
+            // Env values retrieved successfully
+            println!("{}", result);
+            perf_guard.finish(true);
+        }
+        Err(e) => {
+            // Env print failed
+            perf_guard.finish(false);
+            return Err(miette::miette!("Failed to print environment variables: {:?}", e));
+        }
+    }
     
     // Log performance summary
     let summary = performance::registry().get_summary();
