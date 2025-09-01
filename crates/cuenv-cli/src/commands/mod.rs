@@ -1,4 +1,5 @@
 pub mod version;
+pub mod env;
 
 use crate::events::{Event, EventSender};
 use cuenv_core::Result;
@@ -8,6 +9,11 @@ use tracing::{event, Level};
 #[derive(Debug, Clone)]
 pub enum Command {
     Version,
+    EnvPrint {
+        path: String,
+        package: String,
+        format: String,
+    },
 }
 
 pub struct CommandExecutor {
@@ -23,6 +29,9 @@ impl CommandExecutor {
         match command {
             Command::Version => {
                 self.execute_version().await
+            }
+            Command::EnvPrint { path, package, format } => {
+                self.execute_env_print(path, package, format).await
             }
         }
     }
@@ -70,6 +79,35 @@ impl CommandExecutor {
         });
 
         Ok(())
+    }
+
+    async fn execute_env_print(&self, path: String, package: String, format: String) -> Result<()> {
+        let command_name = "env print";
+        
+        // Send command start event
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        // Execute the env print command
+        match env::execute_env_print(&path, &package, &format).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {}", e),
+                });
+                Err(e)
+            }
+        }
     }
 
     fn send_event(&self, event: Event) {
