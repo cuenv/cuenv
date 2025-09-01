@@ -167,13 +167,10 @@ mod tests {
         let cli = Cli::try_parse_from(&["cuenv", "env", "print"]).unwrap();
         
         if let Commands::Env { subcommand } = cli.command {
-            if let EnvCommands::Print { path, package, format } = subcommand {
-                assert_eq!(path, ".");
-                assert_eq!(package, "cuenv");
-                assert_eq!(format, "env");
-            } else {
-                panic!("Expected Print subcommand");
-            }
+            let EnvCommands::Print { path, package, format } = subcommand;
+            assert_eq!(path, ".");
+            assert_eq!(package, "cuenv");
+            assert_eq!(format, "env");
         } else {
             panic!("Expected Env command");
         }
@@ -189,13 +186,10 @@ mod tests {
         ]).unwrap();
         
         if let Commands::Env { subcommand } = cli.command {
-            if let EnvCommands::Print { path, package, format } = subcommand {
-                assert_eq!(path, "examples/env-basic");
-                assert_eq!(package, "examples");
-                assert_eq!(format, "json");
-            } else {
-                panic!("Expected Print subcommand");
-            }
+            let EnvCommands::Print { path, package, format } = subcommand;
+            assert_eq!(path, "examples/env-basic");
+            assert_eq!(package, "examples");
+            assert_eq!(format, "json");
         } else {
             panic!("Expected Env command");
         }
@@ -208,13 +202,10 @@ mod tests {
         ]).unwrap();
         
         if let Commands::Env { subcommand } = cli.command {
-            if let EnvCommands::Print { path, package, format } = subcommand {
-                assert_eq!(path, "test/path");
-                assert_eq!(package, "cuenv"); // default
-                assert_eq!(format, "env"); // default
-            } else {
-                panic!("Expected Print subcommand");
-            }
+            let EnvCommands::Print { path, package, format } = subcommand;
+            assert_eq!(path, "test/path");
+            assert_eq!(package, "cuenv"); // default
+            assert_eq!(format, "env"); // default
         } else {
             panic!("Expected Env command");
         }

@@ -208,7 +208,7 @@ macro_rules! measure_perf_async {
 }
 
 /// Instrument function with automatic performance measurement
-pub fn instrument_perf<F, R>(operation_name: &str, f: F) -> R
+pub fn _instrument_perf<F, R>(operation_name: &str, f: F) -> R
 where
     F: FnOnce() -> R,
 {
@@ -217,7 +217,7 @@ where
 }
 
 /// Async version of instrument_perf
-pub async fn instrument_perf_async<F, Fut, R>(operation_name: &str, f: F) -> R
+pub async fn _instrument_perf_async<F, Fut, R>(operation_name: &str, f: F) -> R
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,

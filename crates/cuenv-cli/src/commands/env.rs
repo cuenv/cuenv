@@ -33,8 +33,11 @@ pub async fn execute_env_print(path: &str, package: &str, format: &str) -> Resul
             serde_json::to_string_pretty(env_object)
                 .map_err(|e| cuenv_core::Error::configuration(format!("Failed to format JSON: {}", e)))?
         }
-        "env" | _ => {
+        "env" => {
             format_as_env_vars(env_object)?
+        }
+        other => {
+            return Err(cuenv_core::Error::configuration(format!("Unsupported format: '{}'. Supported formats are 'json' and 'env'.", other)));
         }
     };
     

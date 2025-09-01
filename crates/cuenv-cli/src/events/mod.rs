@@ -3,7 +3,7 @@ use tokio::sync::mpsc;
 use tracing::{event, Level};
 
 #[derive(Debug, Clone)]
-pub enum Event {
+pub enum _Event {
     UserInput { input: String },
     CommandStart { command: String },
     CommandProgress { command: String, progress: f32, message: String },
@@ -12,46 +12,46 @@ pub enum Event {
     TuiRefresh,
 }
 
-impl fmt::Display for Event {
+impl fmt::Display for _Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Event::UserInput { input } => write!(f, "UserInput: {}", input),
-            Event::CommandStart { command } => write!(f, "CommandStart: {}", command),
-            Event::CommandProgress { command, progress, message } => {
+            _Event::UserInput { input } => write!(f, "UserInput: {}", input),
+            _Event::CommandStart { command } => write!(f, "CommandStart: {}", command),
+            _Event::CommandProgress { command, progress, message } => {
                 write!(f, "CommandProgress: {} ({:.1}%) - {}", command, progress * 100.0, message)
             }
-            Event::CommandComplete { command, success, .. } => {
+            _Event::CommandComplete { command, success, .. } => {
                 write!(f, "CommandComplete: {} ({})", command, if *success { "success" } else { "failed" })
             }
-            Event::SystemShutdown => write!(f, "SystemShutdown"),
-            Event::TuiRefresh => write!(f, "TuiRefresh"),
+            _Event::SystemShutdown => write!(f, "SystemShutdown"),
+            _Event::TuiRefresh => write!(f, "TuiRefresh"),
         }
     }
 }
 
-pub type EventSender = mpsc::UnboundedSender<Event>;
-pub type EventReceiver = mpsc::UnboundedReceiver<Event>;
+pub type _EventSender = mpsc::UnboundedSender<_Event>;
+pub type _EventReceiver = mpsc::UnboundedReceiver<_Event>;
 
-pub struct EventBus {
-    sender: EventSender,
-    receiver: EventReceiver,
+pub struct _EventBus {
+    sender: _EventSender,
+    receiver: _EventReceiver,
 }
 
-impl EventBus {
+impl _EventBus {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
         Self { sender, receiver }
     }
 
-    pub fn sender(&self) -> EventSender {
+    pub fn sender(&self) -> _EventSender {
         self.sender.clone()
     }
 
-    pub fn split(self) -> (EventSender, EventReceiver) {
+    pub fn split(self) -> (_EventSender, _EventReceiver) {
         (self.sender, self.receiver)
     }
 
-    pub fn send_event(&self, event: Event) {
+    pub fn send_event(&self, event: _Event) {
         event!(Level::DEBUG, "Sending event: {}", event);
         if let Err(e) = self.sender.send(event) {
             event!(Level::ERROR, "Failed to send event: {}", e);
@@ -59,7 +59,7 @@ impl EventBus {
     }
 }
 
-impl Default for EventBus {
+impl Default for _EventBus {
     fn default() -> Self {
         Self::new()
     }
@@ -72,7 +72,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_bus_creation() {
-        let event_bus = EventBus::new();
+        let event_bus = _EventBus::new();
         let sender = event_bus.sender();
         
         // Should be able to clone sender
@@ -84,11 +84,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_event_bus_split() {
-        let event_bus = EventBus::new();
+        let event_bus = _EventBus::new();
         let (sender, mut receiver) = event_bus.split();
         
         // Send an event
-        let test_event = Event::UserInput { input: "test".to_string() };
+        let test_event = _Event::UserInput { input: "test".to_string() };
         sender.send(test_event.clone()).unwrap();
         
         // Receive the event
@@ -97,18 +97,18 @@ mod tests {
         let event = result.unwrap().unwrap();
         
         match event {
-            Event::UserInput { input } => assert_eq!(input, "test"),
+            _Event::UserInput { input } => assert_eq!(input, "test"),
             _ => panic!("Expected UserInput event"),
         }
     }
 
     #[tokio::test]
     async fn test_event_bus_send_event() {
-        let event_bus = EventBus::new();
+        let event_bus = _EventBus::new();
         let (sender, mut receiver) = event_bus.split();
         
         // Send event using sender directly
-        let test_event = Event::CommandStart { command: "test_command".to_string() };
+        let test_event = _Event::CommandStart { command: "test_command".to_string() };
         sender.send(test_event.clone()).unwrap();
         
         // Should receive the event
@@ -117,14 +117,14 @@ mod tests {
         let event = result.unwrap().unwrap();
         
         match event {
-            Event::CommandStart { command } => assert_eq!(command, "test_command"),
+            _Event::CommandStart { command } => assert_eq!(command, "test_command"),
             _ => panic!("Expected CommandStart event"),
         }
     }
 
     #[tokio::test]
     async fn test_event_bus_send_event_method() {
-        let mut event_bus = EventBus::new();
+        let mut event_bus = _EventBus::new();
         // We need to get the receiver before using send_event
         let receiver = std::mem::replace(&mut event_bus.receiver, {
             let (_, new_receiver) = mpsc::unbounded_channel();
@@ -133,7 +133,7 @@ mod tests {
         let mut receiver = receiver;
         
         // Send event using send_event method
-        let test_event = Event::CommandStart { command: "test_command".to_string() };
+        let test_event = _Event::CommandStart { command: "test_command".to_string() };
         event_bus.send_event(test_event.clone());
         
         // Should receive the event
@@ -142,7 +142,7 @@ mod tests {
         let event = result.unwrap().unwrap();
         
         match event {
-            Event::CommandStart { command } => assert_eq!(command, "test_command"),
+            _Event::CommandStart { command } => assert_eq!(command, "test_command"),
             _ => panic!("Expected CommandStart event"),
         }
     }
@@ -150,20 +150,20 @@ mod tests {
     #[tokio::test]
     async fn test_event_display_implementations() {
         let events = vec![
-            Event::UserInput { input: "hello".to_string() },
-            Event::CommandStart { command: "build".to_string() },
-            Event::CommandProgress { 
+            _Event::UserInput { input: "hello".to_string() },
+            _Event::CommandStart { command: "build".to_string() },
+            _Event::CommandProgress { 
                 command: "build".to_string(), 
                 progress: 0.5, 
                 message: "compiling".to_string() 
             },
-            Event::CommandComplete { 
+            _Event::CommandComplete { 
                 command: "build".to_string(), 
                 success: true, 
                 output: "done".to_string() 
             },
-            Event::SystemShutdown,
-            Event::TuiRefresh,
+            _Event::SystemShutdown,
+            _Event::TuiRefresh,
         ];
 
         for event in events {
@@ -171,36 +171,36 @@ mod tests {
             assert!(!display.is_empty());
             
             match event {
-                Event::UserInput { .. } => assert!(display.contains("UserInput")),
-                Event::CommandStart { .. } => assert!(display.contains("CommandStart")),
-                Event::CommandProgress { .. } => {
+                _Event::UserInput { .. } => assert!(display.contains("UserInput")),
+                _Event::CommandStart { .. } => assert!(display.contains("CommandStart")),
+                _Event::CommandProgress { .. } => {
                     assert!(display.contains("CommandProgress"));
                     assert!(display.contains("50.0%")); // progress should be formatted as percentage
                 },
-                Event::CommandComplete { .. } => {
+                _Event::CommandComplete { .. } => {
                     assert!(display.contains("CommandComplete"));
                     assert!(display.contains("success"));
                 },
-                Event::SystemShutdown => assert_eq!(display, "SystemShutdown"),
-                Event::TuiRefresh => assert_eq!(display, "TuiRefresh"),
+                _Event::SystemShutdown => assert_eq!(display, "SystemShutdown"),
+                _Event::TuiRefresh => assert_eq!(display, "TuiRefresh"),
             }
         }
     }
 
     #[tokio::test]
     async fn test_multiple_events() {
-        let event_bus = EventBus::new();
+        let event_bus = _EventBus::new();
         let (sender, mut receiver) = event_bus.split();
         
         // Send multiple events
         let events = vec![
-            Event::CommandStart { command: "first".to_string() },
-            Event::CommandProgress { 
+            _Event::CommandStart { command: "first".to_string() },
+            _Event::CommandProgress { 
                 command: "first".to_string(), 
                 progress: 0.25, 
                 message: "starting".to_string() 
             },
-            Event::CommandComplete { 
+            _Event::CommandComplete { 
                 command: "first".to_string(), 
                 success: true, 
                 output: "completed".to_string() 
@@ -219,9 +219,9 @@ mod tests {
             
             // Events should be received in order and match expected types
             match (&expected_event, &event) {
-                (Event::CommandStart { .. }, Event::CommandStart { .. }) => {},
-                (Event::CommandProgress { .. }, Event::CommandProgress { .. }) => {},
-                (Event::CommandComplete { .. }, Event::CommandComplete { .. }) => {},
+                (_Event::CommandStart { .. }, _Event::CommandStart { .. }) => {},
+                (_Event::CommandProgress { .. }, _Event::CommandProgress { .. }) => {},
+                (_Event::CommandComplete { .. }, _Event::CommandComplete { .. }) => {},
                 _ => panic!("Event types don't match: expected {:?}, got {:?}", expected_event, event),
             }
         }
@@ -229,18 +229,18 @@ mod tests {
 
     #[test]
     fn test_event_bus_default() {
-        let event_bus = EventBus::default();
+        let event_bus = _EventBus::default();
         let sender = event_bus.sender();
         assert!(!sender.is_closed());
     }
 
     #[tokio::test]
     async fn test_event_clone() {
-        let event = Event::UserInput { input: "test".to_string() };
+        let event = _Event::UserInput { input: "test".to_string() };
         let cloned_event = event.clone();
         
         match (event, cloned_event) {
-            (Event::UserInput { input: input1 }, Event::UserInput { input: input2 }) => {
+            (_Event::UserInput { input: input1 }, _Event::UserInput { input: input2 }) => {
                 assert_eq!(input1, input2);
             },
             _ => panic!("Clone didn't preserve event type"),
@@ -249,7 +249,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_complete_failure() {
-        let event = Event::CommandComplete { 
+        let event = _Event::CommandComplete { 
             command: "failed_cmd".to_string(), 
             success: false, 
             output: "error output".to_string() 
