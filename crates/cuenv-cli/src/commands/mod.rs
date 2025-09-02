@@ -16,10 +16,12 @@ pub enum Command {
     },
 }
 
+#[allow(dead_code)]
 pub struct CommandExecutor {
     event_sender: EventSender,
 }
 
+#[allow(dead_code)]
 impl CommandExecutor {
     pub fn new(event_sender: EventSender) -> Self {
         Self { event_sender }

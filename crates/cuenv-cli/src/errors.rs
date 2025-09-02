@@ -8,6 +8,7 @@ use thiserror::Error;
 
 /// CLI-specific error types with enhanced diagnostics
 #[derive(Error, Debug, Diagnostic)]
+#[allow(dead_code)]
 pub enum CliError {
     #[error("Command execution failed")]
     #[diagnostic(code(cuenv::cli::command_failed))]
@@ -65,6 +66,7 @@ pub enum CliError {
     },
 }
 
+#[allow(dead_code)]
 impl CliError {
     pub fn command_failed(
         command: impl Into<String>,
@@ -135,6 +137,7 @@ impl CliError {
 }
 
 /// Enhanced error reporter with custom formatting
+#[allow(dead_code)]
 pub struct ErrorReporter {
     use_colors: bool,
     show_source_code: bool,
@@ -151,6 +154,7 @@ impl Default for ErrorReporter {
     }
 }
 
+#[allow(dead_code)]
 impl ErrorReporter {
     pub fn new() -> Self {
         Self::default()
@@ -199,6 +203,7 @@ pub fn _report_error(error: &dyn Diagnostic) {
 }
 
 /// Enhanced result type that automatically handles error reporting
+#[allow(dead_code)]
 pub type CliResult<T> = Result<T, CliError>;
 
 /// Extension trait for Result types to enable easy error reporting

@@ -17,6 +17,7 @@ use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 use tracing::{event, Level};
 
+#[allow(dead_code)]
 pub struct InlineTui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     start_line: u16,
@@ -25,6 +26,7 @@ pub struct InlineTui {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TuiState {
     pub command: Option<String>,
     pub progress: f32,
@@ -47,6 +49,7 @@ impl Default for TuiState {
     }
 }
 
+#[allow(dead_code)]
 impl InlineTui {
     pub fn new() -> io::Result<Self> {
         let stdout = io::stdout();
@@ -180,11 +183,13 @@ impl InlineTui {
     }
 }
 
+#[allow(dead_code)]
 pub struct TuiManager {
     tui: InlineTui,
     state: TuiState,
 }
 
+#[allow(dead_code)]
 impl TuiManager {
     pub fn new() -> io::Result<Self> {
         let tui = InlineTui::new()?;
@@ -239,6 +244,8 @@ impl TuiManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
