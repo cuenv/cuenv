@@ -209,7 +209,6 @@ mod tests {
         // Test passes if no panic occurs
     }
 
-
     #[test]
     fn test_cli_args_json_flag() {
         let cli_args = vec!["cuenv".to_string(), "--json".to_string()];
@@ -219,7 +218,11 @@ mod tests {
 
     #[test]
     fn test_cli_args_level_flag() {
-        let cli_args = vec!["cuenv".to_string(), "--level".to_string(), "debug".to_string()];
+        let cli_args = vec![
+            "cuenv".to_string(),
+            "--level".to_string(),
+            "debug".to_string(),
+        ];
         let level_flag = cli_args.windows(2).find_map(|args| {
             if args[0] == "--level" || args[0] == "-l" {
                 Some(args[1].as_str())
@@ -257,7 +260,7 @@ mod tests {
             (Some("info"), Level::INFO),
             (Some("warn"), Level::WARN),
             (Some("error"), Level::ERROR),
-            (None, Level::WARN), // Default
+            (None, Level::WARN),            // Default
             (Some("invalid"), Level::WARN), // Invalid falls back to default
         ];
 
@@ -288,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn test_command_conversion() {
         use crate::cli::Commands;
-        
+
         // Test Version command conversion
         let cli_command = Commands::Version;
         let command: Command = cli_command.into();
