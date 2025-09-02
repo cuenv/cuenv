@@ -1,7 +1,7 @@
-pub mod version;
 pub mod env;
+pub mod version;
 
-use crate::events::{_Event as Event, _EventSender as EventSender};
+use crate::events::{Event, EventSender};
 use cuenv_core::Result;
 use tokio::time::{sleep, Duration};
 use tracing::{event, Level};
@@ -16,29 +16,29 @@ pub enum Command {
     },
 }
 
-pub struct _CommandExecutor {
+pub struct CommandExecutor {
     event_sender: EventSender,
 }
 
-impl _CommandExecutor {
+impl CommandExecutor {
     pub fn new(event_sender: EventSender) -> Self {
         Self { event_sender }
     }
 
     pub async fn execute(&self, command: Command) -> Result<()> {
         match command {
-            Command::Version => {
-                self.execute_version().await
-            }
-            Command::EnvPrint { path, package, format } => {
-                self.execute_env_print(path, package, format).await
-            }
+            Command::Version => self.execute_version().await,
+            Command::EnvPrint {
+                path,
+                package,
+                format,
+            } => self.execute_env_print(path, package, format).await,
         }
     }
 
     async fn execute_version(&self) -> Result<()> {
         let command_name = "version";
-        
+
         // Send command start event
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
@@ -56,13 +56,13 @@ impl _CommandExecutor {
                 5 => "Complete".to_string(),
                 _ => "Processing...".to_string(),
             };
-            
+
             self.send_event(Event::CommandProgress {
                 command: command_name.to_string(),
                 progress,
                 message,
             });
-            
+
             if i < 5 {
                 sleep(Duration::from_millis(200)).await;
             }
@@ -70,7 +70,7 @@ impl _CommandExecutor {
 
         // Get version information
         let version_info = version::get_version_info();
-        
+
         // Send completion event
         self.send_event(Event::CommandComplete {
             command: command_name.to_string(),
@@ -83,7 +83,7 @@ impl _CommandExecutor {
 
     async fn execute_env_print(&self, path: String, package: String, format: String) -> Result<()> {
         let command_name = "env print";
-        
+
         // Send command start event
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),

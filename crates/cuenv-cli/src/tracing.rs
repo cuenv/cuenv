@@ -5,11 +5,7 @@
 
 use std::io;
 pub use tracing::Level;
-use tracing_subscriber::{
-    filter::EnvFilter,
-    layer::SubscriberExt,
-    util::SubscriberInitExt,
-};
+use tracing_subscriber::{filter::EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
 /// Tracing output format options
@@ -30,7 +26,7 @@ pub enum TracingFormat {
 pub enum LogLevel {
     /// Show all logs (trace level)
     Trace,
-    /// Show debug and above 
+    /// Show debug and above
     Debug,
     /// Show info and above
     Info,
@@ -101,23 +97,24 @@ pub fn correlation_id() -> Uuid {
 /// Initialize tracing with the given configuration
 pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
     let correlation_id = correlation_id();
-    
+
     // Create base filter
     let env_filter = if let Some(filter) = config.filter {
         EnvFilter::try_new(filter)
     } else {
-        EnvFilter::try_from_default_env()
-            .or_else(|_| {
-                let level_str = match config.level {
-                    Level::TRACE => "trace",
-                    Level::DEBUG => "debug", 
-                    Level::INFO => "info",
-                    Level::WARN => "warn",
-                    Level::ERROR => "error",
-                };
-                EnvFilter::try_new(format!("cuenv={},cuenv_cli={},cuenv_core={},cuengine={}", 
-                    level_str, level_str, level_str, level_str))
-            })
+        EnvFilter::try_from_default_env().or_else(|_| {
+            let level_str = match config.level {
+                Level::TRACE => "trace",
+                Level::DEBUG => "debug",
+                Level::INFO => "info",
+                Level::WARN => "warn",
+                Level::ERROR => "error",
+            };
+            EnvFilter::try_new(format!(
+                "cuenv={},cuenv_cli={},cuenv_core={},cuengine={}",
+                level_str, level_str, level_str, level_str
+            ))
+        })
     }
     .map_err(|e| miette::miette!("Failed to create tracing filter: {e}"))?;
 
@@ -241,8 +238,14 @@ mod tests {
 
     #[test]
     fn test_format_parsing() {
-        assert!(matches!("pretty".parse::<TracingFormat>().unwrap(), TracingFormat::Pretty));
-        assert!(matches!("json".parse::<TracingFormat>().unwrap(), TracingFormat::Json));
+        assert!(matches!(
+            "pretty".parse::<TracingFormat>().unwrap(),
+            TracingFormat::Pretty
+        ));
+        assert!(matches!(
+            "json".parse::<TracingFormat>().unwrap(),
+            TracingFormat::Json
+        ));
         assert!("invalid".parse::<TracingFormat>().is_err());
     }
 
