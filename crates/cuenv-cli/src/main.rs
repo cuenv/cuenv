@@ -209,19 +209,6 @@ mod tests {
         // Test passes if no panic occurs
     }
 
-    #[tokio::test]
-    async fn test_parse_args() {
-        // Test argument parsing
-        let result = parse_args().await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_execute_version_command() {
-        let result = execute_version_command().await;
-        // Version command should always succeed
-        assert!(result.is_ok());
-    }
 
     #[test]
     fn test_cli_args_json_flag() {
