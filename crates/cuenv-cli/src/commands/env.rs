@@ -20,7 +20,7 @@ pub async fn execute_env_print(path: &str, package: &str, format: &str) -> Resul
 
     // Parse the JSON response
     let parsed: Value = serde_json::from_str(&json_result).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to parse CUE output as JSON: {}", e))
+        cuenv_core::Error::configuration(format!("Failed to parse CUE output as JSON: {e}"))
     })?;
 
     // Extract the env field
@@ -30,14 +30,12 @@ pub async fn execute_env_print(path: &str, package: &str, format: &str) -> Resul
 
     // Format and return the output
     let output = match format {
-        "json" => serde_json::to_string_pretty(env_object).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to format JSON: {}", e))
-        })?,
+        "json" => serde_json::to_string_pretty(env_object)
+            .map_err(|e| cuenv_core::Error::configuration(format!("Failed to format JSON: {e}")))?,
         "env" => format_as_env_vars(env_object)?,
         other => {
             return Err(cuenv_core::Error::configuration(format!(
-                "Unsupported format: '{}'. Supported formats are 'json' and 'env'.",
-                other
+                "Unsupported format: '{other}'. Supported formats are 'json' and 'env'."
             )));
         }
     };
@@ -63,12 +61,11 @@ fn format_as_env_vars(env_object: &Value) -> Result<String> {
                 Value::Null => "null".to_string(),
                 _ => serde_json::to_string(value).map_err(|e| {
                     cuenv_core::Error::configuration(format!(
-                        "Failed to serialize value for key '{}': {}",
-                        key, e
+                        "Failed to serialize value for key '{key}': {e}"
                     ))
                 })?,
             };
-            lines.push(format!("{}={}", key, formatted_value));
+            lines.push(format!("{key}={formatted_value}"));
         }
     } else {
         return Err(cuenv_core::Error::configuration(

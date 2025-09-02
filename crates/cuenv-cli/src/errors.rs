@@ -174,7 +174,7 @@ impl ErrorReporter {
     /// Report an error using miette's fancy formatting
     pub fn report(&self, error: &dyn Diagnostic) -> miette::Result<()> {
         // Use miette's default error reporting
-        eprintln!("{:?}", error);
+        eprintln!("{error:?}");
 
         // TODO: add proper tracing when fixed
 
@@ -193,8 +193,8 @@ pub fn _report_error(error: &dyn Diagnostic) {
     let reporter = ErrorReporter::default();
 
     if let Err(report_err) = reporter.handle_error(error) {
-        eprintln!("Failed to report error: {}", report_err);
-        eprintln!("Original error: {}", error);
+        eprintln!("Failed to report error: {report_err}");
+        eprintln!("Original error: {error}");
     }
 }
 
@@ -246,7 +246,7 @@ mod tests {
         let error = CliError::config_parse_error(
             "cuenv.cue",
             source,
-            SourceSpan::new(7_usize.into(), 13_usize.into()),
+            SourceSpan::new(7_usize.into(), 13_usize),
         );
 
         assert!(error.to_string().contains("Configuration parsing failed"));
