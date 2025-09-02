@@ -127,7 +127,7 @@ fn test_cstring_ptr_drop_with_valid_string() {
         // because this string was allocated by Rust, not Go
         // cue_free_string() is specifically for Go-allocated strings
         std::mem::forget(wrapper);
-        
+
         // Manually free the Rust-allocated string
         #[allow(unsafe_code)]
         unsafe {

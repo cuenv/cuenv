@@ -8,7 +8,7 @@ use thiserror::Error;
 
 /// CLI-specific error types with enhanced diagnostics
 #[derive(Error, Debug, Diagnostic)]
-pub enum _CliError {
+pub enum CliError {
     #[error("Command execution failed")]
     #[diagnostic(code(cuenv::cli::command_failed))]
     CommandFailed {
@@ -65,12 +65,12 @@ pub enum _CliError {
     },
 }
 
-impl _CliError {
+impl CliError {
     pub fn command_failed(
         command: impl Into<String>,
         source: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {
-        _CliError::CommandFailed {
+        CliError::CommandFailed {
             command: command.into(),
             source: Box::new(source),
             suggestions: None,
@@ -82,7 +82,7 @@ impl _CliError {
         source: impl std::error::Error + Send + Sync + 'static,
         suggestions: Vec<String>,
     ) -> Self {
-        _CliError::CommandFailed {
+        CliError::CommandFailed {
             command: command.into(),
             source: Box::new(source),
             suggestions: Some(suggestions),
@@ -94,7 +94,7 @@ impl _CliError {
         src: impl Into<String>,
         error_span: SourceSpan,
     ) -> Self {
-        _CliError::ConfigParseError {
+        CliError::ConfigParseError {
             config_file: config_file.into(),
             src: src.into(),
             error_span,
@@ -103,7 +103,7 @@ impl _CliError {
     }
 
     pub fn invalid_argument(argument: impl Into<String>) -> Self {
-        _CliError::InvalidArgument {
+        CliError::InvalidArgument {
             argument: argument.into(),
             expected_values: None,
             suggestion: None,
@@ -114,7 +114,7 @@ impl _CliError {
         argument: impl Into<String>,
         expected_values: Vec<String>,
     ) -> Self {
-        _CliError::InvalidArgument {
+        CliError::InvalidArgument {
             argument: argument.into(),
             expected_values: Some(expected_values),
             suggestion: None,
@@ -126,7 +126,7 @@ impl _CliError {
         path: impl Into<std::path::PathBuf>,
         source: std::io::Error,
     ) -> Self {
-        _CliError::FileError {
+        CliError::FileError {
             operation: operation.into(),
             path: path.into(),
             source,
@@ -135,13 +135,13 @@ impl _CliError {
 }
 
 /// Enhanced error reporter with custom formatting
-pub struct _ErrorReporter {
+pub struct ErrorReporter {
     use_colors: bool,
     show_source_code: bool,
     show_help: bool,
 }
 
-impl Default for _ErrorReporter {
+impl Default for ErrorReporter {
     fn default() -> Self {
         Self {
             use_colors: true,
@@ -151,7 +151,7 @@ impl Default for _ErrorReporter {
     }
 }
 
-impl _ErrorReporter {
+impl ErrorReporter {
     pub fn new() -> Self {
         Self::default()
     }
@@ -175,9 +175,9 @@ impl _ErrorReporter {
     pub fn report(&self, error: &dyn Diagnostic) -> miette::Result<()> {
         // Use miette's default error reporting
         eprintln!("{:?}", error);
-        
+
         // TODO: add proper tracing when fixed
-        
+
         Ok(())
     }
 
@@ -190,8 +190,8 @@ impl _ErrorReporter {
 
 /// Convenience function to report errors with default settings
 pub fn _report_error(error: &dyn Diagnostic) {
-    let reporter = _ErrorReporter::default();
-    
+    let reporter = ErrorReporter::default();
+
     if let Err(report_err) = reporter.handle_error(error) {
         eprintln!("Failed to report error: {}", report_err);
         eprintln!("Original error: {}", error);
@@ -199,7 +199,7 @@ pub fn _report_error(error: &dyn Diagnostic) {
 }
 
 /// Enhanced result type that automatically handles error reporting
-pub type _CliResult<T> = Result<T, _CliError>;
+pub type CliResult<T> = Result<T, CliError>;
 
 /// Extension trait for Result types to enable easy error reporting
 pub trait _ResultExt<T> {
@@ -236,29 +236,27 @@ mod tests {
 
     #[test]
     fn test_cli_error_creation() {
-        let error = _CliError::invalid_argument("--invalid-flag");
+        let error = CliError::invalid_argument("--invalid-flag");
         assert!(error.to_string().contains("Invalid command line argument"));
     }
 
     #[test]
     fn test_config_parse_error() {
         let source = "field: invalid value\n";
-        let error = _CliError::config_parse_error(
+        let error = CliError::config_parse_error(
             "cuenv.cue",
             source,
             SourceSpan::new(7_usize.into(), 13_usize.into()),
         );
-        
+
         assert!(error.to_string().contains("Configuration parsing failed"));
     }
 
     #[test]
     fn test_error_reporter() {
-        let reporter = _ErrorReporter::new()
-            .with_colors(false)
-            .with_help(true);
-        
-        let error = _CliError::invalid_argument("--test");
+        let reporter = ErrorReporter::new().with_colors(false).with_help(true);
+
+        let error = CliError::invalid_argument("--test");
         // Test doesn't fail if reporter works correctly
         let _ = reporter.report(&error);
     }

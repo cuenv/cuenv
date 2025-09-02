@@ -3,8 +3,8 @@
 //! This crate provides enhanced error handling with miette diagnostics,
 //! structured error reporting, and contextual information.
 
-use std::path::Path;
 use miette::{Diagnostic, SourceSpan};
+use std::path::Path;
 use thiserror::Error;
 
 /// Main error type for cuenv operations with enhanced diagnostics
@@ -97,9 +97,9 @@ impl Error {
     }
 
     pub fn configuration_with_source(
-        msg: impl Into<String>, 
-        src: impl Into<String>, 
-        span: Option<SourceSpan>
+        msg: impl Into<String>,
+        src: impl Into<String>,
+        span: Option<SourceSpan>,
     ) -> Self {
         Error::Configuration {
             src: src.into(),
@@ -117,9 +117,9 @@ impl Error {
     }
 
     pub fn ffi_with_help(
-        function: &'static str, 
-        message: impl Into<String>, 
-        help: impl Into<String>
+        function: &'static str,
+        message: impl Into<String>,
+        help: impl Into<String>,
     ) -> Self {
         Error::Ffi {
             function,
@@ -190,10 +190,7 @@ impl From<std::io::Error> for Error {
 
 impl From<std::str::Utf8Error> for Error {
     fn from(source: std::str::Utf8Error) -> Self {
-        Error::Utf8 {
-            source,
-            file: None,
-        }
+        Error::Utf8 { source, file: None }
     }
 }
 

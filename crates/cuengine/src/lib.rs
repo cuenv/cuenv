@@ -141,31 +141,27 @@ unsafe extern "C" {
 pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<String> {
     tracing::info!("Starting CUE package evaluation");
     let start_time = std::time::Instant::now();
-    
-    let dir_path_str = dir_path
-        .to_str()
-        .ok_or_else(|| {
-            tracing::error!("Directory path is not valid UTF-8: {:?}", dir_path);
-            Error::configuration("Invalid directory path: not UTF-8".to_string())
-        })?;
-    
+
+    let dir_path_str = dir_path.to_str().ok_or_else(|| {
+        tracing::error!("Directory path is not valid UTF-8: {:?}", dir_path);
+        Error::configuration("Invalid directory path: not UTF-8".to_string())
+    })?;
+
     tracing::debug!(
         dir_path_str = dir_path_str,
         package_name = package_name,
         "Validated input parameters"
     );
 
-    let c_dir = CString::new(dir_path_str)
-        .map_err(|e| {
-            tracing::error!("Failed to convert directory path to C string: {}", e);
-            Error::ffi("cue_eval_package", format!("Invalid directory path: {e}"))
-        })?;
+    let c_dir = CString::new(dir_path_str).map_err(|e| {
+        tracing::error!("Failed to convert directory path to C string: {}", e);
+        Error::ffi("cue_eval_package", format!("Invalid directory path: {e}"))
+    })?;
 
-    let c_package = CString::new(package_name)
-        .map_err(|e| {
-            tracing::error!("Failed to convert package name to C string: {}", e);
-            Error::ffi("cue_eval_package", format!("Invalid package name: {e}"))
-        })?;
+    let c_package = CString::new(package_name).map_err(|e| {
+        tracing::error!("Failed to convert package name to C string: {}", e);
+        Error::ffi("cue_eval_package", format!("Invalid package name: {e}"))
+    })?;
 
     tracing::debug!("Calling FFI function cue_eval_package");
     let ffi_start = std::time::Instant::now();
@@ -176,7 +172,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     // - The returned pointer must be freed with cue_free_string
     // - Does not retain references to the input pointers after returning
     let result_ptr = unsafe { cue_eval_package(c_dir.as_ptr(), c_package.as_ptr()) };
-    
+
     let ffi_duration = ffi_start.elapsed();
     tracing::debug!(
         ffi_duration_ms = ffi_duration.as_millis(),

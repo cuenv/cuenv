@@ -1,5 +1,5 @@
 //! Integration tests for the cuenv CLI
-//! 
+//!
 //! These tests exercise the complete CLI functionality, including
 //! argument parsing, command execution, and output formatting.
 
@@ -9,20 +9,17 @@ use std::str;
 /// Test helper to run cuenv CLI commands
 fn run_cuenv_command(args: &[&str]) -> Result<(String, String, bool), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("cargo");
-    cmd.arg("run")
-        .arg("--bin")
-        .arg("cuenv")
-        .arg("--");
-    
+    cmd.arg("run").arg("--bin").arg("cuenv").arg("--");
+
     for arg in args {
         cmd.arg(arg);
     }
-    
+
     let output = cmd.output()?;
     let stdout = str::from_utf8(&output.stdout)?.to_string();
     let stderr = str::from_utf8(&output.stderr)?.to_string();
     let success = output.status.success();
-    
+
     Ok((stdout, stderr, success))
 }
 
@@ -32,17 +29,20 @@ fn get_test_examples_path() -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     // Go up two levels from crates/cuenv-cli to the project root
     let project_root = std::path::Path::new(manifest_dir)
-        .parent()  // crates
-        .and_then(|p| p.parent())  // project root
+        .parent() // crates
+        .and_then(|p| p.parent()) // project root
         .expect("Failed to find project root");
-    
-    project_root.join("examples/env-basic").to_string_lossy().to_string()
+
+    project_root
+        .join("examples/env-basic")
+        .to_string_lossy()
+        .to_string()
 }
 
 #[test]
 fn test_version_command_basic() {
     let result = run_cuenv_command(&["version"]);
-    
+
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed");
@@ -60,15 +60,15 @@ fn test_version_command_basic() {
 #[test]
 fn test_version_command_with_level_debug() {
     let result = run_cuenv_command(&["--level", "debug", "version"]);
-    
+
     match result {
         Ok((stdout, stderr, success)) => {
             assert!(success, "Command should succeed");
-            
+
             // stdout should still contain version info
             assert!(stdout.contains("cuenv-cli"));
             assert!(stdout.contains("0.1.0"));
-            
+
             // stderr should contain debug logs when level is debug
             assert!(stderr.contains("DEBUG") || stderr.contains("debug"));
         }
@@ -79,15 +79,15 @@ fn test_version_command_with_level_debug() {
 #[test]
 fn test_version_command_with_level_error() {
     let result = run_cuenv_command(&["--level", "error", "version"]);
-    
+
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed");
-            
+
             // stdout should contain version info
             assert!(stdout.contains("cuenv-cli"));
             assert!(stdout.contains("0.1.0"));
-            
+
             // With error level, there should be minimal to no debug output in stderr
         }
         Err(e) => panic!("Failed to run cuenv version with error level: {e}"),
@@ -97,14 +97,14 @@ fn test_version_command_with_level_error() {
 #[test]
 fn test_version_command_with_json_flag() {
     let result = run_cuenv_command(&["--json", "--level", "info", "version"]);
-    
+
     match result {
         Ok((stdout, stderr, success)) => {
             assert!(success, "Command should succeed");
-            
+
             // stdout should still contain version info in normal format
             assert!(stdout.contains("cuenv-cli"));
-            
+
             // stderr should contain JSON formatted logs
             if !stderr.is_empty() {
                 // If there are logs, they should be in JSON format
@@ -118,7 +118,7 @@ fn test_version_command_with_json_flag() {
 #[test]
 fn test_version_command_short_level_flag() {
     let result = run_cuenv_command(&["-l", "warn", "version"]);
-    
+
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed");
@@ -132,7 +132,7 @@ fn test_version_command_short_level_flag() {
 #[test]
 fn test_help_flag() {
     let result = run_cuenv_command(&["--help"]);
-    
+
     match result {
         Ok((stdout, _stderr, _success)) => {
             // Help output should contain key information
@@ -148,7 +148,7 @@ fn test_help_flag() {
 #[test]
 fn test_version_help() {
     let result = run_cuenv_command(&["version", "--help"]);
-    
+
     match result {
         Ok((stdout, _stderr, _success)) => {
             // Version help should contain information about the version command
@@ -161,7 +161,7 @@ fn test_version_help() {
 #[test]
 fn test_invalid_log_level() {
     let result = run_cuenv_command(&["--level", "invalid", "version"]);
-    
+
     match result {
         Ok((_stdout, stderr, success)) => {
             // Should fail with invalid log level
@@ -175,7 +175,7 @@ fn test_invalid_log_level() {
 #[test]
 fn test_missing_subcommand() {
     let result = run_cuenv_command(&[]);
-    
+
     match result {
         Ok((_stdout, stderr, success)) => {
             // Should fail without subcommand
@@ -189,12 +189,14 @@ fn test_missing_subcommand() {
 #[test]
 fn test_combined_flags() {
     let result = run_cuenv_command(&[
-        "--level", "info", 
-        "--json", 
-        "--format", "structured",
-        "version"
+        "--level",
+        "info",
+        "--json",
+        "--format",
+        "structured",
+        "version",
     ]);
-    
+
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed with combined flags");
@@ -210,17 +212,21 @@ fn test_output_consistency() {
     // Run the same command multiple times and ensure consistent output format
     let result1 = run_cuenv_command(&["--level", "error", "version"]);
     let result2 = run_cuenv_command(&["--level", "error", "version"]);
-    
+
     match (result1, result2) {
         (Ok((stdout1, _stderr1, success1)), Ok((stdout2, _stderr2, success2))) => {
             assert!(success1 && success2, "Both commands should succeed");
-            
+
             // The format should be consistent (correlation ID will differ)
             let lines1: Vec<&str> = stdout1.lines().collect();
             let lines2: Vec<&str> = stdout2.lines().collect();
-            
-            assert_eq!(lines1.len(), lines2.len(), "Output should have same number of lines");
-            
+
+            assert_eq!(
+                lines1.len(),
+                lines2.len(),
+                "Output should have same number of lines"
+            );
+
             // Check that non-correlation-ID lines are identical
             for (line1, line2) in lines1.iter().zip(lines2.iter()) {
                 if !line1.contains("Correlation ID:") {
@@ -238,7 +244,7 @@ fn test_correlation_id_uniqueness() {
     // Run command multiple times and ensure correlation IDs are different
     let result1 = run_cuenv_command(&["--level", "error", "version"]);
     let result2 = run_cuenv_command(&["--level", "error", "version"]);
-    
+
     match (result1, result2) {
         (Ok((stdout1, _, _)), Ok((stdout2, _, _))) => {
             let correlation1 = stdout1
@@ -246,13 +252,13 @@ fn test_correlation_id_uniqueness() {
                 .find(|line| line.contains("Correlation ID:"))
                 .and_then(|line| line.split("Correlation ID:").nth(1))
                 .map(str::trim);
-                
+
             let correlation2 = stdout2
                 .lines()
                 .find(|line| line.contains("Correlation ID:"))
                 .and_then(|line| line.split("Correlation ID:").nth(1))
                 .map(str::trim);
-                
+
             match (correlation1, correlation2) {
                 (Some(id1), Some(id2)) => {
                     assert_ne!(id1, id2, "Correlation IDs should be different between runs");
@@ -272,8 +278,15 @@ fn test_correlation_id_uniqueness() {
 #[test]
 fn test_env_print_command_basic() {
     let test_path = get_test_examples_path();
-    let result = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "examples"]);
-    
+    let result = run_cuenv_command(&[
+        "env",
+        "print",
+        "--path",
+        &test_path,
+        "--package",
+        "examples",
+    ]);
+
     match result {
         Ok((stdout, stderr, success)) => {
             if !success {
@@ -294,16 +307,25 @@ fn test_env_print_command_basic() {
 #[test]
 fn test_env_print_command_json_format() {
     let test_path = get_test_examples_path();
-    let result = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "examples", "--format", "json"]);
-    
+    let result = run_cuenv_command(&[
+        "env",
+        "print",
+        "--path",
+        &test_path,
+        "--package",
+        "examples",
+        "--format",
+        "json",
+    ]);
+
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed");
-            
+
             // Parse as JSON to verify it's valid JSON
-            let parsed: serde_json::Value = serde_json::from_str(&stdout)
-                .expect("Output should be valid JSON");
-            
+            let parsed: serde_json::Value =
+                serde_json::from_str(&stdout).expect("Output should be valid JSON");
+
             assert_eq!(parsed["DATABASE_URL"], "postgres://localhost/mydb");
             assert_eq!(parsed["DEBUG"], true);
             assert_eq!(parsed["PORT"], 3000);
@@ -318,7 +340,7 @@ fn test_env_print_command_json_format() {
 fn test_env_print_command_with_short_path_flag() {
     let test_path = get_test_examples_path();
     let result = run_cuenv_command(&["env", "print", "-p", &test_path, "--package", "examples"]);
-    
+
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed with short path flag");
@@ -332,8 +354,15 @@ fn test_env_print_command_with_short_path_flag() {
 
 #[test]
 fn test_env_print_command_invalid_path() {
-    let result = run_cuenv_command(&["env", "print", "--path", "nonexistent/path", "--package", "examples"]);
-    
+    let result = run_cuenv_command(&[
+        "env",
+        "print",
+        "--path",
+        "nonexistent/path",
+        "--package",
+        "examples",
+    ]);
+
     if let Ok((_stdout, _stderr, success)) = result {
         assert!(!success, "Command should fail with invalid path");
     } else {
@@ -343,8 +372,15 @@ fn test_env_print_command_invalid_path() {
 
 #[test]
 fn test_env_print_command_invalid_package() {
-    let result = run_cuenv_command(&["env", "print", "--path", "examples/env-basic", "--package", "nonexistent"]);
-    
+    let result = run_cuenv_command(&[
+        "env",
+        "print",
+        "--path",
+        "examples/env-basic",
+        "--package",
+        "nonexistent",
+    ]);
+
     if let Ok((_stdout, _stderr, success)) = result {
         assert!(!success, "Command should fail with invalid package");
     } else {
@@ -355,15 +391,26 @@ fn test_env_print_command_invalid_package() {
 #[test]
 fn test_env_print_command_unsupported_format() {
     let test_path = get_test_examples_path();
-    let result = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "examples", "--format", "yaml"]);
-    
+    let result = run_cuenv_command(&[
+        "env",
+        "print",
+        "--path",
+        &test_path,
+        "--package",
+        "examples",
+        "--format",
+        "yaml",
+    ]);
+
     match result {
         Ok((stdout, stderr, success)) => {
             assert!(!success, "Command should fail with unsupported format");
             // Check that the error message mentions the unsupported format
-            let combined_output = format!("{}{}", stdout, stderr);
-            assert!(combined_output.contains("Unsupported format") || combined_output.contains("yaml"), 
-                "Error message should mention unsupported format 'yaml'");
+            let combined_output = format!("{stdout}{stderr}");
+            assert!(
+                combined_output.contains("Unsupported format") || combined_output.contains("yaml"),
+                "Error message should mention unsupported format 'yaml'"
+            );
         }
         Err(e) => panic!("Failed to run cuenv env print: {e}"),
     }
