@@ -211,14 +211,14 @@ mod tests {
 
     #[test]
     fn test_cli_args_json_flag() {
-        let cli_args = vec!["cuenv".to_string(), "--json".to_string()];
+        let cli_args = ["cuenv".to_string(), "--json".to_string()];
         let json_flag = cli_args.iter().any(|arg| arg == "--json");
         assert!(json_flag);
     }
 
     #[test]
     fn test_cli_args_level_flag() {
-        let cli_args = vec![
+        let cli_args = [
             "cuenv".to_string(),
             "--level".to_string(),
             "debug".to_string(),

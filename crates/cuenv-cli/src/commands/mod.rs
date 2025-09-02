@@ -127,7 +127,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::time::timeout;
 
-    async fn create_test_executor() -> (CommandExecutor, EventReceiver) {
+    fn create_test_executor() -> (CommandExecutor, EventReceiver) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let executor = CommandExecutor::new(sender);
         (executor, receiver)
@@ -153,7 +153,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_version_command() {
-        let (executor, mut receiver) = create_test_executor().await;
+        let (executor, mut receiver) = create_test_executor();
 
         let handle = tokio::spawn(async move { executor.execute(Command::Version).await });
 
@@ -184,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_version_progress_events() {
-        let (executor, mut receiver) = create_test_executor().await;
+        let (executor, mut receiver) = create_test_executor();
 
         let handle = tokio::spawn(async move { executor.execute(Command::Version).await });
 
@@ -223,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_env_print_success() {
-        let (executor, mut receiver) = create_test_executor().await;
+        let (executor, mut receiver) = create_test_executor();
 
         // Mock successful env print
         let path = "/tmp/test".to_string();
@@ -323,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_version_command_flow() {
-        let (executor, mut receiver) = create_test_executor().await;
+        let (executor, mut receiver) = create_test_executor();
 
         let handle = tokio::spawn(async move { executor.execute_version().await });
 
@@ -336,7 +336,7 @@ mod tests {
             match event {
                 Event::CommandStart { command } if command == "version" => has_start = true,
                 Event::CommandProgress { command, .. } if command == "version" => {
-                    has_progress = true
+                    has_progress = true;
                 }
                 Event::CommandComplete {
                     command,
@@ -360,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn test_command_debug_trait() {
         let cmd = Command::Version;
-        let debug_str = format!("{:?}", cmd);
+        let debug_str = format!("{cmd:?}");
         assert!(debug_str.contains("Version"));
 
         let cmd = Command::EnvPrint {
@@ -368,7 +368,7 @@ mod tests {
             package: "pkg".to_string(),
             format: "json".to_string(),
         };
-        let debug_str = format!("{:?}", cmd);
+        let debug_str = format!("{cmd:?}");
         assert!(debug_str.contains("EnvPrint"));
         assert!(debug_str.contains("/path"));
         assert!(debug_str.contains("pkg"));
