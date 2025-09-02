@@ -1,3 +1,14 @@
+//! `CUEnv` CLI Application
+
+#![allow(missing_docs)]
+#![allow(clippy::cast_precision_loss)]
+#![allow(clippy::cast_possible_truncation)]
+#![allow(clippy::unused_self)]
+#![allow(clippy::unnecessary_wraps)]
+#![allow(clippy::used_underscore_items)]
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::assigning_clones)]
+
 mod cli;
 mod commands;
 mod errors;

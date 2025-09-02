@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 use tracing::{event, Level};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Event {
     UserInput {
         input: String,
@@ -58,14 +59,18 @@ impl fmt::Display for Event {
     }
 }
 
+#[allow(dead_code)]
 pub type EventSender = mpsc::UnboundedSender<Event>;
+#[allow(dead_code)]
 pub type EventReceiver = mpsc::UnboundedReceiver<Event>;
 
+#[allow(dead_code)]
 pub struct EventBus {
     sender: EventSender,
     receiver: EventReceiver,
 }
 
+#[allow(dead_code)]
 impl EventBus {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();

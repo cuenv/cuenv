@@ -64,6 +64,7 @@ impl std::str::FromStr for TracingFormat {
 
 /// Tracing configuration
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TracingConfig {
     pub format: TracingFormat,
     pub level: Level,
