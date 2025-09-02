@@ -9,10 +9,7 @@ fn test_configuration_error() {
     assert_eq!(error.to_string(), "Configuration error");
 
     let error = Error::configuration(String::from("another config error"));
-    assert_eq!(
-        error.to_string(),
-        "Configuration error"
-    );
+    assert_eq!(error.to_string(), "Configuration error");
 }
 
 #[test]
@@ -84,7 +81,9 @@ fn test_error_variants_match() {
 
     let ffi_error = Error::ffi("test", "message");
     match ffi_error {
-        Error::Ffi { function, message, .. } => {
+        Error::Ffi {
+            function, message, ..
+        } => {
             assert_eq!(function, "test");
             assert_eq!(message, "message");
         }
@@ -94,7 +93,9 @@ fn test_error_variants_match() {
     let path = Path::new("/test.cue");
     let cue_error = Error::cue_parse(path, "error");
     match cue_error {
-        Error::CueParse { path: p, message, .. } => {
+        Error::CueParse {
+            path: p, message, ..
+        } => {
             assert_eq!(p.display().to_string(), "/test.cue");
             assert_eq!(message, "error");
         }

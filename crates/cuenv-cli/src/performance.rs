@@ -3,11 +3,11 @@
 //! This module provides comprehensive performance monitoring with
 //! structured tracing, timing measurements, and resource usage tracking.
 
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
-use tracing::{info, debug};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Performance metrics for a single operation
@@ -53,13 +53,13 @@ impl PerformanceRegistry {
         let total_operations = ops.len();
         let successful_operations = ops.iter().filter(|op| op.success).count();
         let total_duration: Duration = ops.iter().map(|op| op.duration).sum();
-        
+
         let avg_duration = if total_operations > 0 {
             total_duration / total_operations as u32
         } else {
             Duration::ZERO
         };
-        
+
         PerformanceSummary {
             total_operations,
             successful_operations,
@@ -103,13 +103,13 @@ impl PerformanceGuard {
     pub fn new(operation_name: impl Into<String>) -> Self {
         let operation_name = operation_name.into();
         let operation_id = Uuid::new_v4();
-        
+
         debug!(
             operation_id = %operation_id,
             operation = %operation_name,
             "Starting performance measurement"
         );
-        
+
         Self {
             operation_name,
             operation_id,
@@ -125,7 +125,7 @@ impl PerformanceGuard {
 
     pub fn finish(self, success: bool) {
         let duration = self.start_time.elapsed();
-        
+
         let metrics = OperationMetrics {
             operation_id: self.operation_id,
             operation_name: self.operation_name.clone(),
@@ -135,14 +135,14 @@ impl PerformanceGuard {
             memory_usage_bytes: get_memory_usage(),
             metadata: self.metadata.clone(),
         };
-        
+
         info!(
             operation_id = %self.operation_id,
             duration_ms = duration.as_millis(),
             success = success,
             "Performance measurement completed"
         );
-        
+
         registry().record_operation(metrics);
     }
 }
@@ -151,7 +151,7 @@ impl Drop for PerformanceGuard {
     fn drop(&mut self) {
         // If not explicitly finished, assume success
         let duration = self.start_time.elapsed();
-        
+
         let metrics = OperationMetrics {
             operation_id: self.operation_id,
             operation_name: self.operation_name.clone(),
@@ -161,7 +161,7 @@ impl Drop for PerformanceGuard {
             memory_usage_bytes: get_memory_usage(),
             metadata: self.metadata.clone(),
         };
-        
+
         registry().record_operation(metrics);
     }
 }
@@ -247,9 +247,9 @@ mod tests {
             sleep(Duration::from_millis(10)).await;
             42
         });
-        
+
         assert_eq!(result, 42);
-        
+
         let summary = registry().get_summary();
         assert!(summary.total_operations > 0);
     }
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_performance_registry() {
         let registry = PerformanceRegistry::new();
-        
+
         let metrics = OperationMetrics {
             operation_id: Uuid::new_v4(),
             operation_name: "test".to_string(),
@@ -267,9 +267,9 @@ mod tests {
             memory_usage_bytes: Some(1024),
             metadata: HashMap::new(),
         };
-        
+
         registry.record_operation(metrics);
-        
+
         let summary = registry.get_summary();
         assert_eq!(summary.total_operations, 1);
         assert_eq!(summary.successful_operations, 1);

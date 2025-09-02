@@ -1,21 +1,30 @@
-use clap::{Parser, Subcommand};
 use crate::commands::Command;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "cuenv")]
-#[command(about = "A modern application build toolchain with typed environments and CUE-powered task orchestration")]
+#[command(
+    about = "A modern application build toolchain with typed environments and CUE-powered task orchestration"
+)]
 #[command(long_about = None)]
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
-    
-    #[arg(short = 'l', long, global = true, help = "Set logging level", default_value = "warn", value_enum)]
+
+    #[arg(
+        short = 'l',
+        long,
+        global = true,
+        help = "Set logging level",
+        default_value = "warn",
+        value_enum
+    )]
     pub level: crate::tracing::LogLevel,
-    
+
     #[arg(long, global = true, help = "Output format", default_value = "auto")]
     pub format: String,
-    
+
     #[arg(long, global = true, help = "Output logs in JSON format")]
     pub json: bool,
 }
@@ -35,9 +44,18 @@ pub enum Commands {
 pub enum EnvCommands {
     #[command(about = "Print environment variables from CUE package")]
     Print {
-        #[arg(long, short = 'p', help = "Path to directory containing CUE files", default_value = ".")]
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
         path: String,
-        #[arg(long, help = "Name of the CUE package to evaluate", default_value = "cuenv")]
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
         package: String,
         #[arg(long, help = "Output format (env, json)", default_value = "env")]
         format: String,
@@ -49,9 +67,15 @@ impl From<Commands> for Command {
         match cmd {
             Commands::Version => Command::Version,
             Commands::Env { subcommand } => match subcommand {
-                EnvCommands::Print { path, package, format } => {
-                    Command::EnvPrint { path, package, format }
-                }
+                EnvCommands::Print {
+                    path,
+                    package,
+                    format,
+                } => Command::EnvPrint {
+                    path,
+                    package,
+                    format,
+                },
             },
         }
     }
@@ -64,13 +88,13 @@ pub fn parse() -> Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
     use crate::tracing::LogLevel;
+    use clap::Parser;
 
     #[test]
     fn test_cli_default_values() {
         let cli = Cli::try_parse_from(&["cuenv", "version"]).unwrap();
-        
+
         assert!(matches!(cli.level, LogLevel::Warn)); // Default log level
         assert_eq!(cli.format, "auto"); // Default format
         assert!(!cli.json); // Default JSON is false
@@ -82,23 +106,23 @@ mod tests {
         // Test each level individually
         let cli = Cli::try_parse_from(&["cuenv", "--level", "trace", "version"]).unwrap();
         assert!(matches!(cli.level, LogLevel::Trace));
-        
+
         let cli = Cli::try_parse_from(&["cuenv", "--level", "debug", "version"]).unwrap();
         assert!(matches!(cli.level, LogLevel::Debug));
-        
+
         let cli = Cli::try_parse_from(&["cuenv", "--level", "info", "version"]).unwrap();
         assert!(matches!(cli.level, LogLevel::Info));
-        
+
         let cli = Cli::try_parse_from(&["cuenv", "--level", "warn", "version"]).unwrap();
         assert!(matches!(cli.level, LogLevel::Warn));
-        
+
         let cli = Cli::try_parse_from(&["cuenv", "--level", "error", "version"]).unwrap();
         assert!(matches!(cli.level, LogLevel::Error));
-        
+
         // Test short form for a few cases
         let cli_short = Cli::try_parse_from(&["cuenv", "-l", "debug", "version"]).unwrap();
         assert!(matches!(cli_short.level, LogLevel::Debug));
-        
+
         let cli_short = Cli::try_parse_from(&["cuenv", "-l", "error", "version"]).unwrap();
         assert!(matches!(cli_short.level, LogLevel::Error));
     }
@@ -107,7 +131,7 @@ mod tests {
     fn test_cli_json_flag() {
         let cli = Cli::try_parse_from(&["cuenv", "--json", "version"]).unwrap();
         assert!(cli.json);
-        
+
         let cli_no_json = Cli::try_parse_from(&["cuenv", "version"]).unwrap();
         assert!(!cli_no_json.json);
     }
@@ -121,13 +145,16 @@ mod tests {
     #[test]
     fn test_cli_combined_flags() {
         let cli = Cli::try_parse_from(&[
-            "cuenv", 
-            "--level", "debug", 
-            "--json", 
-            "--format", "structured",
-            "version"
-        ]).unwrap();
-        
+            "cuenv",
+            "--level",
+            "debug",
+            "--json",
+            "--format",
+            "structured",
+            "version",
+        ])
+        .unwrap();
+
         assert!(matches!(cli.level, LogLevel::Debug));
         assert!(cli.json);
         assert_eq!(cli.format, "structured");
@@ -165,9 +192,13 @@ mod tests {
     #[test]
     fn test_env_print_command_default() {
         let cli = Cli::try_parse_from(&["cuenv", "env", "print"]).unwrap();
-        
+
         if let Commands::Env { subcommand } = cli.command {
-            let EnvCommands::Print { path, package, format } = subcommand;
+            let EnvCommands::Print {
+                path,
+                package,
+                format,
+            } = subcommand;
             assert_eq!(path, ".");
             assert_eq!(package, "cuenv");
             assert_eq!(format, "env");
@@ -179,14 +210,24 @@ mod tests {
     #[test]
     fn test_env_print_command_with_options() {
         let cli = Cli::try_parse_from(&[
-            "cuenv", "env", "print", 
-            "--path", "examples/env-basic",
-            "--package", "examples",
-            "--format", "json"
-        ]).unwrap();
-        
+            "cuenv",
+            "env",
+            "print",
+            "--path",
+            "examples/env-basic",
+            "--package",
+            "examples",
+            "--format",
+            "json",
+        ])
+        .unwrap();
+
         if let Commands::Env { subcommand } = cli.command {
-            let EnvCommands::Print { path, package, format } = subcommand;
+            let EnvCommands::Print {
+                path,
+                package,
+                format,
+            } = subcommand;
             assert_eq!(path, "examples/env-basic");
             assert_eq!(package, "examples");
             assert_eq!(format, "json");
@@ -197,12 +238,14 @@ mod tests {
 
     #[test]
     fn test_env_print_command_short_path() {
-        let cli = Cli::try_parse_from(&[
-            "cuenv", "env", "print", "-p", "test/path"
-        ]).unwrap();
-        
+        let cli = Cli::try_parse_from(&["cuenv", "env", "print", "-p", "test/path"]).unwrap();
+
         if let Commands::Env { subcommand } = cli.command {
-            let EnvCommands::Print { path, package, format } = subcommand;
+            let EnvCommands::Print {
+                path,
+                package,
+                format,
+            } = subcommand;
             assert_eq!(path, "test/path");
             assert_eq!(package, "cuenv"); // default
             assert_eq!(format, "env"); // default
@@ -213,16 +256,21 @@ mod tests {
 
     #[test]
     fn test_env_command_conversion() {
-        let env_cmd = Commands::Env { 
+        let env_cmd = Commands::Env {
             subcommand: EnvCommands::Print {
                 path: "test".to_string(),
                 package: "pkg".to_string(),
                 format: "json".to_string(),
-            }
+            },
         };
         let command: Command = env_cmd.into();
-        
-        if let Command::EnvPrint { path, package, format } = command {
+
+        if let Command::EnvPrint {
+            path,
+            package,
+            format,
+        } = command
+        {
             assert_eq!(path, "test");
             assert_eq!(package, "pkg");
             assert_eq!(format, "json");
