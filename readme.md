@@ -513,4 +513,3 @@ Licensed under the [GNU Affero General Public License v3.0](LICENSE).
 ---
 
 _Built in 🏴 󠁧󠁢󠁳󠁣󠁴󠁿w for the open source community_
-
