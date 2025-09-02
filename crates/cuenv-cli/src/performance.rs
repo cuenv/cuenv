@@ -87,7 +87,7 @@ static PERFORMANCE_REGISTRY: std::sync::OnceLock<PerformanceRegistry> = std::syn
 
 /// Get the global performance registry
 pub fn registry() -> &'static PerformanceRegistry {
-    PERFORMANCE_REGISTRY.get_or_init(|| PerformanceRegistry::new())
+    PERFORMANCE_REGISTRY.get_or_init(PerformanceRegistry::new)
 }
 
 /// Performance measurement guard that automatically records metrics
@@ -174,12 +174,11 @@ fn get_memory_usage() -> Option<u64> {
         use std::fs;
         if let Ok(status) = fs::read_to_string("/proc/self/status") {
             for line in status.lines() {
-                if line.starts_with("VmRSS:") {
-                    if let Some(kb) = line.split_whitespace().nth(1) {
-                        if let Ok(kb_val) = kb.parse::<u64>() {
-                            return Some(kb_val * 1024); // Convert KB to bytes
-                        }
-                    }
+                if line.starts_with("VmRSS:")
+                    && let Some(kb) = line.split_whitespace().nth(1)
+                    && let Ok(kb_val) = kb.parse::<u64>()
+                {
+                    return Some(kb_val * 1024); // Convert KB to bytes
                 }
             }
         }
@@ -216,7 +215,7 @@ where
     f()
 }
 
-/// Async version of instrument_perf
+/// Async version of `instrument_perf`
 pub async fn _instrument_perf_async<F, Fut, R>(operation_name: &str, f: F) -> R
 where
     F: FnOnce() -> Fut,

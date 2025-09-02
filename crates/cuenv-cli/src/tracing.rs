@@ -91,7 +91,7 @@ static CORRELATION_ID: std::sync::OnceLock<Uuid> = std::sync::OnceLock::new();
 
 /// Get or create a correlation ID for the current session
 pub fn correlation_id() -> Uuid {
-    *CORRELATION_ID.get_or_init(|| Uuid::new_v4())
+    *CORRELATION_ID.get_or_init(Uuid::new_v4)
 }
 
 /// Initialize tracing with the given configuration
@@ -111,8 +111,7 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
                 Level::ERROR => "error",
             };
             EnvFilter::try_new(format!(
-                "cuenv={},cuenv_cli={},cuenv_core={},cuengine={}",
-                level_str, level_str, level_str, level_str
+                "cuenv={level_str},cuenv_cli={level_str},cuenv_core={level_str},cuengine={level_str}"
             ))
         })
     }

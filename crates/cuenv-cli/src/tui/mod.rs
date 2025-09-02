@@ -126,7 +126,7 @@ impl InlineTui {
                     } else {
                         ratatui::style::Color::Blue
                     }))
-                    .ratio(state.progress as f64)
+                    .ratio(f64::from(state.progress))
                     .label(state.message.clone());
 
                 f.render_widget(progress_gauge, chunks[0]);
@@ -282,15 +282,12 @@ mod tests {
         };
 
         // Simulate the logic from handle_event
-        match event {
-            Event::CommandStart { command } => {
-                state.command = Some(command.clone());
-                state.progress = 0.0;
-                state.message = "Starting...".to_string();
-                state.is_complete = false;
-                state.success = None;
-            }
-            _ => {}
+        if let Event::CommandStart { command } = event {
+            state.command = Some(command.clone());
+            state.progress = 0.0;
+            state.message = "Starting...".to_string();
+            state.is_complete = false;
+            state.success = None;
         }
 
         assert_eq!(state.command, Some("build".to_string()));
