@@ -16,13 +16,13 @@ use tracing::instrument;
 async fn main() {
     // Set up error handling first
     std::panic::set_hook(Box::new(|panic_info| {
-        eprintln!("Application panicked: {}", panic_info);
+        eprintln!("Application panicked: {panic_info}");
         eprintln!("Internal error occurred. Run with RUST_LOG=debug for more information.");
     }));
 
     // Run the CLI and handle any errors with enhanced reporting
     if let Err(error) = run_main().await {
-        eprintln!("{:?}", error);
+        eprintln!("{error:?}");
         std::process::exit(1);
     }
 }
@@ -163,7 +163,7 @@ async fn execute_env_print_command(
     match output {
         Ok(result) => {
             // Env values retrieved successfully
-            println!("{}", result);
+            println!("{result}");
             perf_guard.finish(true);
         }
         Err(e) => {

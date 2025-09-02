@@ -27,8 +27,8 @@ pub enum Event {
 impl fmt::Display for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Event::UserInput { input } => write!(f, "UserInput: {}", input),
-            Event::CommandStart { command } => write!(f, "CommandStart: {}", command),
+            Event::UserInput { input } => write!(f, "UserInput: {input}"),
+            Event::CommandStart { command } => write!(f, "CommandStart: {command}"),
             Event::CommandProgress {
                 command,
                 progress,
@@ -206,7 +206,7 @@ mod tests {
         ];
 
         for event in events {
-            let display = format!("{}", event);
+            let display = format!("{event}");
             assert!(!display.is_empty());
 
             match event {
@@ -263,10 +263,7 @@ mod tests {
                 (Event::CommandStart { .. }, Event::CommandStart { .. }) => {}
                 (Event::CommandProgress { .. }, Event::CommandProgress { .. }) => {}
                 (Event::CommandComplete { .. }, Event::CommandComplete { .. }) => {}
-                _ => panic!(
-                    "Event types don't match: expected {:?}, got {:?}",
-                    expected_event, event
-                ),
+                _ => panic!("Event types don't match: expected {expected_event:?}, got {event:?}"),
             }
         }
     }
@@ -301,7 +298,7 @@ mod tests {
             output: "error output".to_string(),
         };
 
-        let display = format!("{}", event);
+        let display = format!("{event}");
         assert!(display.contains("failed"));
         assert!(display.contains("failed_cmd"));
     }

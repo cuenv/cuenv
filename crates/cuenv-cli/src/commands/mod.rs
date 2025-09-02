@@ -103,7 +103,7 @@ impl CommandExecutor {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
                     success: false,
-                    output: format!("Error: {}", e),
+                    output: format!("Error: {e}"),
                 });
                 Err(e)
             }
