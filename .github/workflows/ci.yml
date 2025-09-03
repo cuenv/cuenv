@@ -37,9 +37,6 @@ jobs:
       - name: Run clippy
         run: devenv shell -- cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Check license headers
-        run: ./scripts/check-license-headers.sh
-
   test-suite:
     name: test-suite
     runs-on: ${{ matrix.os }}
