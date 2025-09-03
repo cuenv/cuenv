@@ -188,14 +188,7 @@ fn test_missing_subcommand() {
 
 #[test]
 fn test_combined_flags() {
-    let result = run_cuenv_command(&[
-        "--level",
-        "info",
-        "--json",
-        "--format",
-        "structured",
-        "version",
-    ]);
+    let result = run_cuenv_command(&["--level", "info", "--json", "--format", "json", "version"]);
 
     match result {
         Ok((stdout, _stderr, success)) => {
@@ -314,7 +307,7 @@ fn test_env_print_command_json_format() {
         &test_path,
         "--package",
         "examples",
-        "--format",
+        "--output-format",
         "json",
     ]);
 
@@ -398,7 +391,7 @@ fn test_env_print_command_unsupported_format() {
         &test_path,
         "--package",
         "examples",
-        "--format",
+        "--output-format",
         "yaml",
     ]);
 
