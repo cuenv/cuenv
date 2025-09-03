@@ -62,7 +62,6 @@ jobs:
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
 
-
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
@@ -104,7 +103,6 @@ jobs:
       #   env:
       #     CGO_ENABLED: "1"
 
-
   supply-chain-security:
     name: supply-chain-security
     runs-on: ${{ matrix.os }}
@@ -124,7 +122,6 @@ jobs:
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
-
 
       - name: Build devenv
         run: devenv shell
