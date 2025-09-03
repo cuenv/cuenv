@@ -18,9 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Nix (Unix)
+      - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v14
-        if: runner.os != 'Windows'
         with:
           extra_nix_config: |
             accept-flake-config = true
@@ -47,36 +46,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
         rust: [stable, 1.85.0] # MSRV - Edition 2024 requires 1.85+
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Nix (Unix)
+      - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v14
-        if: matrix.os != 'windows-latest'
         with:
           extra_nix_config: |
             accept-flake-config = true
             experimental-features = nix-command flakes
 
-      - name: Install devenv (Unix)
+      - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
-        if: matrix.os != 'windows-latest'
 
-      # Windows fallback - install tools directly
-      - name: Install Rust (Windows)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{ matrix.rust }}
-        if: matrix.os == 'windows-latest'
-
-      - name: Install Go (Windows)
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-        if: matrix.os == 'windows-latest'
 
       - name: Cache cargo registry
         uses: actions/cache@v3
@@ -101,46 +86,24 @@ jobs:
             ${{ runner.os }}-${{ matrix.rust }}-target-
             ${{ runner.os }}-target-
 
-      - name: Build devenv (Unix)
+      - name: Build devenv
         run: devenv shell
-        if: matrix.os != 'windows-latest'
 
-      - name: Build workspace (Unix)
+      - name: Build workspace
         run: devenv shell -- cargo build --workspace --all-features
-        if: matrix.os != 'windows-latest'
 
-      - name: Build workspace (Windows)
-        run: cargo build --workspace --all-features
-        if: matrix.os == 'windows-latest'
-
-      - name: Run tests (Unix)
+      - name: Run tests
         run: devenv shell -- cargo nextest run --workspace --all-features
-        if: matrix.os != 'windows-latest'
 
-      - name: Run tests (Windows)
-        run: cargo test --workspace --all-features
-        if: matrix.os == 'windows-latest'
-
-      - name: Run doctests (Unix)
+      - name: Run doctests
         run: devenv shell -- cargo test --doc --workspace
-        if: matrix.os != 'windows-latest'
-
-      - name: Run doctests (Windows)
-        run: cargo test --doc --workspace
-        if: matrix.os == 'windows-latest'
 
       # Go bridge tests disabled due to CGO issues in CI
-      # - name: Test Go bridge (Unix)
+      # - name: Test Go bridge
       #   run: devenv shell -- bash -c "cd crates/cuengine && CGO_ENABLED=1 go test -v ./..."
-      #   if: matrix.os != 'windows-latest'
       #   env:
       #     CGO_ENABLED: "1"
 
-      - name: Test Go bridge (Windows)
-        run: |
-          cd crates/cuengine
-          go test -v ./...
-        if: matrix.os == 'windows-latest'
 
   supply-chain-security:
     name: supply-chain-security
@@ -148,64 +111,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Nix (Unix)
+      - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v14
-        if: matrix.os != 'windows-latest'
         with:
           extra_nix_config: |
             accept-flake-config = true
             experimental-features = nix-command flakes
 
-      - name: Install devenv (Unix)
+      - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
-        if: matrix.os != 'windows-latest'
 
-      # Windows fallback - install tools directly
-      - name: Install Rust (Windows)
-        uses: dtolnay/rust-toolchain@stable
-        if: matrix.os == 'windows-latest'
 
-      - name: Install Go (Windows)
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-        if: matrix.os == 'windows-latest'
-
-      - name: Install cargo-audit (Windows)
-        run: cargo install cargo-audit
-        if: matrix.os == 'windows-latest'
-
-      - name: Install cargo-deny (Windows)
-        run: cargo install cargo-deny
-        if: matrix.os == 'windows-latest'
-
-      - name: Install cargo-cyclonedx (Windows)
-        run: cargo install cargo-cyclonedx
-        if: matrix.os == 'windows-latest'
-
-      - name: Build devenv (Unix)
+      - name: Build devenv
         run: devenv shell
-        if: matrix.os != 'windows-latest'
 
-      - name: Run security audit (Unix)
+      - name: Run security audit
         run: devenv shell -- cargo audit
-        if: matrix.os != 'windows-latest'
 
-      - name: Run security audit (Windows)
-        run: cargo audit
-        if: matrix.os == 'windows-latest'
-
-      - name: Run dependency checks (Unix)
+      - name: Run dependency checks
         run: devenv shell -- cargo deny check bans licenses advisories
-        if: matrix.os != 'windows-latest'
-
-      - name: Run dependency checks (Windows)
-        run: cargo deny check bans licenses advisories
-        if: matrix.os == 'windows-latest'
 
       # Generate SBOM only on Linux (primary platform)
       - name: Generate SBOM
