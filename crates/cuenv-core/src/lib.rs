@@ -2,9 +2,42 @@
 //!
 //! This crate provides enhanced error handling with miette diagnostics,
 //! structured error reporting, and contextual information.
+//!
+//! ## Type-safe wrappers
+//!
+//! This crate provides validated newtype wrappers for common domain types:
+//!
+//! - [`PackageDir`] - A validated directory path that must exist and be a directory
+//! - [`PackageName`] - A validated package name following CUE package naming rules
+//!
+//! ## Examples
+//!
+//! ```rust
+//! use cuenv_core::{PackageDir, PackageName};
+//! use std::path::Path;
+//!
+//! // Validate a directory exists and is actually a directory
+//! let pkg_dir = match PackageDir::try_from(Path::new(".")) {
+//!     Ok(dir) => dir,
+//!     Err(e) => {
+//!         eprintln!("Invalid directory: {}", e);
+//!         return;
+//!     }
+//! };
+//!
+//! // Validate a package name follows naming rules
+//! let pkg_name = match PackageName::try_from("my-package") {
+//!     Ok(name) => name,
+//!     Err(e) => {
+//!         eprintln!("Invalid package name: {}", e);
+//!         return;
+//!     }
+//! };
+//! ```
 
 use miette::{Diagnostic, SourceSpan};
-use std::path::Path;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Main error type for cuenv operations with enhanced diagnostics
@@ -211,6 +244,230 @@ impl Default for Limits {
             max_package_name_length: 256,
             max_output_size: 100 * 1024 * 1024, // 100MB
         }
+    }
+}
+
+/// A validated directory path that must exist and be a directory
+///
+/// This newtype wrapper ensures that any instance represents a path that:
+/// - Exists on the filesystem
+/// - Is actually a directory (not a file or symlink to file)
+/// - Can be accessed for metadata reading
+///
+/// # Examples
+///
+/// ```rust
+/// use cuenv_core::PackageDir;
+/// use std::path::Path;
+///
+/// // Try to create from current directory
+/// match PackageDir::try_from(Path::new(".")) {
+///     Ok(dir) => println!("Valid directory: {}", dir.as_path().display()),
+///     Err(e) => eprintln!("Invalid directory: {}", e),
+/// }
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct PackageDir(PathBuf);
+
+impl PackageDir {
+    /// Get the path as a reference
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Convert into the underlying PathBuf
+    #[must_use]
+    pub fn into_path_buf(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl AsRef<Path> for PackageDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// Errors that can occur when validating a PackageDir
+#[derive(Error, Debug, Clone, Diagnostic)]
+pub enum PackageDirError {
+    /// The path does not exist
+    #[error("path does not exist: {0}")]
+    #[diagnostic(
+        code(cuenv::package_dir::not_found),
+        help("Make sure the directory exists and you have permission to access it")
+    )]
+    NotFound(String),
+
+    /// The path exists but is not a directory
+    #[error("path is not a directory: {0}")]
+    #[diagnostic(
+        code(cuenv::package_dir::not_directory),
+        help("The path must point to a directory, not a file")
+    )]
+    NotADirectory(String),
+
+    /// An I/O error occurred while checking the path
+    #[error("io error accessing path: {0}")]
+    #[diagnostic(
+        code(cuenv::package_dir::io_error),
+        help("Check file permissions and ensure you have access to the path")
+    )]
+    Io(String),
+}
+
+impl TryFrom<&Path> for PackageDir {
+    type Error = PackageDirError;
+
+    /// Try to create a PackageDir from a path
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use cuenv_core::PackageDir;
+    /// use std::path::Path;
+    ///
+    /// match PackageDir::try_from(Path::new(".")) {
+    ///     Ok(dir) => println!("Valid directory"),
+    ///     Err(e) => eprintln!("Error: {}", e),
+    /// }
+    /// ```
+    fn try_from(input: &Path) -> std::result::Result<Self, Self::Error> {
+        match std::fs::metadata(input) {
+            Ok(meta) => {
+                if meta.is_dir() {
+                    Ok(PackageDir(input.to_path_buf()))
+                } else {
+                    Err(PackageDirError::NotADirectory(input.display().to_string()))
+                }
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    Err(PackageDirError::NotFound(input.display().to_string()))
+                } else {
+                    Err(PackageDirError::Io(e.to_string()))
+                }
+            }
+        }
+    }
+}
+
+/// A validated CUE package name
+///
+/// Package names must follow CUE naming conventions:
+/// - 1-64 characters in length
+/// - Start with alphanumeric character (A-Z, a-z, 0-9)
+/// - Contain only alphanumeric, hyphen (-), or underscore (_) characters
+///
+/// # Examples
+///
+/// ```rust
+/// use cuenv_core::PackageName;
+///
+/// // Valid package names
+/// assert!(PackageName::try_from("my-package").is_ok());
+/// assert!(PackageName::try_from("package_123").is_ok());
+/// assert!(PackageName::try_from("app").is_ok());
+///
+/// // Invalid package names
+/// assert!(PackageName::try_from("-invalid").is_err());  // starts with hyphen
+/// assert!(PackageName::try_from("invalid.name").is_err());  // contains dot
+/// assert!(PackageName::try_from("").is_err());  // empty
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct PackageName(String);
+
+impl PackageName {
+    /// Get the package name as a string slice
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Convert into the underlying String
+    #[must_use]
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for PackageName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PackageName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Errors that can occur when validating a PackageName
+#[derive(Error, Debug, Clone, Diagnostic)]
+pub enum PackageNameError {
+    /// The package name is invalid
+    #[error("invalid package name: {0}")]
+    #[diagnostic(
+        code(cuenv::package_name::invalid),
+        help(
+            "Package names must be 1-64 characters, start with alphanumeric, and contain only alphanumeric, hyphen, or underscore characters"
+        )
+    )]
+    Invalid(String),
+}
+
+impl TryFrom<&str> for PackageName {
+    type Error = PackageNameError;
+
+    /// Try to create a PackageName from a string
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use cuenv_core::PackageName;
+    ///
+    /// match PackageName::try_from("my-package") {
+    ///     Ok(name) => println!("Valid package name: {}", name),
+    ///     Err(e) => eprintln!("Error: {}", e),
+    /// }
+    /// ```
+    fn try_from(s: &str) -> std::result::Result<Self, Self::Error> {
+        let bytes = s.as_bytes();
+
+        // Check length bounds
+        if bytes.is_empty() || bytes.len() > 64 {
+            return Err(PackageNameError::Invalid(s.to_string()));
+        }
+
+        // Check first character must be alphanumeric
+        let first = bytes[0];
+        let is_alnum =
+            |b: u8| b.is_ascii_uppercase() || b.is_ascii_lowercase() || b.is_ascii_digit();
+
+        if !is_alnum(first) {
+            return Err(PackageNameError::Invalid(s.to_string()));
+        }
+
+        // Check all characters are valid
+        let valid = |b: u8| is_alnum(b) || b == b'-' || b == b'_';
+        for &b in bytes {
+            if !valid(b) {
+                return Err(PackageNameError::Invalid(s.to_string()));
+            }
+        }
+
+        Ok(PackageName(s.to_string()))
+    }
+}
+
+impl TryFrom<String> for PackageName {
+    type Error = PackageNameError;
+
+    /// Try to create a PackageName from an owned String
+    fn try_from(s: String) -> std::result::Result<Self, Self::Error> {
+        Self::try_from(s.as_str())
     }
 }
 
@@ -471,5 +728,97 @@ mod tests {
 
         let timeout_err = Error::Timeout { seconds: 5 };
         assert_eq!(timeout_err.code().unwrap().to_string(), "cuenv::timeout");
+    }
+
+    #[test]
+    fn test_package_dir_validation() {
+        // Current directory should be valid
+        let result = PackageDir::try_from(Path::new("."));
+        assert!(result.is_ok(), "Current directory should be valid");
+
+        // Get methods should work
+        let pkg_dir = result.unwrap();
+        assert_eq!(pkg_dir.as_path(), Path::new("."));
+        assert_eq!(pkg_dir.as_ref(), Path::new("."));
+        assert_eq!(pkg_dir.into_path_buf(), PathBuf::from("."));
+
+        // Non-existent directory should fail with NotFound
+        let result = PackageDir::try_from(Path::new("/path/does/not/exist"));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PackageDirError::NotFound(_) => {} // Expected
+            other => panic!("Expected NotFound error, got: {:?}", other),
+        }
+
+        // Path to a file should fail with NotADirectory
+        // Create a temporary file
+        let temp_path = std::env::temp_dir().join("cuenv_test_file");
+        let file = std::fs::File::create(&temp_path).unwrap();
+        drop(file);
+
+        let result = PackageDir::try_from(temp_path.as_path());
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            PackageDirError::NotADirectory(_) => {} // Expected
+            other => panic!("Expected NotADirectory error, got: {:?}", other),
+        }
+
+        // Clean up
+        std::fs::remove_file(temp_path).ok();
+    }
+
+    #[test]
+    fn test_package_name_validation() {
+        // Valid package names
+        let max_len_string = "a".repeat(64);
+        let valid_names = vec![
+            "my-package",
+            "package_123",
+            "a",        // Single character
+            "A",        // Uppercase
+            "0package", // Starts with number
+            "package-with-hyphens",
+            "package_with_underscores",
+            max_len_string.as_str(), // Max length
+        ];
+
+        for name in valid_names {
+            let result = PackageName::try_from(name);
+            assert!(result.is_ok(), "'{}' should be valid", name);
+
+            // Test the String variant too
+            let result = PackageName::try_from(name.to_string());
+            assert!(result.is_ok(), "'{}' as String should be valid", name);
+
+            // Verify methods work correctly
+            let pkg_name = result.unwrap();
+            assert_eq!(pkg_name.as_str(), name);
+            assert_eq!(pkg_name.as_ref(), name);
+            assert_eq!(pkg_name.to_string(), name);
+            assert_eq!(pkg_name.into_string(), name.to_string());
+        }
+
+        // Invalid package names
+        let too_long_string = "a".repeat(65);
+        let invalid_names = vec![
+            "",                       // Empty
+            "-invalid",               // Starts with hyphen
+            "_invalid",               // Starts with underscore
+            "invalid.name",           // Contains dot
+            "invalid/name",           // Contains slash
+            "invalid:name",           // Contains colon
+            too_long_string.as_str(), // Too long
+            "invalid@name",           // Contains @
+            "invalid#name",           // Contains #
+            "invalid name",           // Contains space
+        ];
+
+        for name in invalid_names {
+            let result = PackageName::try_from(name);
+            assert!(result.is_err(), "'{}' should be invalid", name);
+
+            // Verify error type is correct
+            assert!(matches!(result.unwrap_err(), PackageNameError::Invalid(_)));
+        }
     }
 }

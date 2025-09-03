@@ -1,6 +1,10 @@
 //! `CUEnv` CLI Application
 
-#![allow(missing_docs)]
+//! cuenv CLI Application - Production-grade CUE environment toolchain
+//!
+//! This binary provides command-line interface for CUE package evaluation,
+//! environment variable management, and task orchestration.
+
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_possible_truncation)]
 #![allow(clippy::unused_self)]
@@ -17,7 +21,7 @@ mod performance;
 mod tracing;
 mod tui;
 
-use crate::cli::parse;
+use crate::cli::{CliError, EXIT_OK, exit_code_for, parse, render_error};
 use crate::commands::Command;
 use crate::tracing::{Level, TracingConfig, TracingFormat};
 use tracing::instrument;
@@ -31,15 +35,54 @@ async fn main() {
         eprintln!("Internal error occurred. Run with RUST_LOG=debug for more information.");
     }));
 
-    // Run the CLI and handle any errors with enhanced reporting
-    if let Err(error) = run_main().await {
-        eprintln!("{error:?}");
-        std::process::exit(1);
+    // Run the CLI and handle any errors with proper exit codes
+    let exit_code = run().await;
+    std::process::exit(exit_code);
+}
+
+/// Main CLI runner that handles errors properly and returns exit codes
+#[instrument(name = "cuenv_run")]
+async fn run() -> i32 {
+    match real_main().await {
+        Ok(()) => EXIT_OK,
+        Err(err) => {
+            // Try to determine if JSON mode was requested
+            let args: Vec<String> = std::env::args().collect();
+            let json_mode = args.iter().any(|arg| arg == "--json");
+
+            render_error(&err, json_mode);
+            exit_code_for(&err)
+        }
     }
 }
 
-#[instrument(name = "cuenv_main_impl")]
-async fn run_main() -> miette::Result<()> {
+/// Real main implementation that can return `CliError`
+#[instrument(name = "cuenv_real_main")]
+async fn real_main() -> Result<(), CliError> {
+    // Parse CLI arguments
+    let cli = match parse_with_tracing().await {
+        Ok(cli) => cli,
+        Err(e) => {
+            return Err(CliError::config_with_help(
+                format!("Failed to parse CLI arguments: {e}"),
+                "Check your command line arguments and try again",
+            ));
+        }
+    };
+
+    // Convert CLI command to internal command
+    let command: Command = cli.command.into();
+
+    // Execute the command
+    match execute_command_safe(command, cli.json).await {
+        Ok(()) => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Parse CLI with proper tracing initialization
+#[instrument(name = "cuenv_parse_with_tracing")]
+async fn parse_with_tracing() -> Result<crate::cli::Cli, CliError> {
     // Parse args early to get tracing options
     let cli_args = std::env::args().collect::<Vec<_>>();
     let json_flag = cli_args.iter().any(|arg| arg == "--json");
@@ -73,99 +116,66 @@ async fn run_main() -> miette::Result<()> {
         ..Default::default()
     };
 
-    crate::tracing::init_tracing(tracing_config)
-        .map_err(|e| miette::miette!("Failed to initialize tracing: {}", e))?;
-
-    run_cli().await
-}
-
-#[instrument]
-async fn run_cli() -> miette::Result<()> {
-    // Starting cuenv CLI
-
-    // Parse command line arguments in instrumented span
-    let cli = parse_args().await?;
-
-    // Convert CLI command to internal command
-    let command: Command = cli.command.into();
-
-    // Execute command with structured tracing
-    execute_command(command).await?;
-
-    // cuenv CLI completed successfully
-    Ok(())
-}
-
-#[instrument]
-async fn parse_args() -> miette::Result<crate::cli::Cli> {
-    let _start = std::time::Instant::now();
-    let cli = parse();
-
-    // CLI arguments parsed
-
-    Ok(cli)
-}
-
-#[instrument]
-async fn execute_command(command: Command) -> miette::Result<()> {
-    let _start = std::time::Instant::now();
-
-    match command {
-        Command::Version => {
-            execute_version_command().await?;
+    match crate::tracing::init_tracing(tracing_config) {
+        Ok(()) => {}
+        Err(e) => {
+            return Err(CliError::config(format!(
+                "Failed to initialize tracing: {e}"
+            )));
         }
+    }
+
+    // Parse CLI arguments
+    Ok(parse())
+}
+
+/// Execute command safely without ? operator
+#[instrument(name = "cuenv_execute_command_safe")]
+async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), CliError> {
+    match command {
+        Command::Version => match execute_version_command_safe().await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(CliError::other(format!("Version command failed: {e}"))),
+        },
         Command::EnvPrint {
             path,
             package,
             format,
-        } => {
-            execute_env_print_command(path, package, format).await?;
-        }
+        } => match execute_env_print_command_safe(path, package, format, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
     }
-
-    // Command executed successfully
-
-    Ok(())
 }
 
-#[instrument]
-async fn execute_version_command() -> miette::Result<()> {
+/// Execute version command safely
+#[instrument(name = "cuenv_execute_version_safe")]
+async fn execute_version_command_safe() -> Result<(), String> {
     let mut perf_guard = performance::PerformanceGuard::new("version_command");
     perf_guard.add_metadata("command_type", "version");
-
-    // Gathering version information
 
     let version_info = measure_perf!("get_version_info", {
         commands::version::get_version_info()
     });
 
-    // Version information gathered
-
-    // For simple output, just print to stdout
-    println!("{}", version_info);
-
-    // Version information displayed
+    println!("{version_info}");
     perf_guard.finish(true);
-
-    // Log performance summary
-    let _summary = performance::registry().get_summary();
-    // Performance summary
 
     Ok(())
 }
 
-#[instrument]
-async fn execute_env_print_command(
+/// Execute env print command safely
+#[instrument(name = "cuenv_execute_env_print_safe")]
+async fn execute_env_print_command_safe(
     path: String,
     package: String,
     format: String,
-) -> miette::Result<()> {
+    json_mode: bool,
+) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("env_print_command");
     perf_guard.add_metadata("command_type", "env_print");
     perf_guard.add_metadata("package", &package);
     perf_guard.add_metadata("format", &format);
-
-    // Executing env print command
 
     let output = measure_perf!("env_print_execution", {
         commands::env::execute_env_print(&path, &package, &format).await
@@ -173,26 +183,21 @@ async fn execute_env_print_command(
 
     match output {
         Ok(result) => {
-            // Env values retrieved successfully
             println!("{result}");
             perf_guard.finish(true);
+            Ok(())
         }
         Err(e) => {
-            // Env print failed
             perf_guard.finish(false);
-            return Err(miette::miette!(
-                "Failed to print environment variables: {:?}",
-                e
-            ));
+            Err(CliError::eval_with_help(
+                format!("Failed to print environment variables: {e:?}"),
+                "Check your CUE files and package configuration",
+            ))
         }
     }
-
-    // Log performance summary
-    let _summary = performance::registry().get_summary();
-    // Performance summary
-
-    Ok(())
 }
+
+// Note: These functions are currently unused but reserved for future async main implementation
 
 #[cfg(test)]
 mod tests {
