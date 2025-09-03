@@ -21,7 +21,7 @@ mod performance;
 mod tracing;
 mod tui;
 
-use crate::cli::{CliError, EXIT_OK, exit_code_for, parse, render_error};
+use crate::cli::{exit_code_for, parse, render_error, CliError, EXIT_OK};
 use crate::commands::Command;
 use crate::tracing::{Level, TracingConfig, TracingFormat};
 use tracing::instrument;
