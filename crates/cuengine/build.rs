@@ -26,7 +26,7 @@ fn main() {
     let output_path = out_dir.join(lib_filename);
     let header_path = out_dir.join("libcue_bridge.h");
 
-    println!("Building for target: {}", target_triple);
+    println!("Building for target: {target_triple}");
     println!("Expected library: {}", output_path.display());
     println!("Bridge directory: {}", bridge_dir.display());
     println!("Out directory: {}", out_dir.display());
@@ -43,11 +43,13 @@ fn main() {
         &header_path,
     ) {
         build_go_bridge(&bridge_dir, &output_path);
-        
+
         // Verify the library was actually created
-        if !output_path.exists() {
-            panic!("Go bridge library was not created at expected path: {}", output_path.display());
-        }
+        assert!(
+            output_path.exists(),
+            "Go bridge library was not created at expected path: {}",
+            output_path.display()
+        );
         println!("Successfully created library at: {}", output_path.display());
     }
 
@@ -153,8 +155,8 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
 
     cmd.args(["-buildmode=c-archive", "-o", output_str, "bridge.go"]);
 
-    println!("Running Go command: {:?}", cmd);
-    
+    println!("Running Go command: {cmd:?}");
+
     let output = cmd
         .output()
         .expect("Failed to execute Go command. Make sure Go is installed.");
@@ -165,7 +167,7 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
         println!("stderr: {}", String::from_utf8_lossy(&output.stderr));
         panic!("Failed to build libcue bridge");
     }
-    
+
     println!("Go build completed successfully");
 }
 

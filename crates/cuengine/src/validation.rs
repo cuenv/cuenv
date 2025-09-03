@@ -28,12 +28,13 @@ pub fn validate_path(path: &Path, limits: &Limits) -> Result<()> {
 
     // Check path length
     if let Some(path_str) = path.to_str()
-        && path_str.len() > limits.max_path_length {
-            return Err(Error::validation(format!(
-                "Path exceeds maximum length of {} characters",
-                limits.max_path_length
-            )));
-        }
+        && path_str.len() > limits.max_path_length
+    {
+        return Err(Error::validation(format!(
+            "Path exceeds maximum length of {} characters",
+            limits.max_path_length
+        )));
+    }
 
     // Check for path traversal attempts
     for component in path.components() {
