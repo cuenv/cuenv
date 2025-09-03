@@ -16,26 +16,39 @@ fn main() {
     let header_path = out_dir.join("libcue_bridge.h");
 
     // Check for pre-built bridge first (Nix builds with pre-compiled Go bridge)
-    let prebuilt_debug = bridge_dir.join("target/debug/libcue_bridge.a");
-    let prebuilt_release = bridge_dir.join("target/release/libcue_bridge.a");
-    let prebuilt_debug_header = bridge_dir.join("target/debug/libcue_bridge.h");
-    let prebuilt_release_header = bridge_dir.join("target/release/libcue_bridge.h");
+    // Try multiple locations: workspace root and current dir
+    let workspace_root = PathBuf::from(env::var("CARGO_WORKSPACE_DIR").unwrap_or_else(|_| "../..".to_string()));
+    
+    let prebuilt_locations = [
+        // Nix flake puts prebuilt artifacts in workspace target/
+        (workspace_root.join("target/debug/libcue_bridge.a"), workspace_root.join("target/debug/libcue_bridge.h")),
+        (workspace_root.join("target/release/libcue_bridge.a"), workspace_root.join("target/release/libcue_bridge.h")),
+        // Local development builds
+        (bridge_dir.join("target/debug/libcue_bridge.a"), bridge_dir.join("target/debug/libcue_bridge.h")),
+        (bridge_dir.join("target/release/libcue_bridge.a"), bridge_dir.join("target/release/libcue_bridge.h")),
+        // Environment variable override (useful for CI/Nix)
+        (PathBuf::from(env::var("CUE_BRIDGE_PATH").unwrap_or_default()).join("debug/libcue_bridge.a"), PathBuf::from(env::var("CUE_BRIDGE_PATH").unwrap_or_default()).join("debug/libcue_bridge.h")),
+        (PathBuf::from(env::var("CUE_BRIDGE_PATH").unwrap_or_default()).join("release/libcue_bridge.a"), PathBuf::from(env::var("CUE_BRIDGE_PATH").unwrap_or_default()).join("release/libcue_bridge.h")),
+    ];
 
-    if prebuilt_release.exists() && prebuilt_release_header.exists() {
-        // Use pre-built release version
-        std::fs::copy(&prebuilt_release, &output_path)
-            .expect("Failed to copy pre-built release bridge");
-        std::fs::copy(&prebuilt_release_header, &header_path)
-            .expect("Failed to copy pre-built release header");
-        println!("Using pre-built Go bridge (release)");
-    } else if prebuilt_debug.exists() && prebuilt_debug_header.exists() {
-        // Use pre-built debug version
-        std::fs::copy(&prebuilt_debug, &output_path)
-            .expect("Failed to copy pre-built debug bridge");
-        std::fs::copy(&prebuilt_debug_header, &header_path)
-            .expect("Failed to copy pre-built debug header");
-        println!("Using pre-built Go bridge (debug)");
-    } else {
+    let mut found_prebuilt = false;
+
+    // Try to find prebuilt bridge in order of preference (release first, then debug)
+    for (lib_path, header_path_candidate) in prebuilt_locations.iter() {
+        if lib_path.exists() && header_path_candidate.exists() && !lib_path.to_string_lossy().is_empty() {
+            std::fs::copy(lib_path, &output_path)
+                .unwrap_or_else(|e| panic!("Failed to copy pre-built bridge from {}: {}", lib_path.display(), e));
+            std::fs::copy(header_path_candidate, &header_path)
+                .unwrap_or_else(|e| panic!("Failed to copy pre-built header from {}: {}", header_path_candidate.display(), e));
+            
+            let build_type = if lib_path.to_string_lossy().contains("release") { "release" } else { "debug" };
+            println!("Using pre-built Go bridge ({}) from: {}", build_type, lib_path.display());
+            found_prebuilt = true;
+            break;
+        }
+    }
+
+    if !found_prebuilt {
         // Build the Go shared library with CGO (fallback for non-Nix builds)
         println!("Building Go bridge from source");
         let mut cmd = Command::new("go");
