@@ -5,7 +5,7 @@
 
 #![allow(unsafe_code)] // Testing FFI requires unsafe code
 
-use cuengine::{CStringPtr, evaluate_cue_package};
+use cuengine::{evaluate_cue_package, CStringPtr};
 use std::ffi::CString;
 use std::fs;
 use std::sync::{Arc, Barrier};
