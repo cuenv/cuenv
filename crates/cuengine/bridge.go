@@ -7,6 +7,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 	"unsafe"
 
@@ -16,9 +17,58 @@ import (
 	"cuelang.org/go/cue/load"
 )
 
+const BridgeVersion = "bridge/1"
+
+// BridgeError represents an error in the bridge response
+type BridgeError struct {
+	Code    string  `json:"code"`
+	Message string  `json:"message"`
+	Hint    *string `json:"hint,omitempty"`
+}
+
+// BridgeResponse represents the structured response envelope
+type BridgeResponse struct {
+	Version string       `json:"version"`
+	Ok      *json.RawMessage `json:"ok,omitempty"`
+	Error   *BridgeError `json:"error,omitempty"`
+}
+
 //export cue_free_string
 func cue_free_string(s *C.char) {
 	C.free(unsafe.Pointer(s))
+}
+
+//export cue_bridge_version
+func cue_bridge_version() *C.char {
+	versionInfo := fmt.Sprintf("%s (Go %s)", BridgeVersion, runtime.Version())
+	return C.CString(versionInfo)
+}
+
+// Helper function to create error response
+func createErrorResponse(code, message string, hint *string) *C.char {
+	error := &BridgeError{
+		Code:    code,
+		Message: message,
+		Hint:    hint,
+	}
+	response := &BridgeResponse{
+		Version: BridgeVersion,
+		Error:   error,
+	}
+	responseBytes, _ := json.Marshal(response)
+	return C.CString(string(responseBytes))
+}
+
+// Helper function to create success response
+func createSuccessResponse(data string) *C.char {
+	// Convert string to RawMessage to preserve field ordering
+	rawData := json.RawMessage(data)
+	response := &BridgeResponse{
+		Version: BridgeVersion,
+		Ok:      &rawData,
+	}
+	responseBytes, _ := json.Marshal(response)
+	return C.CString(string(responseBytes))
 }
 
 //export cue_eval_package
@@ -27,9 +77,8 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	var result *C.char
 	defer func() {
 		if r := recover(); r != nil {
-			errMsg := map[string]string{"error": fmt.Sprintf("Internal error: %v", r)}
-			errBytes, _ := json.Marshal(errMsg)
-			result = C.CString(string(errBytes))
+			panic_msg := fmt.Sprintf("Internal panic: %v", r)
+			result = createErrorResponse("PANIC_RECOVER", panic_msg, nil)
 		}
 	}()
 
@@ -38,16 +87,12 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 
 	// Validate inputs
 	if goDir == "" {
-		errMsg := map[string]string{"error": "Directory path cannot be empty"}
-		errBytes, _ := json.Marshal(errMsg)
-		result = C.CString(string(errBytes))
+		result = createErrorResponse("INVALID_INPUT", "Directory path cannot be empty", nil)
 		return result
 	}
 
 	if goPackageName == "" {
-		errMsg := map[string]string{"error": "Package name cannot be empty"}
-		errBytes, _ := json.Marshal(errMsg)
-		result = C.CString(string(errBytes))
+		result = createErrorResponse("INVALID_INPUT", "Package name cannot be empty", nil)
 		return result
 	}
 
@@ -66,26 +111,25 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	instances = load.Instances([]string{packagePath}, cfg)
 
 	if len(instances) == 0 {
-		errMsg := map[string]string{"error": "No CUE instances found"}
-		errBytes, _ := json.Marshal(errMsg)
-		result = C.CString(string(errBytes))
+		hint := "Check that the package name exists and CUE files are present"
+		result = createErrorResponse("LOAD_INSTANCE", "No CUE instances found", &hint)
 		return result
 	}
 
 	inst := instances[0]
 	if inst.Err != nil {
-		errMsg := map[string]string{"error": fmt.Sprintf("Failed to load CUE instance: %v", inst.Err)}
-		errBytes, _ := json.Marshal(errMsg)
-		result = C.CString(string(errBytes))
+		msg := fmt.Sprintf("Failed to load CUE instance: %v", inst.Err)
+		hint := "Check CUE syntax and import statements"
+		result = createErrorResponse("LOAD_INSTANCE", msg, &hint)
 		return result
 	}
 
 	// Build the CUE value
 	v := ctx.BuildInstance(inst)
 	if v.Err() != nil {
-		errMsg := map[string]string{"error": fmt.Sprintf("Failed to build CUE value: %v", v.Err())}
-		errBytes, _ := json.Marshal(errMsg)
-		result = C.CString(string(errBytes))
+		msg := fmt.Sprintf("Failed to build CUE value: %v", v.Err())
+		hint := "Check CUE constraints and value definitions"
+		result = createErrorResponse("BUILD_VALUE", msg, &hint)
 		return result
 	}
 
@@ -93,15 +137,13 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	// This completely bypasses Go's map randomization
 	jsonStr, err := buildOrderedJSONString(v)
 	if err != nil {
-		errMsg := map[string]string{"error": fmt.Sprintf("Failed to build ordered JSON: %v", err)}
-		errBytes, _ := json.Marshal(errMsg)
-		result = C.CString(string(errBytes))
+		msg := fmt.Sprintf("Failed to build ordered JSON: %v", err)
+		result = createErrorResponse("ORDERED_JSON", msg, nil)
 		return result
 	}
 
-	jsonBytes := []byte(jsonStr)
-
-	result = C.CString(string(jsonBytes))
+	// Return success response with ordered JSON data
+	result = createSuccessResponse(jsonStr)
 	return result
 }
 
