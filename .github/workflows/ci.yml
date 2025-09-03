@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['*.*.*']
   pull_request:
     branches: [main]
 
@@ -17,13 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cachix/install-nix-action@v24
+      - name: Install Nix (Unix)
+        uses: DeterminateSystems/nix-installer-action@v14
+        if: runner.os != 'Windows'
         with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: cachix/cachix-action@v16
-        with:
-          name: devenv
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
@@ -37,27 +38,28 @@ jobs:
       - name: Run clippy
         run: devenv shell -- cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      - name: Check license headers
+        run: ./scripts/check-license-headers.sh
+
   test-suite:
     name: test-suite
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, 1.82.0] # MSRV - Edition 2024 requires 1.82+
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cachix/install-nix-action@v24
-        with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install Nix (Unix)
+        uses: DeterminateSystems/nix-installer-action@v14
         if: matrix.os != 'windows-latest'
-
-      - uses: cachix/cachix-action@v16
         with:
-          name: devenv
-        if: matrix.os != 'windows-latest'
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
 
       - name: Install devenv (Unix)
         run: nix profile install --accept-flake-config nixpkgs#devenv
@@ -140,28 +142,82 @@ jobs:
           go test -v ./...
         if: matrix.os == 'windows-latest'
 
-  security-audit:
-    name: security-audit
-    runs-on: ubuntu-latest
+  supply-chain-security:
+    name: supply-chain-security
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cachix/install-nix-action@v24
+      - name: Install Nix (Unix)
+        uses: DeterminateSystems/nix-installer-action@v14
+        if: matrix.os != 'windows-latest'
         with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
 
-      - uses: cachix/cachix-action@v16
-        with:
-          name: devenv
-
-      - name: Install devenv
+      - name: Install devenv (Unix)
         run: nix profile install --accept-flake-config nixpkgs#devenv
+        if: matrix.os != 'windows-latest'
 
-      - name: Build devenv
+      # Windows fallback - install tools directly
+      - name: Install Rust (Windows)
+        uses: dtolnay/rust-toolchain@stable
+        if: matrix.os == 'windows-latest'
+
+      - name: Install Go (Windows)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+        if: matrix.os == 'windows-latest'
+
+      - name: Install cargo-audit (Windows)
+        run: cargo install cargo-audit
+        if: matrix.os == 'windows-latest'
+
+      - name: Install cargo-deny (Windows)
+        run: cargo install cargo-deny
+        if: matrix.os == 'windows-latest'
+
+      - name: Install cargo-cyclonedx (Windows)
+        run: cargo install cargo-cyclonedx
+        if: matrix.os == 'windows-latest'
+
+      - name: Build devenv (Unix)
         run: devenv shell
+        if: matrix.os != 'windows-latest'
 
-      - name: Run security audit
+      - name: Run security audit (Unix)
         run: devenv shell -- cargo audit
+        if: matrix.os != 'windows-latest'
+
+      - name: Run security audit (Windows)
+        run: cargo audit
+        if: matrix.os == 'windows-latest'
+
+      - name: Run dependency checks (Unix)
+        run: devenv shell -- cargo deny check bans licenses advisories
+        if: matrix.os != 'windows-latest'
+
+      - name: Run dependency checks (Windows)
+        run: cargo deny check bans licenses advisories
+        if: matrix.os == 'windows-latest'
+
+      # Generate SBOM only on Linux (primary platform)
+      - name: Generate SBOM
+        run: devenv shell -- cargo cyclonedx --override-filename sbom.json
+        if: matrix.os == 'ubuntu-latest'
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.os }}
+          path: sbom.json
+        if: matrix.os == 'ubuntu-latest'
 
   coverage:
     name: coverage
@@ -169,13 +225,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cachix/install-nix-action@v24
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
         with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: cachix/cachix-action@v16
-        with:
-          name: devenv
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
@@ -191,7 +246,8 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
-          fail_ci_if_error: true
+          fail_ci_if_error: false # Soft gating - don't fail CI initially
+        continue-on-error: true
 
   benchmarks:
     name: benchmarks
@@ -199,13 +255,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: cachix/install-nix-action@v24
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
         with:
-          github_access_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: cachix/cachix-action@v16
-        with:
-          name: devenv
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv

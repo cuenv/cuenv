@@ -33,6 +33,8 @@
     cargo-audit # Security vulnerability scanning
     cargo-nextest # Faster test runner for CI
     cargo-release # Release automation helper
+    cargo-deny # Dependency and license checking
+    cargo-cyclonedx # SBOM generation
     git # Required for release-please
     gh # GitHub CLI for release automation
     jq # JSON processing for scripts
