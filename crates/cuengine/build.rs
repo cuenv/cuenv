@@ -26,11 +26,25 @@ fn main() {
     let output_path = out_dir.join(lib_filename);
     let header_path = out_dir.join("libcue_bridge.h");
 
-    // Check for pre-built bridge first (Nix builds with pre-compiled Go bridge)
-    // Try multiple locations: workspace root and current dir
-    let workspace_root =
-        PathBuf::from(env::var("CARGO_WORKSPACE_DIR").unwrap_or_else(|_| "../..".to_string()));
+    // Try to use prebuilt artifacts first (produced by Nix/flake builds)
+    let workspace_root = PathBuf::from(
+        env::var("CARGO_WORKSPACE_DIR").unwrap_or_else(|_| "../..".to_string()),
+    );
 
+    if !try_use_prebuilt(lib_filename, &bridge_dir, &workspace_root, &output_path, &header_path) {
+        build_go_bridge(&bridge_dir, &output_path);
+    }
+
+    configure_rustc_linking(&target_triple, &out_dir);
+}
+
+fn try_use_prebuilt(
+    lib_filename: &str,
+    bridge_dir: &PathBuf,
+    workspace_root: &PathBuf,
+    output_path: &PathBuf,
+    header_path: &PathBuf,
+) -> bool {
     let prebuilt_locations = [
         // Nix flake puts prebuilt artifacts in workspace target/
         (
@@ -67,22 +81,20 @@ fn main() {
         ),
     ];
 
-    let mut found_prebuilt = false;
-
-    // Try to find prebuilt bridge in order of preference (release first, then debug)
-    for (lib_path, header_path_candidate) in prebuilt_locations.iter() {
+    // Prefer release, then debug
+    for (lib_path, header_path_candidate) in &prebuilt_locations {
         if lib_path.exists()
             && header_path_candidate.exists()
             && !lib_path.to_string_lossy().is_empty()
         {
-            std::fs::copy(lib_path, &output_path).unwrap_or_else(|e| {
+            std::fs::copy(lib_path, output_path).unwrap_or_else(|e| {
                 panic!(
                     "Failed to copy pre-built bridge from {}: {}",
                     lib_path.display(),
                     e
                 )
             });
-            std::fs::copy(header_path_candidate, &header_path).unwrap_or_else(|e| {
+            std::fs::copy(header_path_candidate, header_path).unwrap_or_else(|e| {
                 panic!(
                     "Failed to copy pre-built header from {}: {}",
                     header_path_candidate.display(),
@@ -100,35 +112,38 @@ fn main() {
                 build_type,
                 lib_path.display()
             );
-            found_prebuilt = true;
-            break;
+            return true;
         }
     }
 
-    if !found_prebuilt {
-        // Build the Go shared library with CGO (fallback for non-Nix builds)
-        println!("Building Go bridge from source");
-        let mut cmd = Command::new("go");
-        cmd.current_dir(&bridge_dir).arg("build");
+    false
+}
 
-        // Use vendor directory if it exists (for Nix builds)
-        if bridge_dir.join("vendor").exists() {
-            cmd.arg("-mod=vendor");
-        }
+fn build_go_bridge(bridge_dir: &PathBuf, output_path: &PathBuf) {
+    // Build the Go static archive with CGO (fallback for non-Nix builds)
+    println!("Building Go bridge from source");
+    let mut cmd = Command::new("go");
+    cmd.current_dir(bridge_dir).arg("build");
 
-        let output_str = output_path
-            .to_str()
-            .expect("Failed to convert output path to string");
-
-        cmd.args(["-buildmode=c-archive", "-o", output_str, "bridge.go"]);
-
-        let status = cmd
-            .status()
-            .expect("Failed to build Go shared library. Make sure Go is installed.");
-
-        assert!(status.success(), "Failed to build libcue bridge");
+    // Use vendor directory if it exists (for Nix builds)
+    if bridge_dir.join("vendor").exists() {
+        cmd.arg("-mod=vendor");
     }
 
+    let output_str = output_path
+        .to_str()
+        .expect("Failed to convert output path to string");
+
+    cmd.args(["-buildmode=c-archive", "-o", output_str, "bridge.go"]);
+
+    let status = cmd
+        .status()
+        .expect("Failed to build Go shared library. Make sure Go is installed.");
+
+    assert!(status.success(), "Failed to build libcue bridge");
+}
+
+fn configure_rustc_linking(target_triple: &str, out_dir: &PathBuf) {
     // Tell Rust where to find the library
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=cue_bridge");
