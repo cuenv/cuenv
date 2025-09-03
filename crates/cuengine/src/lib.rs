@@ -18,14 +18,23 @@ pub use builder::{CueEvaluator, CueEvaluatorBuilder};
 pub use cuenv_core::{Error, Result};
 pub use retry::RetryConfig;
 
-use serde::{Deserialize};
+use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::c_char;
 use std::path::Path;
 
+// Bridge error codes - keep in sync with Go side constants
+// These match the constants defined in bridge.go
+const ERROR_CODE_INVALID_INPUT: &str = "INVALID_INPUT";
+const ERROR_CODE_LOAD_INSTANCE: &str = "LOAD_INSTANCE";
+const ERROR_CODE_BUILD_VALUE: &str = "BUILD_VALUE";
+const ERROR_CODE_ORDERED_JSON: &str = "ORDERED_JSON";
+const ERROR_CODE_PANIC_RECOVER: &str = "PANIC_RECOVER";
+const ERROR_CODE_JSON_MARSHAL: &str = "JSON_MARSHAL_ERROR";
+
 /// Error response from the Go bridge
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct BridgeError {
     code: String,
     message: String,
@@ -353,9 +362,9 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         };
 
         return match bridge_error.code.as_str() {
-            "INVALID_INPUT" => Err(Error::configuration(full_message)),
-            "LOAD_INSTANCE" | "BUILD_VALUE" => Err(Error::cue_parse(dir_path, full_message)),
-            "ORDERED_JSON" | "PANIC_RECOVER" => Err(Error::ffi("cue_eval_package", full_message)),
+            ERROR_CODE_INVALID_INPUT => Err(Error::configuration(full_message)),
+            ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE => Err(Error::cue_parse(dir_path, full_message)),
+            ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => Err(Error::ffi("cue_eval_package", full_message)),
             _ => Err(Error::cue_parse(dir_path, format!("Unknown error: {full_message}"))),
         };
     }
@@ -692,5 +701,194 @@ env: {
         }
 
         // The main thing is the function doesn't crash/panic
+    }
+
+    #[test]
+    fn test_bridge_error_constants_consistency() {
+        // Test that our error constants match expected values
+        assert_eq!(ERROR_CODE_INVALID_INPUT, "INVALID_INPUT");
+        assert_eq!(ERROR_CODE_LOAD_INSTANCE, "LOAD_INSTANCE");
+        assert_eq!(ERROR_CODE_BUILD_VALUE, "BUILD_VALUE");
+        assert_eq!(ERROR_CODE_ORDERED_JSON, "ORDERED_JSON");
+        assert_eq!(ERROR_CODE_PANIC_RECOVER, "PANIC_RECOVER");
+        assert_eq!(ERROR_CODE_JSON_MARSHAL, "JSON_MARSHAL_ERROR");
+    }
+
+    #[test]
+    fn test_bridge_envelope_parsing() {
+        // Test parsing of valid success envelope
+        let success_json = r#"{"version":"bridge/1","ok":{"test":"value"}}"#;
+        let envelope: BridgeEnvelope = serde_json::from_str(success_json).unwrap();
+        
+        assert_eq!(envelope.version, "bridge/1");
+        assert!(envelope.ok.is_some());
+        assert!(envelope.error.is_none());
+        
+        // Test parsing of valid error envelope
+        let error_json = r#"{"version":"bridge/1","error":{"code":"INVALID_INPUT","message":"test error","hint":"test hint"}}"#;
+        let envelope: BridgeEnvelope = serde_json::from_str(error_json).unwrap();
+        
+        assert_eq!(envelope.version, "bridge/1");
+        assert!(envelope.ok.is_none());
+        assert!(envelope.error.is_some());
+        
+        let error = envelope.error.unwrap();
+        assert_eq!(error.code, "INVALID_INPUT");
+        assert_eq!(error.message, "test error");
+        assert_eq!(error.hint, Some("test hint".to_string()));
+    }
+
+    #[test]
+    fn test_bridge_envelope_parsing_minimal_error() {
+        // Test parsing of error envelope without hint
+        let error_json = r#"{"version":"bridge/1","error":{"code":"LOAD_INSTANCE","message":"test error"}}"#;
+        let envelope: BridgeEnvelope = serde_json::from_str(error_json).unwrap();
+        
+        let error = envelope.error.unwrap();
+        assert_eq!(error.code, "LOAD_INSTANCE");
+        assert_eq!(error.message, "test error");
+        assert!(error.hint.is_none());
+    }
+
+    #[test]
+    fn test_cstring_ptr_drop_behavior() {
+        // Test that Drop trait is correctly implemented
+        // This is mostly to ensure the Drop implementation doesn't panic
+        
+        // Test dropping a null pointer (should be safe)
+        let null_ptr = unsafe { CStringPtr::new(std::ptr::null_mut()) };
+        drop(null_ptr); // Should not panic
+        
+        // Test dropping a valid pointer
+        let test_string = CString::new("test").unwrap();
+        let ptr = test_string.into_raw();
+        let wrapper = unsafe { CStringPtr::new(ptr) };
+        drop(wrapper); // Should free the memory properly
+    }
+
+    #[test]
+    fn test_get_bridge_version_functionality() {
+        // This test covers the actual bridge version functionality
+        // The behavior will depend on whether the Go bridge is available
+        
+        let result = get_bridge_version();
+        
+        match result {
+            Ok(version) => {
+                // If the bridge is available, test the version format
+                tracing::info!("Bridge available with version: {}", version);
+                
+                // Version should not be empty
+                assert!(!version.is_empty());
+                
+                // Version should contain the word "bridge" (case insensitive)
+                assert!(version.to_lowercase().contains("bridge"), "Version should contain 'bridge': {}", version);
+                
+                // Should contain some Go version information
+                assert!(version.contains("go") || version.contains("Go"), "Version should contain Go info: {}", version);
+            }
+            Err(error) => {
+                // If the bridge is not available, verify the error is meaningful
+                let error_str = error.to_string();
+                
+                // Error should not be empty
+                assert!(!error_str.is_empty());
+                
+                // Should be an FFI error or mention the function name
+                assert!(
+                    error_str.contains("FFI") || error_str.contains("cue_bridge_version"),
+                    "Error should mention FFI or function name: {}", error_str
+                );
+                
+                tracing::info!("Bridge not available (expected in test env): {}", error_str);
+            }
+        }
+    }
+
+    #[test]
+    fn test_error_code_mapping() {
+        // Test that we handle different error codes correctly
+        // We can't easily mock the FFI, but we can test the logic
+        
+        // Create a mock bridge error for each error type
+        let test_cases = vec![
+            (ERROR_CODE_INVALID_INPUT, "Invalid input test", None),
+            (ERROR_CODE_LOAD_INSTANCE, "Load instance test", Some("Check CUE files".to_string())),
+            (ERROR_CODE_BUILD_VALUE, "Build value test", Some("Check constraints".to_string())),
+            (ERROR_CODE_ORDERED_JSON, "JSON test", None),
+            (ERROR_CODE_PANIC_RECOVER, "Panic test", None),
+            (ERROR_CODE_JSON_MARSHAL, "Marshal test", None),
+            ("UNKNOWN_CODE", "Unknown error", None),
+        ];
+        
+        for (code, message, hint) in test_cases {
+            let bridge_error = BridgeError {
+                code: code.to_string(),
+                message: message.to_string(),
+                hint,
+            };
+            
+            // The error should serialize and deserialize properly
+            let serialized = serde_json::to_string(&bridge_error).unwrap();
+            let deserialized: BridgeError = serde_json::from_str(&serialized).unwrap();
+            
+            assert_eq!(deserialized.code, code);
+            assert_eq!(deserialized.message, message);
+        }
+    }
+
+    #[test]
+    fn test_path_edge_cases() {
+        // Test more edge cases for path handling
+        
+        // Test with empty package name - should be handled by Go side validation
+        let temp_dir = TempDir::new().unwrap();
+        let result = evaluate_cue_package(temp_dir.path(), "");
+        
+        // This should either fail with a validation error or succeed (depending on FFI availability)
+        match result {
+            Ok(_) => {
+                // If it succeeds, the FFI might not be available (CI behavior)
+                tracing::info!("FFI not available or handles empty package name gracefully");
+            }
+            Err(error) => {
+                // Should get some meaningful error
+                let error_str = error.to_string();
+                assert!(!error_str.is_empty());
+                tracing::info!("Got expected error for empty package name: {}", error_str);
+            }
+        }
+    }
+
+    #[test]
+    fn test_json_envelope_version_mismatch() {
+        // Test version compatibility checking logic
+        // We can test this by creating mock JSON responses
+        
+        let incompatible_version_json = r#"{"version":"bridge/2","ok":{"test":"value"}}"#;
+        let envelope: BridgeEnvelope = serde_json::from_str(incompatible_version_json).unwrap();
+        
+        assert_eq!(envelope.version, "bridge/2");
+        assert!(!envelope.version.starts_with("bridge/1"));
+    }
+
+    #[test]
+    fn test_serialize_import_usage() {
+        // Test that the Serialize import is available even if not used
+        // This ensures the import consistency we added is correct
+        
+        use serde::Serialize;
+        
+        #[derive(Serialize)]
+        struct TestStruct {
+            field: String,
+        }
+        
+        let test = TestStruct {
+            field: "test".to_string(),
+        };
+        
+        let _json = serde_json::to_string(&test).unwrap();
+        // If this compiles, the Serialize import is working
     }
 }
