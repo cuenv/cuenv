@@ -21,12 +21,12 @@ const BridgeVersion = "bridge/1"
 
 // Bridge error codes - keep in sync with Rust side
 const (
-	ErrorCodeInvalidInput   = "INVALID_INPUT"
-	ErrorCodeLoadInstance   = "LOAD_INSTANCE"
-	ErrorCodeBuildValue     = "BUILD_VALUE"
-	ErrorCodeOrderedJSON    = "ORDERED_JSON"
-	ErrorCodePanicRecover   = "PANIC_RECOVER"
-	ErrorCodeJSONMarshal    = "JSON_MARSHAL_ERROR"
+	ErrorCodeInvalidInput = "INVALID_INPUT"
+	ErrorCodeLoadInstance = "LOAD_INSTANCE"
+	ErrorCodeBuildValue   = "BUILD_VALUE"
+	ErrorCodeOrderedJSON  = "ORDERED_JSON"
+	ErrorCodePanicRecover = "PANIC_RECOVER"
+	ErrorCodeJSONMarshal  = "JSON_MARSHAL_ERROR"
 )
 
 // BridgeError represents an error in the bridge response
@@ -38,9 +38,9 @@ type BridgeError struct {
 
 // BridgeResponse represents the structured response envelope
 type BridgeResponse struct {
-	Version string       `json:"version"`
+	Version string           `json:"version"`
 	Ok      *json.RawMessage `json:"ok,omitempty"`
-	Error   *BridgeError `json:"error,omitempty"`
+	Error   *BridgeError     `json:"error,omitempty"`
 }
 
 //export cue_free_string
