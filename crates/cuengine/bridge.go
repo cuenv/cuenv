@@ -19,6 +19,16 @@ import (
 
 const BridgeVersion = "bridge/1"
 
+// Bridge error codes - keep in sync with Rust side
+const (
+	ErrorCodeInvalidInput   = "INVALID_INPUT"
+	ErrorCodeLoadInstance   = "LOAD_INSTANCE"
+	ErrorCodeBuildValue     = "BUILD_VALUE"
+	ErrorCodeOrderedJSON    = "ORDERED_JSON"
+	ErrorCodePanicRecover   = "PANIC_RECOVER"
+	ErrorCodeJSONMarshal    = "JSON_MARSHAL_ERROR"
+)
+
 // BridgeError represents an error in the bridge response
 type BridgeError struct {
 	Code    string  `json:"code"`
@@ -55,7 +65,12 @@ func createErrorResponse(code, message string, hint *string) *C.char {
 		Version: BridgeVersion,
 		Error:   error,
 	}
-	responseBytes, _ := json.Marshal(response)
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		// Fallback error response if JSON marshaling fails
+		fallbackResponse := fmt.Sprintf(`{"version":"%s","error":{"code":"%s","message":"Failed to marshal error response: %s"}}`, BridgeVersion, ErrorCodeJSONMarshal, err.Error())
+		return C.CString(fallbackResponse)
+	}
 	return C.CString(string(responseBytes))
 }
 
@@ -67,7 +82,12 @@ func createSuccessResponse(data string) *C.char {
 		Version: BridgeVersion,
 		Ok:      &rawData,
 	}
-	responseBytes, _ := json.Marshal(response)
+	responseBytes, err := json.Marshal(response)
+	if err != nil {
+		// If success response marshaling fails, return error response instead
+		msg := fmt.Sprintf("Failed to marshal success response: %s", err.Error())
+		return createErrorResponse(ErrorCodeJSONMarshal, msg, nil)
+	}
 	return C.CString(string(responseBytes))
 }
 
@@ -78,7 +98,7 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	defer func() {
 		if r := recover(); r != nil {
 			panic_msg := fmt.Sprintf("Internal panic: %v", r)
-			result = createErrorResponse("PANIC_RECOVER", panic_msg, nil)
+			result = createErrorResponse(ErrorCodePanicRecover, panic_msg, nil)
 		}
 	}()
 
@@ -87,12 +107,12 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 
 	// Validate inputs
 	if goDir == "" {
-		result = createErrorResponse("INVALID_INPUT", "Directory path cannot be empty", nil)
+		result = createErrorResponse(ErrorCodeInvalidInput, "Directory path cannot be empty", nil)
 		return result
 	}
 
 	if goPackageName == "" {
-		result = createErrorResponse("INVALID_INPUT", "Package name cannot be empty", nil)
+		result = createErrorResponse(ErrorCodeInvalidInput, "Package name cannot be empty", nil)
 		return result
 	}
 
@@ -112,7 +132,7 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 
 	if len(instances) == 0 {
 		hint := "Check that the package name exists and CUE files are present"
-		result = createErrorResponse("LOAD_INSTANCE", "No CUE instances found", &hint)
+		result = createErrorResponse(ErrorCodeLoadInstance, "No CUE instances found", &hint)
 		return result
 	}
 
@@ -120,7 +140,7 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	if inst.Err != nil {
 		msg := fmt.Sprintf("Failed to load CUE instance: %v", inst.Err)
 		hint := "Check CUE syntax and import statements"
-		result = createErrorResponse("LOAD_INSTANCE", msg, &hint)
+		result = createErrorResponse(ErrorCodeLoadInstance, msg, &hint)
 		return result
 	}
 
@@ -129,7 +149,7 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	if v.Err() != nil {
 		msg := fmt.Sprintf("Failed to build CUE value: %v", v.Err())
 		hint := "Check CUE constraints and value definitions"
-		result = createErrorResponse("BUILD_VALUE", msg, &hint)
+		result = createErrorResponse(ErrorCodeBuildValue, msg, &hint)
 		return result
 	}
 
@@ -138,7 +158,7 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	jsonStr, err := buildOrderedJSONString(v)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to build ordered JSON: %v", err)
-		result = createErrorResponse("ORDERED_JSON", msg, nil)
+		result = createErrorResponse(ErrorCodeOrderedJSON, msg, nil)
 		return result
 	}
 
