@@ -82,16 +82,16 @@
         # Import the generated Cargo.nix with custom overrides
         crate2nixProject = import cargoNix {
           inherit pkgs;
-          
+
           # Override build for cuengine to include Go bridge
           defaultCrateOverrides = pkgs.defaultCrateOverrides // {
             cuengine = attrs: {
-              nativeBuildInputs = (attrs.nativeBuildInputs or []) ++ [
+              nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
                 pkgs.go_1_24
                 pkgs.pkg-config
               ];
-              
-              buildInputs = (attrs.buildInputs or []) ++ 
+
+              buildInputs = (attrs.buildInputs or [ ]) ++
                 pkgs.lib.optionals pkgs.stdenv.isDarwin [
                   pkgs.darwin.apple_sdk.frameworks.Security
                   pkgs.darwin.apple_sdk.frameworks.CoreFoundation
@@ -107,7 +107,7 @@
                 cp -r ${cue-bridge}/debug/* target/debug/ || true
                 cp -r ${cue-bridge}/release/* target/release/ || true
               '';
-              
+
               # Set environment variables for the build
               CUE_BRIDGE_PATH = cue-bridge;
             };
@@ -132,17 +132,17 @@
             (rust-bin.stable.latest.default.override {
               extensions = [
                 "cargo"
-                "clippy" 
+                "clippy"
                 "rust-analyzer"
                 "rustc"
                 "rustfmt"
                 "llvm-tools-preview"
               ];
             })
-            
+
             # Go toolchain - pinned to 1.24.x as per Phase 3 requirements
             go_1_24
-            
+
             # Development tools
             cargo-edit
             cargo-machete
@@ -153,10 +153,10 @@
             cargo-release
             cargo-deny
             cargo-cyclonedx
-            
+
             # Nix tools
             crate2nix.packages.${system}.crate2nix
-            
+
             # CI/CD tools
             git
             gh
@@ -164,7 +164,7 @@
             prettier
             nixpkgs-fmt
             treefmt
-            
+
             # Build dependencies
             pkg-config
             llvmPackages.bintools
@@ -200,7 +200,7 @@
             drv = self.packages.${system}.cuenv;
             name = "cuenv";
           };
-          
+
           # Generate Cargo.nix helper
           generate-cargo-nix = flake-utils.lib.mkApp {
             drv = pkgs.writeShellScriptBin "generate-cargo-nix" ''

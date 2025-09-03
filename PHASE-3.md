@@ -88,7 +88,7 @@ Target window: 1–2 weeks
 ### Key Files Added/Modified
 
 - ✅ `flake.nix` - Nix packaging with crate2nix
-- ✅ `deny.toml` - Supply chain security configuration  
+- ✅ `deny.toml` - Supply chain security configuration
 - ✅ `release.toml` - Release automation
 - ✅ `scripts/check-license-headers.sh` - License verification
 - ✅ `.github/workflows/ci.yml` - Enhanced CI matrix
