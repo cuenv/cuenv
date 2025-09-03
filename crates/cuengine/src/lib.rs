@@ -52,7 +52,7 @@ struct BridgeEnvelope<'a> {
 
 /// RAII wrapper for C strings returned from FFI
 /// Ensures proper cleanup when the wrapper goes out of scope
-/// 
+///
 /// This type is intentionally !Send and !Sync because the underlying
 /// C pointer comes from Go's runtime which is not thread-safe.
 pub struct CStringPtr {
@@ -80,7 +80,7 @@ impl CStringPtr {
     /// - Allocates memory that must be freed with `cue_free_string`
     /// - Does not modify the memory after returning the pointer
     pub unsafe fn new(ptr: *mut c_char) -> Self {
-        Self { 
+        Self {
             ptr,
             _marker: PhantomData,
         }
@@ -146,7 +146,7 @@ impl Drop for CStringPtr {
 // SAFETY: CStringPtr contains a raw pointer to memory managed by Go's garbage collector.
 // The PhantomData<*const ()> marker makes this type !Send and !Sync because:
 // 1. The Go runtime may have thread-local state associated with this memory
-// 2. The FFI contract doesn't guarantee thread-safety of the underlying memory  
+// 2. The FFI contract doesn't guarantee thread-safety of the underlying memory
 // 3. Concurrent access to cue_free_string from multiple threads is undefined behavior
 // 4. Raw pointers are inherently not Send/Sync, so PhantomData<*const ()> prevents both
 
@@ -178,12 +178,12 @@ pub fn get_bridge_version() -> Result<String> {
     // - Returns either null or a valid pointer to a C string
     // - The returned pointer must be freed with cue_free_string
     let version_ptr = unsafe { cue_bridge_version() };
-    
+
     // Safety: CStringPtr::new is safe because:
     // - version_ptr is either null or a valid pointer from cue_bridge_version
     // - CStringPtr takes ownership and will free the memory on drop
     let version_wrapper = unsafe { CStringPtr::new(version_ptr) };
-    
+
     if version_wrapper.is_null() {
         tracing::error!("cue_bridge_version returned null pointer");
         return Err(Error::ffi(
@@ -191,20 +191,20 @@ pub fn get_bridge_version() -> Result<String> {
             "Bridge version call returned null".to_string(),
         ));
     }
-    
+
     // Safety: version_wrapper.to_str() is safe because:
     // - We've checked that the wrapper is not null
     // - The pointer points to a valid C string from the Go side
-    let version_str = match unsafe { version_wrapper.to_str() } {
+    let bridge_version = match unsafe { version_wrapper.to_str() } {
         Ok(str_ref) => str_ref.to_string(),
         Err(e) => {
             tracing::error!("Failed to convert bridge version to UTF-8 string: {}", e);
             return Err(e);
         }
     };
-    
-    tracing::info!(bridge_version = version_str, "Retrieved bridge version");
-    Ok(version_str)
+
+    tracing::info!(bridge_version = bridge_version, "Retrieved bridge version");
+    Ok(bridge_version)
 }
 
 /// Evaluates a CUE package and returns the result as a JSON string
@@ -223,6 +223,7 @@ pub fn get_bridge_version() -> Result<String> {
 ///
 /// # Returns
 /// JSON string containing the evaluated CUE configuration
+#[allow(clippy::too_many_lines)] // Function complexity justified for FFI bridge
 #[tracing::instrument(
     name = "evaluate_cue_package",
     fields(
@@ -236,12 +237,11 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     tracing::info!("Starting CUE package evaluation");
     let start_time = std::time::Instant::now();
 
-    let dir_path_str = match dir_path.to_str() {
-        Some(path_str) => path_str,
-        None => {
-            tracing::error!("Directory path is not valid UTF-8: {:?}", dir_path);
-            return Err(Error::configuration("Invalid directory path: not UTF-8".to_string()));
-        }
+    let Some(dir_path_str) = dir_path.to_str() else {
+        tracing::error!("Directory path is not valid UTF-8: {:?}", dir_path);
+        return Err(Error::configuration(
+            "Invalid directory path: not UTF-8".to_string(),
+        ));
     };
 
     tracing::debug!(
@@ -254,7 +254,10 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         Ok(c_string) => c_string,
         Err(e) => {
             tracing::error!("Failed to convert directory path to C string: {}", e);
-            return Err(Error::ffi("cue_eval_package", format!("Invalid directory path: {e}")));
+            return Err(Error::ffi(
+                "cue_eval_package",
+                format!("Invalid directory path: {e}"),
+            ));
         }
     };
 
@@ -262,7 +265,10 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         Ok(c_string) => c_string,
         Err(e) => {
             tracing::error!("Failed to convert package name to C string: {}", e);
-            return Err(Error::ffi("cue_eval_package", format!("Invalid package name: {e}")));
+            return Err(Error::ffi(
+                "cue_eval_package",
+                format!("Invalid package name: {e}"),
+            ));
         }
     };
 
@@ -355,6 +361,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
             "CUE evaluation failed with structured error from Go"
         );
 
+        #[allow(clippy::option_if_let_else)] // More readable than map_or
         let full_message = if let Some(hint) = bridge_error.hint {
             format!("{} (Hint: {})", bridge_error.message, hint)
         } else {
@@ -363,22 +370,28 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
 
         return match bridge_error.code.as_str() {
             ERROR_CODE_INVALID_INPUT => Err(Error::configuration(full_message)),
-            ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE => Err(Error::cue_parse(dir_path, full_message)),
-            ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => Err(Error::ffi("cue_eval_package", full_message)),
-            _ => Err(Error::cue_parse(dir_path, format!("Unknown error: {full_message}"))),
+            ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE => {
+                Err(Error::cue_parse(dir_path, full_message))
+            }
+            ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => {
+                Err(Error::ffi("cue_eval_package", full_message))
+            }
+            _ => Err(Error::cue_parse(
+                dir_path,
+                format!("Unknown error: {full_message}"),
+            )),
         };
     }
 
     // Handle success response
-    let json_data = match envelope.ok {
-        Some(raw_json) => raw_json.get(),
-        None => {
-            tracing::error!("Bridge envelope has neither 'ok' nor 'error' field");
-            return Err(Error::ffi(
-                "cue_eval_package",
-                "Invalid bridge response: missing both 'ok' and 'error' fields".to_string(),
-            ));
-        }
+    let json_data = if let Some(raw_json) = envelope.ok {
+        raw_json.get()
+    } else {
+        tracing::error!("Bridge envelope has neither 'ok' nor 'error' field");
+        return Err(Error::ffi(
+            "cue_eval_package",
+            "Invalid bridge response: missing both 'ok' and 'error' fields".to_string(),
+        ));
     };
 
     let total_duration = start_time.elapsed();
@@ -646,7 +659,7 @@ env: {
     #[test]
     fn test_get_bridge_version() {
         let result = get_bridge_version();
-        
+
         // The behavior depends on whether the Go FFI bridge is available
         match result {
             Ok(version) => {
@@ -719,19 +732,19 @@ env: {
         // Test parsing of valid success envelope
         let success_json = r#"{"version":"bridge/1","ok":{"test":"value"}}"#;
         let envelope: BridgeEnvelope = serde_json::from_str(success_json).unwrap();
-        
+
         assert_eq!(envelope.version, "bridge/1");
         assert!(envelope.ok.is_some());
         assert!(envelope.error.is_none());
-        
+
         // Test parsing of valid error envelope
         let error_json = r#"{"version":"bridge/1","error":{"code":"INVALID_INPUT","message":"test error","hint":"test hint"}}"#;
         let envelope: BridgeEnvelope = serde_json::from_str(error_json).unwrap();
-        
+
         assert_eq!(envelope.version, "bridge/1");
         assert!(envelope.ok.is_none());
         assert!(envelope.error.is_some());
-        
+
         let error = envelope.error.unwrap();
         assert_eq!(error.code, "INVALID_INPUT");
         assert_eq!(error.message, "test error");
@@ -741,9 +754,10 @@ env: {
     #[test]
     fn test_bridge_envelope_parsing_minimal_error() {
         // Test parsing of error envelope without hint
-        let error_json = r#"{"version":"bridge/1","error":{"code":"LOAD_INSTANCE","message":"test error"}}"#;
+        let error_json =
+            r#"{"version":"bridge/1","error":{"code":"LOAD_INSTANCE","message":"test error"}}"#;
         let envelope: BridgeEnvelope = serde_json::from_str(error_json).unwrap();
-        
+
         let error = envelope.error.unwrap();
         assert_eq!(error.code, "LOAD_INSTANCE");
         assert_eq!(error.message, "test error");
@@ -754,11 +768,11 @@ env: {
     fn test_cstring_ptr_drop_behavior() {
         // Test that Drop trait is correctly implemented
         // This is mostly to ensure the Drop implementation doesn't panic
-        
+
         // Test dropping a null pointer (should be safe)
         let null_ptr = unsafe { CStringPtr::new(std::ptr::null_mut()) };
         drop(null_ptr); // Should not panic
-        
+
         // Test dropping a valid pointer
         let test_string = CString::new("test").unwrap();
         let ptr = test_string.into_raw();
@@ -770,36 +784,45 @@ env: {
     fn test_get_bridge_version_functionality() {
         // This test covers the actual bridge version functionality
         // The behavior will depend on whether the Go bridge is available
-        
+
         let result = get_bridge_version();
-        
+
         match result {
             Ok(version) => {
                 // If the bridge is available, test the version format
                 tracing::info!("Bridge available with version: {}", version);
-                
+
                 // Version should not be empty
                 assert!(!version.is_empty());
-                
+
                 // Version should contain the word "bridge" (case insensitive)
-                assert!(version.to_lowercase().contains("bridge"), "Version should contain 'bridge': {}", version);
-                
+                assert!(
+                    version.to_lowercase().contains("bridge"),
+                    "Version should contain 'bridge': {}",
+                    version
+                );
+
                 // Should contain some Go version information
-                assert!(version.contains("go") || version.contains("Go"), "Version should contain Go info: {}", version);
+                assert!(
+                    version.contains("go") || version.contains("Go"),
+                    "Version should contain Go info: {}",
+                    version
+                );
             }
             Err(error) => {
                 // If the bridge is not available, verify the error is meaningful
                 let error_str = error.to_string();
-                
+
                 // Error should not be empty
                 assert!(!error_str.is_empty());
-                
+
                 // Should be an FFI error or mention the function name
                 assert!(
                     error_str.contains("FFI") || error_str.contains("cue_bridge_version"),
-                    "Error should mention FFI or function name: {}", error_str
+                    "Error should mention FFI or function name: {}",
+                    error_str
                 );
-                
+
                 tracing::info!("Bridge not available (expected in test env): {}", error_str);
             }
         }
@@ -809,29 +832,37 @@ env: {
     fn test_error_code_mapping() {
         // Test that we handle different error codes correctly
         // We can't easily mock the FFI, but we can test the logic
-        
+
         // Create a mock bridge error for each error type
         let test_cases = vec![
             (ERROR_CODE_INVALID_INPUT, "Invalid input test", None),
-            (ERROR_CODE_LOAD_INSTANCE, "Load instance test", Some("Check CUE files".to_string())),
-            (ERROR_CODE_BUILD_VALUE, "Build value test", Some("Check constraints".to_string())),
+            (
+                ERROR_CODE_LOAD_INSTANCE,
+                "Load instance test",
+                Some("Check CUE files".to_string()),
+            ),
+            (
+                ERROR_CODE_BUILD_VALUE,
+                "Build value test",
+                Some("Check constraints".to_string()),
+            ),
             (ERROR_CODE_ORDERED_JSON, "JSON test", None),
             (ERROR_CODE_PANIC_RECOVER, "Panic test", None),
             (ERROR_CODE_JSON_MARSHAL, "Marshal test", None),
             ("UNKNOWN_CODE", "Unknown error", None),
         ];
-        
+
         for (code, message, hint) in test_cases {
             let bridge_error = BridgeError {
                 code: code.to_string(),
                 message: message.to_string(),
                 hint,
             };
-            
+
             // The error should serialize and deserialize properly
             let serialized = serde_json::to_string(&bridge_error).unwrap();
             let deserialized: BridgeError = serde_json::from_str(&serialized).unwrap();
-            
+
             assert_eq!(deserialized.code, code);
             assert_eq!(deserialized.message, message);
         }
@@ -840,11 +871,11 @@ env: {
     #[test]
     fn test_path_edge_cases() {
         // Test more edge cases for path handling
-        
+
         // Test with empty package name - should be handled by Go side validation
         let temp_dir = TempDir::new().unwrap();
         let result = evaluate_cue_package(temp_dir.path(), "");
-        
+
         // This should either fail with a validation error or succeed (depending on FFI availability)
         match result {
             Ok(_) => {
@@ -864,10 +895,10 @@ env: {
     fn test_json_envelope_version_mismatch() {
         // Test version compatibility checking logic
         // We can test this by creating mock JSON responses
-        
+
         let incompatible_version_json = r#"{"version":"bridge/2","ok":{"test":"value"}}"#;
         let envelope: BridgeEnvelope = serde_json::from_str(incompatible_version_json).unwrap();
-        
+
         assert_eq!(envelope.version, "bridge/2");
         assert!(!envelope.version.starts_with("bridge/1"));
     }
@@ -876,18 +907,18 @@ env: {
     fn test_serialize_import_usage() {
         // Test that the Serialize import is available even if not used
         // This ensures the import consistency we added is correct
-        
+
         use serde::Serialize;
-        
+
         #[derive(Serialize)]
         struct TestStruct {
             field: String,
         }
-        
+
         let test = TestStruct {
             field: "test".to_string(),
         };
-        
+
         let _json = serde_json::to_string(&test).unwrap();
         // If this compiles, the Serialize import is working
     }
