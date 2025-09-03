@@ -118,13 +118,17 @@ mod tests {
         let lines: Vec<&str> = result.split('\n').collect();
 
         assert_eq!(lines.len(), 3);
-        assert!(lines
-            .iter()
-            .any(|line| line.starts_with("ARRAY_VAL=[1,2,3]")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("ARRAY_VAL=[1,2,3]"))
+        );
         assert!(lines.contains(&"NULL_VAL=null"));
-        assert!(lines
-            .iter()
-            .any(|line| line.starts_with("OBJECT_VAL=") && line.contains("nested")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("OBJECT_VAL=") && line.contains("nested"))
+        );
     }
 
     #[test]
