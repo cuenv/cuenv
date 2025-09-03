@@ -1,0 +1,79 @@
+name: flakehub-publish
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types: [completed]
+
+concurrency:
+  group: flakehub-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish-rolling:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
+
+      - name: Publish rolling to FlakeHub
+        uses: DeterminateSystems/flakehub-push@main
+        with:
+          name: cuenv/cuenv
+          rolling: true
+          visibility: public
+
+  publish-tag:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
+
+      - name: Detect tag for this run
+        id: detect-tag
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          REPO="${{ github.repository }}"
+          # Find a tag that points to the head SHA
+          TAG=$(gh api \
+            repos/$REPO/git/matching-refs/tags \
+            --paginate --jq '.[] | select(.object.sha == "'"$SHA"'") | .ref' \
+            | sed 's#refs/tags/##' | head -n1)
+          if [ -n "$TAG" ]; then
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Found tag: $TAG"
+          else
+            echo "No matching tag for $SHA; skipping publish" >&2
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish tagged release to FlakeHub
+        if: steps.detect-tag.outputs.tag != ''
+        uses: DeterminateSystems/flakehub-push@main
+        with:
+          name: cuenv/cuenv
+          tag: ${{ steps.detect-tag.outputs.tag }}
+          visibility: public
+
