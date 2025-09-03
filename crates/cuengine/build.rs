@@ -27,11 +27,16 @@ fn main() {
     let header_path = out_dir.join("libcue_bridge.h");
 
     // Try to use prebuilt artifacts first (produced by Nix/flake builds)
-    let workspace_root = PathBuf::from(
-        env::var("CARGO_WORKSPACE_DIR").unwrap_or_else(|_| "../..".to_string()),
-    );
+    let workspace_root =
+        PathBuf::from(env::var("CARGO_WORKSPACE_DIR").unwrap_or_else(|_| "../..".to_string()));
 
-    if !try_use_prebuilt(lib_filename, &bridge_dir, &workspace_root, &output_path, &header_path) {
+    if !try_use_prebuilt(
+        lib_filename,
+        &bridge_dir,
+        &workspace_root,
+        &output_path,
+        &header_path,
+    ) {
         build_go_bridge(&bridge_dir, &output_path);
     }
 
