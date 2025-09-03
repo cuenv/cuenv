@@ -48,6 +48,7 @@ impl PerformanceRegistry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_summary(&self) -> PerformanceSummary {
         let ops = self.operations.lock().unwrap();
         let total_operations = ops.len();
