@@ -21,7 +21,7 @@ categories = ["config", "development-tools", "parsing"]
 [workspace.dependencies]
 cuenv-core = { path = "crates/cuenv-core", version = "0.1.0" }
 cuengine = { path = "crates/cuengine", version = "0.1.0" }
-thiserror = "1.0"
+thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 tracing = "0.1"

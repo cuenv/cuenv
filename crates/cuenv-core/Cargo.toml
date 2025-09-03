@@ -12,6 +12,6 @@ categories.workspace = true
 description = "Core types and error handling for the cuenv ecosystem"
 
 [dependencies]
-thiserror = "1.0"
+thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 miette = { workspace = true }
