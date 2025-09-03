@@ -155,8 +155,8 @@ impl CueEvaluator {
 
     fn evaluate_internal(&self, dir_path: &Path, package_name: &str) -> Result<String> {
         let _ = self; // Will be used when refactored
-        // Call the existing evaluate_cue_package function
-        // This would be refactored to be a private implementation detail
+                      // Call the existing evaluate_cue_package function
+                      // This would be refactored to be a private implementation detail
         crate::evaluate_cue_package(dir_path, package_name)
     }
 

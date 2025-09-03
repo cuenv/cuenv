@@ -39,6 +39,7 @@ devenv shell -- cargo fmt
 ### PR #8 - Bridge Version Diagnostics
 
 **Latest Updates (Sept 2025):**
+
 - ✅ Fixed all clippy warnings and linting issues
 - ✅ Improved code quality with modern Rust idioms (let...else syntax, if let expressions)
 - ✅ Added proper clippy allow attributes with justifications for FFI complexity
@@ -46,6 +47,7 @@ devenv shell -- cargo fmt
 - ✅ Code compiles cleanly with `clippy -D warnings`
 
 **Key Improvements:**
+
 - Enhanced error handling and JSON response parsing between Go CUE evaluator and Rust via FFI
 - Added missing `Serialize` import alongside `Deserialize` for consistency
 - Proper JSON marshaling error handling in Go bridge
@@ -54,6 +56,7 @@ devenv shell -- cargo fmt
 - Improved memory management and FFI safety
 
 **Technical Details:**
+
 - Bridge version diagnostics functionality fully implemented
 - FFI wrapper with proper RAII memory management
 - Structured error responses with typed error codes
