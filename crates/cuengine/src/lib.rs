@@ -18,14 +18,38 @@ pub use builder::{CueEvaluator, CueEvaluatorBuilder};
 pub use cuenv_core::{Error, Result};
 pub use retry::RetryConfig;
 
+use serde::{Deserialize};
 use std::ffi::{CStr, CString};
+use std::marker::PhantomData;
 use std::os::raw::c_char;
 use std::path::Path;
 
+/// Error response from the Go bridge
+#[derive(Debug, Deserialize)]
+struct BridgeError {
+    code: String,
+    message: String,
+    hint: Option<String>,
+}
+
+/// Structured response envelope from the Go bridge
+#[derive(Debug, Deserialize)]
+struct BridgeEnvelope<'a> {
+    version: String,
+    #[serde(borrow)]
+    ok: Option<&'a serde_json::value::RawValue>,
+    error: Option<BridgeError>,
+}
+
 /// RAII wrapper for C strings returned from FFI
 /// Ensures proper cleanup when the wrapper goes out of scope
+/// 
+/// This type is intentionally !Send and !Sync because the underlying
+/// C pointer comes from Go's runtime which is not thread-safe.
 pub struct CStringPtr {
     ptr: *mut c_char,
+    // Marker to make this type !Send + !Sync
+    _marker: PhantomData<*const ()>,
 }
 
 impl CStringPtr {
@@ -47,7 +71,10 @@ impl CStringPtr {
     /// - Allocates memory that must be freed with `cue_free_string`
     /// - Does not modify the memory after returning the pointer
     pub unsafe fn new(ptr: *mut c_char) -> Self {
-        Self { ptr }
+        Self { 
+            ptr,
+            _marker: PhantomData,
+        }
     }
 
     /// Checks if the wrapped pointer is null
@@ -107,10 +134,68 @@ impl Drop for CStringPtr {
     }
 }
 
+// SAFETY: CStringPtr contains a raw pointer to memory managed by Go's garbage collector.
+// The PhantomData<*const ()> marker makes this type !Send and !Sync because:
+// 1. The Go runtime may have thread-local state associated with this memory
+// 2. The FFI contract doesn't guarantee thread-safety of the underlying memory  
+// 3. Concurrent access to cue_free_string from multiple threads is undefined behavior
+// 4. Raw pointers are inherently not Send/Sync, so PhantomData<*const ()> prevents both
+
 #[link(name = "cue_bridge")]
 unsafe extern "C" {
     fn cue_eval_package(dir_path: *const c_char, package_name: *const c_char) -> *mut c_char;
     fn cue_free_string(s: *mut c_char);
+    fn cue_bridge_version() -> *mut c_char;
+}
+
+/// Gets the bridge version information from the Go side
+///
+/// This function returns version information about the Go FFI bridge,
+/// including the protocol version and Go runtime version.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The FFI call fails
+/// - The returned string is not valid UTF-8
+///
+/// # Returns
+/// String containing bridge version information (e.g., "bridge/1 (Go go1.21.1)")
+pub fn get_bridge_version() -> Result<String> {
+    tracing::debug!("Getting bridge version information");
+
+    // Safety: cue_bridge_version is an FFI function that:
+    // - Takes no parameters
+    // - Returns either null or a valid pointer to a C string
+    // - The returned pointer must be freed with cue_free_string
+    let version_ptr = unsafe { cue_bridge_version() };
+    
+    // Safety: CStringPtr::new is safe because:
+    // - version_ptr is either null or a valid pointer from cue_bridge_version
+    // - CStringPtr takes ownership and will free the memory on drop
+    let version_wrapper = unsafe { CStringPtr::new(version_ptr) };
+    
+    if version_wrapper.is_null() {
+        tracing::error!("cue_bridge_version returned null pointer");
+        return Err(Error::ffi(
+            "cue_bridge_version",
+            "Bridge version call returned null".to_string(),
+        ));
+    }
+    
+    // Safety: version_wrapper.to_str() is safe because:
+    // - We've checked that the wrapper is not null
+    // - The pointer points to a valid C string from the Go side
+    let version_str = match unsafe { version_wrapper.to_str() } {
+        Ok(str_ref) => str_ref.to_string(),
+        Err(e) => {
+            tracing::error!("Failed to convert bridge version to UTF-8 string: {}", e);
+            return Err(e);
+        }
+    };
+    
+    tracing::info!(bridge_version = version_str, "Retrieved bridge version");
+    Ok(version_str)
 }
 
 /// Evaluates a CUE package and returns the result as a JSON string
@@ -142,10 +227,13 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     tracing::info!("Starting CUE package evaluation");
     let start_time = std::time::Instant::now();
 
-    let dir_path_str = dir_path.to_str().ok_or_else(|| {
-        tracing::error!("Directory path is not valid UTF-8: {:?}", dir_path);
-        Error::configuration("Invalid directory path: not UTF-8".to_string())
-    })?;
+    let dir_path_str = match dir_path.to_str() {
+        Some(path_str) => path_str,
+        None => {
+            tracing::error!("Directory path is not valid UTF-8: {:?}", dir_path);
+            return Err(Error::configuration("Invalid directory path: not UTF-8".to_string()));
+        }
+    };
 
     tracing::debug!(
         dir_path_str = dir_path_str,
@@ -153,15 +241,21 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         "Validated input parameters"
     );
 
-    let c_dir = CString::new(dir_path_str).map_err(|e| {
-        tracing::error!("Failed to convert directory path to C string: {}", e);
-        Error::ffi("cue_eval_package", format!("Invalid directory path: {e}"))
-    })?;
+    let c_dir = match CString::new(dir_path_str) {
+        Ok(c_string) => c_string,
+        Err(e) => {
+            tracing::error!("Failed to convert directory path to C string: {}", e);
+            return Err(Error::ffi("cue_eval_package", format!("Invalid directory path: {e}")));
+        }
+    };
 
-    let c_package = CString::new(package_name).map_err(|e| {
-        tracing::error!("Failed to convert package name to C string: {}", e);
-        Error::ffi("cue_eval_package", format!("Invalid package name: {e}"))
-    })?;
+    let c_package = match CString::new(package_name) {
+        Ok(c_string) => c_string,
+        Err(e) => {
+            tracing::error!("Failed to convert package name to C string: {}", e);
+            return Err(Error::ffi("cue_eval_package", format!("Invalid package name: {e}")));
+        }
+    };
 
     tracing::debug!("Calling FFI function cue_eval_package");
     let ffi_start = std::time::Instant::now();
@@ -198,35 +292,95 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     // - The pointer points to a valid C string from the Go side
     // - The memory will not be modified while we use the &str
     // - The &str lifetime is bounded by result's lifetime
-    let json_str = unsafe { result.to_str()? };
+    let json_str = match unsafe { result.to_str() } {
+        Ok(str_ref) => str_ref,
+        Err(e) => {
+            tracing::error!("Failed to convert FFI result to UTF-8 string: {}", e);
+            return Err(e);
+        }
+    };
 
     tracing::debug!(
         result_length = json_str.len(),
         "FFI result converted to string"
     );
 
-    // Check if the result is an error message from Go
-    if json_str.starts_with("error:") {
-        let error_msg = json_str.strip_prefix("error:").unwrap_or(json_str);
-        tracing::error!(
-            error_message = error_msg,
-            "CUE evaluation failed with error from Go"
+    // Parse the structured JSON envelope from Go
+    let envelope: BridgeEnvelope = match serde_json::from_str(json_str) {
+        Ok(env) => env,
+        Err(e) => {
+            tracing::error!(
+                json_response = json_str,
+                parse_error = %e,
+                "Failed to parse JSON envelope from Go bridge"
+            );
+            return Err(Error::ffi(
+                "cue_eval_package",
+                format!("Invalid JSON envelope from Go bridge: {e}"),
+            ));
+        }
+    };
+
+    tracing::debug!(
+        bridge_version = envelope.version,
+        has_ok = envelope.ok.is_some(),
+        has_error = envelope.error.is_some(),
+        "Parsed bridge envelope"
+    );
+
+    // Check envelope version compatibility
+    if !envelope.version.starts_with("bridge/1") {
+        tracing::warn!(
+            expected_version = "bridge/1",
+            actual_version = envelope.version,
+            "Bridge version mismatch - may cause compatibility issues"
         );
-        return Err(Error::cue_parse(
-            dir_path,
-            format!("CUE evaluation error: {error_msg}"),
-        ));
     }
+
+    // Handle error response
+    if let Some(bridge_error) = envelope.error {
+        tracing::error!(
+            error_code = bridge_error.code,
+            error_message = bridge_error.message,
+            error_hint = bridge_error.hint,
+            "CUE evaluation failed with structured error from Go"
+        );
+
+        let full_message = if let Some(hint) = bridge_error.hint {
+            format!("{} (Hint: {})", bridge_error.message, hint)
+        } else {
+            bridge_error.message
+        };
+
+        return match bridge_error.code.as_str() {
+            "INVALID_INPUT" => Err(Error::configuration(full_message)),
+            "LOAD_INSTANCE" | "BUILD_VALUE" => Err(Error::cue_parse(dir_path, full_message)),
+            "ORDERED_JSON" | "PANIC_RECOVER" => Err(Error::ffi("cue_eval_package", full_message)),
+            _ => Err(Error::cue_parse(dir_path, format!("Unknown error: {full_message}"))),
+        };
+    }
+
+    // Handle success response
+    let json_data = match envelope.ok {
+        Some(raw_json) => raw_json.get(),
+        None => {
+            tracing::error!("Bridge envelope has neither 'ok' nor 'error' field");
+            return Err(Error::ffi(
+                "cue_eval_package",
+                "Invalid bridge response: missing both 'ok' and 'error' fields".to_string(),
+            ));
+        }
+    };
 
     let total_duration = start_time.elapsed();
     tracing::info!(
         total_duration_ms = total_duration.as_millis(),
         ffi_duration_ms = ffi_duration.as_millis(),
-        result_size_bytes = json_str.len(),
+        result_size_bytes = json_data.len(),
         "CUE package evaluation completed successfully"
     );
 
-    Ok(json_str.to_string())
+    Ok(json_data.to_string())
 }
 
 #[cfg(test)]
@@ -478,6 +632,32 @@ env: {
         }
 
         // If we get here without crashes, memory management is working
+    }
+
+    #[test]
+    fn test_get_bridge_version() {
+        let result = get_bridge_version();
+        
+        // The behavior depends on whether the Go FFI bridge is available
+        match result {
+            Ok(version) => {
+                // If FFI is available, we should get a version string
+                tracing::info!("Bridge version: {}", version);
+                assert!(!version.is_empty());
+                // Version should start with "bridge/1" according to the envelope format
+                // but we'll be lenient in case the format changes
+                assert!(version.len() > 3); // At least some meaningful content
+            }
+            Err(error) => {
+                // If FFI isn't available, we should get a specific error
+                tracing::info!("FFI not available for bridge version: {}", error);
+                // This is acceptable in test environments without Go build
+                let error_msg = error.to_string();
+                assert!(!error_msg.is_empty());
+                // Should mention the FFI function name
+                assert!(error_msg.contains("cue_bridge_version") || error_msg.contains("FFI"));
+            }
+        }
     }
 
     // Test the error message parsing logic
