@@ -86,6 +86,9 @@ fn main() {
         println!("cargo:rustc-link-lib=userenv");
         println!("cargo:rustc-link-lib=ntdll");
         println!("cargo:rustc-link-lib=winmm");
+        // MSVC CRT shims: required for fprintf and related stdio symbols
+        // Fixes: link.exe LNK2019 unresolved external symbol fprintf
+        println!("cargo:rustc-link-lib=legacy_stdio_definitions");
     } else {
         // Unix-like systems
         println!("cargo:rustc-link-lib=pthread");
