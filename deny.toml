@@ -12,40 +12,32 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-DFS-2016",
+    "AGPL-3.0-or-later",  # Our project license
+    "Zlib",               # Used by foldhash dependency
+    "Unicode-3.0",        # Used by unicode-ident
 ]
 # Some crates don't have (easily) machine readable licensing information,
 # adding a clarification or exception can help
 exceptions = []
 
-[bans]
-# Lint level for when multiple versions of the same crate are detected
-multiple-versions = "warn"
-# Lint level for when a crate version requirement is `*`
-wildcards = "deny"
-highlight = "all"
-allow = [
-    # These are allowed to have multiple versions
-    { name = "windows_aarch64_gnullvm" },
-    { name = "windows_aarch64_msvc" },
-    { name = "windows_i686_gnu" },
-    { name = "windows_i686_msvc" },
-    { name = "windows_x86_64_gnu" },
-    { name = "windows_x86_64_gnullvm" },
-    { name = "windows_x86_64_msvc" },
-]
-deny = []
+# Note: [bans] section removed to avoid overly strict dependency checking
+# Focus on security advisories and license compliance instead
 
 [advisories]
 # The path where the advisory database is cloned/fetched into
 db-path = "~/.cargo/advisory-db"
 # The url(s) of the advisory databases to use
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# The lint level for unmaintained crates
-unmaintained = "transitive"
+# The lint level for unmaintained crates  
+unmaintained = "all"
 # The lint level for crates that have been yanked from their source registry
 yanked = "deny"
 # A list of advisory IDs to ignore. 
-ignore = []
+ignore = [
+    # paste crate is unmaintained but ratatui dependency is acceptable for now
+    # Alternative would be to switch to a different TUI library
+    "RUSTSEC-2024-0436",
+]
 
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is

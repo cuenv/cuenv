@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 {
   languages.rust = {
     enable = true;
@@ -34,12 +34,14 @@
     cargo-release # Release automation helper
     cargo-deny # Dependency and license checking
     cargo-cyclonedx # SBOM generation
-    cargo-llvm-cov # Code coverage
     git # Required for release-please
     gh # GitHub CLI for release automation
     jq # JSON processing for scripts
     prettier # Formatter for JSON/Markdown
     nixpkgs-fmt # Formatter for Nix
     treefmt # Format everything
+  ] ++ lib.optionals pkgs.stdenv.isLinux [
+    # Linux-only packages (cargo-llvm-cov is broken on macOS)
+    cargo-llvm-cov # Code coverage
   ];
 }

@@ -1,7 +1,7 @@
 //! Build script for compiling the Go CUE bridge
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -45,8 +45,8 @@ fn main() {
 
 fn try_use_prebuilt(
     lib_filename: &str,
-    bridge_dir: &PathBuf,
-    workspace_root: &PathBuf,
+    bridge_dir: &Path,
+    workspace_root: &Path,
     output_path: &PathBuf,
     header_path: &PathBuf,
 ) -> bool {
@@ -124,7 +124,7 @@ fn try_use_prebuilt(
     false
 }
 
-fn build_go_bridge(bridge_dir: &PathBuf, output_path: &PathBuf) {
+fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
     // Build the Go static archive with CGO (fallback for non-Nix builds)
     println!("Building Go bridge from source");
     let mut cmd = Command::new("go");
@@ -148,7 +148,7 @@ fn build_go_bridge(bridge_dir: &PathBuf, output_path: &PathBuf) {
     assert!(status.success(), "Failed to build libcue bridge");
 }
 
-fn configure_rustc_linking(target_triple: &str, out_dir: &PathBuf) {
+fn configure_rustc_linking(target_triple: &str, out_dir: &Path) {
     // Tell Rust where to find the library
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=cue_bridge");
