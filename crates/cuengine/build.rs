@@ -26,10 +26,28 @@ fn main() {
     let output_path = out_dir.join(lib_filename);
     let header_path = out_dir.join("libcue_bridge.h");
 
+    println!("=== CUENGINE BUILD SCRIPT DEBUG ===");
     println!("Building for target: {target_triple}");
+    println!("Is Windows: {is_windows}");
     println!("Expected library: {}", output_path.display());
     println!("Bridge directory: {}", bridge_dir.display());
     println!("Out directory: {}", out_dir.display());
+    println!(
+        "Bridge GO file exists: {}",
+        bridge_dir.join("bridge.go").exists()
+    );
+
+    // Check if Go is available
+    match std::process::Command::new("go").arg("version").output() {
+        Ok(output) if output.status.success() => {
+            println!(
+                "Go version: {}",
+                String::from_utf8_lossy(&output.stdout).trim()
+            );
+        }
+        Ok(_) => println!("Go command failed"),
+        Err(e) => println!("Go not available: {e}"),
+    }
 
     // Try to use prebuilt artifacts first (produced by Nix/flake builds)
     let workspace_root =
