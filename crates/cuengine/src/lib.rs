@@ -798,15 +798,13 @@ env: {
                 // Version should contain the word "bridge" (case insensitive)
                 assert!(
                     version.to_lowercase().contains("bridge"),
-                    "Version should contain 'bridge': {}",
-                    version
+                    "Version should contain 'bridge': {version}"
                 );
 
                 // Should contain some Go version information
                 assert!(
                     version.contains("go") || version.contains("Go"),
-                    "Version should contain Go info: {}",
-                    version
+                    "Version should contain Go info: {version}"
                 );
             }
             Err(error) => {
@@ -819,8 +817,7 @@ env: {
                 // Should be an FFI error or mention the function name
                 assert!(
                     error_str.contains("FFI") || error_str.contains("cue_bridge_version"),
-                    "Error should mention FFI or function name: {}",
-                    error_str
+                    "Error should mention FFI or function name: {error_str}"
                 );
 
                 tracing::info!("Bridge not available (expected in test env): {}", error_str);
