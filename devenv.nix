@@ -21,25 +21,28 @@
     package = pkgs.go_1_24;
   };
 
-  packages = with pkgs; [
-    # Existing tools
-    cargo-edit
-    cargo-machete
-    cargo-outdated
-    cargo-llvm-cov
-    llvmPackages.bintools
+  packages = with pkgs;
+    let
+      enableLlvmCov = builtins.getEnv "ENABLE_LLVM_COV" == "1";
+    in
+    [
+      # Existing tools
+      cargo-edit
+      cargo-machete
+      cargo-outdated
+      llvmPackages.bintools
 
-    # CI/CD tools
-    cargo-audit # Security vulnerability scanning
-    cargo-nextest # Faster test runner for CI
-    cargo-release # Release automation helper
-    cargo-deny # Dependency and license checking
-    cargo-cyclonedx # SBOM generation
-    git # Required for release-please
-    gh # GitHub CLI for release automation
-    jq # JSON processing for scripts
-    prettier # Formatter for JSON/Markdown
-    nixpkgs-fmt # Formatter for Nix
-    treefmt # Format everything
-  ];
+      # CI/CD tools
+      cargo-audit # Security vulnerability scanning
+      cargo-nextest # Faster test runner for CI
+      cargo-release # Release automation helper
+      cargo-deny # Dependency and license checking
+      cargo-cyclonedx # SBOM generation
+      git # Required for release-please
+      gh # GitHub CLI for release automation
+      jq # JSON processing for scripts
+      prettier # Formatter for JSON/Markdown
+      nixpkgs-fmt # Formatter for Nix
+      treefmt # Format everything
+    ] ++ pkgs.lib.optionals enableLlvmCov [ cargo-llvm-cov ];
 }
