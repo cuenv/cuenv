@@ -26,6 +26,11 @@ fn main() {
     let output_path = out_dir.join(lib_filename);
     let header_path = out_dir.join("libcue_bridge.h");
 
+    println!("Building for target: {}", target_triple);
+    println!("Expected library: {}", output_path.display());
+    println!("Bridge directory: {}", bridge_dir.display());
+    println!("Out directory: {}", out_dir.display());
+
     // Try to use prebuilt artifacts first (produced by Nix/flake builds)
     let workspace_root =
         PathBuf::from(env::var("CARGO_WORKSPACE_DIR").unwrap_or_else(|_| "../..".to_string()));
@@ -38,6 +43,12 @@ fn main() {
         &header_path,
     ) {
         build_go_bridge(&bridge_dir, &output_path);
+        
+        // Verify the library was actually created
+        if !output_path.exists() {
+            panic!("Go bridge library was not created at expected path: {}", output_path.display());
+        }
+        println!("Successfully created library at: {}", output_path.display());
     }
 
     configure_rustc_linking(&target_triple, &out_dir);
@@ -133,6 +144,7 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
     // Use vendor directory if it exists (for Nix builds)
     if bridge_dir.join("vendor").exists() {
         cmd.arg("-mod=vendor");
+        println!("Using vendor directory");
     }
 
     let output_str = output_path
@@ -141,11 +153,20 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
 
     cmd.args(["-buildmode=c-archive", "-o", output_str, "bridge.go"]);
 
-    let status = cmd
-        .status()
-        .expect("Failed to build Go shared library. Make sure Go is installed.");
+    println!("Running Go command: {:?}", cmd);
+    
+    let output = cmd
+        .output()
+        .expect("Failed to execute Go command. Make sure Go is installed.");
 
-    assert!(status.success(), "Failed to build libcue bridge");
+    if !output.status.success() {
+        println!("Go build failed!");
+        println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+        println!("stderr: {}", String::from_utf8_lossy(&output.stderr));
+        panic!("Failed to build libcue bridge");
+    }
+    
+    println!("Go build completed successfully");
 }
 
 fn configure_rustc_linking(target_triple: &str, out_dir: &Path) {
