@@ -19,7 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-lru = "0.12"
+lru = "0.16"
 parking_lot = "0.12"
 
 [build-dependencies]
