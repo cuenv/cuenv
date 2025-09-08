@@ -28,7 +28,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 libc = "0.2"
 tokio = { version = "1.0", features = ["full"] }
-clap = { version = "4.0", features = ["derive", "env"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 ratatui = "0.29"
 crossterm = "0.28"
 miette = { version = "7.0", features = ["fancy"] }
