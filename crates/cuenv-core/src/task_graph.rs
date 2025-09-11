@@ -7,7 +7,8 @@ use crate::task::{Task, TaskDefinition, TaskGroup, Tasks};
 use crate::Result;
 use petgraph::algo::{toposort, is_cyclic_directed};
 use petgraph::graph::{DiGraph, NodeIndex};
-use std::collections::HashMap;
+use petgraph::visit::IntoNodeReferences;
+use std::collections::{HashMap, HashSet};
 
 /// A node in the task graph
 #[derive(Debug, Clone)]
@@ -133,14 +134,46 @@ impl TaskGraph {
         let node_index = self.graph.add_node(node);
         self.name_to_node.insert(name.to_string(), node_index);
         
-        // Add edges for dependencies
-        for dep in &task.dependencies {
-            if let Some(&dep_node) = self.name_to_node.get(dep) {
-                self.graph.add_edge(dep_node, node_index, ());
+        Ok(node_index)
+    }
+    
+    /// Add dependency edges after all tasks have been added
+    /// This ensures proper cycle detection and missing dependency validation
+    fn add_dependency_edges(&mut self) -> Result<()> {
+        let mut missing_deps = Vec::new();
+        let mut edges_to_add = Vec::new();
+        
+        // Collect all dependency relationships
+        for (node_index, node) in self.graph.node_references() {
+            for dep_name in &node.task.dependencies {
+                if let Some(&dep_node_index) = self.name_to_node.get(dep_name as &str) {
+                    // Record edge to add later
+                    edges_to_add.push((dep_node_index, node_index));
+                } else {
+                    missing_deps.push((node.name.clone(), dep_name.clone()));
+                }
             }
         }
         
-        Ok(node_index)
+        // Report missing dependencies
+        if !missing_deps.is_empty() {
+            let missing_list = missing_deps
+                .iter()
+                .map(|(task, dep)| format!("Task '{}' depends on missing task '{}'", task, dep))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(crate::Error::configuration(format!(
+                "Missing dependencies: {}",
+                missing_list
+            )));
+        }
+        
+        // Add all edges
+        for (from, to) in edges_to_add {
+            self.graph.add_edge(from, to, ());
+        }
+        
+        Ok(())
     }
     
     /// Check if the graph has cycles
@@ -209,6 +242,66 @@ impl TaskGraph {
     /// Check if a task exists in the graph
     pub fn contains_task(&self, name: &str) -> bool {
         self.name_to_node.contains_key(name)
+    }
+    
+    /// Build a complete graph from tasks with proper dependency resolution
+    /// This performs a two-pass build: first adding all nodes, then all edges
+    pub fn build_complete_graph(&mut self, tasks: &Tasks) -> Result<()> {
+        // First pass: Add all tasks as nodes
+        for (name, definition) in tasks.tasks.iter() {
+            match definition {
+                TaskDefinition::Single(task) => {
+                    self.add_task(name, task.clone())?;
+                }
+                TaskDefinition::Group(_) => {
+                    // For groups, we'd need to expand them - this is more complex
+                    // and not needed for the current fix. Groups should be handled
+                    // by build_from_definition which already works correctly.
+                }
+            }
+        }
+        
+        // Second pass: Add all dependency edges
+        self.add_dependency_edges()?;
+        
+        Ok(())
+    }
+    
+    /// Build graph for a specific task and all its transitive dependencies
+    pub fn build_for_task(&mut self, task_name: &str, all_tasks: &Tasks) -> Result<()> {
+        let mut to_process = vec![task_name.to_string()];
+        let mut processed = HashSet::new();
+        
+        // First pass: Collect all tasks that need to be included
+        while let Some(current_name) = to_process.pop() {
+            if processed.contains(&current_name) {
+                continue;
+            }
+            processed.insert(current_name.clone());
+            
+            if let Some(definition) = all_tasks.get(&current_name) {
+                match definition {
+                    TaskDefinition::Single(task) => {
+                        self.add_task(&current_name, task.clone())?;
+                        // Add dependencies to processing queue
+                        for dep in &task.dependencies {
+                            if !processed.contains(dep) {
+                                to_process.push(dep.clone());
+                            }
+                        }
+                    }
+                    TaskDefinition::Group(_) => {
+                        // Handle groups with build_from_definition
+                        self.build_from_definition(&current_name, definition, all_tasks)?;
+                    }
+                }
+            }
+        }
+        
+        // Second pass: Add dependency edges
+        self.add_dependency_edges()?;
+        
+        Ok(())
     }
 }
 

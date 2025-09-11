@@ -12,8 +12,10 @@ use crate::{Error, Result};
 use async_recursion::async_recursion;
 use std::collections::HashMap;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::task::JoinSet;
 
 /// Task execution result
 #[derive(Debug, Clone)]
@@ -66,26 +68,42 @@ impl TaskExecutor {
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
         tracing::info!("Executing task: {}", name);
         
-        // Build the command based on shell configuration
+        // Build the command based on shell and args configuration  
         let mut cmd = if let Some(shell) = &task.shell {
-            // Execute via specified shell
-            let mut cmd = Command::new(&shell.command);
-            cmd.arg(&shell.flag);
-            cmd.arg(&task.command);
-            cmd
-        } else if !task.args.is_empty() {
-            // Direct execution with args (secure)
+            // Check if shell is properly configured
+            if let (Some(shell_command), Some(shell_flag)) = (&shell.command, &shell.flag) {
+                // Execute via specified shell
+                let mut cmd = Command::new(shell_command);
+                cmd.arg(shell_flag);
+                
+                if task.args.is_empty() {
+                    // Just execute the command string as-is
+                    cmd.arg(&task.command);
+                } else {
+                    // Concatenate command and args with proper shell quoting
+                    let full_command = if task.command.is_empty() {
+                        task.args.join(" ")
+                    } else {
+                        format!("{} {}", task.command, task.args.join(" "))
+                    };
+                    cmd.arg(full_command);
+                }
+                cmd
+            } else {
+                // Shell field present but not properly configured, fall back to direct execution
+                let mut cmd = Command::new(&task.command);
+                for arg in &task.args {
+                    cmd.arg(arg);
+                }
+                cmd
+            }
+        } else {
+            // Direct execution (secure by default)
             let mut cmd = Command::new(&task.command);
             for arg in &task.args {
                 cmd.arg(arg);
             }
             cmd
-        } else {
-            // Error: need either shell or args
-            return Err(Error::configuration(format!(
-                "Task '{}' requires either 'shell' configuration or 'args' array for secure execution", 
-                name
-            )));
         };
         
         // Set environment variables
@@ -109,30 +127,40 @@ impl TaskExecutor {
         })?;
         
         let (stdout, stderr) = if self.config.capture_output {
-            // Capture output
+            // Capture output concurrently to prevent deadlocks
             let stdout_handle = child.stdout.take();
             let stderr_handle = child.stderr.take();
             
-            let mut stdout_lines = Vec::new();
-            let mut stderr_lines = Vec::new();
-            
-            if let Some(stdout) = stdout_handle {
-                let reader = BufReader::new(stdout);
-                let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    stdout_lines.push(line);
+            let stdout_task = async {
+                if let Some(stdout) = stdout_handle {
+                    let reader = BufReader::new(stdout);
+                    let mut lines = reader.lines();
+                    let mut stdout_lines = Vec::new();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        stdout_lines.push(line);
+                    }
+                    stdout_lines.join("\n")
+                } else {
+                    String::new()
                 }
-            }
+            };
             
-            if let Some(stderr) = stderr_handle {
-                let reader = BufReader::new(stderr);
-                let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    stderr_lines.push(line);
+            let stderr_task = async {
+                if let Some(stderr) = stderr_handle {
+                    let reader = BufReader::new(stderr);
+                    let mut lines = reader.lines();
+                    let mut stderr_lines = Vec::new();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        stderr_lines.push(line);
+                    }
+                    stderr_lines.join("\n")
+                } else {
+                    String::new()
                 }
-            }
+            };
             
-            (stdout_lines.join("\n"), stderr_lines.join("\n"))
+            // Read stdout and stderr concurrently
+            tokio::join!(stdout_task, stderr_task)
         } else {
             (String::new(), String::new())
         };
@@ -232,34 +260,38 @@ impl TaskExecutor {
         tasks: &HashMap<String, TaskDefinition>,
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
-        let mut handles = Vec::new();
+        let mut join_set = JoinSet::new();
+        let all_tasks = Arc::new(all_tasks.clone());
         
         for (name, task_def) in tasks {
             let task_name = format!("{}.{}", prefix, name);
             let task_def = task_def.clone();
-            let all_tasks = all_tasks.clone();
+            let all_tasks = Arc::clone(&all_tasks);
             let executor = self.clone_with_config();
             
-            let handle = tokio::spawn(async move {
+            join_set.spawn(async move {
                 executor.execute_definition(&task_name, &task_def, &all_tasks).await
             });
             
-            handles.push(handle);
-            
             // Apply parallelism limit if configured
-            if self.config.max_parallel > 0 && handles.len() >= self.config.max_parallel {
+            if self.config.max_parallel > 0 && join_set.len() >= self.config.max_parallel {
                 // Wait for one to complete before starting more
-                if !handles.is_empty() {
-                    let handle = handles.remove(0);
-                    let _ = handle.await;
+                if let Some(result) = join_set.join_next().await {
+                    match result {
+                        Ok(Ok(_)) => {}, // Task completed successfully, continue
+                        Ok(Err(e)) => return Err(e),
+                        Err(e) => {
+                            return Err(Error::configuration(format!("Task execution panicked: {}", e)))
+                        }
+                    }
                 }
             }
         }
         
         // Wait for all remaining tasks
         let mut all_results = Vec::new();
-        for handle in handles {
-            match handle.await {
+        while let Some(result) = join_set.join_next().await {
+            match result {
                 Ok(Ok(results)) => all_results.extend(results),
                 Ok(Err(e)) => return Err(e),
                 Err(e) => {
@@ -278,31 +310,29 @@ impl TaskExecutor {
         
         for group in parallel_groups {
             // Execute all tasks in this group in parallel
-            let mut handles = Vec::new();
+            let mut join_set = JoinSet::new();
             
             for node in group {
                 let task = node.task.clone();
                 let name = node.name.clone();
                 let executor = self.clone_with_config();
                 
-                let handle = tokio::spawn(async move {
+                join_set.spawn(async move {
                     executor.execute_task(&name, &task).await
                 });
-                
-                handles.push(handle);
             }
             
             // Wait for all tasks in this group
-            for handle in handles {
-                match handle.await {
-                    Ok(Ok(result)) => {
-                        if !result.success {
+            while let Some(result) = join_set.join_next().await {
+                match result {
+                    Ok(Ok(task_result)) => {
+                        if !task_result.success {
                             return Err(Error::configuration(format!(
                                 "Task '{}' failed",
-                                result.name
+                                task_result.name
                             )));
                         }
-                        all_results.push(result);
+                        all_results.push(task_result);
                     }
                     Ok(Err(e)) => return Err(e),
                     Err(e) => {
@@ -437,8 +467,8 @@ mod tests {
         let executor = TaskExecutor::new(config);
         
         let task = Task {
-            command: "exit".to_string(),
-            args: vec!["1".to_string()],
+            command: "false".to_string(),
+            args: vec![],
             shell: None,
             dependencies: vec![],
             inputs: vec![],

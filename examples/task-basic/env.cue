@@ -11,13 +11,11 @@ env: {
 tasks: {
 	// Simple Task
 	interpolate: {
-		shell:   "bash"
 		command: "echo"
 		args: ["Hello ", env.NAME, "!"]
 	}
 
 	propagate: {
-		shell:   "bash"
 		command: "printenv"
 		// Good test-case to ensure env above is available at execution.
 		args: ["NAME"]
@@ -26,12 +24,10 @@ tasks: {
 	// Task List
 	greetAll: [
 		{
-			shell:   "bash"
 			command: "echo"
 			args: ["Hello 1 ", env.NAME, "!"]
 		},
 		{
-			shell:   "bash"
 			command: "echo"
 			args: ["Hello 2 ", env.NAME, "!"]
 		},
@@ -39,14 +35,19 @@ tasks: {
 
 	// Nested Tasks
 	greetIndividual: {jack: {
-		shell:   "bash"
 		command: "echo"
 		args: ["Hello Jack"]
 	}
 		tealc: {
-			shell:   "bash"
 			command: "echo"
 			args: ["Hello Teal'c"]
 		}
+	}
+
+	// Shell Task
+	shellExample: {
+		shell: schema.#Bash
+		command: "echo"
+		args: ["Hello from Bash"]
 	}
 }

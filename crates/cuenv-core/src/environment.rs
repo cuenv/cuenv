@@ -130,7 +130,14 @@ impl CueEvaluation {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Number(n) => n.to_string(),
                     serde_json::Value::Bool(b) => b.to_string(),
-                    _ => continue, // Skip complex values
+                    serde_json::Value::Null => continue, // Skip null values
+                    serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+                        // Serialize complex values to JSON strings
+                        match serde_json::to_string(value) {
+                            Ok(json_str) => json_str,
+                            Err(_) => continue, // Skip if serialization fails
+                        }
+                    }
                 };
                 
                 env.set(key.clone(), str_value);

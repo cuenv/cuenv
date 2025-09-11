@@ -2,6 +2,7 @@
 
 use cuenv_core::environment::CueEvaluation;
 use cuenv_core::task_executor::{ExecutorConfig, TaskExecutor};
+use cuenv_core::task_graph::TaskGraph;
 use cuenv_core::Result;
 use cuengine::CueEvaluator;
 use std::fmt::Write;
@@ -24,13 +25,21 @@ pub async fn execute_task(
     // Evaluate CUE to get tasks and environment
     let evaluator = CueEvaluator::builder().build()?;
     let json = evaluator.evaluate(Path::new(path), package)?;
+    tracing::debug!("CUE evaluation result: {}", json);
+    
     let evaluation = CueEvaluation::from_json(&json).map_err(|e| {
+        tracing::error!("Failed to parse CUE evaluation JSON: {}", e);
         cuenv_core::Error::configuration(format!("Failed to parse CUE evaluation: {e}"))
     })?;
     
+    tracing::debug!("Successfully parsed CUE evaluation, found {} tasks", evaluation.tasks.tasks.len());
+    
     // If no task specified, list available tasks
     if task_name.is_none() {
+        tracing::debug!("Listing available tasks");
         let tasks = evaluation.tasks.list_tasks();
+        tracing::debug!("Found {} tasks to list: {:?}", tasks.len(), tasks);
+        
         if tasks.is_empty() {
             return Ok("No tasks defined in the configuration".to_string());
         }
@@ -43,11 +52,15 @@ pub async fn execute_task(
     }
     
     let task_name = task_name.unwrap();
+    tracing::debug!("Looking for specific task: {}", task_name);
     
     // Check if task exists
     let task_def = evaluation.tasks.get(task_name).ok_or_else(|| {
+        tracing::error!("Task '{}' not found in available tasks: {:?}", task_name, evaluation.tasks.list_tasks());
         cuenv_core::Error::configuration(format!("Task '{task_name}' not found"))
     })?;
+    
+    tracing::debug!("Found task definition: {:?}", task_def);
     
     // Create executor with environment
     let config = ExecutorConfig {
@@ -58,10 +71,43 @@ pub async fn execute_task(
     
     let executor = TaskExecutor::new(config);
     
-    // Execute the task
-    let results = executor
-        .execute_definition(task_name, task_def, &evaluation.tasks)
-        .await?;
+    // Build task graph for dependency-aware execution
+    tracing::debug!("Building task graph for task: {}", task_name);
+    let mut task_graph = TaskGraph::new();
+    task_graph.build_for_task(task_name, &evaluation.tasks).map_err(|e| {
+        tracing::error!("Failed to build task graph: {}", e);
+        e
+    })?;
+    tracing::debug!("Successfully built task graph with {} tasks", task_graph.task_count());
+    
+    // Execute using the appropriate method
+    let results = match task_def {
+        cuenv_core::task::TaskDefinition::Group(_) => {
+            // For groups (sequential/parallel), use the original group execution
+            // which properly handles sequential ordering and parallel execution
+            executor.execute_definition(task_name, task_def, &evaluation.tasks).await?
+        }
+        cuenv_core::task::TaskDefinition::Single(task) => {
+            if task.dependencies.is_empty() {
+                // Single task with no dependencies - use direct execution
+                executor.execute_definition(task_name, task_def, &evaluation.tasks).await?
+            } else {
+                // Single task with dependencies - use graph execution
+                executor.execute_graph(&task_graph).await?
+            }
+        }
+    };
+    
+    // Check for any failed tasks first
+    for result in &results {
+        if !result.success {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Task '{}' failed with exit code {:?}",
+                result.name,
+                result.exit_code
+            )));
+        }
+    }
     
     // Format results
     let mut output = String::new();

@@ -4,7 +4,8 @@
       "Bash(gh:*)",
       "Bash(git:*)",
       "Bash(devenv shell:*)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "Bash(cargo run:*)"
     ],
     "deny": [],
     "ask": []

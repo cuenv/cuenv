@@ -5,13 +5,8 @@
 //! This binary provides command-line interface for CUE package evaluation,
 //! environment variable management, and task orchestration.
 
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::unused_self)]
-#![allow(clippy::unnecessary_wraps)]
-#![allow(clippy::used_underscore_items)]
-#![allow(clippy::match_same_arms)]
-#![allow(clippy::assigning_clones)]
+// Individual clippy allows for specific justified cases can be added locally
+// where needed, rather than broad suppression
 
 mod cli;
 mod commands;
@@ -83,30 +78,22 @@ async fn real_main() -> Result<(), CliError> {
 /// Parse CLI with proper tracing initialization
 #[instrument(name = "cuenv_parse_with_tracing")]
 async fn parse_with_tracing() -> Result<crate::cli::Cli, CliError> {
-    // Parse args early to get tracing options
-    let cli_args = std::env::args().collect::<Vec<_>>();
-    let json_flag = cli_args.iter().any(|arg| arg == "--json");
-    let level_flag = cli_args.windows(2).find_map(|args| {
-        if args[0] == "--level" || args[0] == "-l" {
-            Some(args[1].as_str())
-        } else {
-            None
-        }
-    });
-
-    let trace_format = if json_flag {
+    // Parse CLI arguments once
+    let cli = parse();
+    
+    // Derive tracing configuration from parsed CLI
+    let trace_format = if cli.json {
         TracingFormat::Json
     } else {
         TracingFormat::Dev
     };
 
-    let log_level = match level_flag {
-        Some("trace") => Level::TRACE,
-        Some("debug") => Level::DEBUG,
-        Some("info") => Level::INFO,
-        Some("warn") => Level::WARN,
-        Some("error") => Level::ERROR,
-        _ => Level::WARN, // Default
+    let log_level = match cli.level {
+        crate::tracing::LogLevel::Trace => Level::TRACE,
+        crate::tracing::LogLevel::Debug => Level::DEBUG,
+        crate::tracing::LogLevel::Info => Level::INFO,
+        crate::tracing::LogLevel::Warn => Level::WARN,
+        crate::tracing::LogLevel::Error => Level::ERROR,
     };
 
     // Initialize enhanced tracing
@@ -125,8 +112,7 @@ async fn parse_with_tracing() -> Result<crate::cli::Cli, CliError> {
         }
     }
 
-    // Parse CLI arguments
-    Ok(parse())
+    Ok(cli)
 }
 
 /// Execute command safely without ? operator

@@ -71,7 +71,7 @@ env: {
     }
     
     #[tokio::test]
-    async fn test_execute_shell_command() {
+    async fn test_execute_shell_via_exec() {
         let temp_dir = TempDir::new().unwrap();
         let cue_content = r#"package test
 env: {
@@ -79,12 +79,12 @@ env: {
 }"#;
         fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
         
-        // Test depends on FFI availability
-        let result = execute_shell(
+        // Test shell execution via execute_exec with shell command
+        let result = execute_exec(
             temp_dir.path().to_str().unwrap(),
             "test",
-            "bash",
-            "echo Hello",
+            "sh",
+            &["-c".to_string(), "echo Hello".to_string()],
         )
         .await;
         

@@ -9,9 +9,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Shell {
     /// Shell executable name (e.g., "bash", "fish", "zsh")
-    pub command: String,
+    pub command: Option<String>,
     /// Flag for command execution (e.g., "-c", "--command")
-    pub flag: String,
+    pub flag: Option<String>,
 }
 
 /// A single executable task
@@ -41,13 +41,22 @@ pub struct Task {
     pub outputs: Vec<String>,
     
     /// Description of the task
-    #[serde(default = "default_description")]
+    #[serde(default = "default_description", deserialize_with = "deserialize_null_default")]
     pub description: String,
 }
 
 
 fn default_description() -> String {
     "No description provided".to_string()
+}
+
+/// Custom deserializer that handles null values by using the default
+fn deserialize_null_default<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.unwrap_or_else(default_description))
 }
 
 /// Represents a group of tasks with execution mode
