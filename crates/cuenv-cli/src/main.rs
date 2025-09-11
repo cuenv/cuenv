@@ -145,6 +145,23 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
+        Command::Task {
+            path,
+            package,
+            name,
+        } => match execute_task_command_safe(path, package, name).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::Exec {
+            path,
+            package,
+            command,
+            args,
+        } => match execute_exec_command_safe(path, package, command, args).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
     }
 }
 
@@ -192,6 +209,65 @@ async fn execute_env_print_command_safe(
             Err(CliError::eval_with_help(
                 format!("Failed to print environment variables: {e:?}"),
                 "Check your CUE files and package configuration",
+            ))
+        }
+    }
+}
+
+/// Execute task command safely
+#[instrument(name = "cuenv_execute_task_safe")]
+async fn execute_task_command_safe(
+    path: String,
+    package: String,
+    name: Option<String>,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("task_command");
+    perf_guard.add_metadata("command_type", "task");
+    
+    match commands::task::execute_task(&path, &package, name.as_deref(), false).await {
+        Ok(output) => {
+            println!("{}", output);
+            perf_guard.finish(true);
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval_with_help(
+                format!("Task execution failed: {}", e),
+                "Check your CUE configuration and task definitions",
+            ))
+        }
+    }
+}
+
+/// Execute exec command safely
+#[instrument(name = "cuenv_execute_exec_safe")]
+async fn execute_exec_command_safe(
+    path: String,
+    package: String,
+    command: String,
+    args: Vec<String>,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("exec_command");
+    perf_guard.add_metadata("command_type", "exec");
+    
+    match commands::exec::execute_exec(&path, &package, &command, &args).await {
+        Ok(exit_code) => {
+            perf_guard.finish(exit_code == 0);
+            if exit_code == 0 {
+                Ok(())
+            } else {
+                Err(CliError::other(format!(
+                    "Command exited with non-zero code: {}",
+                    exit_code
+                )))
+            }
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval_with_help(
+                format!("Command execution failed: {}", e),
+                "Check your CUE configuration and command",
             ))
         }
     }

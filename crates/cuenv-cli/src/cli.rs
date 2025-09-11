@@ -225,6 +225,44 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: EnvCommands,
     },
+    #[command(about = "Execute a task defined in CUE configuration", visible_alias = "t")]
+    Task {
+        #[arg(help = "Name of the task to execute (list tasks if not provided)")]
+        name: Option<String>,
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+    #[command(about = "Execute a command with CUE environment variables", visible_alias = "e")]
+    Exec {
+        #[arg(help = "Command to execute")]
+        command: String,
+        #[arg(help = "Arguments for the command", trailing_var_arg = true)]
+        args: Vec<String>,
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -267,6 +305,17 @@ impl From<Commands> for Command {
                     package,
                     format: output_format,
                 },
+            },
+            Commands::Task { name, path, package } => Command::Task {
+                path,
+                package,
+                name,
+            },
+            Commands::Exec { command, args, path, package } => Command::Exec {
+                path,
+                package,
+                command,
+                args,
             },
         }
     }

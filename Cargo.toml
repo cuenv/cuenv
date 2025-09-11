@@ -34,6 +34,7 @@ crossterm = "0.28"
 miette = { version = "7.0", features = ["fancy"] }
 uuid = { version = "1.18", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+petgraph = "0.8.2"
 
 # Testing dependencies
 proptest = "1.0"
