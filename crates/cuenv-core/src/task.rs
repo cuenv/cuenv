@@ -5,12 +5,21 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Shell configuration for task execution
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Shell {
+    /// Shell executable name (e.g., "bash", "fish", "zsh")
+    pub command: String,
+    /// Flag for command execution (e.g., "-c", "--command")
+    pub flag: String,
+}
+
 /// A single executable task
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Task {
-    /// Shell to use for execution (default: "bash")
-    #[serde(default = "default_shell")]
-    pub shell: String,
+    /// Shell configuration for command execution (optional)
+    #[serde(default)]
+    pub shell: Option<Shell>,
     
     /// Command to execute
     pub command: String,
@@ -36,9 +45,6 @@ pub struct Task {
     pub description: String,
 }
 
-fn default_shell() -> String {
-    "bash".to_string()
-}
 
 fn default_description() -> String {
     "No description provided".to_string()
@@ -157,7 +163,7 @@ mod tests {
     fn test_task_default_values() {
         let task = Task {
             command: "echo".to_string(),
-            shell: default_shell(),
+            shell: None,
             args: vec![],
             dependencies: vec![],
             inputs: vec![],
@@ -165,7 +171,7 @@ mod tests {
             description: default_description(),
         };
         
-        assert_eq!(task.shell, "bash");
+        assert!(task.shell.is_none());
         assert_eq!(task.command, "echo");
         assert_eq!(task.description, "No description provided");
         assert!(task.args.is_empty());
@@ -181,7 +187,7 @@ mod tests {
         let task: Task = serde_json::from_str(json).unwrap();
         assert_eq!(task.command, "echo");
         assert_eq!(task.args, vec!["Hello", "World"]);
-        assert_eq!(task.shell, "bash"); // default value
+        assert!(task.shell.is_none()); // default value
     }
     
     #[test]
@@ -189,7 +195,7 @@ mod tests {
         let task1 = Task {
             command: "echo".to_string(),
             args: vec!["first".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -199,7 +205,7 @@ mod tests {
         let task2 = Task {
             command: "echo".to_string(),
             args: vec!["second".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -221,7 +227,7 @@ mod tests {
         let task1 = Task {
             command: "echo".to_string(),
             args: vec!["task1".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -231,7 +237,7 @@ mod tests {
         let task2 = Task {
             command: "echo".to_string(),
             args: vec!["task2".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -257,7 +263,7 @@ mod tests {
         let task = Task {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -278,7 +284,7 @@ mod tests {
     fn test_task_definition_helpers() {
         let task = Task {
             command: "test".to_string(),
-            shell: "bash".to_string(),
+            shell: None,
             args: vec![],
             dependencies: vec![],
             inputs: vec![],

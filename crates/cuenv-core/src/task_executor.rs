@@ -9,6 +9,7 @@ use crate::environment::Environment;
 use crate::task::{Task, TaskDefinition, TaskGroup, Tasks};
 use crate::task_graph::TaskGraph;
 use crate::{Error, Result};
+use async_recursion::async_recursion;
 use std::collections::HashMap;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -65,23 +66,27 @@ impl TaskExecutor {
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
         tracing::info!("Executing task: {}", name);
         
-        // Build the command
-        let mut cmd = Command::new(&task.shell);
-        cmd.arg("-c");
-        
-        // Build the full command string
-        let mut full_command = task.command.clone();
-        for arg in &task.args {
-            full_command.push(' ');
-            // Simple shell escaping - in production would need more robust handling
-            if arg.contains(' ') || arg.contains('"') || arg.contains('\'') {
-                full_command.push_str(&format!("'{}'", arg.replace('\'', "'\\''")));
-            } else {
-                full_command.push_str(arg);
+        // Build the command based on shell configuration
+        let mut cmd = if let Some(shell) = &task.shell {
+            // Execute via specified shell
+            let mut cmd = Command::new(&shell.command);
+            cmd.arg(&shell.flag);
+            cmd.arg(&task.command);
+            cmd
+        } else if !task.args.is_empty() {
+            // Direct execution with args (secure)
+            let mut cmd = Command::new(&task.command);
+            for arg in &task.args {
+                cmd.arg(arg);
             }
-        }
-        
-        cmd.arg(full_command);
+            cmd
+        } else {
+            // Error: need either shell or args
+            return Err(Error::configuration(format!(
+                "Task '{}' requires either 'shell' configuration or 'args' array for secure execution", 
+                name
+            )));
+        };
         
         // Set environment variables
         let env_vars = self.config.environment.merge_with_system();
@@ -156,23 +161,22 @@ impl TaskExecutor {
     }
     
     /// Execute a task definition (single task or group)
-    pub fn execute_definition<'a>(
-        &'a self,
-        name: &'a str,
-        definition: &'a TaskDefinition,
-        all_tasks: &'a Tasks,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<TaskResult>>> + Send + 'a>> {
-        Box::pin(async move {
-            match definition {
-                TaskDefinition::Single(task) => {
-                    let result = self.execute_task(name, task).await?;
-                    Ok(vec![result])
-                }
-                TaskDefinition::Group(group) => {
-                    self.execute_group(name, group, all_tasks).await
-                }
+    #[async_recursion]
+    pub async fn execute_definition(
+        &self,
+        name: &str,
+        definition: &TaskDefinition,
+        all_tasks: &Tasks,
+    ) -> Result<Vec<TaskResult>> {
+        match definition {
+            TaskDefinition::Single(task) => {
+                let result = self.execute_task(name, task).await?;
+                Ok(vec![result])
             }
-        })
+            TaskDefinition::Group(group) => {
+                self.execute_group(name, group, all_tasks).await
+            }
+        }
     }
     
     /// Execute a task group
@@ -387,7 +391,7 @@ mod tests {
         let task = Task {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -412,7 +416,7 @@ mod tests {
         let task = Task {
             command: "printenv".to_string(),
             args: vec!["TEST_VAR".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -435,7 +439,7 @@ mod tests {
         let task = Task {
             command: "exit".to_string(),
             args: vec!["1".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -458,7 +462,7 @@ mod tests {
         let task1 = Task {
             command: "echo".to_string(),
             args: vec!["first".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -468,7 +472,7 @@ mod tests {
         let task2 = Task {
             command: "echo".to_string(),
             args: vec!["second".to_string()],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -486,5 +490,95 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results[0].stdout.contains("first"));
         assert!(results[1].stdout.contains("second"));
+    }
+
+    #[tokio::test]
+    async fn test_command_injection_prevention() {
+        let mut config = ExecutorConfig::default();
+        config.capture_output = true;
+        
+        let executor = TaskExecutor::new(config);
+        
+        // Test that malicious shell metacharacters in arguments don't get executed
+        let malicious_task = Task {
+            command: "echo".to_string(),
+            args: vec!["hello".to_string(), "; rm -rf /".to_string()],
+            shell: None,
+            dependencies: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: String::new(),
+        };
+        
+        let result = executor.execute_task("malicious", &malicious_task).await.unwrap();
+        
+        // The malicious command should be treated as literal argument to echo
+        assert!(result.success);
+        assert!(result.stdout.contains("hello ; rm -rf /"));
+    }
+
+    #[tokio::test]
+    async fn test_special_characters_in_args() {
+        let mut config = ExecutorConfig::default();
+        config.capture_output = true;
+        
+        let executor = TaskExecutor::new(config);
+        
+        // Test various special characters that could be used for injection
+        let special_chars = vec![
+            "$USER",           // Variable expansion
+            "$(whoami)",       // Command substitution
+            "`whoami`",        // Backtick command substitution
+            "&& echo hacked",  // Command chaining
+            "|| echo failed",  // Error chaining
+            "> /tmp/hack",     // Redirection
+            "| cat",           // Piping
+        ];
+        
+        for special_arg in special_chars {
+            let task = Task {
+                command: "echo".to_string(),
+                args: vec!["safe".to_string(), special_arg.to_string()],
+                shell: None,
+                dependencies: vec![],
+                inputs: vec![],
+                outputs: vec![],
+                description: String::new(),
+            };
+            
+            let result = executor.execute_task("special", &task).await.unwrap();
+            
+            // Special characters should be treated literally, not interpreted
+            assert!(result.success);
+            assert!(result.stdout.contains("safe"));
+            assert!(result.stdout.contains(&special_arg));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_environment_variable_safety() {
+        let mut config = ExecutorConfig::default();
+        config.capture_output = true;
+        
+        // Set environment variable with potentially dangerous value
+        config.environment.set("DANGEROUS_VAR".to_string(), "; rm -rf /".to_string());
+        
+        let executor = TaskExecutor::new(config);
+        
+        let task = Task {
+            command: "printenv".to_string(),
+            args: vec!["DANGEROUS_VAR".to_string()],
+            shell: None,
+            dependencies: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: String::new(),
+        };
+        
+        let result = executor.execute_task("env_test", &task).await.unwrap();
+        
+        // Environment variable should be passed safely
+        assert!(result.success);
+        assert!(result.stdout.contains("; rm -rf /"));
     }
 }

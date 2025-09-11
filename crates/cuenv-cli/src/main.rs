@@ -226,14 +226,14 @@ async fn execute_task_command_safe(
     
     match commands::task::execute_task(&path, &package, name.as_deref(), false).await {
         Ok(output) => {
-            println!("{}", output);
+            println!("{output}");
             perf_guard.finish(true);
             Ok(())
         }
         Err(e) => {
             perf_guard.finish(false);
             Err(CliError::eval_with_help(
-                format!("Task execution failed: {}", e),
+                format!("Task execution failed: {e}"),
                 "Check your CUE configuration and task definitions",
             ))
         }
@@ -258,15 +258,14 @@ async fn execute_exec_command_safe(
                 Ok(())
             } else {
                 Err(CliError::other(format!(
-                    "Command exited with non-zero code: {}",
-                    exit_code
+                    "Command exited with non-zero code: {exit_code}"
                 )))
             }
         }
         Err(e) => {
             perf_guard.finish(false);
             Err(CliError::eval_with_help(
-                format!("Command execution failed: {}", e),
+                format!("Command execution failed: {e}"),
                 "Check your CUE configuration and command",
             ))
         }

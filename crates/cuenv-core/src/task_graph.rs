@@ -85,11 +85,10 @@ impl TaskGraph {
             let task_nodes = self.build_from_definition(&task_name, task_def, all_tasks)?;
             
             // For sequential execution, link previous task to current
-            if let Some(prev) = previous {
-                if let Some(first) = task_nodes.first() {
+            if let Some(prev) = previous
+                && let Some(first) = task_nodes.first() {
                     self.graph.add_edge(prev, *first, ());
                 }
-            }
             
             if let Some(last) = task_nodes.last() {
                 previous = Some(*last);
@@ -227,7 +226,7 @@ mod tests {
         Task {
             command: format!("echo {}", name),
             args: vec![],
-            shell: "bash".to_string(),
+            shell: None,
             dependencies: deps,
             inputs: vec![],
             outputs: vec![],
@@ -388,5 +387,134 @@ mod tests {
         let groups = graph.get_parallel_groups().unwrap();
         assert_eq!(groups.len(), 1); // All in same level
         assert_eq!(groups[0].len(), 2); // Both can run in parallel
+    }
+
+    #[test]
+    fn test_three_way_cycle_detection() {
+        let mut graph = TaskGraph::new();
+        
+        // Create cyclic dependencies: A -> B -> C -> A
+        let task_a = create_test_task("task_a", vec!["task_c".to_string()]);
+        let task_b = create_test_task("task_b", vec!["task_a".to_string()]);
+        let task_c = create_test_task("task_c", vec!["task_b".to_string()]);
+        
+        graph.add_task("task_a", task_a).unwrap();
+        graph.add_task("task_b", task_b).unwrap();
+        graph.add_task("task_c", task_c).unwrap();
+        
+        // This should create a cycle
+        assert!(graph.has_cycles());
+        
+        // Should fail when trying to get parallel groups
+        assert!(graph.get_parallel_groups().is_err());
+    }
+
+    #[test]
+    fn test_self_dependency_cycle() {
+        let mut graph = TaskGraph::new();
+        
+        // Create self-referencing task
+        let task = create_test_task("self_ref", vec!["self_ref".to_string()]);
+        graph.add_task("self_ref", task).unwrap();
+        
+        assert!(graph.has_cycles());
+        assert!(graph.get_parallel_groups().is_err());
+    }
+
+    #[test]
+    fn test_complex_dependency_graph() {
+        let mut graph = TaskGraph::new();
+        
+        // Create a diamond dependency pattern:
+        //     A
+        //    / \
+        //   B   C
+        //    \ /
+        //     D
+        let task_a = create_test_task("a", vec![]);
+        let task_b = create_test_task("b", vec!["a".to_string()]);
+        let task_c = create_test_task("c", vec!["a".to_string()]);
+        let task_d = create_test_task("d", vec!["b".to_string(), "c".to_string()]);
+        
+        graph.add_task("a", task_a).unwrap();
+        graph.add_task("b", task_b).unwrap();
+        graph.add_task("c", task_c).unwrap();
+        graph.add_task("d", task_d).unwrap();
+        
+        assert!(!graph.has_cycles());
+        assert_eq!(graph.task_count(), 4);
+        
+        let groups = graph.get_parallel_groups().unwrap();
+        
+        // Should have 3 levels: [A], [B,C], [D]
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].len(), 1); // A
+        assert_eq!(groups[1].len(), 2); // B and C can run in parallel
+        assert_eq!(groups[2].len(), 1); // D
+    }
+
+    #[test]
+    fn test_missing_dependency() {
+        let mut graph = TaskGraph::new();
+        
+        // Create task with dependency that doesn't exist
+        let task = create_test_task("dependent", vec!["missing".to_string()]);
+        graph.add_task("dependent", task).unwrap();
+        
+        // Should fail to get parallel groups due to missing dependency
+        assert!(graph.get_parallel_groups().is_err());
+    }
+
+    #[test]
+    fn test_empty_graph() {
+        let graph = TaskGraph::new();
+        
+        assert_eq!(graph.task_count(), 0);
+        assert!(!graph.has_cycles());
+        
+        let groups = graph.get_parallel_groups().unwrap();
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_single_task_no_deps() {
+        let mut graph = TaskGraph::new();
+        
+        let task = create_test_task("solo", vec![]);
+        graph.add_task("solo", task).unwrap();
+        
+        assert_eq!(graph.task_count(), 1);
+        assert!(!graph.has_cycles());
+        
+        let groups = graph.get_parallel_groups().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].len(), 1);
+    }
+
+    #[test]
+    fn test_linear_chain() {
+        let mut graph = TaskGraph::new();
+        
+        // Create linear chain: A -> B -> C -> D
+        let task_a = create_test_task("a", vec![]);
+        let task_b = create_test_task("b", vec!["a".to_string()]);
+        let task_c = create_test_task("c", vec!["b".to_string()]);
+        let task_d = create_test_task("d", vec!["c".to_string()]);
+        
+        graph.add_task("a", task_a).unwrap();
+        graph.add_task("b", task_b).unwrap();
+        graph.add_task("c", task_c).unwrap();
+        graph.add_task("d", task_d).unwrap();
+        
+        assert!(!graph.has_cycles());
+        assert_eq!(graph.task_count(), 4);
+        
+        let groups = graph.get_parallel_groups().unwrap();
+        
+        // Should be 4 sequential groups
+        assert_eq!(groups.len(), 4);
+        for group in &groups {
+            assert_eq!(group.len(), 1);
+        }
     }
 }

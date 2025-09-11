@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 
+/// Reserved field name that should be skipped during environment variable extraction
+/// This field may contain metadata rather than environment variables
+const RESERVED_ENV_FIELD: &str = "environment";
+
 /// Environment variables from CUE configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Environment {
@@ -116,8 +120,8 @@ impl CueEvaluation {
         // The env object contains environment variables as direct properties
         if let serde_json::Value::Object(map) = &self.env {
             for (key, value) in map {
-                // Skip special fields like "environment"
-                if key == "environment" {
+                // Skip reserved fields that contain metadata
+                if key == RESERVED_ENV_FIELD {
                     continue;
                 }
                 

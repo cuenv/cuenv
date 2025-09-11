@@ -25,7 +25,7 @@ pub async fn execute_exec(
     let evaluator = CueEvaluator::builder().build()?;
     let json = evaluator.evaluate(Path::new(path), package)?;
     let evaluation = CueEvaluation::from_json(&json).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to parse CUE evaluation: {}", e))
+        cuenv_core::Error::configuration(format!("Failed to parse CUE evaluation: {e}"))
     })?;
     
     // Execute the command with the environment
@@ -35,35 +35,6 @@ pub async fn execute_exec(
     Ok(exit_code)
 }
 
-/// Execute a shell command with the CUE environment
-pub async fn execute_shell(
-    path: &str,
-    package: &str,
-    shell: &str,
-    command: &str,
-) -> Result<i32> {
-    tracing::info!(
-        "Executing shell command with CUE environment from path: {}, package: {}, shell: {}, command: {}",
-        path,
-        package,
-        shell,
-        command
-    );
-    
-    // Evaluate CUE to get environment
-    let evaluator = CueEvaluator::builder().build()?;
-    let json = evaluator.evaluate(Path::new(path), package)?;
-    let evaluation = CueEvaluation::from_json(&json).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to parse CUE evaluation: {}", e))
-    })?;
-    
-    // Execute shell command
-    let args = vec!["-c".to_string(), command.to_string()];
-    let environment = evaluation.get_environment();
-    let exit_code = execute_command(shell, &args, &environment).await?;
-    
-    Ok(exit_code)
-}
 
 #[cfg(test)]
 mod tests {

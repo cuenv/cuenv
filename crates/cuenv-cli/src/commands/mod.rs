@@ -178,14 +178,13 @@ impl CommandExecutor {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
                     success,
-                    output: format!("Command exited with code {}", exit_code),
+                    output: format!("Command exited with code {exit_code}"),
                 });
                 if success {
                     Ok(())
                 } else {
                     Err(cuenv_core::Error::configuration(format!(
-                        "Command failed with exit code {}",
-                        exit_code
+                        "Command failed with exit code {exit_code}"
                     )))
                 }
             }
