@@ -71,8 +71,10 @@ impl TaskExecutor {
         // Build the command based on shell and args configuration
         let mut cmd = if let Some(shell) = &task.shell {
             // Check if shell is properly configured
-            if let (Some(shell_command), Some(shell_flag)) = (&shell.command, &shell.flag) {
+            if shell.command.is_some() && shell.flag.is_some() {
                 // Execute via specified shell
+                let shell_command = shell.command.as_ref().unwrap();
+                let shell_flag = shell.flag.as_ref().unwrap();
                 let mut cmd = Command::new(shell_command);
                 cmd.arg(shell_flag);
 
@@ -312,20 +314,35 @@ impl TaskExecutor {
         let parallel_groups = graph.get_parallel_groups()?;
         let mut all_results = Vec::new();
 
-        for group in parallel_groups {
-            // Execute all tasks in this group in parallel
-            let mut join_set = JoinSet::new();
+        // Use a single JoinSet for all groups to enforce global parallelism limit
+        let mut join_set = JoinSet::new();
+        let mut group_iter = parallel_groups.into_iter();
+        let mut current_group = group_iter.next();
 
-            for node in group {
-                let task = node.task.clone();
-                let name = node.name.clone();
-                let executor = self.clone_with_config();
+        while current_group.is_some() || !join_set.is_empty() {
+            // Start tasks from current group up to parallelism limit
+            if let Some(group) = current_group.as_mut() {
+                while let Some(node) = group.pop() {
+                    let task = node.task.clone();
+                    let name = node.name.clone();
+                    let executor = self.clone_with_config();
 
-                join_set.spawn(async move { executor.execute_task(&name, &task).await });
+                    join_set.spawn(async move { executor.execute_task(&name, &task).await });
+
+                    // Apply parallelism limit if configured
+                    if self.config.max_parallel > 0 && join_set.len() >= self.config.max_parallel {
+                        break;
+                    }
+                }
+
+                // Move to next group if current group is empty
+                if group.is_empty() {
+                    current_group = group_iter.next();
+                }
             }
 
-            // Wait for all tasks in this group
-            while let Some(result) = join_set.join_next().await {
+            // Wait for at least one task to complete
+            if let Some(result) = join_set.join_next().await {
                 match result {
                     Ok(Ok(task_result)) => {
                         if !task_result.success {

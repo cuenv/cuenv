@@ -160,6 +160,16 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
+impl AsRef<str> for OutputFormat {
+    fn as_ref(&self) -> &str {
+        match self {
+            OutputFormat::Json => "json",
+            OutputFormat::Env => "env",
+            OutputFormat::Simple => "simple",
+        }
+    }
+}
+
 /// Success response envelope for JSON output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OkEnvelope<T> {

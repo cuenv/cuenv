@@ -1,6 +1,12 @@
 package schema
 
-// Tasks can be a single task or a group of tasks
+// #Tasks can represent either a single task or a group of tasks.
+// Use a single #Task when you have an isolated command to run.
+// Use a #TaskGroup when you need to define multiple tasks that should be executed
+// either sequentially (as an array) or in parallel with dependencies (as an object).
+// Choose the structure based on your workflow requirements:
+//   - Single #Task: Simple, standalone execution.
+//   - #TaskGroup: Complex workflows involving multiple tasks and dependencies.
 #Tasks: #Task | #TaskGroup
 
 #Task: {

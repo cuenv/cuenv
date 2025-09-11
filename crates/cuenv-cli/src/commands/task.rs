@@ -93,26 +93,14 @@ pub async fn execute_task(
     );
 
     // Execute using the appropriate method
-    let results = match task_def {
-        cuenv_core::task::TaskDefinition::Group(_) => {
-            // For groups (sequential/parallel), use the original group execution
-            // which properly handles sequential ordering and parallel execution
-            executor
-                .execute_definition(task_name, task_def, &evaluation.tasks)
-                .await?
-        }
-        cuenv_core::task::TaskDefinition::Single(task) => {
-            if task.dependencies.is_empty() {
-                // Single task with no dependencies - use direct execution
-                executor
-                    .execute_definition(task_name, task_def, &evaluation.tasks)
-                    .await?
-            } else {
-                // Single task with dependencies - use graph execution
-                executor.execute_graph(&task_graph).await?
-            }
-        }
-    };
+    let results = execute_task_with_strategy(
+        &executor,
+        task_name,
+        task_def,
+        &task_graph,
+        &evaluation.tasks,
+    )
+    .await?;
 
     // Check for any failed tasks first
     for result in &results {
@@ -152,6 +140,36 @@ pub async fn execute_task(
     }
 
     Ok(output)
+}
+
+/// Execute a task using the appropriate strategy based on task type and dependencies
+async fn execute_task_with_strategy(
+    executor: &TaskExecutor,
+    task_name: &str,
+    task_def: &cuenv_core::task::TaskDefinition,
+    task_graph: &TaskGraph,
+    all_tasks: &cuenv_core::task::Tasks,
+) -> Result<Vec<cuenv_core::task_executor::TaskResult>> {
+    match task_def {
+        cuenv_core::task::TaskDefinition::Group(_) => {
+            // For groups (sequential/parallel), use the original group execution
+            // which properly handles sequential ordering and parallel execution
+            executor
+                .execute_definition(task_name, task_def, all_tasks)
+                .await
+        }
+        cuenv_core::task::TaskDefinition::Single(task) => {
+            if task.dependencies.is_empty() {
+                // Single task with no dependencies - use direct execution
+                executor
+                    .execute_definition(task_name, task_def, all_tasks)
+                    .await
+            } else {
+                // Single task with dependencies - use graph execution
+                executor.execute_graph(task_graph).await
+            }
+        }
+    }
 }
 
 #[cfg(test)]
