@@ -16,7 +16,7 @@ mod performance;
 mod tracing;
 mod tui;
 
-use crate::cli::{exit_code_for, parse, render_error, CliError, EXIT_OK};
+use crate::cli::{CliError, EXIT_OK, exit_code_for, parse, render_error};
 use crate::commands::Command;
 use crate::tracing::{Level, TracingConfig, TracingFormat};
 use tracing::instrument;
@@ -55,7 +55,7 @@ async fn run() -> i32 {
 #[instrument(name = "cuenv_real_main")]
 async fn real_main() -> Result<(), CliError> {
     // Parse CLI arguments
-    let cli = match parse_with_tracing().await {
+    let cli = match initialize_cli_and_tracing().await {
         Ok(cli) => cli,
         Err(e) => {
             return Err(CliError::config_with_help(
@@ -75,12 +75,12 @@ async fn real_main() -> Result<(), CliError> {
     }
 }
 
-/// Parse CLI with proper tracing initialization
-#[instrument(name = "cuenv_parse_with_tracing")]
-async fn parse_with_tracing() -> Result<crate::cli::Cli, CliError> {
+/// Initialize CLI parsing and tracing configuration
+#[instrument(name = "cuenv_initialize_cli_and_tracing")]
+async fn initialize_cli_and_tracing() -> Result<crate::cli::Cli, CliError> {
     // Parse CLI arguments once
     let cli = parse();
-    
+
     // Derive tracing configuration from parsed CLI
     let trace_format = if cli.json {
         TracingFormat::Json
@@ -209,7 +209,7 @@ async fn execute_task_command_safe(
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
-    
+
     match commands::task::execute_task(&path, &package, name.as_deref(), false).await {
         Ok(output) => {
             println!("{output}");
@@ -236,7 +236,7 @@ async fn execute_exec_command_safe(
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("exec_command");
     perf_guard.add_metadata("command_type", "exec");
-    
+
     match commands::exec::execute_exec(&path, &package, &command, &args).await {
         Ok(exit_code) => {
             perf_guard.finish(exit_code == 0);

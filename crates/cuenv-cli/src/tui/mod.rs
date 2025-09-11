@@ -1,21 +1,21 @@
 use crate::events::Event;
 use crossterm::style::Color as CrosstermColor;
 use crossterm::{
+    ExecutableCommand,
     cursor::{Hide, MoveTo, Show},
     style::{Print, ResetColor, SetForegroundColor},
-    ExecutableCommand,
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, Paragraph},
-    Terminal,
 };
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 #[allow(dead_code)]
 pub struct InlineTui {
@@ -220,7 +220,7 @@ impl TuiManager {
                 progress, message, ..
             } => {
                 self.state.progress = *progress;
-                self.state.message = message.clone();
+                self.state.message.clone_from(message);
             }
             Event::CommandComplete {
                 success, output, ..
@@ -233,10 +233,13 @@ impl TuiManager {
                     self.state.output.push(output.clone());
                 }
             }
+            #[allow(clippy::match_same_arms)]
             Event::TuiRefresh => {
                 // Force render
             }
-            _ => {}
+            _ => {
+                // Other events don't need specific handling
+            }
         }
 
         self.tui.render(&self.state)

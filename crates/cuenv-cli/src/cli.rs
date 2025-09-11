@@ -149,6 +149,17 @@ pub enum OutputFormat {
     Simple,
 }
 
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            OutputFormat::Json => "json",
+            OutputFormat::Env => "env",
+            OutputFormat::Simple => "simple",
+        };
+        write!(f, "{s}")
+    }
+}
+
 /// Success response envelope for JSON output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OkEnvelope<T> {
@@ -224,7 +235,10 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: EnvCommands,
     },
-    #[command(about = "Execute a task defined in CUE configuration", visible_alias = "t")]
+    #[command(
+        about = "Execute a task defined in CUE configuration",
+        visible_alias = "t"
+    )]
     Task {
         #[arg(help = "Name of the task to execute (list tasks if not provided)")]
         name: Option<String>,
@@ -242,7 +256,10 @@ pub enum Commands {
         )]
         package: String,
     },
-    #[command(about = "Execute a command with CUE environment variables", visible_alias = "e")]
+    #[command(
+        about = "Execute a command with CUE environment variables",
+        visible_alias = "e"
+    )]
     Exec {
         #[arg(help = "Command to execute")]
         command: String,
@@ -303,15 +320,24 @@ impl From<Commands> for Command {
                 } => Command::EnvPrint {
                     path,
                     package,
-                    format: format!("{output_format:?}").to_lowercase(),
+                    format: output_format.to_string(),
                 },
             },
-            Commands::Task { name, path, package } => Command::Task {
+            Commands::Task {
+                name,
+                path,
+                package,
+            } => Command::Task {
                 path,
                 package,
                 name,
             },
-            Commands::Exec { command, args, path, package } => Command::Exec {
+            Commands::Exec {
+                command,
+                args,
+                path,
+                package,
+            } => Command::Exec {
                 path,
                 package,
                 command,

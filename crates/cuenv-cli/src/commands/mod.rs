@@ -5,8 +5,8 @@ pub mod version;
 
 use crate::events::{Event, EventSender};
 use cuenv_core::Result;
-use tokio::time::{sleep, Duration};
-use tracing::{event, Level};
+use tokio::time::{Duration, sleep};
+use tracing::{Level, event};
 
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -72,6 +72,7 @@ impl CommandExecutor {
 
         // Simulate some work with progress updates
         for i in 0..=5 {
+            #[allow(clippy::cast_precision_loss)] // Progress calculation for demo purposes
             let progress = i as f32 / 5.0;
             let message = match i {
                 0 => "Initializing...".to_string(),
@@ -136,13 +137,18 @@ impl CommandExecutor {
         }
     }
 
-    async fn execute_task(&self, path: String, package: String, name: Option<String>) -> Result<()> {
+    async fn execute_task(
+        &self,
+        path: String,
+        package: String,
+        name: Option<String>,
+    ) -> Result<()> {
         let command_name = "task";
-        
+
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
         });
-        
+
         // Execute the task command
         match task::execute_task(&path, &package, name.as_deref(), false).await {
             Ok(output) => {
@@ -163,14 +169,20 @@ impl CommandExecutor {
             }
         }
     }
-    
-    async fn execute_exec(&self, path: String, package: String, command: String, args: Vec<String>) -> Result<()> {
+
+    async fn execute_exec(
+        &self,
+        path: String,
+        package: String,
+        command: String,
+        args: Vec<String>,
+    ) -> Result<()> {
         let command_name = "exec";
-        
+
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
         });
-        
+
         // Execute the exec command
         match exec::execute_exec(&path, &package, &command, &args).await {
             Ok(exit_code) => {
@@ -198,7 +210,7 @@ impl CommandExecutor {
             }
         }
     }
-    
+
     fn send_event(&self, event: Event) {
         if let Err(e) = self.event_sender.send(event) {
             event!(Level::ERROR, "Failed to send event: {}", e);
@@ -260,12 +272,16 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify we got start, progress, and complete events
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, Event::CommandStart { command } if command == "version")));
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, Event::CommandProgress { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::CommandStart { command } if command == "version"))
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::CommandProgress { .. }))
+        );
         assert!(events.iter().any(|e| matches!(e, Event::CommandComplete { command, success: true, .. } if command == "version")));
     }
 
@@ -293,15 +309,21 @@ mod tests {
 
         // Verify progress sequence
         assert!(!progress_events.is_empty());
-        assert!(progress_events
-            .iter()
-            .any(|(_, msg)| msg.contains("Initializing")));
-        assert!(progress_events
-            .iter()
-            .any(|(_, msg)| msg.contains("Loading version info")));
-        assert!(progress_events
-            .iter()
-            .any(|(_, msg)| msg.contains("Complete")));
+        assert!(
+            progress_events
+                .iter()
+                .any(|(_, msg)| msg.contains("Initializing"))
+        );
+        assert!(
+            progress_events
+                .iter()
+                .any(|(_, msg)| msg.contains("Loading version info"))
+        );
+        assert!(
+            progress_events
+                .iter()
+                .any(|(_, msg)| msg.contains("Complete"))
+        );
 
         // Verify progress values
         let progress_values: Vec<f32> = progress_events.iter().map(|(p, _)| *p).collect();
@@ -342,9 +364,11 @@ mod tests {
         let _ = handle.await.unwrap();
 
         // Verify start event was sent
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, Event::CommandStart { command } if command == "env print")));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::CommandStart { command } if command == "env print"))
+        );
         // Verify complete event was sent (success depends on actual execution)
         assert!(events.iter().any(
             |e| matches!(e, Event::CommandComplete { command, .. } if command == "env print")

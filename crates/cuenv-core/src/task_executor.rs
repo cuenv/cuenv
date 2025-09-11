@@ -63,19 +63,19 @@ impl TaskExecutor {
     pub fn new(config: ExecutorConfig) -> Self {
         Self { config }
     }
-    
+
     /// Execute a single task
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
         tracing::info!("Executing task: {}", name);
-        
-        // Build the command based on shell and args configuration  
+
+        // Build the command based on shell and args configuration
         let mut cmd = if let Some(shell) = &task.shell {
             // Check if shell is properly configured
             if let (Some(shell_command), Some(shell_flag)) = (&shell.command, &shell.flag) {
                 // Execute via specified shell
                 let mut cmd = Command::new(shell_command);
                 cmd.arg(shell_flag);
-                
+
                 if task.args.is_empty() {
                     // Just execute the command string as-is
                     cmd.arg(&task.command);
@@ -105,13 +105,13 @@ impl TaskExecutor {
             }
             cmd
         };
-        
+
         // Set environment variables
         let env_vars = self.config.environment.merge_with_system();
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
-        
+
         // Configure output handling
         if self.config.capture_output {
             cmd.stdout(Stdio::piped());
@@ -120,17 +120,17 @@ impl TaskExecutor {
             cmd.stdout(Stdio::inherit());
             cmd.stderr(Stdio::inherit());
         }
-        
+
         // Execute the command
-        let mut child = cmd.spawn().map_err(|e| {
-            Error::configuration(format!("Failed to spawn task '{}': {}", name, e))
-        })?;
-        
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| Error::configuration(format!("Failed to spawn task '{}': {}", name, e)))?;
+
         let (stdout, stderr) = if self.config.capture_output {
             // Capture output concurrently to prevent deadlocks
             let stdout_handle = child.stdout.take();
             let stderr_handle = child.stderr.take();
-            
+
             let stdout_task = async {
                 if let Some(stdout) = stdout_handle {
                     let reader = BufReader::new(stdout);
@@ -144,7 +144,7 @@ impl TaskExecutor {
                     String::new()
                 }
             };
-            
+
             let stderr_task = async {
                 if let Some(stderr) = stderr_handle {
                     let reader = BufReader::new(stderr);
@@ -158,27 +158,27 @@ impl TaskExecutor {
                     String::new()
                 }
             };
-            
+
             // Read stdout and stderr concurrently
             tokio::join!(stdout_task, stderr_task)
         } else {
             (String::new(), String::new())
         };
-        
+
         // Wait for completion
         let status = child.wait().await.map_err(|e| {
             Error::configuration(format!("Failed to wait for task '{}': {}", name, e))
         })?;
-        
+
         let exit_code = status.code();
         let success = status.success();
-        
+
         if !success {
             tracing::warn!("Task '{}' failed with exit code: {:?}", name, exit_code);
         } else {
             tracing::info!("Task '{}' completed successfully", name);
         }
-        
+
         Ok(TaskResult {
             name: name.to_string(),
             exit_code,
@@ -187,7 +187,7 @@ impl TaskExecutor {
             success,
         })
     }
-    
+
     /// Execute a task definition (single task or group)
     #[async_recursion]
     pub async fn execute_definition(
@@ -201,12 +201,10 @@ impl TaskExecutor {
                 let result = self.execute_task(name, task).await?;
                 Ok(vec![result])
             }
-            TaskDefinition::Group(group) => {
-                self.execute_group(name, group, all_tasks).await
-            }
+            TaskDefinition::Group(group) => self.execute_group(name, group, all_tasks).await,
         }
     }
-    
+
     /// Execute a task group
     async fn execute_group(
         &self,
@@ -215,15 +213,11 @@ impl TaskExecutor {
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         match group {
-            TaskGroup::Sequential(tasks) => {
-                self.execute_sequential(prefix, tasks, all_tasks).await
-            }
-            TaskGroup::Parallel(tasks) => {
-                self.execute_parallel(prefix, tasks, all_tasks).await
-            }
+            TaskGroup::Sequential(tasks) => self.execute_sequential(prefix, tasks, all_tasks).await,
+            TaskGroup::Parallel(tasks) => self.execute_parallel(prefix, tasks, all_tasks).await,
         }
     }
-    
+
     /// Execute tasks sequentially
     async fn execute_sequential(
         &self,
@@ -232,11 +226,13 @@ impl TaskExecutor {
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         let mut results = Vec::new();
-        
+
         for (i, task_def) in tasks.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
-            let task_results = self.execute_definition(&task_name, task_def, all_tasks).await?;
-            
+            let task_results = self
+                .execute_definition(&task_name, task_def, all_tasks)
+                .await?;
+
             // Check if any task failed
             for result in &task_results {
                 if !result.success {
@@ -246,13 +242,13 @@ impl TaskExecutor {
                     )));
                 }
             }
-            
+
             results.extend(task_results);
         }
-        
+
         Ok(results)
     }
-    
+
     /// Execute tasks in parallel
     async fn execute_parallel(
         &self,
@@ -262,32 +258,37 @@ impl TaskExecutor {
     ) -> Result<Vec<TaskResult>> {
         let mut join_set = JoinSet::new();
         let all_tasks = Arc::new(all_tasks.clone());
-        
+
         for (name, task_def) in tasks {
             let task_name = format!("{}.{}", prefix, name);
             let task_def = task_def.clone();
             let all_tasks = Arc::clone(&all_tasks);
             let executor = self.clone_with_config();
-            
+
             join_set.spawn(async move {
-                executor.execute_definition(&task_name, &task_def, &all_tasks).await
+                executor
+                    .execute_definition(&task_name, &task_def, &all_tasks)
+                    .await
             });
-            
+
             // Apply parallelism limit if configured
             if self.config.max_parallel > 0 && join_set.len() >= self.config.max_parallel {
                 // Wait for one to complete before starting more
                 if let Some(result) = join_set.join_next().await {
                     match result {
-                        Ok(Ok(_)) => {}, // Task completed successfully, continue
+                        Ok(Ok(_)) => {} // Task completed successfully, continue
                         Ok(Err(e)) => return Err(e),
                         Err(e) => {
-                            return Err(Error::configuration(format!("Task execution panicked: {}", e)))
+                            return Err(Error::configuration(format!(
+                                "Task execution panicked: {}",
+                                e
+                            )));
                         }
                     }
                 }
             }
         }
-        
+
         // Wait for all remaining tasks
         let mut all_results = Vec::new();
         while let Some(result) = join_set.join_next().await {
@@ -295,33 +296,34 @@ impl TaskExecutor {
                 Ok(Ok(results)) => all_results.extend(results),
                 Ok(Err(e)) => return Err(e),
                 Err(e) => {
-                    return Err(Error::configuration(format!("Task execution panicked: {}", e)))
+                    return Err(Error::configuration(format!(
+                        "Task execution panicked: {}",
+                        e
+                    )));
                 }
             }
         }
-        
+
         Ok(all_results)
     }
-    
+
     /// Execute tasks using a task graph (respects dependencies)
     pub async fn execute_graph(&self, graph: &TaskGraph) -> Result<Vec<TaskResult>> {
         let parallel_groups = graph.get_parallel_groups()?;
         let mut all_results = Vec::new();
-        
+
         for group in parallel_groups {
             // Execute all tasks in this group in parallel
             let mut join_set = JoinSet::new();
-            
+
             for node in group {
                 let task = node.task.clone();
                 let name = node.name.clone();
                 let executor = self.clone_with_config();
-                
-                join_set.spawn(async move {
-                    executor.execute_task(&name, &task).await
-                });
+
+                join_set.spawn(async move { executor.execute_task(&name, &task).await });
             }
-            
+
             // Wait for all tasks in this group
             while let Some(result) = join_set.join_next().await {
                 match result {
@@ -336,15 +338,18 @@ impl TaskExecutor {
                     }
                     Ok(Err(e)) => return Err(e),
                     Err(e) => {
-                        return Err(Error::configuration(format!("Task execution panicked: {}", e)))
+                        return Err(Error::configuration(format!(
+                            "Task execution panicked: {}",
+                            e
+                        )));
                     }
                 }
             }
         }
-        
+
         Ok(all_results)
     }
-    
+
     /// Clone executor with same config (for parallel execution)
     fn clone_with_config(&self) -> Self {
         Self {
@@ -360,33 +365,33 @@ pub async fn execute_command(
     environment: &Environment,
 ) -> Result<i32> {
     tracing::info!("Executing command: {} {:?}", command, args);
-    
+
     let mut cmd = Command::new(command);
     cmd.args(args);
-    
+
     // Set environment variables
     let env_vars = environment.merge_with_system();
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
-    
+
     // Inherit stdio for interactive commands
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
     cmd.stdin(Stdio::inherit());
-    
+
     // Execute and wait
     let status = cmd.status().await.map_err(|e| {
         Error::configuration(format!("Failed to execute command '{}': {}", command, e))
     })?;
-    
+
     Ok(status.code().unwrap_or(1))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_executor_config_default() {
         let config = ExecutorConfig::default();
@@ -394,7 +399,7 @@ mod tests {
         assert_eq!(config.max_parallel, 0);
         assert!(config.environment.is_empty());
     }
-    
+
     #[tokio::test]
     async fn test_task_result() {
         let result = TaskResult {
@@ -404,20 +409,20 @@ mod tests {
             stderr: String::new(),
             success: true,
         };
-        
+
         assert_eq!(result.name, "test");
         assert_eq!(result.exit_code, Some(0));
         assert!(result.success);
         assert_eq!(result.stdout, "output");
     }
-    
+
     #[tokio::test]
     async fn test_execute_simple_task() {
         let mut config = ExecutorConfig::default();
         config.capture_output = true;
-        
+
         let executor = TaskExecutor::new(config);
-        
+
         let task = Task {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
@@ -425,24 +430,26 @@ mod tests {
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
-            description: String::new(),
+            description: Some("Hello task".to_string()),
         };
-        
+
         let result = executor.execute_task("test", &task).await.unwrap();
-        
+
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
         assert!(result.stdout.contains("hello"));
     }
-    
+
     #[tokio::test]
     async fn test_execute_with_environment() {
         let mut config = ExecutorConfig::default();
         config.capture_output = true;
-        config.environment.set("TEST_VAR".to_string(), "test_value".to_string());
-        
+        config
+            .environment
+            .set("TEST_VAR".to_string(), "test_value".to_string());
+
         let executor = TaskExecutor::new(config);
-        
+
         let task = Task {
             command: "printenv".to_string(),
             args: vec!["TEST_VAR".to_string()],
@@ -450,22 +457,22 @@ mod tests {
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
-            description: String::new(),
+            description: Some("Print env task".to_string()),
         };
-        
+
         let result = executor.execute_task("test", &task).await.unwrap();
-        
+
         assert!(result.success);
         assert!(result.stdout.contains("test_value"));
     }
-    
+
     #[tokio::test]
     async fn test_execute_failing_task() {
         let mut config = ExecutorConfig::default();
         config.capture_output = true;
-        
+
         let executor = TaskExecutor::new(config);
-        
+
         let task = Task {
             command: "false".to_string(),
             args: vec![],
@@ -473,22 +480,22 @@ mod tests {
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
-            description: String::new(),
+            description: Some("Failing task".to_string()),
         };
-        
+
         let result = executor.execute_task("test", &task).await.unwrap();
-        
+
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(1));
     }
-    
+
     #[tokio::test]
     async fn test_execute_sequential_group() {
         let mut config = ExecutorConfig::default();
         config.capture_output = true;
-        
+
         let executor = TaskExecutor::new(config);
-        
+
         let task1 = Task {
             command: "echo".to_string(),
             args: vec!["first".to_string()],
@@ -496,9 +503,9 @@ mod tests {
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
-            description: String::new(),
+            description: Some("First task".to_string()),
         };
-        
+
         let task2 = Task {
             command: "echo".to_string(),
             args: vec!["second".to_string()],
@@ -506,17 +513,20 @@ mod tests {
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
-            description: String::new(),
+            description: Some("Second task".to_string()),
         };
-        
+
         let group = TaskGroup::Sequential(vec![
             TaskDefinition::Single(task1),
             TaskDefinition::Single(task2),
         ]);
-        
+
         let all_tasks = Tasks::new();
-        let results = executor.execute_group("seq", &group, &all_tasks).await.unwrap();
-        
+        let results = executor
+            .execute_group("seq", &group, &all_tasks)
+            .await
+            .unwrap();
+
         assert_eq!(results.len(), 2);
         assert!(results[0].stdout.contains("first"));
         assert!(results[1].stdout.contains("second"));
@@ -526,9 +536,9 @@ mod tests {
     async fn test_command_injection_prevention() {
         let mut config = ExecutorConfig::default();
         config.capture_output = true;
-        
+
         let executor = TaskExecutor::new(config);
-        
+
         // Test that malicious shell metacharacters in arguments don't get executed
         let malicious_task = Task {
             command: "echo".to_string(),
@@ -537,11 +547,14 @@ mod tests {
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
-            description: String::new(),
+            description: Some("Malicious task test".to_string()),
         };
-        
-        let result = executor.execute_task("malicious", &malicious_task).await.unwrap();
-        
+
+        let result = executor
+            .execute_task("malicious", &malicious_task)
+            .await
+            .unwrap();
+
         // The malicious command should be treated as literal argument to echo
         assert!(result.success);
         assert!(result.stdout.contains("hello ; rm -rf /"));
@@ -551,20 +564,20 @@ mod tests {
     async fn test_special_characters_in_args() {
         let mut config = ExecutorConfig::default();
         config.capture_output = true;
-        
+
         let executor = TaskExecutor::new(config);
-        
+
         // Test various special characters that could be used for injection
         let special_chars = vec![
-            "$USER",           // Variable expansion
-            "$(whoami)",       // Command substitution
-            "`whoami`",        // Backtick command substitution
-            "&& echo hacked",  // Command chaining
-            "|| echo failed",  // Error chaining
-            "> /tmp/hack",     // Redirection
-            "| cat",           // Piping
+            "$USER",          // Variable expansion
+            "$(whoami)",      // Command substitution
+            "`whoami`",       // Backtick command substitution
+            "&& echo hacked", // Command chaining
+            "|| echo failed", // Error chaining
+            "> /tmp/hack",    // Redirection
+            "| cat",          // Piping
         ];
-        
+
         for special_arg in special_chars {
             let task = Task {
                 command: "echo".to_string(),
@@ -573,11 +586,11 @@ mod tests {
                 dependencies: vec![],
                 inputs: vec![],
                 outputs: vec![],
-                description: String::new(),
+                description: Some("Special character test".to_string()),
             };
-            
+
             let result = executor.execute_task("special", &task).await.unwrap();
-            
+
             // Special characters should be treated literally, not interpreted
             assert!(result.success);
             assert!(result.stdout.contains("safe"));
@@ -589,12 +602,14 @@ mod tests {
     async fn test_environment_variable_safety() {
         let mut config = ExecutorConfig::default();
         config.capture_output = true;
-        
+
         // Set environment variable with potentially dangerous value
-        config.environment.set("DANGEROUS_VAR".to_string(), "; rm -rf /".to_string());
-        
+        config
+            .environment
+            .set("DANGEROUS_VAR".to_string(), "; rm -rf /".to_string());
+
         let executor = TaskExecutor::new(config);
-        
+
         let task = Task {
             command: "printenv".to_string(),
             args: vec!["DANGEROUS_VAR".to_string()],
@@ -602,11 +617,11 @@ mod tests {
             dependencies: vec![],
             inputs: vec![],
             outputs: vec![],
-            description: String::new(),
+            description: Some("Environment variable safety test".to_string()),
         };
-        
+
         let result = executor.execute_task("env_test", &task).await.unwrap();
-        
+
         // Environment variable should be passed safely
         assert!(result.success);
         assert!(result.stdout.contains("; rm -rf /"));

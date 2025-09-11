@@ -56,7 +56,9 @@ impl PerformanceRegistry {
         let total_duration: Duration = ops.iter().map(|op| op.duration).sum();
 
         let avg_duration = if total_operations > 0 {
-            total_duration / total_operations as u32
+            #[allow(clippy::cast_possible_truncation)]
+            let divisor = total_operations as u32;
+            total_duration / divisor
         } else {
             Duration::ZERO
         };
