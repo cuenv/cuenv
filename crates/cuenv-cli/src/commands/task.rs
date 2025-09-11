@@ -113,32 +113,7 @@ pub async fn execute_task(
     }
 
     // Format results
-    let mut output = String::new();
-    for result in results {
-        if capture_output {
-            write!(output, "Task '{}' ", result.name).unwrap();
-            if result.success {
-                output.push_str("succeeded\n");
-                if !result.stdout.is_empty() {
-                    output.push_str("Output:\n");
-                    output.push_str(&result.stdout);
-                    output.push('\n');
-                }
-            } else {
-                writeln!(output, "failed with exit code {:?}", result.exit_code).unwrap();
-                if !result.stderr.is_empty() {
-                    output.push_str("Error:\n");
-                    output.push_str(&result.stderr);
-                    output.push('\n');
-                }
-            }
-        }
-    }
-
-    if output.is_empty() {
-        output = format!("Task '{task_name}' completed");
-    }
-
+    let output = format_task_results(results, capture_output, task_name);
     Ok(output)
 }
 
@@ -170,6 +145,41 @@ async fn execute_task_with_strategy(
             }
         }
     }
+}
+
+/// Format task execution results for output
+fn format_task_results(
+    results: Vec<cuenv_core::task_executor::TaskResult>,
+    capture_output: bool,
+    task_name: &str,
+) -> String {
+    let mut output = String::new();
+    for result in results {
+        if capture_output {
+            write!(output, "Task '{}' ", result.name).unwrap();
+            if result.success {
+                output.push_str("succeeded\n");
+                if !result.stdout.is_empty() {
+                    output.push_str("Output:\n");
+                    output.push_str(&result.stdout);
+                    output.push('\n');
+                }
+            } else {
+                writeln!(output, "failed with exit code {:?}", result.exit_code).unwrap();
+                if !result.stderr.is_empty() {
+                    output.push_str("Error:\n");
+                    output.push_str(&result.stderr);
+                    output.push('\n');
+                }
+            }
+        }
+    }
+
+    if output.is_empty() {
+        output = format!("Task '{task_name}' completed");
+    }
+
+    output
 }
 
 #[cfg(test)]
