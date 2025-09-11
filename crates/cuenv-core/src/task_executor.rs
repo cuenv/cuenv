@@ -435,8 +435,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_simple_task() {
-        let mut config = ExecutorConfig::default();
-        config.capture_output = true;
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
 
         let executor = TaskExecutor::new(config);
 
@@ -459,8 +461,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_with_environment() {
-        let mut config = ExecutorConfig::default();
-        config.capture_output = true;
+        let mut config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
         config
             .environment
             .set("TEST_VAR".to_string(), "test_value".to_string());
@@ -485,8 +489,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_failing_task() {
-        let mut config = ExecutorConfig::default();
-        config.capture_output = true;
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
 
         let executor = TaskExecutor::new(config);
 
@@ -508,8 +514,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_sequential_group() {
-        let mut config = ExecutorConfig::default();
-        config.capture_output = true;
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
 
         let executor = TaskExecutor::new(config);
 
@@ -551,8 +559,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_injection_prevention() {
-        let mut config = ExecutorConfig::default();
-        config.capture_output = true;
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
 
         let executor = TaskExecutor::new(config);
 
@@ -579,8 +589,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_special_characters_in_args() {
-        let mut config = ExecutorConfig::default();
-        config.capture_output = true;
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
 
         let executor = TaskExecutor::new(config);
 
@@ -611,14 +623,16 @@ mod tests {
             // Special characters should be treated literally, not interpreted
             assert!(result.success);
             assert!(result.stdout.contains("safe"));
-            assert!(result.stdout.contains(&special_arg));
+            assert!(result.stdout.contains(special_arg));
         }
     }
 
     #[tokio::test]
     async fn test_environment_variable_safety() {
-        let mut config = ExecutorConfig::default();
-        config.capture_output = true;
+        let mut config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
 
         // Set environment variable with potentially dangerous value
         config

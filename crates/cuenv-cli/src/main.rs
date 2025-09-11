@@ -335,7 +335,6 @@ mod tests {
                 Some("trace") => Level::TRACE,
                 Some("debug") => Level::DEBUG,
                 Some("info") => Level::INFO,
-                Some("warn") => Level::WARN,
                 Some("error") => Level::ERROR,
                 _ => Level::WARN,
             };

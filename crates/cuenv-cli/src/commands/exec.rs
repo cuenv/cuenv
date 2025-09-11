@@ -59,13 +59,10 @@ env: {
         )
         .await;
 
-        match result {
-            Ok(exit_code) => {
-                assert_eq!(exit_code, 0);
-            }
-            Err(_) => {
-                // FFI not available in test environment
-            }
+        if let Ok(exit_code) = result {
+            assert_eq!(exit_code, 0);
+        } else {
+            // FFI not available in test environment
         }
     }
 
@@ -87,13 +84,10 @@ env: {
         )
         .await;
 
-        match result {
-            Ok(exit_code) => {
-                assert_eq!(exit_code, 0);
-            }
-            Err(_) => {
-                // FFI not available in test environment
-            }
+        if let Ok(exit_code) = result {
+            assert_eq!(exit_code, 0);
+        } else {
+            // FFI not available in test environment
         }
     }
 }

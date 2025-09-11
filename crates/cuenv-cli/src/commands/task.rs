@@ -200,13 +200,10 @@ env: {
         let result = execute_task(temp_dir.path().to_str().unwrap(), "test", None, false).await;
 
         // The result depends on FFI availability
-        match result {
-            Ok(output) => {
-                assert!(output.contains("No tasks") || output.contains("Available tasks"));
-            }
-            Err(_) => {
-                // FFI not available in test environment
-            }
+        if let Ok(output) = result {
+            assert!(output.contains("No tasks") || output.contains("Available tasks"));
+        } else {
+            // FFI not available in test environment
         }
     }
 }

@@ -8,7 +8,7 @@ use tempfile::TempDir;
 /// Helper to run cuenv command and capture output
 fn run_cuenv(args: &[&str]) -> (String, String, bool) {
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "cuenv", "--"])
+        .args(["run", "--bin", "cuenv", "--"])
         .args(args)
         .output()
         .expect("Failed to run cuenv");
@@ -323,9 +323,9 @@ tasks: {
 #[test]
 fn test_exec_command_exit_code() {
     let temp_dir = TempDir::new().unwrap();
-    let cue_content = r#"package test
+    let cue_content = r"package test
 
-env: {}"#;
+env: {}";
 
     fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
 
@@ -356,8 +356,7 @@ mod test_examples {
         // Skip if example doesn't exist
         if !example_path.exists() {
             eprintln!(
-                "Skipping test - example path doesn't exist: {:?}",
-                example_path
+                "Skipping test - example path doesn't exist: {example_path:?}"
             );
             return;
         }
