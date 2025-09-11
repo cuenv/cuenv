@@ -5,8 +5,8 @@ pub mod version;
 
 use crate::events::{Event, EventSender};
 use cuenv_core::Result;
-use tokio::time::{Duration, sleep};
-use tracing::{Level, event};
+use tokio::time::{sleep, Duration};
+use tracing::{event, Level};
 
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -272,16 +272,12 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify we got start, progress, and complete events
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::CommandStart { command } if command == "version"))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::CommandProgress { .. }))
-        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::CommandStart { command } if command == "version")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::CommandProgress { .. })));
         assert!(events.iter().any(|e| matches!(e, Event::CommandComplete { command, success: true, .. } if command == "version")));
     }
 
@@ -309,21 +305,15 @@ mod tests {
 
         // Verify progress sequence
         assert!(!progress_events.is_empty());
-        assert!(
-            progress_events
-                .iter()
-                .any(|(_, msg)| msg.contains("Initializing"))
-        );
-        assert!(
-            progress_events
-                .iter()
-                .any(|(_, msg)| msg.contains("Loading version info"))
-        );
-        assert!(
-            progress_events
-                .iter()
-                .any(|(_, msg)| msg.contains("Complete"))
-        );
+        assert!(progress_events
+            .iter()
+            .any(|(_, msg)| msg.contains("Initializing")));
+        assert!(progress_events
+            .iter()
+            .any(|(_, msg)| msg.contains("Loading version info")));
+        assert!(progress_events
+            .iter()
+            .any(|(_, msg)| msg.contains("Complete")));
 
         // Verify progress values
         let progress_values: Vec<f32> = progress_events.iter().map(|(p, _)| *p).collect();
@@ -364,11 +354,9 @@ mod tests {
         let _ = handle.await.unwrap();
 
         // Verify start event was sent
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::CommandStart { command } if command == "env print"))
-        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::CommandStart { command } if command == "env print")));
         // Verify complete event was sent (success depends on actual execution)
         assert!(events.iter().any(
             |e| matches!(e, Event::CommandComplete { command, .. } if command == "env print")
