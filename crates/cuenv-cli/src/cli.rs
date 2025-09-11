@@ -225,6 +225,20 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: EnvCommands,
     },
+    #[command(about = "Shell integration")]
+    Shell {
+        #[command(subcommand)]
+        subcommand: ShellCommands,
+    },
+    #[command(about = "Approve current directory's configuration")]
+    Allow {
+        #[arg(
+            long,
+            short = 'd',
+            help = "Directory containing env.cue to approve"
+        )]
+        directory: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -251,10 +265,42 @@ pub enum EnvCommands {
         )]
         output_format: String,
     },
+    #[command(about = "Load environment and execute hooks")]
+    Load {
+        #[arg(
+            long,
+            short = 'd',
+            help = "Directory containing env.cue"
+        )]
+        directory: Option<String>,
+    },
+    #[command(about = "Show current hook execution status")]
+    Status {
+        #[arg(
+            long,
+            help = "Wait for hooks to complete"
+        )]
+        wait: bool,
+    },
+    #[command(about = "Show current environment variables")]
+    Show,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ShellCommands {
+    #[command(about = "Generate shell integration script")]
+    Init {
+        #[arg(
+            help = "Shell type (fish, bash, zsh)"
+        )]
+        shell: String,
+    },
 }
 
 impl From<Commands> for Command {
     fn from(cmd: Commands) -> Self {
+        use std::path::PathBuf;
+        
         match cmd {
             Commands::Version => Command::Version,
             Commands::Env { subcommand } => match subcommand {
@@ -267,6 +313,21 @@ impl From<Commands> for Command {
                     package,
                     format: output_format,
                 },
+                EnvCommands::Load { directory } => Command::EnvLoad {
+                    directory: directory.map(PathBuf::from),
+                },
+                EnvCommands::Status { wait } => Command::EnvStatus { wait },
+                EnvCommands::Show => Command::EnvPrint {
+                    path: ".".to_string(),
+                    package: "cuenv".to_string(),
+                    format: "env".to_string(),
+                },
+            },
+            Commands::Shell { subcommand } => match subcommand {
+                ShellCommands::Init { shell } => Command::ShellInit { shell },
+            },
+            Commands::Allow { directory } => Command::Allow {
+                directory: directory.map(PathBuf::from),
             },
         }
     }

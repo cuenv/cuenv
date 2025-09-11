@@ -35,6 +35,9 @@
 //! };
 //! ```
 
+pub mod approval;
+pub mod hooks;
+
 use miette::{Diagnostic, SourceSpan};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

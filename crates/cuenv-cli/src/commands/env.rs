@@ -1,8 +1,12 @@
 use cuengine::CueEvaluator;
-use cuenv_core::Result;
+use cuenv_core::{
+    approval::{ApprovalManager, ConfigSummary},
+    hooks::{executor::HookExecutor, state::{HookExecutionState, StateManager}, Hook, HookExecutionConfig},
+    Result,
+};
 use serde_json::Value;
-use std::path::Path;
-use tracing::instrument;
+use std::path::{Path, PathBuf};
+use tracing::{debug, error, info, instrument};
 
 #[instrument(name = "env_print")]
 pub async fn execute_env_print(path: &str, package: &str, format: &str) -> Result<String> {
@@ -133,4 +137,163 @@ mod tests {
         let result = format_as_env_vars(&env_json);
         assert!(result.is_err());
     }
+}
+
+/// Execute env load command - evaluates config, checks approval, executes hooks in background
+#[instrument(name = "env_load")]
+pub async fn execute_env_load(directory: Option<PathBuf>) -> Result<String> {
+    let dir = directory.unwrap_or_else(|| PathBuf::from("."));
+    info!("Loading environment from: {}", dir.display());
+    
+    // Check if env.cue exists
+    let env_file = dir.join("env.cue");
+    if !env_file.exists() {
+        debug!("No env.cue file found in {}", dir.display());
+        return Ok("No env.cue file found in current directory".to_string());
+    }
+    
+    // Evaluate the CUE configuration
+    let evaluator = CueEvaluator::builder().build()?;
+    let json_result = evaluator.evaluate(&dir, "cuenv")?;
+    let config: Value = serde_json::from_str(&json_result).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to parse CUE output: {}", e))
+    })?;
+    
+    // Compute configuration hash
+    let config_hash = ApprovalManager::compute_hash(&config);
+    
+    // Check approval
+    let approval_file = ApprovalManager::default_approval_file()?;
+    let mut approval_manager = ApprovalManager::new(approval_file);
+    approval_manager.load_approvals().await?;
+    
+    if !approval_manager.is_approved(&config_hash) {
+        let summary = ConfigSummary::from_json(&config);
+        return Ok(format!(
+            "Configuration not approved. This configuration contains: {}\n\
+             Run 'cuenv allow' to approve this configuration",
+            summary.description()
+        ));
+    }
+    
+    // Extract hooks from configuration
+    let hooks = extract_hooks_from_config(&config)?;
+    
+    if hooks.is_empty() {
+        info!("No hooks to execute");
+        return Ok("Environment loaded (no hooks to execute)".to_string());
+    }
+    
+    // Create state for tracking
+    let state_dir = StateManager::default_state_dir()?;
+    let state_manager = StateManager::new(state_dir);
+    
+    let mut state = HookExecutionState::new(
+        dir.clone(),
+        config_hash.clone(),
+        hooks.len(),
+    );
+    
+    // Save initial state
+    state_manager.save_state(&state).await?;
+    
+    // Execute hooks in background
+    tokio::spawn(async move {
+        let executor = HookExecutor::new(HookExecutionConfig::default());
+        
+        for (index, hook) in hooks.into_iter().enumerate() {
+            // Update state to mark hook as running
+            state.mark_running(index);
+            if let Err(e) = state_manager.save_state(&state).await {
+                error!("Failed to save state: {}", e);
+            }
+            
+            // Execute the hook
+            match executor.execute_single_hook(hook).await {
+                Ok(result) => {
+                    state.update_result(index, result);
+                    if let Err(e) = state_manager.save_state(&state).await {
+                        error!("Failed to save state: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Hook execution failed: {}", e);
+                    break;
+                }
+            }
+            
+            // Check if we should stop (fail-fast)
+            if state.is_complete() {
+                break;
+            }
+        }
+        
+        info!("Hook execution completed: {}", state.status_string());
+    });
+    
+    Ok(format!("Environment loading started. Run 'cuenv env status' to check progress."))
+}
+
+/// Execute env status command - show current hook execution status
+#[instrument(name = "env_status")]
+pub async fn execute_env_status(wait: bool) -> Result<String> {
+    let dir = PathBuf::from(".");
+    
+    // Get config hash for current directory
+    let env_file = dir.join("env.cue");
+    if !env_file.exists() {
+        return Ok("No env.cue file in current directory".to_string());
+    }
+    
+    // Evaluate to get hash
+    let evaluator = CueEvaluator::builder().build()?;
+    let json_result = evaluator.evaluate(&dir, "cuenv")?;
+    let config: Value = serde_json::from_str(&json_result).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to parse CUE output: {}", e))
+    })?;
+    let config_hash = ApprovalManager::compute_hash(&config);
+    
+    // Load state
+    let state_dir = StateManager::default_state_dir()?;
+    let state_manager = StateManager::new(state_dir);
+    
+    let mut state = match state_manager.load_state(&config_hash).await? {
+        Some(s) => s,
+        None => return Ok("No active environment loading".to_string()),
+    };
+    
+    if wait {
+        // Wait for completion
+        while !state.is_complete() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            state = match state_manager.load_state(&config_hash).await? {
+                Some(s) => s,
+                None => break,
+            };
+        }
+    }
+    
+    Ok(state.status_string())
+}
+
+/// Extract hooks from the configuration
+fn extract_hooks_from_config(config: &Value) -> Result<Vec<Hook>> {
+    let mut hooks = Vec::new();
+    
+    if let Some(hooks_obj) = config.get("hooks").and_then(|v| v.as_object()) {
+        // Process onEnter hooks
+        if let Some(on_enter) = hooks_obj.get("onEnter") {
+            if let Some(arr) = on_enter.as_array() {
+                for hook_value in arr {
+                    if let Ok(hook) = serde_json::from_value::<Hook>(hook_value.clone()) {
+                        hooks.push(hook);
+                    }
+                }
+            } else if let Ok(hook) = serde_json::from_value::<Hook>(on_enter.clone()) {
+                hooks.push(hook);
+            }
+        }
+    }
+    
+    Ok(hooks)
 }
