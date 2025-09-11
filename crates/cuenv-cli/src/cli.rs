@@ -232,11 +232,7 @@ pub enum Commands {
     },
     #[command(about = "Approve current directory's configuration")]
     Allow {
-        #[arg(
-            long,
-            short = 'd',
-            help = "Directory containing env.cue to approve"
-        )]
+        #[arg(long, short = 'd', help = "Directory containing env.cue to approve")]
         directory: Option<String>,
     },
 }
@@ -267,19 +263,12 @@ pub enum EnvCommands {
     },
     #[command(about = "Load environment and execute hooks")]
     Load {
-        #[arg(
-            long,
-            short = 'd',
-            help = "Directory containing env.cue"
-        )]
+        #[arg(long, short = 'd', help = "Directory containing env.cue")]
         directory: Option<String>,
     },
     #[command(about = "Show current hook execution status")]
     Status {
-        #[arg(
-            long,
-            help = "Wait for hooks to complete"
-        )]
+        #[arg(long, help = "Wait for hooks to complete")]
         wait: bool,
     },
     #[command(about = "Show current environment variables")]
@@ -290,9 +279,7 @@ pub enum EnvCommands {
 pub enum ShellCommands {
     #[command(about = "Generate shell integration script")]
     Init {
-        #[arg(
-            help = "Shell type (fish, bash, zsh)"
-        )]
+        #[arg(help = "Shell type (fish, bash, zsh)")]
         shell: String,
     },
 }
@@ -300,7 +287,7 @@ pub enum ShellCommands {
 impl From<Commands> for Command {
     fn from(cmd: Commands) -> Self {
         use std::path::PathBuf;
-        
+
         match cmd {
             Commands::Version => Command::Version,
             Commands::Env { subcommand } => match subcommand {

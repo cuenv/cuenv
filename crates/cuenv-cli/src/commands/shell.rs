@@ -8,11 +8,13 @@ pub fn execute_shell_init(shell: &str) -> Result<String> {
         "fish" => generate_fish_script(),
         "bash" => generate_bash_script(),
         "zsh" => generate_zsh_script(),
-        _ => return Err(cuenv_core::Error::configuration(
-            format!("Unsupported shell: {}. Supported shells are: fish, bash, zsh", shell)
-        )),
+        _ => {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Unsupported shell: {shell}. Supported shells are: fish, bash, zsh"
+            )));
+        }
     };
-    
+
     Ok(script)
 }
 
@@ -33,7 +35,8 @@ if test -f "$PWD/env.cue"
     cuenv env load 2>/dev/null &
     disown
 end
-"#.to_string()
+"#
+    .to_string()
 }
 
 /// Generate Bash shell integration script
@@ -60,7 +63,8 @@ if [[ -f "$PWD/env.cue" ]]; then
     cuenv env load 2>/dev/null &
     disown
 fi
-"#.to_string()
+"#
+    .to_string()
 }
 
 /// Generate Zsh shell integration script
@@ -84,7 +88,8 @@ if [[ -f "$PWD/env.cue" ]]; then
     cuenv env load 2>/dev/null &
     disown
 fi
-"#.to_string()
+"#
+    .to_string()
 }
 
 #[cfg(test)]

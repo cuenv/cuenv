@@ -21,7 +21,7 @@ mod performance;
 mod tracing;
 mod tui;
 
-use crate::cli::{exit_code_for, parse, render_error, CliError, EXIT_OK};
+use crate::cli::{CliError, EXIT_OK, exit_code_for, parse, render_error};
 use crate::commands::Command;
 use crate::tracing::{Level, TracingConfig, TracingFormat};
 use tracing::instrument;
@@ -145,47 +145,41 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
-        Command::EnvLoad { directory } => {
-            match commands::env::execute_env_load(directory).await {
-                Ok(output) => {
-                    println!("{output}");
-                    Ok(())
-                }
-                Err(e) => Err(CliError::eval_with_help(
-                    format!("Failed to load environment: {e:?}"),
-                    "Check your env.cue file and ensure it's approved",
-                ))
+        Command::EnvLoad { directory } => match commands::env::execute_env_load(directory).await {
+            Ok(output) => {
+                println!("{output}");
+                Ok(())
             }
+            Err(e) => Err(CliError::eval_with_help(
+                format!("Failed to load environment: {e:?}"),
+                "Check your env.cue file and ensure it's approved",
+            )),
         },
-        Command::EnvStatus { wait } => {
-            match commands::env::execute_env_status(wait).await {
-                Ok(output) => {
-                    println!("{output}");
-                    Ok(())
-                }
-                Err(e) => Err(CliError::other(format!("Failed to get status: {e}")))
+        Command::EnvStatus { wait } => match commands::env::execute_env_status(wait).await {
+            Ok(output) => {
+                println!("{output}");
+                Ok(())
             }
+            Err(e) => Err(CliError::other(format!("Failed to get status: {e}"))),
         },
-        Command::ShellInit { shell } => {
-            match commands::shell::execute_shell_init(&shell) {
-                Ok(output) => {
-                    println!("{output}");
-                    Ok(())
-                }
-                Err(e) => Err(CliError::config_with_help(
-                    format!("Failed to generate shell integration: {e}"),
-                    "Supported shells are: fish, bash, zsh",
-                ))
+        Command::ShellInit { shell } => match commands::shell::execute_shell_init(&shell) {
+            Ok(output) => {
+                println!("{output}");
+                Ok(())
             }
+            Err(e) => Err(CliError::config_with_help(
+                format!("Failed to generate shell integration: {e}"),
+                "Supported shells are: fish, bash, zsh",
+            )),
         },
-        Command::Allow { directory } => {
-            match commands::allow::execute_allow(directory).await {
-                Ok(output) => {
-                    println!("{output}");
-                    Ok(())
-                }
-                Err(e) => Err(CliError::other(format!("Failed to approve configuration: {e}")))
+        Command::Allow { directory } => match commands::allow::execute_allow(directory).await {
+            Ok(output) => {
+                println!("{output}");
+                Ok(())
             }
+            Err(e) => Err(CliError::other(format!(
+                "Failed to approve configuration: {e}"
+            ))),
         },
     }
 }

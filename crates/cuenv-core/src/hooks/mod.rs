@@ -108,7 +108,7 @@ impl HookResult {
         self.exit_code = Some(exit_code);
         self.stdout = Some(stdout);
         self.stderr = Some(stderr);
-        
+
         if exit_code == 0 {
             self.status = HookStatus::Completed;
         } else {
@@ -210,7 +210,7 @@ mod tests {
         let mut result = HookResult::pending(hook);
         result.start();
         result.complete(1, "".to_string(), "error".to_string());
-        
+
         assert!(matches!(result.status, HookStatus::Failed(_)));
         assert_eq!(result.exit_code, Some(1));
     }

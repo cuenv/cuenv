@@ -39,35 +39,39 @@ impl ApprovalManager {
     /// Load approved hashes from disk
     pub async fn load_approvals(&mut self) -> Result<()> {
         if !self.approval_file.exists() {
-            debug!("No approval file found at: {}", self.approval_file.display());
+            debug!(
+                "No approval file found at: {}",
+                self.approval_file.display()
+            );
             // Create parent directory if it doesn't exist
             if let Some(parent) = self.approval_file.parent() {
-                fs::create_dir_all(parent).await.map_err(|e| {
-                    Error::Io {
-                        source: e,
-                        path: Some(parent.to_path_buf().into_boxed_path()),
-                        operation: "create approval directory".to_string(),
-                    }
+                fs::create_dir_all(parent).await.map_err(|e| Error::Io {
+                    source: e,
+                    path: Some(parent.to_path_buf().into_boxed_path()),
+                    operation: "create approval directory".to_string(),
                 })?;
             }
             return Ok(());
         }
 
         debug!("Loading approvals from: {}", self.approval_file.display());
-        
-        let contents = fs::read_to_string(&self.approval_file).await.map_err(|e| {
-            Error::Io {
+
+        let contents = fs::read_to_string(&self.approval_file)
+            .await
+            .map_err(|e| Error::Io {
                 source: e,
                 path: Some(self.approval_file.clone().into_boxed_path()),
                 operation: "read approval file".to_string(),
-            }
-        })?;
+            })?;
 
         let approvals: ApprovalData = serde_json::from_str(&contents)
             .map_err(|e| Error::configuration(format!("Failed to parse approval file: {}", e)))?;
 
         self.approved_hashes = approvals.hashes.into_iter().collect();
-        info!("Loaded {} approved configurations", self.approved_hashes.len());
+        info!(
+            "Loaded {} approved configurations",
+            self.approved_hashes.len()
+        );
 
         Ok(())
     }
@@ -89,32 +93,33 @@ impl ApprovalManager {
 
         // Ensure parent directory exists
         if let Some(parent) = self.approval_file.parent() {
-            fs::create_dir_all(parent).await.map_err(|e| {
-                Error::Io {
-                    source: e,
-                    path: Some(parent.to_path_buf().into_boxed_path()),
-                    operation: "create approval directory".to_string(),
-                }
+            fs::create_dir_all(parent).await.map_err(|e| Error::Io {
+                source: e,
+                path: Some(parent.to_path_buf().into_boxed_path()),
+                operation: "create approval directory".to_string(),
             })?;
         }
 
-        let mut file = fs::File::create(&self.approval_file).await.map_err(|e| {
-            Error::Io {
+        let mut file = fs::File::create(&self.approval_file)
+            .await
+            .map_err(|e| Error::Io {
                 source: e,
                 path: Some(self.approval_file.clone().into_boxed_path()),
                 operation: "create approval file".to_string(),
-            }
-        })?;
+            })?;
 
-        file.write_all(json.as_bytes()).await.map_err(|e| {
-            Error::Io {
+        file.write_all(json.as_bytes())
+            .await
+            .map_err(|e| Error::Io {
                 source: e,
                 path: Some(self.approval_file.clone().into_boxed_path()),
                 operation: "write approval file".to_string(),
-            }
-        })?;
+            })?;
 
-        info!("Saved {} approved configurations", self.approved_hashes.len());
+        info!(
+            "Saved {} approved configurations",
+            self.approved_hashes.len()
+        );
         Ok(())
     }
 
@@ -270,7 +275,7 @@ impl ConfigSummary {
     /// Get a human-readable description
     pub fn description(&self) -> String {
         let mut parts = Vec::new();
-        
+
         if self.env_vars > 0 {
             parts.push(format!("{} env vars", self.env_vars));
         }
@@ -302,7 +307,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approved.json");
         let manager = ApprovalManager::new(approval_file.clone());
-        
+
         assert_eq!(manager.approval_file, approval_file);
         assert!(manager.approved_hashes.is_empty());
     }
@@ -312,11 +317,11 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approved.json");
         let mut manager = ApprovalManager::new(approval_file);
-        
+
         let hash = "test_hash_123".to_string();
-        
+
         assert!(!manager.is_approved(&hash));
-        
+
         manager.approve(hash.clone()).await.unwrap();
         assert!(manager.is_approved(&hash));
     }
@@ -325,19 +330,19 @@ mod tests {
     async fn test_save_and_load_approvals() {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approved.json");
-        
+
         // Create and save approvals
         {
             let mut manager = ApprovalManager::new(approval_file.clone());
             manager.approve("hash1".to_string()).await.unwrap();
             manager.approve("hash2".to_string()).await.unwrap();
         }
-        
+
         // Load approvals in a new manager
         {
             let mut manager = ApprovalManager::new(approval_file);
             manager.load_approvals().await.unwrap();
-            
+
             assert!(manager.is_approved("hash1"));
             assert!(manager.is_approved("hash2"));
             assert!(!manager.is_approved("hash3"));
@@ -349,12 +354,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approved.json");
         let mut manager = ApprovalManager::new(approval_file);
-        
+
         let hash = "revoke_test".to_string();
-        
+
         manager.approve(hash.clone()).await.unwrap();
         assert!(manager.is_approved(&hash));
-        
+
         manager.revoke(&hash).await.unwrap();
         assert!(!manager.is_approved(&hash));
     }
@@ -364,14 +369,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approved.json");
         let mut manager = ApprovalManager::new(approval_file);
-        
+
         manager.approve("hash_a".to_string()).await.unwrap();
         manager.approve("hash_b".to_string()).await.unwrap();
         manager.approve("hash_c".to_string()).await.unwrap();
-        
+
         let mut approved = manager.list_approved();
         approved.sort();
-        
+
         assert_eq!(approved, vec!["hash_a", "hash_b", "hash_c"]);
     }
 
@@ -380,12 +385,12 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approved.json");
         let mut manager = ApprovalManager::new(approval_file);
-        
+
         manager.approve("hash1".to_string()).await.unwrap();
         manager.approve("hash2".to_string()).await.unwrap();
-        
+
         assert_eq!(manager.list_approved().len(), 2);
-        
+
         manager.clear_all().await.unwrap();
         assert_eq!(manager.list_approved().len(), 0);
     }
@@ -397,13 +402,13 @@ mod tests {
                 "TEST": "value"
             }
         });
-        
+
         let hash1 = ApprovalManager::compute_hash(&value);
         let hash2 = ApprovalManager::compute_hash(&value);
-        
+
         // Same value should produce same hash
         assert_eq!(hash1, hash2);
-        
+
         // Different value should produce different hash
         let value2 = serde_json::json!({
             "env": {
@@ -418,11 +423,11 @@ mod tests {
     fn test_compute_hash_from_string() {
         let config = "test configuration";
         let hash = ApprovalManager::compute_hash_from_string(config);
-        
+
         // Should produce consistent hash
         let hash2 = ApprovalManager::compute_hash_from_string(config);
         assert_eq!(hash, hash2);
-        
+
         // Different string should produce different hash
         let hash3 = ApprovalManager::compute_hash_from_string("different");
         assert_ne!(hash, hash3);
@@ -446,9 +451,9 @@ mod tests {
                 "key": "value"
             }
         });
-        
+
         let summary = ConfigSummary::from_json(&value);
-        
+
         assert_eq!(summary.env_vars, 2);
         assert_eq!(summary.hooks, 3); // 2 onEnter + 1 onExit
         assert!(summary.has_secrets);
@@ -462,7 +467,7 @@ mod tests {
             tasks: 0,
             has_secrets: true,
         };
-        
+
         let desc = summary.description();
         assert!(desc.contains("3 env vars"));
         assert!(desc.contains("2 hooks"));
