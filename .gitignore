@@ -8,10 +8,6 @@
 # OS files
 .DS_Store
 Thumbs.db
-# Devenv
-.devenv*
-devenv.local.nix
-
 # direnv
 .direnv
 
@@ -22,3 +18,8 @@ devenv.local.nix
 build/
 node_modules/
 package-lock.json
+
+# Generated artifacts
+*.cdx.json
+sbom.json
+lcov.info

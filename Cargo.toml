@@ -44,6 +44,9 @@ proptest = "1.0"
 criterion = "0.5"
 tempfile = "3.0"
 
+[workspace.metadata.crane]
+name = "cuenv"
+
 [workspace.lints.rust]
 unsafe_code = "warn"
 missing_docs = "warn"

@@ -1,13 +1,15 @@
 {
   "permissions": {
     "allow": [
+      "Bash(bun:*)",
+      "Bash(cargo:*)",
       "Bash(gh:*)",
       "Bash(git:*)",
-      "Bash(devenv shell:*)",
-      "Bash(cargo test:*)",
-      "Bash(cargo run:*)",
-      "WebFetch(domain:starlight.astro.build)",
-      "Bash(bun add:*)"
+      "Bash(nix:*)",
+      "mcp__context7__resolve-library-id",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:nixos.org)",
+      "WebSearch"
     ],
     "deny": [],
     "ask": []

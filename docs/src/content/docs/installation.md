@@ -97,11 +97,11 @@ For contributors and developers:
 git clone https://github.com/cuenv/cuenv.git
 cd cuenv
 
-# Using devenv (recommended)
-devenv shell
+# Enter the development shell
+nix develop
 
-# Or using nix-shell
-nix-shell
+# Or using direnv (if configured)
+direnv allow
 ```
 
 ## Platform-Specific Setup
