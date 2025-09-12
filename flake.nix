@@ -3,14 +3,14 @@
 
   inputs = {
     flake-schemas.url = "https://flakehub.com/f/DeterminateSystems/flake-schemas/*";
-    
+
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.*";
-    
+
     crate2nix = {
       url = "github:nix-community/crate2nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    
+
     rust-overlay = {
       url = "https://flakehub.com/f/oxalica/rust-overlay/0.1.*";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -50,87 +50,87 @@
     in
     {
       schemas = flake-schemas.schemas;
-      
+
       packages = forEachSupportedSystem ({ system, pkgs }:
         let
 
-        # Pre-build the Go CUE bridge for reproducible builds
-        cue-bridge = pkgs.buildGoModule {
-          pname = "libcue-bridge";
-          version = "0.1.0";
-          src = ./crates/cuengine;
+          # Pre-build the Go CUE bridge for reproducible builds
+          cue-bridge = pkgs.buildGoModule {
+            pname = "libcue-bridge";
+            version = "0.1.0";
+            src = ./crates/cuengine;
 
-          # The vendorHash is required for reproducible Go builds.
-          # To update this hash after changing Go dependencies:
-          # 1. Set vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-          # 2. Run the build; Nix will fail and print the correct hash.
-          # 3. Copy the printed hash here.
-          vendorHash = "sha256-mU40RCeO0R286fxfgONJ7kw6kFDHPMUzHw8sjsBgiRg=";
+            # The vendorHash is required for reproducible Go builds.
+            # To update this hash after changing Go dependencies:
+            # 1. Set vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+            # 2. Run the build; Nix will fail and print the correct hash.
+            # 3. Copy the printed hash here.
+            vendorHash = "sha256-mU40RCeO0R286fxfgONJ7kw6kFDHPMUzHw8sjsBgiRg=";
 
-          buildPhase = ''
-            runHook preBuild
+            buildPhase = ''
+              runHook preBuild
             
-            # Build both debug and release versions
-            mkdir -p $out/debug $out/release
+              # Build both debug and release versions
+              mkdir -p $out/debug $out/release
             
-            # Build debug version
-            go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
-            cp libcue_bridge.h $out/debug/
+              # Build debug version
+              go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
+              cp libcue_bridge.h $out/debug/
             
-            # Build release version (with optimizations)
-            CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go  
-            cp libcue_bridge.h $out/release/
+              # Build release version (with optimizations)
+              CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go  
+              cp libcue_bridge.h $out/release/
 
-            runHook postBuild
-          '';
+              runHook postBuild
+            '';
 
-          installPhase = ''
-            runHook preInstall
-            # Already copied to $out during buildPhase
-            runHook postInstall
-          '';
+            installPhase = ''
+              runHook preInstall
+              # Already copied to $out during buildPhase
+              runHook postInstall
+            '';
 
-          meta = with pkgs.lib; {
-            description = "Go CUE bridge library for cuenv";
-            license = with licenses; [ mit asl20 ];
-            platforms = platforms.unix ++ platforms.windows;
-          };
-        };
-
-        # Import the generated Cargo.nix with custom overrides
-        crate2nixProject = import ./Cargo.nix {
-          inherit pkgs;
-
-          # Override build for cuengine to include Go bridge
-          defaultCrateOverrides = pkgs.defaultCrateOverrides // {
-            cuengine = attrs: {
-              nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-                pkgs.go_1_24
-                pkgs.pkg-config
-              ];
-
-              buildInputs = (attrs.buildInputs or [ ]) ++
-                pkgs.lib.optionals pkgs.stdenv.isDarwin [
-                  pkgs.darwin.apple_sdk.frameworks.Security
-                  pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-                  pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-                ];
-
-              # Make prebuilt bridge available during build
-              preBuild = ''
-                ${attrs.preBuild or ""}
-                
-                # Copy prebuilt bridge artifacts to expected locations
-                mkdir -p target/debug target/release
-                cp -r ${cue-bridge}/debug/* target/debug/ || true
-                cp -r ${cue-bridge}/release/* target/release/ || true
-              '';
-
-              # Set environment variables for the build
-              CUE_BRIDGE_PATH = cue-bridge;
+            meta = with pkgs.lib; {
+              description = "Go CUE bridge library for cuenv";
+              license = with licenses; [ mit asl20 ];
+              platforms = platforms.unix ++ platforms.windows;
             };
           };
-        };
+
+          # Import the generated Cargo.nix with custom overrides
+          crate2nixProject = import ./Cargo.nix {
+            inherit pkgs;
+
+            # Override build for cuengine to include Go bridge
+            defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+              cuengine = attrs: {
+                nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
+                  pkgs.go_1_24
+                  pkgs.pkg-config
+                ];
+
+                buildInputs = (attrs.buildInputs or [ ]) ++
+                  pkgs.lib.optionals pkgs.stdenv.isDarwin [
+                    pkgs.darwin.apple_sdk.frameworks.Security
+                    pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+                    pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+                  ];
+
+                # Make prebuilt bridge available during build
+                preBuild = ''
+                  ${attrs.preBuild or ""}
+                
+                  # Copy prebuilt bridge artifacts to expected locations
+                  mkdir -p target/debug target/release
+                  cp -r ${cue-bridge}/debug/* target/debug/ || true
+                  cp -r ${cue-bridge}/release/* target/release/ || true
+                '';
+
+                # Set environment variables for the build
+                CUE_BRIDGE_PATH = cue-bridge;
+              };
+            };
+          };
         in
         {
           default = crate2nixProject.workspaceMembers.cuenv-cli.build;
@@ -139,94 +139,95 @@
           cuengine = crate2nixProject.workspaceMembers.cuengine.build;
           cue-bridge = cue-bridge;
         });
-      
-      devShells = forEachSupportedSystem ({ system, pkgs }: 
+
+      devShells = forEachSupportedSystem ({ system, pkgs }:
         let
           cue-bridge = self.packages.${system}.cue-bridge;
-        in {
-        default = pkgs.mkShell {
-          packages = with pkgs; [
-            # Rust toolchain
-            rustToolchain
+        in
+        {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              # Rust toolchain
+              rustToolchain
 
-            # Go toolchain - pinned to 1.24.x as per Phase 3 requirements
-            go_1_24
+              # Go toolchain - pinned to 1.24.x as per Phase 3 requirements
+              go_1_24
 
-            # CUE language support
-            cue
+              # CUE language support
+              cue
 
-            # Documentation tools
-            antora
+              # Documentation tools
+              antora
 
-            # Development tools
-            cargo-edit
-            cargo-machete
-            cargo-outdated
-            cargo-llvm-cov
-            cargo-audit
-            cargo-nextest
-            cargo-release
-            cargo-deny
-            cargo-cyclonedx
+              # Development tools
+              cargo-edit
+              cargo-machete
+              cargo-outdated
+              cargo-llvm-cov
+              cargo-audit
+              cargo-nextest
+              cargo-release
+              cargo-deny
+              cargo-cyclonedx
 
-            # Nix tools (use directly from input without referencing the package)
-            # crate2nix is available via the 'generate-cargo-nix' app (see 'apps' below)
-            # Run with: nix run .#generate-cargo-nix
+              # Nix tools (use directly from input without referencing the package)
+              # crate2nix is available via the 'generate-cargo-nix' app (see 'apps' below)
+              # Run with: nix run .#generate-cargo-nix
 
-            # CI/CD tools
-            git
-            gh
-            jq
-            prettier
-            nixpkgs-fmt
-            treefmt
+              # CI/CD tools
+              git
+              gh
+              jq
+              prettier
+              nixpkgs-fmt
+              treefmt
 
-            # Build dependencies
-            pkg-config
-            llvmPackages.bintools
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-            pkgs.darwin.apple_sdk.frameworks.Security
-            pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-          ];
-          
-          env = {
-            RUST_BACKTRACE = "1";
-            RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
+              # Build dependencies
+              pkg-config
+              llvmPackages.bintools
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+              pkgs.darwin.apple_sdk.frameworks.Security
+              pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+              pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+            ];
+
+            env = {
+              RUST_BACKTRACE = "1";
+              RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
+            };
+
+            shellHook = ''
+              export CUE_BRIDGE_PATH="${cue-bridge}"
+            
+              # Ensure target directories exist and copy prebuilt bridge
+              mkdir -p target/debug target/release
+              if [ -d "${cue-bridge}/debug" ]; then
+                cp -r ${cue-bridge}/debug/* target/debug/ 2>/dev/null || true
+              fi
+              if [ -d "${cue-bridge}/release" ]; then
+                cp -r ${cue-bridge}/release/* target/release/ 2>/dev/null || true
+              fi
+            
+              echo "🦀 cuenv development environment ready!"
+              echo "📦 Prebuilt CUE bridge available at: ${cue-bridge}"
+              echo "🔧 Use 'crate2nix generate' to update Cargo.nix when dependencies change"
+              echo "🚀 Phase 3 tooling: cargo deny, audit, cyclonedx available"
+            '';
           };
+        });
 
-          shellHook = ''
-            export CUE_BRIDGE_PATH="${cue-bridge}"
-            
-            # Ensure target directories exist and copy prebuilt bridge
-            mkdir -p target/debug target/release
-            if [ -d "${cue-bridge}/debug" ]; then
-              cp -r ${cue-bridge}/debug/* target/debug/ 2>/dev/null || true
-            fi
-            if [ -d "${cue-bridge}/release" ]; then
-              cp -r ${cue-bridge}/release/* target/release/ 2>/dev/null || true
-            fi
-            
-            echo "🦀 cuenv development environment ready!"
-            echo "📦 Prebuilt CUE bridge available at: ${cue-bridge}"
-            echo "🔧 Use 'crate2nix generate' to update Cargo.nix when dependencies change"
-            echo "🚀 Phase 3 tooling: cargo deny, audit, cyclonedx available"
-          '';
-        };
-      });
-      
       apps = forEachSupportedSystem ({ system, pkgs }: {
-          default = {
-            type = "app";
-            program = "${self.packages.${system}.cuenv}/bin/cuenv";
-          };
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.cuenv}/bin/cuenv";
+        };
 
-          generate-cargo-nix = {
-            type = "app";
-            program = "${pkgs.writeShellScriptBin "generate-cargo-nix" ''
+        generate-cargo-nix = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "generate-cargo-nix" ''
               ${crate2nix.packages.${system}.crate2nix}/bin/crate2nix generate
             ''}/bin/generate-cargo-nix";
-          };
+        };
       });
     };
 }
