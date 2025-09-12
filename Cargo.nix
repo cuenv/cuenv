@@ -8,7 +8,7 @@
 , stdenv ? pkgs.stdenv
 , buildRustCrateForPkgs ? pkgs: pkgs.buildRustCrate
   # This is used as the `crateOverrides` argument for `buildRustCrate`.
-, defaultCrateOverrides ? pkgs.defaultCrateOverrides
+, defaultCrateOverrides ? { }
   # The features to enable for the root_crate or the workspace_members.
 , rootFeatures ? [ "default" ]
   # If true, throw errors instead of issueing deprecation warnings.
@@ -8510,7 +8510,7 @@ rec {
     buildRustCrateWithFeatures =
       { packageId
       , features ? rootFeatures
-      , crateOverrides ? defaultCrateOverrides
+      , crateOverrides ? { }
       , buildRustCrateForPkgsFunc ? null
       , runTests ? false
       , testCrateFlags ? [ ]
@@ -8536,7 +8536,7 @@ rec {
               then buildRustCrateForPkgsFunc
               else
                 (
-                  if crateOverrides == pkgs.defaultCrateOverrides
+                  if crateOverrides == { }
                   then buildRustCrateForPkgs
                   else
                     pkgs: (buildRustCrateForPkgs pkgs).override {
