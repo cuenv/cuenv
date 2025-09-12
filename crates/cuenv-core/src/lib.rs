@@ -10,6 +10,13 @@
 //! - [`PackageDir`] - A validated directory path that must exist and be a directory
 //! - [`PackageName`] - A validated package name following CUE package naming rules
 //!
+//! ## Hook Execution System
+//!
+//! This crate provides a background hook execution system with:
+//!
+//! - [`hooks`] - Hook execution types and functionality
+//! - [`approval`] - Hash-based approval system for security
+//!
 //! ## Examples
 //!
 //! ```rust
@@ -39,6 +46,9 @@ use miette::{Diagnostic, SourceSpan};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+pub mod hooks;
+pub mod approval;
 
 /// Main error type for cuenv operations with enhanced diagnostics
 #[derive(Error, Debug, Diagnostic)]
