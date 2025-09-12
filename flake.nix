@@ -43,6 +43,8 @@
               rustToolchain = final.rust-bin.stable.latest.default.override {
                 extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
               };
+              # Override defaultCrateOverrides to be an empty set to avoid darwin.apple_sdk_11_0
+              defaultCrateOverrides = { };
             })
           ];
         };
@@ -106,48 +108,42 @@
           # Pre-build the Go CUE bridge for reproducible builds
           cue-bridge = mkCueBridge pkgs;
 
-          # Import Cargo.nix with empty defaultCrateOverrides to bypass the legacy SDK issue
-          # We provide our own overrides without referencing pkgs.defaultCrateOverrides
+          # Import Cargo.nix - pkgs.defaultCrateOverrides is already overridden to be empty
           crate2nixProject = import ./Cargo.nix {
             inherit pkgs;
-            # Pass an empty set as defaultCrateOverrides to completely avoid
-            # the problematic pkgs.defaultCrateOverrides reference
-            defaultCrateOverrides = { };
-            # Provide our custom buildRustCrateForPkgs that adds our overrides
-            buildRustCrateForPkgs = pkgs: pkgs.buildRustCrate.override {
-              defaultCrateOverrides = {
-                cuengine = attrs: {
-                  nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-                    pkgs.go_1_24
-                    pkgs.pkg-config
-                  ];
+            # Provide our crate-specific overrides
+            defaultCrateOverrides = {
+              cuengine = attrs: {
+                nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
+                  pkgs.go_1_24
+                  pkgs.pkg-config
+                ];
 
-                  buildInputs = (attrs.buildInputs or [ ]) ++
-                    pkgs.lib.optionals pkgs.stdenv.isDarwin (
-                      if pkgs ? darwin.apple_sdk then [
-                        pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-                        pkgs.darwin.apple_sdk.frameworks.Security
-                        pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-                      ] else [
-                        pkgs.darwin.CoreFoundation
-                        pkgs.darwin.Security
-                        pkgs.darwin.SystemConfiguration
-                      ]
-                    );
+                buildInputs = (attrs.buildInputs or [ ]) ++
+                  pkgs.lib.optionals pkgs.stdenv.isDarwin (
+                    if pkgs ? darwin.apple_sdk then [
+                      pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+                      pkgs.darwin.apple_sdk.frameworks.Security
+                      pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+                    ] else [
+                      pkgs.darwin.CoreFoundation
+                      pkgs.darwin.Security
+                      pkgs.darwin.SystemConfiguration
+                    ]
+                  );
 
-                  # Make prebuilt bridge available during build
-                  preBuild = ''
-                    ${attrs.preBuild or ""}
-                
-                    # Copy prebuilt bridge artifacts to expected locations
-                    mkdir -p target/debug target/release
-                    cp -r ${cue-bridge}/debug/* target/debug/ || true
-                    cp -r ${cue-bridge}/release/* target/release/ || true
-                  '';
+                # Make prebuilt bridge available during build
+                preBuild = ''
+                  ${attrs.preBuild or ""}
+              
+                  # Copy prebuilt bridge artifacts to expected locations
+                  mkdir -p target/debug target/release
+                  cp -r ${cue-bridge}/debug/* target/debug/ || true
+                  cp -r ${cue-bridge}/release/* target/release/ || true
+                '';
 
-                  # Set environment variables for the build
-                  CUE_BRIDGE_PATH = cue-bridge;
-                };
+                # Set environment variables for the build
+                CUE_BRIDGE_PATH = cue-bridge;
               };
             };
           };
