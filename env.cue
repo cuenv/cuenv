@@ -4,6 +4,10 @@ import "github.com/cuenv/cuenv/schema"
 
 schema.#Cuenv
 
+hooks: onEnter: {
+  schema.#NixFlake
+}
+
 env: {
   NAME: "david"
 }
