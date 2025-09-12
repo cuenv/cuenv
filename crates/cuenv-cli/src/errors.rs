@@ -176,6 +176,7 @@ impl ErrorReporter {
     }
 
     /// Report an error using miette's fancy formatting
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     pub fn report(&self, error: &dyn Diagnostic) -> miette::Result<()> {
         // Use miette's default error reporting
         eprintln!("{error:?}");
@@ -193,6 +194,7 @@ impl ErrorReporter {
 }
 
 /// Convenience function to report errors with default settings
+#[allow(clippy::used_underscore_items)]
 pub fn _report_error(error: &dyn Diagnostic) {
     let reporter = ErrorReporter::default();
 
@@ -218,6 +220,7 @@ where
 {
     fn report_on_error(self) -> Self {
         if let Err(ref error) = self {
+            #[allow(clippy::used_underscore_items)]
             _report_error(error);
         }
         self
@@ -227,6 +230,7 @@ where
         match self {
             Ok(value) => value,
             Err(error) => {
+                #[allow(clippy::used_underscore_items)]
                 _report_error(&error);
                 std::process::exit(exit_code);
             }

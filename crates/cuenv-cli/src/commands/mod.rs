@@ -1,4 +1,6 @@
 pub mod env;
+pub mod exec;
+pub mod task;
 pub mod version;
 
 use crate::events::{Event, EventSender};
@@ -13,6 +15,17 @@ pub enum Command {
         path: String,
         package: String,
         format: String,
+    },
+    Task {
+        path: String,
+        package: String,
+        name: Option<String>,
+    },
+    Exec {
+        path: String,
+        package: String,
+        command: String,
+        args: Vec<String>,
     },
 }
 
@@ -35,6 +48,17 @@ impl CommandExecutor {
                 package,
                 format,
             } => self.execute_env_print(path, package, format).await,
+            Command::Task {
+                path,
+                package,
+                name,
+            } => self.execute_task(path, package, name).await,
+            Command::Exec {
+                path,
+                package,
+                command,
+                args,
+            } => self.execute_exec(path, package, command, args).await,
         }
     }
 
@@ -48,6 +72,7 @@ impl CommandExecutor {
 
         // Simulate some work with progress updates
         for i in 0..=5 {
+            #[allow(clippy::cast_precision_loss)] // Progress calculation for demo purposes
             let progress = i as f32 / 5.0;
             let message = match i {
                 0 => "Initializing...".to_string(),
@@ -100,6 +125,80 @@ impl CommandExecutor {
                     output,
                 });
                 Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_task(
+        &self,
+        path: String,
+        package: String,
+        name: Option<String>,
+    ) -> Result<()> {
+        let command_name = "task";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        // Execute the task command
+        match task::execute_task(&path, &package, name.as_deref(), false).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_exec(
+        &self,
+        path: String,
+        package: String,
+        command: String,
+        args: Vec<String>,
+    ) -> Result<()> {
+        let command_name = "exec";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        // Execute the exec command
+        match exec::execute_exec(&path, &package, &command, &args).await {
+            Ok(exit_code) => {
+                let success = exit_code == 0;
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success,
+                    output: format!("Command exited with code {exit_code}"),
+                });
+                if success {
+                    Ok(())
+                } else {
+                    Err(cuenv_core::Error::configuration(format!(
+                        "Command failed with exit code {exit_code}"
+                    )))
+                }
             }
             Err(e) => {
                 self.send_event(Event::CommandComplete {

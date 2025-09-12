@@ -35,6 +35,14 @@
 //! };
 //! ```
 
+pub mod environment;
+pub mod task;
+pub mod task_executor;
+pub mod task_graph;
+
+#[cfg(test)]
+mod environment_test;
+
 use miette::{Diagnostic, SourceSpan};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
