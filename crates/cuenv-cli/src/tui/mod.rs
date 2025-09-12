@@ -1,21 +1,21 @@
 use crate::events::Event;
 use crossterm::style::Color as CrosstermColor;
 use crossterm::{
-    ExecutableCommand,
     cursor::{Hide, MoveTo, Show},
     style::{Print, ResetColor, SetForegroundColor},
+    ExecutableCommand,
 };
 use ratatui::{
-    Terminal,
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, Paragraph},
+    Terminal,
 };
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
-use tracing::{Level, event};
+use tracing::{event, Level};
 
 #[allow(dead_code)]
 pub struct InlineTui {

@@ -1,6 +1,6 @@
 //! Hook execution engine with background processing and state management
 
-use crate::hooks::state::{HookExecutionState, StateManager, compute_directory_hash};
+use crate::hooks::state::{compute_directory_hash, HookExecutionState, StateManager};
 use crate::hooks::types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult};
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
