@@ -3,23 +3,23 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
-    
+
     crane = {
       url = "github:ipetkov/crane";
     };
-    
+
     flake-utils.url = "github:numtide/flake-utils";
-    
+
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    
+
     advisory-db = {
       url = "github:rustsec/advisory-db";
       flake = false;
     };
-    
+
     flake-schemas.url = "https://flakehub.com/f/DeterminateSystems/flake-schemas/*";
   };
 
@@ -230,26 +230,26 @@
             # Rust toolchain (provided by crane)
             # Go toolchain
             go_1_24
-            
+
             # CUE language support
             cue
-            
+
             # Documentation tools
             antora
-            
+
             # Development tools
             cargo-audit
             cargo-nextest
             cargo-deny
-            
+
             # CI/CD tools
             git
             gh
             jq
-            prettier
+            nodePackages.prettier
             nixpkgs-fmt
             treefmt
-            
+
             # Build dependencies
             pkg-config
             llvmPackages.bintools
