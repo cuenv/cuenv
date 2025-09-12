@@ -39,7 +39,7 @@ impl HookExecutor {
 
         let state_manager = StateManager::new(state_dir);
         let concurrency_limiter = Arc::new(Semaphore::new(config.max_concurrent));
-        
+
         // Default allowed commands - can be customized
         let mut allowed_commands = HashSet::new();
         // Common safe commands
@@ -54,7 +54,7 @@ impl HookExecutor {
         allowed_commands.insert("true".to_string());
         allowed_commands.insert("false".to_string());
         allowed_commands.insert("sleep".to_string());
-        
+
         // Development tools
         allowed_commands.insert("npm".to_string());
         allowed_commands.insert("yarn".to_string());
@@ -86,19 +86,19 @@ impl HookExecutor {
             active_tasks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
-    
+
     /// Add a command to the whitelist
     pub async fn allow_command(&self, command: String) {
         let mut allowed = self.allowed_commands.write().await;
         allowed.insert(command);
     }
-    
+
     /// Remove a command from the whitelist
     pub async fn disallow_command(&self, command: &str) {
         let mut allowed = self.allowed_commands.write().await;
         allowed.remove(command);
     }
-    
+
     /// Check if a command is allowed
     async fn is_command_allowed(&self, command: &str) -> bool {
         let allowed = self.allowed_commands.read().await;
@@ -172,12 +172,12 @@ impl HookExecutor {
                     error!("Failed to save error state: {}", save_err);
                 }
             }
-            
+
             // Remove from active tasks when done
             let mut tasks = active_tasks.lock().await;
             tasks.remove(&task_key);
         });
-        
+
         // Track the task for potential cancellation
         let mut tasks = self.active_tasks.lock().await;
         tasks.insert(directory_hash, handle);
@@ -296,17 +296,17 @@ impl HookExecutor {
                 hook.command
             )));
         }
-        
+
         // Use the hook's timeout if specified, otherwise use the default
         let timeout = if hook.timeout_seconds > 0 {
             hook.timeout_seconds
         } else {
             self.config.default_timeout_seconds
         };
-        
+
         // Validate command arguments for potential injection
         validate_command_args(&hook)?;
-        
+
         execute_hook_with_timeout(hook, &timeout).await
     }
 }
@@ -322,14 +322,14 @@ async fn execute_hooks_concurrent(
     allowed_commands: Arc<RwLock<HashSet<String>>>,
 ) -> Result<()> {
     use futures::future::join_all;
-    
+
     // Batch saves to reduce I/O operations
     let mut pending_results = Vec::new();
     let mut tasks = Vec::new();
-    
+
     // Clone hooks for error handling
     let hooks_backup = hooks.clone();
-    
+
     for (index, hook) in hooks.into_iter().enumerate() {
         // Check if execution was cancelled
         if let Ok(Some(current_state)) = state_manager.load_state(&state.directory_hash).await
@@ -355,13 +355,16 @@ async fn execute_hooks_concurrent(
                 ),
             );
             if config.fail_fast {
-                warn!("Hook {} uses disallowed command, stopping execution", index + 1);
+                warn!(
+                    "Hook {} uses disallowed command, stopping execution",
+                    index + 1
+                );
                 break;
             }
             continue;
         }
         drop(allowed);
-        
+
         // Validate command arguments
         if let Err(e) = validate_command_args(&hook) {
             let error_msg = format!("Invalid command arguments: {}", e);
@@ -377,7 +380,10 @@ async fn execute_hooks_concurrent(
                 ),
             );
             if config.fail_fast {
-                warn!("Hook {} has invalid arguments, stopping execution", index + 1);
+                warn!(
+                    "Hook {} has invalid arguments, stopping execution",
+                    index + 1
+                );
                 break;
             }
             continue;
@@ -388,22 +394,22 @@ async fn execute_hooks_concurrent(
         } else {
             config.default_timeout_seconds
         };
-        
+
         let permit = concurrency_limiter.clone().acquire_owned().await.unwrap();
         let hook_clone = hook.clone();
         let task_index = index;
-        
+
         // Mark hook as running before spawning
         state.mark_hook_running(index);
-        
+
         let task = tokio::spawn(async move {
             let result = execute_hook_with_timeout(hook_clone, &timeout_seconds).await;
             drop(permit); // Release the semaphore permit
             (task_index, result)
         });
-        
+
         tasks.push(task);
-        
+
         // For fail_fast mode, we need to execute sequentially
         if config.fail_fast {
             match tasks.pop().unwrap().await {
@@ -443,7 +449,7 @@ async fn execute_hooks_concurrent(
             }
         }
     }
-    
+
     // If not fail_fast, wait for all tasks to complete
     if !config.fail_fast && !tasks.is_empty() {
         let results = join_all(tasks).await;
@@ -460,16 +466,16 @@ async fn execute_hooks_concurrent(
                 }
             }
         }
-        
+
         // Batch update results
         for (idx, result) in pending_results {
             state.record_hook_result(idx, result);
         }
     }
-    
+
     // Save final state once
     state_manager.save_state(state).await?;
-    
+
     Ok(())
 }
 
@@ -477,7 +483,7 @@ async fn execute_hooks_concurrent(
 fn validate_command_args(hook: &Hook) -> Result<()> {
     // Check for shell metacharacters that could lead to injection
     let dangerous_chars = ['|', '&', ';', '$', '`', '\n', '\r', '<', '>', '(', ')'];
-    
+
     for arg in &hook.args {
         for ch in dangerous_chars {
             if arg.contains(ch) {
@@ -487,7 +493,7 @@ fn validate_command_args(hook: &Hook) -> Result<()> {
                 )));
             }
         }
-        
+
         // Check for command substitution patterns
         if arg.contains("$(") || arg.contains("${") {
             return Err(Error::configuration(format!(
@@ -496,7 +502,7 @@ fn validate_command_args(hook: &Hook) -> Result<()> {
             )));
         }
     }
-    
+
     // Validate environment variables
     for (key, value) in &hook.env {
         // Check environment variable names
@@ -506,7 +512,7 @@ fn validate_command_args(hook: &Hook) -> Result<()> {
                 key
             )));
         }
-        
+
         // Check for null bytes in values
         if value.contains('\0') {
             return Err(Error::configuration(
@@ -514,7 +520,7 @@ fn validate_command_args(hook: &Hook) -> Result<()> {
             ));
         }
     }
-    
+
     Ok(())
 }
 
@@ -740,7 +746,7 @@ mod tests {
         let directory_path = PathBuf::from("/test/concurrent");
         let config_hash = "concurrent_test".to_string();
 
-        // Create hooks that can run concurrently  
+        // Create hooks that can run concurrently
         let hooks = vec![
             Hook {
                 command: "echo".to_string(),
@@ -813,7 +819,10 @@ mod tests {
         };
 
         let result = executor.execute_single_hook(hook_with_injection).await;
-        assert!(result.is_err(), "Expected error for command with dangerous arguments");
+        assert!(
+            result.is_err(),
+            "Expected error for command with dangerous arguments"
+        );
     }
 
     #[tokio::test]
@@ -876,7 +885,7 @@ mod tests {
         for i in 0..100 {
             args.push(format!("Line {}: {}", i, large_content));
         }
-        
+
         // Use echo with multiple arguments
         let hook = Hook {
             command: "echo".to_string(),
@@ -936,7 +945,10 @@ mod tests {
         assert_eq!(cleaned, 1);
 
         // State should be gone
-        let state = executor.get_execution_status(&directory_path).await.unwrap();
+        let state = executor
+            .get_execution_status(&directory_path)
+            .await
+            .unwrap();
         assert!(state.is_none());
     }
 

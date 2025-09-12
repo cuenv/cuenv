@@ -148,27 +148,27 @@ impl StateManager {
 
         Ok(states)
     }
-    
+
     /// Clean up the entire state directory
     pub async fn cleanup_state_directory(&self) -> Result<usize> {
         if !self.state_dir.exists() {
             return Ok(0);
         }
-        
+
         let mut cleaned_count = 0;
         let mut dir = fs::read_dir(&self.state_dir).await.map_err(|e| Error::Io {
             source: e,
             path: Some(self.state_dir.clone().into_boxed_path()),
             operation: "read_dir".to_string(),
         })?;
-        
+
         while let Some(entry) = dir.next_entry().await.map_err(|e| Error::Io {
             source: e,
             path: Some(self.state_dir.clone().into_boxed_path()),
             operation: "next_entry".to_string(),
         })? {
             let path = entry.path();
-            
+
             // Only clean up JSON state files
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 // Try to load and check if it's a completed state
@@ -192,7 +192,11 @@ impl StateManager {
                             // If we can't parse it, it might be corrupted - remove it
                             warn!("Failed to parse state file {}: {}", path.display(), e);
                             if let Err(rm_err) = fs::remove_file(&path).await {
-                                error!("Failed to remove corrupted state file {}: {}", path.display(), rm_err);
+                                error!(
+                                    "Failed to remove corrupted state file {}: {}",
+                                    path.display(),
+                                    rm_err
+                                );
                             } else {
                                 cleaned_count += 1;
                                 info!("Removed corrupted state file: {}", path.display());
@@ -202,19 +206,19 @@ impl StateManager {
                 }
             }
         }
-        
+
         if cleaned_count > 0 {
             info!("Cleaned up {} state files from directory", cleaned_count);
         }
-        
+
         Ok(cleaned_count)
     }
-    
+
     /// Clean up orphaned state files (states without corresponding processes)
     pub async fn cleanup_orphaned_states(&self, max_age: chrono::Duration) -> Result<usize> {
         let cutoff = Utc::now() - max_age;
         let mut cleaned_count = 0;
-        
+
         for state in self.list_active_states().await? {
             // Remove states that are stuck in running but are too old
             if state.status == ExecutionStatus::Running && state.started_at < cutoff {
@@ -227,11 +231,11 @@ impl StateManager {
                 cleaned_count += 1;
             }
         }
-        
+
         if cleaned_count > 0 {
             info!("Cleaned up {} orphaned state files", cleaned_count);
         }
-        
+
         Ok(cleaned_count)
     }
 }
@@ -703,22 +707,24 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let state_dir = temp_dir.path().join("state");
         let state_manager = StateManager::new(state_dir.clone());
-        
+
         // Ensure state directory exists
         state_manager.ensure_state_dir().await.unwrap();
-        
+
         // Write corrupted JSON to a state file
         let corrupted_file = state_dir.join("corrupted.json");
-        tokio::fs::write(&corrupted_file, "{invalid json}").await.unwrap();
-        
+        tokio::fs::write(&corrupted_file, "{invalid json}")
+            .await
+            .unwrap();
+
         // List active states should handle the corrupted file gracefully
         let states = state_manager.list_active_states().await.unwrap();
         assert_eq!(states.len(), 0); // Corrupted file should be skipped
-        
+
         // Cleanup should remove the corrupted file
         let cleaned = state_manager.cleanup_state_directory().await.unwrap();
         assert_eq!(cleaned, 1);
-        
+
         // Verify the corrupted file is gone
         assert!(!corrupted_file.exists());
     }

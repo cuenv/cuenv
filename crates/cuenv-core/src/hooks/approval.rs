@@ -58,12 +58,15 @@ impl ApprovalManager {
                 path: Some(self.approval_file.clone().into_boxed_path()),
                 operation: "open".to_string(),
             })?;
-        
+
         // Acquire shared lock (multiple readers allowed)
-        file.lock_shared().map_err(|e| Error::configuration(
-            format!("Failed to acquire shared lock on approval file: {}", e)
-        ))?;
-        
+        file.lock_shared().map_err(|e| {
+            Error::configuration(format!(
+                "Failed to acquire shared lock on approval file: {}",
+                e
+            ))
+        })?;
+
         let mut contents = String::new();
         file.read_to_string(&mut contents)
             .await
@@ -72,7 +75,7 @@ impl ApprovalManager {
                 path: Some(self.approval_file.clone().into_boxed_path()),
                 operation: "read_to_string".to_string(),
             })?;
-        
+
         // Unlock happens automatically when file is dropped
         drop(file);
 
@@ -87,18 +90,20 @@ impl ApprovalManager {
     pub async fn save_approvals(&self) -> Result<()> {
         // Validate and canonicalize the approval file path to prevent path traversal
         let canonical_path = validate_and_canonicalize_path(&self.approval_file)?;
-        
+
         // Ensure parent directory exists
         if let Some(parent) = canonical_path.parent()
             && !parent.exists()
         {
             // Validate the parent directory path as well
             let parent_path = validate_directory_path(parent)?;
-            fs::create_dir_all(&parent_path).await.map_err(|e| Error::Io {
-                source: e,
-                path: Some(parent_path.into()),
-                operation: "create_dir_all".to_string(),
-            })?;
+            fs::create_dir_all(&parent_path)
+                .await
+                .map_err(|e| Error::Io {
+                    source: e,
+                    path: Some(parent_path.into()),
+                    operation: "create_dir_all".to_string(),
+                })?;
         }
 
         let contents = serde_json::to_string_pretty(&self.approvals)
@@ -106,7 +111,7 @@ impl ApprovalManager {
 
         // Write to a temporary file first, then rename atomically
         let temp_path = canonical_path.with_extension("tmp");
-        
+
         // Open temp file with exclusive lock for writing
         let mut file = OpenOptions::new()
             .write(true)
@@ -119,12 +124,15 @@ impl ApprovalManager {
                 path: Some(temp_path.clone().into_boxed_path()),
                 operation: "open".to_string(),
             })?;
-        
+
         // Acquire exclusive lock (only one writer allowed)
-        file.lock_exclusive().map_err(|e| Error::configuration(
-            format!("Failed to acquire exclusive lock on temp file: {}", e)
-        ))?;
-        
+        file.lock_exclusive().map_err(|e| {
+            Error::configuration(format!(
+                "Failed to acquire exclusive lock on temp file: {}",
+                e
+            ))
+        })?;
+
         file.write_all(contents.as_bytes())
             .await
             .map_err(|e| Error::Io {
@@ -132,16 +140,16 @@ impl ApprovalManager {
                 path: Some(temp_path.clone().into_boxed_path()),
                 operation: "write_all".to_string(),
             })?;
-        
+
         file.sync_all().await.map_err(|e| Error::Io {
             source: e,
             path: Some(temp_path.clone().into_boxed_path()),
             operation: "sync_all".to_string(),
         })?;
-        
+
         // Unlock happens automatically when file is dropped
         drop(file);
-        
+
         // Atomically rename temp file to final location
         fs::rename(&temp_path, &canonical_path)
             .await
@@ -325,7 +333,7 @@ fn validate_and_canonicalize_path(path: &Path) -> Result<PathBuf> {
             }
         }
     }
-    
+
     // If the path exists, canonicalize it
     if path.exists() {
         std::fs::canonicalize(path)
@@ -334,8 +342,9 @@ fn validate_and_canonicalize_path(path: &Path) -> Result<PathBuf> {
         // For non-existent paths, validate the parent and construct the canonical path
         if let Some(parent) = path.parent() {
             if parent.exists() {
-                let canonical_parent = std::fs::canonicalize(parent)
-                    .map_err(|e| Error::configuration(format!("Failed to canonicalize parent path: {}", e)))?;
+                let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+                    Error::configuration(format!("Failed to canonicalize parent path: {}", e))
+                })?;
                 if let Some(file_name) = path.file_name() {
                     Ok(canonical_parent.join(file_name))
                 } else {
@@ -357,7 +366,7 @@ fn validate_and_canonicalize_path(path: &Path) -> Result<PathBuf> {
 fn validate_directory_path(path: &Path) -> Result<PathBuf> {
     // Check for suspicious patterns
     validate_path_structure(path)?;
-    
+
     // Return the path as-is if validation passes
     Ok(path.to_path_buf())
 }
@@ -365,20 +374,20 @@ fn validate_directory_path(path: &Path) -> Result<PathBuf> {
 /// Validate path structure for security
 fn validate_path_structure(path: &Path) -> Result<()> {
     let path_str = path.to_string_lossy();
-    
+
     // Check for null bytes
     if path_str.contains('\0') {
         return Err(Error::configuration("Path contains null bytes"));
     }
-    
+
     // Check for suspicious patterns that might indicate path traversal attempts
     let suspicious_patterns = [
-        "../../../",  // Multiple parent directory traversals
-        "..\\..\\..\\" , // Windows-style traversals
-        "%2e%2e",     // URL-encoded parent directory
-        "..;/",       // Semicolon injection
+        "../../../",    // Multiple parent directory traversals
+        "..\\..\\..\\", // Windows-style traversals
+        "%2e%2e",       // URL-encoded parent directory
+        "..;/",         // Semicolon injection
     ];
-    
+
     for pattern in &suspicious_patterns {
         if path_str.contains(pattern) {
             return Err(Error::configuration(format!(
@@ -387,7 +396,7 @@ fn validate_path_structure(path: &Path) -> Result<()> {
             )));
         }
     }
-    
+
     Ok(())
 }
 
@@ -654,18 +663,18 @@ mod tests {
         assert!(validate_path_structure(Path::new("/home/user/test")).is_ok());
         assert!(validate_path_structure(Path::new("./relative/path")).is_ok());
         assert!(validate_path_structure(Path::new("file.txt")).is_ok());
-        
+
         // Test paths with null bytes (should fail)
         let path_with_null = PathBuf::from("/test\0/path");
         assert!(validate_path_structure(&path_with_null).is_err());
-        
+
         // Test paths with multiple parent directory traversals (should fail)
         assert!(validate_path_structure(Path::new("../../../etc/passwd")).is_err());
         assert!(validate_path_structure(Path::new("..\\..\\..\\windows\\system32")).is_err());
-        
+
         // Test URL-encoded traversals (should fail)
         assert!(validate_path_structure(Path::new("/test/%2e%2e/passwd")).is_err());
-        
+
         // Test semicolon injection (should fail)
         assert!(validate_path_structure(Path::new("..;/etc/passwd")).is_err());
     }
@@ -675,17 +684,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let test_file = temp_dir.path().join("test.txt");
         std::fs::write(&test_file, "test").unwrap();
-        
+
         // Test existing file canonicalization
         let result = validate_and_canonicalize_path(&test_file).unwrap();
         assert!(result.is_absolute());
         assert!(result.exists());
-        
+
         // Test non-existent file in existing directory
         let new_file = temp_dir.path().join("new_file.txt");
         let result = validate_and_canonicalize_path(&new_file).unwrap();
         assert!(result.ends_with("new_file.txt"));
-        
+
         // Test validation with parent directory that exists
         let nested_new = temp_dir.path().join("subdir/newfile.txt");
         let result = validate_and_canonicalize_path(&nested_new);
@@ -696,26 +705,29 @@ mod tests {
     async fn test_approval_file_corruption_recovery() {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approvals.json");
-        
+
         // Write corrupted JSON to the approval file
         std::fs::write(&approval_file, "{invalid json}").unwrap();
-        
+
         let mut manager = ApprovalManager::new(approval_file.clone());
-        
-        // Loading should fail due to corrupted JSON  
+
+        // Loading should fail due to corrupted JSON
         let result = manager.load_approvals().await;
-        assert!(result.is_err(), "Expected error when loading corrupted JSON");
-        
+        assert!(
+            result.is_err(),
+            "Expected error when loading corrupted JSON"
+        );
+
         // Manager should still be usable with empty approvals
         assert_eq!(manager.approvals.len(), 0);
-        
+
         // Should be able to save new approvals
         let directory = Path::new("/test/dir");
         manager
             .approve_config(directory, "test_hash".to_string(), None)
             .await
             .unwrap();
-        
+
         // New manager should be able to load the fixed file
         let mut manager2 = ApprovalManager::new(approval_file);
         manager2.load_approvals().await.unwrap();
@@ -726,11 +738,11 @@ mod tests {
     async fn test_concurrent_approval_access() {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approvals.json");
-        
+
         // Create multiple managers accessing the same file
         let mut manager1 = ApprovalManager::new(approval_file.clone());
         let mut manager2 = ApprovalManager::new(approval_file.clone());
-        
+
         // Approve from first manager
         manager1
             .approve_config(
@@ -740,7 +752,7 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         // Approve from second manager
         manager2
             .approve_config(
@@ -750,11 +762,11 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         // Load in a third manager to verify both approvals
         let mut manager3 = ApprovalManager::new(approval_file);
         manager3.load_approvals().await.unwrap();
-        
+
         // Should have the approval from manager1 (manager2's might have overwritten)
         // Due to file locking, one of them should succeed
         assert!(manager3.approvals.len() > 0);
@@ -765,10 +777,10 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let approval_file = temp_dir.path().join("approvals.json");
         let mut manager = ApprovalManager::new(approval_file);
-        
+
         let directory = Path::new("/test/expire");
         let config_hash = "expire_hash".to_string();
-        
+
         // Add an expired approval
         let expired_approval = ApprovalRecord {
             directory_path: directory.to_path_buf(),
@@ -777,15 +789,14 @@ mod tests {
             expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
             note: Some("Expired approval".to_string()),
         };
-        
-        manager.approvals.insert(
-            compute_directory_key(directory),
-            expired_approval,
-        );
-        
+
+        manager
+            .approvals
+            .insert(compute_directory_key(directory), expired_approval);
+
         // Should not be approved due to expiration
         assert!(!manager.is_approved(directory, &config_hash).unwrap());
-        
+
         // Cleanup should remove expired approval
         let removed = manager.cleanup_expired().await.unwrap();
         assert_eq!(removed, 1);
