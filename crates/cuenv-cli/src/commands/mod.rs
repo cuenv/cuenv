@@ -1,5 +1,6 @@
 pub mod env;
 pub mod exec;
+pub mod hooks;
 pub mod task;
 pub mod version;
 
@@ -16,6 +17,14 @@ pub enum Command {
         package: String,
         format: String,
     },
+    EnvLoad {
+        path: String,
+    },
+    EnvStatus {
+        path: String,
+        wait: bool,
+        timeout: u64,
+    },
     Task {
         path: String,
         package: String,
@@ -26,6 +35,13 @@ pub enum Command {
         package: String,
         command: String,
         args: Vec<String>,
+    },
+    ShellInit {
+        shell: crate::cli::ShellType,
+    },
+    Allow {
+        path: String,
+        note: Option<String>,
     },
 }
 
@@ -59,6 +75,17 @@ impl CommandExecutor {
                 command,
                 args,
             } => self.execute_exec(path, package, command, args).await,
+            Command::EnvLoad { path } => self.execute_env_load(path).await,
+            Command::EnvStatus {
+                path,
+                wait,
+                timeout,
+            } => self.execute_env_status(path, wait, timeout).await,
+            Command::ShellInit { shell } => {
+                self.execute_shell_init(shell);
+                Ok(())
+            }
+            Command::Allow { path, note } => self.execute_allow(path, note).await,
         }
     }
 
@@ -199,6 +226,102 @@ impl CommandExecutor {
                         "Command failed with exit code {exit_code}"
                     )))
                 }
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_env_load(&self, path: String) -> Result<()> {
+        let command_name = "env load";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_env_load(&path).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_env_status(&self, path: String, wait: bool, timeout: u64) -> Result<()> {
+        let command_name = "env status";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_env_status(&path, wait, timeout).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    fn execute_shell_init(&self, shell: crate::cli::ShellType) {
+        let command_name = "shell init";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        let output = hooks::execute_shell_init(shell);
+        self.send_event(Event::CommandComplete {
+            command: command_name.to_string(),
+            success: true,
+            output,
+        });
+    }
+
+    async fn execute_allow(&self, path: String, note: Option<String>) -> Result<()> {
+        let command_name = "allow";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_allow(&path, note).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
             }
             Err(e) => {
                 self.send_event(Event::CommandComplete {

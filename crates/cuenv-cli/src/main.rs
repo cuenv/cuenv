@@ -16,7 +16,7 @@ mod performance;
 mod tracing;
 mod tui;
 
-use crate::cli::{CliError, EXIT_OK, exit_code_for, parse, render_error};
+use crate::cli::{CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, render_error};
 use crate::commands::Command;
 use crate::tracing::{Level, TracingConfig, TracingFormat};
 use tracing::instrument;
@@ -148,6 +148,25 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
+        Command::EnvLoad { path } => match execute_env_load_command_safe(path, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::EnvStatus {
+            path,
+            wait,
+            timeout,
+        } => match execute_env_status_command_safe(path, wait, timeout, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::ShellInit { shell } => execute_shell_init_command_safe(shell, json_mode),
+        Command::Allow { path, note } => {
+            match execute_allow_command_safe(path, note, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -165,6 +184,118 @@ async fn execute_version_command_safe() -> Result<(), String> {
     perf_guard.finish(true);
 
     Ok(())
+}
+
+/// Execute env load command safely
+#[instrument(name = "cuenv_execute_env_load_safe")]
+async fn execute_env_load_command_safe(path: String, json_mode: bool) -> Result<(), CliError> {
+    match commands::hooks::execute_env_load(&path).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "message": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Env load failed: {e}"),
+            "Check that your env.cue file is valid and the directory is approved",
+        )),
+    }
+}
+
+/// Execute env status command safely
+#[instrument(name = "cuenv_execute_env_status_safe")]
+async fn execute_env_status_command_safe(
+    path: String,
+    wait: bool,
+    timeout: u64,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::hooks::execute_env_status(&path, wait, timeout).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "status": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Env status failed: {e}"),
+            "Check that your env.cue file exists and hook execution has been started",
+        )),
+    }
+}
+
+/// Execute shell init command safely
+#[instrument(name = "cuenv_execute_shell_init_safe")]
+fn execute_shell_init_command_safe(
+    shell: crate::cli::ShellType,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    let output = commands::hooks::execute_shell_init(shell);
+
+    if json_mode {
+        let envelope = OkEnvelope::new(serde_json::json!({
+            "script": output
+        }));
+        match serde_json::to_string(&envelope) {
+            Ok(json) => println!("{json}"),
+            Err(e) => return Err(CliError::other(format!("JSON serialization failed: {e}"))),
+        }
+    } else {
+        println!("{output}");
+    }
+    Ok(())
+}
+
+/// Execute allow command safely
+#[instrument(name = "cuenv_execute_allow_safe")]
+async fn execute_allow_command_safe(
+    path: String,
+    note: Option<String>,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::hooks::execute_allow(&path, note).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "message": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Allow failed: {e}"),
+            "Check that your env.cue file is valid and the directory exists",
+        )),
+    }
 }
 
 /// Execute env print command safely
