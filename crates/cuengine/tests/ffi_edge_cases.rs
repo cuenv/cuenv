@@ -1,6 +1,6 @@
 //! Tests for FFI edge cases and error paths
 
-use cuengine::{evaluate_cue_package, CStringPtr};
+use cuengine::{CStringPtr, evaluate_cue_package};
 use std::ffi::CString;
 use tempfile::TempDir;
 
