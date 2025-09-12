@@ -101,8 +101,13 @@
           crate2nixProject = import ./Cargo.nix {
             inherit pkgs;
 
-            # Override build for cuengine to include Go bridge
-            defaultCrateOverrides = pkgs.defaultCrateOverrides // {
+            # Create a cleaned version of defaultCrateOverrides without darwin.apple_sdk_11_0
+            defaultCrateOverrides = 
+              let
+                # Get the base overrides but filter out any that might reference the old SDK
+                baseOverrides = if pkgs.stdenv.isDarwin then {} else pkgs.defaultCrateOverrides;
+              in
+              baseOverrides // {
               cuengine = attrs: {
                 nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
                   pkgs.go_1_24
