@@ -58,9 +58,11 @@
 
         buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (
           if pkgs ? darwin.apple_sdk then [
+            pkgs.darwin.apple_sdk.frameworks.CoreFoundation
             pkgs.darwin.apple_sdk.frameworks.Security
             pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
           ] else [
+            pkgs.darwin.CoreFoundation
             pkgs.darwin.Security
             pkgs.darwin.SystemConfiguration
           ]
@@ -108,13 +110,18 @@
           crate2nixProject = import ./Cargo.nix {
             inherit pkgs;
 
-            # Create a cleaned version of defaultCrateOverrides without darwin.apple_sdk_11_0
+            # Avoid using pkgs.defaultCrateOverrides on Darwin to prevent apple_sdk_11_0 issues
             defaultCrateOverrides =
               let
-                # Get the base overrides but filter out any that might reference the old SDK
-                baseOverrides = if pkgs.stdenv.isDarwin then { } else pkgs.defaultCrateOverrides;
+                # Create base overrides that work on all platforms
+                # On Darwin, we completely avoid pkgs.defaultCrateOverrides
+                # On Linux, we can safely use it
+                baseOverrides =
+                  if pkgs.stdenv.isDarwin
+                  then (final: prev: { })  # Empty base overrides for Darwin
+                  else pkgs.defaultCrateOverrides;
               in
-              baseOverrides // {
+              pkgs.lib.composeExtensions baseOverrides (final: prev: {
                 cuengine = attrs: {
                   nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
                     pkgs.go_1_24
@@ -122,15 +129,17 @@
                   ];
 
                   buildInputs = (attrs.buildInputs or [ ]) ++
-                  pkgs.lib.optionals pkgs.stdenv.isDarwin (
-                    if pkgs ? darwin.apple_sdk then [
-                      pkgs.darwin.apple_sdk.frameworks.Security
-                      pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-                    ] else [
-                      pkgs.darwin.Security
-                      pkgs.darwin.SystemConfiguration
-                    ]
-                  );
+                    pkgs.lib.optionals pkgs.stdenv.isDarwin (
+                      if pkgs ? darwin.apple_sdk then [
+                        pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+                        pkgs.darwin.apple_sdk.frameworks.Security
+                        pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+                      ] else [
+                        pkgs.darwin.CoreFoundation
+                        pkgs.darwin.Security
+                        pkgs.darwin.SystemConfiguration
+                      ]
+                    );
 
                   # Make prebuilt bridge available during build
                   preBuild = ''
@@ -145,7 +154,7 @@
                   # Set environment variables for the build
                   CUE_BRIDGE_PATH = cue-bridge;
                 };
-              };
+              });
           };
         in
         {
@@ -200,9 +209,11 @@
               llvmPackages.bintools
             ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin (
               if pkgs ? darwin.apple_sdk then [
+                pkgs.darwin.apple_sdk.frameworks.CoreFoundation
                 pkgs.darwin.apple_sdk.frameworks.Security
                 pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
               ] else [
+                pkgs.darwin.CoreFoundation
                 pkgs.darwin.Security
                 pkgs.darwin.SystemConfiguration
               ]
