@@ -76,14 +76,8 @@
           };
         };
 
-        # Generate Cargo.nix from Cargo.lock using crate2nix
-        cargoNix = crate2nix.tools.${system}.appliedCargoNix {
-          name = "cuenv";
-          src = ./.;
-        };
-
         # Import the generated Cargo.nix with custom overrides
-        crate2nixProject = import cargoNix {
+        crate2nixProject = import ./Cargo.nix {
           inherit pkgs;
 
           # Override build for cuengine to include Go bridge
