@@ -220,7 +220,7 @@ impl TuiManager {
                 progress, message, ..
             } => {
                 self.state.progress = *progress;
-                self.state.message = message.clone();
+                self.state.message.clone_from(message);
             }
             Event::CommandComplete {
                 success, output, ..
@@ -233,10 +233,13 @@ impl TuiManager {
                     self.state.output.push(output.clone());
                 }
             }
+            #[allow(clippy::match_same_arms)]
             Event::TuiRefresh => {
                 // Force render
             }
-            _ => {}
+            _ => {
+                // Other events don't need specific handling
+            }
         }
 
         self.tui.render(&self.state)

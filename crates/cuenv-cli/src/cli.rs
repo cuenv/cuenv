@@ -109,8 +109,7 @@ impl CliError {
 pub fn exit_code_for(err: &CliError) -> i32 {
     match err {
         CliError::Config { .. } => EXIT_CLI,
-        CliError::Eval { .. } => EXIT_EVAL,
-        CliError::Other { .. } => EXIT_EVAL,
+        CliError::Eval { .. } | CliError::Other { .. } => EXIT_EVAL,
     }
 }
 
@@ -148,6 +147,27 @@ pub enum OutputFormat {
     /// Simple text format
     #[default]
     Simple,
+}
+
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            OutputFormat::Json => "json",
+            OutputFormat::Env => "env",
+            OutputFormat::Simple => "simple",
+        };
+        write!(f, "{s}")
+    }
+}
+
+impl AsRef<str> for OutputFormat {
+    fn as_ref(&self) -> &str {
+        match self {
+            OutputFormat::Json => "json",
+            OutputFormat::Env => "env",
+            OutputFormat::Simple => "simple",
+        }
+    }
 }
 
 /// Success response envelope for JSON output
@@ -225,6 +245,50 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: EnvCommands,
     },
+    #[command(
+        about = "Execute a task defined in CUE configuration",
+        visible_alias = "t"
+    )]
+    Task {
+        #[arg(help = "Name of the task to execute (list tasks if not provided)")]
+        name: Option<String>,
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+    #[command(
+        about = "Execute a command with CUE environment variables",
+        visible_alias = "e"
+    )]
+    Exec {
+        #[arg(help = "Command to execute")]
+        command: String,
+        #[arg(help = "Arguments for the command", trailing_var_arg = true)]
+        args: Vec<String>,
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -246,10 +310,11 @@ pub enum EnvCommands {
         package: String,
         #[arg(
             long = "output-format",
-            help = "Output format (env, json)",
-            default_value = "env"
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Env
         )]
-        output_format: String,
+        output_format: OutputFormat,
     },
 }
 
@@ -265,8 +330,28 @@ impl From<Commands> for Command {
                 } => Command::EnvPrint {
                     path,
                     package,
-                    format: output_format,
+                    format: output_format.to_string(),
                 },
+            },
+            Commands::Task {
+                name,
+                path,
+                package,
+            } => Command::Task {
+                path,
+                package,
+                name,
+            },
+            Commands::Exec {
+                command,
+                args,
+                path,
+                package,
+            } => Command::Exec {
+                path,
+                package,
+                command,
+                args,
             },
         }
     }
@@ -386,7 +471,7 @@ mod tests {
             } = subcommand;
             assert_eq!(path, ".");
             assert_eq!(package, "cuenv");
-            assert_eq!(output_format, "env");
+            assert!(matches!(output_format, OutputFormat::Env));
         } else {
             panic!("Expected Env command");
         }
@@ -415,7 +500,7 @@ mod tests {
             } = subcommand;
             assert_eq!(path, "examples/env-basic");
             assert_eq!(package, "examples");
-            assert_eq!(output_format, "json");
+            assert!(matches!(output_format, OutputFormat::Json));
         } else {
             panic!("Expected Env command");
         }
@@ -433,7 +518,7 @@ mod tests {
             } = subcommand;
             assert_eq!(path, "test/path");
             assert_eq!(package, "cuenv"); // default
-            assert_eq!(output_format, "env"); // default
+            assert!(matches!(output_format, OutputFormat::Env)); // default
         } else {
             panic!("Expected Env command");
         }
@@ -445,7 +530,7 @@ mod tests {
             subcommand: EnvCommands::Print {
                 path: "test".to_string(),
                 package: "pkg".to_string(),
-                output_format: "json".to_string(),
+                output_format: OutputFormat::Json,
             },
         };
         let command: Command = env_cmd.into();

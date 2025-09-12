@@ -265,9 +265,9 @@ mod tests {
 
             // Events should be received in order and match expected types
             match (&expected_event, &event) {
-                (Event::CommandStart { .. }, Event::CommandStart { .. }) => {}
-                (Event::CommandProgress { .. }, Event::CommandProgress { .. }) => {}
-                (Event::CommandComplete { .. }, Event::CommandComplete { .. }) => {}
+                (Event::CommandStart { .. }, Event::CommandStart { .. })
+                | (Event::CommandProgress { .. }, Event::CommandProgress { .. })
+                | (Event::CommandComplete { .. }, Event::CommandComplete { .. }) => {}
                 _ => panic!("Event types don't match: expected {expected_event:?}, got {event:?}"),
             }
         }

@@ -5,13 +5,8 @@
 //! This binary provides command-line interface for CUE package evaluation,
 //! environment variable management, and task orchestration.
 
-#![allow(clippy::cast_precision_loss)]
-#![allow(clippy::cast_possible_truncation)]
-#![allow(clippy::unused_self)]
-#![allow(clippy::unnecessary_wraps)]
-#![allow(clippy::used_underscore_items)]
-#![allow(clippy::match_same_arms)]
-#![allow(clippy::assigning_clones)]
+// Individual clippy allows for specific justified cases can be added locally
+// where needed, rather than broad suppression
 
 mod cli;
 mod commands;
@@ -60,7 +55,7 @@ async fn run() -> i32 {
 #[instrument(name = "cuenv_real_main")]
 async fn real_main() -> Result<(), CliError> {
     // Parse CLI arguments
-    let cli = match parse_with_tracing().await {
+    let cli = match initialize_cli_and_tracing().await {
         Ok(cli) => cli,
         Err(e) => {
             return Err(CliError::config_with_help(
@@ -80,33 +75,25 @@ async fn real_main() -> Result<(), CliError> {
     }
 }
 
-/// Parse CLI with proper tracing initialization
-#[instrument(name = "cuenv_parse_with_tracing")]
-async fn parse_with_tracing() -> Result<crate::cli::Cli, CliError> {
-    // Parse args early to get tracing options
-    let cli_args = std::env::args().collect::<Vec<_>>();
-    let json_flag = cli_args.iter().any(|arg| arg == "--json");
-    let level_flag = cli_args.windows(2).find_map(|args| {
-        if args[0] == "--level" || args[0] == "-l" {
-            Some(args[1].as_str())
-        } else {
-            None
-        }
-    });
+/// Initialize CLI parsing and tracing configuration
+#[instrument(name = "cuenv_initialize_cli_and_tracing")]
+async fn initialize_cli_and_tracing() -> Result<crate::cli::Cli, CliError> {
+    // Parse CLI arguments once
+    let cli = parse();
 
-    let trace_format = if json_flag {
+    // Derive tracing configuration from parsed CLI
+    let trace_format = if cli.json {
         TracingFormat::Json
     } else {
         TracingFormat::Dev
     };
 
-    let log_level = match level_flag {
-        Some("trace") => Level::TRACE,
-        Some("debug") => Level::DEBUG,
-        Some("info") => Level::INFO,
-        Some("warn") => Level::WARN,
-        Some("error") => Level::ERROR,
-        _ => Level::WARN, // Default
+    let log_level = match cli.level {
+        crate::tracing::LogLevel::Trace => Level::TRACE,
+        crate::tracing::LogLevel::Debug => Level::DEBUG,
+        crate::tracing::LogLevel::Info => Level::INFO,
+        crate::tracing::LogLevel::Warn => Level::WARN,
+        crate::tracing::LogLevel::Error => Level::ERROR,
     };
 
     // Initialize enhanced tracing
@@ -125,8 +112,7 @@ async fn parse_with_tracing() -> Result<crate::cli::Cli, CliError> {
         }
     }
 
-    // Parse CLI arguments
-    Ok(parse())
+    Ok(cli)
 }
 
 /// Execute command safely without ? operator
@@ -142,6 +128,23 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             package,
             format,
         } => match execute_env_print_command_safe(path, package, format, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::Task {
+            path,
+            package,
+            name,
+        } => match execute_task_command_safe(path, package, name).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::Exec {
+            path,
+            package,
+            command,
+            args,
+        } => match execute_exec_command_safe(path, package, command, args).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -192,6 +195,64 @@ async fn execute_env_print_command_safe(
             Err(CliError::eval_with_help(
                 format!("Failed to print environment variables: {e:?}"),
                 "Check your CUE files and package configuration",
+            ))
+        }
+    }
+}
+
+/// Execute task command safely
+#[instrument(name = "cuenv_execute_task_safe")]
+async fn execute_task_command_safe(
+    path: String,
+    package: String,
+    name: Option<String>,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("task_command");
+    perf_guard.add_metadata("command_type", "task");
+
+    match commands::task::execute_task(&path, &package, name.as_deref(), false).await {
+        Ok(output) => {
+            println!("{output}");
+            perf_guard.finish(true);
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval_with_help(
+                format!("Task execution failed: {e}"),
+                "Check your CUE configuration and task definitions",
+            ))
+        }
+    }
+}
+
+/// Execute exec command safely
+#[instrument(name = "cuenv_execute_exec_safe")]
+async fn execute_exec_command_safe(
+    path: String,
+    package: String,
+    command: String,
+    args: Vec<String>,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("exec_command");
+    perf_guard.add_metadata("command_type", "exec");
+
+    match commands::exec::execute_exec(&path, &package, &command, &args).await {
+        Ok(exit_code) => {
+            perf_guard.finish(exit_code == 0);
+            if exit_code == 0 {
+                Ok(())
+            } else {
+                Err(CliError::other(format!(
+                    "Command exited with non-zero code: {exit_code}"
+                )))
+            }
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval_with_help(
+                format!("Command execution failed: {e}"),
+                "Check your CUE configuration and command",
             ))
         }
     }
@@ -274,7 +335,6 @@ mod tests {
                 Some("trace") => Level::TRACE,
                 Some("debug") => Level::DEBUG,
                 Some("info") => Level::INFO,
-                Some("warn") => Level::WARN,
                 Some("error") => Level::ERROR,
                 _ => Level::WARN,
             };
