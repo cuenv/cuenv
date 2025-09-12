@@ -2,14 +2,17 @@
   description = "cuenv - Configuration utilities and validation engine";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    flake-schemas.url = "https://flakehub.com/f/DeterminateSystems/flake-schemas/*";
+    
+    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1.*";
+    
     crate2nix = {
       url = "github:nix-community/crate2nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    flake-utils.url = "github:numtide/flake-utils";
+    
     rust-overlay = {
-      url = "github:oxalica/rust-overlay";
+      url = "https://flakehub.com/f/oxalica/rust-overlay/0.1.*";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -27,11 +30,29 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, crate2nix, flake-utils, rust-overlay, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        overlays = [ (import rust-overlay) ];
-        pkgs = import nixpkgs { inherit system overlays; };
+  outputs = { self, flake-schemas, nixpkgs, crate2nix, rust-overlay, ... }:
+    let
+      supportedSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forEachSupportedSystem = f: nixpkgs.lib.genAttrs supportedSystems (system: f {
+        inherit system;
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [
+            rust-overlay.overlays.default
+            (final: prev: {
+              rustToolchain = final.rust-bin.stable.latest.default.override {
+                extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
+              };
+            })
+          ];
+        };
+      });
+    in
+    {
+      schemas = flake-schemas.schemas;
+      
+      packages = forEachSupportedSystem ({ system, pkgs }:
+        let
 
         # Pre-build the Go CUE bridge for reproducible builds
         cue-bridge = pkgs.buildGoModule {
@@ -110,32 +131,23 @@
             };
           };
         };
-
-      in
-      {
-        # Package outputs
-        packages = {
+        in
+        {
           default = crate2nixProject.workspaceMembers.cuenv-cli.build;
           cuenv = crate2nixProject.workspaceMembers.cuenv-cli.build;
           cuenv-core = crate2nixProject.workspaceMembers.cuenv-core.build;
           cuengine = crate2nixProject.workspaceMembers.cuengine.build;
           cue-bridge = cue-bridge;
-        };
-
-        # Development shell
-        devShells.default = pkgs.mkShell {
-          buildInputs = with pkgs; [
-            # Rust toolchain (stable with MSRV support)
-            (rust-bin.stable.latest.default.override {
-              extensions = [
-                "cargo"
-                "clippy"
-                "rust-analyzer"
-                "rustc"
-                "rustfmt"
-                "llvm-tools-preview"
-              ];
-            })
+        });
+      
+      devShells = forEachSupportedSystem ({ system, pkgs }: 
+        let
+          cue-bridge = self.packages.${system}.cue-bridge;
+        in {
+        default = pkgs.mkShell {
+          packages = with pkgs; [
+            # Rust toolchain
+            rustToolchain
 
             # Go toolchain - pinned to 1.24.x as per Phase 3 requirements
             go_1_24
@@ -172,13 +184,17 @@
             # Build dependencies
             pkg-config
             llvmPackages.bintools
-          ] ++ lib.optionals stdenv.isDarwin [
-            darwin.apple_sdk.frameworks.Security
-            darwin.apple_sdk.frameworks.CoreFoundation
-            darwin.apple_sdk.frameworks.SystemConfiguration
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.darwin.apple_sdk.frameworks.Security
+            pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
           ];
+          
+          env = {
+            RUST_BACKTRACE = "1";
+            RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
+          };
 
-          # Make prebuilt bridge available in development
           shellHook = ''
             export CUE_BRIDGE_PATH="${cue-bridge}"
             
@@ -197,21 +213,20 @@
             echo "🚀 Phase 3 tooling: cargo deny, audit, cyclonedx available"
           '';
         };
-
-        # Apps
-        apps = {
-          default = flake-utils.lib.mkApp {
-            drv = self.packages.${system}.cuenv;
-            name = "cuenv";
+      });
+      
+      apps = forEachSupportedSystem ({ system, pkgs }: {
+          default = {
+            type = "app";
+            program = "${self.packages.${system}.cuenv}/bin/cuenv";
           };
 
-          # Generate Cargo.nix helper
-          generate-cargo-nix = flake-utils.lib.mkApp {
-            drv = pkgs.writeShellScriptBin "generate-cargo-nix" ''
+          generate-cargo-nix = {
+            type = "app";
+            program = "${pkgs.writeShellScriptBin "generate-cargo-nix" ''
               ${crate2nix.packages.${system}.crate2nix}/bin/crate2nix generate
-            '';
+            ''}/bin/generate-cargo-nix";
           };
-        };
-      }
-    );
+      });
+    };
 }
