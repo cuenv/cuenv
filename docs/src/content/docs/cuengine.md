@@ -1,0 +1,320 @@
+---
+title: CUE Engine
+description: Core CUE evaluation engine with Rust FFI interface
+---
+
+The CUE Engine (`cuengine`) is the foundational component of cuenv, providing fast and reliable CUE evaluation through a Rust FFI interface to the Go CUE library.
+
+## Overview
+
+The CUE Engine bridges the gap between Rust's performance and safety with CUE's powerful constraint-based configuration language. It provides a high-level API for evaluating CUE expressions, validating configurations, and extracting structured data.
+
+## Architecture
+
+```text
+┌─────────────────┐    ┌──────────────┐    ┌─────────────┐
+│   Rust Client   │◄──►│   cuengine   │◄──►│  Go CUE     │
+│   (cuenv-core)  │    │   (FFI Layer) │    │  Evaluator  │
+└─────────────────┘    └──────────────┘    └─────────────┘
+```
+
+### Key Components
+
+**FFI Wrapper**
+Provides a safe Rust interface to the Go CUE evaluation engine using CGO.
+
+**Memory Management**
+Implements RAII patterns for automatic cleanup of Go-allocated memory.
+
+**Error Handling**
+Translates Go errors into structured Rust error types with proper error codes.
+
+**JSON Bridge**
+Handles serialization/deserialization between Rust and Go data structures.
+
+## API Reference
+
+### Core Functions
+
+#### `evaluate_cue`
+
+Evaluates a CUE expression and returns the result.
+
+```rust
+pub fn evaluate_cue(
+    input: &str,
+    options: &EvaluationOptions,
+) -> Result<serde_json::Value, CueError>
+```
+
+**Parameters:**
+
+- `input`: The CUE expression to evaluate
+- `options`: Evaluation configuration options
+
+**Returns:**
+
+- `Ok(Value)`: The evaluated result as JSON
+- `Err(CueError)`: Evaluation error with details
+
+**Example:**
+
+```rust
+use cuengine::{evaluate_cue, EvaluationOptions};
+
+let input = r#"
+    name: "example"
+    version: "1.0.0"
+    environment: {
+        NODE_ENV: "production"
+        PORT: 8080
+    }
+"#;
+
+let options = EvaluationOptions::default();
+let result = evaluate_cue(input, &options)?;
+println!("{}", serde_json::to_string_pretty(&result)?);
+```
+
+#### `validate_cue`
+
+Validates CUE configuration against constraints.
+
+```rust
+pub fn validate_cue(
+    input: &str,
+    schema: Option<&str>,
+) -> Result<ValidationResult, CueError>
+```
+
+**Parameters:**
+
+- `input`: The CUE configuration to validate
+- `schema`: Optional schema for validation
+
+**Returns:**
+
+- `Ok(ValidationResult)`: Validation results and any issues
+- `Err(CueError)`: Validation error
+
+#### `get_bridge_version`
+
+Returns version information for compatibility checking.
+
+```rust
+pub fn get_bridge_version() -> Result<BridgeVersion, CueError>
+```
+
+**Returns:**
+
+- Bridge version information including Rust and Go component versions
+
+### Configuration Options
+
+#### `EvaluationOptions`
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationOptions {
+    /// Include concrete values only
+    pub concrete: bool,
+    /// Maximum evaluation depth
+    pub max_depth: Option<u32>,
+    /// Enable strict mode
+    pub strict: bool,
+    /// Include hidden fields
+    pub show_hidden: bool,
+}
+```
+
+#### `ValidationResult`
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationResult {
+    /// Whether validation passed
+    pub valid: bool,
+    /// List of validation errors
+    pub errors: Vec<ValidationError>,
+    /// List of warnings
+    pub warnings: Vec<String>,
+}
+```
+
+### Error Handling
+
+The engine provides structured error types:
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum CueError {
+    #[error("Evaluation failed: {message}")]
+    EvaluationError {
+        message: String,
+        code: i32,
+        position: Option<Position>,
+    },
+
+    #[error("Validation failed: {message}")]
+    ValidationError {
+        message: String,
+        errors: Vec<ValidationError>,
+    },
+
+    #[error("FFI error: {message}")]
+    FfiError { message: String },
+
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] serde_json::Error),
+}
+```
+
+## Performance Characteristics
+
+The CUE Engine is optimized for:
+
+**Fast Evaluation**
+
+- Minimal FFI overhead through efficient serialization
+- Reusable evaluation contexts for batch operations
+- Lazy evaluation where possible
+
+**Memory Efficiency**
+
+- Automatic cleanup of Go-allocated memory
+- Streaming support for large configurations
+- Configurable memory limits
+
+**Concurrent Safety**
+
+- Thread-safe evaluation contexts
+- Parallel validation support
+- Lock-free read operations where possible
+
+## Integration Patterns
+
+### Basic Usage
+
+```rust
+use cuengine::{CueEngine, EvaluationOptions};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = CueEngine::new()?;
+
+    let config = r#"
+        database: {
+            host: "localhost"
+            port: 5432
+            name: "myapp"
+        }
+    "#;
+
+    let result = engine.evaluate(config, &EvaluationOptions::default())?;
+    println!("Database config: {}", result["database"]);
+
+    Ok(())
+}
+```
+
+### Configuration Validation
+
+```rust
+use cuengine::{validate_cue, ValidationOptions};
+
+fn validate_app_config(config: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let schema = r#"
+        #Config: {
+            name: string
+            version: string & =~"^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            environment: {
+                [string]: string | number | bool
+            }
+        }
+
+        config: #Config
+    "#;
+
+    let result = validate_cue(config, Some(schema))?;
+
+    if !result.valid {
+        for error in result.errors {
+            eprintln!("Validation error: {}", error.message);
+        }
+        return Err("Configuration validation failed".into());
+    }
+
+    Ok(())
+}
+```
+
+### Batch Processing
+
+```rust
+use cuengine::{CueEngine, EvaluationOptions};
+use std::path::Path;
+
+fn process_config_directory(path: &Path) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
+    let engine = CueEngine::new()?;
+    let options = EvaluationOptions::default();
+    let mut results = Vec::new();
+
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.path().extension().map_or(false, |ext| ext == "cue") {
+            let content = std::fs::read_to_string(entry.path())?;
+            let result = engine.evaluate(&content, &options)?;
+            results.push(result);
+        }
+    }
+
+    Ok(results)
+}
+```
+
+## Testing
+
+The engine includes comprehensive test coverage:
+
+```bash
+# Run all engine tests
+cargo test -p cuengine
+
+# Run specific test categories
+cargo test -p cuengine evaluation
+cargo test -p cuengine validation
+cargo test -p cuengine error_handling
+
+# Run with debugging output
+RUST_LOG=debug cargo test -p cuengine -- --nocapture
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**FFI Initialization Errors**
+Ensure the Go bridge library is properly built and accessible.
+
+**Memory Leaks**
+Check that all `CueEngine` instances are properly dropped.
+
+**Evaluation Timeouts**
+Increase timeout settings for complex CUE expressions.
+
+**Version Mismatches**
+Use `get_bridge_version()` to verify Rust/Go component compatibility.
+
+### Debug Mode
+
+Enable debug logging for detailed operation tracing:
+
+```rust
+env_logger::init();
+log::debug!("CUE evaluation trace enabled");
+```
+
+## See Also
+
+- [cuenv-core](/cuenv-core/) - Higher-level configuration management
+- [API Reference](/api-reference/) - Complete API documentation
+- [Examples](/examples/) - Usage examples and patterns

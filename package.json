@@ -5,12 +5,9 @@
   "workspaces": [
     "docs"
   ],
-  "devDependencies": {
-    "bun": "^1.0.0"
-  },
   "scripts": {
     "docs:build": "cd docs && bun run build",
-    "docs:serve": "cd docs && bun run serve",
+    "docs:preview": "cd docs && bun run preview",
     "docs:dev": "cd docs && bun run dev"
   }
 }

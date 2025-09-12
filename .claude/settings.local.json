@@ -5,7 +5,9 @@
       "Bash(git:*)",
       "Bash(devenv shell:*)",
       "Bash(cargo test:*)",
-      "Bash(cargo run:*)"
+      "Bash(cargo run:*)",
+      "WebFetch(domain:starlight.astro.build)",
+      "Bash(bun add:*)"
     ],
     "deny": [],
     "ask": []

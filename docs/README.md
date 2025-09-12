@@ -1,79 +1,49 @@
-# cuenv Documentation
+# Starlight Starter Kit: Basics
 
-This directory contains the source files for the cuenv documentation website, built with [Antora](https://antora.org/) and written in [AsciiDoc](https://asciidoctor.org/).
-
-## Building Documentation
-
-### Prerequisites
-
-- Node.js 16+ 
-- npm
-
-### Quick Start
-
-```bash
-# Install dependencies
-npm install
-
-# Build documentation
-npm run docs:build
-
-# Serve locally
-npm run docs:serve
-```
-
-The documentation will be available at http://localhost:8080
-
-### Development Workflow
-
-```bash
-# Build and serve in one command
-npm run docs:dev
-```
-
-## Structure
+[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
 
 ```
-docs/
-├── antora.yml              # Antora component descriptor
-├── modules/
-│   └── ROOT/
-│       ├── nav.adoc        # Site navigation
-│       ├── pages/          # Documentation pages
-│       ├── assets/         # Images and other assets
-│       └── examples/       # Code examples
-└── README.md              # This file
+bun create astro@latest -- --template starlight
 ```
 
-## Writing Guidelines
+> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
 
-- Use AsciiDoc format for all documentation
-- Follow the existing page structure and navigation
-- Include code examples where appropriate
-- Cross-reference related pages using `xref:`
-- Test all code examples before committing
+## 🚀 Project Structure
 
-## Building Process
+Inside of your Astro + Starlight project, you'll see the following folders and files:
 
-The documentation is built using Antora, which:
+```
+.
+├── public/
+├── src/
+│   ├── assets/
+│   ├── content/
+│   │   └── docs/
+│   └── content.config.ts
+├── astro.config.mjs
+├── package.json
+└── tsconfig.json
+```
 
-1. Reads the `antora-playbook.yml` configuration
-2. Processes AsciiDoc files in `docs/modules/ROOT/pages/`
-3. Applies the UI theme
-4. Generates a static website in `build/site/`
+Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
 
-## Deployment
+Images can be added to `src/assets/` and embedded in Markdown with a relative link.
 
-Documentation is automatically built and deployed via GitHub Actions:
+Static assets, like favicons, can be placed in the `public/` directory.
 
-- **Pull Requests**: Documentation is built and artifacts are saved
-- **Main Branch**: Documentation is built and deployed to GitHub Pages
+## 🧞 Commands
 
-## Contributing
+All commands are run from the root of the project, from a terminal:
 
-1. Edit or add AsciiDoc files in `docs/modules/ROOT/pages/`
-2. Update navigation in `docs/modules/ROOT/nav.adoc` if adding new pages
-3. Test locally with `npm run docs:build`
-4. Submit a pull request
+| Command               | Action                                           |
+| :-------------------- | :----------------------------------------------- |
+| `bun install`         | Installs dependencies                            |
+| `bun dev`             | Starts local dev server at `localhost:4321`      |
+| `bun build`           | Build your production site to `./dist/`          |
+| `bun preview`         | Preview your build locally, before deploying     |
+| `bun astro ...`       | Run CLI commands like `astro add`, `astro check` |
+| `bun astro -- --help` | Get help using the Astro CLI                     |
 
-For detailed contributing guidelines, see the main [Contributing Guide](../CONTRIBUTING.md).
+## 👀 Want to learn more?
+
+Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
