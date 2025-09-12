@@ -998,11 +998,11 @@ mod tests {
     #[tokio::test]
     async fn test_command_whitelist_management() {
         let executor = HookExecutor::with_default_config().unwrap();
-        
+
         // Test adding a new command to whitelist
         let custom_command = "my-custom-tool".to_string();
         executor.allow_command(custom_command.clone()).await;
-        
+
         // Test that the newly allowed command works
         let hook = Hook {
             command: custom_command.clone(),
@@ -1012,18 +1012,21 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: true, // Don't fail if command doesn't exist
         };
-        
+
         // Should not error due to whitelist check (may fail if command doesn't exist)
         let result = executor.execute_single_hook(hook).await;
         // If it errors, it should be because the command doesn't exist, not because it's not allowed
         if result.is_err() {
             let err_msg = result.unwrap_err().to_string();
-            assert!(!err_msg.contains("not allowed"), "Command should be allowed after adding to whitelist");
+            assert!(
+                !err_msg.contains("not allowed"),
+                "Command should be allowed after adding to whitelist"
+            );
         }
-        
+
         // Test removing a command from whitelist
         executor.disallow_command("echo").await;
-        
+
         let hook = Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
@@ -1032,15 +1035,21 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: false,
         };
-        
+
         let result = executor.execute_single_hook(hook).await;
         assert!(result.is_err(), "Echo command should be disallowed");
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("not allowed") || err_msg.contains("not in whitelist") || err_msg.contains("Configuration"), "Error message should indicate command not allowed: {}", err_msg);
-        
+        assert!(
+            err_msg.contains("not allowed")
+                || err_msg.contains("not in whitelist")
+                || err_msg.contains("Configuration"),
+            "Error message should indicate command not allowed: {}",
+            err_msg
+        );
+
         // Test re-allowing a command
         executor.allow_command("echo".to_string()).await;
-        
+
         let hook = Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
@@ -1049,15 +1058,18 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: false,
         };
-        
+
         let result = executor.execute_single_hook(hook).await;
-        assert!(result.is_ok(), "Echo command should be allowed after re-adding");
+        assert!(
+            result.is_ok(),
+            "Echo command should be allowed after re-adding"
+        );
     }
 
     #[tokio::test]
     async fn test_fail_fast_mode_edge_cases() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         // Test fail_fast with multiple failing hooks
         let config = HookExecutionConfig {
             max_concurrent: 2,
@@ -1065,10 +1077,10 @@ mod tests {
             fail_fast: true,
             state_dir: Some(temp_dir.path().to_path_buf()),
         };
-        
+
         let executor = HookExecutor::new(config).unwrap();
         let directory_path = PathBuf::from("/test/fail-fast");
-        
+
         let hooks = vec![
             Hook {
                 command: "false".to_string(), // Will fail
@@ -1095,32 +1107,32 @@ mod tests {
                 continue_on_error: false,
             },
         ];
-        
+
         executor
             .execute_hooks_background(directory_path.clone(), "fail_fast_test".to_string(), hooks)
             .await
             .unwrap();
-        
+
         // Wait for completion
         executor
             .wait_for_completion(&directory_path, Some(10))
             .await
             .unwrap();
-        
+
         let state = executor
             .get_execution_status(&directory_path)
             .await
             .unwrap()
             .unwrap();
-        
+
         assert_eq!(state.status, ExecutionStatus::Failed);
         // Only the first hook should have been executed
         // Only the first hook should have been executed
         assert_eq!(state.completed_hooks, 1);
-        
+
         // Test fail_fast with continue_on_error interaction
         let directory_path2 = PathBuf::from("/test/fail-fast-continue");
-        
+
         let hooks2 = vec![
             Hook {
                 command: "false".to_string(),
@@ -1155,23 +1167,27 @@ mod tests {
                 continue_on_error: false,
             },
         ];
-        
+
         executor
-            .execute_hooks_background(directory_path2.clone(), "fail_fast_continue_test".to_string(), hooks2)
+            .execute_hooks_background(
+                directory_path2.clone(),
+                "fail_fast_continue_test".to_string(),
+                hooks2,
+            )
             .await
             .unwrap();
-        
+
         executor
             .wait_for_completion(&directory_path2, Some(10))
             .await
             .unwrap();
-        
+
         let state2 = executor
             .get_execution_status(&directory_path2)
             .await
             .unwrap()
             .unwrap();
-        
+
         assert_eq!(state2.status, ExecutionStatus::Failed);
         // First three hooks should have been executed
         // First three hooks should have been executed
@@ -1181,7 +1197,7 @@ mod tests {
     #[tokio::test]
     async fn test_security_validation_comprehensive() {
         let executor = HookExecutor::with_default_config().unwrap();
-        
+
         // Test various command injection attempts
         let injection_attempts = vec![
             vec!["; rm -rf /".to_string()],
@@ -1195,7 +1211,7 @@ mod tests {
             vec!["test\nrm -rf /".to_string()],
             vec!["test\r\nrm -rf /".to_string()],
         ];
-        
+
         for args in injection_attempts {
             let hook = Hook {
                 command: "echo".to_string(),
@@ -1205,7 +1221,7 @@ mod tests {
                 timeout_seconds: 5,
                 continue_on_error: false,
             };
-            
+
             let result = executor.execute_single_hook(hook).await;
             assert!(
                 result.is_err(),
@@ -1213,13 +1229,13 @@ mod tests {
                 args
             );
         }
-        
+
         // Test environment variable security
         // Note: The current implementation might not check for LD_PRELOAD specifically
         // This is a security recommendation for future implementation
         let mut dangerous_env = HashMap::new();
         dangerous_env.insert("LD_PRELOAD".to_string(), "/evil/library.so".to_string());
-        
+
         let hook_with_ld_preload = Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
@@ -1228,15 +1244,15 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: true, // Continue on error to handle different behaviors
         };
-        
+
         // This test documents that LD_PRELOAD should ideally be checked
         let _ = executor.execute_single_hook(hook_with_ld_preload).await;
-        
+
         // Test PATH manipulation
         // Note: PATH manipulation might be allowed in some cases
         let mut path_manipulation = HashMap::new();
         path_manipulation.insert("PATH".to_string(), "/evil/bin:$PATH".to_string());
-        
+
         let hook_with_path = Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
@@ -1245,7 +1261,7 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: true,
         };
-        
+
         // This test documents that PATH manipulation could be a security concern
         let _ = executor.execute_single_hook(hook_with_path).await;
     }
@@ -1254,7 +1270,7 @@ mod tests {
     async fn test_working_directory_handling() {
         let executor = HookExecutor::with_default_config().unwrap();
         let temp_dir = TempDir::new().unwrap();
-        
+
         // Test with valid working directory
         let hook_with_valid_dir = Hook {
             command: "pwd".to_string(),
@@ -1264,11 +1280,14 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: false,
         };
-        
-        let result = executor.execute_single_hook(hook_with_valid_dir).await.unwrap();
+
+        let result = executor
+            .execute_single_hook(hook_with_valid_dir)
+            .await
+            .unwrap();
         assert!(result.success);
         assert!(result.stdout.contains(temp_dir.path().to_str().unwrap()));
-        
+
         // Test with non-existent working directory
         let hook_with_invalid_dir = Hook {
             command: "pwd".to_string(),
@@ -1278,15 +1297,18 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: true, // Continue on error to handle different OS behaviors
         };
-        
+
         let result = executor.execute_single_hook(hook_with_invalid_dir).await;
         // This might succeed or fail depending on the implementation
         // The important part is it doesn't panic
         if result.is_ok() {
             // If it succeeds, the command might have handled the missing directory
-            assert!(!result.unwrap().stdout.contains("/nonexistent/directory/that/does/not/exist"));
+            assert!(!result
+                .unwrap()
+                .stdout
+                .contains("/nonexistent/directory/that/does/not/exist"));
         }
-        
+
         // Test with relative path working directory (should be validated)
         let hook_with_relative_dir = Hook {
             command: "pwd".to_string(),
@@ -1296,7 +1318,7 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: false,
         };
-        
+
         // This might work or fail depending on the implementation
         let _ = executor.execute_single_hook(hook_with_relative_dir).await;
     }
@@ -1310,10 +1332,10 @@ mod tests {
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
         };
-        
+
         let executor = HookExecutor::new(config).unwrap();
         let directory_path = PathBuf::from("/test/concurrent");
-        
+
         // Create 5 hooks that sleep for different durations
         let hooks = vec![
             Hook {
@@ -1357,34 +1379,34 @@ mod tests {
                 continue_on_error: false,
             },
         ];
-        
+
         let start = std::time::Instant::now();
-        
+
         executor
             .execute_hooks_background(directory_path.clone(), "concurrent_test".to_string(), hooks)
             .await
             .unwrap();
-        
+
         executor
             .wait_for_completion(&directory_path, Some(30))
             .await
             .unwrap();
-        
+
         let duration = start.elapsed();
-        
+
         // With max_concurrent=2, 5 hooks of 0.1s each should take at least 0.3s
         // (3 batches: 2, 2, 1)
         assert!(
             duration.as_secs_f64() >= 0.25,
             "Concurrent execution limit not enforced properly"
         );
-        
+
         let state = executor
             .get_execution_status(&directory_path)
             .await
             .unwrap()
             .unwrap();
-        
+
         assert_eq!(state.status, ExecutionStatus::Completed);
         assert_eq!(state.completed_hooks, 5);
         assert_eq!(state.total_hooks, 5);
@@ -1393,7 +1415,7 @@ mod tests {
     #[tokio::test]
     async fn test_hook_execution_with_complex_output() {
         let executor = HookExecutor::with_default_config().unwrap();
-        
+
         // Test simple hooks without dangerous characters
         let hook = Hook {
             command: "echo".to_string(),
@@ -1403,11 +1425,11 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: false,
         };
-        
+
         let result = executor.execute_single_hook(hook).await.unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("stdout output"));
-        
+
         // Test hook with non-zero exit code (using false command)
         let hook_with_exit_code = Hook {
             command: "false".to_string(),
@@ -1417,8 +1439,11 @@ mod tests {
             timeout_seconds: 5,
             continue_on_error: true,
         };
-        
-        let result = executor.execute_single_hook(hook_with_exit_code).await.unwrap();
+
+        let result = executor
+            .execute_single_hook(hook_with_exit_code)
+            .await
+            .unwrap();
         assert!(!result.success);
         // Exit code should be non-zero
         assert!(result.exit_status.is_some());
@@ -1433,16 +1458,16 @@ mod tests {
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
         };
-        
+
         let executor = HookExecutor::new(config).unwrap();
-        
+
         // Start executions for multiple directories
         let directories = vec![
             PathBuf::from("/test/dir1"),
             PathBuf::from("/test/dir2"),
             PathBuf::from("/test/dir3"),
         ];
-        
+
         for (i, dir) in directories.iter().enumerate() {
             let hooks = vec![Hook {
                 command: "echo".to_string(),
@@ -1452,26 +1477,19 @@ mod tests {
                 timeout_seconds: 5,
                 continue_on_error: false,
             }];
-            
+
             executor
                 .execute_hooks_background(dir.clone(), format!("hash_{}", i), hooks)
                 .await
                 .unwrap();
         }
-        
+
         // Wait for all to complete
         for dir in &directories {
-            executor
-                .wait_for_completion(dir, Some(10))
-                .await
-                .unwrap();
-            
-            let state = executor
-                .get_execution_status(dir)
-                .await
-                .unwrap()
-                .unwrap();
-            
+            executor.wait_for_completion(dir, Some(10)).await.unwrap();
+
+            let state = executor.get_execution_status(dir).await.unwrap().unwrap();
+
             assert_eq!(state.status, ExecutionStatus::Completed);
             assert_eq!(state.completed_hooks, 1);
             assert_eq!(state.total_hooks, 1);
@@ -1487,10 +1505,10 @@ mod tests {
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
         };
-        
+
         let executor = HookExecutor::new(config).unwrap();
         let directory_path = PathBuf::from("/test/recovery");
-        
+
         // Execute hooks with some failures
         let hooks = vec![
             Hook {
@@ -1518,23 +1536,23 @@ mod tests {
                 continue_on_error: false,
             },
         ];
-        
+
         executor
             .execute_hooks_background(directory_path.clone(), "recovery_test".to_string(), hooks)
             .await
             .unwrap();
-        
+
         executor
             .wait_for_completion(&directory_path, Some(10))
             .await
             .unwrap();
-        
+
         let state = executor
             .get_execution_status(&directory_path)
             .await
             .unwrap()
             .unwrap();
-        
+
         // Should complete with partial failure
         assert_eq!(state.status, ExecutionStatus::Completed);
         assert_eq!(state.completed_hooks, 3);
