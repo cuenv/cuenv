@@ -27,7 +27,9 @@ pub async fn execute_env_load(path: &str) -> Result<String> {
     let evaluator = CueEvaluator::builder().build()?;
     let json_result = evaluator.evaluate(&directory, "cuenv")?;
     let config: Value = serde_json::from_str(&json_result).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
+        cuenv_core::Error::configuration(format!(
+            "Failed to parse CUE output: {e}\nRaw output: {json_result}"
+        ))
     })?;
 
     // Check approval status
@@ -146,7 +148,9 @@ pub async fn execute_allow(path: &str, note: Option<String>) -> Result<String> {
     let evaluator = CueEvaluator::builder().build()?;
     let json_result = evaluator.evaluate(&directory, "cuenv")?;
     let config: Value = serde_json::from_str(&json_result).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
+        cuenv_core::Error::configuration(format!(
+            "Failed to parse CUE output: {e}\nRaw output: {json_result}"
+        ))
     })?;
 
     // Compute configuration hash
@@ -206,9 +210,9 @@ fn extract_hooks_from_config(config: &Value) -> Vec<Hook> {
         }
 
         // Could also process onExit hooks here if needed
-        if let Some(on_exit) = hooks_obj.get("onExit") {
+        if let Some(_on_exit) = hooks_obj.get("onExit") {
             debug!("Found onExit hooks but skipping for now");
-            extract_hooks_from_value(on_exit, &mut hooks);
+            // TODO: Implement onExit hook handling
         }
     }
 

@@ -158,7 +158,6 @@ impl std::fmt::Display for ExecutionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::process::ExitStatusExt;
 
     #[test]
     fn test_hook_serialization() {
@@ -201,9 +200,20 @@ mod tests {
             continue_on_error: false,
         };
 
+        // Use Command::new to create a platform-compatible successful exit status
+        let exit_status = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
+            .args(if cfg!(windows) {
+                vec!["/C", "exit 0"]
+            } else {
+                vec![]
+            })
+            .output()
+            .unwrap()
+            .status;
+
         let result = HookResult::success(
             hook.clone(),
-            std::process::ExitStatus::from_raw(0),
+            exit_status,
             "test\n".to_string(),
             "".to_string(),
             100,
@@ -229,9 +239,22 @@ mod tests {
             continue_on_error: false,
         };
 
+        // Use Command::new to create a platform-compatible failed exit status
+        let exit_status = Some(
+            std::process::Command::new(if cfg!(windows) { "cmd" } else { "false" })
+                .args(if cfg!(windows) {
+                    vec!["/C", "exit 1"]
+                } else {
+                    vec![]
+                })
+                .output()
+                .unwrap()
+                .status,
+        );
+
         let result = HookResult::failure(
             hook.clone(),
-            Some(std::process::ExitStatus::from_raw(256)), // exit code 1
+            exit_status,
             "".to_string(),
             "command failed".to_string(),
             50,

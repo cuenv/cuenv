@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Manages persistent state for hook execution sessions
 #[derive(Debug, Clone)]
@@ -147,6 +147,92 @@ impl StateManager {
         }
 
         Ok(states)
+    }
+    
+    /// Clean up the entire state directory
+    pub async fn cleanup_state_directory(&self) -> Result<usize> {
+        if !self.state_dir.exists() {
+            return Ok(0);
+        }
+        
+        let mut cleaned_count = 0;
+        let mut dir = fs::read_dir(&self.state_dir).await.map_err(|e| Error::Io {
+            source: e,
+            path: Some(self.state_dir.clone().into_boxed_path()),
+            operation: "read_dir".to_string(),
+        })?;
+        
+        while let Some(entry) = dir.next_entry().await.map_err(|e| Error::Io {
+            source: e,
+            path: Some(self.state_dir.clone().into_boxed_path()),
+            operation: "next_entry".to_string(),
+        })? {
+            let path = entry.path();
+            
+            // Only clean up JSON state files
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                // Try to load and check if it's a completed state
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    match self.load_state(stem).await {
+                        Ok(Some(state)) if state.is_complete() => {
+                            // Remove completed states
+                            if let Err(e) = fs::remove_file(&path).await {
+                                warn!("Failed to remove state file {}: {}", path.display(), e);
+                            } else {
+                                cleaned_count += 1;
+                                debug!("Cleaned up state file: {}", path.display());
+                            }
+                        }
+                        Ok(Some(_)) => {
+                            // Keep running states
+                            debug!("Keeping active state file: {}", path.display());
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            // If we can't parse it, it might be corrupted - remove it
+                            warn!("Failed to parse state file {}: {}", path.display(), e);
+                            if let Err(rm_err) = fs::remove_file(&path).await {
+                                error!("Failed to remove corrupted state file {}: {}", path.display(), rm_err);
+                            } else {
+                                cleaned_count += 1;
+                                info!("Removed corrupted state file: {}", path.display());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if cleaned_count > 0 {
+            info!("Cleaned up {} state files from directory", cleaned_count);
+        }
+        
+        Ok(cleaned_count)
+    }
+    
+    /// Clean up orphaned state files (states without corresponding processes)
+    pub async fn cleanup_orphaned_states(&self, max_age: chrono::Duration) -> Result<usize> {
+        let cutoff = Utc::now() - max_age;
+        let mut cleaned_count = 0;
+        
+        for state in self.list_active_states().await? {
+            // Remove states that are stuck in running but are too old
+            if state.status == ExecutionStatus::Running && state.started_at < cutoff {
+                warn!(
+                    "Found orphaned running state for {} (started {}), removing",
+                    state.directory_path.display(),
+                    state.started_at
+                );
+                self.remove_state(&state.directory_hash).await?;
+                cleaned_count += 1;
+            }
+        }
+        
+        if cleaned_count > 0 {
+            info!("Cleaned up {} orphaned state files", cleaned_count);
+        }
+        
+        Ok(cleaned_count)
     }
 }
 
@@ -491,5 +577,149 @@ mod tests {
         state.error_message = Some("Test error".to_string());
         let display = state.progress_display();
         assert!(display.contains("Hook execution failed: Test error"));
+    }
+
+    #[tokio::test]
+    async fn test_state_directory_cleanup() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_manager = StateManager::new(temp_dir.path().to_path_buf());
+
+        // Create multiple states with different statuses
+        let completed_state = HookExecutionState {
+            directory_hash: "completed_hash".to_string(),
+            directory_path: PathBuf::from("/completed"),
+            config_hash: "config1".to_string(),
+            status: ExecutionStatus::Completed,
+            total_hooks: 1,
+            completed_hooks: 1,
+            current_hook_index: None,
+            hook_results: HashMap::new(),
+            started_at: Utc::now() - chrono::Duration::hours(1),
+            finished_at: Some(Utc::now() - chrono::Duration::minutes(30)),
+            error_message: None,
+        };
+
+        let running_state = HookExecutionState {
+            directory_hash: "running_hash".to_string(),
+            directory_path: PathBuf::from("/running"),
+            config_hash: "config2".to_string(),
+            status: ExecutionStatus::Running,
+            total_hooks: 2,
+            completed_hooks: 1,
+            current_hook_index: Some(1),
+            hook_results: HashMap::new(),
+            started_at: Utc::now() - chrono::Duration::minutes(5),
+            finished_at: None,
+            error_message: None,
+        };
+
+        let failed_state = HookExecutionState {
+            directory_hash: "failed_hash".to_string(),
+            directory_path: PathBuf::from("/failed"),
+            config_hash: "config3".to_string(),
+            status: ExecutionStatus::Failed,
+            total_hooks: 1,
+            completed_hooks: 0,
+            current_hook_index: None,
+            hook_results: HashMap::new(),
+            started_at: Utc::now() - chrono::Duration::hours(2),
+            finished_at: Some(Utc::now() - chrono::Duration::hours(1)),
+            error_message: Some("Test failure".to_string()),
+        };
+
+        // Save all states
+        state_manager.save_state(&completed_state).await.unwrap();
+        state_manager.save_state(&running_state).await.unwrap();
+        state_manager.save_state(&failed_state).await.unwrap();
+
+        // Verify all states exist
+        let states = state_manager.list_active_states().await.unwrap();
+        assert_eq!(states.len(), 3);
+
+        // Clean up completed states
+        let cleaned = state_manager.cleanup_state_directory().await.unwrap();
+        assert_eq!(cleaned, 2); // Should clean up completed and failed states
+
+        // Verify only running state remains
+        let remaining_states = state_manager.list_active_states().await.unwrap();
+        assert_eq!(remaining_states.len(), 1);
+        assert_eq!(remaining_states[0].directory_hash, "running_hash");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_orphaned_states() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_manager = StateManager::new(temp_dir.path().to_path_buf());
+
+        // Create an old running state (orphaned)
+        let orphaned_state = HookExecutionState {
+            directory_hash: "orphaned_hash".to_string(),
+            directory_path: PathBuf::from("/orphaned"),
+            config_hash: "config".to_string(),
+            status: ExecutionStatus::Running,
+            total_hooks: 1,
+            completed_hooks: 0,
+            current_hook_index: Some(0),
+            hook_results: HashMap::new(),
+            started_at: Utc::now() - chrono::Duration::hours(3),
+            finished_at: None,
+            error_message: None,
+        };
+
+        // Create a recent running state (not orphaned)
+        let recent_state = HookExecutionState {
+            directory_hash: "recent_hash".to_string(),
+            directory_path: PathBuf::from("/recent"),
+            config_hash: "config".to_string(),
+            status: ExecutionStatus::Running,
+            total_hooks: 1,
+            completed_hooks: 0,
+            current_hook_index: Some(0),
+            hook_results: HashMap::new(),
+            started_at: Utc::now() - chrono::Duration::minutes(5),
+            finished_at: None,
+            error_message: None,
+        };
+
+        // Save both states
+        state_manager.save_state(&orphaned_state).await.unwrap();
+        state_manager.save_state(&recent_state).await.unwrap();
+
+        // Clean up orphaned states older than 1 hour
+        let cleaned = state_manager
+            .cleanup_orphaned_states(chrono::Duration::hours(1))
+            .await
+            .unwrap();
+        assert_eq!(cleaned, 1); // Should clean up only the orphaned state
+
+        // Verify only recent state remains
+        let remaining_states = state_manager.list_active_states().await.unwrap();
+        assert_eq!(remaining_states.len(), 1);
+        assert_eq!(remaining_states[0].directory_hash, "recent_hash");
+    }
+
+    #[tokio::test]
+    async fn test_corrupted_state_file_handling() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().join("state");
+        let state_manager = StateManager::new(state_dir.clone());
+        
+        // Ensure state directory exists
+        state_manager.ensure_state_dir().await.unwrap();
+        
+        // Write corrupted JSON to a state file
+        let corrupted_file = state_dir.join("corrupted.json");
+        tokio::fs::write(&corrupted_file, "{invalid json}").await.unwrap();
+        
+        // List active states should handle the corrupted file gracefully
+        let states = state_manager.list_active_states().await.unwrap();
+        assert_eq!(states.len(), 0); // Corrupted file should be skipped
+        
+        // Cleanup should remove the corrupted file
+        let cleaned = state_manager.cleanup_state_directory().await.unwrap();
+        assert_eq!(cleaned, 1);
+        
+        // Verify the corrupted file is gone
+        assert!(!corrupted_file.exists());
     }
 }
