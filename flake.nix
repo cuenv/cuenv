@@ -242,6 +242,7 @@
             cargo-nextest
             cargo-deny
             cargo-llvm-cov
+            cargo-cyclonedx
 
             # CI/CD tools
             git
