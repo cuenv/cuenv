@@ -241,6 +241,7 @@
             cargo-audit
             cargo-nextest
             cargo-deny
+            cargo-llvm-cov
 
             # CI/CD tools
             git
