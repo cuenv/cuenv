@@ -1,0 +1,12 @@
+= Tasks
+
+This page is under development. Please check back later or contribute to help us complete the documentation.
+
+== Placeholder Content
+
+This section will contain detailed information about tasks.
+
+== See Also
+
+* xref:index.adoc[Overview]
+* xref:contributing.adoc[Contributing Guide]

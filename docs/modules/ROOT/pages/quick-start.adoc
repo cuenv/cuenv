@@ -1,0 +1,219 @@
+= Quick Start
+:description: Get up and running with cuenv quickly
+:keywords: quickstart, installation, getting-started
+
+This quick start guide will get you up and running with cuenv in just a few minutes.
+
+== Prerequisites
+
+Before you begin, make sure you have:
+
+* Rust 1.70+ installed via https://rustup.rs/[rustup^]
+* Git for version control
+* (Optional) Nix package manager for additional features
+
+== Installation
+
+[NOTE]
+====
+cuenv is currently in alpha development. Installation methods are being finalized.
+====
+
+=== From Source (Development)
+
+. Clone the repository:
++
+[source,bash]
+----
+git clone https://github.com/cuenv/cuenv.git
+cd cuenv
+----
+
+. Build the project:
++
+[source,bash]
+----
+cargo build --release
+----
+
+. Install locally:
++
+[source,bash]
+----
+cargo install --path crates/cuenv-cli
+----
+
+=== Using Cargo (Future)
+
+Once published to crates.io:
+
+[source,bash]
+----
+cargo install cuenv-cli
+----
+
+== Your First CUE Environment
+
+. Create a new project directory:
++
+[source,bash]
+----
+mkdir my-cuenv-project
+cd my-cuenv-project
+----
+
+. Initialize a cuenv environment:
++
+[source,bash]
+----
+cuenv init
+----
+
+. Create a simple `env.cue` file:
++
+[source,cue]
+----
+package env
+
+// Define your environment variables
+environment: {
+    NODE_ENV: "development"
+    PORT: "3000"
+    DATABASE_URL: "postgresql://localhost/myapp"
+}
+
+// Define tasks
+tasks: {
+    build: {
+        description: "Build the application"
+        command: "npm run build"
+        depends: ["install"]
+    }
+    
+    install: {
+        description: "Install dependencies"
+        command: "npm install"
+    }
+    
+    dev: {
+        description: "Start development server"
+        command: "npm run dev"
+        depends: ["install"]
+        environment: environment
+    }
+}
+----
+
+. Run a task:
++
+[source,bash]
+----
+cuenv run dev
+----
+
+== What's Next?
+
+* Learn about xref:configuration.adoc[configuration options]
+* Explore xref:tasks.adoc[task orchestration] features
+* Set up xref:environments.adoc[typed environments]
+* Integrate with xref:nix-integration.adoc[Nix] for package management
+* Configure xref:secrets.adoc[secret management]
+
+== Common Use Cases
+
+=== Monorepo Management
+
+cuenv excels at managing complex monorepos with multiple services:
+
+[source,cue]
+----
+package env
+
+// Shared environment
+shared: {
+    LOG_LEVEL: "info"
+    RUST_LOG: "debug"
+}
+
+// Service-specific configurations
+services: {
+    api: {
+        environment: shared & {
+            SERVICE_NAME: "api"
+            PORT: "8080"
+        }
+    }
+    
+    worker: {
+        environment: shared & {
+            SERVICE_NAME: "worker"
+            QUEUE_URL: "redis://localhost"
+        }
+    }
+}
+----
+
+=== Development Workflows
+
+Automate common development tasks:
+
+[source,cue]
+----
+tasks: {
+    test: {
+        description: "Run all tests"
+        command: "cargo test --workspace"
+    }
+    
+    lint: {
+        description: "Run linting"
+        command: "cargo clippy -- -D warnings"
+    }
+    
+    format: {
+        description: "Format code"
+        command: "cargo fmt"
+    }
+    
+    ci: {
+        description: "Run CI pipeline"
+        depends: ["lint", "test", "format"]
+    }
+}
+----
+
+== Troubleshooting
+
+=== Build Issues
+
+If you encounter build issues:
+
+. Ensure you have the latest Rust version:
++
+[source,bash]
+----
+rustup update
+----
+
+. Clean and rebuild:
++
+[source,bash]
+----
+cargo clean
+cargo build
+----
+
+=== CUE Evaluation Errors
+
+For CUE-related errors:
+
+* Validate your `.cue` files with the CUE CLI
+* Check for syntax errors and type constraints
+* Refer to the https://cuelang.org/docs/[CUE Language documentation^]
+
+== Getting Help
+
+* Check the xref:api-reference.adoc[API Reference]
+* Browse xref:examples.adoc[examples] for common patterns
+* Open an issue on https://github.com/cuenv/cuenv/issues[GitHub^]
+* Join the discussion on https://github.com/cuenv/cuenv/discussions[GitHub Discussions^]

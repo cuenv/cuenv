@@ -1,0 +1,24 @@
+site:
+  title: cuenv Documentation
+  url: https://cuenv.github.io/cuenv
+  start_page: cuenv::index.adoc
+  
+content:
+  sources:
+  - url: .
+    start_path: docs
+    
+ui:
+  bundle:
+    url: https://github.com/asciidoctor/asciidoctor-docs-ui/releases/latest/download/ui-bundle.zip
+    snapshot: false
+    
+asciidoc:
+  attributes:
+    source-highlighter: highlight.js
+    page-pagination: true
+  extensions:
+  - '@asciidoctor/tabs'
+  
+output:
+  dir: ./build/site

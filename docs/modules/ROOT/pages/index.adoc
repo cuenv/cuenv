@@ -1,0 +1,104 @@
+= cuenv Documentation
+:description: A modern application build toolchain with typed environments and CUE-powered task orchestration
+:keywords: cue, configuration, validation, rust, build-tools
+:page-layout: home
+
+[.lead]
+**A modern application build toolchain with typed environments and CUE-powered task orchestration**
+
+image::https://img.shields.io/badge/License-AGPL%20v3-blue.svg[License: AGPL v3,link=https://www.gnu.org/licenses/agpl-3.0]
+image::https://github.com/cuenv/cuenv/workflows/CI/badge.svg[Build Status,link=https://github.com/cuenv/cuenv/actions]
+image::https://img.shields.io/crates/v/cuenv[Crates.io,link=https://crates.io/crates/cuenv]
+
+[NOTE]
+====
+**Status**: Alpha - Core evaluation engine complete, CLI and task runner in active development
+====
+
+== Overview
+
+cuenv is a next-generation build toolchain that brings type safety and powerful configuration management to application development. Built around CUE's constraint-based type system, cuenv provides a unified solution for environment management, task orchestration, and secure secret handling.
+
+Unlike traditional build tools, cuenv leverages CUE's ability to compose and validate configuration across directory hierarchies, making it particularly well-suited for monorepos and complex project structures. With integrated Nix support, security isolation, and extensible secret management, cuenv provides a complete development environment solution.
+
+**Perfect for:**
+
+- Monorepos requiring consistent environment management
+- Teams needing type-safe configuration  
+- Projects with complex build dependencies
+- Security-conscious development workflows
+
+== Key Features
+
+[cols="1,1,3"]
+|===
+|Feature |Status |Description
+
+|✅ **CUE Evaluation Engine**
+|Complete
+|Fast, reliable CUE evaluation with Rust performance
+
+|🚧 **CLI Interface**
+|In Development
+|Task execution and environment management
+
+|🚧 **Typed Environments**
+|In Development  
+|Compose environment constraints from CUE modules
+
+|🚧 **Task Orchestration**
+|In Development
+|Parallel/sequential execution with smart dependencies
+
+|🚧 **Nix Integration**
+|In Development
+|Automatic software provisioning via Nix flakes
+
+|🚧 **Secret Management**
+|In Development
+|Extensible resolvers for 1Password, AWS, GCP, etc.
+
+|📋 **Security Isolation**
+|Planned
+|Linux namespaces, landlock, eBPF integration
+
+|🚧 **Shell Integration**
+|In Development
+|Smart hooks for bash, fish, zsh, nushell
+
+|🚧 **Dev Tool Integration**
+|In Development
+|Seamless Devenv and Flox compatibility
+|===
+
+**Legend:** ✅ Complete • 🚧 In Development • 📋 Planned
+
+== Quick Links
+
+* xref:quick-start.adoc[Get started] with cuenv in minutes
+* xref:installation.adoc[Installation guide] for different platforms  
+* xref:examples.adoc[Examples] and use cases
+* xref:api-reference.adoc[API Documentation] for developers
+* xref:contributing.adoc[Contributing guide] for contributors
+
+== Architecture Overview
+
+cuenv consists of three main components:
+
+**cuengine**:: 
+The core CUE evaluation engine providing fast, reliable CUE processing with a Rust FFI interface.
+
+**cuenv-core**::
+The foundational library handling configuration management, task orchestration, and environment composition.
+
+**cuenv-cli**::
+The command-line interface providing user-friendly access to cuenv's capabilities.
+
+Each component is designed for modularity and can be used independently or as part of the complete cuenv toolchain.
+
+== Community
+
+- https://github.com/cuenv/cuenv[GitHub Repository^]
+- https://github.com/cuenv/cuenv/issues[Issue Tracker^]  
+- https://github.com/cuenv/cuenv/discussions[Discussions^]
+- https://crates.io/crates/cuenv[Crates.io Package^]
