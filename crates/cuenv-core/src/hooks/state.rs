@@ -797,8 +797,7 @@ mod tests {
         // The state might exist or not depending on timing of concurrent operations
         if let Some(state) = final_state {
             assert_eq!(state.directory_hash, "concurrent_hash");
-            // Completed hooks might be 0 if all concurrent writes failed
-            assert!(state.completed_hooks >= 0);
+            // Completed hooks will be 0 if all concurrent writes failed, or > 0 if some succeeded
         }
     }
 
