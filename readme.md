@@ -37,7 +37,7 @@ Unlike traditional build tools, cuenv leverages CUE's ability to compose and val
 | 🚧 **Secret Management**     | In Development | Extensible resolvers for 1Password, AWS, GCP, etc.    |
 | 📋 **Security Isolation**    | Planned        | Linux namespaces, landlock, eBPF integration          |
 | 🚧 **Shell Integration**     | In Development | Smart hooks for bash, fish, zsh, nushell              |
-| 🚧 **Dev Tool Integration**  | In Development | Seamless Devenv and Flox compatibility                |
+| 🚧 **Dev Tool Integration**  | In Development | Seamless Nix flake and Flox compatibility             |
 
 **Legend:** ✅ Complete • 🚧 In Development • 📋 Planned
 

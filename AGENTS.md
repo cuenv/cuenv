@@ -1,8 +1,40 @@
-# Devenv + Nix
+# Nix Flake Development Environment
 
-No tooling is available in this project, so all commands must be prefixed and run as such:
+This project uses a Nix flake for development. To run commands, use:
 
-`devenv shell -- cargo --version`
+`nix develop --command cargo --version`
+
+Or enter the development shell with:
+`nix develop`
+
+## CRITICAL: Pre-Push Checklist
+
+**NEVER push code without running these checks:**
+
+1. **Run clippy with strict warnings** - MUST pass with no warnings:
+
+   ```bash
+   nix develop --command cargo clippy -- -D warnings
+   ```
+
+2. **Run treefmt** - MUST format all files:
+
+   ```bash
+   nix develop --command treefmt
+   ```
+
+3. **Run tests** - MUST pass all tests:
+
+   ```bash
+   nix develop --command cargo test
+   ```
+
+4. **Build the project** - MUST compile successfully:
+   ```bash
+   nix develop --command cargo build
+   ```
+
+If ANY of these checks fail, DO NOT push. Fix the issues first.
 
 ## Development Workflow
 
@@ -11,27 +43,21 @@ No tooling is available in this project, so all commands must be prefixed and ru
 This project uses Clippy for Rust linting. To run clippy with strict warnings:
 
 ```bash
-# Using devenv (preferred)
-devenv shell -- cargo clippy -- -D warnings
-
-# Or using nix-shell directly
-nix-shell -p gcc --run "cargo clippy -- -D warnings"
+# Run clippy with strict warnings
+nix develop --command cargo clippy -- -D warnings
 ```
 
 ### Running Tests
 
 ```bash
 # Run library tests
-devenv shell -- cargo test --lib
-
-# Or using nix-shell
-nix-shell -p gcc --run "cargo test --lib"
+nix develop --command cargo test --lib
 ```
 
 ### Code Formatting
 
 ```bash
-devenv shell -- cargo fmt
+nix develop --command cargo fmt
 ```
 
 ## Recent Changes

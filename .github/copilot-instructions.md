@@ -42,22 +42,22 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cd crates/cuengine && gofmt -w .
 ```
 
-### Development Workflow with devenv (If Available)
+### Development Workflow with Nix Flake
 
-This project uses devenv + Nix for reproducible environments. If devenv is available, prefix all commands:
+This project uses a Nix flake for reproducible development environments:
 
 ```bash
-# Check if devenv is available
-which devenv
+# Enter the development shell
+nix develop
 
-# If available, prefix all cargo commands:
-devenv shell -- cargo build --workspace --all-features
-devenv shell -- cargo test --workspace
-devenv shell -- cargo clippy --workspace --all-targets --all-features -- -D warnings
-devenv shell -- treefmt --fail-on-change  # Format all files
+# Or run commands directly:
+nix develop --command cargo build --workspace --all-features
+nix develop --command cargo test --workspace
+nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
+nix develop --command treefmt --fail-on-change  # Format all files
 ```
 
-**If devenv is NOT available:** Use standard cargo commands directly (as shown above).
+**If Nix is NOT available:** Use standard cargo commands directly (as shown above).
 
 ## Validation Scenarios
 
@@ -119,7 +119,7 @@ cuenv/
 ├── examples/
 │   └── env-basic/         # Example CUE configuration files
 ├── .github/workflows/     # CI/CD configuration
-└── devenv.nix            # Development environment
+└── flake.nix             # Nix flake configuration
 ```
 
 ## Common Tasks
@@ -181,7 +181,7 @@ cargo test --workspace
 
 ### Common Issues:
 
-1. **devenv not found**: Use standard cargo commands instead
+1. **Nix not available**: Use standard cargo commands instead
 2. **Go FFI tests fail**: This is expected in some environments without CGO
 3. **cargo-audit/cargo-deny not found**: These are CI-only tools, skip locally
 4. **Build appears frozen**: Builds can take 90+ seconds, especially first run

@@ -62,27 +62,24 @@ jobs:
             accept-flake-config = true
             experimental-features = nix-command flakes
 
-      - name: Install devenv
-        run: nix profile install --accept-flake-config nixpkgs#devenv
-
-      - name: Build devenv
-        run: devenv shell
+      - name: Build development environment
+        run: nix develop --accept-flake-config --command echo "Development environment ready"
 
       # Pre-build Go bridge to avoid Go dependency during crates.io publish
       - name: Pre-build Go bridge
         run: |
           cd crates/cuengine
-          devenv shell -- go build -buildmode=c-archive -o target/release/libcue_bridge.a bridge.go
+          nix develop --accept-flake-config --command go build -buildmode=c-archive -o target/release/libcue_bridge.a bridge.go
           cp libcue_bridge.h target/release/
 
       - name: Verify workspace builds
-        run: devenv shell -- cargo build --workspace --release
+        run: nix develop --accept-flake-config --command cargo build --workspace --release
 
       - name: Run final tests
-        run: devenv shell -- cargo nextest run --workspace --release
+        run: nix develop --accept-flake-config --command cargo nextest run --workspace --release
 
       - name: Dry run publish cuenv-core
-        run: devenv shell -- cargo publish --dry-run -p cuenv-core
+        run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuenv-core
 
       # Get trusted publishing token for cuenv-core
       - name: Authenticate with crates.io (cuenv-core)
@@ -91,13 +88,13 @@ jobs:
           crate: cuenv-core
 
       - name: Publish cuenv-core to crates.io
-        run: devenv shell -- cargo publish -p cuenv-core
+        run: nix develop --accept-flake-config --command cargo publish -p cuenv-core
 
       - name: Wait for crates.io indexing
         run: sleep 300 # Wait 5 minutes for crates.io to index cuenv-core
 
       - name: Dry run publish cuengine
-        run: devenv shell -- cargo publish --dry-run -p cuengine
+        run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuengine
 
       # Get trusted publishing token for cuengine
       - name: Authenticate with crates.io (cuengine)
@@ -106,7 +103,7 @@ jobs:
           crate: cuengine
 
       - name: Publish cuengine to crates.io
-        run: devenv shell -- cargo publish -p cuengine
+        run: nix develop --accept-flake-config --command cargo publish -p cuengine
 
   build-release-artifacts:
     runs-on: ${{ matrix.os }}
@@ -151,12 +148,12 @@ jobs:
           go-version: "1.24"
         if: matrix.os == 'windows-latest'
 
-      - name: Build devenv (Unix)
-        run: devenv shell
+      - name: Build development environment (Unix)
+        run: nix develop --accept-flake-config --command echo "Development environment ready"
         if: matrix.os != 'windows-latest'
 
       - name: Build release (Unix)
-        run: devenv shell -- cargo build --workspace --release
+        run: nix develop --accept-flake-config --command cargo build --workspace --release
         if: matrix.os != 'windows-latest'
 
       - name: Build release (Windows)
