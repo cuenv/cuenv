@@ -769,7 +769,7 @@ mod tests {
 
         // Should have the approval from manager1 (manager2's might have overwritten)
         // Due to file locking, one of them should succeed
-        assert!(manager3.approvals.len() > 0);
+        assert!(!manager3.approvals.is_empty());
     }
 
     #[tokio::test]

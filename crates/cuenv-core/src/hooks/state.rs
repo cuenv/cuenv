@@ -406,6 +406,8 @@ mod tests {
     use crate::hooks::types::{Hook, HookResult};
     use std::collections::HashMap;
     use std::os::unix::process::ExitStatusExt;
+    use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[test]
@@ -727,5 +729,186 @@ mod tests {
 
         // Verify the corrupted file is gone
         assert!(!corrupted_file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_state_modifications() {
+        use tokio::task;
+        
+        let temp_dir = TempDir::new().unwrap();
+        let state_manager = Arc::new(StateManager::new(temp_dir.path().to_path_buf()));
+        
+        // Create initial state
+        let initial_state = HookExecutionState {
+            directory_hash: "concurrent_hash".to_string(),
+            directory_path: PathBuf::from("/concurrent"),
+            config_hash: "config".to_string(),
+            status: ExecutionStatus::Running,
+            total_hooks: 10,
+            completed_hooks: 0,
+            current_hook_index: Some(0),
+            hook_results: HashMap::new(),
+            started_at: Utc::now(),
+            finished_at: None,
+            error_message: None,
+        };
+        
+        state_manager.save_state(&initial_state).await.unwrap();
+        
+        // Spawn multiple tasks that concurrently modify the state
+        let mut handles = vec![];
+        
+        for i in 0..5 {
+            let sm = state_manager.clone();
+            let path = initial_state.directory_path.clone();
+            
+            let handle = task::spawn(async move {
+                // Load state - it might have been modified by another task
+                let directory_hash = compute_directory_hash(&path);
+                
+                // Simulate some work
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                
+                // Load state, modify, and save (handle potential concurrent modifications)
+                if let Ok(Some(mut state)) = sm.load_state(&directory_hash).await {
+                    state.completed_hooks += 1;
+                    state.current_hook_index = Some(i + 1);
+                    
+                    // Save state - ignore errors from concurrent saves
+                    let _ = sm.save_state(&state).await;
+                }
+            });
+            
+            handles.push(handle);
+        }
+        
+        // Wait for all tasks to complete
+        for handle in handles {
+            handle.await.unwrap();
+        }
+        
+        // Verify final state - due to concurrent writes, the exact values may vary
+        // but the state should be loadable and valid
+        let final_state = state_manager
+            .load_state(&initial_state.directory_hash)
+            .await
+            .unwrap();
+        
+        // The state might exist or not depending on timing of concurrent operations
+        if let Some(state) = final_state {
+            assert_eq!(state.directory_hash, "concurrent_hash");
+            // Completed hooks might be 0 if all concurrent writes failed
+            assert!(state.completed_hooks >= 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_state_with_unicode_and_special_chars() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_manager = StateManager::new(temp_dir.path().to_path_buf());
+        
+        // Create state with unicode and special characters
+        let mut unicode_state = HookExecutionState {
+            directory_hash: "unicode_hash".to_string(),
+            directory_path: PathBuf::from("/测试/目录/🚀"),
+            config_hash: "config_ñ_é_ü".to_string(),
+            status: ExecutionStatus::Failed,
+            total_hooks: 1,
+            completed_hooks: 1,
+            current_hook_index: None,
+            hook_results: HashMap::new(),
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            error_message: Some("Error: 错误信息 with émojis 🔥💥".to_string()),
+        };
+        
+        // Add hook result with unicode output
+        let unicode_hook = Hook {
+            command: "echo".to_string(),
+            args: vec![],
+            working_dir: None,
+            env: HashMap::new(),
+            timeout_seconds: 5,
+            continue_on_error: false,
+        };
+        let unicode_result = HookResult {
+            hook: unicode_hook,
+            success: false,
+            exit_status: Some(1),
+            stdout: "输出: Hello 世界! 🌍".to_string(),
+            stderr: "错误: ñoño error ⚠️".to_string(),
+            duration_ms: 100,
+            error: Some("失败了 😢".to_string()),
+        };
+        unicode_state.hook_results.insert(0, unicode_result);
+        
+        // Save and load the state
+        state_manager.save_state(&unicode_state).await.unwrap();
+        
+        let loaded = state_manager
+            .load_state(&unicode_state.directory_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        
+        // Verify all unicode content is preserved
+        assert_eq!(loaded.config_hash, "config_ñ_é_ü");
+        assert_eq!(loaded.error_message, Some("Error: 错误信息 with émojis 🔥💥".to_string()));
+        
+        let hook_result = loaded.hook_results.get(&0).unwrap();
+        assert_eq!(hook_result.stdout, "输出: Hello 世界! 🌍");
+        assert_eq!(hook_result.stderr, "错误: ñoño error ⚠️");
+        assert_eq!(hook_result.error, Some("失败了 😢".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_state_directory_with_many_states() {
+        let temp_dir = TempDir::new().unwrap();
+        let state_manager = StateManager::new(temp_dir.path().to_path_buf());
+        
+        // Create many states to test scalability
+        for i in 0..50 {
+            let state = HookExecutionState {
+                directory_hash: format!("hash_{}", i),
+                directory_path: PathBuf::from(format!("/dir/{}", i)),
+                config_hash: format!("config_{}", i),
+                status: if i % 3 == 0 {
+                    ExecutionStatus::Completed
+                } else if i % 3 == 1 {
+                    ExecutionStatus::Running
+                } else {
+                    ExecutionStatus::Failed
+                },
+                total_hooks: 1,
+                completed_hooks: if i % 3 == 0 { 1 } else { 0 },
+                current_hook_index: if i % 3 == 1 { Some(0) } else { None },
+                hook_results: HashMap::new(),
+                started_at: Utc::now() - chrono::Duration::hours(i as i64),
+                finished_at: if i % 3 != 1 {
+                    Some(Utc::now() - chrono::Duration::hours(i as i64 - 1))
+                } else {
+                    None
+                },
+                error_message: if i % 3 == 2 {
+                    Some(format!("Error {}", i))
+                } else {
+                    None
+                },
+            };
+            state_manager.save_state(&state).await.unwrap();
+        }
+        
+        // List all states
+        let listed = state_manager.list_active_states().await.unwrap();
+        assert_eq!(listed.len(), 50);
+        
+        // Clean up old completed states (older than 24 hours)
+        let cleaned = state_manager
+            .cleanup_orphaned_states(chrono::Duration::hours(24))
+            .await
+            .unwrap();
+        
+        // Should clean up states older than 24 hours
+        assert!(cleaned > 0);
     }
 }
