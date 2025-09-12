@@ -26,6 +26,10 @@ jobs:
           CI: "true"
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: node-setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
       - name: cloudflare-deploy
         uses: cloudflare/wrangler-action@v3
         with:
