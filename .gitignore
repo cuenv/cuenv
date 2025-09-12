@@ -18,3 +18,8 @@ Thumbs.db
 build/
 node_modules/
 package-lock.json
+
+# Generated artifacts
+*.cdx.json
+sbom.json
+lcov.info
