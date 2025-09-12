@@ -10,7 +10,7 @@ export default defineConfig({
 			description: 'A modern application build toolchain with typed environments and CUE-powered task orchestration',
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/cuenv/cuenv' },
-				{ icon: 'discord', label: 'Discord', href: 'https://github.com/cuenv/cuenv/discussions' }
+				{ icon: 'github', label: 'Discussions', href: 'https://github.com/cuenv/cuenv/discussions' }
 			],
 			editLink: {
 				baseUrl: 'https://github.com/cuenv/cuenv/edit/main/docs/',
