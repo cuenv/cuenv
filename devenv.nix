@@ -22,6 +22,9 @@
   };
 
   packages = with pkgs; [
+    # Docs
+    antora
+
     # Existing tools
     cargo-edit
     cargo-machete
