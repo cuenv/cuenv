@@ -12,8 +12,16 @@ description = "Event-driven CLI with inline TUI for cuenv"
 name = "cuenv"
 path = "src/main.rs"
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Allow console output in CLI crate
+print_stdout = "allow"
+print_stderr = "allow"
 
 [dependencies]
 cuenv-core = { workspace = true }

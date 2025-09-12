@@ -1,5 +1,9 @@
 //! Tests for CUE evaluation and JSON parsing
 
+// Allow console output in test files for debugging
+#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stderr)]
+
 #[cfg(test)]
 mod tests {
     use crate::environment::{CueEvaluation, Environment};

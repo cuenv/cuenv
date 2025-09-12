@@ -4,6 +4,9 @@
 //! and proper resource cleanup across the FFI boundary.
 
 #![allow(unsafe_code)] // Testing FFI requires unsafe code
+// Allow console output in test files for debugging
+#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stderr)]
 
 use cuengine::{evaluate_cue_package, CStringPtr};
 use std::ffi::CString;

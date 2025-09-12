@@ -49,5 +49,8 @@ unsafe_code = "warn"
 missing_docs = "warn"
 
 [workspace.lints.clippy]
-all = "warn"
-pedantic = "warn"
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Prevent console output in core crates - structured events should be used instead
+print_stdout = "deny"
+print_stderr = "deny"

@@ -1,5 +1,9 @@
 //! Integration tests for task and exec commands
 
+// Allow console output in test files for debugging
+#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stderr)]
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;

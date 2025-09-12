@@ -2,6 +2,83 @@ use std::fmt;
 use tokio::sync::mpsc;
 use tracing::{event, Level};
 
+// Re-export uuid for correlation IDs
+pub use uuid::Uuid;
+
+// Helper function to generate correlation IDs
+pub fn generate_correlation_id() -> String {
+    Uuid::new_v4().to_string()
+}
+
+// Event emission functions for structured output
+pub fn emit_version_info(version: &str, correlation_id: &str) {
+    event!(
+        Level::INFO,
+        event_type = "version_info",
+        version = version,
+        correlation_id = correlation_id,
+        "Version information displayed"
+    );
+}
+
+pub fn emit_env_load_output(content: &str, json_mode: bool) {
+    event!(
+        Level::INFO,
+        event_type = "env_load_output", 
+        content = content,
+        json_mode = json_mode,
+        "Environment load output"
+    );
+}
+
+pub fn emit_env_status_output(content: &str, json_mode: bool) {
+    event!(
+        Level::INFO,
+        event_type = "env_status_output",
+        content = content, 
+        json_mode = json_mode,
+        "Environment status output"
+    );
+}
+
+pub fn emit_shell_init_output(content: &str, json_mode: bool) {
+    event!(
+        Level::INFO,
+        event_type = "shell_init_output",
+        content = content,
+        json_mode = json_mode, 
+        "Shell init output"
+    );
+}
+
+pub fn emit_allow_command_output(content: &str, json_mode: bool) {
+    event!(
+        Level::INFO,
+        event_type = "allow_command_output",
+        content = content,
+        json_mode = json_mode,
+        "Allow command output"
+    );
+}
+
+pub fn emit_env_print_output(content: &str) {
+    event!(
+        Level::INFO,
+        event_type = "env_print_output",
+        content = content,
+        "Environment print output"
+    );
+}
+
+pub fn emit_task_execution_output(content: &str) {
+    event!(
+        Level::INFO,
+        event_type = "task_execution_output", 
+        content = content,
+        "Task execution output"
+    );
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum Event {
@@ -20,6 +97,33 @@ pub enum Event {
         command: String,
         success: bool,
         output: String,
+    },
+    // New structured output events
+    VersionInfo {
+        version: String,
+        correlation_id: String,
+    },
+    EnvLoadOutput {
+        content: String,
+        json_mode: bool,
+    },
+    EnvStatusOutput {
+        content: String,
+        json_mode: bool,
+    },
+    ShellInitOutput {
+        content: String,
+        json_mode: bool,
+    },
+    AllowCommandOutput {
+        content: String,
+        json_mode: bool,
+    },
+    EnvPrintOutput {
+        content: String,
+    },
+    TaskExecutionOutput {
+        content: String,
     },
     SystemShutdown,
     TuiRefresh,
@@ -53,6 +157,21 @@ impl fmt::Display for Event {
                     if *success { "success" } else { "failed" }
                 )
             }
+            Event::VersionInfo { version, .. } => write!(f, "VersionInfo: {version}"),
+            Event::EnvLoadOutput { content, json_mode } => {
+                write!(f, "EnvLoadOutput: (json: {json_mode}) {content}")
+            }
+            Event::EnvStatusOutput { content, json_mode } => {
+                write!(f, "EnvStatusOutput: (json: {json_mode}) {content}")
+            }
+            Event::ShellInitOutput { content, json_mode } => {
+                write!(f, "ShellInitOutput: (json: {json_mode}) {content}")
+            }
+            Event::AllowCommandOutput { content, json_mode } => {
+                write!(f, "AllowCommandOutput: (json: {json_mode}) {content}")
+            }
+            Event::EnvPrintOutput { content } => write!(f, "EnvPrintOutput: {content}"),
+            Event::TaskExecutionOutput { content } => write!(f, "TaskExecutionOutput: {content}"),
             Event::SystemShutdown => write!(f, "SystemShutdown"),
             Event::TuiRefresh => write!(f, "TuiRefresh"),
         }
@@ -206,6 +325,20 @@ mod tests {
                 success: true,
                 output: "done".to_string(),
             },
+            Event::VersionInfo {
+                version: "1.0.0".to_string(),
+                correlation_id: "test-id".to_string(),
+            },
+            Event::EnvLoadOutput {
+                content: "env loaded".to_string(),
+                json_mode: false,
+            },
+            Event::EnvPrintOutput {
+                content: "KEY=value".to_string(),
+            },
+            Event::TaskExecutionOutput {
+                content: "task completed".to_string(),
+            },
             Event::SystemShutdown,
             Event::TuiRefresh,
         ];
@@ -225,8 +358,13 @@ mod tests {
                     assert!(display.contains("CommandComplete"));
                     assert!(display.contains("success"));
                 }
+                Event::VersionInfo { .. } => assert!(display.contains("VersionInfo")),
+                Event::EnvLoadOutput { .. } => assert!(display.contains("EnvLoadOutput")),
+                Event::EnvPrintOutput { .. } => assert!(display.contains("EnvPrintOutput")),
+                Event::TaskExecutionOutput { .. } => assert!(display.contains("TaskExecutionOutput")),
                 Event::SystemShutdown => assert_eq!(display, "SystemShutdown"),
                 Event::TuiRefresh => assert_eq!(display, "TuiRefresh"),
+                _ => {} // Handle other new events
             }
         }
     }
@@ -280,8 +418,8 @@ mod tests {
         assert!(!sender.is_closed());
     }
 
-    #[tokio::test]
-    async fn test_event_clone() {
+    #[test]
+    fn test_event_clone() {
         let event = Event::UserInput {
             input: "test".to_string(),
         };
@@ -293,6 +431,31 @@ mod tests {
             }
             _ => panic!("Clone didn't preserve event type"),
         }
+    }
+
+    #[test]
+    fn test_generate_correlation_id() {
+        let id1 = generate_correlation_id();
+        let id2 = generate_correlation_id();
+        
+        // Should generate different IDs
+        assert_ne!(id1, id2);
+        
+        // Should be valid UUID format (36 chars with hyphens)
+        assert_eq!(id1.len(), 36);
+        assert!(id1.contains('-'));
+    }
+
+    #[test]
+    fn test_event_emission_functions() {
+        // Test that event emission functions don't panic
+        emit_version_info("test-version", "test-correlation-id");
+        emit_env_load_output("test-content", false);
+        emit_env_status_output("test-status", true);
+        emit_shell_init_output("test-script", false);
+        emit_allow_command_output("test-allow", true);
+        emit_env_print_output("KEY=value");
+        emit_task_execution_output("task done");
     }
 
     #[tokio::test]

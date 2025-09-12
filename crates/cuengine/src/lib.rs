@@ -524,6 +524,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::print_stdout)] // Allow debug output in tests
     fn test_evaluate_cue_package_with_valid_setup() {
         let temp_dir = TempDir::new().unwrap();
 

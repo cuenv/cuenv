@@ -180,6 +180,9 @@ async fn execute_version_command_safe() -> Result<(), String> {
         commands::version::get_version_info()
     });
 
+    // Emit structured event and also print for CLI compatibility
+    let correlation_id = crate::events::generate_correlation_id();
+    crate::events::emit_version_info(&version_info, &correlation_id);
     println!("{version_info}");
     perf_guard.finish(true);
 
@@ -191,19 +194,23 @@ async fn execute_version_command_safe() -> Result<(), String> {
 async fn execute_env_load_command_safe(path: String, json_mode: bool) -> Result<(), CliError> {
     match commands::hooks::execute_env_load(&path).await {
         Ok(output) => {
-            if json_mode {
+            let content = if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "message": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => json,
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
-            }
+                output
+            };
+
+            // Emit structured event and print for CLI compatibility
+            crate::events::emit_env_load_output(&content, json_mode);
+            println!("{content}");
             Ok(())
         }
         Err(e) => Err(CliError::eval_with_help(
@@ -223,19 +230,23 @@ async fn execute_env_status_command_safe(
 ) -> Result<(), CliError> {
     match commands::hooks::execute_env_status(&path, wait, timeout).await {
         Ok(output) => {
-            if json_mode {
+            let content = if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "status": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => json,
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
-            }
+                output
+            };
+
+            // Emit structured event and print for CLI compatibility
+            crate::events::emit_env_status_output(&content, json_mode);
+            println!("{content}");
             Ok(())
         }
         Err(e) => Err(CliError::eval_with_help(
@@ -253,17 +264,21 @@ fn execute_shell_init_command_safe(
 ) -> Result<(), CliError> {
     let output = commands::hooks::execute_shell_init(shell);
 
-    if json_mode {
+    let content = if json_mode {
         let envelope = OkEnvelope::new(serde_json::json!({
             "script": output
         }));
         match serde_json::to_string(&envelope) {
-            Ok(json) => println!("{json}"),
+            Ok(json) => json,
             Err(e) => return Err(CliError::other(format!("JSON serialization failed: {e}"))),
         }
     } else {
-        println!("{output}");
-    }
+        output
+    };
+
+    // Emit structured event and print for CLI compatibility
+    crate::events::emit_shell_init_output(&content, json_mode);
+    println!("{content}");
     Ok(())
 }
 
@@ -276,19 +291,23 @@ async fn execute_allow_command_safe(
 ) -> Result<(), CliError> {
     match commands::hooks::execute_allow(&path, note).await {
         Ok(output) => {
-            if json_mode {
+            let content = if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "message": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => json,
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
-            }
+                output
+            };
+
+            // Emit structured event and print for CLI compatibility
+            crate::events::emit_allow_command_output(&content, json_mode);
+            println!("{content}");
             Ok(())
         }
         Err(e) => Err(CliError::eval_with_help(
@@ -317,6 +336,8 @@ async fn execute_env_print_command_safe(
 
     match output {
         Ok(result) => {
+            // Emit structured event and print for CLI compatibility
+            crate::events::emit_env_print_output(&result);
             println!("{result}");
             perf_guard.finish(true);
             Ok(())
@@ -343,6 +364,8 @@ async fn execute_task_command_safe(
 
     match commands::task::execute_task(&path, &package, name.as_deref(), false).await {
         Ok(output) => {
+            // Emit structured event and print for CLI compatibility
+            crate::events::emit_task_execution_output(&output);
             println!("{output}");
             perf_guard.finish(true);
             Ok(())
