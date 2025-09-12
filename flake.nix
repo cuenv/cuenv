@@ -106,46 +106,50 @@
           # Pre-build the Go CUE bridge for reproducible builds
           cue-bridge = mkCueBridge pkgs;
 
-          # Create crate overrides without using defaultCrateOverrides
-          crateOverrides = {
-            cuengine = attrs: {
-              nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-                pkgs.go_1_24
-                pkgs.pkg-config
-              ];
-
-              buildInputs = (attrs.buildInputs or [ ]) ++
-                pkgs.lib.optionals pkgs.stdenv.isDarwin (
-                  if pkgs ? darwin.apple_sdk then [
-                    pkgs.darwin.apple_sdk.frameworks.CoreFoundation
-                    pkgs.darwin.apple_sdk.frameworks.Security
-                    pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-                  ] else [
-                    pkgs.darwin.CoreFoundation
-                    pkgs.darwin.Security
-                    pkgs.darwin.SystemConfiguration
-                  ]
-                );
-
-              # Make prebuilt bridge available during build
-              preBuild = ''
-                ${attrs.preBuild or ""}
-            
-                # Copy prebuilt bridge artifacts to expected locations
-                mkdir -p target/debug target/release
-                cp -r ${cue-bridge}/debug/* target/debug/ || true
-                cp -r ${cue-bridge}/release/* target/release/ || true
-              '';
-
-              # Set environment variables for the build
-              CUE_BRIDGE_PATH = cue-bridge;
-            };
-          };
-
-          # Import Cargo.nix with explicit defaultCrateOverrides set to empty
+          # Import Cargo.nix with empty defaultCrateOverrides to bypass the legacy SDK issue
+          # We provide our own overrides without referencing pkgs.defaultCrateOverrides
           crate2nixProject = import ./Cargo.nix {
             inherit pkgs;
-            defaultCrateOverrides = crateOverrides;
+            # Pass an empty set as defaultCrateOverrides to completely avoid
+            # the problematic pkgs.defaultCrateOverrides reference
+            defaultCrateOverrides = { };
+            # Provide our custom buildRustCrateForPkgs that adds our overrides
+            buildRustCrateForPkgs = pkgs: pkgs.buildRustCrate.override {
+              defaultCrateOverrides = {
+                cuengine = attrs: {
+                  nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
+                    pkgs.go_1_24
+                    pkgs.pkg-config
+                  ];
+
+                  buildInputs = (attrs.buildInputs or [ ]) ++
+                    pkgs.lib.optionals pkgs.stdenv.isDarwin (
+                      if pkgs ? darwin.apple_sdk then [
+                        pkgs.darwin.apple_sdk.frameworks.CoreFoundation
+                        pkgs.darwin.apple_sdk.frameworks.Security
+                        pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+                      ] else [
+                        pkgs.darwin.CoreFoundation
+                        pkgs.darwin.Security
+                        pkgs.darwin.SystemConfiguration
+                      ]
+                    );
+
+                  # Make prebuilt bridge available during build
+                  preBuild = ''
+                    ${attrs.preBuild or ""}
+                
+                    # Copy prebuilt bridge artifacts to expected locations
+                    mkdir -p target/debug target/release
+                    cp -r ${cue-bridge}/debug/* target/debug/ || true
+                    cp -r ${cue-bridge}/release/* target/release/ || true
+                  '';
+
+                  # Set environment variables for the build
+                  CUE_BRIDGE_PATH = cue-bridge;
+                };
+              };
+            };
           };
         in
         {
