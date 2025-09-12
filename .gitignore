@@ -8,10 +8,6 @@
 # OS files
 .DS_Store
 Thumbs.db
-# Devenv
-.devenv*
-devenv.local.nix
-
 # direnv
 .direnv
 

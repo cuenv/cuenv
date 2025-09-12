@@ -34,14 +34,12 @@
         pkgs = import nixpkgs { inherit system overlays; };
 
         # Pre-build the Go CUE bridge for reproducible builds
-        cue-bridge = pkgs.stdenv.mkDerivation {
+        cue-bridge = pkgs.buildGoModule {
           pname = "libcue-bridge";
           version = "0.1.0";
           src = ./crates/cuengine;
 
-          nativeBuildInputs = with pkgs; [
-            go_1_24
-          ];
+          vendorHash = "sha256-mU40RCeO0R286fxfgONJ7kw6kFDHPMUzHw8sjsBgiRg=";
 
           buildPhase = ''
             runHook preBuild
@@ -143,6 +141,12 @@
             # Go toolchain - pinned to 1.24.x as per Phase 3 requirements
             go_1_24
 
+            # CUE language support
+            cue
+
+            # Documentation tools
+            antora
+
             # Development tools
             cargo-edit
             cargo-machete
@@ -154,8 +158,8 @@
             cargo-deny
             cargo-cyclonedx
 
-            # Nix tools
-            crate2nix.packages.${system}.crate2nix
+            # Nix tools (use directly from input without referencing the package)
+            # crate2nix is available via the generate-cargo-nix app
 
             # CI/CD tools
             git

@@ -1,8 +1,11 @@
-# Devenv + Nix
+# Nix Flake Development Environment
 
-No tooling is available in this project, so all commands must be prefixed and run as such:
+This project uses a Nix flake for development. To run commands, use:
 
-`devenv shell -- cargo --version`
+`nix develop --command cargo --version`
+
+Or enter the development shell with:
+`nix develop`
 
 ## Development Workflow
 
@@ -11,27 +14,21 @@ No tooling is available in this project, so all commands must be prefixed and ru
 This project uses Clippy for Rust linting. To run clippy with strict warnings:
 
 ```bash
-# Using devenv (preferred)
-devenv shell -- cargo clippy -- -D warnings
-
-# Or using nix-shell directly
-nix-shell -p gcc --run "cargo clippy -- -D warnings"
+# Run clippy with strict warnings
+nix develop --command cargo clippy -- -D warnings
 ```
 
 ### Running Tests
 
 ```bash
 # Run library tests
-devenv shell -- cargo test --lib
-
-# Or using nix-shell
-nix-shell -p gcc --run "cargo test --lib"
+nix develop --command cargo test --lib
 ```
 
 ### Code Formatting
 
 ```bash
-devenv shell -- cargo fmt
+nix develop --command cargo fmt
 ```
 
 ## Recent Changes

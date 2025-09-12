@@ -24,9 +24,7 @@ jobs:
             accept-flake-config = true
             experimental-features = nix-command flakes
 
-      - run: nix profile install --accept-flake-config nixpkgs#devenv
-
-      - run: devenv shell
+      - run: nix develop --accept-flake-config --command echo "Development environment ready"
 
       - id: claude-review
         uses: anthropics/claude-code-action@beta
@@ -45,4 +43,4 @@ jobs:
 
             Be constructive and helpful in your feedback.
 
-          allowed_tools: "Bash(devenv*),Bash(git:*),Bash(gh:*)"
+          allowed_tools: "Bash(nix*),Bash(git:*),Bash(gh:*)"
