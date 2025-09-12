@@ -12,16 +12,19 @@ Or enter the development shell with:
 **NEVER push code without running these checks:**
 
 1. **Run clippy with strict warnings** - MUST pass with no warnings:
+
    ```bash
    nix develop --command cargo clippy -- -D warnings
    ```
 
 2. **Run treefmt** - MUST format all files:
+
    ```bash
    nix develop --command treefmt
    ```
 
 3. **Run tests** - MUST pass all tests:
+
    ```bash
    nix develop --command cargo test
    ```
