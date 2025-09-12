@@ -159,6 +159,9 @@
           treefmt
           pkg-config
           llvmPackages.bintools
+          bun
+          patchelf
+          libgccjit
         ] ++ lib.optionals stdenv.isLinux [ cargo-llvm-cov ];
 
       in
@@ -206,13 +209,26 @@
           RUST_BACKTRACE = "1";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
+          LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
 
           shellHook = ''
             ${setupBridge}
             
+            # Install docs dependencies and patch wrangler workerd binary
+            cd docs
+            bun install
+            
+            __patchTarget="./node_modules/@cloudflare/workerd-linux-64/bin/workerd"
+            if [[ -f "$__patchTarget" ]]; then
+              ${pkgs.patchelf}/bin/patchelf --set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 "$__patchTarget"
+            fi
+            
+            cd ..
+            
             echo "🦀 cuenv development environment ready!"
             echo "📦 Prebuilt CUE bridge available at: ${cue-bridge}"
             echo "🚀 Crane-based build system active"
+            echo "📚 Docs dependencies installed and wrangler patched"
           '';
         };
 

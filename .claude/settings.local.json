@@ -9,7 +9,8 @@
       "mcp__context7__resolve-library-id",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:nixos.org)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:developers.cloudflare.com)"
     ],
     "deny": [],
     "ask": []

@@ -10,29 +10,20 @@ jobs:
   website:
     runs-on: ubuntu-latest
     steps:
-      - name: git-checkout
-        uses: actions/checkout@v4
-      - name: bun-setup
-        uses: oven-sh/setup-bun@v1
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v1
         with:
           bun-version: latest
-      - name: dependencies-install
-        run: bun install
+      - run: bun install
         working-directory: ./docs
-      - name: website-build
-        run: bun run build
+      - run: bun run build
         working-directory: ./docs
         env:
           CI: "true"
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      - name: node-setup
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: cloudflare-deploy
-        uses: cloudflare/wrangler-action@v3
+      - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ./docs
