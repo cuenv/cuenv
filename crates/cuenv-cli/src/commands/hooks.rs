@@ -2,12 +2,12 @@
 
 use cuengine::CueEvaluator;
 use cuenv_core::{
-    Result,
     hooks::{
-        approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
+        approval::{check_approval_status, ApprovalManager, ApprovalStatus, ConfigSummary},
         executor::HookExecutor,
         types::Hook,
     },
+    Result,
 };
 use serde_json::Value;
 use std::path::PathBuf;
