@@ -36,6 +36,7 @@
 //! ```
 
 pub mod environment;
+pub mod hooks;
 pub mod task;
 pub mod task_executor;
 pub mod task_graph;
