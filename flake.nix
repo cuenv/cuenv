@@ -110,10 +110,15 @@
                 ];
 
                 buildInputs = (attrs.buildInputs or [ ]) ++
-                  pkgs.lib.optionals pkgs.stdenv.isDarwin [
-                    pkgs.darwin.apple_sdk.frameworks.Security
-                    pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-                  ];
+                  pkgs.lib.optionals pkgs.stdenv.isDarwin (
+                    if pkgs ? darwin.apple_sdk then [
+                      pkgs.darwin.apple_sdk.frameworks.Security
+                      pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+                    ] else [
+                      pkgs.darwin.Security
+                      pkgs.darwin.SystemConfiguration
+                    ]
+                  );
 
                 # Make prebuilt bridge available during build
                 preBuild = ''
@@ -184,10 +189,15 @@
               # Build dependencies
               pkg-config
               llvmPackages.bintools
-            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
-              pkgs.darwin.apple_sdk.frameworks.Security
-              pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
-            ];
+            ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin (
+              if pkgs ? darwin.apple_sdk then [
+                pkgs.darwin.apple_sdk.frameworks.Security
+                pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+              ] else [
+                pkgs.darwin.Security
+                pkgs.darwin.SystemConfiguration
+              ]
+            );
 
             env = {
               RUST_BACKTRACE = "1";
