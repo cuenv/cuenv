@@ -100,10 +100,11 @@
                 pkgs.lib.hasSuffix "\.mod" path ||
                 pkgs.lib.hasSuffix "\.sum" path;
               isBridgeHeader = pkgs.lib.hasSuffix "bridge.h" path;
+              isCueFile = pkgs.lib.hasSuffix "\.cue" path;
               isDirectory = type == "directory";
             in
             isRustFile || isTomlFile || isLockFile ||
-            isGoFile || isBridgeHeader || isDirectory;
+            isGoFile || isBridgeHeader || isCueFile || isDirectory;
         };
 
         # Bridge setup helper
