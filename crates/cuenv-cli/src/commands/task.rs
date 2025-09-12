@@ -1,10 +1,10 @@
 //! Task execution command implementation
 
 use cuengine::CueEvaluator;
+use cuenv_core::Result;
 use cuenv_core::environment::CueEvaluation;
 use cuenv_core::task_executor::{ExecutorConfig, TaskExecutor};
 use cuenv_core::task_graph::TaskGraph;
-use cuenv_core::Result;
 use std::fmt::Write;
 use std::path::Path;
 
