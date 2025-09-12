@@ -160,9 +160,11 @@
           pkg-config
           llvmPackages.bintools
           bun
+        ] ++ lib.optionals stdenv.isLinux [
+          cargo-llvm-cov
           patchelf
           libgccjit
-        ] ++ lib.optionals stdenv.isLinux [ cargo-llvm-cov ];
+        ];
 
       in
       {
@@ -202,35 +204,39 @@
           };
         };
 
-        devShells.default = craneLib.devShell {
+        devShells.default = craneLib.devShell ({
           checks = self.checks.${system};
           packages = devTools;
 
           RUST_BACKTRACE = "1";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
-          LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
 
           shellHook = ''
             ${setupBridge}
             
-            # Install docs dependencies and patch wrangler workerd binary
+            # Install docs dependencies
             cd docs
             bun install
             
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+            # Patch wrangler workerd binary (Linux only)
             __patchTarget="./node_modules/@cloudflare/workerd-linux-64/bin/workerd"
             if [[ -f "$__patchTarget" ]]; then
               ${pkgs.patchelf}/bin/patchelf --set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 "$__patchTarget"
             fi
+            ''}
             
             cd ..
             
             echo "🦀 cuenv development environment ready!"
             echo "📦 Prebuilt CUE bridge available at: ${cue-bridge}"
             echo "🚀 Crane-based build system active"
-            echo "📚 Docs dependencies installed and wrangler patched"
+            echo "📚 Docs dependencies installed${pkgs.lib.optionalString pkgs.stdenv.isLinux " and wrangler patched"}"
           '';
-        };
+        } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+          LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
+        });
 
         apps = {
           default = flake-utils.lib.mkApp {
