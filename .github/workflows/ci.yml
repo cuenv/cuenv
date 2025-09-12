@@ -20,10 +20,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            experimental-features = nix-command flakes
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
@@ -51,10 +47,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            experimental-features = nix-command flakes
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
@@ -112,10 +104,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            experimental-features = nix-command flakes
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
@@ -149,10 +137,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            experimental-features = nix-command flakes
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
@@ -183,10 +167,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            experimental-features = nix-command flakes
 
       - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
