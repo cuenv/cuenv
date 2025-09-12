@@ -241,7 +241,6 @@
             cargo-audit
             cargo-nextest
             cargo-deny
-            cargo-llvm-cov
             cargo-cyclonedx
 
             # CI/CD tools
@@ -255,6 +254,9 @@
             # Build dependencies
             pkg-config
             llvmPackages.bintools
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+            # Linux-only tools
+            cargo-llvm-cov
           ];
 
           # Environment variables
