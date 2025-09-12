@@ -140,7 +140,11 @@ fn test_environment_to_env_vec() {
 }
 
 #[test]
-#[allow(unsafe_code)] // Required for test environment variable manipulation
+// Unsafe code is required here because std::env::set_var() is unsafe in Rust 1.71+
+// due to potential data races when environment variables are modified while other
+// threads might be reading them. In this test context, we're running in a controlled
+// single-threaded test environment, making this usage safe.
+#[allow(unsafe_code)]
 fn test_environment_merge_with_system() {
     let mut env = Environment::new();
     env.set("CUENV_TEST_VAR".to_string(), "override_value".to_string());

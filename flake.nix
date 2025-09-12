@@ -39,6 +39,11 @@
           version = "0.1.0";
           src = ./crates/cuengine;
 
+          # The vendorHash is required for reproducible Go builds.
+          # To update this hash after changing Go dependencies:
+          # 1. Set vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+          # 2. Run the build; Nix will fail and print the correct hash.
+          # 3. Copy the printed hash here.
           vendorHash = "sha256-mU40RCeO0R286fxfgONJ7kw6kFDHPMUzHw8sjsBgiRg=";
 
           buildPhase = ''
@@ -159,7 +164,8 @@
             cargo-cyclonedx
 
             # Nix tools (use directly from input without referencing the package)
-            # crate2nix is available via the generate-cargo-nix app
+            # crate2nix is available via the 'generate-cargo-nix' app (see 'apps' below)
+            # Run with: nix run .#generate-cargo-nix
 
             # CI/CD tools
             git
