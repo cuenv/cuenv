@@ -145,6 +145,22 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
+        Command::EnvLoad { path } => match execute_env_load_command_safe(path, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::EnvStatus { path, wait } => match execute_env_status_command_safe(path, wait, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::ShellInit { shell } => match execute_shell_init_command_safe(shell, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::Allow { path, note } => match execute_allow_command_safe(path, note, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
     }
 }
 
@@ -192,6 +208,146 @@ async fn execute_env_print_command_safe(
             Err(CliError::eval_with_help(
                 format!("Failed to print environment variables: {e:?}"),
                 "Check your CUE files and package configuration",
+            ))
+        }
+    }
+}
+
+/// Execute env load command safely
+#[instrument(name = "cuenv_execute_env_load_safe")]
+async fn execute_env_load_command_safe(
+    path: String,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("env_load_command");
+    perf_guard.add_metadata("command_type", "env_load");
+    perf_guard.add_metadata("path", &path);
+
+    let output = measure_perf!("env_load_execution", {
+        commands::env::execute_env_load(&path).await
+    });
+
+    match output {
+        Ok(result) => {
+            if json_mode {
+                let json_output = serde_json::json!({"message": result});
+                println!("{}", serde_json::to_string(&json_output).unwrap());
+            } else {
+                println!("{result}");
+            }
+            perf_guard.finish(true);
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval_with_help(
+                format!("Failed to load environment: {e:?}"),
+                "Check your CUE files and ensure configuration is approved with 'cuenv allow'",
+            ))
+        }
+    }
+}
+
+/// Execute env status command safely
+#[instrument(name = "cuenv_execute_env_status_safe")]
+async fn execute_env_status_command_safe(
+    path: String,
+    wait: bool,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("env_status_command");
+    perf_guard.add_metadata("command_type", "env_status");
+    perf_guard.add_metadata("path", &path);
+    perf_guard.add_metadata("wait", &wait.to_string());
+
+    let output = measure_perf!("env_status_execution", {
+        commands::env::execute_env_status(&path, wait).await
+    });
+
+    match output {
+        Ok(result) => {
+            if json_mode {
+                let json_output = serde_json::json!({"status": result});
+                println!("{}", serde_json::to_string(&json_output).unwrap());
+            } else {
+                println!("{result}");
+            }
+            perf_guard.finish(true);
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval_with_help(
+                format!("Failed to get environment status: {e:?}"),
+                "Check your directory path and hook execution state",
+            ))
+        }
+    }
+}
+
+/// Execute shell init command safely
+#[instrument(name = "cuenv_execute_shell_init_safe")]
+async fn execute_shell_init_command_safe(
+    shell: crate::cli::ShellType,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("shell_init_command");
+    perf_guard.add_metadata("command_type", "shell_init");
+    perf_guard.add_metadata("shell", &format!("{shell:?}"));
+
+    let output = measure_perf!("shell_init_execution", {
+        commands::shell::execute_shell_init(shell).await
+    });
+
+    match output {
+        Ok(result) => {
+            if json_mode {
+                let json_output = serde_json::json!({"script": result});
+                println!("{}", serde_json::to_string(&json_output).unwrap());
+            } else {
+                println!("{result}");
+            }
+            perf_guard.finish(true);
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::other(format!("Failed to generate shell integration: {e:?}")))
+        }
+    }
+}
+
+/// Execute allow command safely
+#[instrument(name = "cuenv_execute_allow_safe")]
+async fn execute_allow_command_safe(
+    path: String,
+    note: Option<String>,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("allow_command");
+    perf_guard.add_metadata("command_type", "allow");
+    perf_guard.add_metadata("path", &path);
+
+    let output = measure_perf!("allow_execution", {
+        commands::allow::execute_allow(&path, note).await
+    });
+
+    match output {
+        Ok(result) => {
+            if json_mode {
+                let json_output = serde_json::json!({"message": result});
+                println!("{}", serde_json::to_string(&json_output).unwrap());
+            } else {
+                println!("{result}");
+            }
+            perf_guard.finish(true);
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval_with_help(
+                format!("Failed to approve configuration: {e:?}"),
+                "Check your CUE files and directory path",
             ))
         }
     }

@@ -1,6 +1,9 @@
+pub mod allow;
 pub mod env;
+pub mod shell;
 pub mod version;
 
+use crate::cli::ShellType;
 use crate::events::{Event, EventSender};
 use cuenv_core::Result;
 use tokio::time::{sleep, Duration};
@@ -13,6 +16,20 @@ pub enum Command {
         path: String,
         package: String,
         format: String,
+    },
+    EnvLoad {
+        path: String,
+    },
+    EnvStatus {
+        path: String,
+        wait: bool,
+    },
+    ShellInit {
+        shell: ShellType,
+    },
+    Allow {
+        path: String,
+        note: Option<String>,
     },
 }
 
@@ -35,6 +52,10 @@ impl CommandExecutor {
                 package,
                 format,
             } => self.execute_env_print(path, package, format).await,
+            Command::EnvLoad { path } => self.execute_env_load(path).await,
+            Command::EnvStatus { path, wait } => self.execute_env_status(path, wait).await,
+            Command::ShellInit { shell } => self.execute_shell_init(shell).await,
+            Command::Allow { path, note } => self.execute_allow(path, note).await,
         }
     }
 
@@ -93,6 +114,122 @@ impl CommandExecutor {
 
         // Execute the env print command
         match env::execute_env_print(&path, &package, &format).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_env_load(&self, path: String) -> Result<()> {
+        let command_name = "env load";
+
+        // Send command start event
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        // Execute the env load command
+        match env::execute_env_load(&path).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_env_status(&self, path: String, wait: bool) -> Result<()> {
+        let command_name = "env status";
+
+        // Send command start event
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        // Execute the env status command
+        match env::execute_env_status(&path, wait).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_shell_init(&self, shell: ShellType) -> Result<()> {
+        let command_name = "shell init";
+
+        // Send command start event
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        // Execute the shell init command
+        match shell::execute_shell_init(shell).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_allow(&self, path: String, note: Option<String>) -> Result<()> {
+        let command_name = "allow";
+
+        // Send command start event
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        // Execute the allow command
+        match allow::execute_allow(&path, note).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
