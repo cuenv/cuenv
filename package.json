@@ -1,0 +1,16 @@
+{
+  "name": "cuenv",
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "docs"
+  ],
+  "devDependencies": {
+    "bun": "^1.0.0"
+  },
+  "scripts": {
+    "docs:build": "cd docs && bun run build",
+    "docs:serve": "cd docs && bun run serve",
+    "docs:dev": "cd docs && bun run dev"
+  }
+}
