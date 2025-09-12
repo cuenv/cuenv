@@ -173,15 +173,12 @@
               antora
 
               # Development tools
-              cargo-edit
-              cargo-machete
-              cargo-outdated
-              cargo-llvm-cov
+              # Note: Some cargo tools may trigger darwin.apple_sdk_11_0 issues
+              # Excluded: cargo-edit, cargo-machete, cargo-outdated, cargo-llvm-cov
+              # cargo-release, cargo-cyclonedx (they cause SDK issues on Darwin)
               cargo-audit
               cargo-nextest
-              cargo-release
               cargo-deny
-              cargo-cyclonedx
 
               # Nix tools (use directly from input without referencing the package)
               # crate2nix is available via the 'generate-cargo-nix' app (see 'apps' below)
