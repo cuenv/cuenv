@@ -289,6 +289,23 @@ pub enum Commands {
         )]
         package: String,
     },
+    #[command(about = "Shell integration commands")]
+    Shell {
+        #[command(subcommand)]
+        subcommand: ShellCommands,
+    },
+    #[command(about = "Approve configuration for hook execution")]
+    Allow {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(long, help = "Optional note about this approval")]
+        note: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -316,6 +333,46 @@ pub enum EnvCommands {
         )]
         output_format: OutputFormat,
     },
+    #[command(about = "Load environment and execute hooks in background")]
+    Load {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+    },
+    #[command(about = "Show hook execution status")]
+    Status {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(long, help = "Wait for hooks to complete before returning")]
+        wait: bool,
+        #[arg(long, help = "Timeout in seconds for waiting", default_value = "300")]
+        timeout: u64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ShellCommands {
+    #[command(about = "Generate shell integration script")]
+    Init {
+        #[arg(help = "Shell type", value_enum)]
+        shell: ShellType,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum ShellType {
+    Fish,
+    Bash,
+    Zsh,
 }
 
 impl From<Commands> for Command {
@@ -331,6 +388,16 @@ impl From<Commands> for Command {
                     path,
                     package,
                     format: output_format.to_string(),
+                },
+                EnvCommands::Load { path } => Command::EnvLoad { path },
+                EnvCommands::Status {
+                    path,
+                    wait,
+                    timeout,
+                } => Command::EnvStatus {
+                    path,
+                    wait,
+                    timeout,
                 },
             },
             Commands::Task {
@@ -353,6 +420,10 @@ impl From<Commands> for Command {
                 command,
                 args,
             },
+            Commands::Shell { subcommand } => match subcommand {
+                ShellCommands::Init { shell } => Command::ShellInit { shell },
+            },
+            Commands::Allow { path, note } => Command::Allow { path, note },
         }
     }
 }
@@ -464,14 +535,18 @@ mod tests {
         let cli = Cli::try_parse_from(["cuenv", "env", "print"]).unwrap();
 
         if let Commands::Env { subcommand } = cli.command {
-            let EnvCommands::Print {
+            if let EnvCommands::Print {
                 path,
                 package,
                 output_format,
-            } = subcommand;
-            assert_eq!(path, ".");
-            assert_eq!(package, "cuenv");
-            assert!(matches!(output_format, OutputFormat::Env));
+            } = subcommand
+            {
+                assert_eq!(path, ".");
+                assert_eq!(package, "cuenv");
+                assert!(matches!(output_format, OutputFormat::Env));
+            } else {
+                panic!("Expected EnvCommands::Print");
+            }
         } else {
             panic!("Expected Env command");
         }
@@ -493,14 +568,18 @@ mod tests {
         .unwrap();
 
         if let Commands::Env { subcommand } = cli.command {
-            let EnvCommands::Print {
-                path,
-                package,
-                output_format,
-            } = subcommand;
-            assert_eq!(path, "examples/env-basic");
-            assert_eq!(package, "examples");
-            assert!(matches!(output_format, OutputFormat::Json));
+            match subcommand {
+                EnvCommands::Print {
+                    path,
+                    package,
+                    output_format,
+                } => {
+                    assert_eq!(path, "examples/env-basic");
+                    assert_eq!(package, "examples");
+                    assert!(matches!(output_format, OutputFormat::Json));
+                }
+                _ => panic!("Expected EnvCommands::Print"),
+            }
         } else {
             panic!("Expected Env command");
         }
@@ -511,14 +590,18 @@ mod tests {
         let cli = Cli::try_parse_from(["cuenv", "env", "print", "-p", "test/path"]).unwrap();
 
         if let Commands::Env { subcommand } = cli.command {
-            let EnvCommands::Print {
-                path,
-                package,
-                output_format,
-            } = subcommand;
-            assert_eq!(path, "test/path");
-            assert_eq!(package, "cuenv"); // default
-            assert!(matches!(output_format, OutputFormat::Env)); // default
+            match subcommand {
+                EnvCommands::Print {
+                    path,
+                    package,
+                    output_format,
+                } => {
+                    assert_eq!(path, "test/path");
+                    assert_eq!(package, "cuenv"); // default
+                    assert!(matches!(output_format, OutputFormat::Env)); // default
+                }
+                _ => panic!("Expected EnvCommands::Print"),
+            }
         } else {
             panic!("Expected Env command");
         }
