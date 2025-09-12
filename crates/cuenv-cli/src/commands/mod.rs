@@ -1,12 +1,13 @@
 pub mod env;
 pub mod exec;
+pub mod hooks;
 pub mod task;
 pub mod version;
 
 use crate::events::{Event, EventSender};
 use cuenv_core::Result;
-use tokio::time::{Duration, sleep};
-use tracing::{Level, event};
+use tokio::time::{sleep, Duration};
+use tracing::{event, Level};
 
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -15,6 +16,14 @@ pub enum Command {
         path: String,
         package: String,
         format: String,
+    },
+    EnvLoad {
+        path: String,
+    },
+    EnvStatus {
+        path: String,
+        wait: bool,
+        timeout: u64,
     },
     Task {
         path: String,
@@ -26,6 +35,13 @@ pub enum Command {
         package: String,
         command: String,
         args: Vec<String>,
+    },
+    ShellInit {
+        shell: crate::cli::ShellType,
+    },
+    Allow {
+        path: String,
+        note: Option<String>,
     },
 }
 
@@ -59,6 +75,17 @@ impl CommandExecutor {
                 command,
                 args,
             } => self.execute_exec(path, package, command, args).await,
+            Command::EnvLoad { path } => self.execute_env_load(path).await,
+            Command::EnvStatus {
+                path,
+                wait,
+                timeout,
+            } => self.execute_env_status(path, wait, timeout).await,
+            Command::ShellInit { shell } => {
+                self.execute_shell_init(shell);
+                Ok(())
+            }
+            Command::Allow { path, note } => self.execute_allow(path, note).await,
         }
     }
 
@@ -211,6 +238,102 @@ impl CommandExecutor {
         }
     }
 
+    async fn execute_env_load(&self, path: String) -> Result<()> {
+        let command_name = "env load";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_env_load(&path).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_env_status(&self, path: String, wait: bool, timeout: u64) -> Result<()> {
+        let command_name = "env status";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_env_status(&path, wait, timeout).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    fn execute_shell_init(&self, shell: crate::cli::ShellType) {
+        let command_name = "shell init";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        let output = hooks::execute_shell_init(shell);
+        self.send_event(Event::CommandComplete {
+            command: command_name.to_string(),
+            success: true,
+            output,
+        });
+    }
+
+    async fn execute_allow(&self, path: String, note: Option<String>) -> Result<()> {
+        let command_name = "allow";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_allow(&path, note).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
     fn send_event(&self, event: Event) {
         if let Err(e) = self.event_sender.send(event) {
             event!(Level::ERROR, "Failed to send event: {}", e);
@@ -272,16 +395,12 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify we got start, progress, and complete events
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::CommandStart { command } if command == "version"))
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::CommandProgress { .. }))
-        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::CommandStart { command } if command == "version")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::CommandProgress { .. })));
         assert!(events.iter().any(|e| matches!(e, Event::CommandComplete { command, success: true, .. } if command == "version")));
     }
 
@@ -309,21 +428,15 @@ mod tests {
 
         // Verify progress sequence
         assert!(!progress_events.is_empty());
-        assert!(
-            progress_events
-                .iter()
-                .any(|(_, msg)| msg.contains("Initializing"))
-        );
-        assert!(
-            progress_events
-                .iter()
-                .any(|(_, msg)| msg.contains("Loading version info"))
-        );
-        assert!(
-            progress_events
-                .iter()
-                .any(|(_, msg)| msg.contains("Complete"))
-        );
+        assert!(progress_events
+            .iter()
+            .any(|(_, msg)| msg.contains("Initializing")));
+        assert!(progress_events
+            .iter()
+            .any(|(_, msg)| msg.contains("Loading version info")));
+        assert!(progress_events
+            .iter()
+            .any(|(_, msg)| msg.contains("Complete")));
 
         // Verify progress values
         let progress_values: Vec<f32> = progress_events.iter().map(|(p, _)| *p).collect();
@@ -364,11 +477,9 @@ mod tests {
         let _ = handle.await.unwrap();
 
         // Verify start event was sent
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, Event::CommandStart { command } if command == "env print"))
-        );
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::CommandStart { command } if command == "env print")));
         // Verify complete event was sent (success depends on actual execution)
         assert!(events.iter().any(
             |e| matches!(e, Event::CommandComplete { command, .. } if command == "env print")
