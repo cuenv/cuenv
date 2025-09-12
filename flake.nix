@@ -102,19 +102,19 @@
             inherit pkgs;
 
             # Create a cleaned version of defaultCrateOverrides without darwin.apple_sdk_11_0
-            defaultCrateOverrides = 
+            defaultCrateOverrides =
               let
                 # Get the base overrides but filter out any that might reference the old SDK
-                baseOverrides = if pkgs.stdenv.isDarwin then {} else pkgs.defaultCrateOverrides;
+                baseOverrides = if pkgs.stdenv.isDarwin then { } else pkgs.defaultCrateOverrides;
               in
               baseOverrides // {
-              cuengine = attrs: {
-                nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
-                  pkgs.go_1_24
-                  pkgs.pkg-config
-                ];
+                cuengine = attrs: {
+                  nativeBuildInputs = (attrs.nativeBuildInputs or [ ]) ++ [
+                    pkgs.go_1_24
+                    pkgs.pkg-config
+                  ];
 
-                buildInputs = (attrs.buildInputs or [ ]) ++
+                  buildInputs = (attrs.buildInputs or [ ]) ++
                   pkgs.lib.optionals pkgs.stdenv.isDarwin (
                     if pkgs ? darwin.apple_sdk then [
                       pkgs.darwin.apple_sdk.frameworks.Security
@@ -125,20 +125,20 @@
                     ]
                   );
 
-                # Make prebuilt bridge available during build
-                preBuild = ''
-                  ${attrs.preBuild or ""}
+                  # Make prebuilt bridge available during build
+                  preBuild = ''
+                    ${attrs.preBuild or ""}
                 
-                  # Copy prebuilt bridge artifacts to expected locations
-                  mkdir -p target/debug target/release
-                  cp -r ${cue-bridge}/debug/* target/debug/ || true
-                  cp -r ${cue-bridge}/release/* target/release/ || true
-                '';
+                    # Copy prebuilt bridge artifacts to expected locations
+                    mkdir -p target/debug target/release
+                    cp -r ${cue-bridge}/debug/* target/debug/ || true
+                    cp -r ${cue-bridge}/release/* target/release/ || true
+                  '';
 
-                # Set environment variables for the build
-                CUE_BRIDGE_PATH = cue-bridge;
+                  # Set environment variables for the build
+                  CUE_BRIDGE_PATH = cue-bridge;
+                };
               };
-            };
           };
         in
         {
