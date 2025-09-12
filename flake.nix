@@ -47,55 +47,62 @@
           ];
         };
       });
+      # Helper to build the CUE bridge without tying devShells to self.packages
+      mkCueBridge = pkgs: pkgs.buildGoModule {
+        pname = "libcue-bridge";
+        version = "0.1.0";
+        src = ./crates/cuengine;
+
+        # The vendorHash is required for reproducible Go builds.
+        vendorHash = "sha256-mU40RCeO0R286fxfgONJ7kw6kFDHPMUzHw8sjsBgiRg";
+
+        buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin (
+          if pkgs ? darwin.apple_sdk then [
+            pkgs.darwin.apple_sdk.frameworks.Security
+            pkgs.darwin.apple_sdk.frameworks.SystemConfiguration
+          ] else [
+            pkgs.darwin.Security
+            pkgs.darwin.SystemConfiguration
+          ]
+        );
+
+        buildPhase = ''
+          runHook preBuild
+
+          # Build both debug and release versions
+          mkdir -p $out/debug $out/release
+
+          # Build debug version
+          go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
+          cp libcue_bridge.h $out/debug/
+
+          # Build release version (with optimizations)
+          CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go  
+          cp libcue_bridge.h $out/release/
+
+          runHook postBuild
+        '';
+
+        installPhase = ''
+          runHook preInstall
+          # Already copied to $out during buildPhase
+          runHook postInstall
+        '';
+
+        meta = with pkgs.lib; {
+          description = "Go CUE bridge library for cuenv";
+          license = with licenses; [ mit asl20 ];
+          platforms = platforms.unix ++ platforms.windows;
+        };
+      };
     in
     {
       schemas = flake-schemas.schemas;
 
       packages = forEachSupportedSystem ({ system, pkgs }:
         let
-
           # Pre-build the Go CUE bridge for reproducible builds
-          cue-bridge = pkgs.buildGoModule {
-            pname = "libcue-bridge";
-            version = "0.1.0";
-            src = ./crates/cuengine;
-
-            # The vendorHash is required for reproducible Go builds.
-            # To update this hash after changing Go dependencies:
-            # 1. Set vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-            # 2. Run the build; Nix will fail and print the correct hash.
-            # 3. Copy the printed hash here.
-            vendorHash = "sha256-mU40RCeO0R286fxfgONJ7kw6kFDHPMUzHw8sjsBgiRg=";
-
-            buildPhase = ''
-              runHook preBuild
-            
-              # Build both debug and release versions
-              mkdir -p $out/debug $out/release
-            
-              # Build debug version
-              go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
-              cp libcue_bridge.h $out/debug/
-            
-              # Build release version (with optimizations)
-              CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go  
-              cp libcue_bridge.h $out/release/
-
-              runHook postBuild
-            '';
-
-            installPhase = ''
-              runHook preInstall
-              # Already copied to $out during buildPhase
-              runHook postInstall
-            '';
-
-            meta = with pkgs.lib; {
-              description = "Go CUE bridge library for cuenv";
-              license = with licenses; [ mit asl20 ];
-              platforms = platforms.unix ++ platforms.windows;
-            };
-          };
+          cue-bridge = mkCueBridge pkgs;
 
           # Import the generated Cargo.nix with custom overrides
           crate2nixProject = import ./Cargo.nix {
@@ -150,11 +157,8 @@
         });
 
       devShells = forEachSupportedSystem ({ system, pkgs }:
-        let
-          cue-bridge = self.packages.${system}.cue-bridge;
-        in
         {
-          default = pkgs.mkShell {
+          default = let cue-bridge = mkCueBridge pkgs; in pkgs.mkShell {
             packages = with pkgs; [
               # Rust toolchain
               rustToolchain

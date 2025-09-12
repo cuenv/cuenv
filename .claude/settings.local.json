@@ -7,7 +7,8 @@
       "Bash(git:*)",
       "Bash(nix:*)",
       "mcp__context7__resolve-library-id",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:nixos.org)"
     ],
     "deny": [],
     "ask": []
