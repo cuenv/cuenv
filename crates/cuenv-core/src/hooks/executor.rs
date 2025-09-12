@@ -94,7 +94,7 @@ impl HookExecutor {
         );
 
         // Create initial execution state
-        let mut state = HookExecutionState::new(directory.clone(), config_hash, hooks.len());
+        let mut state = HookExecutionState::new(directory.clone(), config_hash.clone(), hooks.len());
         state.mark_started();
 
         // Save initial state
@@ -103,8 +103,11 @@ impl HookExecutor {
         // Spawn background task for hook execution
         let executor = self.clone_for_background();
         tokio::spawn(async move {
+            info!("Background task started for hook execution");
             if let Err(e) = executor.execute_hooks_sequential(state, hooks).await {
                 error!("Hook execution failed: {}", e);
+            } else {
+                info!("Hook execution completed successfully");
             }
         });
 
@@ -231,6 +234,8 @@ impl HookExecutor {
                 hook.command, e
             ))
         })?;
+
+        debug!("Hook process spawned successfully, waiting for completion");
 
         // Then apply timeout to waiting for completion
         match tokio::time::timeout(timeout_duration, child.wait()).await {
