@@ -2,7 +2,7 @@
 
 #![allow(missing_docs)] // Benchmarks don't need documentation
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use cuengine::evaluate_cue_package;
 use std::fs;
 use tempfile::TempDir;
