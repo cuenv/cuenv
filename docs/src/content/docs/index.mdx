@@ -1,0 +1,101 @@
+---
+title: cuenv Documentation
+description: A modern application build toolchain with typed environments and CUE-powered task orchestration
+template: splash
+hero:
+  title: |
+    cuenv
+  tagline: A modern application build toolchain with typed environments and CUE-powered task orchestration
+  image:
+    file: ../../assets/houston.webp
+  actions:
+    - text: Quick Start
+      link: /quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/cuenv/cuenv
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Badge } from '@astrojs/starlight/components';
+
+<Badge text="Alpha" variant="caution" size="small" />
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Build Status](https://github.com/cuenv/cuenv/workflows/CI/badge.svg)](https://github.com/cuenv/cuenv/actions)
+[![Crates.io](https://img.shields.io/crates/v/cuenv)](https://crates.io/crates/cuenv)
+
+:::note[Status]
+Alpha - Core evaluation engine complete, CLI and task runner in active development
+:::
+
+## Overview
+
+cuenv is a next-generation build toolchain that brings type safety and powerful configuration management to application development. Built around CUE's constraint-based type system, cuenv provides a unified solution for environment management, task orchestration, and secure secret handling.
+
+Unlike traditional build tools, cuenv leverages CUE's ability to compose and validate configuration across directory hierarchies, making it particularly well-suited for monorepos and complex project structures. With integrated Nix support, security isolation, and extensible secret management, cuenv provides a complete development environment solution.
+
+**Perfect for:**
+
+- Monorepos requiring consistent environment management
+- Teams needing type-safe configuration  
+- Projects with complex build dependencies
+- Security-conscious development workflows
+
+## Key Features
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| ✅ **CUE Evaluation Engine** | Complete | Fast, reliable CUE evaluation with Rust performance |
+| 🚧 **CLI Interface** | In Development | Task execution and environment management |
+| 🚧 **Typed Environments** | In Development | Compose environment constraints from CUE modules |
+| 🚧 **Task Orchestration** | In Development | Parallel/sequential execution with smart dependencies |
+| 🚧 **Nix Integration** | In Development | Automatic software provisioning via Nix flakes |
+| 🚧 **Secret Management** | In Development | Extensible resolvers for 1Password, AWS, GCP, etc. |
+| 📋 **Security Isolation** | Planned | Linux namespaces, landlock, eBPF integration |
+| 🚧 **Shell Integration** | In Development | Smart hooks for bash, fish, zsh, nushell |
+| 🚧 **Dev Tool Integration** | In Development | Seamless Devenv and Flox compatibility |
+
+**Legend:** ✅ Complete • 🚧 In Development • 📋 Planned
+
+## Quick Links
+
+<CardGrid>
+  <Card title="Get Started" icon="rocket">
+    [Quick start guide](/quick-start/) to get up and running in minutes
+  </Card>
+  <Card title="Installation" icon="add-document">
+    [Installation guide](/installation/) for different platforms
+  </Card>
+  <Card title="Examples" icon="open-book">
+    [Examples and use cases](/examples/) to learn from
+  </Card>
+  <Card title="API Reference" icon="document">
+    [API Documentation](/api-reference/) for developers
+  </Card>
+</CardGrid>
+
+## Architecture Overview
+
+cuenv consists of three main components:
+
+**cuengine**
+: The core CUE evaluation engine providing fast, reliable CUE processing with a Rust FFI interface.
+
+**cuenv-core**
+: The foundational library handling configuration management, task orchestration, and environment composition.
+
+**cuenv-cli**
+: The command-line interface providing user-friendly access to cuenv's capabilities.
+
+Each component is designed for modularity and can be used independently or as part of the complete cuenv toolchain.
+
+## Community
+
+- [GitHub Repository](https://github.com/cuenv/cuenv)
+- [Issue Tracker](https://github.com/cuenv/cuenv/issues)
+- [Discussions](https://github.com/cuenv/cuenv/discussions)
+- [Crates.io Package](https://crates.io/crates/cuenv)
