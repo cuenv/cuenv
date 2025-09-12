@@ -11,7 +11,7 @@ env: {
 tasks: {
   clippy: {
     shell: {command: "bash", flag: "-c"}
-    command: "devenv shell -- cargo clippy -- -D warnings"
+    command: "nix develop --command cargo clippy -- -D warnings"
   }
 }
 

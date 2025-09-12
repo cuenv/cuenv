@@ -480,7 +480,6 @@ version = "0.1.0"
 dependencies = [
  "async-recursion",
  "chrono",
- "cuengine",
  "dirs",
  "fs4",
  "futures",

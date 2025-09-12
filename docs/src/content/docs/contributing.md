@@ -22,7 +22,7 @@ git clone https://github.com/cuenv/cuenv.git
 cd cuenv
 
 # Set up development environment
-devenv shell  # or nix-shell
+nix develop  # or direnv allow
 
 # Build the project
 cargo build

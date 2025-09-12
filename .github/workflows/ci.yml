@@ -21,17 +21,14 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Install devenv
-        run: nix profile install --accept-flake-config nixpkgs#devenv
-
-      - name: Build devenv
-        run: devenv shell
+      - name: Build development environment
+        run: nix develop --accept-flake-config --command echo "Development environment ready"
 
       - name: Check formatting
-        run: devenv shell -- treefmt --fail-on-change
+        run: nix develop --accept-flake-config --command treefmt --fail-on-change
 
       - name: Run clippy
-        run: devenv shell -- cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: nix develop --accept-flake-config --command cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test-suite:
     name: test-suite
@@ -47,9 +44,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
-
-      - name: Install devenv
-        run: nix profile install --accept-flake-config nixpkgs#devenv
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -74,21 +68,21 @@ jobs:
             ${{ runner.os }}-${{ matrix.rust }}-target-
             ${{ runner.os }}-target-
 
-      - name: Build devenv
-        run: devenv shell
+      - name: Build development environment
+        run: nix develop --accept-flake-config --command echo "Development environment ready"
 
       - name: Build workspace
-        run: devenv shell -- cargo build --workspace --all-features
+        run: nix develop --accept-flake-config --command cargo build --workspace --all-features
 
       - name: Run tests
-        run: devenv shell -- cargo nextest run --workspace --all-features
+        run: nix develop --accept-flake-config --command cargo nextest run --workspace --all-features
 
       - name: Run doctests
-        run: devenv shell -- cargo test --doc --workspace
+        run: nix develop --accept-flake-config --command cargo test --doc --workspace
 
       # Go bridge tests disabled due to CGO issues in CI
       # - name: Test Go bridge
-      #   run: devenv shell -- bash -c "cd crates/cuengine && CGO_ENABLED=1 go test -v ./..."
+      #   run: nix develop --accept-flake-config --command bash -c "cd crates/cuengine && CGO_ENABLED=1 go test -v ./..."
       #   env:
       #     CGO_ENABLED: "1"
 
@@ -105,21 +99,18 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Install devenv
-        run: nix profile install --accept-flake-config nixpkgs#devenv
-
-      - name: Build devenv
-        run: devenv shell
+      - name: Build development environment
+        run: nix develop --accept-flake-config --command echo "Development environment ready"
 
       - name: Run security audit
-        run: devenv shell -- cargo audit
+        run: nix develop --accept-flake-config --command cargo audit
 
       - name: Run dependency checks
-        run: devenv shell -- cargo deny check bans licenses advisories
+        run: nix develop --accept-flake-config --command cargo deny check bans licenses advisories
 
       # Generate SBOM only on Linux (primary platform)
       - name: Generate SBOM
-        run: devenv shell -- cargo cyclonedx --override-filename sbom.json
+        run: nix develop --accept-flake-config --command cargo cyclonedx --override-filename sbom.json
         if: matrix.os == 'ubuntu-latest'
 
       - name: Upload SBOM artifact
@@ -138,16 +129,13 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Install devenv
-        run: nix profile install --accept-flake-config nixpkgs#devenv
-
-      - name: Build devenv
-        run: devenv shell
+      - name: Build development environment
+        run: nix develop --accept-flake-config --command echo "Development environment ready"
         env:
           ENABLE_LLVM_COV: "1"
 
       - name: Generate coverage
-        run: devenv shell -- cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+        run: nix develop --accept-flake-config --command cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
         env:
           ENABLE_LLVM_COV: "1"
 
@@ -168,14 +156,11 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Install devenv
-        run: nix profile install --accept-flake-config nixpkgs#devenv
-
-      - name: Build devenv
-        run: devenv shell
+      - name: Build development environment
+        run: nix develop --accept-flake-config --command echo "Development environment ready"
 
       - name: Run benchmarks
-        run: devenv shell -- cargo bench --workspace --no-fail-fast
+        run: nix develop --accept-flake-config --command cargo bench --workspace --no-fail-fast
         continue-on-error: true # Don't fail CI on benchmark regression initially
 
       - name: Store benchmark result

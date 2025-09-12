@@ -119,10 +119,14 @@ fn try_use_prebuilt(
 
     // Prefer release, then debug
     for (lib_path, header_path_candidate) in &prebuilt_locations {
-        if lib_path.exists()
-            && header_path_candidate.exists()
+        if lib_path.is_file()
+            && header_path_candidate.is_file()
             && !lib_path.to_string_lossy().is_empty()
         {
+            // Remove destination files if they exist (might be read-only)
+            let _ = std::fs::remove_file(output_path);
+            let _ = std::fs::remove_file(header_path);
+
             std::fs::copy(lib_path, output_path).unwrap_or_else(|e| {
                 panic!(
                     "Failed to copy pre-built bridge from {}: {}",

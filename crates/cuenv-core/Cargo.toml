@@ -28,5 +28,4 @@ sha2 = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
-cuengine = { workspace = true }
 tempfile = { workspace = true }
