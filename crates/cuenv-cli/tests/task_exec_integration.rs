@@ -355,9 +355,7 @@ mod test_examples {
 
         // Skip if example doesn't exist
         if !example_path.exists() {
-            eprintln!(
-                "Skipping test - example path doesn't exist: {example_path:?}"
-            );
+            eprintln!("Skipping test - example path doesn't exist: {example_path:?}");
             return;
         }
 
