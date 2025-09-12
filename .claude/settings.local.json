@@ -6,8 +6,15 @@
       "Bash(devenv shell:*)",
       "Bash(cargo test:*)",
       "Bash(cargo run:*)",
+<<<<<<< Updated upstream
       "WebFetch(domain:starlight.astro.build)",
       "Bash(bun add:*)"
+||||||| Stash base
+      "Bash(cargo run:*)"
+=======
+      "mcp__context7__resolve-library-id",
+      "WebFetch(domain:github.com)"
+>>>>>>> Stashed changes
     ],
     "deny": [],
     "ask": []
