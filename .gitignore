@@ -26,3 +26,6 @@ lcov.info
 
 # Test directories
 .test/
+
+# Example build artifacts
+examples/*/target/

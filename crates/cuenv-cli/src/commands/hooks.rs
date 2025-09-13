@@ -102,7 +102,7 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
 /// Execute env status command - show current hook execution status
 pub async fn execute_env_status(
     path: &str,
-    _package: &str,
+    package: &str,
     wait: bool,
     timeout_seconds: u64,
 ) -> Result<String> {
@@ -114,18 +114,34 @@ pub async fn execute_env_status(
         return Ok(format!("No env.cue file found in '{path}'"));
     }
 
+    // Get the config hash from the approval state or compute it
+    let mut approval_manager = ApprovalManager::with_default_file()?;
+    approval_manager.load_approvals().await?;
+
+    let config_hash = if let Some(approval) = approval_manager.get_approval(path) {
+        approval.config_hash.clone()
+    } else {
+        // If not approved, compute it from current config
+        let evaluator = CueEvaluator::builder().build()?;
+        let json_result = evaluator.evaluate(&directory, package)?;
+        let config: Value = serde_json::from_str(&json_result).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
+        })?;
+        cuenv_core::hooks::approval::compute_config_hash(&config)
+    };
+
     let executor = HookExecutor::with_default_config()?;
 
     if wait {
         // Wait for completion with timeout
         match executor
-            .wait_for_completion(&directory, Some(timeout_seconds))
+            .wait_for_completion(&directory, &config_hash, Some(timeout_seconds))
             .await
         {
             Ok(state) => Ok(state.progress_display()),
             Err(cuenv_core::Error::Timeout { .. }) => {
                 // Timeout occurred, get current status
-                if let Some(state) = executor.get_execution_status(&directory).await? {
+                if let Some(state) = executor.get_execution_status_for_instance(&directory, &config_hash).await? {
                     Ok(format!(
                         "Timeout after {} seconds. Current status: {}",
                         timeout_seconds,
@@ -139,7 +155,7 @@ pub async fn execute_env_status(
         }
     } else {
         // Return current status immediately
-        if let Some(state) = executor.get_execution_status(&directory).await? {
+        if let Some(state) = executor.get_execution_status_for_instance(&directory, &config_hash).await? {
             Ok(state.progress_display())
         } else {
             Ok("No hook execution in progress".to_string())

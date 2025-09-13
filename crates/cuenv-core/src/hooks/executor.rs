@@ -1,8 +1,6 @@
 //! Hook execution engine with background processing and state management
 
-use crate::hooks::state::{
-    compute_directory_hash, compute_instance_hash, HookExecutionState, StateManager,
-};
+use crate::hooks::state::{compute_instance_hash, HookExecutionState, StateManager};
 use crate::hooks::types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult};
 use crate::{Error, Result};
 use std::collections::HashMap;
@@ -123,12 +121,30 @@ impl HookExecutor {
             std::fs::remove_file(&pid_file).ok();
         }
 
-        // Serialize hooks and config for the supervisor process
+        // Write hooks and config to temp files to avoid argument size limits
+        let state_dir = self.state_manager.get_state_dir();
+        let hooks_file = state_dir.join(format!("{}_hooks.json", instance_hash));
+        let config_file = state_dir.join(format!("{}_config.json", instance_hash));
+
+        // Serialize and write hooks
         let hooks_json = serde_json::to_string(&hooks)
             .map_err(|e| Error::configuration(format!("Failed to serialize hooks: {}", e)))?;
+        std::fs::write(&hooks_file, &hooks_json)
+            .map_err(|e| Error::Io {
+                source: e,
+                path: Some(hooks_file.clone().into_boxed_path()),
+                operation: "write".to_string(),
+            })?;
 
+        // Serialize and write config
         let config_json = serde_json::to_string(&self.config)
             .map_err(|e| Error::configuration(format!("Failed to serialize config: {}", e)))?;
+        std::fs::write(&config_file, &config_json)
+            .map_err(|e| Error::Io {
+                source: e,
+                path: Some(config_file.clone().into_boxed_path()),
+                operation: "write".to_string(),
+            })?;
 
         // Get the executable path to spawn as supervisor
         // Allow override via CUENV_EXECUTABLE for testing
@@ -150,10 +166,10 @@ impl HookExecutor {
             .arg(&instance_hash)
             .arg("--config-hash")
             .arg(&config_hash)
-            .arg("--hooks")
-            .arg(&hooks_json)
-            .arg("--config")
-            .arg(&config_json)
+            .arg("--hooks-file")
+            .arg(&hooks_file.to_string_lossy().to_string())
+            .arg("--config-file")
+            .arg(&config_file.to_string_lossy().to_string())
             .stdin(Stdio::null());
 
         // Redirect output to log files for debugging
@@ -183,17 +199,36 @@ impl HookExecutor {
             cmd.env("CUENV_APPROVAL_FILE", approval_file);
         }
 
+        // Platform-specific detachment configuration
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Detach from parent process group using setsid
+            unsafe {
+                cmd.pre_exec(|| {
+                    // Create a new session, detaching from controlling terminal
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Windows-specific flags for detached process
+            const DETACHED_PROCESS: u32 = 0x00000008;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        }
+
         let _child = cmd
             .spawn()
             .map_err(|e| Error::configuration(format!("Failed to spawn supervisor: {}", e)))?;
 
-        // Detach the child process so it continues after parent exits
-        // On Unix, this makes it a daemon process
-        #[cfg(unix)]
-        {
-            // The process is already spawned, we just need to not wait for it
-            // It will be adopted by init when parent exits
-        }
+        // The child is now properly detached
 
         info!("Spawned supervisor process for hook execution");
 
@@ -232,14 +267,15 @@ impl HookExecutor {
     pub async fn wait_for_completion(
         &self,
         directory_path: &Path,
+        config_hash: &str,
         timeout_seconds: Option<u64>,
     ) -> Result<HookExecutionState> {
-        let directory_hash = compute_directory_hash(directory_path);
+        let instance_hash = compute_instance_hash(directory_path, config_hash);
         let poll_interval = Duration::from_millis(500);
         let start_time = Instant::now();
 
         loop {
-            if let Some(state) = self.state_manager.load_state(&directory_hash).await? {
+            if let Some(state) = self.state_manager.load_state(&instance_hash).await? {
                 if state.is_complete() {
                     return Ok(state);
                 }
@@ -262,14 +298,15 @@ impl HookExecutor {
     pub async fn cancel_execution(
         &self,
         directory_path: &Path,
+        config_hash: &str,
         reason: Option<String>,
     ) -> Result<bool> {
-        let directory_hash = compute_directory_hash(directory_path);
+        let instance_hash = compute_instance_hash(directory_path, config_hash);
 
         // Try to kill the supervisor process if it exists
         let pid_file = self
             .state_manager
-            .get_state_file_path(&directory_hash)
+            .get_state_file_path(&instance_hash)
             .with_extension("pid");
 
         if pid_file.exists()
@@ -303,7 +340,7 @@ impl HookExecutor {
         }
 
         // Then update the state
-        if let Some(mut state) = self.state_manager.load_state(&directory_hash).await?
+        if let Some(mut state) = self.state_manager.load_state(&instance_hash).await?
             && !state.is_complete()
         {
             state.mark_cancelled(reason);
@@ -752,7 +789,7 @@ mod tests {
 
         // Check execution status
         let status = executor
-            .get_execution_status(&directory_path)
+            .get_execution_status_for_instance(&directory_path, &config_hash)
             .await
             .unwrap();
         assert!(status.is_some());
@@ -819,14 +856,14 @@ mod tests {
 
         // Cancel the execution
         let cancelled = executor
-            .cancel_execution(&directory_path, Some("User cancelled".to_string()))
+            .cancel_execution(&directory_path, &config_hash, Some("User cancelled".to_string()))
             .await
             .unwrap();
         assert!(cancelled);
 
         // Check that state reflects cancellation
         let state = executor
-            .get_execution_status(&directory_path)
+            .get_execution_status_for_instance(&directory_path, &config_hash)
             .await
             .unwrap()
             .unwrap();
@@ -891,7 +928,7 @@ mod tests {
 
         // Wait for completion
         executor
-            .wait_for_completion(&directory_path, Some(5))
+            .wait_for_completion(&directory_path, &config_hash, Some(5))
             .await
             .unwrap();
 
@@ -904,7 +941,7 @@ mod tests {
 
         // State should be gone
         let state = executor
-            .get_execution_status(&directory_path)
+            .get_execution_status_for_instance(&directory_path, &config_hash)
             .await
             .unwrap();
         assert!(state.is_none());
@@ -921,10 +958,11 @@ mod tests {
 
         let executor = HookExecutor::new(config).unwrap();
         let directory_path = PathBuf::from("/test/directory");
+        let config_hash = "hash".to_string();
 
         // Initially no state
         let status = executor
-            .get_execution_status(&directory_path)
+            .get_execution_status_for_instance(&directory_path, &config_hash)
             .await
             .unwrap();
         assert!(status.is_none());
@@ -939,13 +977,13 @@ mod tests {
         }];
 
         executor
-            .execute_hooks_background(directory_path.clone(), "hash".to_string(), hooks)
+            .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
             .await
             .unwrap();
 
         // Should now have state
         let status = executor
-            .get_execution_status(&directory_path)
+            .get_execution_status_for_instance(&directory_path, &config_hash)
             .await
             .unwrap();
         assert!(status.is_some());
@@ -1059,14 +1097,15 @@ mod tests {
             },
         ];
 
+        let config_hash = "fail_fast_test".to_string();
         executor
-            .execute_hooks_background(directory_path.clone(), "fail_fast_test".to_string(), hooks)
+            .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
             .await
             .unwrap();
 
         // Wait for completion
         executor
-            .wait_for_completion(&directory_path, Some(10))
+            .wait_for_completion(&directory_path, &config_hash, Some(10))
             .await
             .unwrap();
 
@@ -1115,22 +1154,23 @@ mod tests {
             },
         ];
 
+        let config_hash2 = "fail_fast_continue_test".to_string();
         executor
             .execute_hooks_background(
                 directory_path2.clone(),
-                "fail_fast_continue_test".to_string(),
+                config_hash2.clone(),
                 hooks2,
             )
             .await
             .unwrap();
 
         executor
-            .wait_for_completion(&directory_path2, Some(10))
+            .wait_for_completion(&directory_path2, &config_hash2, Some(10))
             .await
             .unwrap();
 
         let state2 = executor
-            .get_execution_status(&directory_path2)
+            .get_execution_status_for_instance(&directory_path2, &config_hash2)
             .await
             .unwrap()
             .unwrap();
@@ -1284,6 +1324,7 @@ mod tests {
             PathBuf::from("/test/dir3"),
         ];
 
+        let mut config_hashes = Vec::new();
         for (i, dir) in directories.iter().enumerate() {
             let hooks = vec![Hook {
                 command: "echo".to_string(),
@@ -1293,15 +1334,17 @@ mod tests {
                 source: Some(false),
             }];
 
+            let config_hash = format!("hash_{}", i);
+            config_hashes.push(config_hash.clone());
             executor
-                .execute_hooks_background(dir.clone(), format!("hash_{}", i), hooks)
+                .execute_hooks_background(dir.clone(), config_hash, hooks)
                 .await
                 .unwrap();
         }
 
         // Wait for all to complete
-        for dir in &directories {
-            executor.wait_for_completion(dir, Some(10)).await.unwrap();
+        for (dir, config_hash) in directories.iter().zip(config_hashes.iter()) {
+            executor.wait_for_completion(dir, config_hash, Some(10)).await.unwrap();
 
             let state = executor.get_execution_status(dir).await.unwrap().unwrap();
 
@@ -1349,13 +1392,14 @@ mod tests {
             },
         ];
 
+        let config_hash = "recovery_test".to_string();
         executor
-            .execute_hooks_background(directory_path.clone(), "recovery_test".to_string(), hooks)
+            .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
             .await
             .unwrap();
 
         executor
-            .wait_for_completion(&directory_path, Some(10))
+            .wait_for_completion(&directory_path, &config_hash, Some(10))
             .await
             .unwrap();
 

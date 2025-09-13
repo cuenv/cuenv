@@ -606,6 +606,7 @@ dependencies = [
  "dirs",
  "fs4",
  "futures",
+ "libc",
  "miette",
  "petgraph",
  "serde",

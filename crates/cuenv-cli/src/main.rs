@@ -587,8 +587,8 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     // Parse supervisor arguments
     let mut directory_path = PathBuf::new();
     let mut instance_hash = String::new();
-    let mut hooks_json = String::new();
-    let mut config_json = String::new();
+    let mut hooks_file = PathBuf::new();
+    let mut config_file = PathBuf::new();
 
     let mut i = 2; // Skip program name and "__hook-supervisor"
     while i < args.len() {
@@ -605,12 +605,12 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
                 // Config hash is passed but not currently used in supervisor
                 i += 2;
             }
-            "--hooks" => {
-                hooks_json.clone_from(&args[i + 1]);
+            "--hooks-file" => {
+                hooks_file = PathBuf::from(&args[i + 1]);
                 i += 2;
             }
-            "--config" => {
-                config_json.clone_from(&args[i + 1]);
+            "--config-file" => {
+                config_file = PathBuf::from(&args[i + 1]);
                 i += 2;
             }
             _ => i += 1,
@@ -626,12 +626,23 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     eprintln!("[supervisor] Starting with args: {args:?}");
     eprintln!("[supervisor] Directory: {}", directory_path.display());
     eprintln!("[supervisor] Instance hash: {instance_hash}");
+    eprintln!("[supervisor] Hooks file: {}", hooks_file.display());
+    eprintln!("[supervisor] Config file: {}", config_file.display());
 
-    // Deserialize hooks and config
+    // Read and deserialize hooks and config from files
+    let hooks_json = std::fs::read_to_string(&hooks_file)
+        .map_err(|e| CliError::other(format!("Failed to read hooks file: {e}")))?;
+    let config_json = std::fs::read_to_string(&config_file)
+        .map_err(|e| CliError::other(format!("Failed to read config file: {e}")))?;
+
     let hooks: Vec<Hook> = serde_json::from_str(&hooks_json)
         .map_err(|e| CliError::other(format!("Failed to deserialize hooks: {e}")))?;
     let config: HookExecutionConfig = serde_json::from_str(&config_json)
         .map_err(|e| CliError::other(format!("Failed to deserialize config: {e}")))?;
+
+    // Clean up temp files after reading
+    std::fs::remove_file(&hooks_file).ok();
+    std::fs::remove_file(&config_file).ok();
 
     // Write PID file
     let state_dir = config

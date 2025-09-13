@@ -28,6 +28,9 @@ sha2 = { workspace = true }
 chrono = { workspace = true }
 sysinfo = "0.30"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 cucumber = { workspace = true }

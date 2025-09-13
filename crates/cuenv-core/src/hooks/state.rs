@@ -41,6 +41,11 @@ impl StateManager {
         Ok(Self::new(Self::default_state_dir()?))
     }
 
+    /// Get the state directory path
+    pub fn get_state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+
     /// Ensure the state directory exists
     pub async fn ensure_state_dir(&self) -> Result<()> {
         if !self.state_dir.exists() {
