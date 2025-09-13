@@ -586,7 +586,7 @@ dependencies = [
 
 [[package]]
 name = "cuengine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cc",
  "criterion",
@@ -606,7 +606,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "clap",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-recursion",
  "chrono",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "schema-validator"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",

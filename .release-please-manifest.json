@@ -1,4 +1,6 @@
 {
-  "crates/cuenv-core": "0.1.0",
-  "crates/cuengine": "0.1.0"
+  "crates/cuenv-core": "0.2.0",
+  "crates/cuengine": "0.2.0",
+  "crates/cuenv-cli": "0.1.1",
+  "crates/schema-validator": "0.1.1"
 }
