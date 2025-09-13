@@ -736,7 +736,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "Run with cargo test --test bdd -- --ignored"]
     async fn run_bdd_tests() {
         TestWorld::cucumber()
             .run("tests/bdd/features/hooks.feature")
