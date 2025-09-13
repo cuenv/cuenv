@@ -1,11 +1,11 @@
 //! Type definitions for hooks and hook execution
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
 /// A hook represents a command that can be executed when entering or exiting environments
+/// Based on schema/hooks.cue #ExecHook definition
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Hook {
     /// The command to execute
@@ -13,20 +13,19 @@ pub struct Hook {
     /// Arguments to pass to the command
     #[serde(default)]
     pub args: Vec<String>,
-    /// Working directory for command execution (defaults to env directory)
-    pub working_dir: Option<PathBuf>,
-    /// Environment variables to set for this command
+    /// Working directory for command execution (defaults to ".")
     #[serde(default)]
-    pub env: HashMap<String, String>,
-    /// Timeout in seconds (defaults to 300)
-    #[serde(default = "default_timeout")]
-    pub timeout_seconds: u64,
-    /// Whether to continue executing subsequent hooks if this one fails
+    pub dir: Option<String>,
+    /// Input files that trigger re-execution when changed
     #[serde(default)]
-    pub continue_on_error: bool,
+    pub inputs: Vec<String>,
+    /// Whether to source the command output as shell script to capture environment changes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<bool>,
 }
 
 /// Default timeout for hook execution
+#[allow(dead_code)]
 fn default_timeout() -> u64 {
     300
 }
@@ -108,7 +107,7 @@ impl HookResult {
 }
 
 /// Configuration for hook execution
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookExecutionConfig {
     /// Maximum number of hooks to execute concurrently
     pub max_concurrent: usize,
@@ -164,10 +163,9 @@ mod tests {
         let hook = Hook {
             command: "npm".to_string(),
             args: vec!["install".to_string()],
-            working_dir: Some(PathBuf::from("/tmp")),
-            env: HashMap::from([("NODE_ENV".to_string(), "development".to_string())]),
-            timeout_seconds: 120,
-            continue_on_error: true,
+            dir: Some("/tmp".to_string()),
+            inputs: vec![],
+            source: Some(false),
         };
 
         let json = serde_json::to_string(&hook).unwrap();
@@ -183,10 +181,9 @@ mod tests {
 
         assert_eq!(hook.command, "echo");
         assert_eq!(hook.args, vec!["hello"]);
-        assert_eq!(hook.working_dir, None);
-        assert!(hook.env.is_empty());
-        assert_eq!(hook.timeout_seconds, 300); // default
-        assert!(!hook.continue_on_error); // default
+        assert_eq!(hook.dir, None);
+        assert!(hook.inputs.is_empty());
+        assert_eq!(hook.source, None); // default
     }
 
     #[test]
@@ -194,10 +191,9 @@ mod tests {
         let hook = Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 300,
-            continue_on_error: false,
+            dir: None,
+            inputs: vec![],
+            source: None,
         };
 
         // Use Command::new to create a platform-compatible successful exit status
@@ -233,10 +229,9 @@ mod tests {
         let hook = Hook {
             command: "false".to_string(),
             args: vec![],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 300,
-            continue_on_error: false,
+            dir: None,
+            inputs: vec![],
+            source: None,
         };
 
         // Use Command::new to create a platform-compatible failed exit status
@@ -277,10 +272,9 @@ mod tests {
         let hook = Hook {
             command: "sleep".to_string(),
             args: vec!["1000".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 10,
-            continue_on_error: false,
+            dir: None,
+            inputs: vec![],
+            source: None,
         };
 
         let result = HookResult::timeout(hook.clone(), "".to_string(), "".to_string(), 10);

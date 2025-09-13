@@ -26,7 +26,7 @@ Or enter the development shell with:
 3. **Run tests** - MUST pass all tests:
 
    ```bash
-   nix develop --command cargo test
+   nix develop --command cargo nextest run
    ```
 
 4. **Build the project** - MUST compile successfully:
@@ -50,8 +50,14 @@ nix develop --command cargo clippy -- -D warnings
 ### Running Tests
 
 ```bash
-# Run library tests
-nix develop --command cargo test --lib
+# Run all tests with nextest
+nix develop --command cargo nextest run
+
+# Run library tests only
+nix develop --command cargo nextest run --lib
+
+# Run BDD tests
+nix develop --command cargo test --test bdd
 ```
 
 ### Code Formatting

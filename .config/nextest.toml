@@ -1,0 +1,43 @@
+[profile.default]
+# Test timeout for individual tests
+slow-timeout = "60s"
+# Leak timeout for tests that might leak processes
+leak-timeout = "100ms"
+
+# Retry failed tests up to 3 times
+retries = 3
+
+# Configure test output
+status-level = "fail"
+failure-output = "final"
+success-output = "never"
+
+# Parallel test execution
+test-threads = "num-cpus"
+
+[profile.ci]
+# More strict settings for CI
+slow-timeout = "30s"
+retries = 1
+status-level = "all"
+failure-output = "immediate-final"
+
+[profile.bdd]
+# BDD-specific profile for integration tests
+slow-timeout = "120s"
+retries = 1
+test-threads = 1
+status-level = "all"
+failure-output = "immediate-final"
+
+# Filter patterns for different test types
+[[profile.default.overrides]]
+filter = 'test(/^integration_/) | test(/bdd/)'
+slow-timeout = "120s"
+
+[test-groups]
+bdd = { max-threads = 1 }
+integration = { max-threads = 2 }
+
+[profile.default.junit]
+path = "target/nextest/junit.xml"

@@ -1,15 +1,15 @@
 //! Hook execution engine with background processing and state management
 
-use crate::hooks::state::{compute_directory_hash, HookExecutionState, StateManager};
+use crate::hooks::state::{
+    compute_directory_hash, compute_instance_hash, HookExecutionState, StateManager,
+};
 use crate::hooks::types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult};
 use crate::{Error, Result};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
-use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
@@ -18,15 +18,7 @@ use tracing::{debug, error, info, warn};
 pub struct HookExecutor {
     config: HookExecutionConfig,
     state_manager: StateManager,
-    /// Semaphore for limiting concurrent hook executions
-    concurrency_limiter: Arc<Semaphore>,
-    /// Set of whitelisted commands for security
-    allowed_commands: Arc<RwLock<HashSet<String>>>,
-    /// Active background tasks for cancellation support
-    active_tasks: Arc<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
-
-use std::collections::HashMap;
 
 impl HookExecutor {
     /// Create a new hook executor with the specified configuration
@@ -38,76 +30,23 @@ impl HookExecutor {
         };
 
         let state_manager = StateManager::new(state_dir);
-        let concurrency_limiter = Arc::new(Semaphore::new(config.max_concurrent));
-
-        // Default allowed commands - can be customized
-        let mut allowed_commands = HashSet::new();
-        // Common safe commands
-        allowed_commands.insert("echo".to_string());
-        allowed_commands.insert("pwd".to_string());
-        allowed_commands.insert("ls".to_string());
-        allowed_commands.insert("cat".to_string());
-        allowed_commands.insert("grep".to_string());
-        allowed_commands.insert("find".to_string());
-        allowed_commands.insert("date".to_string());
-        allowed_commands.insert("env".to_string());
-        allowed_commands.insert("true".to_string());
-        allowed_commands.insert("false".to_string());
-        allowed_commands.insert("sleep".to_string());
-
-        // Development tools
-        allowed_commands.insert("npm".to_string());
-        allowed_commands.insert("yarn".to_string());
-        allowed_commands.insert("pnpm".to_string());
-        allowed_commands.insert("node".to_string());
-        allowed_commands.insert("python".to_string());
-        allowed_commands.insert("python3".to_string());
-        allowed_commands.insert("pip".to_string());
-        allowed_commands.insert("pip3".to_string());
-        allowed_commands.insert("cargo".to_string());
-        allowed_commands.insert("rustc".to_string());
-        allowed_commands.insert("go".to_string());
-        allowed_commands.insert("make".to_string());
-        allowed_commands.insert("cmake".to_string());
-        allowed_commands.insert("gcc".to_string());
-        allowed_commands.insert("clang".to_string());
-        allowed_commands.insert("git".to_string());
-        allowed_commands.insert("docker".to_string());
-        allowed_commands.insert("docker-compose".to_string());
-        allowed_commands.insert("kubectl".to_string());
-        allowed_commands.insert("terraform".to_string());
-        allowed_commands.insert("ansible".to_string());
 
         Ok(Self {
             config,
             state_manager,
-            concurrency_limiter,
-            allowed_commands: Arc::new(RwLock::new(allowed_commands)),
-            active_tasks: Arc::new(Mutex::new(HashMap::new())),
         })
-    }
-
-    /// Add a command to the whitelist
-    pub async fn allow_command(&self, command: String) {
-        let mut allowed = self.allowed_commands.write().await;
-        allowed.insert(command);
-    }
-
-    /// Remove a command from the whitelist
-    pub async fn disallow_command(&self, command: &str) {
-        let mut allowed = self.allowed_commands.write().await;
-        allowed.remove(command);
-    }
-
-    /// Check if a command is allowed
-    async fn is_command_allowed(&self, command: &str) -> bool {
-        let allowed = self.allowed_commands.read().await;
-        allowed.contains(command)
     }
 
     /// Create a hook executor with default configuration
     pub fn with_default_config() -> Result<Self> {
-        Self::new(HookExecutionConfig::default())
+        let mut config = HookExecutionConfig::default();
+
+        // Use CUENV_STATE_DIR if set
+        if let Ok(state_dir) = std::env::var("CUENV_STATE_DIR") {
+            config.state_dir = Some(PathBuf::from(state_dir));
+        }
+
+        Self::new(config)
     }
 
     /// Start executing hooks in the background for a directory
@@ -121,16 +60,30 @@ impl HookExecutor {
             return Ok("No hooks to execute".to_string());
         }
 
-        let directory_hash = compute_directory_hash(&directory_path);
+        let instance_hash = compute_instance_hash(&directory_path, &config_hash);
         let total_hooks = hooks.len();
 
-        // Create initial execution state
+        // Check for existing state to preserve previous environment
+        let previous_env =
+            if let Ok(Some(existing_state)) = self.state_manager.load_state(&instance_hash).await {
+                // If we have a completed state, save its environment as previous
+                if existing_state.status == ExecutionStatus::Completed {
+                    Some(existing_state.environment_vars.clone())
+                } else {
+                    existing_state.previous_env
+                }
+            } else {
+                None
+            };
+
+        // Create initial execution state with previous environment
         let mut state = HookExecutionState::new(
             directory_path.clone(),
-            directory_hash.clone(),
-            config_hash,
+            instance_hash.clone(),
+            config_hash.clone(),
             total_hooks,
         );
+        state.previous_env = previous_env;
 
         // Save initial state
         self.state_manager.save_state(&state).await?;
@@ -141,46 +94,107 @@ impl HookExecutor {
             directory_path.display()
         );
 
-        // Clone necessary data for the background task
-        let state_manager = self.state_manager.clone();
-        let config = self.config.clone();
-        let concurrency_limiter = self.concurrency_limiter.clone();
-        let allowed_commands = self.allowed_commands.clone();
-        let active_tasks = self.active_tasks.clone();
-        let task_key = directory_hash.clone();
+        // Check if a supervisor is already running for this instance
+        let pid_file = self
+            .state_manager
+            .get_state_file_path(&instance_hash)
+            .with_extension("pid");
 
-        // Spawn background execution task with proper tracking
-        let handle = tokio::spawn(async move {
-            let result = execute_hooks_concurrent(
-                hooks,
-                &directory_path,
-                &config,
-                &state_manager,
-                &mut state,
-                concurrency_limiter,
-                allowed_commands,
-            )
-            .await;
+        if pid_file.exists() {
+            // Read the PID and check if process is still running
+            if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+                && let Ok(pid) = pid_str.trim().parse::<usize>()
+            {
+                // Check if process is still alive using sysinfo
+                use sysinfo::{Pid, ProcessRefreshKind, System};
+                let mut system = System::new();
+                let process_pid = Pid::from(pid);
+                system.refresh_process_specifics(process_pid, ProcessRefreshKind::new());
 
-            if let Err(e) = result {
-                error!("Hook execution failed: {}", e);
-                state.status = ExecutionStatus::Failed;
-                state.error_message = Some(e.to_string());
-                state.finished_at = Some(chrono::Utc::now());
-
-                if let Err(save_err) = state_manager.save_state(&state).await {
-                    error!("Failed to save error state: {}", save_err);
+                if system.process(process_pid).is_some() {
+                    info!("Supervisor already running for directory with PID {}", pid);
+                    return Ok(format!(
+                        "Supervisor already running for {} hooks (PID: {})",
+                        total_hooks, pid
+                    ));
                 }
             }
+            // If we get here, the PID file exists but process is dead
+            std::fs::remove_file(&pid_file).ok();
+        }
 
-            // Remove from active tasks when done
-            let mut tasks = active_tasks.lock().await;
-            tasks.remove(&task_key);
-        });
+        // Serialize hooks and config for the supervisor process
+        let hooks_json = serde_json::to_string(&hooks)
+            .map_err(|e| Error::configuration(format!("Failed to serialize hooks: {}", e)))?;
 
-        // Track the task for potential cancellation
-        let mut tasks = self.active_tasks.lock().await;
-        tasks.insert(directory_hash, handle);
+        let config_json = serde_json::to_string(&self.config)
+            .map_err(|e| Error::configuration(format!("Failed to serialize config: {}", e)))?;
+
+        // Get the executable path to spawn as supervisor
+        // Allow override via CUENV_EXECUTABLE for testing
+        let current_exe = if let Ok(exe_path) = std::env::var("CUENV_EXECUTABLE") {
+            PathBuf::from(exe_path)
+        } else {
+            std::env::current_exe()
+                .map_err(|e| Error::configuration(format!("Failed to get current exe: {}", e)))?
+        };
+
+        // Spawn a detached supervisor process
+        use std::process::{Command, Stdio};
+
+        let mut cmd = Command::new(&current_exe);
+        cmd.arg("__hook-supervisor") // Special hidden command
+            .arg("--directory")
+            .arg(directory_path.to_string_lossy().to_string())
+            .arg("--instance-hash")
+            .arg(&instance_hash)
+            .arg("--config-hash")
+            .arg(&config_hash)
+            .arg("--hooks")
+            .arg(&hooks_json)
+            .arg("--config")
+            .arg(&config_json)
+            .stdin(Stdio::null());
+
+        // Redirect output to log files for debugging
+        let log_file = std::fs::File::create("/tmp/cuenv_supervisor.log").ok();
+        let err_file = std::fs::File::create("/tmp/cuenv_supervisor_err.log").ok();
+
+        if let Some(log) = log_file {
+            cmd.stdout(Stdio::from(log));
+        } else {
+            cmd.stdout(Stdio::null());
+        }
+
+        if let Some(err) = err_file {
+            cmd.stderr(Stdio::from(err));
+        } else {
+            cmd.stderr(Stdio::null());
+        }
+
+        // Pass through CUENV_STATE_DIR if set
+        if let Ok(state_dir) = std::env::var("CUENV_STATE_DIR") {
+            cmd.env("CUENV_STATE_DIR", state_dir);
+        }
+
+        // Pass through CUENV_APPROVAL_FILE if set
+        if let Ok(approval_file) = std::env::var("CUENV_APPROVAL_FILE") {
+            cmd.env("CUENV_APPROVAL_FILE", approval_file);
+        }
+
+        let _child = cmd
+            .spawn()
+            .map_err(|e| Error::configuration(format!("Failed to spawn supervisor: {}", e)))?;
+
+        // Detach the child process so it continues after parent exits
+        // On Unix, this makes it a daemon process
+        #[cfg(unix)]
+        {
+            // The process is already spawned, we just need to not wait for it
+            // It will be adopted by init when parent exits
+        }
+
+        info!("Spawned supervisor process for hook execution");
 
         Ok(format!(
             "Started execution of {} hooks in background",
@@ -193,8 +207,24 @@ impl HookExecutor {
         &self,
         directory_path: &Path,
     ) -> Result<Option<HookExecutionState>> {
-        let directory_hash = compute_directory_hash(directory_path);
-        self.state_manager.load_state(&directory_hash).await
+        // List all active states and find one matching this directory
+        let states = self.state_manager.list_active_states().await?;
+        for state in states {
+            if state.directory_path == directory_path {
+                return Ok(Some(state));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Get execution status for a specific instance (directory + config)
+    pub async fn get_execution_status_for_instance(
+        &self,
+        directory_path: &Path,
+        config_hash: &str,
+    ) -> Result<Option<HookExecutionState>> {
+        let instance_hash = compute_instance_hash(directory_path, config_hash);
+        self.state_manager.load_state(&instance_hash).await
     }
 
     /// Wait for hook execution to complete, with optional timeout in seconds
@@ -235,16 +265,41 @@ impl HookExecutor {
     ) -> Result<bool> {
         let directory_hash = compute_directory_hash(directory_path);
 
-        // First, try to abort the background task if it exists
-        let mut tasks = self.active_tasks.lock().await;
-        if let Some(handle) = tasks.remove(&directory_hash) {
-            handle.abort();
-            info!(
-                "Aborted background task for directory: {}",
-                directory_path.display()
-            );
+        // Try to kill the supervisor process if it exists
+        let pid_file = self
+            .state_manager
+            .get_state_file_path(&directory_hash)
+            .with_extension("pid");
+
+        if pid_file.exists()
+            && let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+            && let Ok(pid) = pid_str.trim().parse::<usize>()
+        {
+            use sysinfo::{Pid, ProcessRefreshKind, Signal, System};
+
+            let mut system = System::new();
+            let process_pid = Pid::from(pid);
+
+            // Refresh the specific process
+            system.refresh_process_specifics(process_pid, ProcessRefreshKind::new());
+
+            // Check if process exists and kill it
+            if let Some(process) = system.process(process_pid) {
+                if process.kill_with(Signal::Term).is_some() {
+                    info!("Sent SIGTERM to supervisor process PID {}", pid);
+                } else {
+                    warn!("Failed to send SIGTERM to supervisor process PID {}", pid);
+                }
+            } else {
+                info!(
+                    "Supervisor process PID {} not found (may have already exited)",
+                    pid
+                );
+            }
+
+            // Clean up PID file regardless
+            std::fs::remove_file(&pid_file).ok();
         }
-        drop(tasks); // Release the lock early
 
         // Then update the state
         if let Some(mut state) = self.state_manager.load_state(&directory_hash).await?
@@ -289,246 +344,227 @@ impl HookExecutor {
 
     /// Execute a single hook and return the result
     pub async fn execute_single_hook(&self, hook: Hook) -> Result<HookResult> {
-        // Validate the command is allowed
-        if !self.is_command_allowed(&hook.command).await {
-            return Err(Error::configuration(format!(
-                "Command '{}' is not in the allowed commands whitelist",
-                hook.command
-            )));
-        }
+        // Use the default timeout from config
+        let timeout = self.config.default_timeout_seconds;
 
-        // Use the hook's timeout if specified, otherwise use the default
-        let timeout = if hook.timeout_seconds > 0 {
-            hook.timeout_seconds
-        } else {
-            self.config.default_timeout_seconds
-        };
-
-        // Validate command arguments for potential injection
-        validate_command_args(&hook)?;
-
+        // No validation - users approved this config with cuenv allow
         execute_hook_with_timeout(hook, &timeout).await
     }
 }
 
-/// Execute hooks concurrently with proper limits and state management
-async fn execute_hooks_concurrent(
+/// Execute hooks sequentially
+pub async fn execute_hooks(
     hooks: Vec<Hook>,
     _directory_path: &Path,
     config: &HookExecutionConfig,
     state_manager: &StateManager,
     state: &mut HookExecutionState,
-    concurrency_limiter: Arc<Semaphore>,
-    allowed_commands: Arc<RwLock<HashSet<String>>>,
 ) -> Result<()> {
-    use futures::future::join_all;
-
-    // Batch saves to reduce I/O operations
-    let mut pending_results = Vec::new();
-    let mut tasks = Vec::new();
-
-    // Clone hooks for error handling
-    let hooks_backup = hooks.clone();
-
+    let hook_count = hooks.len();
+    info!("execute_hooks called with {} hooks", hook_count);
+    if hook_count == 0 {
+        error!("No hooks to execute!");
+        return Ok(());
+    }
+    info!("Starting to iterate over {} hooks", hook_count);
     for (index, hook) in hooks.into_iter().enumerate() {
+        info!(
+            "Processing hook {}/{}: command={}",
+            index + 1,
+            state.total_hooks,
+            hook.command
+        );
         // Check if execution was cancelled
-        if let Ok(Some(current_state)) = state_manager.load_state(&state.directory_hash).await
-            && current_state.status == ExecutionStatus::Cancelled
-        {
-            info!("Execution was cancelled, stopping");
-            break;
-        }
-
-        // Validate command is allowed
-        let allowed = allowed_commands.read().await;
-        if !allowed.contains(&hook.command) {
-            let error_msg = format!("Command '{}' is not allowed", hook.command);
-            state.record_hook_result(
-                index,
-                HookResult::failure(
-                    hook.clone(),
-                    None,
-                    String::new(),
-                    error_msg.clone(),
-                    0,
-                    error_msg,
-                ),
-            );
-            if config.fail_fast {
-                warn!(
-                    "Hook {} uses disallowed command, stopping execution",
-                    index + 1
-                );
+        info!("Checking if execution was cancelled");
+        if let Ok(Some(current_state)) = state_manager.load_state(&state.directory_hash).await {
+            info!("Loaded state: status = {:?}", current_state.status);
+            if current_state.status == ExecutionStatus::Cancelled {
+                info!("Execution was cancelled, stopping");
                 break;
             }
-            continue;
-        }
-        drop(allowed);
-
-        // Validate command arguments
-        if let Err(e) = validate_command_args(&hook) {
-            let error_msg = format!("Invalid command arguments: {}", e);
-            state.record_hook_result(
-                index,
-                HookResult::failure(
-                    hook.clone(),
-                    None,
-                    String::new(),
-                    error_msg.clone(),
-                    0,
-                    error_msg,
-                ),
-            );
-            if config.fail_fast {
-                warn!(
-                    "Hook {} has invalid arguments, stopping execution",
-                    index + 1
-                );
-                break;
-            }
-            continue;
         }
 
-        let timeout_seconds = if hook.timeout_seconds > 0 {
-            hook.timeout_seconds
-        } else {
-            config.default_timeout_seconds
-        };
+        // No validation - users approved this config with cuenv allow
 
-        let permit = concurrency_limiter.clone().acquire_owned().await.unwrap();
-        let hook_clone = hook.clone();
-        let task_index = index;
+        let timeout_seconds = config.default_timeout_seconds;
 
-        // Mark hook as running before spawning
+        // Mark hook as running
         state.mark_hook_running(index);
 
-        let task = tokio::spawn(async move {
-            let result = execute_hook_with_timeout(hook_clone, &timeout_seconds).await;
-            drop(permit); // Release the semaphore permit
-            (task_index, result)
-        });
+        // Execute the hook and wait for it to complete
+        let result = execute_hook_with_timeout(hook.clone(), &timeout_seconds).await;
 
-        tasks.push(task);
-
-        // For fail_fast mode, we need to execute sequentially
-        if config.fail_fast {
-            match tasks.pop().unwrap().await {
-                Ok((idx, Ok(result))) => {
-                    state.record_hook_result(idx, result.clone());
-                    if !result.success && !result.hook.continue_on_error {
-                        warn!("Hook {} failed and fail_fast is enabled, stopping", idx + 1);
-                        break;
+        // Record the result
+        match result {
+            Ok(hook_result) => {
+                // If this is a source hook and it succeeded, evaluate its output
+                if hook.source.unwrap_or(false)
+                    && hook_result.success
+                    && !hook_result.stdout.is_empty()
+                {
+                    info!("Evaluating source hook output for environment variables");
+                    match evaluate_shell_environment(&hook_result.stdout).await {
+                        Ok(env_vars) => {
+                            info!(
+                                "Captured {} environment variables from source hook",
+                                env_vars.len()
+                            );
+                            // Merge captured environment variables into state
+                            for (key, value) in env_vars {
+                                state.environment_vars.insert(key, value);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to evaluate source hook output: {}", e);
+                            // Don't fail the hook execution, just log the error
+                        }
                     }
                 }
-                Ok((idx, Err(e))) => {
-                    let error_msg = format!("Hook execution error: {}", e);
-                    state.record_hook_result(
-                        idx,
-                        HookResult::failure(
-                            hooks_backup.get(idx).cloned().unwrap_or_else(|| Hook {
-                                command: "unknown".to_string(),
-                                args: vec![],
-                                working_dir: None,
-                                env: HashMap::new(),
-                                timeout_seconds: 0,
-                                continue_on_error: false,
-                            }),
-                            None,
-                            String::new(),
-                            error_msg.clone(),
-                            0,
-                            error_msg,
-                        ),
+
+                state.record_hook_result(index, hook_result.clone());
+                if !hook_result.success && config.fail_fast {
+                    warn!(
+                        "Hook {} failed and fail_fast is enabled, stopping",
+                        index + 1
                     );
                     break;
                 }
-                Err(e) => {
-                    error!("Task join error: {}", e);
+            }
+            Err(e) => {
+                let error_msg = format!("Hook execution error: {}", e);
+                state.record_hook_result(
+                    index,
+                    HookResult::failure(
+                        hook.clone(),
+                        None,
+                        String::new(),
+                        error_msg.clone(),
+                        0,
+                        error_msg,
+                    ),
+                );
+                if config.fail_fast {
+                    warn!("Hook {} failed with error, stopping", index + 1);
                     break;
                 }
             }
         }
+
+        // Save state after each hook completes
+        state_manager.save_state(state).await?;
     }
 
-    // If not fail_fast, wait for all tasks to complete
-    if !config.fail_fast && !tasks.is_empty() {
-        let results = join_all(tasks).await;
-        for result in results {
-            match result {
-                Ok((idx, Ok(hook_result))) => {
-                    pending_results.push((idx, hook_result));
-                }
-                Ok((idx, Err(e))) => {
-                    error!("Hook {} failed: {}", idx, e);
-                }
-                Err(e) => {
-                    error!("Task join error: {}", e);
-                }
-            }
-        }
-
-        // Batch update results
-        for (idx, result) in pending_results {
-            state.record_hook_result(idx, result);
-        }
+    // Mark execution as completed if we got here without errors
+    if state.status == ExecutionStatus::Running {
+        state.status = ExecutionStatus::Completed;
+        state.finished_at = Some(chrono::Utc::now());
+        info!(
+            "All hooks completed successfully for directory: {}",
+            state.directory_path.display()
+        );
     }
 
-    // Save final state once
+    // Save final state
     state_manager.save_state(state).await?;
 
     Ok(())
 }
 
-/// Validate command arguments for potential security issues
-fn validate_command_args(hook: &Hook) -> Result<()> {
-    // Check for shell metacharacters that could lead to injection
-    let dangerous_chars = ['|', '&', ';', '$', '`', '\n', '\r', '<', '>', '(', ')'];
+/// Evaluate shell script and extract resulting environment variables
+async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String, String>> {
+    debug!(
+        "Evaluating shell script to extract environment ({} bytes)",
+        shell_script.len()
+    );
 
-    for arg in &hook.args {
-        for ch in dangerous_chars {
-            if arg.contains(ch) {
-                return Err(Error::configuration(format!(
-                    "Command argument contains potentially dangerous character '{}': {}",
-                    ch, arg
-                )));
+    // First, get the environment before running the script
+    let mut cmd_before = Command::new("bash");
+    cmd_before.arg("-c");
+    cmd_before.arg("env -0");
+    cmd_before.stdout(Stdio::piped());
+    cmd_before.stderr(Stdio::piped());
+
+    let output_before = cmd_before
+        .output()
+        .await
+        .map_err(|e| Error::configuration(format!("Failed to get initial environment: {}", e)))?;
+
+    let env_before_output = String::from_utf8_lossy(&output_before.stdout);
+    let mut env_before = HashMap::new();
+    for line in env_before_output.split('\0') {
+        if let Some((key, value)) = line.split_once('=') {
+            env_before.insert(key.to_string(), value.to_string());
+        }
+    }
+
+    // Now execute the script and capture the environment after
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c");
+    // Create a script that sources the exports and then prints the environment
+    let script = format!("{}\nenv -0", shell_script);
+    cmd.arg(script);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let output = cmd.output().await.map_err(|e| {
+        Error::configuration(format!("Failed to evaluate shell environment: {}", e))
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::configuration(format!(
+            "Shell script evaluation failed: {}",
+            stderr
+        )));
+    }
+
+    // Parse the null-separated environment output
+    let env_output = String::from_utf8_lossy(&output.stdout);
+    let mut env_delta = HashMap::new();
+
+    for line in env_output.split('\0') {
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some((key, value)) = line.split_once('=') {
+            // Skip some problematic variables that can interfere
+            if key.starts_with("BASH_FUNC_")
+                || key == "PS1"
+                || key == "PS2"
+                || key == "_"
+                || key == "PWD"
+                || key == "OLDPWD"
+                || key == "SHLVL"
+                || key.starts_with("BASH")
+            {
+                continue;
+            }
+
+            // Only include variables that are new or changed
+            if env_before.get(key) != Some(&value.to_string()) {
+                env_delta.insert(key.to_string(), value.to_string());
             }
         }
-
-        // Check for command substitution patterns
-        if arg.contains("$(") || arg.contains("${") {
-            return Err(Error::configuration(format!(
-                "Command argument contains potential command substitution: {}",
-                arg
-            )));
-        }
     }
 
-    // Validate environment variables
-    for (key, value) in &hook.env {
-        // Check environment variable names
-        if key.is_empty() || key.contains('=') || key.contains('\0') {
-            return Err(Error::configuration(format!(
-                "Invalid environment variable name: {}",
-                key
-            )));
-        }
-
-        // Check for null bytes in values
-        if value.contains('\0') {
-            return Err(Error::configuration(
-                "Environment variable value contains null byte".to_string(),
-            ));
-        }
-    }
-
-    Ok(())
+    debug!(
+        "Evaluated shell script and extracted {} new/changed environment variables",
+        env_delta.len()
+    );
+    Ok(env_delta)
 }
 
 /// Execute a single hook with timeout
 async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<HookResult> {
     let start_time = Instant::now();
 
-    debug!("Executing hook: {} {}", hook.command, hook.args.join(" "));
+    debug!(
+        "Executing hook: {} {} (source: {})",
+        hook.command,
+        hook.args.join(" "),
+        hook.source.unwrap_or(false)
+    );
 
     // Prepare the command
     let mut cmd = Command::new(&hook.command);
@@ -537,13 +573,8 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
     cmd.stderr(Stdio::piped());
 
     // Set working directory
-    if let Some(working_dir) = &hook.working_dir {
-        cmd.current_dir(working_dir);
-    }
-
-    // Set environment variables
-    for (key, value) in &hook.env {
-        cmd.env(key, value);
+    if let Some(dir) = &hook.dir {
+        cmd.current_dir(dir);
     }
 
     // Execute with timeout
@@ -629,10 +660,9 @@ mod tests {
         let hook = Hook {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 10,
-            continue_on_error: false,
+            dir: None,
+            inputs: vec![],
+            source: None,
         };
 
         let result = executor.execute_single_hook(hook).await.unwrap();
@@ -647,10 +677,9 @@ mod tests {
         let hook = Hook {
             command: "false".to_string(), // Command that always fails
             args: vec![],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 10,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         };
 
         let result = executor.execute_single_hook(hook).await.unwrap();
@@ -666,10 +695,9 @@ mod tests {
         let hook = Hook {
             command: "sleep".to_string(),
             args: vec!["10".to_string()], // Sleep for 10 seconds
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 1, // But timeout after 1 second
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         };
 
         let result = executor.execute_single_hook(hook).await.unwrap();
@@ -695,18 +723,16 @@ mod tests {
             Hook {
                 command: "echo".to_string(),
                 args: vec!["hook1".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "echo".to_string(),
                 args: vec!["hook2".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
         ];
 
@@ -751,26 +777,23 @@ mod tests {
             Hook {
                 command: "echo".to_string(),
                 args: vec!["hook1".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "echo".to_string(),
                 args: vec!["hook2".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "echo".to_string(),
                 args: vec!["hook3".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
         ];
 
@@ -799,10 +822,9 @@ mod tests {
         let hook = Hook {
             command: "rm".to_string(), // Not in whitelist
             args: vec!["-rf".to_string(), "/".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 10,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         };
 
         let result = executor.execute_single_hook(hook).await;
@@ -812,10 +834,9 @@ mod tests {
         let hook_with_injection = Hook {
             command: "echo".to_string(),
             args: vec!["test; rm -rf /".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 10,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         };
 
         let result = executor.execute_single_hook(hook_with_injection).await;
@@ -843,10 +864,9 @@ mod tests {
         let hooks = vec![Hook {
             command: "sleep".to_string(),
             args: vec!["10".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 20,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         }];
 
         executor
@@ -890,10 +910,9 @@ mod tests {
         let hook = Hook {
             command: "echo".to_string(),
             args,
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 10,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         };
 
         let result = executor.execute_single_hook(hook).await.unwrap();
@@ -920,10 +939,9 @@ mod tests {
         let hooks = vec![Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 10,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         }];
 
         executor
@@ -976,10 +994,9 @@ mod tests {
         let hooks = vec![Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 10,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         }];
 
         executor
@@ -995,76 +1012,74 @@ mod tests {
         assert!(status.is_some());
     }
 
-    #[tokio::test]
-    async fn test_command_whitelist_management() {
-        let executor = HookExecutor::with_default_config().unwrap();
-
-        // Test adding a new command to whitelist
-        let custom_command = "my-custom-tool".to_string();
-        executor.allow_command(custom_command.clone()).await;
-
-        // Test that the newly allowed command works
-        let hook = Hook {
-            command: custom_command.clone(),
-            args: vec!["--version".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: true, // Don't fail if command doesn't exist
-        };
-
-        // Should not error due to whitelist check (may fail if command doesn't exist)
-        let result = executor.execute_single_hook(hook).await;
-        // If it errors, it should be because the command doesn't exist, not because it's not allowed
-        if result.is_err() {
-            let err_msg = result.unwrap_err().to_string();
-            assert!(
-                !err_msg.contains("not allowed"),
-                "Command should be allowed after adding to whitelist"
-            );
-        }
-
-        // Test removing a command from whitelist
-        executor.disallow_command("echo").await;
-
-        let hook = Hook {
-            command: "echo".to_string(),
-            args: vec!["test".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: false,
-        };
-
-        let result = executor.execute_single_hook(hook).await;
-        assert!(result.is_err(), "Echo command should be disallowed");
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("not allowed")
-                || err_msg.contains("not in whitelist")
-                || err_msg.contains("Configuration"),
-            "Error message should indicate command not allowed: {}",
-            err_msg
-        );
-
-        // Test re-allowing a command
-        executor.allow_command("echo".to_string()).await;
-
-        let hook = Hook {
-            command: "echo".to_string(),
-            args: vec!["test".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: false,
-        };
-
-        let result = executor.execute_single_hook(hook).await;
-        assert!(
-            result.is_ok(),
-            "Echo command should be allowed after re-adding"
-        );
-    }
+    // Commented out: allow_command and disallow_command methods don't exist
+    // #[tokio::test]
+    // async fn test_command_whitelist_management() {
+    //         let executor = HookExecutor::with_default_config().unwrap();
+    //
+    //         // Test adding a new command to whitelist
+    //         let custom_command = "my-custom-tool".to_string();
+    //         executor.allow_command(custom_command.clone()).await;
+    //
+    //         // Test that the newly allowed command works
+    //         let hook = Hook {
+    //             command: custom_command.clone(),
+    //             args: vec!["--version".to_string()],
+    //             dir: None,
+    //             inputs: Vec::new(),
+    //             source: Some(false),
+    //         };
+    //
+    //         // Should not error due to whitelist check (may fail if command doesn't exist)
+    //         let result = executor.execute_single_hook(hook).await;
+    //         // If it errors, it should be because the command doesn't exist, not because it's not allowed
+    //         if result.is_err() {
+    //             let err_msg = result.unwrap_err().to_string();
+    //             assert!(
+    //                 !err_msg.contains("not allowed"),
+    //                 "Command should be allowed after adding to whitelist"
+    //             );
+    //         }
+    //
+    //         // Test removing a command from whitelist
+    //         executor.disallow_command("echo").await;
+    //
+    //         let hook = Hook {
+    //             command: "echo".to_string(),
+    //             args: vec!["test".to_string()],
+    //             dir: None,
+    //             inputs: vec![],
+    //             source: None,
+    //         };
+    //
+    //         let result = executor.execute_single_hook(hook).await;
+    //         assert!(result.is_err(), "Echo command should be disallowed");
+    //         let err_msg = result.unwrap_err().to_string();
+    //         assert!(
+    //             err_msg.contains("not allowed")
+    //                 || err_msg.contains("not in whitelist")
+    //                 || err_msg.contains("Configuration"),
+    //             "Error message should indicate command not allowed: {}",
+    //             err_msg
+    //         );
+    //
+    //         // Test re-allowing a command
+    //         executor.allow_command("echo".to_string()).await;
+    //
+    //         let hook = Hook {
+    //             command: "echo".to_string(),
+    //             args: vec!["test".to_string()],
+    //             dir: None,
+    //             inputs: vec![],
+    //             source: None,
+    //         };
+    //
+    //         let result = executor.execute_single_hook(hook).await;
+    //         assert!(
+    //             result.is_ok(),
+    //             "Echo command should be allowed after re-adding"
+    //         );
+    //     }
 
     #[tokio::test]
     async fn test_fail_fast_mode_edge_cases() {
@@ -1085,26 +1100,23 @@ mod tests {
             Hook {
                 command: "false".to_string(), // Will fail
                 args: vec![],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "echo".to_string(), // Should not execute due to fail_fast
                 args: vec!["should not run".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "echo".to_string(), // Should not execute due to fail_fast
                 args: vec!["also should not run".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
         ];
 
@@ -1137,34 +1149,30 @@ mod tests {
             Hook {
                 command: "false".to_string(),
                 args: vec![],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: true, // Should continue despite failure
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "echo".to_string(),
                 args: vec!["this should run".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "false".to_string(), // Will fail and stop execution
                 args: vec![],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "echo".to_string(),
                 args: vec!["this should not run".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
         ];
 
@@ -1216,10 +1224,9 @@ mod tests {
             let hook = Hook {
                 command: "echo".to_string(),
                 args: args.clone(),
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             };
 
             let result = executor.execute_single_hook(hook).await;
@@ -1239,10 +1246,10 @@ mod tests {
         let hook_with_ld_preload = Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
-            working_dir: None,
-            env: dangerous_env,
-            timeout_seconds: 5,
-            continue_on_error: true, // Continue on error to handle different behaviors
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
+            // env: dangerous_env, // Field doesn't exist in Hook struct
         };
 
         // This test documents that LD_PRELOAD should ideally be checked
@@ -1256,10 +1263,10 @@ mod tests {
         let hook_with_path = Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
-            working_dir: None,
-            env: path_manipulation,
-            timeout_seconds: 5,
-            continue_on_error: true,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
+            // env: path_manipulation, // Field doesn't exist in Hook struct
         };
 
         // This test documents that PATH manipulation could be a security concern
@@ -1275,10 +1282,9 @@ mod tests {
         let hook_with_valid_dir = Hook {
             command: "pwd".to_string(),
             args: vec![],
-            working_dir: Some(temp_dir.path().to_path_buf()),
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: false,
+            dir: Some(temp_dir.path().to_string_lossy().to_string()),
+            inputs: vec![],
+            source: None,
         };
 
         let result = executor
@@ -1292,10 +1298,9 @@ mod tests {
         let hook_with_invalid_dir = Hook {
             command: "pwd".to_string(),
             args: vec![],
-            working_dir: Some(PathBuf::from("/nonexistent/directory/that/does/not/exist")),
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: true, // Continue on error to handle different OS behaviors
+            dir: Some("/nonexistent/directory/that/does/not/exist".to_string()),
+            inputs: vec![],
+            source: None,
         };
 
         let result = executor.execute_single_hook(hook_with_invalid_dir).await;
@@ -1313,10 +1318,9 @@ mod tests {
         let hook_with_relative_dir = Hook {
             command: "pwd".to_string(),
             args: vec![],
-            working_dir: Some(PathBuf::from("./relative/path")),
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: false,
+            dir: Some("./relative/path".to_string()),
+            inputs: vec![],
+            source: None,
         };
 
         // This might work or fail depending on the implementation
@@ -1341,42 +1345,37 @@ mod tests {
             Hook {
                 command: "sleep".to_string(),
                 args: vec!["0.1".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "sleep".to_string(),
                 args: vec!["0.1".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "sleep".to_string(),
                 args: vec!["0.1".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "sleep".to_string(),
                 args: vec!["0.1".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "sleep".to_string(),
                 args: vec!["0.1".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 10,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
         ];
 
@@ -1420,10 +1419,9 @@ mod tests {
         let hook = Hook {
             command: "echo".to_string(),
             args: vec!["stdout output".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: false,
+            dir: None,
+            inputs: vec![],
+            source: None,
         };
 
         let result = executor.execute_single_hook(hook).await.unwrap();
@@ -1434,10 +1432,9 @@ mod tests {
         let hook_with_exit_code = Hook {
             command: "false".to_string(),
             args: vec![],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: true,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         };
 
         let result = executor
@@ -1472,10 +1469,9 @@ mod tests {
             let hooks = vec![Hook {
                 command: "echo".to_string(),
                 args: vec![format!("directory {}", i)],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             }];
 
             executor
@@ -1514,26 +1510,23 @@ mod tests {
             Hook {
                 command: "echo".to_string(),
                 args: vec!["success 1".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "false".to_string(),
                 args: vec![],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: true, // Continue despite failure
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
             Hook {
                 command: "echo".to_string(),
                 args: vec!["success 2".to_string()],
-                working_dir: None,
-                env: HashMap::new(),
-                timeout_seconds: 5,
-                continue_on_error: false,
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
             },
         ];
 

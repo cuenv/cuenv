@@ -23,3 +23,6 @@ package-lock.json
 *.cdx.json
 sbom.json
 lcov.info
+
+# Test directories
+.test/

@@ -10,11 +10,12 @@ use cuenv_core::{
     Result,
 };
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
 /// Execute env load command - evaluates config, checks approval, starts hook execution
-pub async fn execute_env_load(path: &str) -> Result<String> {
+pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
     let directory = PathBuf::from(path);
 
     // Check if env.cue exists
@@ -23,9 +24,14 @@ pub async fn execute_env_load(path: &str) -> Result<String> {
         return Ok(format!("No env.cue file found in '{path}'"));
     }
 
+    // Canonicalize the path to ensure consistency
+    let directory = directory.canonicalize().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to canonicalize path: {e}"))
+    })?;
+
     // Evaluate the CUE configuration
     let evaluator = CueEvaluator::builder().build()?;
-    let json_result = evaluator.evaluate(&directory, "cuenv")?;
+    let json_result = evaluator.evaluate(&directory, package)?;
     let config: Value = serde_json::from_str(&json_result).map_err(|e| {
         cuenv_core::Error::configuration(format!(
             "Failed to parse CUE output: {e}\nRaw output: {json_result}"
@@ -41,7 +47,16 @@ pub async fn execute_env_load(path: &str) -> Result<String> {
     match approval_status {
         ApprovalStatus::Approved => {
             // Extract hooks from configuration and execute
+            let debug_msg = format!(
+                "[env_load] Config JSON: {}\n",
+                serde_json::to_string_pretty(&config).unwrap_or_default()
+            );
+            std::fs::write("/tmp/cuenv_env_load_debug.log", &debug_msg).ok();
+
             let hooks = extract_hooks_from_config(&config);
+
+            let debug_msg2 = format!("[env_load] Extracted {} hooks\n", hooks.len());
+            std::fs::write("/tmp/cuenv_env_load_debug2.log", &debug_msg2).ok();
 
             if hooks.is_empty() {
                 return Ok("No hooks to execute".to_string());
@@ -51,9 +66,20 @@ pub async fn execute_env_load(path: &str) -> Result<String> {
             let executor = HookExecutor::with_default_config()?;
             let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config);
 
-            executor
-                .execute_hooks_background(directory, config_hash, hooks)
-                .await
+            let result = executor
+                .execute_hooks_background(directory.clone(), config_hash, hooks)
+                .await?;
+
+            // If no shell integration is active, provide preexec hook for manual eval
+            if std::env::var("CUENV_SHELL_INTEGRATION").is_err() {
+                let shell = detect_current_shell();
+                let preexec_script = generate_standalone_preexec(path, shell);
+                Ok(format!(
+                    "{result}\n\nTo load environment when hooks complete, eval this:\n{preexec_script}"
+                ))
+            } else {
+                Ok(result)
+            }
         }
         ApprovalStatus::RequiresApproval { current_hash } => {
             let summary = ConfigSummary::from_json(&config);
@@ -83,7 +109,12 @@ pub async fn execute_env_load(path: &str) -> Result<String> {
 }
 
 /// Execute env status command - show current hook execution status
-pub async fn execute_env_status(path: &str, wait: bool, timeout_seconds: u64) -> Result<String> {
+pub async fn execute_env_status(
+    path: &str,
+    _package: &str,
+    wait: bool,
+    timeout_seconds: u64,
+) -> Result<String> {
     let directory = PathBuf::from(path);
 
     // Check if env.cue exists
@@ -126,7 +157,7 @@ pub async fn execute_env_status(path: &str, wait: bool, timeout_seconds: u64) ->
 }
 
 /// Execute allow command - approve current directory's configuration
-pub async fn execute_allow(path: &str, note: Option<String>) -> Result<String> {
+pub async fn execute_allow(path: &str, package: &str, note: Option<String>) -> Result<String> {
     let directory = PathBuf::from(path);
 
     // Check if directory exists
@@ -135,6 +166,11 @@ pub async fn execute_allow(path: &str, note: Option<String>) -> Result<String> {
             "Directory does not exist: {path}"
         )));
     }
+
+    // Canonicalize the path to ensure consistency
+    let directory = directory.canonicalize().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to canonicalize path: {e}"))
+    })?;
 
     // Check if env.cue exists
     let env_file = directory.join("env.cue");
@@ -146,7 +182,7 @@ pub async fn execute_allow(path: &str, note: Option<String>) -> Result<String> {
 
     // Evaluate the CUE configuration
     let evaluator = CueEvaluator::builder().build()?;
-    let json_result = evaluator.evaluate(&directory, "cuenv")?;
+    let json_result = evaluator.evaluate(&directory, package)?;
     let config: Value = serde_json::from_str(&json_result).map_err(|e| {
         cuenv_core::Error::configuration(format!(
             "Failed to parse CUE output: {e}\nRaw output: {json_result}"
@@ -190,12 +226,172 @@ pub async fn execute_allow(path: &str, note: Option<String>) -> Result<String> {
     ))
 }
 
+/// Execute env check command - check hook status and output env for shell
+pub async fn execute_env_check(
+    path: &str,
+    package: &str,
+    shell: crate::cli::ShellType,
+) -> Result<String> {
+    let directory = PathBuf::from(path);
+
+    // Check if env.cue exists
+    let env_file = directory.join("env.cue");
+    if !env_file.exists() {
+        return Ok(String::new()); // Silent return for non-cuenv directories
+    }
+
+    // Get the config hash from the approval state
+    let mut approval_manager = ApprovalManager::with_default_file()?;
+    approval_manager.load_approvals().await?;
+
+    // Get the config hash for this directory
+    let config_hash = if let Some(approval) = approval_manager.get_approval(path) {
+        approval.config_hash.clone()
+    } else {
+        // If not approved, compute it from current config
+        let evaluator = CueEvaluator::builder().build()?;
+        let json_result = evaluator.evaluate(&directory, package)?;
+        let config: Value = serde_json::from_str(&json_result).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
+        })?;
+        cuenv_core::hooks::approval::compute_config_hash(&config)
+    };
+
+    let executor = HookExecutor::with_default_config()?;
+
+    // Check execution status using the specific instance
+    if let Some(state) = executor
+        .get_execution_status_for_instance(&directory, &config_hash)
+        .await?
+        && state.is_complete()
+        && state.status == cuenv_core::hooks::types::ExecutionStatus::Completed
+    {
+        let mut output = String::new();
+        let mut all_env_vars = HashMap::new();
+
+        // First, get environment variables from CUE configuration
+        let evaluator = CueEvaluator::builder().build()?;
+        let json_result = evaluator.evaluate(&directory, package)?;
+        let config: Value = serde_json::from_str(&json_result).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
+        })?;
+
+        // Add CUE env variables to our map
+        if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
+            for (key, value) in env_obj {
+                let value_str = match value {
+                    Value::String(s) => s.clone(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    _ => continue, // Skip complex values
+                };
+                all_env_vars.insert(key.clone(), value_str);
+            }
+        }
+
+        // Then, add/override with environment variables from source hooks
+        for (key, value) in &state.environment_vars {
+            all_env_vars.insert(key.clone(), value.clone());
+        }
+
+        // Output all environment variables
+        for (key, value) in &all_env_vars {
+            match shell {
+                crate::cli::ShellType::Fish => {
+                    use std::fmt::Write;
+                    writeln!(&mut output, "set -x {key} \"{value}\"").unwrap();
+                }
+                crate::cli::ShellType::Bash | crate::cli::ShellType::Zsh => {
+                    use std::fmt::Write;
+                    writeln!(&mut output, "export {key}=\"{value}\"").unwrap();
+                }
+            }
+        }
+
+        return Ok(output);
+    }
+
+    // No environment to load
+    Ok(String::new())
+}
+
 /// Generate shell integration script
 pub fn execute_shell_init(shell: crate::cli::ShellType) -> String {
     match shell {
         crate::cli::ShellType::Fish => generate_fish_integration(),
         crate::cli::ShellType::Bash => generate_bash_integration(),
         crate::cli::ShellType::Zsh => generate_zsh_integration(),
+    }
+}
+
+/// Detect the current shell from environment
+fn detect_current_shell() -> crate::cli::ShellType {
+    // Try to detect from SHELL environment variable
+    if let Ok(shell_path) = std::env::var("SHELL") {
+        if shell_path.contains("fish") {
+            return crate::cli::ShellType::Fish;
+        } else if shell_path.contains("bash") {
+            return crate::cli::ShellType::Bash;
+        } else if shell_path.contains("zsh") {
+            return crate::cli::ShellType::Zsh;
+        }
+    }
+
+    // Default to bash if we can't detect
+    crate::cli::ShellType::Bash
+}
+
+/// Generate standalone preexec hook for manual evaluation
+fn generate_standalone_preexec(path: &str, shell: crate::cli::ShellType) -> String {
+    match shell {
+        crate::cli::ShellType::Fish => format!(
+            r#"# Eval this to load environment when hooks complete:
+set -g __cuenv_pending_dir "{path}"
+function __cuenv_check_hooks --on-event fish_preexec
+    if test -n "$__cuenv_pending_dir"
+        set -l env_exports (cuenv env check --path "$__cuenv_pending_dir" --shell fish 2>/dev/null)
+        if test -n "$env_exports"
+            eval $env_exports
+            echo "[cuenv] Environment loaded for $__cuenv_pending_dir"
+            set -e __cuenv_pending_dir
+            functions -e __cuenv_check_hooks
+        end
+    end
+end"#
+        ),
+        crate::cli::ShellType::Bash => format!(
+            r#"# Eval this to load environment when hooks complete:
+__cuenv_pending_dir="{path}"
+__cuenv_preexec() {{
+    if [[ -n "$__cuenv_pending_dir" ]]; then
+        local env_exports=$(cuenv env check --path "$__cuenv_pending_dir" --shell bash 2>/dev/null)
+        if [[ -n "$env_exports" ]]; then
+            eval "$env_exports"
+            echo "[cuenv] Environment loaded for $__cuenv_pending_dir"
+            unset __cuenv_pending_dir
+            trap - DEBUG
+        fi
+    fi
+}}
+trap '__cuenv_preexec' DEBUG"#
+        ),
+        crate::cli::ShellType::Zsh => format!(
+            r#"# Eval this to load environment when hooks complete:
+__cuenv_pending_dir="{path}"
+__cuenv_preexec() {{
+    if [[ -n "$__cuenv_pending_dir" ]]; then
+        local env_exports=$(cuenv env check --path "$__cuenv_pending_dir" --shell zsh 2>/dev/null)
+        if [[ -n "$env_exports" ]]; then
+            eval "$env_exports"
+            echo "[cuenv] Environment loaded for $__cuenv_pending_dir"
+            unset __cuenv_pending_dir
+            add-zsh-hook -d preexec __cuenv_preexec
+        fi
+    fi
+}}
+autoload -U add-zsh-hook
+add-zsh-hook preexec __cuenv_preexec"#
+        ),
     }
 }
 
@@ -241,19 +437,25 @@ fn extract_hooks_from_value(value: &Value, hooks: &mut Vec<Hook>) {
 
 /// Generate Fish shell integration script
 fn generate_fish_integration() -> String {
-    r#"# cuenv Fish shell integration
+    r"# cuenv Fish shell integration
 # Add this to your ~/.config/fish/config.fish
 
-function __cuenv_auto_load --on-variable PWD
-    if test -f "$PWD/env.cue"
-        cuenv env load --path "$PWD" 2>/dev/null
-    end
+# Mark that shell integration is active
+set -x CUENV_SHELL_INTEGRATION 1
+
+# Hook function that loads environment on each prompt
+function __cuenv_hook --on-variable PWD
+    # The export command handles everything:
+    # - Checks if env.cue exists
+    # - Loads cached state if available (fast path)
+    # - Evaluates CUE only when needed
+    # - Starts hooks in background if needed
+    # - Returns safe no-op if nothing to do
+    source (cuenv export --shell fish 2>/dev/null | psub)
 end
 
-# Also check current directory on startup
-if test -f "$PWD/env.cue"
-    cuenv env load --path "$PWD" 2>/dev/null
-end"#
+# Also run on shell startup
+source (cuenv export --shell fish 2>/dev/null | psub)"
         .to_string()
 }
 
@@ -262,21 +464,29 @@ fn generate_bash_integration() -> String {
     r#"# cuenv Bash shell integration
 # Add this to your ~/.bashrc
 
-__cuenv_auto_load() {
-    if [[ -f "$PWD/env.cue" ]]; then
-        cuenv env load --path "$PWD" 2>/dev/null
-    fi
+# Mark that shell integration is active
+export CUENV_SHELL_INTEGRATION=1
+
+# Hook function that loads environment on each prompt
+__cuenv_hook() {
+    # The export command handles everything:
+    # - Checks if env.cue exists
+    # - Loads cached state if available (fast path)
+    # - Evaluates CUE only when needed
+    # - Starts hooks in background if needed
+    # - Returns safe no-op if nothing to do
+    eval "$(cuenv export --shell bash 2>/dev/null)"
 }
 
-# Set up directory change hook
+# Set up the hook via PROMPT_COMMAND
 if [[ -n "$PROMPT_COMMAND" ]]; then
-    PROMPT_COMMAND="__cuenv_auto_load; $PROMPT_COMMAND"
+    PROMPT_COMMAND="__cuenv_hook; $PROMPT_COMMAND"
 else
-    PROMPT_COMMAND="__cuenv_auto_load"
+    PROMPT_COMMAND="__cuenv_hook"
 fi
 
-# Also check current directory on startup
-__cuenv_auto_load"#
+# Also run on shell startup
+__cuenv_hook"#
         .to_string()
 }
 
@@ -285,18 +495,26 @@ fn generate_zsh_integration() -> String {
     r#"# cuenv Zsh shell integration  
 # Add this to your ~/.zshrc
 
-__cuenv_auto_load() {
-    if [[ -f "$PWD/env.cue" ]]; then
-        cuenv env load --path "$PWD" 2>/dev/null
-    fi
+# Mark that shell integration is active
+export CUENV_SHELL_INTEGRATION=1
+
+# Hook function that loads environment on each prompt
+__cuenv_hook() {
+    # The export command handles everything:
+    # - Checks if env.cue exists
+    # - Loads cached state if available (fast path)
+    # - Evaluates CUE only when needed
+    # - Starts hooks in background if needed
+    # - Returns safe no-op if nothing to do
+    eval "$(cuenv export --shell zsh 2>/dev/null)"
 }
 
-# Set up directory change hook
+# Set up the hook via precmd
 autoload -U add-zsh-hook
-add-zsh-hook chpwd __cuenv_auto_load
+add-zsh-hook precmd __cuenv_hook
 
-# Also check current directory on startup
-__cuenv_auto_load"#
+# Also run on shell startup
+__cuenv_hook"#
         .to_string()
 }
 
@@ -367,7 +585,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_allow_no_directory() {
-        let result = execute_allow("/nonexistent/directory", None).await;
+        let result = execute_allow("/nonexistent/directory", "cuenv", None).await;
         assert!(result.is_err());
         // The error type is Configuration error, which doesn't include the detailed message in Display
         // Just verify it's an error for a non-existent directory
@@ -380,7 +598,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_allow_no_env_cue() {
         let temp_dir = TempDir::new().unwrap();
-        let result = execute_allow(temp_dir.path().to_str().unwrap(), None).await;
+        let result = execute_allow(temp_dir.path().to_str().unwrap(), "cuenv", None).await;
         assert!(result.is_err());
         // The error type is Configuration error for missing env.cue file
         assert!(matches!(
@@ -392,7 +610,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_env_load_no_file() {
         let temp_dir = TempDir::new().unwrap();
-        let result = execute_env_load(temp_dir.path().to_str().unwrap()).await;
+        let result = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv").await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("No env.cue file found"));
@@ -401,7 +619,8 @@ mod tests {
     #[tokio::test]
     async fn test_execute_env_status_no_file() {
         let temp_dir = TempDir::new().unwrap();
-        let result = execute_env_status(temp_dir.path().to_str().unwrap(), false, 30).await;
+        let result =
+            execute_env_status(temp_dir.path().to_str().unwrap(), "cuenv", false, 30).await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("No env.cue file found"));

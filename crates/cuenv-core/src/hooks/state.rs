@@ -3,10 +3,13 @@
 use crate::hooks::types::{ExecutionStatus, HookResult};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
+use fs4::tokio::AsyncFileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, error, info, warn};
 
 /// Manages persistent state for hook execution sessions
@@ -23,6 +26,11 @@ impl StateManager {
 
     /// Get the default state directory (~/.cuenv/state)
     pub fn default_state_dir() -> Result<PathBuf> {
+        // Check for CUENV_STATE_DIR environment variable first
+        if let Ok(state_dir) = std::env::var("CUENV_STATE_DIR") {
+            return Ok(PathBuf::from(state_dir));
+        }
+
         let home = dirs::home_dir()
             .ok_or_else(|| Error::configuration("Could not determine home directory"))?;
         Ok(home.join(".cuenv").join("state"))
@@ -53,7 +61,12 @@ impl StateManager {
         self.state_dir.join(format!("{}.json", directory_hash))
     }
 
-    /// Save execution state to disk
+    /// Get the state file path for a given directory hash (public for PID files)
+    pub fn get_state_file_path(&self, directory_hash: &str) -> PathBuf {
+        self.state_dir.join(format!("{}.json", directory_hash))
+    }
+
+    /// Save execution state to disk with atomic write and locking
     pub async fn save_state(&self, state: &HookExecutionState) -> Result<()> {
         self.ensure_state_dir().await?;
 
@@ -61,11 +74,55 @@ impl StateManager {
         let json = serde_json::to_string_pretty(state)
             .map_err(|e| Error::configuration(format!("Failed to serialize state: {e}")))?;
 
-        fs::write(&state_file, json).await.map_err(|e| Error::Io {
-            source: e,
-            path: Some(state_file.into_boxed_path()),
-            operation: "write".to_string(),
+        // Write to a temporary file first, then rename atomically
+        let temp_path = state_file.with_extension("tmp");
+
+        // Open temp file with exclusive lock for writing
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)
+            .await
+            .map_err(|e| Error::Io {
+                source: e,
+                path: Some(temp_path.clone().into_boxed_path()),
+                operation: "open".to_string(),
+            })?;
+
+        // Acquire exclusive lock (only one writer allowed)
+        file.lock_exclusive().map_err(|e| {
+            Error::configuration(format!(
+                "Failed to acquire exclusive lock on state temp file: {}",
+                e
+            ))
         })?;
+
+        file.write_all(json.as_bytes())
+            .await
+            .map_err(|e| Error::Io {
+                source: e,
+                path: Some(temp_path.clone().into_boxed_path()),
+                operation: "write_all".to_string(),
+            })?;
+
+        file.sync_all().await.map_err(|e| Error::Io {
+            source: e,
+            path: Some(temp_path.clone().into_boxed_path()),
+            operation: "sync_all".to_string(),
+        })?;
+
+        // Unlock happens automatically when file is dropped
+        drop(file);
+
+        // Atomically rename temp file to final location
+        fs::rename(&temp_path, &state_file)
+            .await
+            .map_err(|e| Error::Io {
+                source: e,
+                path: Some(state_file.clone().into_boxed_path()),
+                operation: "rename".to_string(),
+            })?;
 
         debug!(
             "Saved execution state for directory hash: {}",
@@ -74,7 +131,7 @@ impl StateManager {
         Ok(())
     }
 
-    /// Load execution state from disk
+    /// Load execution state from disk with shared locking
     pub async fn load_state(&self, directory_hash: &str) -> Result<Option<HookExecutionState>> {
         let state_file = self.state_file_path(directory_hash);
 
@@ -82,7 +139,32 @@ impl StateManager {
             return Ok(None);
         }
 
-        let json = fs::read_to_string(&state_file)
+        // Open file with shared lock for reading
+        let mut file = match OpenOptions::new().read(true).open(&state_file).await {
+            Ok(f) => f,
+            Err(e) => {
+                // File might have been deleted between exists check and open
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(None);
+                }
+                return Err(Error::Io {
+                    source: e,
+                    path: Some(state_file.clone().into_boxed_path()),
+                    operation: "open".to_string(),
+                });
+            }
+        };
+
+        // Acquire shared lock (multiple readers allowed)
+        file.lock_shared().map_err(|e| {
+            Error::configuration(format!(
+                "Failed to acquire shared lock on state file: {}",
+                e
+            ))
+        })?;
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)
             .await
             .map_err(|e| Error::Io {
                 source: e,
@@ -90,7 +172,10 @@ impl StateManager {
                 operation: "read_to_string".to_string(),
             })?;
 
-        let state: HookExecutionState = serde_json::from_str(&json)
+        // Unlock happens automatically when file is dropped
+        drop(file);
+
+        let state: HookExecutionState = serde_json::from_str(&contents)
             .map_err(|e| Error::configuration(format!("Failed to deserialize state: {e}")))?;
 
         debug!(
@@ -265,6 +350,10 @@ pub struct HookExecutionState {
     pub finished_at: Option<DateTime<Utc>>,
     /// Error message if execution failed
     pub error_message: Option<String>,
+    /// Environment variables captured from source hooks
+    pub environment_vars: HashMap<String, String>,
+    /// Previous environment variables (for diff/unset support)
+    pub previous_env: Option<HashMap<String, String>>,
 }
 
 impl HookExecutionState {
@@ -287,6 +376,8 @@ impl HookExecutionState {
             started_at: Utc::now(),
             finished_at: None,
             error_message: None,
+            environment_vars: HashMap::new(),
+            previous_env: None,
         }
     }
 
@@ -394,9 +485,16 @@ impl HookExecutionState {
 
 /// Compute a hash for a directory path for state file naming
 pub fn compute_directory_hash(path: &Path) -> String {
+    compute_instance_hash(path, "")
+}
+
+/// Compute a hash for a unique execution instance (directory + config)
+pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(b":");
+    hasher.update(config_hash.as_bytes());
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
@@ -455,10 +553,9 @@ mod tests {
         let hook = Hook {
             command: "echo".to_string(),
             args: vec!["test".to_string()],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 300,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         };
 
         let result = HookResult::success(
@@ -508,10 +605,9 @@ mod tests {
         let hook = Hook {
             command: "echo".to_string(),
             args: vec![],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 300,
-            continue_on_error: false,
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
         };
 
         let result = HookResult::success(
@@ -600,9 +696,11 @@ mod tests {
             completed_hooks: 1,
             current_hook_index: None,
             hook_results: HashMap::new(),
+            environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::hours(1),
             finished_at: Some(Utc::now() - chrono::Duration::minutes(30)),
             error_message: None,
+            previous_env: None,
         };
 
         let running_state = HookExecutionState {
@@ -614,9 +712,11 @@ mod tests {
             completed_hooks: 1,
             current_hook_index: Some(1),
             hook_results: HashMap::new(),
+            environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::minutes(5),
             finished_at: None,
             error_message: None,
+            previous_env: None,
         };
 
         let failed_state = HookExecutionState {
@@ -628,9 +728,11 @@ mod tests {
             completed_hooks: 0,
             current_hook_index: None,
             hook_results: HashMap::new(),
+            environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::hours(2),
             finished_at: Some(Utc::now() - chrono::Duration::hours(1)),
             error_message: Some("Test failure".to_string()),
+            previous_env: None,
         };
 
         // Save all states
@@ -667,9 +769,11 @@ mod tests {
             completed_hooks: 0,
             current_hook_index: Some(0),
             hook_results: HashMap::new(),
+            environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::hours(3),
             finished_at: None,
             error_message: None,
+            previous_env: None,
         };
 
         // Create a recent running state (not orphaned)
@@ -682,9 +786,11 @@ mod tests {
             completed_hooks: 0,
             current_hook_index: Some(0),
             hook_results: HashMap::new(),
+            environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::minutes(5),
             finished_at: None,
             error_message: None,
+            previous_env: None,
         };
 
         // Save both states
@@ -748,9 +854,11 @@ mod tests {
             completed_hooks: 0,
             current_hook_index: Some(0),
             hook_results: HashMap::new(),
+            environment_vars: HashMap::new(),
             started_at: Utc::now(),
             finished_at: None,
             error_message: None,
+            previous_env: None,
         };
 
         state_manager.save_state(&initial_state).await.unwrap();
@@ -816,19 +924,20 @@ mod tests {
             completed_hooks: 1,
             current_hook_index: None,
             hook_results: HashMap::new(),
+            environment_vars: HashMap::new(),
             started_at: Utc::now(),
             finished_at: Some(Utc::now()),
             error_message: Some("Error: 错误信息 with émojis 🔥💥".to_string()),
+            previous_env: None,
         };
 
         // Add hook result with unicode output
         let unicode_hook = Hook {
             command: "echo".to_string(),
             args: vec![],
-            working_dir: None,
-            env: HashMap::new(),
-            timeout_seconds: 5,
-            continue_on_error: false,
+            dir: None,
+            inputs: vec![],
+            source: None,
         };
         let unicode_result = HookResult {
             hook: unicode_hook,
@@ -885,6 +994,7 @@ mod tests {
                 completed_hooks: if i % 3 == 0 { 1 } else { 0 },
                 current_hook_index: if i % 3 == 1 { Some(0) } else { None },
                 hook_results: HashMap::new(),
+                environment_vars: HashMap::new(),
                 started_at: Utc::now() - chrono::Duration::hours(i as i64),
                 finished_at: if i % 3 != 1 {
                     Some(Utc::now() - chrono::Duration::hours(i as i64 - 1))
@@ -896,6 +1006,7 @@ mod tests {
                 } else {
                     None
                 },
+                previous_env: None,
             };
             state_manager.save_state(&state).await.unwrap();
         }
