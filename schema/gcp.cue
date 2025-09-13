@@ -5,12 +5,11 @@ package schema
 	secret:  string
 	version: string | *"latest"
 	ref:     "gcp://\(project)/\(secret)/\(version)"
-	resolver: #ExecResolver & {
-		command: "gcloud"
-		args: [
-			"secrets", "versions", "access", version,
-			"--secret", secret,
-			"--project", project,
-		]
-	}
+	resolver: "exec"
+	command: "gcloud"
+	args: [
+		"secrets", "versions", "access", version,
+		"--secret", secret,
+		"--project", project,
+	]
 }

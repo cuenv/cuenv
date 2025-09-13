@@ -176,12 +176,26 @@ fn validate_fixture(fixture_path: &Path, should_pass: bool) -> Result<bool> {
     // First, validate with CUE
     let cue_valid = validate_with_cue(fixture_path)?;
 
-    // Export CUE to JSON and validate with Rust
-    let json_path = export_cue_to_json(fixture_path)?;
-    let rust_valid = validate_with_rust(&json_path);
-
-    // Clean up temporary JSON file
-    let _ = fs::remove_file(json_path);
+    // For invalid fixtures, if CUE validation fails (as expected), we can't export to JSON
+    // So we consider Rust validation as also failing
+    let rust_valid = if !cue_valid {
+        // If CUE validation fails, we can't export to JSON, so Rust validation also fails
+        false
+    } else {
+        // Export CUE to JSON and validate with Rust
+        match export_cue_to_json(fixture_path) {
+            Ok(json_path) => {
+                let valid = validate_with_rust(&json_path);
+                // Clean up temporary JSON file
+                let _ = fs::remove_file(json_path);
+                valid
+            }
+            Err(_) => {
+                // If export fails, consider it as validation failure
+                false
+            }
+        }
+    };
 
     // Check results
     let passed = match (should_pass, cue_valid, rust_valid) {
