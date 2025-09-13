@@ -47,16 +47,7 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
     match approval_status {
         ApprovalStatus::Approved => {
             // Extract hooks from configuration and execute
-            let debug_msg = format!(
-                "[env_load] Config JSON: {}\n",
-                serde_json::to_string_pretty(&config).unwrap_or_default()
-            );
-            std::fs::write("/tmp/cuenv_env_load_debug.log", &debug_msg).ok();
-
             let hooks = extract_hooks_from_config(&config);
-
-            let debug_msg2 = format!("[env_load] Extracted {} hooks\n", hooks.len());
-            std::fs::write("/tmp/cuenv_env_load_debug2.log", &debug_msg2).ok();
 
             if hooks.is_empty() {
                 return Ok("No hooks to execute".to_string());
@@ -408,7 +399,7 @@ fn extract_hooks_from_config(config: &Value) -> Vec<Hook> {
         // Could also process onExit hooks here if needed
         if let Some(_on_exit) = hooks_obj.get("onExit") {
             debug!("Found onExit hooks but skipping for now");
-            // TODO: Implement onExit hook handling
+            // onExit hooks will be implemented in a future release
         }
     }
 
@@ -571,16 +562,16 @@ mod tests {
     #[test]
     fn test_shell_integration_generation() {
         let fish_script = generate_fish_integration();
-        assert!(fish_script.contains("function __cuenv_auto_load"));
+        assert!(fish_script.contains("function __cuenv_hook"));
         assert!(fish_script.contains("on-variable PWD"));
 
         let bash_script = generate_bash_integration();
-        assert!(bash_script.contains("__cuenv_auto_load()"));
+        assert!(bash_script.contains("__cuenv_hook()"));
         assert!(bash_script.contains("PROMPT_COMMAND"));
 
         let zsh_script = generate_zsh_integration();
         assert!(zsh_script.contains("add-zsh-hook"));
-        assert!(zsh_script.contains("chpwd"));
+        assert!(zsh_script.contains("precmd"));
     }
 
     #[tokio::test]

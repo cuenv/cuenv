@@ -24,12 +24,6 @@ pub struct Hook {
     pub source: Option<bool>,
 }
 
-/// Default timeout for hook execution
-#[allow(dead_code)]
-fn default_timeout() -> u64 {
-    300
-}
-
 /// Result of executing a single hook
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HookResult {
@@ -109,8 +103,6 @@ impl HookResult {
 /// Configuration for hook execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookExecutionConfig {
-    /// Maximum number of hooks to execute concurrently
-    pub max_concurrent: usize,
     /// Default timeout for hooks that don't specify one
     pub default_timeout_seconds: u64,
     /// Whether to stop executing remaining hooks if one fails
@@ -122,7 +114,6 @@ pub struct HookExecutionConfig {
 impl Default for HookExecutionConfig {
     fn default() -> Self {
         Self {
-            max_concurrent: 1,            // Sequential execution by default
             default_timeout_seconds: 300, // 5 minutes
             fail_fast: true,
             state_dir: None, // Will use default state dir
@@ -290,7 +281,6 @@ mod tests {
     fn test_execution_config_default() {
         let config = HookExecutionConfig::default();
 
-        assert_eq!(config.max_concurrent, 1);
         assert_eq!(config.default_timeout_seconds, 300);
         assert!(config.fail_fast);
         assert!(config.state_dir.is_none());

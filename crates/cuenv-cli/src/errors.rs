@@ -180,9 +180,6 @@ impl ErrorReporter {
     pub fn report(&self, error: &dyn Diagnostic) -> miette::Result<()> {
         // Use miette's default error reporting
         eprintln!("{error:?}");
-
-        // TODO: add proper tracing when fixed
-
         Ok(())
     }
 
