@@ -62,20 +62,20 @@ impl StateManager {
     }
 
     /// Generate a state file path for a given directory hash
-    fn state_file_path(&self, directory_hash: &str) -> PathBuf {
-        self.state_dir.join(format!("{}.json", directory_hash))
+    fn state_file_path(&self, instance_hash: &str) -> PathBuf {
+        self.state_dir.join(format!("{}.json", instance_hash))
     }
 
     /// Get the state file path for a given directory hash (public for PID files)
-    pub fn get_state_file_path(&self, directory_hash: &str) -> PathBuf {
-        self.state_dir.join(format!("{}.json", directory_hash))
+    pub fn get_state_file_path(&self, instance_hash: &str) -> PathBuf {
+        self.state_dir.join(format!("{}.json", instance_hash))
     }
 
     /// Save execution state to disk with atomic write and locking
     pub async fn save_state(&self, state: &HookExecutionState) -> Result<()> {
         self.ensure_state_dir().await?;
 
-        let state_file = self.state_file_path(&state.directory_hash);
+        let state_file = self.state_file_path(&state.instance_hash);
         let json = serde_json::to_string_pretty(state)
             .map_err(|e| Error::configuration(format!("Failed to serialize state: {e}")))?;
 
@@ -131,14 +131,14 @@ impl StateManager {
 
         debug!(
             "Saved execution state for directory hash: {}",
-            state.directory_hash
+            state.instance_hash
         );
         Ok(())
     }
 
     /// Load execution state from disk with shared locking
-    pub async fn load_state(&self, directory_hash: &str) -> Result<Option<HookExecutionState>> {
-        let state_file = self.state_file_path(directory_hash);
+    pub async fn load_state(&self, instance_hash: &str) -> Result<Option<HookExecutionState>> {
+        let state_file = self.state_file_path(instance_hash);
 
         if !state_file.exists() {
             return Ok(None);
@@ -185,14 +185,14 @@ impl StateManager {
 
         debug!(
             "Loaded execution state for directory hash: {}",
-            directory_hash
+            instance_hash
         );
         Ok(Some(state))
     }
 
     /// Remove state file for a directory
-    pub async fn remove_state(&self, directory_hash: &str) -> Result<()> {
-        let state_file = self.state_file_path(directory_hash);
+    pub async fn remove_state(&self, instance_hash: &str) -> Result<()> {
+        let state_file = self.state_file_path(instance_hash);
 
         if state_file.exists() {
             fs::remove_file(&state_file).await.map_err(|e| Error::Io {
@@ -202,7 +202,7 @@ impl StateManager {
             })?;
             debug!(
                 "Removed execution state for directory hash: {}",
-                directory_hash
+                instance_hash
             );
         }
 
@@ -317,7 +317,7 @@ impl StateManager {
                     state.directory_path.display(),
                     state.started_at
                 );
-                self.remove_state(&state.directory_hash).await?;
+                self.remove_state(&state.instance_hash).await?;
                 cleaned_count += 1;
             }
         }
@@ -333,8 +333,8 @@ impl StateManager {
 /// Represents the state of hook execution for a specific directory
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HookExecutionState {
-    /// Hash of the directory path
-    pub directory_hash: String,
+    /// Hash combining directory path and config (instance identifier)
+    pub instance_hash: String,
     /// Path to the directory being processed
     pub directory_path: PathBuf,
     /// Hash of the configuration that was approved
@@ -365,12 +365,12 @@ impl HookExecutionState {
     /// Create a new execution state
     pub fn new(
         directory_path: PathBuf,
-        directory_hash: String,
+        instance_hash: String,
         config_hash: String,
         total_hooks: usize,
     ) -> Self {
         Self {
-            directory_hash,
+            instance_hash,
             directory_path,
             config_hash,
             status: ExecutionStatus::Running,
@@ -488,11 +488,6 @@ impl HookExecutionState {
     }
 }
 
-/// Compute a hash for a directory path for state file naming
-pub fn compute_directory_hash(path: &Path) -> String {
-    compute_instance_hash(path, "")
-}
-
 /// Compute a hash for a unique execution instance (directory + config)
 pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -514,18 +509,18 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_compute_directory_hash() {
+    fn test_compute_instance_hash() {
         let path = Path::new("/test/path");
-        let hash = compute_directory_hash(path);
+        let hash = compute_instance_hash(path);
         assert_eq!(hash.len(), 16);
 
         // Same path should produce same hash
-        let hash2 = compute_directory_hash(path);
+        let hash2 = compute_instance_hash(path);
         assert_eq!(hash, hash2);
 
         // Different path should produce different hash
         let different_path = Path::new("/other/path");
-        let different_hash = compute_directory_hash(different_path);
+        let different_hash = compute_instance_hash(different_path);
         assert_ne!(hash, different_hash);
     }
 
@@ -535,22 +530,22 @@ mod tests {
         let state_manager = StateManager::new(temp_dir.path().to_path_buf());
 
         let directory_path = PathBuf::from("/test/dir");
-        let directory_hash = compute_directory_hash(&directory_path);
+        let instance_hash = compute_instance_hash(&directory_path);
         let config_hash = "test_config_hash".to_string();
 
         let mut state =
-            HookExecutionState::new(directory_path, directory_hash.clone(), config_hash, 2);
+            HookExecutionState::new(directory_path, instance_hash.clone(), config_hash, 2);
 
         // Save initial state
         state_manager.save_state(&state).await.unwrap();
 
         // Load state back
         let loaded_state = state_manager
-            .load_state(&directory_hash)
+            .load_state(&instance_hash)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(loaded_state.directory_hash, state.directory_hash);
+        assert_eq!(loaded_state.instance_hash, state.instance_hash);
         assert_eq!(loaded_state.total_hooks, 2);
         assert_eq!(loaded_state.status, ExecutionStatus::Running);
 
@@ -576,7 +571,7 @@ mod tests {
 
         // Load updated state
         let updated_state = state_manager
-            .load_state(&directory_hash)
+            .load_state(&instance_hash)
             .await
             .unwrap()
             .unwrap();
@@ -584,17 +579,17 @@ mod tests {
         assert_eq!(updated_state.hook_results.len(), 1);
 
         // Remove state
-        state_manager.remove_state(&directory_hash).await.unwrap();
-        let removed_state = state_manager.load_state(&directory_hash).await.unwrap();
+        state_manager.remove_state(&instance_hash).await.unwrap();
+        let removed_state = state_manager.load_state(&instance_hash).await.unwrap();
         assert!(removed_state.is_none());
     }
 
     #[test]
     fn test_hook_execution_state() {
         let directory_path = PathBuf::from("/test/dir");
-        let directory_hash = "test_hash".to_string();
+        let instance_hash = "test_hash".to_string();
         let config_hash = "config_hash".to_string();
-        let mut state = HookExecutionState::new(directory_path, directory_hash, config_hash, 3);
+        let mut state = HookExecutionState::new(directory_path, instance_hash, config_hash, 3);
 
         // Initial state
         assert_eq!(state.status, ExecutionStatus::Running);
@@ -660,9 +655,9 @@ mod tests {
     #[test]
     fn test_progress_display() {
         let directory_path = PathBuf::from("/test/dir");
-        let directory_hash = "test_hash".to_string();
+        let instance_hash = "test_hash".to_string();
         let config_hash = "config_hash".to_string();
-        let mut state = HookExecutionState::new(directory_path, directory_hash, config_hash, 2);
+        let mut state = HookExecutionState::new(directory_path, instance_hash, config_hash, 2);
 
         // Running state
         let display = state.progress_display();
@@ -693,7 +688,7 @@ mod tests {
 
         // Create multiple states with different statuses
         let completed_state = HookExecutionState {
-            directory_hash: "completed_hash".to_string(),
+            instance_hash: "completed_hash".to_string(),
             directory_path: PathBuf::from("/completed"),
             config_hash: "config1".to_string(),
             status: ExecutionStatus::Completed,
@@ -709,7 +704,7 @@ mod tests {
         };
 
         let running_state = HookExecutionState {
-            directory_hash: "running_hash".to_string(),
+            instance_hash: "running_hash".to_string(),
             directory_path: PathBuf::from("/running"),
             config_hash: "config2".to_string(),
             status: ExecutionStatus::Running,
@@ -725,7 +720,7 @@ mod tests {
         };
 
         let failed_state = HookExecutionState {
-            directory_hash: "failed_hash".to_string(),
+            instance_hash: "failed_hash".to_string(),
             directory_path: PathBuf::from("/failed"),
             config_hash: "config3".to_string(),
             status: ExecutionStatus::Failed,
@@ -756,7 +751,7 @@ mod tests {
         // Verify only running state remains
         let remaining_states = state_manager.list_active_states().await.unwrap();
         assert_eq!(remaining_states.len(), 1);
-        assert_eq!(remaining_states[0].directory_hash, "running_hash");
+        assert_eq!(remaining_states[0].instance_hash, "running_hash");
     }
 
     #[tokio::test]
@@ -766,7 +761,7 @@ mod tests {
 
         // Create an old running state (orphaned)
         let orphaned_state = HookExecutionState {
-            directory_hash: "orphaned_hash".to_string(),
+            instance_hash: "orphaned_hash".to_string(),
             directory_path: PathBuf::from("/orphaned"),
             config_hash: "config".to_string(),
             status: ExecutionStatus::Running,
@@ -783,7 +778,7 @@ mod tests {
 
         // Create a recent running state (not orphaned)
         let recent_state = HookExecutionState {
-            directory_hash: "recent_hash".to_string(),
+            instance_hash: "recent_hash".to_string(),
             directory_path: PathBuf::from("/recent"),
             config_hash: "config".to_string(),
             status: ExecutionStatus::Running,
@@ -812,7 +807,7 @@ mod tests {
         // Verify only recent state remains
         let remaining_states = state_manager.list_active_states().await.unwrap();
         assert_eq!(remaining_states.len(), 1);
-        assert_eq!(remaining_states[0].directory_hash, "recent_hash");
+        assert_eq!(remaining_states[0].instance_hash, "recent_hash");
     }
 
     #[tokio::test]
@@ -851,7 +846,7 @@ mod tests {
 
         // Create initial state
         let initial_state = HookExecutionState {
-            directory_hash: "concurrent_hash".to_string(),
+            instance_hash: "concurrent_hash".to_string(),
             directory_path: PathBuf::from("/concurrent"),
             config_hash: "config".to_string(),
             status: ExecutionStatus::Running,
@@ -877,13 +872,13 @@ mod tests {
 
             let handle = task::spawn(async move {
                 // Load state - it might have been modified by another task
-                let directory_hash = compute_directory_hash(&path);
+                let instance_hash = compute_instance_hash(&path, "concurrent_config");
 
                 // Simulate some work
                 tokio::time::sleep(Duration::from_millis(10)).await;
 
                 // Load state, modify, and save (handle potential concurrent modifications)
-                if let Ok(Some(mut state)) = sm.load_state(&directory_hash).await {
+                if let Ok(Some(mut state)) = sm.load_state(&instance_hash).await {
                     state.completed_hooks += 1;
                     state.current_hook_index = Some(i + 1);
 
@@ -903,13 +898,13 @@ mod tests {
         // Verify final state - due to concurrent writes, the exact values may vary
         // but the state should be loadable and valid
         let final_state = state_manager
-            .load_state(&initial_state.directory_hash)
+            .load_state(&initial_state.instance_hash)
             .await
             .unwrap();
 
         // The state might exist or not depending on timing of concurrent operations
         if let Some(state) = final_state {
-            assert_eq!(state.directory_hash, "concurrent_hash");
+            assert_eq!(state.instance_hash, "concurrent_hash");
             // Completed hooks will be 0 if all concurrent writes failed, or > 0 if some succeeded
         }
     }
@@ -921,7 +916,7 @@ mod tests {
 
         // Create state with unicode and special characters
         let mut unicode_state = HookExecutionState {
-            directory_hash: "unicode_hash".to_string(),
+            instance_hash: "unicode_hash".to_string(),
             directory_path: PathBuf::from("/测试/目录/🚀"),
             config_hash: "config_ñ_é_ü".to_string(),
             status: ExecutionStatus::Failed,
@@ -959,7 +954,7 @@ mod tests {
         state_manager.save_state(&unicode_state).await.unwrap();
 
         let loaded = state_manager
-            .load_state(&unicode_state.directory_hash)
+            .load_state(&unicode_state.instance_hash)
             .await
             .unwrap()
             .unwrap();
@@ -985,7 +980,7 @@ mod tests {
         // Create many states to test scalability
         for i in 0..50 {
             let state = HookExecutionState {
-                directory_hash: format!("hash_{}", i),
+                instance_hash: format!("hash_{}", i),
                 directory_path: PathBuf::from(format!("/dir/{}", i)),
                 config_hash: format!("config_{}", i),
                 status: if i % 3 == 0 {

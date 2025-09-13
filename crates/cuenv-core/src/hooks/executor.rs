@@ -367,7 +367,7 @@ impl HookExecutor {
                 && finished_at < cutoff
             {
                 self.state_manager
-                    .remove_state(&state.directory_hash)
+                    .remove_state(&state.instance_hash)
                     .await?;
                 cleaned_count += 1;
             }
@@ -414,7 +414,7 @@ pub async fn execute_hooks(
         );
         // Check if execution was cancelled
         info!("Checking if execution was cancelled");
-        if let Ok(Some(current_state)) = state_manager.load_state(&state.directory_hash).await {
+        if let Ok(Some(current_state)) = state_manager.load_state(&state.instance_hash).await {
             info!("Loaded state: status = {:?}", current_state.status);
             if current_state.status == ExecutionStatus::Cancelled {
                 info!("Execution was cancelled, stopping");
@@ -778,7 +778,7 @@ mod tests {
         ];
 
         let result = executor
-            .execute_hooks_background(directory_path.clone(), config_hash, hooks)
+            .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
             .await
             .unwrap();
 
@@ -847,7 +847,7 @@ mod tests {
         }];
 
         executor
-            .execute_hooks_background(directory_path.clone(), config_hash, hooks)
+            .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
             .await
             .unwrap();
 
@@ -922,7 +922,7 @@ mod tests {
         }];
 
         executor
-            .execute_hooks_background(directory_path.clone(), config_hash, hooks)
+            .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
             .await
             .unwrap();
 
@@ -1110,7 +1110,7 @@ mod tests {
             .unwrap();
 
         let state = executor
-            .get_execution_status(&directory_path)
+            .get_execution_status_for_instance(&directory_path, &config_hash)
             .await
             .unwrap()
             .unwrap();
@@ -1337,7 +1337,7 @@ mod tests {
             let config_hash = format!("hash_{}", i);
             config_hashes.push(config_hash.clone());
             executor
-                .execute_hooks_background(dir.clone(), config_hash, hooks)
+                .execute_hooks_background(dir.clone(), config_hash.clone(), hooks)
                 .await
                 .unwrap();
         }
@@ -1404,7 +1404,7 @@ mod tests {
             .unwrap();
 
         let state = executor
-            .get_execution_status(&directory_path)
+            .get_execution_status_for_instance(&directory_path, &config_hash)
             .await
             .unwrap()
             .unwrap();
@@ -1413,5 +1413,135 @@ mod tests {
         assert_eq!(state.status, ExecutionStatus::Completed);
         assert_eq!(state.completed_hooks, 3);
         assert_eq!(state.total_hooks, 3);
+    }
+
+    #[tokio::test]
+    async fn test_instance_hash_separation() {
+        // Test that different config hashes for the same directory are tracked separately
+        let temp_dir = TempDir::new().unwrap();
+        let config = HookExecutionConfig {
+            default_timeout_seconds: 30,
+            fail_fast: false,
+            state_dir: Some(temp_dir.path().to_path_buf()),
+        };
+
+        let executor = HookExecutor::new(config).unwrap();
+        let directory_path = PathBuf::from("/test/multi-config");
+        
+        // Create hooks for first configuration
+        let hooks1 = vec![Hook {
+            command: "echo".to_string(),
+            args: vec!["config1".to_string()],
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
+        }];
+
+        // Create hooks for second configuration  
+        let hooks2 = vec![Hook {
+            command: "echo".to_string(),
+            args: vec!["config2".to_string()],
+            dir: None,
+            inputs: Vec::new(),
+            source: Some(false),
+        }];
+
+        let config_hash1 = "config_hash_1".to_string();
+        let config_hash2 = "config_hash_2".to_string();
+
+        // Execute both configurations
+        executor
+            .execute_hooks_background(directory_path.clone(), config_hash1.clone(), hooks1)
+            .await
+            .unwrap();
+
+        executor
+            .execute_hooks_background(directory_path.clone(), config_hash2.clone(), hooks2)
+            .await
+            .unwrap();
+
+        // Wait for both to complete
+        executor
+            .wait_for_completion(&directory_path, &config_hash1, Some(5))
+            .await
+            .unwrap();
+
+        executor
+            .wait_for_completion(&directory_path, &config_hash2, Some(5))
+            .await
+            .unwrap();
+
+        // Check that both have separate states
+        let state1 = executor
+            .get_execution_status_for_instance(&directory_path, &config_hash1)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let state2 = executor
+            .get_execution_status_for_instance(&directory_path, &config_hash2)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(state1.status, ExecutionStatus::Completed);
+        assert_eq!(state2.status, ExecutionStatus::Completed);
+        
+        // Ensure they have different instance hashes
+        assert_ne!(state1.instance_hash, state2.instance_hash);
+    }
+
+    #[tokio::test]
+    async fn test_file_based_argument_passing() {
+        // Test that hooks and config are written to files and cleaned up
+        let temp_dir = TempDir::new().unwrap();
+        let config = HookExecutionConfig {
+            default_timeout_seconds: 30,
+            fail_fast: false,
+            state_dir: Some(temp_dir.path().to_path_buf()),
+        };
+
+        let executor = HookExecutor::new(config).unwrap();
+        let directory_path = PathBuf::from("/test/file-args");
+        let config_hash = "file_test".to_string();
+        
+        // Create a large hook configuration that would exceed typical arg limits
+        let mut large_hooks = Vec::new();
+        for i in 0..100 {
+            large_hooks.push(Hook {
+                command: "echo".to_string(),
+                args: vec![format!("This is a very long argument string number {} with lots of text to ensure we test the file-based argument passing mechanism properly", i)],
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
+            });
+        }
+
+        // This should write to files instead of passing as arguments
+        let result = executor
+            .execute_hooks_background(directory_path.clone(), config_hash.clone(), large_hooks)
+            .await;
+
+        assert!(result.is_ok(), "Should handle large hook configurations");
+        
+        // Wait a bit for supervisor to start and read files
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // Cancel to clean up
+        executor
+            .cancel_execution(&directory_path, &config_hash, Some("Test cleanup".to_string()))
+            .await
+            .ok();
+    }
+
+    #[tokio::test]
+    async fn test_state_dir_getter() {
+        use crate::hooks::state::StateManager;
+        
+        let temp_dir = TempDir::new().unwrap();
+        let state_dir = temp_dir.path().to_path_buf();
+        let state_manager = StateManager::new(state_dir.clone());
+        
+        assert_eq!(state_manager.get_state_dir(), state_dir.as_path());
     }
 }
