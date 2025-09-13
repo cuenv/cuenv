@@ -15,6 +15,7 @@ description = "Core types and error handling for the cuenv ecosystem"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
+schemars = "1.0.4"
 miette = { workspace = true }
 petgraph = { workspace = true }
 tokio = { workspace = true }
@@ -26,6 +27,12 @@ fs4 = { version = "0.11", features = ["tokio"] }
 dirs = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
+sysinfo = "0.30"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+cucumber = { workspace = true }
+tokio-test = { workspace = true }

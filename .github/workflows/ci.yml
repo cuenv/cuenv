@@ -63,10 +63,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-${{ matrix.rust }}-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.rust }}-target-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.rust }}-target-
-            ${{ runner.os }}-target-
+            ${{ runner.os }}-${{ matrix.rust }}-target-v2-
+            ${{ runner.os }}-target-v2-
 
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
@@ -79,6 +79,11 @@ jobs:
 
       - name: Run doctests
         run: nix develop --accept-flake-config --command cargo test --doc --workspace
+
+      - name: Run BDD tests
+        # BDD tests use cucumber and are incompatible with nextest
+        # See: https://github.com/cucumber-rs/cucumber/issues/370
+        run: nix develop --accept-flake-config --command cargo test --test bdd
 
       # Go bridge tests disabled due to CGO issues in CI
       # - name: Test Go bridge

@@ -303,8 +303,28 @@ pub enum Commands {
             default_value = "."
         )]
         path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
         #[arg(long, help = "Optional note about this approval")]
         note: Option<String>,
+    },
+    #[command(
+        about = "Export environment variables for shell evaluation",
+        hide = true
+    )]
+    Export {
+        #[arg(long, short = 's', help = "Shell type (bash, zsh, fish, powershell)")]
+        shell: Option<String>,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
     },
 }
 
@@ -342,6 +362,12 @@ pub enum EnvCommands {
             default_value = "."
         )]
         path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
     },
     #[command(about = "Show hook execution status")]
     Status {
@@ -352,10 +378,39 @@ pub enum EnvCommands {
             default_value = "."
         )]
         path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
         #[arg(long, help = "Wait for hooks to complete before returning")]
         wait: bool,
         #[arg(long, help = "Timeout in seconds for waiting", default_value = "300")]
         timeout: u64,
+    },
+    #[command(about = "Check hook status and output environment for shell")]
+    Check {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(
+            long,
+            help = "Shell type for export format",
+            value_enum,
+            default_value_t = ShellType::Bash
+        )]
+        shell: ShellType,
     },
 }
 
@@ -389,15 +444,26 @@ impl From<Commands> for Command {
                     package,
                     format: output_format.to_string(),
                 },
-                EnvCommands::Load { path } => Command::EnvLoad { path },
+                EnvCommands::Load { path, package } => Command::EnvLoad { path, package },
                 EnvCommands::Status {
                     path,
+                    package,
                     wait,
                     timeout,
                 } => Command::EnvStatus {
                     path,
+                    package,
                     wait,
                     timeout,
+                },
+                EnvCommands::Check {
+                    path,
+                    package,
+                    shell,
+                } => Command::EnvCheck {
+                    path,
+                    package,
+                    shell,
                 },
             },
             Commands::Task {
@@ -423,7 +489,16 @@ impl From<Commands> for Command {
             Commands::Shell { subcommand } => match subcommand {
                 ShellCommands::Init { shell } => Command::ShellInit { shell },
             },
-            Commands::Allow { path, note } => Command::Allow { path, note },
+            Commands::Allow {
+                path,
+                package,
+                note,
+            } => Command::Allow {
+                path,
+                package,
+                note,
+            },
+            Commands::Export { shell, package } => Command::Export { shell, package },
         }
     }
 }
