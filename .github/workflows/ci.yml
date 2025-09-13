@@ -63,10 +63,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-${{ matrix.rust }}-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.rust }}-target-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.rust }}-target-
-            ${{ runner.os }}-target-
+            ${{ runner.os }}-${{ matrix.rust }}-target-v2-
+            ${{ runner.os }}-target-v2-
 
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
