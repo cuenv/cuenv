@@ -1,6 +1,6 @@
 //! Hook-related command implementations
 
-use cuengine::CueEvaluator;
+use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
     hooks::{
         approval::{check_approval_status, ApprovalManager, ApprovalStatus, ConfigSummary},
@@ -12,7 +12,7 @@ use cuenv_core::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Helper to check if env.cue exists and return early if not
 fn check_env_file(path: &Path) -> Result<PathBuf> {
@@ -37,14 +37,16 @@ fn check_env_file(path: &Path) -> Result<PathBuf> {
 }
 
 /// Helper to evaluate CUE configuration
-fn evaluate_config(directory: &Path, package: &str) -> Result<Value> {
+fn evaluate_config(directory: &Path, package: &str) -> Result<Cuenv> {
     let evaluator = CueEvaluator::builder().build()?;
-    let json_result = evaluator.evaluate(directory, package)?;
-    serde_json::from_str(&json_result).map_err(|e| {
-        cuenv_core::Error::configuration(format!(
-            "Failed to parse CUE output: {e}\nRaw output: {json_result}"
-        ))
-    })
+    evaluator.evaluate_typed(directory, package)
+}
+
+/// Helper to evaluate CUE configuration as Value (for approval system)
+fn evaluate_config_as_value(directory: &Path, package: &str) -> Result<Value> {
+    let manifest = evaluate_config(directory, package)?;
+    serde_json::to_value(&manifest)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize config: {e}")))
 }
 
 /// Helper to get config hash from approval manager or compute it
@@ -57,8 +59,10 @@ fn get_config_hash(
         Ok(approval.config_hash.clone())
     } else {
         // If not approved, compute it from current config
-        let config = evaluate_config(directory, package)?;
-        Ok(cuenv_core::hooks::approval::compute_config_hash(&config))
+        let config_value = evaluate_config_as_value(directory, package)?;
+        Ok(cuenv_core::hooks::approval::compute_config_hash(
+            &config_value,
+        ))
     }
 }
 
@@ -71,12 +75,15 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
 
     // Evaluate the CUE configuration
     let config = evaluate_config(&directory, package)?;
+    let config_value = serde_json::to_value(&config).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
+    })?;
 
     // Check approval status
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
 
-    let approval_status = check_approval_status(&approval_manager, &directory, &config)?;
+    let approval_status = check_approval_status(&approval_manager, &directory, &config_value)?;
 
     match approval_status {
         ApprovalStatus::Approved => {
@@ -89,7 +96,7 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
 
             // Start background execution
             let executor = HookExecutor::with_default_config()?;
-            let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config);
+            let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
 
             let result = executor
                 .execute_hooks_background(directory.clone(), config_hash, hooks)
@@ -98,7 +105,7 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
             Ok(result)
         }
         ApprovalStatus::RequiresApproval { current_hash } => {
-            let summary = ConfigSummary::from_json(&config);
+            let summary = ConfigSummary::from_json(&config_value);
             Ok(format!(
                 "Configuration has changed and requires approval.\n\
                  This configuration contains: {}\n\
@@ -110,7 +117,7 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
             ))
         }
         ApprovalStatus::NotApproved { current_hash } => {
-            let summary = ConfigSummary::from_json(&config);
+            let summary = ConfigSummary::from_json(&config_value);
             Ok(format!(
                 "Configuration not approved.\n\
                  This configuration contains: {}\n\
@@ -187,9 +194,12 @@ pub async fn execute_allow(path: &str, package: &str, note: Option<String>) -> R
 
     // Evaluate the CUE configuration
     let config = evaluate_config(&directory, package)?;
+    let config_value = serde_json::to_value(&config).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
+    })?;
 
     // Compute configuration hash
-    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config);
+    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
 
     // Initialize approval manager
     let mut approval_manager = ApprovalManager::with_default_file()?;
@@ -204,7 +214,7 @@ pub async fn execute_allow(path: &str, package: &str, note: Option<String>) -> R
     }
 
     // Show what we're approving
-    let summary = ConfigSummary::from_json(&config);
+    let summary = ConfigSummary::from_json(&config_value);
 
     // Approve the configuration
     approval_manager
@@ -257,13 +267,13 @@ pub async fn execute_env_check(
         let config = evaluate_config(&directory, package)?;
 
         // Add CUE env variables to our map
-        if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
-            for (key, value) in env_obj {
+        if let Some(env) = &config.env {
+            for (key, value) in &env.base {
                 let value_str = match value {
-                    Value::String(s) => s.clone(),
-                    Value::Number(n) => n.to_string(),
-                    Value::Bool(b) => b.to_string(),
-                    _ => continue, // Skip complex values
+                    cuenv_core::environment::EnvValue::String(s) => s.clone(),
+                    cuenv_core::environment::EnvValue::Int(i) => i.to_string(),
+                    cuenv_core::environment::EnvValue::Bool(b) => b.to_string(),
+                    cuenv_core::environment::EnvValue::Secret(_) => continue, // Skip secrets
                 };
                 all_env_vars.insert(key.clone(), value_str);
             }
@@ -305,43 +315,8 @@ pub fn execute_shell_init(shell: crate::cli::ShellType) -> String {
 }
 
 /// Extract hooks from the configuration JSON
-fn extract_hooks_from_config(config: &Value) -> Vec<Hook> {
-    let mut hooks = Vec::new();
-
-    if let Some(hooks_obj) = config.get("hooks").and_then(|v| v.as_object()) {
-        // Process onEnter hooks
-        if let Some(on_enter) = hooks_obj.get("onEnter") {
-            extract_hooks_from_value(on_enter, &mut hooks);
-        }
-
-        // Could also process onExit hooks here if needed
-        if let Some(_on_exit) = hooks_obj.get("onExit") {
-            debug!("Found onExit hooks but skipping for now");
-            // onExit hooks will be implemented in a future release
-        }
-    }
-
-    hooks
-}
-
-/// Extract hooks from a JSON value (array or single object)
-fn extract_hooks_from_value(value: &Value, hooks: &mut Vec<Hook>) {
-    if let Some(arr) = value.as_array() {
-        for hook_value in arr {
-            if let Ok(hook) = serde_json::from_value::<Hook>(hook_value.clone()) {
-                hooks.push(hook);
-            } else {
-                warn!("Failed to parse hook from configuration: {:?}", hook_value);
-            }
-        }
-    } else if let Ok(hook) = serde_json::from_value::<Hook>(value.clone()) {
-        hooks.push(hook);
-    } else {
-        warn!(
-            "Failed to parse single hook from configuration: {:?}",
-            value
-        );
-    }
+fn extract_hooks_from_config(config: &Cuenv) -> Vec<Hook> {
+    config.on_enter_hooks()
 }
 
 /// Generate Fish shell integration script
@@ -430,20 +405,37 @@ __cuenv_hook"#
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use tempfile::TempDir;
 
     #[test]
     fn test_extract_hooks_from_config() {
-        let config = json!({
-            "env": {"NODE_ENV": "development"},
-            "hooks": {
-                "onEnter": [
-                    {"command": "npm", "args": ["install"]},
-                    {"command": "docker-compose", "args": ["up", "-d"]}
-                ]
-            }
-        });
+        use cuenv_core::hooks::types::Hook;
+        use cuenv_core::manifest::{Cuenv, HookList, Hooks};
+
+        let config = Cuenv {
+            config: None,
+            env: None,
+            hooks: Some(Hooks {
+                on_enter: Some(HookList::Multiple(vec![
+                    Hook {
+                        command: "npm".to_string(),
+                        args: vec!["install".to_string()],
+                        dir: None,
+                        inputs: vec![],
+                        source: None,
+                    },
+                    Hook {
+                        command: "docker-compose".to_string(),
+                        args: vec!["up".to_string(), "-d".to_string()],
+                        dir: None,
+                        inputs: vec![],
+                        source: None,
+                    },
+                ])),
+                on_exit: None,
+            }),
+            tasks: std::collections::HashMap::new(),
+        };
 
         let hooks = extract_hooks_from_config(&config);
         assert_eq!(hooks.len(), 2);
@@ -455,11 +447,24 @@ mod tests {
 
     #[test]
     fn test_extract_hooks_single_hook() {
-        let config = json!({
-            "hooks": {
-                "onEnter": {"command": "echo", "args": ["hello"]}
-            }
-        });
+        use cuenv_core::hooks::types::Hook;
+        use cuenv_core::manifest::{Cuenv, HookList, Hooks};
+
+        let config = Cuenv {
+            config: None,
+            env: None,
+            hooks: Some(Hooks {
+                on_enter: Some(HookList::Single(Hook {
+                    command: "echo".to_string(),
+                    args: vec!["hello".to_string()],
+                    dir: None,
+                    inputs: vec![],
+                    source: None,
+                })),
+                on_exit: None,
+            }),
+            tasks: std::collections::HashMap::new(),
+        };
 
         let hooks = extract_hooks_from_config(&config);
         assert_eq!(hooks.len(), 1);
@@ -469,9 +474,14 @@ mod tests {
 
     #[test]
     fn test_extract_hooks_empty_config() {
-        let config = json!({
-            "env": {"TEST": "value"}
-        });
+        use cuenv_core::manifest::Cuenv;
+
+        let config = Cuenv {
+            config: None,
+            env: None,
+            hooks: None,
+            tasks: std::collections::HashMap::new(),
+        };
 
         let hooks = extract_hooks_from_config(&config);
         assert_eq!(hooks.len(), 0);

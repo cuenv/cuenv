@@ -35,12 +35,16 @@
 //! };
 //! ```
 
+pub mod config;
 pub mod environment;
 pub mod hooks;
+pub mod manifest;
+pub mod secrets;
 pub mod shell;
-pub mod task;
-pub mod task_executor;
-pub mod task_graph;
+pub mod tasks;
+
+#[cfg(test)]
+mod schema_tests;
 
 use miette::{Diagnostic, SourceSpan};
 use serde::{Deserialize, Serialize};

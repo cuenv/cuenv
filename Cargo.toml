@@ -4,6 +4,7 @@ members = [
     "crates/cuenv-core",
     "crates/cuengine",
     "crates/cuenv-cli",
+    "crates/schema-validator",
 ]
 
 [workspace.package]

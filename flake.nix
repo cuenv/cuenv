@@ -119,13 +119,16 @@
           cp -r ${cue-bridge}/release/* target/release/ || true
         '';
 
+
         # Common build configuration
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config ];
+          nativeBuildInputs = with pkgs; [ go pkg-config pkgs-unstable.cue ];
           buildInputs = platformBuildInputs;
-          preBuild = setupBridge;
+          preBuild = ''
+            ${setupBridge}
+          '';
           CUE_BRIDGE_PATH = cue-bridge;
         };
 

@@ -1,12 +1,13 @@
 //! Type definitions for hooks and hook execution
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
 /// A hook represents a command that can be executed when entering or exiting environments
 /// Based on schema/hooks.cue #ExecHook definition
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct Hook {
     /// The command to execute
     pub command: String,
@@ -25,7 +26,7 @@ pub struct Hook {
 }
 
 /// Result of executing a single hook
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct HookResult {
     /// The hook that was executed
     pub hook: Hook,
@@ -101,7 +102,7 @@ impl HookResult {
 }
 
 /// Configuration for hook execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct HookExecutionConfig {
     /// Default timeout for hooks that don't specify one
     pub default_timeout_seconds: u64,
@@ -122,7 +123,7 @@ impl Default for HookExecutionConfig {
 }
 
 /// Status of hook execution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub enum ExecutionStatus {
     /// Hooks are currently being executed
     Running,

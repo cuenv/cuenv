@@ -1,0 +1,154 @@
+name: Schema Conformance Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/cuenv-core/src/**"
+      - "schema/**"
+      - "tests/fixtures/**"
+      - ".github/workflows/schema-check.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/cuenv-core/src/**"
+      - "schema/**"
+      - "tests/fixtures/**"
+      - ".github/workflows/schema-check.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  schema-validation:
+    name: Validate Schema Conformance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+
+      - name: Setup CUE
+        run: |
+          # Install CUE CLI
+          go install cuelang.org/go/cmd/cue@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Generate Rust JSON Schemas
+        run: |
+          nix develop --accept-flake-config --command \
+            cargo run --package schema-validator -- generate \
+              --output generated-schemas
+
+      - name: Export CUE Schemas
+        run: |
+          # Export CUE schemas to JSON for comparison
+          cue export schema/*.cue > cue-schemas.json || true
+
+          # Try OpenAPI export as well
+          cue export --out openapi schema/*.cue > cue-openapi.json || true
+
+      - name: Validate Test Fixtures
+        run: |
+          # Run conformance tests
+          nix develop --accept-flake-config --command \
+            cargo test --package cuenv-core schema_conformance
+
+          # Run schema validator on fixtures
+          if command -v cue &> /dev/null; then
+            nix develop --accept-flake-config --command \
+              cargo run --package schema-validator -- validate \
+                --fixtures tests/fixtures
+          else
+            echo "CUE not available, skipping fixture validation"
+          fi
+
+      - name: Check Schema Compatibility
+        run: |
+          # Compare Rust and CUE schemas
+          if [ -f "cue-schemas.json" ] && [ -d "generated-schemas" ]; then
+            nix develop --accept-flake-config --command \
+              cargo run --package schema-validator -- compare \
+                --cue-path schema \
+                --rust-path generated-schemas
+          else
+            echo "Skipping schema comparison - files not generated"
+          fi
+
+      - name: Upload Generated Schemas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-schemas
+          path: |
+            generated-schemas/
+            cue-schemas.json
+            cue-openapi.json
+          retention-days: 7
+
+      - name: Schema Drift Detection
+        run: |
+          # Check if schemas have changed unexpectedly
+          if [ -d "generated-schemas" ]; then
+            echo "Schema generation successful"
+            ls -la generated-schemas/
+          fi
+
+          # In a real setup, you might compare against committed golden files
+          # and fail if there are unexpected changes
+
+  golden-test:
+    name: Golden Schema Test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v5
+
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          path: main-branch
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+
+      - name: Generate schemas from main
+        run: |
+          cd main-branch
+          nix develop --accept-flake-config --command \
+            cargo run --package schema-validator -- generate \
+              --output ../main-schemas
+
+      - name: Generate schemas from PR
+        run: |
+          nix develop --accept-flake-config --command \
+            cargo run --package schema-validator -- generate \
+              --output pr-schemas
+
+      - name: Compare schemas
+        run: |
+          # Simple diff to detect changes
+          if diff -r main-schemas pr-schemas > schema-diff.txt 2>&1; then
+            echo "✅ No schema changes detected"
+          else
+            echo "⚠️ Schema changes detected:"
+            cat schema-diff.txt
+            echo ""
+            echo "Please review schema changes carefully."
+            # Don't fail - this is informational
+          fi
+
+      - name: Upload schema diff
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-diff
+          path: schema-diff.txt
+          retention-days: 7

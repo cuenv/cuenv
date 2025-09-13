@@ -5,8 +5,9 @@
 //! 2. Start supervisor if needed (async)
 //! 3. Return environment diff for shell evaluation
 
-use cuengine::CueEvaluator;
+use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
+    environment::EnvValue,
     hooks::{
         approval::{check_approval_status, ApprovalManager, ApprovalStatus},
         executor::HookExecutor,
@@ -15,7 +16,6 @@ use cuenv_core::{
     shell::Shell,
     Result,
 };
-use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
@@ -38,17 +38,18 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
     // Always evaluate CUE to get current config (not a bottleneck)
     debug!("Evaluating CUE for {}", current_dir.display());
     let evaluator = CueEvaluator::builder().build()?;
-    let json_result = evaluator.evaluate(&current_dir, package)?;
-    let config: Value = serde_json::from_str(&json_result).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
-    })?;
+    let config: Cuenv = evaluator.evaluate_typed(&current_dir, package)?;
 
     // Load approval manager and check approval status
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
 
     debug!("Checking approval for directory: {}", current_dir.display());
-    let approval_status = check_approval_status(&approval_manager, &current_dir, &config)?;
+    // Convert Cuenv to Value for approval check (temporary until approval system is updated)
+    let config_value = serde_json::to_value(&config).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
+    })?;
+    let approval_status = check_approval_status(&approval_manager, &current_dir, &config_value)?;
 
     match approval_status {
         ApprovalStatus::NotApproved { .. } | ApprovalStatus::RequiresApproval { .. } => {
@@ -61,7 +62,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
     }
 
     // Compute config hash for this directory + config
-    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config);
+    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
 
     // Check if state is ready
     let executor = HookExecutor::with_default_config()?;
@@ -142,64 +143,24 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
 }
 
 /// Extract hooks from CUE config
-fn extract_hooks_from_config(config: &Value) -> Vec<cuenv_core::hooks::types::Hook> {
-    let mut hooks = Vec::new();
-
-    if let Some(hooks_obj) = config.get("hooks").and_then(|v| v.as_object())
-        && let Some(on_enter) = hooks_obj.get("onEnter").and_then(|v| v.as_array())
-    {
-        for hook_value in on_enter {
-            if let Some(hook_obj) = hook_value.as_object() {
-                let command = hook_obj
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("echo")
-                    .to_string();
-
-                let args = hook_obj
-                    .get("args")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                let source = hook_obj
-                    .get("source")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-
-                hooks.push(cuenv_core::hooks::types::Hook {
-                    command,
-                    args,
-                    dir: None,
-                    inputs: Vec::new(),
-                    source: Some(source),
-                });
-            }
-        }
-    }
-
-    hooks
+fn extract_hooks_from_config(config: &Cuenv) -> Vec<cuenv_core::hooks::types::Hook> {
+    config.on_enter_hooks()
 }
 
 /// Extract static environment variables from CUE config
-fn extract_static_env_vars(config: &Value) -> HashMap<String, String> {
+fn extract_static_env_vars(config: &Cuenv) -> HashMap<String, String> {
     let mut env_vars = HashMap::new();
 
-    if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
-        for (key, value) in env_obj {
-            if key == "environment" {
-                continue; // Skip the special environment key
-            }
-
+    if let Some(env) = &config.env {
+        for (key, value) in &env.base {
             let value_str = match value {
-                Value::String(s) => s.clone(),
-                Value::Number(n) => n.to_string(),
-                Value::Bool(b) => b.to_string(),
-                _ => continue, // Skip complex values
+                EnvValue::String(s) => s.clone(),
+                EnvValue::Int(i) => i.to_string(),
+                EnvValue::Bool(b) => b.to_string(),
+                EnvValue::Secret(_secret) => {
+                    // For now, skip secrets or handle them specially
+                    continue;
+                }
             };
             env_vars.insert(key.clone(), value_str);
         }
@@ -210,7 +171,7 @@ fn extract_static_env_vars(config: &Value) -> HashMap<String, String> {
 
 /// Collect all environment variables (static + hook-generated)
 fn collect_all_env_vars(
-    config: &Value,
+    config: &Cuenv,
     hook_env: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut all_vars = extract_static_env_vars(config);
