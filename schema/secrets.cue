@@ -1,11 +1,15 @@
 package schema
 
+// Base secret type with exec resolver
 #Secret: {
-	resolver: #ExecResolver
+	resolver: "exec"
+	command: string
+	args?: [...string]
 	...
 }
 
+// For backward compatibility and structured types
 #ExecResolver: {
 	command: string
-	args: [...string]
+	args?: [...string]
 }

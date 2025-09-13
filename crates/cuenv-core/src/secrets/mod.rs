@@ -21,8 +21,15 @@ pub struct ExecResolver {
 /// This is the base type that can be extended in CUE
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct Secret {
-    /// Resolver configuration
-    pub resolver: ExecResolver,
+    /// Resolver type (currently only "exec" is supported)
+    pub resolver: String,
+    
+    /// Command to execute
+    pub command: String,
+
+    /// Arguments to pass to the command
+    #[serde(default)]
+    pub args: Vec<String>,
 
     /// Additional fields for extensibility
     #[serde(flatten)]
@@ -33,7 +40,9 @@ impl Secret {
     /// Create a new secret with a resolver
     pub fn new(command: String, args: Vec<String>) -> Self {
         Secret {
-            resolver: ExecResolver { command, args },
+            resolver: "exec".to_string(),
+            command,
+            args,
             extra: HashMap::new(),
         }
     }
@@ -41,7 +50,9 @@ impl Secret {
     /// Create a secret with additional fields
     pub fn with_extra(command: String, args: Vec<String>, extra: HashMap<String, Value>) -> Self {
         Secret {
-            resolver: ExecResolver { command, args },
+            resolver: "exec".to_string(),
+            command,
+            args,
             extra,
         }
     }

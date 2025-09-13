@@ -2,7 +2,7 @@ package schema
 
 #Config: {
 	// Task output format
-	outputFormat?: "tui" | "spinner" | "simple" | "tree"
+	outputFormat?: "tui" | "spinner" | "simple" | "tree" | "json"
 	
 	// Cache configuration
 	cacheMode?: "off" | "read" | "read-write" | "write"

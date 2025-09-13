@@ -76,10 +76,9 @@ mod tests {
 
         // Test secret value
         let val: EnvValue = serde_json::from_value(json!({
-            "resolver": {
-                "command": "op",
-                "args": ["read", "secret"]
-            }
+            "resolver": "exec",
+            "command": "op",
+            "args": ["read", "secret"]
         }))
         .unwrap();
         assert!(matches!(val, EnvValue::Secret(_)));
