@@ -689,7 +689,6 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
 mod tests {
     use super::*;
     use crate::hooks::types::Hook;
-    use std::collections::HashMap;
     use tempfile::TempDir;
 
     #[tokio::test]

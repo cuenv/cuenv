@@ -80,6 +80,11 @@ jobs:
       - name: Run doctests
         run: nix develop --accept-flake-config --command cargo test --doc --workspace
 
+      - name: Run BDD tests
+        # BDD tests use cucumber and are incompatible with nextest
+        # See: https://github.com/cucumber-rs/cucumber/issues/370
+        run: nix develop --accept-flake-config --command cargo test --test bdd
+
       # Go bridge tests disabled due to CGO issues in CI
       # - name: Test Go bridge
       #   run: nix develop --accept-flake-config --command bash -c "cd crates/cuengine && CGO_ENABLED=1 go test -v ./..."

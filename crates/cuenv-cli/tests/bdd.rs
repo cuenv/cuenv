@@ -722,23 +722,13 @@ async fn see_hook_failure_message(world: &mut TestWorld) {
     );
 }
 
-// Main test runner
+// Main test runner for cucumber BDD tests
+// Note: These tests are incompatible with nextest and should be run separately
+// with: cargo test --test bdd
+// See: https://github.com/cucumber-rs/cucumber/issues/370
 #[tokio::main]
 async fn main() {
     TestWorld::cucumber()
         .run("tests/bdd/features/hooks.feature")
         .await;
-}
-
-// Integration with cargo test
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn run_bdd_tests() {
-        TestWorld::cucumber()
-            .run("tests/bdd/features/hooks.feature")
-            .await;
-    }
 }
