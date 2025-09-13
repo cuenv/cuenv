@@ -29,6 +29,8 @@ cc = "1.2"
 tempfile = { workspace = true }
 proptest = { workspace = true }
 criterion = { workspace = true }
+cucumber = { workspace = true }
+tokio-test = { workspace = true }
 
 [[bench]]
 name = "evaluation_benchmarks"

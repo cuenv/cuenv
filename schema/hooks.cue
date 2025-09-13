@@ -13,7 +13,6 @@ package schema
 	dir?: string | *"."
 	inputs?: [...string]
 	source?: bool
-	preload?: bool | *false
 
 	// To be extended
 	...

@@ -10,7 +10,12 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:nixos.org)",
       "WebSearch",
-      "WebFetch(domain:developers.cloudflare.com)"
+      "WebFetch(domain:developers.cloudflare.com)",
+      "WebFetch(domain:cucumber-rs.github.io)",
+      "Bash(/home/rawkode/Code/src/github.com/cuenv/cuenv/target/debug/cuenv env load --path . --package examples)",
+      "Bash(cat:*)",
+      "Read(//tmp/**)",
+      "Bash(awk:*)"
     ],
     "deny": [],
     "ask": []

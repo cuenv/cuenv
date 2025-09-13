@@ -10,7 +10,6 @@
 
 mod cli;
 mod commands;
-mod errors;
 mod events;
 mod performance;
 mod tracing;
@@ -19,6 +18,10 @@ mod tui;
 use crate::cli::{exit_code_for, parse, render_error, CliError, OkEnvelope, EXIT_OK};
 use crate::commands::Command;
 use crate::tracing::{Level, TracingConfig, TracingFormat};
+use cuenv_core::hooks::execute_hooks;
+use cuenv_core::hooks::state::StateManager;
+use cuenv_core::hooks::{ExecutionStatus, Hook, HookExecutionConfig};
+use std::path::PathBuf;
 use tracing::instrument;
 
 #[tokio::main]
@@ -54,6 +57,12 @@ async fn run() -> i32 {
 /// Real main implementation that can return `CliError`
 #[instrument(name = "cuenv_real_main")]
 async fn real_main() -> Result<(), CliError> {
+    // Check if we're being called as a supervisor process
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "__hook-supervisor" {
+        return run_hook_supervisor(args).await;
+    }
+
     // Parse CLI arguments
     let cli = match initialize_cli_and_tracing().await {
         Ok(cli) => cli,
@@ -148,21 +157,40 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
-        Command::EnvLoad { path } => match execute_env_load_command_safe(path, json_mode).await {
+        Command::EnvLoad { path, package } => {
+            match execute_env_load_command_safe(path, package, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
+        Command::EnvStatus {
+            path,
+            package,
+            wait,
+            timeout,
+        } => match execute_env_status_command_safe(path, package, wait, timeout, json_mode).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
-        Command::EnvStatus {
+        Command::EnvCheck {
             path,
-            wait,
-            timeout,
-        } => match execute_env_status_command_safe(path, wait, timeout, json_mode).await {
+            package,
+            shell,
+        } => match execute_env_check_command_safe(path, package, shell, json_mode).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
         Command::ShellInit { shell } => execute_shell_init_command_safe(shell, json_mode),
-        Command::Allow { path, note } => {
-            match execute_allow_command_safe(path, note, json_mode).await {
+        Command::Allow {
+            path,
+            package,
+            note,
+        } => match execute_allow_command_safe(path, package, note, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::Export { shell, package } => {
+            match execute_export_command_safe(shell, package).await {
                 Ok(()) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -188,8 +216,12 @@ async fn execute_version_command_safe() -> Result<(), String> {
 
 /// Execute env load command safely
 #[instrument(name = "cuenv_execute_env_load_safe")]
-async fn execute_env_load_command_safe(path: String, json_mode: bool) -> Result<(), CliError> {
-    match commands::hooks::execute_env_load(&path).await {
+async fn execute_env_load_command_safe(
+    path: String,
+    package: String,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::hooks::execute_env_load(&path, &package).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -217,11 +249,12 @@ async fn execute_env_load_command_safe(path: String, json_mode: bool) -> Result<
 #[instrument(name = "cuenv_execute_env_status_safe")]
 async fn execute_env_status_command_safe(
     path: String,
+    package: String,
     wait: bool,
     timeout: u64,
     json_mode: bool,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_env_status(&path, wait, timeout).await {
+    match commands::hooks::execute_env_status(&path, &package, wait, timeout).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -241,6 +274,39 @@ async fn execute_env_status_command_safe(
         Err(e) => Err(CliError::eval_with_help(
             format!("Env status failed: {e}"),
             "Check that your env.cue file exists and hook execution has been started",
+        )),
+    }
+}
+
+/// Execute env check command safely
+#[instrument(name = "cuenv_execute_env_check_safe")]
+async fn execute_env_check_command_safe(
+    path: String,
+    package: String,
+    shell: crate::cli::ShellType,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::hooks::execute_env_check(&path, &package, shell).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "exports": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                // Output shell export commands directly (no extra formatting)
+                print!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Env check failed: {e}"),
+            "Check that your env.cue file exists and hooks have completed successfully",
         )),
     }
 }
@@ -271,10 +337,11 @@ fn execute_shell_init_command_safe(
 #[instrument(name = "cuenv_execute_allow_safe")]
 async fn execute_allow_command_safe(
     path: String,
+    package: String,
     note: Option<String>,
     json_mode: bool,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_allow(&path, note).await {
+    match commands::hooks::execute_allow(&path, &package, note).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -294,6 +361,25 @@ async fn execute_allow_command_safe(
         Err(e) => Err(CliError::eval_with_help(
             format!("Allow failed: {e}"),
             "Check that your env.cue file is valid and the directory exists",
+        )),
+    }
+}
+
+/// Execute export command safely
+#[instrument(name = "cuenv_execute_export_safe", skip_all)]
+async fn execute_export_command_safe(
+    shell: Option<String>,
+    package: String,
+) -> Result<(), CliError> {
+    match commands::export::execute_export(shell.as_deref(), &package).await {
+        Ok(output) => {
+            // Export command always outputs raw shell commands - no JSON mode
+            print!("{output}");
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Export failed: {e}"),
+            "Check that your env.cue file is valid",
         )),
     }
 }
@@ -341,7 +427,9 @@ async fn execute_task_command_safe(
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
 
-    match commands::task::execute_task(&path, &package, name.as_deref(), false).await {
+    let result = commands::task::execute_task(&path, &package, name.as_deref(), false).await;
+
+    match result {
         Ok(output) => {
             println!("{output}");
             perf_guard.finish(true);
@@ -349,10 +437,7 @@ async fn execute_task_command_safe(
         }
         Err(e) => {
             perf_guard.finish(false);
-            Err(CliError::eval_with_help(
-                format!("Task execution failed: {e}"),
-                "Check your CUE configuration and task definitions",
-            ))
+            Err(CliError::eval(e.to_string()))
         }
     }
 }
@@ -368,25 +453,144 @@ async fn execute_exec_command_safe(
     let mut perf_guard = performance::PerformanceGuard::new("exec_command");
     perf_guard.add_metadata("command_type", "exec");
 
-    match commands::exec::execute_exec(&path, &package, &command, &args).await {
+    let result = commands::exec::execute_exec(&path, &package, &command, &args).await;
+
+    match result {
         Ok(exit_code) => {
             perf_guard.finish(exit_code == 0);
-            if exit_code == 0 {
-                Ok(())
-            } else {
-                Err(CliError::other(format!(
-                    "Command exited with non-zero code: {exit_code}"
-                )))
+            if exit_code != 0 {
+                std::process::exit(exit_code);
             }
+            Ok(())
         }
         Err(e) => {
             perf_guard.finish(false);
-            Err(CliError::eval_with_help(
-                format!("Command execution failed: {e}"),
-                "Check your CUE configuration and command",
-            ))
+            Err(CliError::eval(e.to_string()))
         }
     }
+}
+
+/// Run as a hook supervisor process
+async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
+    // Parse supervisor arguments
+    let mut directory_path = PathBuf::new();
+    let mut instance_hash = String::new();
+    let mut hooks_file = PathBuf::new();
+    let mut config_file = PathBuf::new();
+
+    let mut i = 2; // Skip program name and "__hook-supervisor"
+    while i < args.len() {
+        match args[i].as_str() {
+            "--directory" => {
+                directory_path = PathBuf::from(&args[i + 1]);
+                i += 2;
+            }
+            "--instance-hash" => {
+                instance_hash.clone_from(&args[i + 1]);
+                i += 2;
+            }
+            "--config-hash" => {
+                // Config hash is passed but not currently used in supervisor
+                i += 2;
+            }
+            "--hooks-file" => {
+                hooks_file = PathBuf::from(&args[i + 1]);
+                i += 2;
+            }
+            "--config-file" => {
+                config_file = PathBuf::from(&args[i + 1]);
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+
+    // Initialize basic logging for supervisor to stderr
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init();
+
+    eprintln!("[supervisor] Starting with args: {args:?}");
+    eprintln!("[supervisor] Directory: {}", directory_path.display());
+    eprintln!("[supervisor] Instance hash: {instance_hash}");
+    eprintln!("[supervisor] Hooks file: {}", hooks_file.display());
+    eprintln!("[supervisor] Config file: {}", config_file.display());
+
+    // Read and deserialize hooks and config from files
+    let hooks_json = std::fs::read_to_string(&hooks_file)
+        .map_err(|e| CliError::other(format!("Failed to read hooks file: {e}")))?;
+    let config_json = std::fs::read_to_string(&config_file)
+        .map_err(|e| CliError::other(format!("Failed to read config file: {e}")))?;
+
+    let hooks: Vec<Hook> = serde_json::from_str(&hooks_json)
+        .map_err(|e| CliError::other(format!("Failed to deserialize hooks: {e}")))?;
+    let config: HookExecutionConfig = serde_json::from_str(&config_json)
+        .map_err(|e| CliError::other(format!("Failed to deserialize config: {e}")))?;
+
+    // Clean up temp files after reading
+    std::fs::remove_file(&hooks_file).ok();
+    std::fs::remove_file(&config_file).ok();
+
+    // Write PID file
+    let state_dir = config
+        .state_dir
+        .clone()
+        .unwrap_or_else(|| StateManager::default_state_dir().unwrap());
+    eprintln!("[supervisor] Using state dir: {}", state_dir.display());
+    let state_manager = StateManager::new(state_dir);
+    let state_file = state_manager.get_state_file_path(&instance_hash);
+    eprintln!(
+        "[supervisor] Looking for state file: {}",
+        state_file.display()
+    );
+
+    let pid_file = state_file.with_extension("pid");
+    std::fs::write(&pid_file, format!("{}", std::process::id()))
+        .map_err(|e| CliError::other(format!("Failed to write PID file: {e}")))?;
+
+    // Load the current state
+    let mut state = state_manager
+        .load_state(&instance_hash)
+        .await
+        .map_err(|e| CliError::other(format!("Failed to load state: {e}")))?
+        .ok_or_else(|| CliError::other("State not found for supervisor"))?;
+
+    // Execute the hooks
+    eprintln!(
+        "[supervisor] Executing {} hooks for directory: {}",
+        hooks.len(),
+        directory_path.display()
+    );
+    let result = execute_hooks(hooks, &directory_path, &config, &state_manager, &mut state).await;
+
+    if let Err(e) = result {
+        eprintln!("[supervisor] Hook execution failed: {e}");
+        state.status = ExecutionStatus::Failed;
+        state.error_message = Some(e.to_string());
+        state.finished_at = Some(chrono::Utc::now());
+        state_manager
+            .save_state(&state)
+            .await
+            .map_err(|e| CliError::other(format!("Failed to save error state: {e}")))?;
+        return Err(CliError::other(format!("Hook execution failed: {e}")));
+    }
+
+    // Save the final state with environment variables from source hooks
+    eprintln!(
+        "[supervisor] Saving final state with {} environment variables",
+        state.environment_vars.len()
+    );
+    state_manager
+        .save_state(&state)
+        .await
+        .map_err(|e| CliError::other(format!("Failed to save final state: {e}")))?;
+
+    // Clean up PID file
+    std::fs::remove_file(&pid_file).ok();
+
+    eprintln!("[supervisor] Completed successfully");
+    Ok(())
 }
 
 // Note: These functions are currently unused but reserved for future async main implementation

@@ -1,9 +1,8 @@
 //! Task execution command implementation
 
-use cuengine::CueEvaluator;
-use cuenv_core::environment::CueEvaluation;
-use cuenv_core::task_executor::{ExecutorConfig, TaskExecutor};
-use cuenv_core::task_graph::TaskGraph;
+use cuengine::{CueEvaluator, Cuenv};
+use cuenv_core::environment::Environment;
+use cuenv_core::tasks::{ExecutorConfig, TaskDefinition, TaskExecutor, TaskGraph, Tasks};
 use cuenv_core::Result;
 use std::fmt::Write;
 use std::path::Path;
@@ -24,23 +23,18 @@ pub async fn execute_task(
 
     // Evaluate CUE to get tasks and environment
     let evaluator = CueEvaluator::builder().build()?;
-    let json = evaluator.evaluate(Path::new(path), package)?;
-    tracing::debug!("CUE evaluation result: {}", json);
-
-    let evaluation = CueEvaluation::from_json(&json).map_err(|e| {
-        tracing::error!("Failed to parse CUE evaluation JSON: {}", e);
-        cuenv_core::Error::configuration(format!("Failed to parse CUE evaluation: {e}"))
-    })?;
+    let manifest: Cuenv = evaluator.evaluate_typed(Path::new(path), package)?;
+    tracing::debug!("CUE evaluation successful");
 
     tracing::debug!(
         "Successfully parsed CUE evaluation, found {} tasks",
-        evaluation.tasks.tasks.len()
+        manifest.tasks.len()
     );
 
     // If no task specified, list available tasks
     if task_name.is_none() {
         tracing::debug!("Listing available tasks");
-        let tasks = evaluation.tasks.list_tasks();
+        let tasks: Vec<&str> = manifest.tasks.keys().map(String::as_str).collect();
         tracing::debug!("Found {} tasks to list: {:?}", tasks.len(), tasks);
 
         if tasks.is_empty() {
@@ -58,49 +52,62 @@ pub async fn execute_task(
     tracing::debug!("Looking for specific task: {}", task_name);
 
     // Check if task exists
-    let task_def = evaluation.tasks.get(task_name).ok_or_else(|| {
+    let task_def = manifest.tasks.get(task_name).ok_or_else(|| {
+        let available: Vec<&str> = manifest.tasks.keys().map(String::as_str).collect();
         tracing::error!(
             "Task '{}' not found in available tasks: {:?}",
             task_name,
-            evaluation.tasks.list_tasks()
+            available
         );
         cuenv_core::Error::configuration(format!("Task '{task_name}' not found"))
     })?;
 
     tracing::debug!("Found task definition: {:?}", task_def);
 
+    // Set up environment from manifest
+    let mut environment = Environment::new();
+    if let Some(env) = &manifest.env {
+        for (key, value) in &env.base {
+            use cuenv_core::environment::EnvValue;
+            let value_str = match value {
+                EnvValue::String(s) => s.clone(),
+                EnvValue::Int(i) => i.to_string(),
+                EnvValue::Bool(b) => b.to_string(),
+                EnvValue::Secret(_) => continue,
+            };
+            environment.set(key.clone(), value_str);
+        }
+    }
+
     // Create executor with environment
     let config = ExecutorConfig {
         capture_output,
         max_parallel: 0,
-        environment: evaluation.get_environment(),
+        environment,
     };
 
     let executor = TaskExecutor::new(config);
 
+    // Convert manifest tasks to Tasks struct
+    let tasks = Tasks {
+        tasks: manifest.tasks.clone(),
+    };
+
     // Build task graph for dependency-aware execution
     tracing::debug!("Building task graph for task: {}", task_name);
     let mut task_graph = TaskGraph::new();
-    task_graph
-        .build_for_task(task_name, &evaluation.tasks)
-        .map_err(|e| {
-            tracing::error!("Failed to build task graph: {}", e);
-            e
-        })?;
+    task_graph.build_for_task(task_name, &tasks).map_err(|e| {
+        tracing::error!("Failed to build task graph: {}", e);
+        e
+    })?;
     tracing::debug!(
         "Successfully built task graph with {} tasks",
         task_graph.task_count()
     );
 
     // Execute using the appropriate method
-    let results = execute_task_with_strategy(
-        &executor,
-        task_name,
-        task_def,
-        &task_graph,
-        &evaluation.tasks,
-    )
-    .await?;
+    let results =
+        execute_task_with_strategy(&executor, task_name, task_def, &task_graph, &tasks).await?;
 
     // Check for any failed tasks first
     for result in &results {
@@ -121,19 +128,19 @@ pub async fn execute_task(
 async fn execute_task_with_strategy(
     executor: &TaskExecutor,
     task_name: &str,
-    task_def: &cuenv_core::task::TaskDefinition,
+    task_def: &TaskDefinition,
     task_graph: &TaskGraph,
-    all_tasks: &cuenv_core::task::Tasks,
-) -> Result<Vec<cuenv_core::task_executor::TaskResult>> {
+    all_tasks: &Tasks,
+) -> Result<Vec<cuenv_core::tasks::TaskResult>> {
     match task_def {
-        cuenv_core::task::TaskDefinition::Group(_) => {
+        TaskDefinition::Group(_) => {
             // For groups (sequential/parallel), use the original group execution
             // which properly handles sequential ordering and parallel execution
             executor
                 .execute_definition(task_name, task_def, all_tasks)
                 .await
         }
-        cuenv_core::task::TaskDefinition::Single(task) => {
+        TaskDefinition::Single(task) => {
             if task.dependencies.is_empty() {
                 // Single task with no dependencies - use direct execution
                 executor
@@ -149,7 +156,7 @@ async fn execute_task_with_strategy(
 
 /// Format task execution results for output
 fn format_task_results(
-    results: Vec<cuenv_core::task_executor::TaskResult>,
+    results: Vec<cuenv_core::tasks::TaskResult>,
     capture_output: bool,
     task_name: &str,
 ) -> String {

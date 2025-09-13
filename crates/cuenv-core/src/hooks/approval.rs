@@ -31,6 +31,19 @@ impl ApprovalManager {
 
     /// Get the default approval file path (~/.cuenv/approved.json)
     pub fn default_approval_file() -> Result<PathBuf> {
+        // Check for CUENV_APPROVAL_FILE environment variable first
+        if let Ok(approval_file) = std::env::var("CUENV_APPROVAL_FILE") {
+            return Ok(PathBuf::from(approval_file));
+        }
+
+        // Check for CUENV_STATE_DIR to keep consistency with state directory
+        if let Ok(state_dir) = std::env::var("CUENV_STATE_DIR") {
+            let state_path = PathBuf::from(state_dir);
+            if let Some(parent) = state_path.parent() {
+                return Ok(parent.join("approved.json"));
+            }
+        }
+
         let home = dirs::home_dir()
             .ok_or_else(|| Error::configuration("Could not determine home directory"))?;
         Ok(home.join(".cuenv").join("approved.json"))
@@ -39,6 +52,13 @@ impl ApprovalManager {
     /// Create an approval manager using the default approval file
     pub fn with_default_file() -> Result<Self> {
         Ok(Self::new(Self::default_approval_file()?))
+    }
+
+    /// Get approval for a specific directory
+    pub fn get_approval(&self, directory: &str) -> Option<&ApprovalRecord> {
+        let path = PathBuf::from(directory);
+        let dir_key = compute_directory_key(&path);
+        self.approvals.get(&dir_key)
     }
 
     /// Load approvals from disk with file locking
@@ -312,9 +332,13 @@ pub fn compute_config_hash(config: &Value) -> String {
 }
 
 /// Compute a directory key for the approvals map
-fn compute_directory_key(path: &Path) -> String {
+pub fn compute_directory_key(path: &Path) -> String {
+    // Try to canonicalize the path for consistency
+    // If canonicalization fails (e.g., path doesn't exist), use the path as-is
+    let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
     let mut hasher = Sha256::new();
-    hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(canonical_path.to_string_lossy().as_bytes());
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 

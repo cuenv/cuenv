@@ -1,5 +1,6 @@
 pub mod env;
 pub mod exec;
+pub mod export;
 pub mod hooks;
 pub mod task;
 pub mod version;
@@ -19,11 +20,18 @@ pub enum Command {
     },
     EnvLoad {
         path: String,
+        package: String,
     },
     EnvStatus {
         path: String,
+        package: String,
         wait: bool,
         timeout: u64,
+    },
+    EnvCheck {
+        path: String,
+        package: String,
+        shell: crate::cli::ShellType,
     },
     Task {
         path: String,
@@ -41,7 +49,12 @@ pub enum Command {
     },
     Allow {
         path: String,
+        package: String,
         note: Option<String>,
+    },
+    Export {
+        shell: Option<String>,
+        package: String,
     },
 }
 
@@ -75,17 +88,28 @@ impl CommandExecutor {
                 command,
                 args,
             } => self.execute_exec(path, package, command, args).await,
-            Command::EnvLoad { path } => self.execute_env_load(path).await,
+            Command::EnvLoad { path, package } => self.execute_env_load(path, package).await,
             Command::EnvStatus {
                 path,
+                package,
                 wait,
                 timeout,
-            } => self.execute_env_status(path, wait, timeout).await,
+            } => self.execute_env_status(path, package, wait, timeout).await,
+            Command::EnvCheck {
+                path,
+                package,
+                shell,
+            } => self.execute_env_check(path, package, shell).await,
             Command::ShellInit { shell } => {
                 self.execute_shell_init(shell);
                 Ok(())
             }
-            Command::Allow { path, note } => self.execute_allow(path, note).await,
+            Command::Allow {
+                path,
+                package,
+                note,
+            } => self.execute_allow(path, package, note).await,
+            Command::Export { shell, package } => self.execute_export(shell, package).await,
         }
     }
 
@@ -238,14 +262,14 @@ impl CommandExecutor {
         }
     }
 
-    async fn execute_env_load(&self, path: String) -> Result<()> {
+    async fn execute_env_load(&self, path: String, package: String) -> Result<()> {
         let command_name = "env load";
 
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_env_load(&path).await {
+        match hooks::execute_env_load(&path, &package).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -265,14 +289,52 @@ impl CommandExecutor {
         }
     }
 
-    async fn execute_env_status(&self, path: String, wait: bool, timeout: u64) -> Result<()> {
+    async fn execute_env_status(
+        &self,
+        path: String,
+        package: String,
+        wait: bool,
+        timeout: u64,
+    ) -> Result<()> {
         let command_name = "env status";
 
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_env_status(&path, wait, timeout).await {
+        match hooks::execute_env_status(&path, &package, wait, timeout).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_env_check(
+        &self,
+        path: String,
+        package: String,
+        shell: crate::cli::ShellType,
+    ) -> Result<()> {
+        let command_name = "env check";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_env_check(&path, &package, shell).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -307,14 +369,46 @@ impl CommandExecutor {
         });
     }
 
-    async fn execute_allow(&self, path: String, note: Option<String>) -> Result<()> {
+    async fn execute_allow(
+        &self,
+        path: String,
+        package: String,
+        note: Option<String>,
+    ) -> Result<()> {
         let command_name = "allow";
 
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_allow(&path, note).await {
+        match hooks::execute_allow(&path, &package, note).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_export(&self, shell: Option<String>, package: String) -> Result<()> {
+        let command_name = "export";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match export::execute_export(shell.as_deref(), &package).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),

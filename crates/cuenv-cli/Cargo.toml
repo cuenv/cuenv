@@ -33,3 +33,6 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+cucumber = { workspace = true }
+tokio-test = { workspace = true }
+sha2 = { workspace = true }
