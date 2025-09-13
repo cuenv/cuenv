@@ -475,112 +475,6 @@ async fn execute_exec_command_safe(
     }
 }
 
-// Note: These functions are currently unused but reserved for future async main implementation
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_panic_hook() {
-        // Test that panic hook is properly set
-        // Note: We can't easily test the panic hook directly
-        // Just verify that we can set and take a hook
-        let _ = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let _ = std::panic::take_hook();
-        // Test passes if no panic occurs
-    }
-
-    #[test]
-    fn test_cli_args_json_flag() {
-        let cli_args = ["cuenv".to_string(), "--json".to_string()];
-        let json_flag = cli_args.iter().any(|arg| arg == "--json");
-        assert!(json_flag);
-    }
-
-    #[test]
-    fn test_cli_args_level_flag() {
-        let cli_args = [
-            "cuenv".to_string(),
-            "--level".to_string(),
-            "debug".to_string(),
-        ];
-        let level_flag = cli_args.windows(2).find_map(|args| {
-            if args[0] == "--level" || args[0] == "-l" {
-                Some(args[1].as_str())
-            } else {
-                None
-            }
-        });
-        assert_eq!(level_flag, Some("debug"));
-    }
-
-    #[test]
-    fn test_trace_format_selection() {
-        let json_flag = true;
-        let trace_format = if json_flag {
-            TracingFormat::Json
-        } else {
-            TracingFormat::Dev
-        };
-        assert!(matches!(trace_format, TracingFormat::Json));
-
-        let json_flag = false;
-        let trace_format = if json_flag {
-            TracingFormat::Json
-        } else {
-            TracingFormat::Dev
-        };
-        assert!(matches!(trace_format, TracingFormat::Dev));
-    }
-
-    #[test]
-    fn test_log_level_parsing() {
-        let test_cases = vec![
-            (Some("trace"), Level::TRACE),
-            (Some("debug"), Level::DEBUG),
-            (Some("info"), Level::INFO),
-            (Some("warn"), Level::WARN),
-            (Some("error"), Level::ERROR),
-            (None, Level::WARN),            // Default
-            (Some("invalid"), Level::WARN), // Invalid falls back to default
-        ];
-
-        for (input, expected) in test_cases {
-            let log_level = match input {
-                Some("trace") => Level::TRACE,
-                Some("debug") => Level::DEBUG,
-                Some("info") => Level::INFO,
-                Some("error") => Level::ERROR,
-                _ => Level::WARN,
-            };
-            assert_eq!(log_level, expected);
-        }
-    }
-
-    #[test]
-    fn test_tracing_config_default() {
-        let tracing_config = TracingConfig {
-            format: TracingFormat::Dev,
-            level: Level::WARN,
-            ..Default::default()
-        };
-        assert!(matches!(tracing_config.format, TracingFormat::Dev));
-        assert_eq!(tracing_config.level, Level::WARN);
-    }
-
-    #[tokio::test]
-    async fn test_command_conversion() {
-        use crate::cli::Commands;
-
-        // Test Version command conversion
-        let cli_command = Commands::Version;
-        let command: Command = cli_command.into();
-        assert!(matches!(command, Command::Version));
-    }
-}
-
 /// Run as a hook supervisor process
 async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     // Parse supervisor arguments
@@ -702,4 +596,110 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
 
     eprintln!("[supervisor] Completed successfully");
     Ok(())
+}
+
+// Note: These functions are currently unused but reserved for future async main implementation
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_panic_hook() {
+        // Test that panic hook is properly set
+        // Note: We can't easily test the panic hook directly
+        // Just verify that we can set and take a hook
+        let _ = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = std::panic::take_hook();
+        // Test passes if no panic occurs
+    }
+
+    #[test]
+    fn test_cli_args_json_flag() {
+        let cli_args = ["cuenv".to_string(), "--json".to_string()];
+        let json_flag = cli_args.iter().any(|arg| arg == "--json");
+        assert!(json_flag);
+    }
+
+    #[test]
+    fn test_cli_args_level_flag() {
+        let cli_args = [
+            "cuenv".to_string(),
+            "--level".to_string(),
+            "debug".to_string(),
+        ];
+        let level_flag = cli_args.windows(2).find_map(|args| {
+            if args[0] == "--level" || args[0] == "-l" {
+                Some(args[1].as_str())
+            } else {
+                None
+            }
+        });
+        assert_eq!(level_flag, Some("debug"));
+    }
+
+    #[test]
+    fn test_trace_format_selection() {
+        let json_flag = true;
+        let trace_format = if json_flag {
+            TracingFormat::Json
+        } else {
+            TracingFormat::Dev
+        };
+        assert!(matches!(trace_format, TracingFormat::Json));
+
+        let json_flag = false;
+        let trace_format = if json_flag {
+            TracingFormat::Json
+        } else {
+            TracingFormat::Dev
+        };
+        assert!(matches!(trace_format, TracingFormat::Dev));
+    }
+
+    #[test]
+    fn test_log_level_parsing() {
+        let test_cases = vec![
+            (Some("trace"), Level::TRACE),
+            (Some("debug"), Level::DEBUG),
+            (Some("info"), Level::INFO),
+            (Some("warn"), Level::WARN),
+            (Some("error"), Level::ERROR),
+            (None, Level::WARN),            // Default
+            (Some("invalid"), Level::WARN), // Invalid falls back to default
+        ];
+
+        for (input, expected) in test_cases {
+            let log_level = match input {
+                Some("trace") => Level::TRACE,
+                Some("debug") => Level::DEBUG,
+                Some("info") => Level::INFO,
+                Some("error") => Level::ERROR,
+                _ => Level::WARN,
+            };
+            assert_eq!(log_level, expected);
+        }
+    }
+
+    #[test]
+    fn test_tracing_config_default() {
+        let tracing_config = TracingConfig {
+            format: TracingFormat::Dev,
+            level: Level::WARN,
+            ..Default::default()
+        };
+        assert!(matches!(tracing_config.format, TracingFormat::Dev));
+        assert_eq!(tracing_config.level, Level::WARN);
+    }
+
+    #[tokio::test]
+    async fn test_command_conversion() {
+        use crate::cli::Commands;
+
+        // Test Version command conversion
+        let cli_command = Commands::Version;
+        let command: Command = cli_command.into();
+        assert!(matches!(command, Command::Version));
+    }
 }

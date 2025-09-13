@@ -11,7 +11,6 @@ use tempfile::TempDir;
 use tokio::fs;
 use tokio::process::Command;
 use tokio::time::sleep;
-use uuid;
 
 /// The test world holds state across test steps
 #[derive(Debug, World)]
@@ -20,6 +19,7 @@ pub struct TestWorld {
     /// Current working directory for the test
     current_dir: PathBuf,
     /// Temporary directory for test isolation
+    #[allow(dead_code)]
     temp_dir: Option<TempDir>,
     /// Environment variables set during test
     env_vars: HashMap<String, String>,
@@ -43,14 +43,12 @@ impl TestWorld {
     async fn new() -> Self {
         // Build the cuenv binary if needed
         let output = Command::new("cargo")
-            .args(&["build", "--bin", "cuenv"])
+            .args(["build", "--bin", "cuenv"])
             .output()
             .await
             .expect("Failed to build cuenv");
 
-        if !output.status.success() {
-            panic!("Failed to build cuenv binary");
-        }
+        assert!(output.status.success(), "Failed to build cuenv binary");
 
         let cuenv_binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -106,6 +104,7 @@ impl TestWorld {
     }
 
     /// Create a test CUE file with specified content
+    #[allow(dead_code)]
     async fn create_cue_file(&self, dir: &str, content: &str) -> Result<(), String> {
         let path = self.temp_dir.as_ref().unwrap().path().join(dir);
         fs::create_dir_all(&path).await.map_err(|e| e.to_string())?;
@@ -133,29 +132,31 @@ impl TestWorld {
                 files.push(name.clone());
 
                 // Check if any state file shows completion
-                if name.ends_with(".json") {
-                    if let Ok(content) = fs::read_to_string(entry.path()).await {
-                        // Log the content for debugging
+                if std::path::Path::new(&name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                    && let Ok(content) = fs::read_to_string(entry.path()).await
+                {
+                    // Log the content for debugging
+                    let _ = fs::write(
+                        format!(
+                            "/tmp/cuenv_state_content_{}.json",
+                            name.replace(".json", "")
+                        ),
+                        &content,
+                    )
+                    .await;
+
+                    if content.contains("\"Completed\"") {
                         let _ = fs::write(
-                            format!(
-                                "/tmp/cuenv_state_content_{}.json",
-                                name.replace(".json", "")
-                            ),
-                            &content,
+                            self.state_dir
+                                .parent()
+                                .unwrap()
+                                .join("cuenv_found_completed_state.log"),
+                            format!("Found completed state in: {name}"),
                         )
                         .await;
-
-                        if content.contains("\"Completed\"") {
-                            let _ = fs::write(
-                                self.state_dir
-                                    .parent()
-                                    .unwrap()
-                                    .join("cuenv_found_completed_state.log"),
-                                format!("Found completed state in: {}", name),
-                            )
-                            .await;
-                            return true;
-                        }
+                        return true;
                     }
                 }
             }
@@ -164,7 +165,7 @@ impl TestWorld {
                     .parent()
                     .unwrap()
                     .join("cuenv_state_dir_contents.log"),
-                format!("Files in {:?}: {:?}", self.state_dir, files),
+                format!("Files in {}: {:?}", self.state_dir.display(), files),
             )
             .await;
         } else {
@@ -173,7 +174,7 @@ impl TestWorld {
                     .parent()
                     .unwrap()
                     .join("cuenv_state_dir_error.log"),
-                format!("Failed to read state dir: {:?}", self.state_dir),
+                format!("Failed to read state dir: {}", self.state_dir.display()),
             )
             .await;
         }
@@ -181,7 +182,8 @@ impl TestWorld {
     }
 
     /// Compute instance hash matching cuenv's implementation (directory + config)
-    fn compute_instance_hash(&self, path: &PathBuf) -> String {
+    #[allow(dead_code)]
+    fn compute_instance_hash(path: &std::path::Path) -> String {
         // Match the exact implementation in cuenv-core/src/hooks/state.rs
         use sha2::{Digest, Sha256};
 
@@ -200,19 +202,20 @@ impl TestWorld {
     }
 
     /// Compute directory hash for backward compatibility
-    fn compute_dir_hash(&self, path: &PathBuf) -> String {
-        self.compute_instance_hash(path)
+    #[allow(dead_code)]
+    fn compute_dir_hash(path: &std::path::Path) -> String {
+        Self::compute_instance_hash(path)
     }
 }
 
 #[given(expr = "cuenv is installed and available")]
-async fn cuenv_is_installed(world: &mut TestWorld) {
+fn cuenv_is_installed(world: &mut TestWorld) {
     // Verify the binary exists
     assert!(world.cuenv_binary.exists(), "cuenv binary not found");
 }
 
 #[given(expr = "the shell integration is configured")]
-async fn shell_integration_configured(world: &mut TestWorld) {
+fn shell_integration_configured(world: &mut TestWorld) {
     // Set up environment to simulate shell integration
     world
         .env_vars
@@ -245,7 +248,7 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
             .parent()
             .unwrap()
             .to_path_buf();
-        let test_dir = repo_root.join(".test").join(format!("test_{}", unique_id));
+        let test_dir = repo_root.join(".test").join(format!("test_{unique_id}"));
         if !test_dir.exists() {
             fs::create_dir_all(&test_dir).await.unwrap();
         }
@@ -261,14 +264,14 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
             .parent()
             .unwrap()
             .to_path_buf();
-        let test_dir = repo_root.join(".test").join(format!("test_{}", unique_id));
+        let test_dir = repo_root.join(".test").join(format!("test_{unique_id}"));
         test_dir.join(dir)
     };
 
     if !path.exists() {
         fs::create_dir_all(&path).await.unwrap();
     }
-    world.current_dir = path;
+    world.current_dir.clone_from(&path);
 }
 
 #[given(expr = "cuenv is allowed in {string} directory")]
@@ -343,7 +346,7 @@ tasks: {
 #[when(expr = "I change directory to {string}")]
 async fn change_directory(world: &mut TestWorld, dir: String) {
     let new_path = world.current_dir.join(dir);
-    world.current_dir = new_path.clone();
+    world.current_dir.clone_from(&new_path);
 
     // Trigger cuenv env load (simulating shell integration)
     let package = if new_path.to_str().unwrap().contains("examples") {
@@ -400,7 +403,7 @@ async fn wait_for_hooks(world: &mut TestWorld) {
                 .parent()
                 .unwrap()
                 .join("cuenv_wait_iteration.log"),
-            format!("Iteration {}: Checking for hook completion", i),
+            format!("Iteration {i}: Checking for hook completion"),
         )
         .await;
         if world.check_hooks_complete("hook").await {
@@ -410,7 +413,7 @@ async fn wait_for_hooks(world: &mut TestWorld) {
                     .parent()
                     .unwrap()
                     .join("cuenv_hooks_complete.log"),
-                format!("Hooks complete at iteration {}", i),
+                format!("Hooks complete at iteration {i}"),
             )
             .await;
             world.hooks_running = false;
@@ -431,8 +434,10 @@ async fn wait_for_hooks(world: &mut TestWorld) {
                     .unwrap()
                     .join("cuenv_before_check.log"),
                 format!(
-                    "Running env check:\nPath: {}\nPackage: {}\nState dir: {:?}",
-                    dir_path, package, world.state_dir
+                    "Running env check:\nPath: {}\nPackage: {}\nState dir: {}",
+                    dir_path,
+                    package,
+                    world.state_dir.display()
                 ),
             )
             .await;
@@ -488,7 +493,7 @@ async fn wait_for_hooks(world: &mut TestWorld) {
 }
 
 #[then(expr = "the environment variables should be loaded in my shell")]
-async fn env_vars_loaded(world: &mut TestWorld) {
+fn env_vars_loaded(world: &mut TestWorld) {
     assert!(
         world.shell_env.contains_key("CUENV_TEST"),
         "CUENV_TEST not found in environment"
@@ -515,7 +520,8 @@ async fn execute_command(world: &mut TestWorld, command: String) {
 }
 
 #[then(expr = "I should see {string}")]
-async fn should_see_output(world: &mut TestWorld, expected: String) {
+#[allow(clippy::needless_pass_by_value)]
+fn should_see_output(world: &mut TestWorld, expected: String) {
     assert!(
         world.last_output.contains(&expected),
         "Expected '{}' in output, got: '{}'",
@@ -534,7 +540,7 @@ async fn check_hook_status(world: &mut TestWorld) {
 }
 
 #[then(expr = "I should see hooks are running")]
-async fn hooks_are_running(world: &mut TestWorld) {
+fn hooks_are_running(world: &mut TestWorld) {
     // Hooks may complete very quickly, so accept either running or completed status
     assert!(
         world.last_output.contains("Running")
@@ -556,7 +562,7 @@ async fn check_hook_status_again(world: &mut TestWorld) {
 }
 
 #[then(expr = "I should see hooks have completed successfully")]
-async fn hooks_completed_successfully(world: &mut TestWorld) {
+fn hooks_completed_successfully(world: &mut TestWorld) {
     assert!(
         world.last_output.contains("Completed") || world.last_output.contains("Success"),
         "Hooks not reported as completed: {}",
@@ -565,23 +571,23 @@ async fn hooks_completed_successfully(world: &mut TestWorld) {
 }
 
 #[then(expr = "the environment variable {string} should equal {string}")]
-async fn env_var_equals(world: &mut TestWorld, var: String, value: String) {
+#[allow(clippy::needless_pass_by_value)]
+fn env_var_equals(world: &mut TestWorld, var: String, value: String) {
     assert_eq!(
         world.shell_env.get(&var).unwrap_or(&String::new()),
         &value,
-        "Environment variable {} does not equal expected value",
-        var
+        "Environment variable {var} does not equal expected value"
     );
 }
 
 #[when(expr = "I execute a command that uses these variables")]
 async fn execute_with_vars(world: &mut TestWorld) {
-    let cmd = format!("echo $CUENV_TEST:$API_ENDPOINT");
+    let cmd = "echo $CUENV_TEST:$API_ENDPOINT".to_string();
     execute_command(world, cmd).await;
 }
 
 #[then(expr = "the command should have access to the loaded environment")]
-async fn command_has_env_access(world: &mut TestWorld) {
+fn command_has_env_access(world: &mut TestWorld) {
     assert!(world
         .last_output
         .contains("loaded_successfully:http://localhost:8080/api"));
@@ -670,7 +676,7 @@ async fn wait_for_hooks_or_failure(world: &mut TestWorld) {
 }
 
 #[then(expr = "the environment variables should not be loaded")]
-async fn env_vars_not_loaded(world: &mut TestWorld) {
+fn env_vars_not_loaded(world: &mut TestWorld) {
     assert!(
         !world.shell_env.contains_key("SHOULD_NOT_LOAD"),
         "Failed hook should not load environment variables"

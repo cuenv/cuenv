@@ -1207,7 +1207,7 @@ mod tests {
         let test_args = vec![
             vec!["simple test".to_string()],
             vec!["test with spaces".to_string()],
-            vec!["test", "multiple", "args"]
+            ["test", "multiple", "args"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -1333,7 +1333,7 @@ mod tests {
         let executor = HookExecutor::new(config).unwrap();
 
         // Start executions for multiple directories
-        let directories = vec![
+        let directories = [
             PathBuf::from("/test/dir1"),
             PathBuf::from("/test/dir2"),
             PathBuf::from("/test/dir3"),
