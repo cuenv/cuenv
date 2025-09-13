@@ -1365,7 +1365,11 @@ mod tests {
                 .await
                 .unwrap();
 
-            let state = executor.get_execution_status(dir).await.unwrap().unwrap();
+            let state = executor
+                .get_execution_status_for_instance(dir, config_hash)
+                .await
+                .unwrap()
+                .unwrap();
 
             assert_eq!(state.status, ExecutionStatus::Completed);
             assert_eq!(state.completed_hooks, 1);
@@ -1435,6 +1439,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires supervisor binary - integration test"]
     async fn test_instance_hash_separation() {
         // Test that different config hashes for the same directory are tracked separately
         let temp_dir = TempDir::new().unwrap();
@@ -1511,6 +1516,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires supervisor binary - integration test"]
     async fn test_file_based_argument_passing() {
         // Test that hooks and config are written to files and cleaned up
         let temp_dir = TempDir::new().unwrap();

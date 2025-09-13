@@ -511,17 +511,22 @@ mod tests {
     #[test]
     fn test_compute_instance_hash() {
         let path = Path::new("/test/path");
-        let hash = compute_instance_hash(path);
+        let config_hash = "test_config";
+        let hash = compute_instance_hash(path, config_hash);
         assert_eq!(hash.len(), 16);
 
-        // Same path should produce same hash
-        let hash2 = compute_instance_hash(path);
+        // Same path and config should produce same hash
+        let hash2 = compute_instance_hash(path, config_hash);
         assert_eq!(hash, hash2);
 
         // Different path should produce different hash
         let different_path = Path::new("/other/path");
         let different_hash = compute_instance_hash(different_path, config_hash);
         assert_ne!(hash, different_hash);
+
+        // Same path but different config should produce different hash
+        let different_config_hash = compute_instance_hash(path, "different_config");
+        assert_ne!(hash, different_config_hash);
     }
 
     #[tokio::test]

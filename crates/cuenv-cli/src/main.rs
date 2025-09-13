@@ -10,7 +10,6 @@
 
 mod cli;
 mod commands;
-mod errors;
 mod events;
 mod performance;
 mod tracing;
