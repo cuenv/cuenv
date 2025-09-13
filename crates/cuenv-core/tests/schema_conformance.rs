@@ -84,7 +84,7 @@ fn test_cue_validation() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("cue") {
             let output = Command::new("cue")
-                .args(&["vet", path.to_str().unwrap()])
+                .args(["vet", path.to_str().unwrap()])
                 .output()
                 .expect("Failed to run cue vet");
 
@@ -103,7 +103,7 @@ fn test_cue_validation() {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("cue") {
             let output = Command::new("cue")
-                .args(&["vet", path.to_str().unwrap()])
+                .args(["vet", path.to_str().unwrap()])
                 .output()
                 .expect("Failed to run cue vet");
 
@@ -186,7 +186,7 @@ fn export_and_parse_cue(cue_path: &Path) -> Result<Value, String> {
 
     // Try to export with cue command if available
     if let Ok(output) = Command::new("cue")
-        .args(&["export", cue_path.to_str().unwrap()])
+        .args(["export", cue_path.to_str().unwrap()])
         .output()
     {
         if output.status.success() {
