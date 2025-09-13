@@ -36,9 +36,17 @@ pub struct Task {
     #[serde(default)]
     pub args: Vec<String>,
 
+    /// Environment variables for this task
+    #[serde(default)]
+    pub env: HashMap<String, serde_json::Value>,
+
     /// Task dependencies (names of tasks that must run first)
     #[serde(default)]
     pub dependencies: Vec<String>,
+
+    /// Alternative name for dependencies
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 
     /// Input files/resources
     #[serde(default)]
@@ -177,7 +185,9 @@ mod tests {
             command: "echo".to_string(),
             shell: None,
             args: vec![],
+            env: HashMap::new(),
             dependencies: vec![],
+            depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
             description: None,
@@ -208,7 +218,9 @@ mod tests {
             command: "echo".to_string(),
             args: vec!["first".to_string()],
             shell: None,
+            env: HashMap::new(),
             dependencies: vec![],
+            depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
             description: Some("First task".to_string()),
@@ -218,7 +230,9 @@ mod tests {
             command: "echo".to_string(),
             args: vec!["second".to_string()],
             shell: None,
+            env: HashMap::new(),
             dependencies: vec![],
+            depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
             description: Some("Second task".to_string()),
@@ -240,7 +254,9 @@ mod tests {
             command: "echo".to_string(),
             args: vec!["task1".to_string()],
             shell: None,
+            env: HashMap::new(),
             dependencies: vec![],
+            depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
             description: Some("Task 1".to_string()),
@@ -250,7 +266,9 @@ mod tests {
             command: "echo".to_string(),
             args: vec!["task2".to_string()],
             shell: None,
+            env: HashMap::new(),
             dependencies: vec![],
+            depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
             description: Some("Task 2".to_string()),
@@ -276,7 +294,9 @@ mod tests {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
             shell: None,
+            env: HashMap::new(),
             dependencies: vec![],
+            depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
             description: Some("Hello task".to_string()),
@@ -300,7 +320,9 @@ mod tests {
             command: "test".to_string(),
             shell: None,
             args: vec![],
+            env: HashMap::new(),
             dependencies: vec![],
+            depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
             description: Some("Test task".to_string()),

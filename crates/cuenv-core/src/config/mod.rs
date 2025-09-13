@@ -44,6 +44,7 @@ pub enum OutputFormat {
     Spinner,
     Simple,
     Tree,
+    Json,
 }
 
 /// Cache mode options

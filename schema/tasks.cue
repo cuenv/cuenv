@@ -13,8 +13,10 @@ package schema
 	shell?: #Shell
 	command!: string
 	args?: [...string]
-
+	env?: {[string]: string | int | bool}
+	
 	dependencies?: [...string]
+	depends_on?: [...string]  // Alternative name for dependencies
 	inputs?: [...string]
 	outputs?: [...string]
 	description?: string
