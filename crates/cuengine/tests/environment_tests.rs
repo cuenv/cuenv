@@ -57,9 +57,9 @@ fn test_parse_task_basic_example() {
                 }
             }
 
-            println!("Environment variables: {:?}", env.vars);
+            println!("Environment variables: {:#?}", env.vars);
             let task_names: Vec<&str> = cuenv.tasks.keys().map(String::as_str).collect();
-            println!("Tasks: {:?}", task_names);
+            println!("Tasks: {task_names:?}");
 
             // Verify we got the expected values
             assert_eq!(env.get("NAME"), Some("Jack O'Neill"));
