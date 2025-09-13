@@ -6,6 +6,7 @@
 confidence-threshold = 0.8
 allow = [
     "MIT",
+    "MIT-0",              # MIT No Attribution - used by borrow-or-share
     "Apache-2.0", 
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",

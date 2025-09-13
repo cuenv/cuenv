@@ -1,8 +1,8 @@
 //! Exec command implementation for running arbitrary commands with CUE environment
 
-use cuengine::CueEvaluator;
-use cuenv_core::environment::CueEvaluation;
-use cuenv_core::task_executor::execute_command;
+use cuengine::{CueEvaluator, Cuenv};
+use cuenv_core::environment::Environment;
+use cuenv_core::tasks::execute_command;
 use cuenv_core::Result;
 use std::path::Path;
 
@@ -23,13 +23,24 @@ pub async fn execute_exec(
 
     // Evaluate CUE to get environment
     let evaluator = CueEvaluator::builder().build()?;
-    let json = evaluator.evaluate(Path::new(path), package)?;
-    let evaluation = CueEvaluation::from_json(&json).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to parse CUE evaluation: {e}"))
-    })?;
+    let manifest: Cuenv = evaluator.evaluate_typed(Path::new(path), package)?;
+
+    // Set up environment from manifest
+    let mut environment = Environment::new();
+    if let Some(env) = &manifest.env {
+        for (key, value) in &env.base {
+            use cuenv_core::environment::EnvValue;
+            let value_str = match value {
+                EnvValue::String(s) => s.clone(),
+                EnvValue::Int(i) => i.to_string(),
+                EnvValue::Bool(b) => b.to_string(),
+                EnvValue::Secret(_) => continue,
+            };
+            environment.set(key.clone(), value_str);
+        }
+    }
 
     // Execute the command with the environment
-    let environment = evaluation.get_environment();
     let exit_code = execute_command(command, args, &environment).await?;
 
     Ok(exit_code)

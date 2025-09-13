@@ -1,0 +1,89 @@
+//! Root Cuenv configuration type
+//!
+//! Based on schema/cuenv.cue
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+use crate::config::Config;
+use crate::environment::Env;
+use crate::hooks::Hook;
+use crate::tasks::TaskDefinition;
+
+/// Collection of hooks that can be executed
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct Hooks {
+    /// Hooks to execute when entering an environment
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "onEnter")]
+    pub on_enter: Option<HookList>,
+
+    /// Hooks to execute when exiting an environment
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "onExit")]
+    pub on_exit: Option<HookList>,
+}
+
+/// Hook list can be a single hook or an array of hooks
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
+pub enum HookList {
+    Single(Hook),
+    Multiple(Vec<Hook>),
+}
+
+impl HookList {
+    /// Convert to a vector of hooks
+    pub fn to_vec(&self) -> Vec<Hook> {
+        match self {
+            HookList::Single(hook) => vec![hook.clone()],
+            HookList::Multiple(hooks) => hooks.clone(),
+        }
+    }
+}
+
+/// Root Cuenv configuration structure
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct Cuenv {
+    /// Configuration settings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<Config>,
+
+    /// Environment variables configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<Env>,
+
+    /// Hooks configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<Hooks>,
+
+    /// Tasks configuration
+    #[serde(default)]
+    pub tasks: HashMap<String, TaskDefinition>,
+}
+
+impl Cuenv {
+    /// Create a new empty Cuenv configuration
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get hooks to execute when entering environment
+    pub fn on_enter_hooks(&self) -> Vec<Hook> {
+        self.hooks
+            .as_ref()
+            .and_then(|h| h.on_enter.as_ref())
+            .map(|h| h.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Get hooks to execute when exiting environment
+    pub fn on_exit_hooks(&self) -> Vec<Hook> {
+        self.hooks
+            .as_ref()
+            .and_then(|h| h.on_exit.as_ref())
+            .map(|h| h.to_vec())
+            .unwrap_or_default()
+    }
+}

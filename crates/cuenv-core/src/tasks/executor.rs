@@ -5,9 +5,8 @@
 //! - Parallel and sequential execution
 //! - Output capture and streaming
 
+use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
 use crate::environment::Environment;
-use crate::task::{Task, TaskDefinition, TaskGroup, Tasks};
-use crate::task_graph::TaskGraph;
 use crate::{Error, Result};
 use async_recursion::async_recursion;
 use std::collections::HashMap;

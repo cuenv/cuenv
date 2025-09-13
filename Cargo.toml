@@ -4,6 +4,7 @@ members = [
     "crates/cuenv-core",
     "crates/cuengine",
     "crates/cuenv-cli",
+    "crates/schema-validator",
 ]
 
 [workspace.package]
@@ -43,6 +44,11 @@ sha2 = "0.10"
 proptest = "1.0"
 criterion = "0.5"
 tempfile = "3.0"
+
+# BDD testing dependencies
+cucumber = "0.21"
+gherkin = "0.14"
+tokio-test = "0.4"
 
 [workspace.metadata.crane]
 name = "cuenv"

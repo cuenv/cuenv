@@ -1,12 +1,20 @@
-//! Task data structures and definitions
+//! Task execution and management module
 //!
 //! This module provides the core types for task execution, matching the CUE schema.
 
+pub mod executor;
+pub mod graph;
+
+// Re-export executor and graph modules
+pub use executor::*;
+pub use graph::*;
+
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Shell configuration for task execution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct Shell {
     /// Shell executable name (e.g., "bash", "fish", "zsh")
     pub command: Option<String>,
@@ -15,7 +23,7 @@ pub struct Shell {
 }
 
 /// A single executable task
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct Task {
     /// Shell configuration for command execution (optional)
     #[serde(default)]
@@ -55,7 +63,7 @@ impl Task {
 }
 
 /// Represents a group of tasks with execution mode
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(untagged)]
 pub enum TaskGroup {
     /// Sequential execution: array of tasks executed in order
@@ -66,7 +74,7 @@ pub enum TaskGroup {
 }
 
 /// A task definition can be either a single task or a group of tasks
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(untagged)]
 pub enum TaskDefinition {
     /// A single task
@@ -77,7 +85,7 @@ pub enum TaskDefinition {
 }
 
 /// Root tasks structure from CUE
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct Tasks {
     /// Map of task names to their definitions
     #[serde(flatten)]

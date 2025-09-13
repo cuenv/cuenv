@@ -3,6 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
@@ -28,12 +29,16 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, rust-overlay, advisory-db, flake-schemas, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, crane, flake-utils, rust-overlay, advisory-db, flake-schemas, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
+        };
+
+        pkgs-unstable = import nixpkgs-unstable {
+          inherit system;
         };
 
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
@@ -114,13 +119,16 @@
           cp -r ${cue-bridge}/release/* target/release/ || true
         '';
 
+
         # Common build configuration
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config ];
+          nativeBuildInputs = with pkgs; [ go pkg-config pkgs-unstable.cue ];
           buildInputs = platformBuildInputs;
-          preBuild = setupBridge;
+          preBuild = ''
+            ${setupBridge}
+          '';
           CUE_BRIDGE_PATH = cue-bridge;
         };
 
@@ -145,7 +153,7 @@
         # Development tools configuration
         devTools = with pkgs; [
           go_1_24
-          cue
+          pkgs-unstable.cue # Use CUE from unstable for latest version
           antora
           cargo-audit
           cargo-nextest

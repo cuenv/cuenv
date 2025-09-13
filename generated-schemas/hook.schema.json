@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Hook",
+  "description": "A hook represents a command that can be executed when entering or exiting environments\nBased on schema/hooks.cue #ExecHook definition",
+  "type": "object",
+  "properties": {
+    "args": {
+      "description": "Arguments to pass to the command",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "command": {
+      "description": "The command to execute",
+      "type": "string"
+    },
+    "dir": {
+      "description": "Working directory for command execution (defaults to \".\")",
+      "type": ["string", "null"],
+      "default": null
+    },
+    "inputs": {
+      "description": "Input files that trigger re-execution when changed",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "source": {
+      "description": "Whether to source the command output as shell script to capture environment changes",
+      "type": ["boolean", "null"]
+    }
+  },
+  "required": ["command"]
+}

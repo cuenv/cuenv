@@ -1,17 +1,54 @@
-//! Environment management for task execution
+//! Environment management for cuenv
 //!
-//! This module handles extraction and propagation of environment variables
-//! from CUE configurations to task execution contexts.
+//! This module handles environment variables from CUE configurations,
+//! including extraction, propagation, and environment-specific overrides.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 
-/// Reserved field name that should be skipped during environment variable extraction
-/// This field may contain metadata rather than environment variables
-const RESERVED_ENV_FIELD: &str = "environment";
+/// Environment variable values can be strings, integers, booleans, or secrets
+/// When exported to actual environment, these will always be strings
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
+pub enum EnvValue {
+    String(String),
+    Int(i64),
+    Bool(bool),
+    Secret(crate::secrets::Secret),
+}
 
-/// Environment variables from CUE configuration
+/// Environment configuration with environment-specific overrides
+/// Based on schema/env.cue
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct Env {
+    /// Base environment variables
+    /// Keys must match pattern: ^[A-Z][A-Z0-9_]*$
+    #[serde(flatten)]
+    pub base: HashMap<String, EnvValue>,
+
+    /// Environment-specific overrides
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HashMap<String, HashMap<String, EnvValue>>>,
+}
+
+impl Env {
+    /// Get environment variables for a specific environment
+    pub fn for_environment(&self, env_name: &str) -> HashMap<String, EnvValue> {
+        let mut result = self.base.clone();
+
+        if let Some(environments) = &self.environment
+            && let Some(env_overrides) = environments.get(env_name)
+        {
+            result.extend(env_overrides.clone());
+        }
+
+        result
+    }
+}
+
+/// Runtime environment variables for task execution
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Environment {
     /// Map of environment variable names to values
@@ -90,64 +127,6 @@ impl Environment {
     }
 }
 
-/// Combined CUE evaluation result with environment and tasks
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CueEvaluation {
-    /// Raw env object from CUE (contains environment variables)
-    #[serde(default)]
-    pub env: serde_json::Value,
-
-    /// Task definitions
-    #[serde(default)]
-    pub tasks: crate::task::Tasks,
-}
-
-impl CueEvaluation {
-    /// Create a new evaluation result
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Parse from JSON string
-    pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
-    }
-
-    /// Extract environment variables from the env object
-    pub fn get_environment(&self) -> Environment {
-        let mut env = Environment::new();
-
-        // The env object contains environment variables as direct properties
-        if let serde_json::Value::Object(map) = &self.env {
-            for (key, value) in map {
-                // Skip reserved fields that contain metadata
-                if key == RESERVED_ENV_FIELD {
-                    continue;
-                }
-
-                // Convert value to string
-                let str_value = match value {
-                    serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    serde_json::Value::Null => continue, // Skip null values
-                    serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
-                        // Serialize complex values to JSON strings
-                        match serde_json::to_string(value) {
-                            Ok(json_str) => json_str,
-                            Err(_) => continue, // Skip if serialization fails
-                        }
-                    }
-                };
-
-                env.set(key.clone(), str_value);
-            }
-        }
-
-        env
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,70 +200,55 @@ mod tests {
     }
 
     #[test]
-    fn test_cue_evaluation_deserialization() {
-        let json = r#"{
-            "env": {
-                "NAME": "test",
-                "VALUE": "42"
-            },
-            "tasks": {
-                "greet": {
-                    "command": "echo",
-                    "args": ["hello"]
-                }
-            }
-        }"#;
+    fn test_env_value_types() {
+        let str_val = EnvValue::String("test".to_string());
+        let int_val = EnvValue::Int(42);
+        let bool_val = EnvValue::Bool(true);
 
-        let eval = CueEvaluation::from_json(json).unwrap();
-
-        // Test environment extraction
-        let env = eval.get_environment();
-        assert_eq!(env.get("NAME"), Some("test"));
-        assert_eq!(env.get("VALUE"), Some("42"));
-
-        // Test tasks
-        assert!(eval.tasks.contains("greet"));
+        assert_eq!(str_val, EnvValue::String("test".to_string()));
+        assert_eq!(int_val, EnvValue::Int(42));
+        assert_eq!(bool_val, EnvValue::Bool(true));
     }
 
     #[test]
-    fn test_cue_evaluation_empty() {
-        let json = "{}";
-        let eval = CueEvaluation::from_json(json).unwrap();
+    fn test_env_for_environment() {
+        let mut base = HashMap::new();
+        base.insert("BASE_VAR".to_string(), EnvValue::String("base".to_string()));
+        base.insert(
+            "OVERRIDE_ME".to_string(),
+            EnvValue::String("original".to_string()),
+        );
 
-        let env = eval.get_environment();
-        assert!(env.is_empty());
-        assert!(eval.tasks.list_tasks().is_empty());
-    }
+        let mut dev_env = HashMap::new();
+        dev_env.insert(
+            "OVERRIDE_ME".to_string(),
+            EnvValue::String("dev".to_string()),
+        );
+        dev_env.insert(
+            "DEV_VAR".to_string(),
+            EnvValue::String("development".to_string()),
+        );
 
-    #[test]
-    fn test_cue_evaluation_env_only() {
-        let json = r#"{
-            "env": {
-                "FOO": "bar"
-            }
-        }"#;
+        let mut environments = HashMap::new();
+        environments.insert("development".to_string(), dev_env);
 
-        let eval = CueEvaluation::from_json(json).unwrap();
+        let env = Env {
+            base,
+            environment: Some(environments),
+        };
 
-        let env = eval.get_environment();
-        assert_eq!(env.get("FOO"), Some("bar"));
-        assert!(eval.tasks.list_tasks().is_empty());
-    }
-
-    #[test]
-    fn test_cue_evaluation_tasks_only() {
-        let json = r#"{
-            "tasks": {
-                "test": {
-                    "command": "test"
-                }
-            }
-        }"#;
-
-        let eval = CueEvaluation::from_json(json).unwrap();
-
-        let env = eval.get_environment();
-        assert!(env.is_empty());
-        assert!(eval.tasks.contains("test"));
+        let dev_vars = env.for_environment("development");
+        assert_eq!(
+            dev_vars.get("BASE_VAR"),
+            Some(&EnvValue::String("base".to_string()))
+        );
+        assert_eq!(
+            dev_vars.get("OVERRIDE_ME"),
+            Some(&EnvValue::String("dev".to_string()))
+        );
+        assert_eq!(
+            dev_vars.get("DEV_VAR"),
+            Some(&EnvValue::String("development".to_string()))
+        );
     }
 }

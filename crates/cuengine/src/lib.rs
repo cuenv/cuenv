@@ -15,7 +15,7 @@ pub mod validation;
 
 // Re-export main types
 pub use builder::{CueEvaluator, CueEvaluatorBuilder};
-pub use cuenv_core::{Error, Result};
+pub use cuenv_core::{manifest::Cuenv, Error, Result};
 pub use retry::RetryConfig;
 
 use serde::{Deserialize, Serialize};
@@ -403,6 +403,68 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     );
 
     Ok(json_data.to_string())
+}
+
+/// Evaluates a CUE package and returns the result as a typed struct
+///
+/// This is a convenience wrapper around `evaluate_cue_package` that deserializes
+/// the JSON result into a strongly-typed Rust struct.
+///
+/// # Type Parameters
+/// * `T` - The type to deserialize into. Must implement `serde::de::DeserializeOwned`
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The CUE evaluation fails (see `evaluate_cue_package` for details)
+/// - The JSON cannot be deserialized into the target type
+///
+/// # Arguments
+/// * `dir_path` - Directory containing the CUE files
+/// * `package_name` - Name of the CUE package to evaluate
+///
+/// # Returns
+/// The evaluated CUE configuration as the specified type `T`
+///
+/// # Example
+/// ```no_run
+/// use cuengine::{evaluate_cue_package_typed, Cuenv};
+/// use std::path::Path;
+///
+/// let path = Path::new("/path/to/cue/files");
+/// let manifest: Cuenv = evaluate_cue_package_typed(path, "cuenv").unwrap();
+/// ```
+#[tracing::instrument(
+    name = "evaluate_cue_package_typed",
+    fields(
+        dir_path = %dir_path.display(),
+        package_name = package_name,
+        target_type = std::any::type_name::<T>(),
+    ),
+    level = "info"
+)]
+pub fn evaluate_cue_package_typed<T>(dir_path: &Path, package_name: &str) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    tracing::debug!("Evaluating CUE package with typed deserialization");
+
+    // Get the JSON string from the basic evaluation
+    let json_str = evaluate_cue_package(dir_path, package_name)?;
+
+    // Deserialize into the target type
+    serde_json::from_str(&json_str).map_err(|e| {
+        tracing::error!(
+            "Failed to deserialize CUE output to {}: {}",
+            std::any::type_name::<T>(),
+            e
+        );
+        Error::configuration(format!(
+            "Failed to parse CUE output as {}: {}",
+            std::any::type_name::<T>(),
+            e
+        ))
+    })
 }
 
 #[cfg(test)]

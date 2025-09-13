@@ -3,7 +3,7 @@
 //! This module builds directed acyclic graphs (DAGs) from task definitions
 //! to handle dependencies and determine execution order.
 
-use crate::task::{Task, TaskDefinition, TaskGroup, Tasks};
+use super::{Task, TaskDefinition, TaskGroup, Tasks};
 use crate::Result;
 use petgraph::algo::{is_cyclic_directed, toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
