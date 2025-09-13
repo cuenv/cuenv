@@ -520,7 +520,7 @@ mod tests {
 
         // Different path should produce different hash
         let different_path = Path::new("/other/path");
-        let different_hash = compute_instance_hash(different_path);
+        let different_hash = compute_instance_hash(different_path, config_hash);
         assert_ne!(hash, different_hash);
     }
 
@@ -530,8 +530,8 @@ mod tests {
         let state_manager = StateManager::new(temp_dir.path().to_path_buf());
 
         let directory_path = PathBuf::from("/test/dir");
-        let instance_hash = compute_instance_hash(&directory_path);
         let config_hash = "test_config_hash".to_string();
+        let instance_hash = compute_instance_hash(&directory_path, &config_hash);
 
         let mut state =
             HookExecutionState::new(directory_path, instance_hash.clone(), config_hash, 2);

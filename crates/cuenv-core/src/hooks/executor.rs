@@ -129,22 +129,20 @@ impl HookExecutor {
         // Serialize and write hooks
         let hooks_json = serde_json::to_string(&hooks)
             .map_err(|e| Error::configuration(format!("Failed to serialize hooks: {}", e)))?;
-        std::fs::write(&hooks_file, &hooks_json)
-            .map_err(|e| Error::Io {
-                source: e,
-                path: Some(hooks_file.clone().into_boxed_path()),
-                operation: "write".to_string(),
-            })?;
+        std::fs::write(&hooks_file, &hooks_json).map_err(|e| Error::Io {
+            source: e,
+            path: Some(hooks_file.clone().into_boxed_path()),
+            operation: "write".to_string(),
+        })?;
 
         // Serialize and write config
         let config_json = serde_json::to_string(&self.config)
             .map_err(|e| Error::configuration(format!("Failed to serialize config: {}", e)))?;
-        std::fs::write(&config_file, &config_json)
-            .map_err(|e| Error::Io {
-                source: e,
-                path: Some(config_file.clone().into_boxed_path()),
-                operation: "write".to_string(),
-            })?;
+        std::fs::write(&config_file, &config_json).map_err(|e| Error::Io {
+            source: e,
+            path: Some(config_file.clone().into_boxed_path()),
+            operation: "write".to_string(),
+        })?;
 
         // Get the executable path to spawn as supervisor
         // Allow override via CUENV_EXECUTABLE for testing
@@ -167,9 +165,9 @@ impl HookExecutor {
             .arg("--config-hash")
             .arg(&config_hash)
             .arg("--hooks-file")
-            .arg(&hooks_file.to_string_lossy().to_string())
+            .arg(hooks_file.to_string_lossy().to_string())
             .arg("--config-file")
-            .arg(&config_file.to_string_lossy().to_string())
+            .arg(config_file.to_string_lossy().to_string())
             .stdin(Stdio::null());
 
         // Redirect output to log files for debugging
@@ -508,6 +506,21 @@ pub async fn execute_hooks(
     Ok(())
 }
 
+/// Detect which shell to use for environment evaluation
+fn detect_shell() -> &'static str {
+    // Check if bash is available
+    if std::process::Command::new("bash")
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        return "bash";
+    }
+
+    // Fall back to POSIX sh
+    "sh"
+}
+
 /// Evaluate shell script and extract resulting environment variables
 async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String, String>> {
     debug!(
@@ -515,8 +528,11 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         shell_script.len()
     );
 
+    let shell = detect_shell();
+    debug!("Using shell: {}", shell);
+
     // First, get the environment before running the script
-    let mut cmd_before = Command::new("bash");
+    let mut cmd_before = Command::new(shell);
     cmd_before.arg("-c");
     cmd_before.arg("env -0");
     cmd_before.stdout(Stdio::piped());
@@ -536,7 +552,7 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     }
 
     // Now execute the script and capture the environment after
-    let mut cmd = Command::new("bash");
+    let mut cmd = Command::new(shell);
     cmd.arg("-c");
     // Create a script that sources the exports and then prints the environment
     let script = format!("{}\nenv -0", shell_script);
@@ -856,7 +872,11 @@ mod tests {
 
         // Cancel the execution
         let cancelled = executor
-            .cancel_execution(&directory_path, &config_hash, Some("User cancelled".to_string()))
+            .cancel_execution(
+                &directory_path,
+                &config_hash,
+                Some("User cancelled".to_string()),
+            )
             .await
             .unwrap();
         assert!(cancelled);
@@ -1156,11 +1176,7 @@ mod tests {
 
         let config_hash2 = "fail_fast_continue_test".to_string();
         executor
-            .execute_hooks_background(
-                directory_path2.clone(),
-                config_hash2.clone(),
-                hooks2,
-            )
+            .execute_hooks_background(directory_path2.clone(), config_hash2.clone(), hooks2)
             .await
             .unwrap();
 
@@ -1344,7 +1360,10 @@ mod tests {
 
         // Wait for all to complete
         for (dir, config_hash) in directories.iter().zip(config_hashes.iter()) {
-            executor.wait_for_completion(dir, config_hash, Some(10)).await.unwrap();
+            executor
+                .wait_for_completion(dir, config_hash, Some(10))
+                .await
+                .unwrap();
 
             let state = executor.get_execution_status(dir).await.unwrap().unwrap();
 
@@ -1427,7 +1446,7 @@ mod tests {
 
         let executor = HookExecutor::new(config).unwrap();
         let directory_path = PathBuf::from("/test/multi-config");
-        
+
         // Create hooks for first configuration
         let hooks1 = vec![Hook {
             command: "echo".to_string(),
@@ -1437,7 +1456,7 @@ mod tests {
             source: Some(false),
         }];
 
-        // Create hooks for second configuration  
+        // Create hooks for second configuration
         let hooks2 = vec![Hook {
             command: "echo".to_string(),
             args: vec!["config2".to_string()],
@@ -1486,7 +1505,7 @@ mod tests {
 
         assert_eq!(state1.status, ExecutionStatus::Completed);
         assert_eq!(state2.status, ExecutionStatus::Completed);
-        
+
         // Ensure they have different instance hashes
         assert_ne!(state1.instance_hash, state2.instance_hash);
     }
@@ -1504,7 +1523,7 @@ mod tests {
         let executor = HookExecutor::new(config).unwrap();
         let directory_path = PathBuf::from("/test/file-args");
         let config_hash = "file_test".to_string();
-        
+
         // Create a large hook configuration that would exceed typical arg limits
         let mut large_hooks = Vec::new();
         for i in 0..100 {
@@ -1523,13 +1542,17 @@ mod tests {
             .await;
 
         assert!(result.is_ok(), "Should handle large hook configurations");
-        
+
         // Wait a bit for supervisor to start and read files
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // Cancel to clean up
         executor
-            .cancel_execution(&directory_path, &config_hash, Some("Test cleanup".to_string()))
+            .cancel_execution(
+                &directory_path,
+                &config_hash,
+                Some("Test cleanup".to_string()),
+            )
             .await
             .ok();
     }
@@ -1537,11 +1560,11 @@ mod tests {
     #[tokio::test]
     async fn test_state_dir_getter() {
         use crate::hooks::state::StateManager;
-        
+
         let temp_dir = TempDir::new().unwrap();
         let state_dir = temp_dir.path().to_path_buf();
         let state_manager = StateManager::new(state_dir.clone());
-        
+
         assert_eq!(state_manager.get_state_dir(), state_dir.as_path());
     }
 }

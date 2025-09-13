@@ -141,7 +141,10 @@ pub async fn execute_env_status(
             Ok(state) => Ok(state.progress_display()),
             Err(cuenv_core::Error::Timeout { .. }) => {
                 // Timeout occurred, get current status
-                if let Some(state) = executor.get_execution_status_for_instance(&directory, &config_hash).await? {
+                if let Some(state) = executor
+                    .get_execution_status_for_instance(&directory, &config_hash)
+                    .await?
+                {
                     Ok(format!(
                         "Timeout after {} seconds. Current status: {}",
                         timeout_seconds,
@@ -155,7 +158,10 @@ pub async fn execute_env_status(
         }
     } else {
         // Return current status immediately
-        if let Some(state) = executor.get_execution_status_for_instance(&directory, &config_hash).await? {
+        if let Some(state) = executor
+            .get_execution_status_for_instance(&directory, &config_hash)
+            .await?
+        {
             Ok(state.progress_display())
         } else {
             Ok("No hook execution in progress".to_string())
