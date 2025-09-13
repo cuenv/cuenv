@@ -37,6 +37,7 @@
 
 pub mod environment;
 pub mod hooks;
+pub mod shell;
 pub mod task;
 pub mod task_executor;
 pub mod task_graph;

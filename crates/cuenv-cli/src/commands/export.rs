@@ -10,9 +10,9 @@ use cuenv_core::{
     hooks::{
         approval::{check_approval_status, ApprovalManager, ApprovalStatus},
         executor::HookExecutor,
-        state::compute_instance_hash,
         types::ExecutionStatus,
     },
+    shell::Shell,
     Result,
 };
 use serde_json::Value;
@@ -20,48 +20,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, info};
-
-/// Shell type for formatting output
-#[derive(Debug, Clone, Copy)]
-pub enum Shell {
-    Bash,
-    Zsh,
-    Fish,
-    #[allow(clippy::enum_variant_names)]
-    PowerShell,
-}
-
-impl Shell {
-    /// Detect shell from environment or argument
-    pub fn detect(target: Option<&str>) -> Self {
-        if let Some(t) = target {
-            return Self::from_str(t);
-        }
-
-        // Try to detect from environment
-        if let Ok(shell) = std::env::var("SHELL") {
-            if shell.contains("fish") {
-                return Shell::Fish;
-            } else if shell.contains("zsh") {
-                return Shell::Zsh;
-            } else if shell.contains("bash") {
-                return Shell::Bash;
-            }
-        }
-
-        // Default to bash
-        Shell::Bash
-    }
-
-    fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "zsh" => Shell::Zsh,
-            "fish" => Shell::Fish,
-            "powershell" | "pwsh" => Shell::PowerShell,
-            _ => Shell::Bash,
-        }
-    }
-}
 
 /// Execute the export command - the main entry point for shell integration
 pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<String> {
@@ -102,9 +60,8 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
         }
     }
 
-    // Compute instance hash for this directory + config
+    // Compute config hash for this directory + config
     let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config);
-    let _instance_hash = compute_instance_hash(&current_dir, &config_hash);
 
     // Check if state is ready
     let executor = HookExecutor::with_default_config()?;
@@ -367,12 +324,49 @@ fn format_no_op(shell: Shell) -> String {
     }
 }
 
-// Unused function - commenting out for now
-// /// Collect environment variables from execution state
-// fn collect_all_env_vars_from_state(
-//     state: &cuenv_core::hooks::state::HookExecutionState,
-// ) -> HashMap<String, String> {
-//     // For now, just return the environment vars from the state
-//     // In the future, we might merge with static env vars
-//     state.environment_vars.clone()
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_shell_value() {
+        // Test basic string
+        assert_eq!(escape_shell_value("simple"), "simple");
+
+        // Test double quotes
+        assert_eq!(escape_shell_value("hello \"world\""), "hello \\\"world\\\"");
+
+        // Test backslashes
+        assert_eq!(escape_shell_value("path\\to\\file"), "path\\\\to\\\\file");
+
+        // Test dollar signs
+        assert_eq!(escape_shell_value("$HOME"), "\\$HOME");
+        assert_eq!(escape_shell_value("test $var"), "test \\$var");
+
+        // Test backticks
+        assert_eq!(escape_shell_value("`command`"), "\\`command\\`");
+
+        // Test multiple special characters
+        assert_eq!(
+            escape_shell_value("$HOME/path\\with\"quotes`and`backticks"),
+            "\\$HOME/path\\\\with\\\"quotes\\`and\\`backticks"
+        );
+
+        // Test empty string
+        assert_eq!(escape_shell_value(""), "");
+
+        // Test string with newlines (not escaped)
+        assert_eq!(escape_shell_value("line1\nline2"), "line1\nline2");
+
+        // Test string with tabs (not escaped)
+        assert_eq!(escape_shell_value("col1\tcol2"), "col1\tcol2");
+    }
+
+    #[test]
+    fn test_format_no_op() {
+        assert_eq!(format_no_op(Shell::Bash), ":");
+        assert_eq!(format_no_op(Shell::Zsh), ":");
+        assert_eq!(format_no_op(Shell::Fish), "true");
+        assert_eq!(format_no_op(Shell::PowerShell), "# no changes");
+    }
+}

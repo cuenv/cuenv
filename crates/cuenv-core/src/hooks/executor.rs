@@ -397,25 +397,25 @@ pub async fn execute_hooks(
     state: &mut HookExecutionState,
 ) -> Result<()> {
     let hook_count = hooks.len();
-    info!("execute_hooks called with {} hooks", hook_count);
+    debug!("execute_hooks called with {} hooks", hook_count);
     if hook_count == 0 {
-        error!("No hooks to execute!");
+        debug!("No hooks to execute");
         return Ok(());
     }
-    info!("Starting to iterate over {} hooks", hook_count);
+    debug!("Starting to iterate over {} hooks", hook_count);
     for (index, hook) in hooks.into_iter().enumerate() {
-        info!(
+        debug!(
             "Processing hook {}/{}: command={}",
             index + 1,
             state.total_hooks,
             hook.command
         );
         // Check if execution was cancelled
-        info!("Checking if execution was cancelled");
+        debug!("Checking if execution was cancelled");
         if let Ok(Some(current_state)) = state_manager.load_state(&state.instance_hash).await {
-            info!("Loaded state: status = {:?}", current_state.status);
+            debug!("Loaded state: status = {:?}", current_state.status);
             if current_state.status == ExecutionStatus::Cancelled {
-                info!("Execution was cancelled, stopping");
+                debug!("Execution was cancelled, stopping");
                 break;
             }
         }
@@ -438,10 +438,10 @@ pub async fn execute_hooks(
                     && hook_result.success
                     && !hook_result.stdout.is_empty()
                 {
-                    info!("Evaluating source hook output for environment variables");
+                    debug!("Evaluating source hook output for environment variables");
                     match evaluate_shell_environment(&hook_result.stdout).await {
                         Ok(env_vars) => {
-                            info!(
+                            debug!(
                                 "Captured {} environment variables from source hook",
                                 env_vars.len()
                             );

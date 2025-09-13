@@ -11,32 +11,66 @@ use cuenv_core::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
-/// Execute env load command - evaluates config, checks approval, starts hook execution
-pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
-    let directory = PathBuf::from(path);
+/// Helper to check if env.cue exists and return early if not
+fn check_env_file(path: &Path) -> Result<PathBuf> {
+    let directory = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        PathBuf::from(path)
+    };
 
-    // Check if env.cue exists
     let env_file = directory.join("env.cue");
     if !env_file.exists() {
-        return Ok(format!("No env.cue file found in '{path}'"));
+        return Err(cuenv_core::Error::configuration(format!(
+            "No env.cue file found in '{}'",
+            path.display()
+        )));
     }
 
     // Canonicalize the path to ensure consistency
-    let directory = directory.canonicalize().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to canonicalize path: {e}"))
-    })?;
+    directory
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to canonicalize path: {e}")))
+}
 
-    // Evaluate the CUE configuration
+/// Helper to evaluate CUE configuration
+fn evaluate_config(directory: &Path, package: &str) -> Result<Value> {
     let evaluator = CueEvaluator::builder().build()?;
-    let json_result = evaluator.evaluate(&directory, package)?;
-    let config: Value = serde_json::from_str(&json_result).map_err(|e| {
+    let json_result = evaluator.evaluate(directory, package)?;
+    serde_json::from_str(&json_result).map_err(|e| {
         cuenv_core::Error::configuration(format!(
             "Failed to parse CUE output: {e}\nRaw output: {json_result}"
         ))
-    })?;
+    })
+}
+
+/// Helper to get config hash from approval manager or compute it
+fn get_config_hash(
+    directory: &Path,
+    package: &str,
+    approval_manager: &ApprovalManager,
+) -> Result<String> {
+    if let Some(approval) = approval_manager.get_approval(directory.to_str().unwrap_or("")) {
+        Ok(approval.config_hash.clone())
+    } else {
+        // If not approved, compute it from current config
+        let config = evaluate_config(directory, package)?;
+        Ok(cuenv_core::hooks::approval::compute_config_hash(&config))
+    }
+}
+
+/// Execute env load command - evaluates config, checks approval, starts hook execution
+pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
+    // Check env.cue and canonicalize path
+    let Ok(directory) = check_env_file(Path::new(path)) else {
+        return Ok(format!("No env.cue file found in '{path}'"));
+    };
+
+    // Evaluate the CUE configuration
+    let config = evaluate_config(&directory, package)?;
 
     // Check approval status
     let mut approval_manager = ApprovalManager::with_default_file()?;
@@ -61,16 +95,7 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
                 .execute_hooks_background(directory.clone(), config_hash, hooks)
                 .await?;
 
-            // If no shell integration is active, provide preexec hook for manual eval
-            if std::env::var("CUENV_SHELL_INTEGRATION").is_err() {
-                let shell = detect_current_shell();
-                let preexec_script = generate_standalone_preexec(path, shell);
-                Ok(format!(
-                    "{result}\n\nTo load environment when hooks complete, eval this:\n{preexec_script}"
-                ))
-            } else {
-                Ok(result)
-            }
+            Ok(result)
         }
         ApprovalStatus::RequiresApproval { current_hash } => {
             let summary = ConfigSummary::from_json(&config);
@@ -106,29 +131,15 @@ pub async fn execute_env_status(
     wait: bool,
     timeout_seconds: u64,
 ) -> Result<String> {
-    let directory = PathBuf::from(path);
-
-    // Check if env.cue exists
-    let env_file = directory.join("env.cue");
-    if !env_file.exists() {
+    // Check env.cue and canonicalize path
+    let Ok(directory) = check_env_file(Path::new(path)) else {
         return Ok(format!("No env.cue file found in '{path}'"));
-    }
+    };
 
-    // Get the config hash from the approval state or compute it
+    // Get the config hash
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
-
-    let config_hash = if let Some(approval) = approval_manager.get_approval(path) {
-        approval.config_hash.clone()
-    } else {
-        // If not approved, compute it from current config
-        let evaluator = CueEvaluator::builder().build()?;
-        let json_result = evaluator.evaluate(&directory, package)?;
-        let config: Value = serde_json::from_str(&json_result).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
-        })?;
-        cuenv_core::hooks::approval::compute_config_hash(&config)
-    };
+    let config_hash = get_config_hash(&directory, package, &approval_manager)?;
 
     let executor = HookExecutor::with_default_config()?;
 
@@ -171,36 +182,11 @@ pub async fn execute_env_status(
 
 /// Execute allow command - approve current directory's configuration
 pub async fn execute_allow(path: &str, package: &str, note: Option<String>) -> Result<String> {
-    let directory = PathBuf::from(path);
-
-    // Check if directory exists
-    if !directory.exists() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "Directory does not exist: {path}"
-        )));
-    }
-
-    // Canonicalize the path to ensure consistency
-    let directory = directory.canonicalize().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to canonicalize path: {e}"))
-    })?;
-
-    // Check if env.cue exists
-    let env_file = directory.join("env.cue");
-    if !env_file.exists() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "No env.cue file found in directory: {path}"
-        )));
-    }
+    // Check env.cue and canonicalize path
+    let directory = check_env_file(Path::new(path))?;
 
     // Evaluate the CUE configuration
-    let evaluator = CueEvaluator::builder().build()?;
-    let json_result = evaluator.evaluate(&directory, package)?;
-    let config: Value = serde_json::from_str(&json_result).map_err(|e| {
-        cuenv_core::Error::configuration(format!(
-            "Failed to parse CUE output: {e}\nRaw output: {json_result}"
-        ))
-    })?;
+    let config = evaluate_config(&directory, package)?;
 
     // Compute configuration hash
     let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config);
@@ -245,30 +231,15 @@ pub async fn execute_env_check(
     package: &str,
     shell: crate::cli::ShellType,
 ) -> Result<String> {
-    let directory = PathBuf::from(path);
-
-    // Check if env.cue exists
-    let env_file = directory.join("env.cue");
-    if !env_file.exists() {
+    // Check env.cue and canonicalize path - silent return if no env.cue
+    let Ok(directory) = check_env_file(Path::new(path)) else {
         return Ok(String::new()); // Silent return for non-cuenv directories
-    }
+    };
 
-    // Get the config hash from the approval state
+    // Get the config hash
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
-
-    // Get the config hash for this directory
-    let config_hash = if let Some(approval) = approval_manager.get_approval(path) {
-        approval.config_hash.clone()
-    } else {
-        // If not approved, compute it from current config
-        let evaluator = CueEvaluator::builder().build()?;
-        let json_result = evaluator.evaluate(&directory, package)?;
-        let config: Value = serde_json::from_str(&json_result).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
-        })?;
-        cuenv_core::hooks::approval::compute_config_hash(&config)
-    };
+    let config_hash = get_config_hash(&directory, package, &approval_manager)?;
 
     let executor = HookExecutor::with_default_config()?;
 
@@ -283,11 +254,7 @@ pub async fn execute_env_check(
         let mut all_env_vars = HashMap::new();
 
         // First, get environment variables from CUE configuration
-        let evaluator = CueEvaluator::builder().build()?;
-        let json_result = evaluator.evaluate(&directory, package)?;
-        let config: Value = serde_json::from_str(&json_result).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to parse CUE output: {e}"))
-        })?;
+        let config = evaluate_config(&directory, package)?;
 
         // Add CUE env variables to our map
         if let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) {
@@ -334,77 +301,6 @@ pub fn execute_shell_init(shell: crate::cli::ShellType) -> String {
         crate::cli::ShellType::Fish => generate_fish_integration(),
         crate::cli::ShellType::Bash => generate_bash_integration(),
         crate::cli::ShellType::Zsh => generate_zsh_integration(),
-    }
-}
-
-/// Detect the current shell from environment
-fn detect_current_shell() -> crate::cli::ShellType {
-    // Try to detect from SHELL environment variable
-    if let Ok(shell_path) = std::env::var("SHELL") {
-        if shell_path.contains("fish") {
-            return crate::cli::ShellType::Fish;
-        } else if shell_path.contains("bash") {
-            return crate::cli::ShellType::Bash;
-        } else if shell_path.contains("zsh") {
-            return crate::cli::ShellType::Zsh;
-        }
-    }
-
-    // Default to bash if we can't detect
-    crate::cli::ShellType::Bash
-}
-
-/// Generate standalone preexec hook for manual evaluation
-fn generate_standalone_preexec(path: &str, shell: crate::cli::ShellType) -> String {
-    match shell {
-        crate::cli::ShellType::Fish => format!(
-            r#"# Eval this to load environment when hooks complete:
-set -g __cuenv_pending_dir "{path}"
-function __cuenv_check_hooks --on-event fish_preexec
-    if test -n "$__cuenv_pending_dir"
-        set -l env_exports (cuenv env check --path "$__cuenv_pending_dir" --shell fish 2>/dev/null)
-        if test -n "$env_exports"
-            eval $env_exports
-            echo "[cuenv] Environment loaded for $__cuenv_pending_dir"
-            set -e __cuenv_pending_dir
-            functions -e __cuenv_check_hooks
-        end
-    end
-end"#
-        ),
-        crate::cli::ShellType::Bash => format!(
-            r#"# Eval this to load environment when hooks complete:
-__cuenv_pending_dir="{path}"
-__cuenv_preexec() {{
-    if [[ -n "$__cuenv_pending_dir" ]]; then
-        local env_exports=$(cuenv env check --path "$__cuenv_pending_dir" --shell bash 2>/dev/null)
-        if [[ -n "$env_exports" ]]; then
-            eval "$env_exports"
-            echo "[cuenv] Environment loaded for $__cuenv_pending_dir"
-            unset __cuenv_pending_dir
-            trap - DEBUG
-        fi
-    fi
-}}
-trap '__cuenv_preexec' DEBUG"#
-        ),
-        crate::cli::ShellType::Zsh => format!(
-            r#"# Eval this to load environment when hooks complete:
-__cuenv_pending_dir="{path}"
-__cuenv_preexec() {{
-    if [[ -n "$__cuenv_pending_dir" ]]; then
-        local env_exports=$(cuenv env check --path "$__cuenv_pending_dir" --shell zsh 2>/dev/null)
-        if [[ -n "$env_exports" ]]; then
-            eval "$env_exports"
-            echo "[cuenv] Environment loaded for $__cuenv_pending_dir"
-            unset __cuenv_pending_dir
-            add-zsh-hook -d preexec __cuenv_preexec
-        fi
-    fi
-}}
-autoload -U add-zsh-hook
-add-zsh-hook preexec __cuenv_preexec"#
-        ),
     }
 }
 
