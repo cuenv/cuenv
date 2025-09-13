@@ -427,13 +427,19 @@ async fn execute_task_command_safe(
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
 
-    // TODO: Fix task_executor import issues
-    eprintln!("Task command is temporarily disabled");
-    perf_guard.finish(false);
-    Err(CliError::eval_with_help(
-        "Task command is temporarily disabled".to_string(),
-        "This command will be re-enabled once task module issues are resolved",
-    ))
+    let result = commands::task::execute_task(&path, &package, name.as_deref(), false).await;
+
+    match result {
+        Ok(output) => {
+            println!("{output}");
+            perf_guard.finish(true);
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval(e.to_string()))
+        }
+    }
 }
 
 /// Execute exec command safely
@@ -447,13 +453,21 @@ async fn execute_exec_command_safe(
     let mut perf_guard = performance::PerformanceGuard::new("exec_command");
     perf_guard.add_metadata("command_type", "exec");
 
-    // TODO: Fix task_executor import issues
-    eprintln!("Exec command is temporarily disabled");
-    perf_guard.finish(false);
-    Err(CliError::eval_with_help(
-        "Exec command is temporarily disabled".to_string(),
-        "This command will be re-enabled once task module issues are resolved",
-    ))
+    let result = commands::exec::execute_exec(&path, &package, &command, &args).await;
+
+    match result {
+        Ok(exit_code) => {
+            perf_guard.finish(exit_code == 0);
+            if exit_code != 0 {
+                std::process::exit(exit_code);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            Err(CliError::eval(e.to_string()))
+        }
+    }
 }
 
 /// Run as a hook supervisor process

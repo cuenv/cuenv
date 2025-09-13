@@ -63,9 +63,11 @@ fn test_parse_task_basic_example() {
 
             // Verify we got the expected values
             assert_eq!(env.get("NAME"), Some("Jack O'Neill"));
-            assert_eq!(env.get("TITLE"), Some("Colonel"));
-            assert!(cuenv.tasks.contains_key("greet"));
-            assert!(cuenv.tasks.contains_key("serve"));
+            // Verify expected tasks exist
+            assert!(cuenv.tasks.contains_key("interpolate"));
+            assert!(cuenv.tasks.contains_key("propagate"));
+            assert!(cuenv.tasks.contains_key("greetAll"));
+            assert!(cuenv.tasks.contains_key("shellExample"));
         }
         Err(e) => {
             println!("\nFailed to parse as Cuenv: {e}");
