@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/nix-installer-action@v20
 
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/nix-installer-action@v20
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -102,7 +102,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/nix-installer-action@v20
 
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
@@ -132,7 +132,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/nix-installer-action@v20
 
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
@@ -159,7 +159,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/nix-installer-action@v20
 
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
