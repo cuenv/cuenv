@@ -6,8 +6,6 @@ import "github.com/cuenv/cuenv/schema"
 schema.#Cuenv & {
 	config: {
 		outputFormat: "json"
-		cacheMode: "read-write"
-		cacheEnabled: true
 	}
 	
 	env: {
