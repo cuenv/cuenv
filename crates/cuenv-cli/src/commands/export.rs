@@ -7,7 +7,6 @@
 
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
-    environment::EnvValue,
     hooks::{
         approval::{check_approval_status, ApprovalManager, ApprovalStatus},
         executor::HookExecutor,
@@ -153,15 +152,12 @@ fn extract_static_env_vars(config: &Cuenv) -> HashMap<String, String> {
 
     if let Some(env) = &config.env {
         for (key, value) in &env.base {
-            let value_str = match value {
-                EnvValue::String(s) => s.clone(),
-                EnvValue::Int(i) => i.to_string(),
-                EnvValue::Bool(b) => b.to_string(),
-                EnvValue::Secret(_secret) => {
-                    // For now, skip secrets or handle them specially
-                    continue;
-                }
-            };
+            // Use to_string_value for consistent handling
+            let value_str = value.to_string_value();
+            if value_str == "[SECRET]" {
+                // Skip secrets in export
+                continue;
+            }
             env_vars.insert(key.clone(), value_str);
         }
     }

@@ -6,8 +6,6 @@ import "github.com/cuenv/cuenv/schema"
 schema.#Cuenv & {
 	config: {
 		outputFormat: "json"
-		cacheMode: "read-write"
-		cacheEnabled: true
 	}
 	
 	env: {
@@ -51,7 +49,7 @@ schema.#Cuenv & {
 			description: "Run tests"
 			command: "cargo"
 			args: ["test"]
-			depends_on: ["build"]
+			dependsOn: ["build"]
 		}
 	}
 }
