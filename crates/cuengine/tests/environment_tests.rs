@@ -47,12 +47,11 @@ fn test_parse_task_basic_example() {
             let mut env = Environment::new();
             if let Some(env_config) = &cuenv.env {
                 for (key, value) in &env_config.base {
-                    let value_str = match value {
-                        EnvValue::String(s) => s.clone(),
-                        EnvValue::Int(i) => i.to_string(),
-                        EnvValue::Bool(b) => b.to_string(),
-                        EnvValue::Secret(_) => continue,
-                    };
+                    // Use the to_string_value method that handles all variants
+                    let value_str = value.to_string_value();
+                    if value_str == "[SECRET]" {
+                        continue; // Skip secrets
+                    }
                     env.set(key.clone(), value_str);
                 }
             }
