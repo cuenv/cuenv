@@ -140,7 +140,7 @@ impl TaskGraph {
 
         // Collect all dependency relationships
         for (node_index, node) in self.graph.node_references() {
-            for dep_name in &node.task.dependencies {
+            for dep_name in &node.task.depends_on {
                 if let Some(&dep_node_index) = self.name_to_node.get(dep_name as &str) {
                     // Record edge to add later
                     edges_to_add.push((dep_node_index, node_index));
@@ -210,7 +210,7 @@ impl TaskGraph {
         for task in sorted {
             // Find the maximum level of all dependencies
             let mut level = 0;
-            for dep in &task.task.dependencies {
+            for dep in &task.task.depends_on {
                 if let Some(&dep_level) = processed.get(dep) {
                     level = level.max(dep_level + 1);
                 }
@@ -277,7 +277,7 @@ impl TaskGraph {
                     TaskDefinition::Single(task) => {
                         self.add_task(&current_name, task.clone())?;
                         // Add dependencies to processing queue
-                        for dep in &task.dependencies {
+                        for dep in &task.depends_on {
                             if !processed.contains(dep) {
                                 to_process.push(dep.clone());
                             }
@@ -314,8 +314,7 @@ mod tests {
             args: vec![],
             shell: None,
             env: HashMap::new(),
-            dependencies: deps,
-            depends_on: vec![],
+            depends_on: deps,
             inputs: vec![],
             outputs: vec![],
             description: Some(format!("Test task {}", name)),

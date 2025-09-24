@@ -444,19 +444,19 @@ tasks: {
     build: {
         command: "echo"
         args: ["Building after init"]
-        dependencies: ["init"]
+        dependsOn: ["init"]
     }
     
     test: {
         command: "echo"
         args: ["Testing after build"]
-        dependencies: ["build"]
+        dependsOn: ["build"]
     }
     
     deploy: {
         command: "echo"
         args: ["Deploying after test"]
-        dependencies: ["test"]
+        dependsOn: ["test"]
     }
 }"#;
 

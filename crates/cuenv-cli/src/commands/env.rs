@@ -1,5 +1,5 @@
 use cuengine::{CueEvaluator, Cuenv};
-use cuenv_core::{environment::EnvValue, Result};
+use cuenv_core::Result;
 use std::path::Path;
 use tracing::instrument;
 
@@ -47,15 +47,12 @@ fn format_as_env_vars(env: &cuenv_core::environment::Env) -> String {
 
     for key in keys {
         let value = &env.base[key];
-        let formatted_value = match value {
-            EnvValue::String(s) => s.clone(),
-            EnvValue::Int(i) => i.to_string(),
-            EnvValue::Bool(b) => b.to_string(),
-            EnvValue::Secret(_) => {
-                // For now, skip secrets in env output
-                continue;
-            }
-        };
+        // Use to_string_value for consistent handling
+        let formatted_value = value.to_string_value();
+        if formatted_value == "[SECRET]" {
+            // Skip secrets in env output
+            continue;
+        }
         lines.push(format!("{key}={formatted_value}"));
     }
 
