@@ -141,7 +141,7 @@ async fn execute_task_with_strategy(
                 .await
         }
         TaskDefinition::Single(task) => {
-            if task.dependencies.is_empty() {
+            if task.depends_on.is_empty() {
                 // Single task with no dependencies - use direct execution
                 executor
                     .execute_definition(task_name, task_def, all_tasks)

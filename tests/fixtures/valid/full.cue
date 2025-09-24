@@ -51,7 +51,7 @@ schema.#Cuenv & {
 			description: "Run tests"
 			command: "cargo"
 			args: ["test"]
-			depends_on: ["build"]
+			dependsOn: ["build"]
 		}
 	}
 }
