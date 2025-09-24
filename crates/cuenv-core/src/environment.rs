@@ -95,7 +95,7 @@ impl EnvValue {
 
             // Check policies for restricted variables
             EnvValue::WithPolicies(var) => match &var.policies {
-                None => true, // No policies means accessible
+                None => true,                                  // No policies means accessible
                 Some(policies) if policies.is_empty() => true, // Empty policies means accessible
                 Some(policies) => {
                     // Check if any policy allows this task
@@ -103,7 +103,7 @@ impl EnvValue {
                         policy
                             .allow_tasks
                             .as_ref()
-                            .is_some_and(|tasks| tasks.contains(&task_name.to_string()))
+                            .is_some_and(|tasks| tasks.iter().any(|t| t == task_name))
                     })
                 }
             },
@@ -120,7 +120,7 @@ impl EnvValue {
 
             // Check policies for restricted variables
             EnvValue::WithPolicies(var) => match &var.policies {
-                None => true, // No policies means accessible
+                None => true,                                  // No policies means accessible
                 Some(policies) if policies.is_empty() => true, // Empty policies means accessible
                 Some(policies) => {
                     // Check if any policy allows this exec command
@@ -128,7 +128,7 @@ impl EnvValue {
                         policy
                             .allow_exec
                             .as_ref()
-                            .is_some_and(|execs| execs.contains(&command.to_string()))
+                            .is_some_and(|execs| execs.iter().any(|e| e == command))
                     })
                 }
             },
@@ -421,7 +421,10 @@ mod tests {
 
     #[test]
     fn test_to_string_value() {
-        assert_eq!(EnvValue::String("test".to_string()).to_string_value(), "test");
+        assert_eq!(
+            EnvValue::String("test".to_string()).to_string_value(),
+            "test"
+        );
         assert_eq!(EnvValue::Int(42).to_string_value(), "42");
         assert_eq!(EnvValue::Bool(true).to_string_value(), "true");
         assert_eq!(EnvValue::Bool(false).to_string_value(), "false");
@@ -438,7 +441,10 @@ mod tests {
         let mut env_vars = HashMap::new();
 
         // Unrestricted variable
-        env_vars.insert("PUBLIC".to_string(), EnvValue::String("public_value".to_string()));
+        env_vars.insert(
+            "PUBLIC".to_string(),
+            EnvValue::String("public_value".to_string()),
+        );
 
         // Restricted variable
         env_vars.insert(
@@ -470,7 +476,10 @@ mod tests {
         let mut env_vars = HashMap::new();
 
         // Unrestricted variable
-        env_vars.insert("PUBLIC".to_string(), EnvValue::String("public_value".to_string()));
+        env_vars.insert(
+            "PUBLIC".to_string(),
+            EnvValue::String("public_value".to_string()),
+        );
 
         // Restricted variable
         env_vars.insert(
