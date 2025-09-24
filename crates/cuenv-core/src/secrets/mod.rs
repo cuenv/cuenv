@@ -23,7 +23,7 @@ pub struct ExecResolver {
 pub struct Secret {
     /// Resolver type (currently only "exec" is supported)
     pub resolver: String,
-    
+
     /// Command to execute
     pub command: String,
 

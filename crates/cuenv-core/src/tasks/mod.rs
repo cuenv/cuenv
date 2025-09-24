@@ -41,11 +41,7 @@ pub struct Task {
     pub env: HashMap<String, serde_json::Value>,
 
     /// Task dependencies (names of tasks that must run first)
-    #[serde(default)]
-    pub dependencies: Vec<String>,
-
-    /// Alternative name for dependencies
-    #[serde(default)]
+    #[serde(default, rename = "dependsOn")]
     pub depends_on: Vec<String>,
 
     /// Input files/resources
@@ -186,7 +182,6 @@ mod tests {
             shell: None,
             args: vec![],
             env: HashMap::new(),
-            dependencies: vec![],
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -219,7 +214,6 @@ mod tests {
             args: vec!["first".to_string()],
             shell: None,
             env: HashMap::new(),
-            dependencies: vec![],
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -231,7 +225,6 @@ mod tests {
             args: vec!["second".to_string()],
             shell: None,
             env: HashMap::new(),
-            dependencies: vec![],
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -255,7 +248,6 @@ mod tests {
             args: vec!["task1".to_string()],
             shell: None,
             env: HashMap::new(),
-            dependencies: vec![],
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -267,7 +259,6 @@ mod tests {
             args: vec!["task2".to_string()],
             shell: None,
             env: HashMap::new(),
-            dependencies: vec![],
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -295,7 +286,6 @@ mod tests {
             args: vec!["hello".to_string()],
             shell: None,
             env: HashMap::new(),
-            dependencies: vec![],
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -321,7 +311,6 @@ mod tests {
             shell: None,
             args: vec![],
             env: HashMap::new(),
-            dependencies: vec![],
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],

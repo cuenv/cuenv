@@ -67,15 +67,10 @@ pub async fn execute_task(
     // Set up environment from manifest
     let mut environment = Environment::new();
     if let Some(env) = &manifest.env {
-        for (key, value) in &env.base {
-            use cuenv_core::environment::EnvValue;
-            let value_str = match value {
-                EnvValue::String(s) => s.clone(),
-                EnvValue::Int(i) => i.to_string(),
-                EnvValue::Bool(b) => b.to_string(),
-                EnvValue::Secret(_) => continue,
-            };
-            environment.set(key.clone(), value_str);
+        // Build environment for task, applying policies
+        let env_vars = cuenv_core::environment::Environment::build_for_task(task_name, &env.base);
+        for (key, value) in env_vars {
+            environment.set(key, value);
         }
     }
 
@@ -141,7 +136,7 @@ async fn execute_task_with_strategy(
                 .await
         }
         TaskDefinition::Single(task) => {
-            if task.dependencies.is_empty() {
+            if task.depends_on.is_empty() {
                 // Single task with no dependencies - use direct execution
                 executor
                     .execute_definition(task_name, task_def, all_tasks)
