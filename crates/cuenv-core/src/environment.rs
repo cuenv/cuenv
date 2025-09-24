@@ -8,11 +8,47 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 
-/// Environment variable values can be strings, integers, booleans, or secrets
+/// Policy for controlling environment variable access
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct Policy {
+    /// Allowlist of task names that can access this variable
+    #[serde(skip_serializing_if = "Option::is_none", rename = "allowTasks")]
+    pub allow_tasks: Option<Vec<String>>,
+
+    /// Allowlist of exec commands that can access this variable
+    #[serde(skip_serializing_if = "Option::is_none", rename = "allowExec")]
+    pub allow_exec: Option<Vec<String>>,
+}
+
+/// Environment variable with optional access policies
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct EnvVarWithPolicies {
+    /// The actual value
+    pub value: EnvValueSimple,
+
+    /// Optional access policies
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<Policy>>,
+}
+
+/// Simple environment variable values (non-recursive)
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
+pub enum EnvValueSimple {
+    String(String),
+    Int(i64),
+    Bool(bool),
+    Secret(crate::secrets::Secret),
+}
+
+/// Environment variable values can be strings, integers, booleans, secrets, or values with policies
 /// When exported to actual environment, these will always be strings
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(untagged)]
 pub enum EnvValue {
+    // Value with policies must come first for serde untagged to try it first
+    WithPolicies(EnvVarWithPolicies),
+    // Simple values (backward compatible)
     String(String),
     Int(i64),
     Bool(bool),
@@ -45,6 +81,74 @@ impl Env {
         }
 
         result
+    }
+}
+
+impl EnvValue {
+    /// Check if a task has access to this environment variable
+    pub fn is_accessible_by_task(&self, task_name: &str) -> bool {
+        match self {
+            // Simple values are always accessible
+            EnvValue::String(_) | EnvValue::Int(_) | EnvValue::Bool(_) | EnvValue::Secret(_) => {
+                true
+            }
+
+            // Check policies for restricted variables
+            EnvValue::WithPolicies(var) => match &var.policies {
+                None => true, // No policies means accessible
+                Some(policies) if policies.is_empty() => true, // Empty policies means accessible
+                Some(policies) => {
+                    // Check if any policy allows this task
+                    policies.iter().any(|policy| {
+                        policy
+                            .allow_tasks
+                            .as_ref()
+                            .is_some_and(|tasks| tasks.contains(&task_name.to_string()))
+                    })
+                }
+            },
+        }
+    }
+
+    /// Check if an exec command has access to this environment variable
+    pub fn is_accessible_by_exec(&self, command: &str) -> bool {
+        match self {
+            // Simple values are always accessible
+            EnvValue::String(_) | EnvValue::Int(_) | EnvValue::Bool(_) | EnvValue::Secret(_) => {
+                true
+            }
+
+            // Check policies for restricted variables
+            EnvValue::WithPolicies(var) => match &var.policies {
+                None => true, // No policies means accessible
+                Some(policies) if policies.is_empty() => true, // Empty policies means accessible
+                Some(policies) => {
+                    // Check if any policy allows this exec command
+                    policies.iter().any(|policy| {
+                        policy
+                            .allow_exec
+                            .as_ref()
+                            .is_some_and(|execs| execs.contains(&command.to_string()))
+                    })
+                }
+            },
+        }
+    }
+
+    /// Get the actual string value of the environment variable
+    pub fn to_string_value(&self) -> String {
+        match self {
+            EnvValue::String(s) => s.clone(),
+            EnvValue::Int(i) => i.to_string(),
+            EnvValue::Bool(b) => b.to_string(),
+            EnvValue::Secret(_) => "[SECRET]".to_string(), // Placeholder for secrets
+            EnvValue::WithPolicies(var) => match &var.value {
+                EnvValueSimple::String(s) => s.clone(),
+                EnvValueSimple::Int(i) => i.to_string(),
+                EnvValueSimple::Bool(b) => b.to_string(),
+                EnvValueSimple::Secret(_) => "[SECRET]".to_string(),
+            },
+        }
     }
 }
 
@@ -124,6 +228,30 @@ impl Environment {
     /// Iterate over environment variables
     pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
         self.vars.iter()
+    }
+
+    /// Build environment for a task, filtering based on policies
+    pub fn build_for_task(
+        task_name: &str,
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> HashMap<String, String> {
+        env_vars
+            .iter()
+            .filter(|(_, value)| value.is_accessible_by_task(task_name))
+            .map(|(key, value)| (key.clone(), value.to_string_value()))
+            .collect()
+    }
+
+    /// Build environment for exec command, filtering based on policies
+    pub fn build_for_exec(
+        command: &str,
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> HashMap<String, String> {
+        env_vars
+            .iter()
+            .filter(|(_, value)| value.is_accessible_by_exec(command))
+            .map(|(key, value)| (key.clone(), value.to_string_value()))
+            .collect()
     }
 }
 
@@ -208,6 +336,165 @@ mod tests {
         assert_eq!(str_val, EnvValue::String("test".to_string()));
         assert_eq!(int_val, EnvValue::Int(42));
         assert_eq!(bool_val, EnvValue::Bool(true));
+    }
+
+    #[test]
+    fn test_policy_task_access() {
+        // Simple value - always accessible
+        let simple_var = EnvValue::String("simple".to_string());
+        assert!(simple_var.is_accessible_by_task("any_task"));
+
+        // Variable with no policies - accessible
+        let no_policy_var = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("value".to_string()),
+            policies: None,
+        });
+        assert!(no_policy_var.is_accessible_by_task("any_task"));
+
+        // Variable with empty policies - accessible
+        let empty_policy_var = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("value".to_string()),
+            policies: Some(vec![]),
+        });
+        assert!(empty_policy_var.is_accessible_by_task("any_task"));
+
+        // Variable with task restrictions
+        let restricted_var = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("secret".to_string()),
+            policies: Some(vec![Policy {
+                allow_tasks: Some(vec!["deploy".to_string(), "release".to_string()]),
+                allow_exec: None,
+            }]),
+        });
+        assert!(restricted_var.is_accessible_by_task("deploy"));
+        assert!(restricted_var.is_accessible_by_task("release"));
+        assert!(!restricted_var.is_accessible_by_task("test"));
+        assert!(!restricted_var.is_accessible_by_task("build"));
+    }
+
+    #[test]
+    fn test_policy_exec_access() {
+        // Simple value - always accessible
+        let simple_var = EnvValue::String("simple".to_string());
+        assert!(simple_var.is_accessible_by_exec("bash"));
+
+        // Variable with exec restrictions
+        let restricted_var = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("secret".to_string()),
+            policies: Some(vec![Policy {
+                allow_tasks: None,
+                allow_exec: Some(vec!["kubectl".to_string(), "terraform".to_string()]),
+            }]),
+        });
+        assert!(restricted_var.is_accessible_by_exec("kubectl"));
+        assert!(restricted_var.is_accessible_by_exec("terraform"));
+        assert!(!restricted_var.is_accessible_by_exec("bash"));
+        assert!(!restricted_var.is_accessible_by_exec("sh"));
+    }
+
+    #[test]
+    fn test_multiple_policies() {
+        // Variable with multiple policies - should allow if ANY policy allows
+        let multi_policy_var = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("value".to_string()),
+            policies: Some(vec![
+                Policy {
+                    allow_tasks: Some(vec!["task1".to_string()]),
+                    allow_exec: None,
+                },
+                Policy {
+                    allow_tasks: Some(vec!["task2".to_string()]),
+                    allow_exec: Some(vec!["kubectl".to_string()]),
+                },
+            ]),
+        });
+
+        // Task access - either policy allows
+        assert!(multi_policy_var.is_accessible_by_task("task1"));
+        assert!(multi_policy_var.is_accessible_by_task("task2"));
+        assert!(!multi_policy_var.is_accessible_by_task("task3"));
+
+        // Exec access - only second policy has exec rules
+        assert!(multi_policy_var.is_accessible_by_exec("kubectl"));
+        assert!(!multi_policy_var.is_accessible_by_exec("bash"));
+    }
+
+    #[test]
+    fn test_to_string_value() {
+        assert_eq!(EnvValue::String("test".to_string()).to_string_value(), "test");
+        assert_eq!(EnvValue::Int(42).to_string_value(), "42");
+        assert_eq!(EnvValue::Bool(true).to_string_value(), "true");
+        assert_eq!(EnvValue::Bool(false).to_string_value(), "false");
+
+        let with_policies = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("policy_value".to_string()),
+            policies: Some(vec![]),
+        });
+        assert_eq!(with_policies.to_string_value(), "policy_value");
+    }
+
+    #[test]
+    fn test_build_for_task() {
+        let mut env_vars = HashMap::new();
+
+        // Unrestricted variable
+        env_vars.insert("PUBLIC".to_string(), EnvValue::String("public_value".to_string()));
+
+        // Restricted variable
+        env_vars.insert(
+            "SECRET".to_string(),
+            EnvValue::WithPolicies(EnvVarWithPolicies {
+                value: EnvValueSimple::String("secret_value".to_string()),
+                policies: Some(vec![Policy {
+                    allow_tasks: Some(vec!["deploy".to_string()]),
+                    allow_exec: None,
+                }]),
+            }),
+        );
+
+        // Build for deploy task - should get both
+        let deploy_env = Environment::build_for_task("deploy", &env_vars);
+        assert_eq!(deploy_env.len(), 2);
+        assert_eq!(deploy_env.get("PUBLIC"), Some(&"public_value".to_string()));
+        assert_eq!(deploy_env.get("SECRET"), Some(&"secret_value".to_string()));
+
+        // Build for test task - should only get public
+        let test_env = Environment::build_for_task("test", &env_vars);
+        assert_eq!(test_env.len(), 1);
+        assert_eq!(test_env.get("PUBLIC"), Some(&"public_value".to_string()));
+        assert_eq!(test_env.get("SECRET"), None);
+    }
+
+    #[test]
+    fn test_build_for_exec() {
+        let mut env_vars = HashMap::new();
+
+        // Unrestricted variable
+        env_vars.insert("PUBLIC".to_string(), EnvValue::String("public_value".to_string()));
+
+        // Restricted variable
+        env_vars.insert(
+            "SECRET".to_string(),
+            EnvValue::WithPolicies(EnvVarWithPolicies {
+                value: EnvValueSimple::String("secret_value".to_string()),
+                policies: Some(vec![Policy {
+                    allow_tasks: None,
+                    allow_exec: Some(vec!["kubectl".to_string()]),
+                }]),
+            }),
+        );
+
+        // Build for kubectl - should get both
+        let kubectl_env = Environment::build_for_exec("kubectl", &env_vars);
+        assert_eq!(kubectl_env.len(), 2);
+        assert_eq!(kubectl_env.get("PUBLIC"), Some(&"public_value".to_string()));
+        assert_eq!(kubectl_env.get("SECRET"), Some(&"secret_value".to_string()));
+
+        // Build for bash - should only get public
+        let bash_env = Environment::build_for_exec("bash", &env_vars);
+        assert_eq!(bash_env.len(), 1);
+        assert_eq!(bash_env.get("PUBLIC"), Some(&"public_value".to_string()));
+        assert_eq!(bash_env.get("SECRET"), None);
     }
 
     #[test]

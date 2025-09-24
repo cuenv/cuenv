@@ -28,15 +28,10 @@ pub async fn execute_exec(
     // Set up environment from manifest
     let mut environment = Environment::new();
     if let Some(env) = &manifest.env {
-        for (key, value) in &env.base {
-            use cuenv_core::environment::EnvValue;
-            let value_str = match value {
-                EnvValue::String(s) => s.clone(),
-                EnvValue::Int(i) => i.to_string(),
-                EnvValue::Bool(b) => b.to_string(),
-                EnvValue::Secret(_) => continue,
-            };
-            environment.set(key.clone(), value_str);
+        // Build environment for exec command, applying policies
+        let env_vars = cuenv_core::environment::Environment::build_for_exec(command, &env.base);
+        for (key, value) in env_vars {
+            environment.set(key, value);
         }
     }
 
