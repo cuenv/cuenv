@@ -1,3 +1,8 @@
+# Related Decisions
+# - ADR-0001 Hook Approval Gate for Environment Loading
+# - ADR-0002 Background Hook Execution with Shell Self-Unload
+# - RFC-0003 Shell Integration Workflow and Hook Lifecycle
+
 Feature: Shell Integration with Preexec Hooks
   As a developer
   I want hooks to execute in the background and load environment variables automatically
