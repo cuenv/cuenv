@@ -15,7 +15,7 @@ pub mod validation;
 
 // Re-export main types
 pub use builder::{CueEvaluator, CueEvaluatorBuilder};
-pub use cuenv_core::{manifest::Cuenv, Error, Result};
+pub use cuenv_core::{Error, Result, manifest::Cuenv};
 pub use retry::RetryConfig;
 
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,6 @@
 use std::fmt;
 use tokio::sync::mpsc;
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -102,7 +102,7 @@ impl Default for EventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     #[tokio::test]
     async fn test_event_bus_creation() {

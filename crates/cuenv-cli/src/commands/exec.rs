@@ -1,9 +1,9 @@
 //! Exec command implementation for running arbitrary commands with CUE environment
 
 use cuengine::{CueEvaluator, Cuenv};
+use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::tasks::execute_command;
-use cuenv_core::Result;
 use std::path::Path;
 
 /// Execute an arbitrary command with the CUE environment

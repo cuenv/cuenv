@@ -260,7 +260,7 @@ CUE evaluation fails with circular reference error
 
 - OS: Ubuntu 20.04
 - Rust: 1.75.0
-- cuenv: 0.1.0
+- cuenv: 0.1.1
 
 ## Steps to Reproduce
 
@@ -311,7 +311,7 @@ Include:
 cuenv follows Semantic Versioning:
 
 * **Major** (1.0.0): Breaking changes
-* **Minor** (0.1.0): New features, backwards compatible
+* **Minor** (0.1.x): New features, backwards compatible
 * **Patch** (0.1.1): Bug fixes
 
 ### Release Checklist

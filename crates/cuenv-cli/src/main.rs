@@ -15,7 +15,7 @@ mod performance;
 mod tracing;
 mod tui;
 
-use crate::cli::{exit_code_for, parse, render_error, CliError, OkEnvelope, EXIT_OK};
+use crate::cli::{CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, render_error};
 use crate::commands::Command;
 use crate::tracing::{Level, TracingConfig, TracingFormat};
 use cuenv_core::hooks::execute_hooks;

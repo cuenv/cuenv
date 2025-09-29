@@ -8,20 +8,20 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/cuenv/cuenv"
 homepage = "https://github.com/cuenv/cuenv"
 documentation = "https://docs.rs/cuenv"
-readme = "README.md"
+readme = "readme.md"
 keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
-cuenv-core = { path = "crates/cuenv-core", version = "0.1.0" }
-cuengine = { path = "crates/cuengine", version = "0.1.0" }
+cuenv-core = { path = "crates/cuenv-core", version = "0.1.1" }
+cuengine = { path = "crates/cuengine", version = "0.1.1" }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }

@@ -20,7 +20,7 @@ push = false
 # Pre-release checks
 pre-release-commit-message = "chore: Release {{crate_name}} v{{version}}"
 pre-release-replacements = [
-  { file = "README.md", search = "cuenv = \"[^\"]*\"", replace = "cuenv = \"{{version}}\"" },
+  { file = "readme.md", search = "cuenv = \"[^\"]*\"", replace = "cuenv = \"{{version}}\"" },
   { file = "CHANGELOG.md", search = "## Unreleased", replace = "## Unreleased\n\n## [{{version}}] - {{date}}" },
 ]
 
