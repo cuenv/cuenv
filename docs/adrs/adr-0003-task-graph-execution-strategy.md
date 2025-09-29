@@ -19,17 +19,21 @@ superseded_by: []
 ## Decision
 
 1. **Dual Execution Paths**
+
    - Tasks with no dependencies MUST execute directly via `TaskExecutor::execute_definition`.
    - Tasks with dependencies or group definitions MUST construct a `TaskGraph` and execute via `TaskExecutor::execute_graph`, respecting topological ordering.
 
 2. **Listing Behaviour**
+
    - Invoking `cuenv task` without arguments MUST list available tasks in deterministic order.
    - Missing task names MUST produce configuration errors with guidance.
 
 3. **Environment Injection**
+
    - The CLI MUST build a task-specific environment using `Environment::build_for_task`, applying base variables and policies before execution.
 
 4. **Failure Handling**
+
    - Any failing task in the graph MUST abort subsequent executions and surface a configuration error containing the failing task name and exit code.
 
 5. **Output Strategy**
@@ -43,10 +47,10 @@ superseded_by: []
 
 ## Alignment with Features
 
-| Feature Scenario | Impact |
-| --- | --- |
+| Feature Scenario                                                   | Impact                                                                        |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
 | [features/cli/task.feature](features/cli/task.feature:1) — Pending | Scenarios will validate listing, success, and failure behaviour defined here. |
-| [features/cli/help.feature](features/cli/help.feature:1) — Pending | Help text must explain graph vs direct execution referencing this decision. |
+| [features/cli/help.feature](features/cli/help.feature:1) — Pending | Help text must explain graph vs direct execution referencing this decision.   |
 
 ## Related Documents
 

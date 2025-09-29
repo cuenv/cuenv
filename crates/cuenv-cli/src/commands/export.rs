@@ -7,13 +7,13 @@
 
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
+    Result,
     hooks::{
-        approval::{check_approval_status, ApprovalManager, ApprovalStatus},
+        approval::{ApprovalManager, ApprovalStatus, check_approval_status},
         executor::HookExecutor,
         types::ExecutionStatus,
     },
     shell::Shell,
-    Result,
 };
 use std::collections::HashMap;
 use std::path::Path;

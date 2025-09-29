@@ -21,17 +21,21 @@ This ADR builds upon [docs/rfcs/rfc-0003-shell-integration-workflow-and-hook-lif
 ## Decision
 
 1. **Mandatory Approval**
+
    - `cuenv env load` MUST verify configuration approval (via `ApprovalManager`) before executing hooks.
    - Approved configurations are keyed by canonical directory path and configuration hash. Unapproved configurations result in instructional guidance instead of execution.
 
 2. **Feedback Messages**
+
    - When approval is missing or outdated, the CLI MUST return descriptive guidance, including truncated hashes and a summary derived from `ConfigSummary`.
    - Messages SHOULD direct users to `cuenv allow --path <dir>`.
 
 3. **Silent Handling of Missing Files**
+
    - If no `env.cue` is present, `env load` MUST respond with a no-op message stating the absence of configuration instead of surfacing an error.
 
 4. **Hashing Strategy**
+
    - Configuration hashes are computed from fully serialised manifests to capture effective changes.
    - Hash mismatches MUST invalidate prior approvals.
 
@@ -46,11 +50,11 @@ This ADR builds upon [docs/rfcs/rfc-0003-shell-integration-workflow-and-hook-lif
 
 ## Alignment with Features
 
-| Feature Scenario | Impact |
-| --- | --- |
-| [features/cli/hooks.feature](features/cli/hooks.feature:59) — Failed hooks do not load environment | Ensures approval gate prevents execution if configuration changes unapproved. |
-| [features/cli/hooks.feature](features/cli/hooks.feature:50) — Changing directories preserves state | Approval keying by canonical directory upholds this scenario. |
-| [features/cli/env.feature](features/cli/env.feature:1) — Pending scenarios | Must include cases for approved vs. unapproved configurations referencing this ADR. |
+| Feature Scenario                                                                                   | Impact                                                                              |
+| -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| [features/cli/hooks.feature](features/cli/hooks.feature:59) — Failed hooks do not load environment | Ensures approval gate prevents execution if configuration changes unapproved.       |
+| [features/cli/hooks.feature](features/cli/hooks.feature:50) — Changing directories preserves state | Approval keying by canonical directory upholds this scenario.                       |
+| [features/cli/env.feature](features/cli/env.feature:1) — Pending scenarios                         | Must include cases for approved vs. unapproved configurations referencing this ADR. |
 
 ## Related Documents
 

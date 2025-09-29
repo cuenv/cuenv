@@ -20,11 +20,8 @@
   nixConfig = {
     extra-substituters = [
       "https://cache.nixos.org"
-      "https://cache.flakehub.com"
     ];
-    extra-trusted-public-keys = [
-      "cache.flakehub.com-3:hJuILl5sVK4iKm86JzgdXW12Y2Hwd5G07qKtHTOcDCM="
-    ];
+    extra-trusted-public-keys = [ ];
     experimental-features = [ "nix-command" "flakes" ];
     accept-flake-config = true;
   };
@@ -41,7 +38,7 @@
           inherit system;
         };
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
         };
 
@@ -60,7 +57,7 @@
         # CUE bridge builder
         mkCueBridge = pkgs: pkgs.buildGoModule {
           pname = "libcue-bridge";
-          version = "0.1.0";
+          version = "0.1.1";
           src = ./crates/cuengine;
           vendorHash = "sha256-mU40RCeO0R286fxfgONJ7kw6kFDHPMUzHw8sjsBgiRg";
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin darwinFrameworks;
@@ -141,7 +138,7 @@
         cuenv = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           pname = "cuenv";
-          version = "0.1.0";
+          version = "0.1.1";
         });
 
         # Individual crate builder helper

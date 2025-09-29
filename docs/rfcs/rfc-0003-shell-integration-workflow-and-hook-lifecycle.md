@@ -40,33 +40,38 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 ## Proposed Approach
 
 1. **Approval First**
+
    - Require `cuenv allow` to run before `env load` can initiate hooks, verifying configuration fingerprints using [ApprovalManager](crates/cuenv-cli/src/commands/hooks.rs:191).
    - Document responses for `Approved`, `RequiresApproval`, and `NotApproved` states.
 
 2. **Background Execution Contract**
+
    - Hooks execute asynchronously, with progress tracked via persistent state so `env status --wait` can poll reliably.
    - The current integration uses prompt- or directory-change hooks (PROMPT_COMMAND / precmd / on-variable PWD) that invoke an `export` flow on each prompt. Those handlers are designed to be safe and idempotent: when no work is required the export flow returns a fast no-op.
    - The runtime handles cancellation and state updates via `HookExecutor::cancel_execution` which marks the state as cancelled and attempts to signal supervisor processes. Shell-side handlers remain installed by default and will continue to run the export flow on subsequent prompts. If automatic handler deregistration (self-unload) is desired for UX reasons, a follow-up ADR should define the contract and cross-shell implementation plan.
 
 3. **Environment Loading**
+
    - Environment variables appear in the user's shell only after successful hook completion, as seen in `execute_env_check`.
    - Secrets remain redacted when streamed back to the shell (ties into RFC-0005/ADR-0004).
 
 4. **Shell Script Requirements**
+
    - Provide canonical scripts for Bash, Zsh, Fish (see generator functions around `generate_bash_integration`).
    - Ensure scripts set `CUENV_SHELL_INTEGRATION` and re-run `cuenv export` on prompt events.
 
 5. **Resilience and Edge Cases**
    - Hooks failing should prevent environment injection but still clean up supervisor state; shell-side handlers remain installed but are safe (subsequent prompts will perform no-op exports when appropriate).
-  - Changing directories mid-execution triggers cancellation paths in the executor (supervisor processes may be signalled and state marked as cancelled). The shell integration will run the export flow for the new directory on the next prompt, aligning behavior with the new context.
+
+- Changing directories mid-execution triggers cancellation paths in the executor (supervisor processes may be signalled and state marked as cancelled). The shell integration will run the export flow for the new directory on the next prompt, aligning behavior with the new context.
 
 ## Alternatives Considered
 
-| Option | Outcome | Reason Rejected |
-| --- | --- | --- |
-| Eager environment loading before hooks finish | Faster initial command | Violates dependency assumptions (e.g. secrets loaded by hooks) |
-| Serial synchronous hook execution | Simplified state | Unacceptable latency when hooks are long-running |
-| Shell-specific binaries instead of scripts | Better integration | Higher maintenance overhead, inconsistent with cross-shell philosophy |
+| Option                                        | Outcome                | Reason Rejected                                                       |
+| --------------------------------------------- | ---------------------- | --------------------------------------------------------------------- |
+| Eager environment loading before hooks finish | Faster initial command | Violates dependency assumptions (e.g. secrets loaded by hooks)        |
+| Serial synchronous hook execution             | Simplified state       | Unacceptable latency when hooks are long-running                      |
+| Shell-specific binaries instead of scripts    | Better integration     | Higher maintenance overhead, inconsistent with cross-shell philosophy |
 
 ## Impact on Users
 
@@ -82,11 +87,11 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 
 ## Features Alignment
 
-| Feature Specification | Coverage | Notes |
-| --- | --- | --- |
-| [features/cli/hooks.feature](features/cli/hooks.feature:9) | Existing scenarios: background execution, sequential ordering, cleanup | Ensure scenario descriptions cite ADR IDs once ratified. |
-| [features/cli/hooks.feature](features/cli/hooks.feature:59) | Failure mode ensures environment isn't applied | Links declaratively to ADR-0001 (approval gate). |
-| [features/cli/env.feature](features/cli/env.feature:1) | TBD | Should include scenarios for `env load`, `status`, and `check` referencing this lifecycle. |
+| Feature Specification                                       | Coverage                                                               | Notes                                                                                      |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [features/cli/hooks.feature](features/cli/hooks.feature:9)  | Existing scenarios: background execution, sequential ordering, cleanup | Ensure scenario descriptions cite ADR IDs once ratified.                                   |
+| [features/cli/hooks.feature](features/cli/hooks.feature:59) | Failure mode ensures environment isn't applied                         | Links declaratively to ADR-0001 (approval gate).                                           |
+| [features/cli/env.feature](features/cli/env.feature:1)      | TBD                                                                    | Should include scenarios for `env load`, `status`, and `check` referencing this lifecycle. |
 
 ## Open Questions
 
@@ -96,9 +101,9 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 
 ## Related Artifacts
 
-| Artifact | Purpose |
-| --- | --- |
-| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69) | Primary implementation of lifecycle logic. |
-| [docs/adrs/adr-0001-hook-approval-gate-for-environment-loading.md](docs/adrs/adr-0001-hook-approval-gate-for-environment-loading.md:1) | Ratified decision covering approval guarantees. |
-| [docs/adrs/adr-0002-background-hook-execution-with-shell-self-unload.md](docs/adrs/adr-0002-background-hook-execution-with-shell-self-unload.md:1) | Ratified decision covering self-unload and background semantics. |
-| [readme.md](readme.md:214) | Shell integration section that must stay consistent with this RFC. |
+| Artifact                                                                                                                                           | Purpose                                                            |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69)                                                                | Primary implementation of lifecycle logic.                         |
+| [docs/adrs/adr-0001-hook-approval-gate-for-environment-loading.md](docs/adrs/adr-0001-hook-approval-gate-for-environment-loading.md:1)             | Ratified decision covering approval guarantees.                    |
+| [docs/adrs/adr-0002-background-hook-execution-with-shell-self-unload.md](docs/adrs/adr-0002-background-hook-execution-with-shell-self-unload.md:1) | Ratified decision covering self-unload and background semantics.   |
+| [readme.md](readme.md:214)                                                                                                                         | Shell integration section that must stay consistent with this RFC. |

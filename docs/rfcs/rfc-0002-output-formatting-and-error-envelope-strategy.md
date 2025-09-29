@@ -40,20 +40,24 @@ Documenting the strategy provides a single source of truth that feature files an
 ## Proposed Approach
 
 1. **Output Format Definitions**
+
    - `simple`: Human-readable text optimised for TUI output.
    - `env`: Line-delimited `KEY=VALUE` pairs, omitting secrets and invalid shell tokens.
    - `json`: Structured payload equivalent to `serde_json::Value`.
    - `--json` flag: Wrap output inside an envelope while respecting the chosen format for the `data` field.
 
 2. **Error Envelope Contract**
+
    - Enumerate `CliError::{Config, Eval, Other}` as the canonical categories, each mapping to `code: config|eval|other`.
    - Provide optional `help` messages surfaced via miette when not in JSON mode.
 
 3. **Exit Code Mapping**
+
    - Maintain the explicit mapping in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:109).
    - Document future additions to the error taxonomy through ADR updates.
 
 4. **Testing Strategy**
+
    - Expand BDD coverage in [features/cli/errors.feature](features/cli/errors.feature:1) to assert envelope structure, redaction rules, and exit codes.
    - Introduce snapshot tests to detect schema regressions.
 
@@ -62,11 +66,11 @@ Documenting the strategy provides a single source of truth that feature files an
 
 ## Alternatives Considered
 
-| Option | Outcome | Reason Rejected |
-| --- | --- | --- |
-| Output dedicated JSON payloads per command without envelopes | Command-specific schemas | Lacked uniformity across commands, harder for automation |
-| Default to JSON for all operations | Machine-friendly | Degraded human ergonomics and contradicted CLI norms |
-| Inline secrets in env output | Convenience | Violates security posture defined in [docs/adrs/adr-0004-environment-export-filtering-policy.md](docs/adrs/adr-0004-environment-export-filtering-policy.md:1) |
+| Option                                                       | Outcome                  | Reason Rejected                                                                                                                                               |
+| ------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Output dedicated JSON payloads per command without envelopes | Command-specific schemas | Lacked uniformity across commands, harder for automation                                                                                                      |
+| Default to JSON for all operations                           | Machine-friendly         | Degraded human ergonomics and contradicted CLI norms                                                                                                          |
+| Inline secrets in env output                                 | Convenience              | Violates security posture defined in [docs/adrs/adr-0004-environment-export-filtering-policy.md](docs/adrs/adr-0004-environment-export-filtering-policy.md:1) |
 
 ## Impact on Users
 
@@ -82,10 +86,10 @@ Documenting the strategy provides a single source of truth that feature files an
 
 ## Features Alignment
 
-| Feature Specification | Coverage | Notes |
-| --- | --- | --- |
-| [features/cli/errors.feature](features/cli/errors.feature:1) | Pending | Will assert JSON envelopes, redaction, and exit codes. |
-| [features/cli/help.feature](features/cli/help.feature:1) | Pending | Help output must describe formatting flags based on this RFC. |
+| Feature Specification                                        | Coverage | Notes                                                         |
+| ------------------------------------------------------------ | -------- | ------------------------------------------------------------- |
+| [features/cli/errors.feature](features/cli/errors.feature:1) | Pending  | Will assert JSON envelopes, redaction, and exit codes.        |
+| [features/cli/help.feature](features/cli/help.feature:1)     | Pending  | Help output must describe formatting flags based on this RFC. |
 
 ## Open Questions
 
@@ -95,8 +99,8 @@ Documenting the strategy provides a single source of truth that feature files an
 
 ## Related Artifacts
 
-| Artifact | Purpose |
-| --- | --- |
-| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140) | Source of `OutputFormat`, envelopes, and error mappings. |
-| [docs/adrs/adr-0005-cli-error-taxonomy-and-exit-codes.md](docs/adrs/adr-0005-cli-error-taxonomy-and-exit-codes.md:1) | Ratified decision capturing the taxonomy defined here. |
-| [readme.md](readme.md:368) | Public documentation that will mirror the output contract. |
+| Artifact                                                                                                             | Purpose                                                    |
+| -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140)                                                       | Source of `OutputFormat`, envelopes, and error mappings.   |
+| [docs/adrs/adr-0005-cli-error-taxonomy-and-exit-codes.md](docs/adrs/adr-0005-cli-error-taxonomy-and-exit-codes.md:1) | Ratified decision capturing the taxonomy defined here.     |
+| [readme.md](readme.md:368)                                                                                           | Public documentation that will mirror the output contract. |

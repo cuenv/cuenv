@@ -1,6 +1,6 @@
 //! Tests for retry logic with exponential backoff
 
-use cuengine::retry::{with_retry, RetryConfig};
+use cuengine::retry::{RetryConfig, with_retry};
 use cuenv_core::Error;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

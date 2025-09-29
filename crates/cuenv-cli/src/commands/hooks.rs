@@ -2,12 +2,12 @@
 
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
+    Result,
     hooks::{
-        approval::{check_approval_status, ApprovalManager, ApprovalStatus, ConfigSummary},
+        approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
         executor::HookExecutor,
         types::Hook,
     },
-    Result,
 };
 use serde_json::Value;
 use std::collections::HashMap;
