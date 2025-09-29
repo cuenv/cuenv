@@ -41,18 +41,22 @@ Left undocumented, future changes risk fragmenting the user experience and break
 ## Proposed Approach
 
 1. **Command Taxonomy**
+
    - Retain the current top-level subcommands enumerated in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:239).
    - Document the rationale for each grouping (`env` for environment inspection and hook lifecycle, `task` for orchestration, `exec` for ad-hoc commands, `shell` for integration, `allow` for approvals).
 
 2. **Default Arguments**
+
    - Standardise `--path` defaulting to `.` and `--package` defaulting to `cuenv`.
    - Promote `--format` as a global flag with allowed values (`simple`, `env`, `json`), matching the `OutputFormat` value enum at [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140).
 
 3. **Discoverability Enhancements**
+
    - Ensure `--help` output surfaces subcommands, aliases, and examples consistent with documentation commitments in [readme.md](readme.md:242).
    - Provide canonical command usage snippets to be reused in docs and BDD scenarios.
 
 4. **Stability Guarantees**
+
    - Introduce a compatibility promise (semantic categories: stable, experimental, hidden) to guide future additions.
    - Define criteria to graduate an experimental command (minimum documentation, feature coverage, and telemetry).
 
@@ -61,11 +65,11 @@ Left undocumented, future changes risk fragmenting the user experience and break
 
 ## Alternatives Considered
 
-| Option | Outcome | Reason Rejected |
-| --- | --- | --- |
-| Keep the current implicit structure without documentation | Collegial knowledge sharing only | Fragile for new contributors and downstream tooling |
-| Collapse `shell` subcommands into `env` | Fewer top-level commands | Conflates configuration operations with integration bootstrap |
-| Split `task` into multiple verbs (e.g. `task-run`, `task-list`) | Verb clarity | Increases binary size via Clap duplication and complicates UX |
+| Option                                                          | Outcome                          | Reason Rejected                                               |
+| --------------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------- |
+| Keep the current implicit structure without documentation       | Collegial knowledge sharing only | Fragile for new contributors and downstream tooling           |
+| Collapse `shell` subcommands into `env`                         | Fewer top-level commands         | Conflates configuration operations with integration bootstrap |
+| Split `task` into multiple verbs (e.g. `task-run`, `task-list`) | Verb clarity                     | Increases binary size via Clap duplication and complicates UX |
 
 ## Impact on Users
 
@@ -81,11 +85,11 @@ Left undocumented, future changes risk fragmenting the user experience and break
 
 ## Features Alignment
 
-| Feature Specification | Coverage | Notes |
-| --- | --- | --- |
+| Feature Specification                                    | Coverage                                                 | Notes                                                    |
+| -------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------- |
 | [features/cli/help.feature](features/cli/help.feature:1) | `Scenario: Full CLI help surfaces subcommands` (pending) | This RFC defines the structure the scenario must assert. |
-| [features/cli/env.feature](features/cli/env.feature:1) | `Scenario: TBD` (pending) | To be updated to verify default path/package handling. |
-| [features/cli/task.feature](features/cli/task.feature:1) | `Scenario: Task listing respects hierarchy` (pending) | Aligns aliases (`cuenv task`, `cuenv t`). |
+| [features/cli/env.feature](features/cli/env.feature:1)   | `Scenario: TBD` (pending)                                | To be updated to verify default path/package handling.   |
+| [features/cli/task.feature](features/cli/task.feature:1) | `Scenario: Task listing respects hierarchy` (pending)    | Aligns aliases (`cuenv task`, `cuenv t`).                |
 
 ## Open Questions
 
@@ -95,9 +99,9 @@ Left undocumented, future changes risk fragmenting the user experience and break
 
 ## Related Artifacts
 
-| Artifact | Purpose |
-| --- | --- |
-| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:211) | Canonical definition of Clap command hierarchy. |
-| [readme.md](readme.md:242) | Public CLI reference that must mirror the agreed structure. |
-| [docs/adrs/adr-0003-task-graph-execution-strategy.md](docs/adrs/adr-0003-task-graph-execution-strategy.md:1) | Downstream ADR addressing execution semantics that depend on this command layout. |
-| [docs/adrs/adr-0005-cli-error-taxonomy-and-exit-codes.md](docs/adrs/adr-0005-cli-error-taxonomy-and-exit-codes.md:1) | Documents error handling expectations for commands defined here. |
+| Artifact                                                                                                             | Purpose                                                                           |
+| -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:211)                                                       | Canonical definition of Clap command hierarchy.                                   |
+| [readme.md](readme.md:242)                                                                                           | Public CLI reference that must mirror the agreed structure.                       |
+| [docs/adrs/adr-0003-task-graph-execution-strategy.md](docs/adrs/adr-0003-task-graph-execution-strategy.md:1)         | Downstream ADR addressing execution semantics that depend on this command layout. |
+| [docs/adrs/adr-0005-cli-error-taxonomy-and-exit-codes.md](docs/adrs/adr-0005-cli-error-taxonomy-and-exit-codes.md:1) | Documents error handling expectations for commands defined here.                  |

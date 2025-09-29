@@ -40,18 +40,22 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 ## Proposed Approach
 
 1. **Task Discovery and Listing**
+
    - When `cuenv task` is executed without arguments, list all available tasks sorted by manifest order, mirroring the logic in `execute_task` that returns `Available tasks`.
    - Support aliases (e.g. `cuenv t`) and ensure help text references them.
 
 2. **Execution Semantics**
+
    - For `TaskDefinition::Single` without dependencies, execute directly and stream output if `capture_output` is enabled.
    - For singles with dependencies or groups, construct a `TaskGraph` via [TaskGraph::build_for_task](crates/cuenv-cli/src/commands/task.rs:92) and execute using `execute_graph`, preserving topological order.
 
 3. **Environment Handling**
+
    - Build a task-specific environment using `Environment::build_for_task`, injecting base variables while respecting secret redaction.
    - Support future policy hooks via cuenv-core without altering CLI contracts.
 
 4. **Failure Behaviour**
+
    - Abort on the first failing dependency, returning configuration errors with exit code 2 where applicable.
    - Provide structured output summarising success/failure, aligning with `format_task_results`.
 
@@ -61,11 +65,11 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 
 ## Alternatives Considered
 
-| Option | Outcome | Reason Rejected |
-| --- | --- | --- |
-| Always use graph execution | Uniform implementation | Adds overhead for simple tasks, complicates debugging |
-| Require explicit dependency lists in CLI | Increased clarity | Redundant with CUE manifest, contradicts declarative design |
-| Force sequential execution for groups | Predictable | Prevents parallelism for independent subtasks |
+| Option                                   | Outcome                | Reason Rejected                                             |
+| ---------------------------------------- | ---------------------- | ----------------------------------------------------------- |
+| Always use graph execution               | Uniform implementation | Adds overhead for simple tasks, complicates debugging       |
+| Require explicit dependency lists in CLI | Increased clarity      | Redundant with CUE manifest, contradicts declarative design |
+| Force sequential execution for groups    | Predictable            | Prevents parallelism for independent subtasks               |
 
 ## Impact on Users
 
@@ -81,10 +85,10 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 
 ## Features Alignment
 
-| Feature Specification | Coverage | Notes |
-| --- | --- | --- |
+| Feature Specification                                    | Coverage                              | Notes                                                    |
+| -------------------------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
 | [features/cli/task.feature](features/cli/task.feature:1) | Pending scenarios defined by this RFC | Will cover listing, execution, dependency failure cases. |
-| [features/cli/help.feature](features/cli/help.feature:1) | Pending | Help output must describe task behaviour and flags. |
+| [features/cli/help.feature](features/cli/help.feature:1) | Pending                               | Help output must describe task behaviour and flags.      |
 
 ## Open Questions
 
@@ -94,9 +98,9 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 
 ## Related Artifacts
 
-| Artifact | Purpose |
-| --- | --- |
-| [crates/cuenv-cli/src/commands/task.rs](crates/cuenv-cli/src/commands/task.rs:10) | Primary CLI logic for task execution. |
+| Artifact                                                                                                     | Purpose                                                |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| [crates/cuenv-cli/src/commands/task.rs](crates/cuenv-cli/src/commands/task.rs:10)                            | Primary CLI logic for task execution.                  |
 | [docs/adrs/adr-0003-task-graph-execution-strategy.md](docs/adrs/adr-0003-task-graph-execution-strategy.md:1) | Ratified decision capturing final execution semantics. |
-| [readme.md](readme.md:248) | Public documentation for task commands. |
-| cuenv-core task executor docs (future) | Provide deeper technical details once published. |
+| [readme.md](readme.md:248)                                                                                   | Public documentation for task commands.                |
+| cuenv-core task executor docs (future)                                                                       | Provide deeper technical details once published.       |

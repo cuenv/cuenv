@@ -21,15 +21,18 @@ This ADR builds on [docs/rfcs/rfc-0002-output-formatting-and-error-envelope-stra
 ## Decision
 
 1. **Error Categories**
+
    - `Config`: Represents CLI usage errors, configuration issues, and validation failures; MUST exit with code `2`.
    - `Eval`: Represents evaluation or FFI failures; MUST exit with code `3`.
    - `Other`: Represents unexpected errors; MUST also exit with code `3`.
 
 2. **Diagnostic Presentation**
+
    - Human-readable output MUST use `miette` to render `CliError` values with optional help text.
    - JSON mode MUST wrap errors in `ErrorEnvelope` with fields `status: "error"` and `error.code` set to `config|eval|other`.
 
 3. **Extensibility**
+
    - New error categories MUST be added by extending `CliError` and MUST document exit codes and envelope schema updates.
    - Deprecating an error type requires a future ADR referencing this decision.
 
@@ -44,10 +47,10 @@ This ADR builds on [docs/rfcs/rfc-0002-output-formatting-and-error-envelope-stra
 
 ## Alignment with Features
 
-| Feature Scenario | Impact |
-| --- | --- |
+| Feature Scenario                                                       | Impact                                                                        |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | [features/cli/errors.feature](features/cli/errors.feature:1) — Pending | Must verify exit codes, envelope structure, and redaction rules per this ADR. |
-| [features/cli/help.feature](features/cli/help.feature:1) — Pending | Help output should highlight error categories and exit codes. |
+| [features/cli/help.feature](features/cli/help.feature:1) — Pending     | Help output should highlight error categories and exit codes.                 |
 
 ## Related Documents
 

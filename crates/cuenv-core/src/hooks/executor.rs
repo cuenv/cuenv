@@ -1,6 +1,6 @@
 //! Hook execution engine with background processing and state management
 
-use crate::hooks::state::{compute_instance_hash, HookExecutionState, StateManager};
+use crate::hooks::state::{HookExecutionState, StateManager, compute_instance_hash};
 use crate::hooks::types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult};
 use crate::{Error, Result};
 use std::collections::HashMap;
@@ -1266,10 +1266,12 @@ mod tests {
         // The important part is it doesn't panic
         if result.is_ok() {
             // If it succeeds, the command might have handled the missing directory
-            assert!(!result
-                .unwrap()
-                .stdout
-                .contains("/nonexistent/directory/that/does/not/exist"));
+            assert!(
+                !result
+                    .unwrap()
+                    .stdout
+                    .contains("/nonexistent/directory/that/does/not/exist")
+            );
         }
 
         // Test with relative path working directory (should be validated)

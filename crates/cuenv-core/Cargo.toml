@@ -1,6 +1,6 @@
 [package]
 name = "cuenv-core"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -10,6 +10,9 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Core types and error handling for the cuenv ecosystem"
+exclude = [
+    "src/target/**",
+]
 
 [dependencies]
 thiserror = "2.0"

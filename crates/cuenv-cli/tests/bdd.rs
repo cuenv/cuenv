@@ -3,7 +3,7 @@
 //! These tests verify the behavior of the CLI through feature specifications,
 //! particularly focusing on shell integration and hook execution.
 
-use cucumber::{given, then, when, World};
+use cucumber::{World, given, then, when};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -588,9 +588,11 @@ async fn execute_with_vars(world: &mut TestWorld) {
 
 #[then(expr = "the command should have access to the loaded environment")]
 fn command_has_env_access(world: &mut TestWorld) {
-    assert!(world
-        .last_output
-        .contains("loaded_successfully:http://localhost:8080/api"));
+    assert!(
+        world
+            .last_output
+            .contains("loaded_successfully:http://localhost:8080/api")
+    );
 }
 
 // Failure scenario steps

@@ -63,7 +63,8 @@ mod tests {
 
         // Test that all expected components are present
         assert!(version_info.contains("cuenv-cli"));
-        assert!(version_info.contains("0.1.0"));
+        let expected_version = env!("CARGO_PKG_VERSION");
+        assert!(version_info.contains(expected_version));
         assert!(version_info.contains("Authors:"));
         assert!(version_info.contains("Target:"));
         assert!(version_info.contains("Rust Compiler:"));
