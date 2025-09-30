@@ -143,7 +143,7 @@ jobs:
         if: matrix.os == 'windows-latest'
 
       - name: Install Go (Windows)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.24"
         if: matrix.os == 'windows-latest'
