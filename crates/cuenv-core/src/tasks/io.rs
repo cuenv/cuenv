@@ -130,12 +130,11 @@ impl InputResolver {
             let rel = match path.strip_prefix(&self.project_root) { Ok(p) => p, Err(_) => continue };
             let rel_norm = normalize_rel_path(rel);
             // Match globset relative path
-            if set.is_match(rel_norm.as_path()) {
-                if seen.insert(rel_norm.clone()) {
-                    let src = canonical_or_abs(path)?;
-                    let (hash, size) = sha256_file(&src)?;
-                    files.push(ResolvedInputFile { rel_path: rel_norm, source_path: src, sha256: hash, size });
-                }
+            if set.is_match(rel_norm.as_path())
+                && seen.insert(rel_norm.clone()) {
+                let src = canonical_or_abs(path)?;
+                let (hash, size) = sha256_file(&src)?;
+                files.push(ResolvedInputFile { rel_path: rel_norm, source_path: src, sha256: hash, size });
             }
         }
 

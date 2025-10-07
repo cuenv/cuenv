@@ -278,20 +278,19 @@ impl TaskExecutor {
 
         for rel in &outputs {
             let src = hermetic_root.join(rel);
-            if let Ok(meta) = std::fs::metadata(&src) {
-                if meta.is_file() {
-                    let dst = outputs_stage.join(rel);
-                    if let Some(parent) = dst.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-                    let _ = std::fs::copy(&src, &dst);
-                    let (sha, _size) = crate::tasks::io::sha256_file(&src).unwrap_or_else(|_| (String::new(), 0));
-                    output_index.push(task_cache::OutputIndexEntry {
-                        rel_path: rel.to_string_lossy().to_string(),
-                        size: meta.len(),
-                        sha256: sha,
-                    });
+            if let Ok(meta) = std::fs::metadata(&src)
+                && meta.is_file() {
+                let dst = outputs_stage.join(rel);
+                if let Some(parent) = dst.parent() {
+                    let _ = std::fs::create_dir_all(parent);
                 }
+                let _ = std::fs::copy(&src, &dst);
+                let (sha, _size) = crate::tasks::io::sha256_file(&src).unwrap_or_default();
+                output_index.push(task_cache::OutputIndexEntry {
+                    rel_path: rel.to_string_lossy().to_string(),
+                    size: meta.len(),
+                    sha256: sha,
+                });
             }
         }
 
@@ -302,7 +301,7 @@ impl TaskExecutor {
             if p.is_dir() { continue; }
             let rel = match p.strip_prefix(&hermetic_root) { Ok(r) => r.to_path_buf(), Err(_) => continue };
             let rel_str = rel.to_string_lossy().to_string();
-            let (sha, _size) = match crate::tasks::io::sha256_file(p) { Ok(x) => x, Err(_) => (String::new(), 0) };
+            let (sha, _size) = crate::tasks::io::sha256_file(p).unwrap_or_default();
             let initial = initial_hashes.get(&rel_str);
             let changed = match initial {
                 None => true,
@@ -421,17 +420,17 @@ impl TaskExecutor {
             let all_tasks = Arc::clone(&all_tasks);
             let executor = self.clone_with_config();
             join_set.spawn(async move { executor.execute_definition(&task_name, &task_def, &all_tasks).await });
-            if self.config.max_parallel > 0 && join_set.len() >= self.config.max_parallel {
-                if let Some(result) = join_set.join_next().await {
-                    match result {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(e)) => return Err(e),
-                        Err(e) => {
-                            return Err(Error::configuration(format!(
-                                "Task execution panicked: {}",
-                                e
-                            )));
-                        }
+            if self.config.max_parallel > 0
+                && join_set.len() >= self.config.max_parallel
+                && let Some(result) = join_set.join_next().await {
+                match result {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => return Err(e),
+                    Err(e) => {
+                        return Err(Error::configuration(format!(
+                            "Task execution panicked: {}",
+                            e
+                        )));
                     }
                 }
             }
