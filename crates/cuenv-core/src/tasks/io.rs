@@ -172,7 +172,7 @@ pub fn populate_hermetic_dir(resolved: &ResolvedInputs, hermetic_root: &Path) ->
             Ok(_) => {}
             Err(e) => {
                 // Cross-device or unsupported: copy
-                if e.kind() == std::io::ErrorKind::CrossDeviceLink || e.raw_os_error() == Some(libc::EXDEV) {
+                if e.kind() == std::io::ErrorKind::CrossDeviceLink {
                     fs::copy(&f.source_path, &dest).map_err(|e2| Error::Io { source: e2, path: Some(dest.into()), operation: "copy".into() })?;
                 } else {
                     // Could be other FS errors; attempt copy anyway

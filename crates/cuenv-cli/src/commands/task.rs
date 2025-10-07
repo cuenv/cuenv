@@ -203,7 +203,7 @@ env: {
 }"#;
         fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
-        let result = execute_task(temp_dir.path().to_str().unwrap(), "test", None, false).await;
+        let result = execute_task(temp_dir.path().to_str().unwrap(), "test", None, false, None, false).await;
 
         // The result depends on FFI availability
         if let Ok(output) = result {
