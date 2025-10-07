@@ -170,16 +170,9 @@ pub fn populate_hermetic_dir(resolved: &ResolvedInputs, hermetic_root: &Path) ->
         // Try hardlink first
         match fs::hard_link(&f.source_path, &dest) {
             Ok(_) => {}
-            Err(e) => {
-                // Cross-device or unsupported: copy
-                {
-                    // Fall back to copy on any error creating hardlink
-                    let _ = e; // silence unused variable in some toolchains
-                    fs::copy(&f.source_path, &dest).map_err(|e2| Error::Io { source: e2, path: Some(dest.into()), operation: "copy".into() })?;
-                } else {
-                    // Could be other FS errors; attempt copy anyway
-                    fs::copy(&f.source_path, &dest).map_err(|e2| Error::Io { source: e2, path: Some(dest.into()), operation: "copy".into() })?;
-                }
+            Err(_e) => {
+                // Fall back to copy on any error creating hardlink
+                fs::copy(&f.source_path, &dest).map_err(|e2| Error::Io { source: e2, path: Some(dest.into()), operation: "copy".into() })?;
             }
         }
     }
