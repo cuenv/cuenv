@@ -31,6 +31,12 @@ dirs = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 sysinfo = "0.30"
+# For input resolution, snapshots, and hashing
+globset = "0.4"
+walkdir = "2.5"
+tar = "0.4"
+zstd = { version = "0.13", features = ["zstdmt"] }
+hex = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

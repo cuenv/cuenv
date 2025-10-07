@@ -13,6 +13,8 @@ pub async fn execute_task(
     package: &str,
     task_name: Option<&str>,
     capture_output: bool,
+    materialize_outputs: Option<&str>,
+    show_cache_path: bool,
 ) -> Result<String> {
     tracing::info!(
         "Executing task from path: {}, package: {}, task: {:?}",
@@ -79,6 +81,9 @@ pub async fn execute_task(
         capture_output,
         max_parallel: 0,
         environment,
+        project_root: Path::new(path).to_path_buf(),
+        materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
+        show_cache_path,
     };
 
     let executor = TaskExecutor::new(config);
@@ -101,8 +106,7 @@ pub async fn execute_task(
     );
 
     // Execute using the appropriate method
-    let results =
-        execute_task_with_strategy(&executor, task_name, task_def, &task_graph, &tasks).await?;
+    let results = execute_task_with_strategy(&executor, task_name, task_def, &task_graph, &tasks).await?;
 
     // Check for any failed tasks first
     for result in &results {
