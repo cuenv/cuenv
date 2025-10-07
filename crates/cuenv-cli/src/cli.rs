@@ -482,6 +482,8 @@ impl From<Commands> for Command {
                 name,
                 path,
                 package,
+                materialize_outputs,
+                show_cache_path,
             } => Command::Task {
                 path,
                 package,
