@@ -172,7 +172,9 @@ pub fn populate_hermetic_dir(resolved: &ResolvedInputs, hermetic_root: &Path) ->
             Ok(_) => {}
             Err(e) => {
                 // Cross-device or unsupported: copy
-                if e.kind() == std::io::ErrorKind::CrossDeviceLink {
+                {
+                    // Fall back to copy on any error creating hardlink
+                    let _ = e; // silence unused variable in some toolchains
                     fs::copy(&f.source_path, &dest).map_err(|e2| Error::Io { source: e2, path: Some(dest.into()), operation: "copy".into() })?;
                 } else {
                     // Could be other FS errors; attempt copy anyway
@@ -219,7 +221,7 @@ pub fn snapshot_workspace_tar_zst(src_root: &Path, dst_file: &Path) -> Result<()
     let enc = zstd::Encoder::new(file, 3).map_err(|e| Error::configuration(format!("zstd encoder error: {e}")))?;
     let mut builder = tar::Builder::new(enc);
     builder.append_dir_all(".", src_root).map_err(|e| Error::configuration(format!("tar append failed: {e}")))?;
-    let mut enc = builder.into_inner().map_err(|e| Error::configuration(format!("tar finalize failed: {e}")))?;
+    let enc = builder.into_inner().map_err(|e| Error::configuration(format!("tar finalize failed: {e}")))?;
     enc.finish().map_err(|e| Error::configuration(format!("zstd finish failed: {e}")))?;
     Ok(())
 }

@@ -13,7 +13,7 @@ use crate::{Error, Result};
 use async_recursion::async_recursion;
 use chrono::Utc;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -81,7 +81,7 @@ impl TaskExecutor {
         };
 
         // Build cache key envelope
-        let mut inputs_summary: BTreeMap<String, String> = resolved_inputs.to_summary_map();
+        let inputs_summary: BTreeMap<String, String> = resolved_inputs.to_summary_map();
         // Ensure deterministic order is already guaranteed by BTreeMap
         let env_summary: BTreeMap<String, String> = self
             .config
@@ -158,7 +158,7 @@ impl TaskExecutor {
         }
 
         // Initial snapshot to detect undeclared writes
-        let mut initial_hashes: BTreeMap<String, String> = inputs_summary.clone();
+        let initial_hashes: BTreeMap<String, String> = inputs_summary.clone();
 
         // Build command
         let mut cmd = if let Some(shell) = &task.shell {
