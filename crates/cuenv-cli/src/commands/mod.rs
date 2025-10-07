@@ -85,9 +85,10 @@ impl CommandExecutor {
                 name,
                 materialize_outputs,
                 show_cache_path,
-            } => self
-                .execute_task(path, package, name, materialize_outputs, show_cache_path)
-                .await,
+            } => {
+                self.execute_task(path, package, name, materialize_outputs, show_cache_path)
+                    .await
+            }
             Command::Exec {
                 path,
                 package,
@@ -217,7 +218,8 @@ impl CommandExecutor {
             materialize_outputs.as_deref(),
             show_cache_path,
         )
-        .await {
+        .await
+        {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),

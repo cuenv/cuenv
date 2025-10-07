@@ -37,7 +37,8 @@ pub struct CacheEntry {
 }
 
 fn cache_root() -> Result<PathBuf> {
-    let home = home_dir().ok_or_else(|| Error::configuration("Failed to find home directory for cache"))?;
+    let home = home_dir()
+        .ok_or_else(|| Error::configuration("Failed to find home directory for cache"))?;
     Ok(home.join(".cuenv/cache/tasks"))
 }
 
@@ -46,9 +47,15 @@ pub fn key_to_path(key: &str) -> Result<PathBuf> {
 }
 
 pub fn lookup(key: &str) -> Option<CacheEntry> {
-    let path = match key_to_path(key) { Ok(p) => p, Err(_) => return None };
+    let path = match key_to_path(key) {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
     if path.exists() {
-        Some(CacheEntry { key: key.to_string(), path })
+        Some(CacheEntry {
+            key: key.to_string(),
+            path,
+        })
     } else {
         None
     }
@@ -59,35 +66,69 @@ pub struct TaskLogs {
     pub stderr: Option<String>,
 }
 
-pub fn save_result(key: &str, meta: &TaskResultMeta, outputs_root: &Path, hermetic_root: &Path, logs: TaskLogs) -> Result<()> {
+pub fn save_result(
+    key: &str,
+    meta: &TaskResultMeta,
+    outputs_root: &Path,
+    hermetic_root: &Path,
+    logs: TaskLogs,
+) -> Result<()> {
     let path = key_to_path(key)?;
-    fs::create_dir_all(&path).map_err(|e| Error::Io { source: e, path: Some(path.clone().into()), operation: "create_dir_all".into() })?;
+    fs::create_dir_all(&path).map_err(|e| Error::Io {
+        source: e,
+        path: Some(path.clone().into()),
+        operation: "create_dir_all".into(),
+    })?;
 
     // metadata.json
     let meta_path = path.join("metadata.json");
-    let json = serde_json::to_vec_pretty(meta).map_err(|e| Error::configuration(format!("Failed to serialize metadata: {e}")))?;
-    fs::write(&meta_path, json).map_err(|e| Error::Io { source: e, path: Some(meta_path.into()), operation: "write".into() })?;
+    let json = serde_json::to_vec_pretty(meta)
+        .map_err(|e| Error::configuration(format!("Failed to serialize metadata: {e}")))?;
+    fs::write(&meta_path, json).map_err(|e| Error::Io {
+        source: e,
+        path: Some(meta_path.into()),
+        operation: "write".into(),
+    })?;
 
     // outputs/
     let out_dir = path.join("outputs");
-    fs::create_dir_all(&out_dir).map_err(|e| Error::Io { source: e, path: Some(out_dir.clone().into()), operation: "create_dir_all".into() })?;
+    fs::create_dir_all(&out_dir).map_err(|e| Error::Io {
+        source: e,
+        path: Some(out_dir.clone().into()),
+        operation: "create_dir_all".into(),
+    })?;
     // Copy tree from outputs_root (already collected) if exists
     if outputs_root.exists() {
-        for entry in walkdir::WalkDir::new(outputs_root).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(outputs_root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let p = entry.path();
-            if p.is_dir() { continue; }
+            if p.is_dir() {
+                continue;
+            }
             let rel = p.strip_prefix(outputs_root).unwrap();
             let dst = out_dir.join(rel);
-            if let Some(parent) = dst.parent() { fs::create_dir_all(parent).ok(); }
-            fs::copy(p, &dst).map_err(|e| Error::Io { source: e, path: Some(dst.into()), operation: "copy".into() })?;
+            if let Some(parent) = dst.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            fs::copy(p, &dst).map_err(|e| Error::Io {
+                source: e,
+                path: Some(dst.into()),
+                operation: "copy".into(),
+            })?;
         }
     }
 
     // logs/
     let logs_dir = path.join("logs");
     fs::create_dir_all(&logs_dir).ok();
-    if let Some(s) = logs.stdout.as_ref() { let _ = fs::write(logs_dir.join("stdout.log"), s); }
-    if let Some(s) = logs.stderr.as_ref() { let _ = fs::write(logs_dir.join("stderr.log"), s); }
+    if let Some(s) = logs.stdout.as_ref() {
+        let _ = fs::write(logs_dir.join("stdout.log"), s);
+    }
+    if let Some(s) = logs.stderr.as_ref() {
+        let _ = fs::write(logs_dir.join("stderr.log"), s);
+    }
 
     // workspace snapshot
     let snapshot = path.join("workspace.tar.zst");
@@ -97,17 +138,31 @@ pub fn save_result(key: &str, meta: &TaskResultMeta, outputs_root: &Path, hermet
 }
 
 pub fn materialize_outputs(key: &str, destination: &Path) -> Result<usize> {
-    let entry = lookup(key).ok_or_else(|| Error::configuration(format!("Cache key not found: {key}")))?;
+    let entry =
+        lookup(key).ok_or_else(|| Error::configuration(format!("Cache key not found: {key}")))?;
     let out_dir = entry.path.join("outputs");
-    if !out_dir.exists() { return Ok(0); }
+    if !out_dir.exists() {
+        return Ok(0);
+    }
     let mut count = 0usize;
-    for e in walkdir::WalkDir::new(&out_dir).into_iter().filter_map(|e| e.ok()) {
+    for e in walkdir::WalkDir::new(&out_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let p = e.path();
-        if p.is_dir() { continue; }
+        if p.is_dir() {
+            continue;
+        }
         let rel = p.strip_prefix(&out_dir).unwrap();
         let dst = destination.join(rel);
-        if let Some(parent) = dst.parent() { fs::create_dir_all(parent).ok(); }
-        fs::copy(p, &dst).map_err(|e| Error::Io { source: e, path: Some(dst.into()), operation: "copy".into() })?;
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::copy(p, &dst).map_err(|e| Error::Io {
+            source: e,
+            path: Some(dst.into()),
+            operation: "copy".into(),
+        })?;
         count += 1;
     }
     Ok(count)
@@ -126,8 +181,10 @@ pub struct CacheKeyEnvelope {
 
 pub fn compute_cache_key(envelope: &CacheKeyEnvelope) -> Result<(String, serde_json::Value)> {
     // Canonical JSON with sorted keys (BTreeMap ensures deterministic ordering for maps)
-    let json = serde_json::to_value(envelope).map_err(|e| Error::configuration(format!("Failed to encode envelope: {e}")))?;
-    let bytes = serde_json::to_vec(&json).map_err(|e| Error::configuration(format!("Failed to serialize envelope: {e}")))?;
+    let json = serde_json::to_value(envelope)
+        .map_err(|e| Error::configuration(format!("Failed to encode envelope: {e}")))?;
+    let bytes = serde_json::to_vec(&json)
+        .map_err(|e| Error::configuration(format!("Failed to serialize envelope: {e}")))?;
     let digest = Sha256::digest(bytes);
     Ok((hex::encode(digest), json))
 }

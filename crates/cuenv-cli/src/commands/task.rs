@@ -106,7 +106,8 @@ pub async fn execute_task(
     );
 
     // Execute using the appropriate method
-    let results = execute_task_with_strategy(&executor, task_name, task_def, &task_graph, &tasks).await?;
+    let results =
+        execute_task_with_strategy(&executor, task_name, task_def, &task_graph, &tasks).await?;
 
     // Check for any failed tasks first
     for result in &results {
@@ -203,7 +204,15 @@ env: {
 }"#;
         fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
-        let result = execute_task(temp_dir.path().to_str().unwrap(), "test", None, false, None, false).await;
+        let result = execute_task(
+            temp_dir.path().to_str().unwrap(),
+            "test",
+            None,
+            false,
+            None,
+            false,
+        )
+        .await;
 
         // The result depends on FFI availability
         if let Ok(output) = result {

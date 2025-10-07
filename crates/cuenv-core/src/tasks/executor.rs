@@ -8,7 +8,7 @@
 use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
 use crate::cache::tasks as task_cache;
 use crate::environment::Environment;
-use crate::tasks::io::{collect_outputs, populate_hermetic_dir, InputResolver};
+use crate::tasks::io::{InputResolver, collect_outputs, populate_hermetic_dir};
 use crate::{Error, Result};
 use async_recursion::async_recursion;
 use chrono::Utc;
@@ -151,7 +151,8 @@ impl TaskExecutor {
         }
 
         // Seed working directory with inputs
-        let span_populate = tracing::info_span!("inputs.populate", files = resolved_inputs.files.len());
+        let span_populate =
+            tracing::info_span!("inputs.populate", files = resolved_inputs.files.len());
         {
             let _g = span_populate.enter();
             populate_hermetic_dir(&resolved_inputs, &hermetic_root)?;
@@ -279,7 +280,8 @@ impl TaskExecutor {
         for rel in &outputs {
             let src = hermetic_root.join(rel);
             if let Ok(meta) = std::fs::metadata(&src)
-                && meta.is_file() {
+                && meta.is_file()
+            {
                 let dst = outputs_stage.join(rel);
                 if let Some(parent) = dst.parent() {
                     let _ = std::fs::create_dir_all(parent);
@@ -296,10 +298,18 @@ impl TaskExecutor {
 
         // Detect undeclared writes
         let mut warned = false;
-        for entry in walkdir::WalkDir::new(&hermetic_root).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(&hermetic_root)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let p = entry.path();
-            if p.is_dir() { continue; }
-            let rel = match p.strip_prefix(&hermetic_root) { Ok(r) => r.to_path_buf(), Err(_) => continue };
+            if p.is_dir() {
+                continue;
+            }
+            let rel = match p.strip_prefix(&hermetic_root) {
+                Ok(r) => r.to_path_buf(),
+                Err(_) => continue,
+            };
             let rel_str = rel.to_string_lossy().to_string();
             let (sha, _size) = crate::tasks::io::sha256_file(p).unwrap_or_default();
             let initial = initial_hashes.get(&rel_str);
@@ -333,8 +343,16 @@ impl TaskExecutor {
                 output_index,
             };
             let logs = task_cache::TaskLogs {
-                stdout: if self.config.capture_output { Some(stdout.clone()) } else { None },
-                stderr: if self.config.capture_output { Some(stderr.clone()) } else { None },
+                stdout: if self.config.capture_output {
+                    Some(stdout.clone())
+                } else {
+                    None
+                },
+                stderr: if self.config.capture_output {
+                    Some(stderr.clone())
+                } else {
+                    None
+                },
             };
             let cache_span = tracing::info_span!("cache.save", key = %cache_key);
             {
@@ -392,7 +410,9 @@ impl TaskExecutor {
         let mut results = Vec::new();
         for (i, task_def) in tasks.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
-            let task_results = self.execute_definition(&task_name, task_def, all_tasks).await?;
+            let task_results = self
+                .execute_definition(&task_name, task_def, all_tasks)
+                .await?;
             for result in &task_results {
                 if !result.success {
                     return Err(Error::configuration(format!(
@@ -419,10 +439,15 @@ impl TaskExecutor {
             let task_def = task_def.clone();
             let all_tasks = Arc::clone(&all_tasks);
             let executor = self.clone_with_config();
-            join_set.spawn(async move { executor.execute_definition(&task_name, &task_def, &all_tasks).await });
+            join_set.spawn(async move {
+                executor
+                    .execute_definition(&task_name, &task_def, &all_tasks)
+                    .await
+            });
             if self.config.max_parallel > 0
                 && join_set.len() >= self.config.max_parallel
-                && let Some(result) = join_set.join_next().await {
+                && let Some(result) = join_set.join_next().await
+            {
                 match result {
                     Ok(Ok(_)) => {}
                     Ok(Err(e)) => return Err(e),
@@ -509,7 +534,11 @@ fn create_hermetic_dir(task_name: &str, key: &str) -> Result<PathBuf> {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>();
-    let dir = std::env::temp_dir().join(format!("cuenv-work-{}-{}", sanitized_task, &key[..12.min(key.len())]));
+    let dir = std::env::temp_dir().join(format!(
+        "cuenv-work-{}-{}",
+        sanitized_task,
+        &key[..12.min(key.len())]
+    ));
     std::fs::create_dir_all(&dir).map_err(|e| Error::Io {
         source: e,
         path: Some(dir.clone().into()),
@@ -528,7 +557,9 @@ pub async fn execute_command(
     let mut cmd = Command::new(command);
     cmd.args(args);
     let env_vars = environment.merge_with_system();
-    for (key, value) in env_vars { cmd.env(key, value); }
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
     cmd.stdin(Stdio::inherit());
@@ -552,7 +583,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_task_result() {
-        let result = TaskResult { name: "test".to_string(), exit_code: Some(0), stdout: "output".to_string(), stderr: String::new(), success: true };
+        let result = TaskResult {
+            name: "test".to_string(),
+            exit_code: Some(0),
+            stdout: "output".to_string(),
+            stderr: String::new(),
+            success: true,
+        };
         assert_eq!(result.name, "test");
         assert_eq!(result.exit_code, Some(0));
         assert!(result.success);
@@ -561,9 +598,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_simple_task() {
-        let config = ExecutorConfig { capture_output: true, ..Default::default() };
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
         let executor = TaskExecutor::new(config);
-        let task = Task { command: "echo".to_string(), args: vec!["hello".to_string()], shell: None, env: HashMap::new(), depends_on: vec![], inputs: vec![], outputs: vec![], description: Some("Hello task".to_string()) };
+        let task = Task {
+            command: "echo".to_string(),
+            args: vec!["hello".to_string()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("Hello task".to_string()),
+        };
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(result.success);
         assert_eq!(result.exit_code, Some(0));
@@ -572,10 +621,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_with_environment() {
-        let mut config = ExecutorConfig { capture_output: true, ..Default::default() };
-        config.environment.set("TEST_VAR".to_string(), "test_value".to_string());
+        let mut config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
+        config
+            .environment
+            .set("TEST_VAR".to_string(), "test_value".to_string());
         let executor = TaskExecutor::new(config);
-        let task = Task { command: "printenv".to_string(), args: vec!["TEST_VAR".to_string()], shell: None, env: HashMap::new(), depends_on: vec![], inputs: vec![], outputs: vec![], description: Some("Print env task".to_string()) };
+        let task = Task {
+            command: "printenv".to_string(),
+            args: vec!["TEST_VAR".to_string()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("Print env task".to_string()),
+        };
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test_value"));
@@ -583,9 +646,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_failing_task() {
-        let config = ExecutorConfig { capture_output: true, ..Default::default() };
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
         let executor = TaskExecutor::new(config);
-        let task = Task { command: "false".to_string(), args: vec![], shell: None, env: HashMap::new(), depends_on: vec![], inputs: vec![], outputs: vec![], description: Some("Failing task".to_string()) };
+        let task = Task {
+            command: "false".to_string(),
+            args: vec![],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("Failing task".to_string()),
+        };
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(1));
@@ -593,13 +668,40 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_sequential_group() {
-        let config = ExecutorConfig { capture_output: true, ..Default::default() };
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
         let executor = TaskExecutor::new(config);
-        let task1 = Task { command: "echo".to_string(), args: vec!["first".to_string()], shell: None, env: HashMap::new(), depends_on: vec![], inputs: vec![], outputs: vec![], description: Some("First task".to_string()) };
-        let task2 = Task { command: "echo".to_string(), args: vec!["second".to_string()], shell: None, env: HashMap::new(), depends_on: vec![], inputs: vec![], outputs: vec![], description: Some("Second task".to_string()) };
-        let group = TaskGroup::Sequential(vec![TaskDefinition::Single(task1), TaskDefinition::Single(task2)]);
+        let task1 = Task {
+            command: "echo".to_string(),
+            args: vec!["first".to_string()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("First task".to_string()),
+        };
+        let task2 = Task {
+            command: "echo".to_string(),
+            args: vec!["second".to_string()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("Second task".to_string()),
+        };
+        let group = TaskGroup::Sequential(vec![
+            TaskDefinition::Single(task1),
+            TaskDefinition::Single(task2),
+        ]);
         let all_tasks = Tasks::new();
-        let results = executor.execute_group("seq", &group, &all_tasks).await.unwrap();
+        let results = executor
+            .execute_group("seq", &group, &all_tasks)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert!(results[0].stdout.contains("first"));
         assert!(results[1].stdout.contains("second"));
@@ -607,17 +709,35 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_injection_prevention() {
-        let config = ExecutorConfig { capture_output: true, ..Default::default() };
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
         let executor = TaskExecutor::new(config);
-        let malicious_task = Task { command: "echo".to_string(), args: vec!["hello".to_string(), "; rm -rf /".to_string()], shell: None, env: HashMap::new(), depends_on: vec![], inputs: vec![], outputs: vec![], description: Some("Malicious task test".to_string()) };
-        let result = executor.execute_task("malicious", &malicious_task).await.unwrap();
+        let malicious_task = Task {
+            command: "echo".to_string(),
+            args: vec!["hello".to_string(), "; rm -rf /".to_string()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("Malicious task test".to_string()),
+        };
+        let result = executor
+            .execute_task("malicious", &malicious_task)
+            .await
+            .unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("hello ; rm -rf /"));
     }
 
     #[tokio::test]
     async fn test_special_characters_in_args() {
-        let config = ExecutorConfig { capture_output: true, ..Default::default() };
+        let config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
         let executor = TaskExecutor::new(config);
         let special_chars = vec![
             "$USER",
@@ -629,7 +749,16 @@ mod tests {
             "| cat",
         ];
         for special_arg in special_chars {
-            let task = Task { command: "echo".to_string(), args: vec!["safe".to_string(), special_arg.to_string()], shell: None, env: HashMap::new(), depends_on: vec![], inputs: vec![], outputs: vec![], description: Some("Special character test".to_string()) };
+            let task = Task {
+                command: "echo".to_string(),
+                args: vec!["safe".to_string(), special_arg.to_string()],
+                shell: None,
+                env: HashMap::new(),
+                depends_on: vec![],
+                inputs: vec![],
+                outputs: vec![],
+                description: Some("Special character test".to_string()),
+            };
             let result = executor.execute_task("special", &task).await.unwrap();
             assert!(result.success);
             assert!(result.stdout.contains("safe"));
@@ -639,10 +768,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_environment_variable_safety() {
-        let mut config = ExecutorConfig { capture_output: true, ..Default::default() };
-        config.environment.set("DANGEROUS_VAR".to_string(), "; rm -rf /".to_string());
+        let mut config = ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        };
+        config
+            .environment
+            .set("DANGEROUS_VAR".to_string(), "; rm -rf /".to_string());
         let executor = TaskExecutor::new(config);
-        let task = Task { command: "printenv".to_string(), args: vec!["DANGEROUS_VAR".to_string()], shell: None, env: HashMap::new(), depends_on: vec![], inputs: vec![], outputs: vec![], description: Some("Environment variable safety test".to_string()) };
+        let task = Task {
+            command: "printenv".to_string(),
+            args: vec!["DANGEROUS_VAR".to_string()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            description: Some("Environment variable safety test".to_string()),
+        };
         let result = executor.execute_task("env_test", &task).await.unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("; rm -rf /"));

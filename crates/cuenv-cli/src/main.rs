@@ -428,7 +428,8 @@ async fn execute_task_command_safe(
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
 
-    let result = commands::task::execute_task(&path, &package, name.as_deref(), false, None, false).await;
+    let result =
+        commands::task::execute_task(&path, &package, name.as_deref(), false, None, false).await;
 
     match result {
         Ok(output) => {
