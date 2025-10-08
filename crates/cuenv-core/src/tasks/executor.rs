@@ -544,28 +544,30 @@ fn create_hermetic_dir(task_name: &str, key: &str) -> Result<PathBuf> {
 
     // If a directory from a previous run exists, remove it before reuse.
     // This avoids contamination from artifacts left by failed runs where no cache was saved.
-    if base.exists() && let Err(e) = std::fs::remove_dir_all(&base) {
-            // If we cannot remove the previous directory (e.g. in-use on Windows),
-            // fall back to a unique, fresh directory to maintain hermetic execution.
-            let ts = Utc::now().format("%Y%m%d%H%M%S%3f");
-            let fallback = std::env::temp_dir().join(format!(
-                "cuenv-work-{}-{}-{}",
-                sanitized_task,
-                &key[..12.min(key.len())],
-                ts
-            ));
-            tracing::warn!(
-                previous = %base.display(),
-                fallback = %fallback.display(),
-                error = %e,
-                "Failed to clean previous hermetic workdir; using fresh fallback directory"
-            );
-            std::fs::create_dir_all(&fallback).map_err(|e| Error::Io {
-                source: e,
-                path: Some(fallback.clone().into()),
-                operation: "create_dir_all".into(),
-            })?;
-            return Ok(fallback);
+    if base.exists()
+        && let Err(e) = std::fs::remove_dir_all(&base)
+    {
+        // If we cannot remove the previous directory (e.g. in-use on Windows),
+        // fall back to a unique, fresh directory to maintain hermetic execution.
+        let ts = Utc::now().format("%Y%m%d%H%M%S%3f");
+        let fallback = std::env::temp_dir().join(format!(
+            "cuenv-work-{}-{}-{}",
+            sanitized_task,
+            &key[..12.min(key.len())],
+            ts
+        ));
+        tracing::warn!(
+            previous = %base.display(),
+            fallback = %fallback.display(),
+            error = %e,
+            "Failed to clean previous hermetic workdir; using fresh fallback directory"
+        );
+        std::fs::create_dir_all(&fallback).map_err(|e| Error::Io {
+            source: e,
+            path: Some(fallback.clone().into()),
+            operation: "create_dir_all".into(),
+        })?;
+        return Ok(fallback);
     }
 
     std::fs::create_dir_all(&base).map_err(|e| Error::Io {
