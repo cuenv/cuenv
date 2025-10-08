@@ -4,6 +4,7 @@
 
 pub mod executor;
 pub mod graph;
+pub mod io;
 
 // Re-export executor and graph modules
 pub use executor::*;
