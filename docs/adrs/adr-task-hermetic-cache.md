@@ -10,15 +10,18 @@ Tasks must execute deterministically from a set of explicitly declared inputs an
 ## Decisions
 
 1. Inputs/Outputs syntax
+
 - Accept files, directories, and glob patterns (e.g., `src/**/*.ts`) relative to the env.cue root.
 - Globs are first-class for both inputs and outputs.
 
 2. Hermetic execution
+
 - Each task runs in a fresh working directory pre-populated only with its resolved inputs.
 - Directory-only isolation; no network isolation.
 - Symlinks are resolved to target content at population time. Hardlinks are used when possible, falling back to copies on cross-device or FS limitations.
 
 3. Cache key
+
 - SHA256 over a canonical JSON envelope containing:
   - Sorted list of `{path, content_hash}` for all resolved input files
   - `command`, `args`, and `shell` (if any)
@@ -27,6 +30,7 @@ Tasks must execute deterministically from a set of explicitly declared inputs an
 - Full hex digest used as the key.
 
 4. Cache behavior and storage
+
 - On key hit: skip execution entirely and log a cache-hit message. Outputs are not materialized by default.
 - Cache is persisted under `~/.cuenv/cache/tasks/<key>/` containing:
   - `metadata.json` (canonical envelope and execution metadata)
@@ -36,11 +40,13 @@ Tasks must execute deterministically from a set of explicitly declared inputs an
 - No GC; manual cleanup only.
 
 5. Outputs and undeclared writes
+
 - Only declared outputs are indexed and persisted to `outputs/`.
 - Writes to undeclared paths are allowed but produce a WARN log and are not cached as outputs.
 - No implicit coupling: a task must explicitly list the outputs of its dependencies as inputs.
 
 6. CLI UX
+
 - On hit: `Task <name> cache hit: <key>. Skipping execution.`
 - On miss: `Task <name> executing hermetically… key <key>`
 - Flags added (no behavior change by default):

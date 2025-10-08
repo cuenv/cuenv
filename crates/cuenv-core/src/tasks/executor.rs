@@ -529,22 +529,51 @@ impl TaskExecutor {
 }
 
 fn create_hermetic_dir(task_name: &str, key: &str) -> Result<PathBuf> {
-    // Use OS temp dir; name scoped by task and key
+    // Use OS temp dir; name scoped by task and cache key prefix.
+    // IMPORTANT: Ensure the workdir is clean on every run to preserve hermeticity.
     let sanitized_task = task_name
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect::<String>();
-    let dir = std::env::temp_dir().join(format!(
+
+    let base = std::env::temp_dir().join(format!(
         "cuenv-work-{}-{}",
         sanitized_task,
         &key[..12.min(key.len())]
     ));
-    std::fs::create_dir_all(&dir).map_err(|e| Error::Io {
+
+    // If a directory from a previous run exists, remove it before reuse.
+    // This avoids contamination from artifacts left by failed runs where no cache was saved.
+    if base.exists() && let Err(e) = std::fs::remove_dir_all(&base) {
+            // If we cannot remove the previous directory (e.g. in-use on Windows),
+            // fall back to a unique, fresh directory to maintain hermetic execution.
+            let ts = Utc::now().format("%Y%m%d%H%M%S%3f");
+            let fallback = std::env::temp_dir().join(format!(
+                "cuenv-work-{}-{}-{}",
+                sanitized_task,
+                &key[..12.min(key.len())],
+                ts
+            ));
+            tracing::warn!(
+                previous = %base.display(),
+                fallback = %fallback.display(),
+                error = %e,
+                "Failed to clean previous hermetic workdir; using fresh fallback directory"
+            );
+            std::fs::create_dir_all(&fallback).map_err(|e| Error::Io {
+                source: e,
+                path: Some(fallback.clone().into()),
+                operation: "create_dir_all".into(),
+            })?;
+            return Ok(fallback);
+    }
+
+    std::fs::create_dir_all(&base).map_err(|e| Error::Io {
         source: e,
-        path: Some(dir.clone().into()),
+        path: Some(base.clone().into()),
         operation: "create_dir_all".into(),
     })?;
-    Ok(dir)
+    Ok(base)
 }
 
 /// Execute an arbitrary command with the cuenv environment
