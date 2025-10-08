@@ -304,7 +304,7 @@ mod tests {
 
         let resolver = InputResolver::new(root);
         let inputs = resolver
-            .resolve(&vec!["src".into(), "README.md".into(), "**/*.ts".into()])
+            .resolve(&["src".into(), "README.md".into(), "**/*.ts".into()])
             .unwrap();
         let rels: Vec<String> = inputs
             .files
@@ -326,7 +326,7 @@ mod tests {
         std::fs::write(root.join("data/real.txt"), "hello").unwrap();
         unixfs::symlink("real.txt", root.join("data/link.txt")).unwrap();
         let resolver = InputResolver::new(root);
-        let inputs = resolver.resolve(&vec!["data/link.txt".into()]).unwrap();
+        let inputs = resolver.resolve(&["data/link.txt".into()]).unwrap();
         assert_eq!(inputs.files.len(), 1);
         assert!(inputs.files[0].source_path.ends_with("real.txt"));
     }
@@ -338,7 +338,7 @@ mod tests {
         std::fs::create_dir_all(root.join("dir")).unwrap();
         std::fs::write(root.join("dir/x.txt"), "x").unwrap();
         let resolver = InputResolver::new(root);
-        let resolved = resolver.resolve(&vec!["dir".into()]).unwrap();
+        let resolved = resolver.resolve(&["dir".into()]).unwrap();
         let herm = TempDir::new().unwrap();
         populate_hermetic_dir(&resolved, herm.path()).unwrap();
         assert!(herm.path().join("dir/x.txt").exists());
