@@ -30,7 +30,7 @@ fs4 = { version = "0.11", features = ["tokio"] }
 dirs = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
-sysinfo = "0.30"
+sysinfo = "0.37"
 # For input resolution, snapshots, and hashing
 globset = "0.4"
 walkdir = "2.5"
