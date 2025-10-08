@@ -17,5 +17,9 @@ tasks: {
     shell: {command: "bash", flag: "-c"}
     command: "nix develop --command cargo clippy -- -D warnings"
   }
+  noinputs: {
+    command: "touch"
+    args: [ "abc" ]
+  }
 }
 
