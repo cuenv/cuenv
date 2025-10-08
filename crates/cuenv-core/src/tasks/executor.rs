@@ -10,6 +10,7 @@ use crate::environment::Environment;
 use crate::{Error, Result};
 use async_recursion::async_recursion;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -40,6 +41,8 @@ pub struct ExecutorConfig {
     pub max_parallel: usize,
     /// Environment variables to propagate
     pub environment: Environment,
+    /// Optional working directory override (for hermetic execution)
+    pub working_dir: Option<PathBuf>,
 }
 
 impl Default for ExecutorConfig {
@@ -48,6 +51,7 @@ impl Default for ExecutorConfig {
             capture_output: false,
             max_parallel: 0,
             environment: Environment::new(),
+            working_dir: None,
         }
     }
 }
@@ -106,6 +110,11 @@ impl TaskExecutor {
             }
             cmd
         };
+
+        // Set working directory override if provided
+        if let Some(dir) = &self.config.working_dir {
+            cmd.current_dir(dir);
+        }
 
         // Set environment variables
         let env_vars = self.config.environment.merge_with_system();
@@ -199,7 +208,7 @@ impl TaskExecutor {
     ) -> Result<Vec<TaskResult>> {
         match definition {
             TaskDefinition::Single(task) => {
-                let result = self.execute_task(name, task).await?;
+                let result = self.execute_task(name, task.as_ref()).await?;
                 Ok(vec![result])
             }
             TaskDefinition::Group(group) => self.execute_group(name, group, all_tasks).await,
@@ -449,6 +458,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Hello task".to_string()),
         };
 
@@ -479,6 +489,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Print env task".to_string()),
         };
 
@@ -505,6 +516,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Failing task".to_string()),
         };
 
@@ -531,6 +543,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("First task".to_string()),
         };
 
@@ -542,12 +555,13 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Second task".to_string()),
         };
 
         let group = TaskGroup::Sequential(vec![
-            TaskDefinition::Single(task1),
-            TaskDefinition::Single(task2),
+            TaskDefinition::Single(Box::new(task1)),
+            TaskDefinition::Single(Box::new(task2)),
         ]);
 
         let all_tasks = Tasks::new();
@@ -579,6 +593,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Malicious task test".to_string()),
         };
 
@@ -621,6 +636,7 @@ mod tests {
                 depends_on: vec![],
                 inputs: vec![],
                 outputs: vec![],
+                external_inputs: None,
                 description: Some("Special character test".to_string()),
             };
 
@@ -655,6 +671,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Environment variable safety test".to_string()),
         };
 

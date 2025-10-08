@@ -22,6 +22,26 @@ pub struct Shell {
     pub flag: Option<String>,
 }
 
+/// Mapping of external output to local workspace path
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct Mapping {
+    /// Path relative to external project root of a declared output from the external task
+    pub from: String,
+    /// Path inside the dependent task’s hermetic workspace where this file/dir will be materialized
+    pub to: String,
+}
+
+/// Cross-project external input declaration
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ExternalInput {
+    /// Path to project root relative to env.cue or absolute-from-repo-root
+    pub project: String,
+    /// Name of the external task in that project
+    pub task: String,
+    /// Required explicit mappings
+    pub map: Vec<Mapping>,
+}
+
 /// A single executable task
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct Task {
@@ -51,6 +71,10 @@ pub struct Task {
     /// Output files/resources
     #[serde(default)]
     pub outputs: Vec<String>,
+
+    /// Cross-project inputs
+    #[serde(default, rename = "externalInputs")]
+    pub external_inputs: Option<Vec<ExternalInput>>,
 
     /// Description of the task
     #[serde(default)]
@@ -82,7 +106,7 @@ pub enum TaskGroup {
 #[serde(untagged)]
 pub enum TaskDefinition {
     /// A single task
-    Single(Task),
+    Single(Box<Task>),
 
     /// A group of tasks
     Group(TaskGroup),
@@ -132,7 +156,7 @@ impl TaskDefinition {
     /// Get as single task if it is one
     pub fn as_single(&self) -> Option<&Task> {
         match self {
-            TaskDefinition::Single(task) => Some(task),
+            TaskDefinition::Single(task) => Some(task.as_ref()),
             _ => None,
         }
     }
@@ -185,6 +209,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: None,
         };
 
@@ -217,6 +242,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("First task".to_string()),
         };
 
@@ -228,12 +254,13 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Second task".to_string()),
         };
 
         let group = TaskGroup::Sequential(vec![
-            TaskDefinition::Single(task1),
-            TaskDefinition::Single(task2),
+            TaskDefinition::Single(Box::new(task1)),
+            TaskDefinition::Single(Box::new(task2)),
         ]);
 
         assert!(group.is_sequential());
@@ -251,6 +278,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Task 1".to_string()),
         };
 
@@ -262,12 +290,13 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Task 2".to_string()),
         };
 
         let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("task1".to_string(), TaskDefinition::Single(task1));
-        parallel_tasks.insert("task2".to_string(), TaskDefinition::Single(task2));
+        parallel_tasks.insert("task1".to_string(), TaskDefinition::Single(Box::new(task1)));
+        parallel_tasks.insert("task2".to_string(), TaskDefinition::Single(Box::new(task2)));
 
         let group = TaskGroup::Parallel(parallel_tasks);
 
@@ -289,12 +318,13 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Hello task".to_string()),
         };
 
         tasks
             .tasks
-            .insert("greet".to_string(), TaskDefinition::Single(task));
+            .insert("greet".to_string(), TaskDefinition::Single(Box::new(task)));
 
         assert!(tasks.contains("greet"));
         assert!(!tasks.contains("nonexistent"));
@@ -314,10 +344,11 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Test task".to_string()),
         };
 
-        let single = TaskDefinition::Single(task.clone());
+        let single = TaskDefinition::Single(Box::new(task.clone()));
         assert!(single.is_single());
         assert!(!single.is_group());
         assert_eq!(single.as_single().unwrap().command, "test");

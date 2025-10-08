@@ -614,6 +614,7 @@ dependencies = [
  "cucumber",
  "cuengine",
  "cuenv-core",
+ "dirs",
  "miette",
  "ratatui",
  "serde",
@@ -626,6 +627,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]
