@@ -37,6 +37,8 @@ pub enum Command {
         path: String,
         package: String,
         name: Option<String>,
+        materialize_outputs: Option<String>,
+        show_cache_path: bool,
     },
     Exec {
         path: String,
@@ -81,7 +83,12 @@ impl CommandExecutor {
                 path,
                 package,
                 name,
-            } => self.execute_task(path, package, name).await,
+                materialize_outputs,
+                show_cache_path,
+            } => {
+                self.execute_task(path, package, name, materialize_outputs, show_cache_path)
+                    .await
+            }
             Command::Exec {
                 path,
                 package,
@@ -193,6 +200,8 @@ impl CommandExecutor {
         path: String,
         package: String,
         name: Option<String>,
+        materialize_outputs: Option<String>,
+        show_cache_path: bool,
     ) -> Result<()> {
         let command_name = "task";
 
@@ -201,7 +210,16 @@ impl CommandExecutor {
         });
 
         // Execute the task command
-        match task::execute_task(&path, &package, name.as_deref(), false).await {
+        match task::execute_task(
+            &path,
+            &package,
+            name.as_deref(),
+            false,
+            materialize_outputs.as_deref(),
+            show_cache_path,
+        )
+        .await
+        {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),

@@ -255,4 +255,18 @@ mod tests {
         let id2 = correlation_id();
         assert_eq!(id1, id2);
     }
+
+    #[test]
+    fn test_tracing_macros_smoke() {
+        // command_span should create a span without panicking
+        let span = command_span!("unit_test_cmd");
+        let _entered = span.enter();
+
+        // perf_span and perf_event should also be safe to call
+        let pspan = perf_span!("perf_op");
+        let _e2 = pspan.enter();
+        let dur = std::time::Duration::from_millis(1);
+        // smoke test for macro with required args
+        perf_event!("perf_op", dur);
+    }
 }

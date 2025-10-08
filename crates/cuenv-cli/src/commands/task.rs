@@ -13,6 +13,8 @@ pub async fn execute_task(
     package: &str,
     task_name: Option<&str>,
     capture_output: bool,
+    materialize_outputs: Option<&str>,
+    show_cache_path: bool,
 ) -> Result<String> {
     tracing::info!(
         "Executing task from path: {}, package: {}, task: {:?}",
@@ -79,6 +81,9 @@ pub async fn execute_task(
         capture_output,
         max_parallel: 0,
         environment,
+        project_root: Path::new(path).to_path_buf(),
+        materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
+        show_cache_path,
     };
 
     let executor = TaskExecutor::new(config);
@@ -174,11 +179,29 @@ fn format_task_results(
                     output.push('\n');
                 }
             }
+        } else {
+            // When not capturing output, we still want to print cached logs on
+            // cache hits (executor returns them in TaskResult). This ensures CLI
+            // behavior matches a fresh execution where child output is inherited.
+            if !result.stdout.is_empty() {
+                output.push_str(&result.stdout);
+                output.push('\n');
+            }
         }
     }
 
-    if output.is_empty() {
-        output = format!("Task '{task_name}' completed");
+    if capture_output {
+        if output.is_empty() {
+            output = format!("Task '{task_name}' completed");
+        }
+    } else {
+        // In non-capturing mode, ensure we always include a clear completion
+        // message even if we printed cached logs above.
+        if output.is_empty() {
+            output = format!("Task '{task_name}' completed");
+        } else {
+            let _ = writeln!(output, "Task '{task_name}' completed");
+        }
     }
 
     output
@@ -199,7 +222,15 @@ env: {
 }"#;
         fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
-        let result = execute_task(temp_dir.path().to_str().unwrap(), "test", None, false).await;
+        let result = execute_task(
+            temp_dir.path().to_str().unwrap(),
+            "test",
+            None,
+            false,
+            None,
+            false,
+        )
+        .await;
 
         // The result depends on FFI availability
         if let Ok(output) = result {
