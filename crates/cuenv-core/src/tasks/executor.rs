@@ -128,13 +128,32 @@ impl TaskExecutor {
                 let count = task_cache::materialize_outputs(&cache_key, dest)?;
                 tracing::info!(materialized = count, dest = %dest.display(), "Materialized cached outputs");
             }
-            return Ok(TaskResult {
-                name: name.to_string(),
-                exit_code: Some(0),
-                stdout: String::new(),
-                stderr: String::new(),
-                success: true,
-            });
+            // On cache hit, surface cached logs so behavior matches a fresh
+            // execution from the caller's perspective. We return them in the
+            // TaskResult even if `capture_output` is false, allowing callers
+            // (like the CLI) to print cached logs explicitly.
+            let stdout_path = hit.path.join("logs").join("stdout.log");
+            let stderr_path = hit.path.join("logs").join("stderr.log");
+            let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+            // If logs are present, we can return immediately. If logs are
+            // missing (older cache format), fall through to execute to
+            // backfill logs for future hits.
+            if !(stdout.is_empty() && stderr.is_empty()) {
+                return Ok(TaskResult {
+                    name: name.to_string(),
+                    exit_code: Some(0),
+                    stdout,
+                    stderr,
+                    success: true,
+                });
+            } else {
+                tracing::info!(
+                    task = %name,
+                    key = %cache_key,
+                    "Cache entry lacks logs; executing to backfill logs"
+                );
+            }
         }
 
         tracing::info!(
@@ -201,56 +220,48 @@ impl TaskExecutor {
         }
         cmd.current_dir(&hermetic_root);
 
-        // Configure output
-        if self.config.capture_output {
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
-        } else {
-            cmd.stdout(Stdio::inherit());
-            cmd.stderr(Stdio::inherit());
-        }
+        // Configure output: always capture to ensure consistent behavior on
+        // cache hits and allow callers to decide what to print.
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
 
         let start = std::time::Instant::now();
         let mut child = cmd
             .spawn()
             .map_err(|e| Error::configuration(format!("Failed to spawn task '{}': {}", name, e)))?;
 
-        let (stdout, stderr) = if self.config.capture_output {
-            let stdout_handle = child.stdout.take();
-            let stderr_handle = child.stderr.take();
+        let stdout_handle = child.stdout.take();
+        let stderr_handle = child.stderr.take();
 
-            let stdout_task = async {
-                if let Some(stdout) = stdout_handle {
-                    let reader = BufReader::new(stdout);
-                    let mut lines = reader.lines();
-                    let mut stdout_lines = Vec::new();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        stdout_lines.push(line);
-                    }
-                    stdout_lines.join("\n")
-                } else {
-                    String::new()
+        let stdout_task = async {
+            if let Some(stdout) = stdout_handle {
+                let reader = BufReader::new(stdout);
+                let mut lines = reader.lines();
+                let mut stdout_lines = Vec::new();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    stdout_lines.push(line);
                 }
-            };
-
-            let stderr_task = async {
-                if let Some(stderr) = stderr_handle {
-                    let reader = BufReader::new(stderr);
-                    let mut lines = reader.lines();
-                    let mut stderr_lines = Vec::new();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        stderr_lines.push(line);
-                    }
-                    stderr_lines.join("\n")
-                } else {
-                    String::new()
-                }
-            };
-
-            tokio::join!(stdout_task, stderr_task)
-        } else {
-            (String::new(), String::new())
+                stdout_lines.join("\n")
+            } else {
+                String::new()
+            }
         };
+
+        let stderr_task = async {
+            if let Some(stderr) = stderr_handle {
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                let mut stderr_lines = Vec::new();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    stderr_lines.push(line);
+                }
+                stderr_lines.join("\n")
+            } else {
+                String::new()
+            }
+        };
+
+        let (stdout, stderr) = tokio::join!(stdout_task, stderr_task);
 
         let status = child.wait().await.map_err(|e| {
             Error::configuration(format!("Failed to wait for task '{}': {}", name, e))
@@ -279,20 +290,23 @@ impl TaskExecutor {
 
         for rel in &outputs {
             let src = hermetic_root.join(rel);
-            if let Ok(meta) = std::fs::metadata(&src)
-                && meta.is_file()
-            {
-                let dst = outputs_stage.join(rel);
-                if let Some(parent) = dst.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+            // Intentionally avoid `let`-chains here to preserve readability
+            // and to align with review guidance; allow clippy's collapsible-if.
+            #[allow(clippy::collapsible_if)]
+            if let Ok(meta) = std::fs::metadata(&src) {
+                if meta.is_file() {
+                    let dst = outputs_stage.join(rel);
+                    if let Some(parent) = dst.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = std::fs::copy(&src, &dst);
+                    let (sha, _size) = crate::tasks::io::sha256_file(&src).unwrap_or_default();
+                    output_index.push(task_cache::OutputIndexEntry {
+                        rel_path: rel.to_string_lossy().to_string(),
+                        size: meta.len(),
+                        sha256: sha,
+                    });
                 }
-                let _ = std::fs::copy(&src, &dst);
-                let (sha, _size) = crate::tasks::io::sha256_file(&src).unwrap_or_default();
-                output_index.push(task_cache::OutputIndexEntry {
-                    rel_path: rel.to_string_lossy().to_string(),
-                    size: meta.len(),
-                    sha256: sha,
-                });
             }
         }
 
@@ -343,16 +357,10 @@ impl TaskExecutor {
                 output_index,
             };
             let logs = task_cache::TaskLogs {
-                stdout: if self.config.capture_output {
-                    Some(stdout.clone())
-                } else {
-                    None
-                },
-                stderr: if self.config.capture_output {
-                    Some(stderr.clone())
-                } else {
-                    None
-                },
+                // Persist logs regardless of capture setting so cache hits can
+                // reproduce output faithfully.
+                stdout: Some(stdout.clone()),
+                stderr: Some(stderr.clone()),
             };
             let cache_span = tracing::info_span!("cache.save", key = %cache_key);
             {

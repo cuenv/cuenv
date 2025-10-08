@@ -179,11 +179,29 @@ fn format_task_results(
                     output.push('\n');
                 }
             }
+        } else {
+            // When not capturing output, we still want to print cached logs on
+            // cache hits (executor returns them in TaskResult). This ensures CLI
+            // behavior matches a fresh execution where child output is inherited.
+            if !result.stdout.is_empty() {
+                output.push_str(&result.stdout);
+                output.push('\n');
+            }
         }
     }
 
-    if output.is_empty() {
-        output = format!("Task '{task_name}' completed");
+    if capture_output {
+        if output.is_empty() {
+            output = format!("Task '{task_name}' completed");
+        }
+    } else {
+        // In non-capturing mode, ensure we always include a clear completion
+        // message even if we printed cached logs above.
+        if output.is_empty() {
+            output = format!("Task '{task_name}' completed");
+        } else {
+            let _ = writeln!(output, "Task '{task_name}' completed");
+        }
     }
 
     output
