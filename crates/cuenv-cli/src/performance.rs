@@ -198,6 +198,8 @@ macro_rules! measure_perf {
     }};
 }
 
+// (first tests module removed; consolidated into the one at bottom of file)
+
 /// Async version of performance measurement
 #[macro_export]
 macro_rules! measure_perf_async {
@@ -233,8 +235,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::time::Duration;
     use tokio::time::sleep;
+    use uuid::Uuid;
 
     #[test]
     fn test_performance_measurement() {
@@ -276,5 +280,122 @@ mod tests {
         assert_eq!(summary.total_operations, 1);
         assert_eq!(summary.successful_operations, 1);
         assert_eq!(summary.failed_operations, 0);
+    }
+
+    // Additional focused unit tests to boost coverage
+    // Helper to find operations containing a token in their name
+    fn find_ops(token: &str) -> Vec<OperationMetrics> {
+        registry()
+            .get_summary()
+            .operations
+            .into_iter()
+            .filter(|op| op.operation_name.contains(token))
+            .collect()
+    }
+
+    #[test]
+    fn test_registry_record_and_summary() {
+        let reg = PerformanceRegistry::new();
+        let before = reg.get_summary();
+        assert_eq!(before.total_operations, 0);
+
+        let mut meta = HashMap::new();
+        meta.insert("k".to_string(), "v".to_string());
+        reg.record_operation(OperationMetrics {
+            operation_id: Uuid::new_v4(),
+            operation_name: "unit_test_op".to_string(),
+            start_time: std::time::SystemTime::now(),
+            duration: Duration::from_millis(5),
+            success: true,
+            memory_usage_bytes: None,
+            metadata: meta,
+        });
+
+        let after = reg.get_summary();
+        assert_eq!(after.total_operations, 1);
+        assert_eq!(after.successful_operations, 1);
+        assert_eq!(after.failed_operations, 0);
+        assert!(after.total_duration >= Duration::from_millis(5));
+        assert_eq!(after.operations.len(), 1);
+    }
+
+    #[test]
+    fn test_guard_finish_records_success() {
+        let token = format!("finish-{}", Uuid::new_v4());
+        let mut guard = PerformanceGuard::new(token.clone());
+        guard.add_metadata("case", "finish");
+        guard.finish(true);
+
+        let ops = find_ops(&token);
+        assert!(!ops.is_empty());
+        assert!(ops.iter().any(|o| o.success));
+        assert!(
+            ops.iter()
+                .any(|o| { o.metadata.get("case").is_some_and(|v| v == "finish") })
+        );
+    }
+
+    #[test]
+    fn test_guard_drop_records_when_not_finished() {
+        let token = format!("drop-{}", Uuid::new_v4());
+        {
+            let mut g = PerformanceGuard::new(token.clone());
+            g.add_metadata("case", "drop");
+        }
+        let ops = find_ops(&token);
+        assert!(!ops.is_empty());
+    }
+
+    #[test]
+    fn test_measure_perf_macro_executes_block() {
+        let token = format!("macro-{}", Uuid::new_v4());
+        let value = measure_perf!(&token, { 2 + 2 });
+        assert_eq!(value, 4);
+        let ops = find_ops(&token);
+        assert!(!ops.is_empty());
+    }
+
+    #[test]
+    fn test_operationmetrics_serde_roundtrip() {
+        let metrics = OperationMetrics {
+            operation_id: Uuid::new_v4(),
+            operation_name: "serde-test".to_string(),
+            start_time: std::time::SystemTime::now(),
+            duration: Duration::from_millis(1),
+            success: false,
+            memory_usage_bytes: Some(1234),
+            metadata: HashMap::from([("a".into(), "b".into())]),
+        };
+        let json = serde_json::to_string(&metrics).unwrap();
+        let de: OperationMetrics = serde_json::from_str(&json).unwrap();
+        assert_eq!(de.operation_name, metrics.operation_name);
+        assert!(!de.success);
+        assert_eq!(de.memory_usage_bytes, Some(1234));
+    }
+
+    #[test]
+    fn test_summary_serde_roundtrip() {
+        let reg = PerformanceRegistry::new();
+        reg.record_operation(OperationMetrics {
+            operation_id: Uuid::new_v4(),
+            operation_name: "serde-summary".to_string(),
+            start_time: std::time::SystemTime::now(),
+            duration: Duration::from_millis(3),
+            success: true,
+            memory_usage_bytes: None,
+            metadata: HashMap::new(),
+        });
+        let summary = reg.get_summary();
+        let json = serde_json::to_string(&summary).unwrap();
+        let de: PerformanceSummary = serde_json::from_str(&json).unwrap();
+        assert!(de.total_operations >= 1);
+    }
+
+    #[test]
+    fn test_get_memory_usage_smoke() {
+        let usage = get_memory_usage();
+        if let Some(bytes) = usage {
+            assert!(bytes > 0);
+        }
     }
 }

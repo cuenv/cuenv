@@ -284,6 +284,10 @@ fn format_no_op(shell: Shell) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::environment::{Env, EnvValue, EnvValueSimple, EnvVarWithPolicies};
+    use cuenv_core::manifest::Cuenv;
+    use cuenv_core::secrets::Secret;
+    use std::collections::HashMap;
 
     #[test]
     fn test_escape_shell_value() {
@@ -325,5 +329,104 @@ mod tests {
         assert_eq!(format_no_op(Shell::Zsh), ":");
         assert_eq!(format_no_op(Shell::Fish), "true");
         assert_eq!(format_no_op(Shell::PowerShell), "# no changes");
+    }
+
+    #[test]
+    fn test_format_env_diff_exports_by_shell() {
+        let mut env = HashMap::new();
+        env.insert("FOO".to_string(), "bar baz".to_string());
+        env.insert("NUM".to_string(), "42".to_string());
+
+        let bash = format_env_diff(env.clone(), Shell::Bash);
+        assert!(bash.contains("export FOO=\"bar baz\""));
+        assert!(bash.contains("export NUM=\"42\""));
+
+        let zsh = format_env_diff(env.clone(), Shell::Zsh);
+        assert!(zsh.contains("export FOO=\"bar baz\""));
+
+        let fish = format_env_diff(env.clone(), Shell::Fish);
+        assert!(fish.contains("set -x FOO \"bar baz\""));
+
+        let pwsh = format_env_diff(env, Shell::PowerShell);
+        assert!(pwsh.contains("$env:FOO = \"bar baz\""));
+    }
+
+    #[test]
+    fn test_format_env_diff_with_unset() {
+        let current = HashMap::from([
+            ("A".to_string(), "1".to_string()),
+            ("B".to_string(), "2".to_string()),
+        ]);
+        let previous = HashMap::from([
+            ("A".to_string(), "old".to_string()),
+            ("REMOVED".to_string(), "x".to_string()),
+        ]);
+
+        let out_bash = format_env_diff_with_unset(current.clone(), Some(&previous), Shell::Bash);
+        assert!(out_bash.lines().any(|l| l == "unset REMOVED"));
+        assert!(out_bash.contains("export A=\"1\""));
+
+        let out_fish = format_env_diff_with_unset(current.clone(), Some(&previous), Shell::Fish);
+        assert!(out_fish.lines().any(|l| l == "set -e REMOVED"));
+
+        let out_pwsh = format_env_diff_with_unset(current, Some(&previous), Shell::PowerShell);
+        assert!(out_pwsh.lines().any(|l| l == "Remove-Item Env:REMOVED"));
+    }
+
+    #[test]
+    fn test_extract_static_env_vars_skips_secrets() {
+        // Build Cuenv with one normal var and one secret
+        let mut base = HashMap::new();
+        base.insert("PLAIN".to_string(), EnvValue::String("value".to_string()));
+        let secret = Secret::new("cmd".to_string(), vec!["arg".to_string()]);
+        base.insert("SECRET".to_string(), EnvValue::Secret(secret));
+
+        let env_cfg = Env {
+            base,
+            environment: None,
+        };
+        let cfg = Cuenv {
+            config: None,
+            env: Some(env_cfg),
+            hooks: None,
+            tasks: HashMap::new(),
+        };
+
+        let vars = extract_static_env_vars(&cfg);
+        assert!(vars.get("PLAIN") == Some(&"value".to_string()));
+        assert!(!vars.contains_key("SECRET"));
+    }
+
+    #[test]
+    fn test_collect_all_env_vars_override() {
+        let mut base = HashMap::new();
+        base.insert("OVERRIDE".to_string(), EnvValue::String("base".to_string()));
+        base.insert(
+            "BASE_ONLY".to_string(),
+            EnvValue::WithPolicies(EnvVarWithPolicies {
+                value: EnvValueSimple::String("plain".to_string()),
+                policies: None,
+            }),
+        );
+
+        let cfg = Cuenv {
+            config: None,
+            env: Some(Env {
+                base,
+                environment: None,
+            }),
+            hooks: None,
+            tasks: HashMap::new(),
+        };
+
+        let hook_env = HashMap::from([
+            ("OVERRIDE".to_string(), "hook".to_string()),
+            ("HOOK_ONLY".to_string(), "x".to_string()),
+        ]);
+
+        let merged = collect_all_env_vars(&cfg, &hook_env);
+        assert_eq!(merged.get("OVERRIDE"), Some(&"hook".to_string()));
+        assert_eq!(merged.get("BASE_ONLY"), Some(&"plain".to_string()));
+        assert_eq!(merged.get("HOOK_ONLY"), Some(&"x".to_string()));
     }
 }

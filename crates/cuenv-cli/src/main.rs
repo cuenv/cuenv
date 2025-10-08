@@ -144,6 +144,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             path,
             package,
             name,
+            ..
         } => match execute_task_command_safe(path, package, name).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
@@ -427,7 +428,8 @@ async fn execute_task_command_safe(
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
 
-    let result = commands::task::execute_task(&path, &package, name.as_deref(), false).await;
+    let result =
+        commands::task::execute_task(&path, &package, name.as_deref(), false, None, false).await;
 
     match result {
         Ok(output) => {

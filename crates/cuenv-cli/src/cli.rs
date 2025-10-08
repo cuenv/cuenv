@@ -265,6 +265,18 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
+        #[arg(
+            long = "materialize-outputs",
+            help = "Materialize cached outputs to this directory on cache hit (off by default)",
+            value_name = "DIR"
+        )]
+        materialize_outputs: Option<String>,
+        #[arg(
+            long = "show-cache-path",
+            help = "Print the cache path for this task key",
+            default_value_t = false
+        )]
+        show_cache_path: bool,
     },
     #[command(
         about = "Execute a command with CUE environment variables",
@@ -470,10 +482,14 @@ impl From<Commands> for Command {
                 name,
                 path,
                 package,
+                materialize_outputs,
+                show_cache_path,
             } => Command::Task {
                 path,
                 package,
                 name,
+                materialize_outputs,
+                show_cache_path,
             },
             Commands::Exec {
                 command,
