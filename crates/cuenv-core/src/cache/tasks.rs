@@ -72,8 +72,25 @@ fn cache_root_from_inputs(inputs: CacheInputs) -> Result<PathBuf> {
         if path.starts_with("/homeless-shelter") {
             continue;
         }
+        // If the path already exists, ensure it is writable; some CI environments
+        // provide read‑only cache directories under $HOME.
         if path.exists() {
-            return Ok(path);
+            let probe = path.join(".write_probe");
+            match std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&probe)
+            {
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&probe);
+                    return Ok(path);
+                }
+                Err(_) => {
+                    // Not writable, try next candidate
+                    continue;
+                }
+            }
         }
         match std::fs::create_dir_all(&path) {
             Ok(_) => return Ok(path),
@@ -254,6 +271,39 @@ pub fn compute_cache_key(envelope: &CacheKeyEnvelope) -> Result<(String, serde_j
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    struct EnvVarGuard {
+        key: String,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set<K: Into<String>, V: Into<String>>(key: K, value: V) -> Self {
+            let key_s = key.into();
+            let prev = std::env::var(&key_s).ok();
+            // Rust 2024 makes env mutation unsafe; this test confines changes to the current thread
+            // and restores previous values via Drop.
+            unsafe {
+                std::env::set_var(&key_s, value.into());
+            }
+            Self { key: key_s, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(ref v) = self.prev {
+                unsafe {
+                    std::env::set_var(&self.key, v);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var(&self.key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn cache_key_is_deterministic_and_order_invariant() {
@@ -325,5 +375,93 @@ mod tests {
         let dir = cache_root_from_inputs(inputs).expect("cache_root should use override");
         assert!(dir.starts_with(&tmp));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn save_and_materialize_outputs_roundtrip() {
+        // Force cache root into a temp directory to avoid touching user dirs
+        let cache_tmp = TempDir::new().expect("tempdir");
+        let _guard = EnvVarGuard::set("CUENV_CACHE_DIR", cache_tmp.path().to_string_lossy());
+
+        // Prepare fake outputs
+        let outputs = TempDir::new().expect("outputs tempdir");
+        std::fs::create_dir_all(outputs.path().join("dir")).unwrap();
+        std::fs::write(outputs.path().join("foo.txt"), b"foo").unwrap();
+        std::fs::write(outputs.path().join("dir/bar.bin"), b"bar").unwrap();
+
+        // Prepare hermetic workspace to snapshot
+        let herm = TempDir::new().expect("hermetic tempdir");
+        std::fs::create_dir_all(herm.path().join("work")).unwrap();
+        std::fs::write(herm.path().join("work/a.txt"), b"a").unwrap();
+
+        // Minimal metadata
+        let mut env_summary = BTreeMap::new();
+        env_summary.insert("FOO".to_string(), "1".to_string());
+        let inputs_summary = BTreeMap::new();
+        let output_index = vec![
+            OutputIndexEntry {
+                rel_path: "foo.txt".to_string(),
+                size: 3,
+                sha256: {
+                    use sha2::{Digest, Sha256};
+                    let mut h = Sha256::new();
+                    h.update(b"foo");
+                    hex::encode(h.finalize())
+                },
+            },
+            OutputIndexEntry {
+                rel_path: "dir/bar.bin".to_string(),
+                size: 3,
+                sha256: {
+                    use sha2::{Digest, Sha256};
+                    let mut h = Sha256::new();
+                    h.update(b"bar");
+                    hex::encode(h.finalize())
+                },
+            },
+        ];
+
+        let meta = TaskResultMeta {
+            task_name: "unit".into(),
+            command: "echo".into(),
+            args: vec!["ok".into()],
+            env_summary,
+            inputs_summary,
+            created_at: chrono::Utc::now(),
+            cuenv_version: "0.0.0-test".into(),
+            platform: std::env::consts::OS.to_string(),
+            duration_ms: 1,
+            exit_code: 0,
+            cache_key_envelope: serde_json::json!({}),
+            output_index,
+        };
+
+        let logs = TaskLogs {
+            stdout: Some("hello".into()),
+            stderr: Some("".into()),
+        };
+
+        let key = "roundtrip-key-123";
+        save_result(key, &meta, outputs.path(), herm.path(), logs).expect("save_result");
+
+        // Verify cache layout
+        let base = key_to_path(key).expect("key_to_path");
+        assert!(base.join("metadata.json").exists());
+        assert!(base.join("outputs/foo.txt").exists());
+        assert!(base.join("outputs/dir/bar.bin").exists());
+        assert!(base.join("logs/stdout.log").exists());
+        let snapshot = base.join("workspace.tar.zst");
+        let snap_meta = std::fs::metadata(&snapshot).unwrap();
+        assert!(snap_meta.len() > 0);
+
+        // Materialize into fresh destination
+        let dest = TempDir::new().expect("dest tempdir");
+        let copied = materialize_outputs(key, dest.path()).expect("materialize_outputs");
+        assert_eq!(copied, 2);
+        assert_eq!(std::fs::read(dest.path().join("foo.txt")).unwrap(), b"foo");
+        assert_eq!(
+            std::fs::read(dest.path().join("dir/bar.bin")).unwrap(),
+            b"bar"
+        );
     }
 }

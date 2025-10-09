@@ -39,6 +39,8 @@ pub struct ExecutorConfig {
     pub max_parallel: usize,
     /// Environment variables to propagate (resolved via policies)
     pub environment: Environment,
+    /// Optional working directory override (for hermetic execution)
+    pub working_dir: Option<PathBuf>,
     /// Project root for resolving inputs/outputs (env.cue root)
     pub project_root: PathBuf,
     /// Optional: materialize cached outputs on cache hit
@@ -53,6 +55,7 @@ impl Default for ExecutorConfig {
             capture_output: false,
             max_parallel: 0,
             environment: Environment::new(),
+            working_dir: None,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             materialize_outputs: None,
             show_cache_path: false,
@@ -212,6 +215,11 @@ impl TaskExecutor {
             }
             cmd
         };
+
+        // Set working directory override if provided
+        if let Some(dir) = &self.config.working_dir {
+            cmd.current_dir(dir);
+        }
 
         // Set environment variables (resolved + system), set CWD
         let env_vars = self.config.environment.merge_with_system();
@@ -390,7 +398,7 @@ impl TaskExecutor {
     ) -> Result<Vec<TaskResult>> {
         match definition {
             TaskDefinition::Single(task) => {
-                let result = self.execute_task(name, task).await?;
+                let result = self.execute_task(name, task.as_ref()).await?;
                 Ok(vec![result])
             }
             TaskDefinition::Group(group) => self.execute_group(name, group, all_tasks).await,
@@ -650,6 +658,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Hello task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -676,6 +685,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Print env task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -698,6 +708,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Failing task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -720,6 +731,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("First task".to_string()),
         };
         let task2 = Task {
@@ -730,11 +742,12 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Second task".to_string()),
         };
         let group = TaskGroup::Sequential(vec![
-            TaskDefinition::Single(task1),
-            TaskDefinition::Single(task2),
+            TaskDefinition::Single(Box::new(task1)),
+            TaskDefinition::Single(Box::new(task2)),
         ]);
         let all_tasks = Tasks::new();
         let results = executor
@@ -761,6 +774,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Malicious task test".to_string()),
         };
         let result = executor
@@ -796,6 +810,7 @@ mod tests {
                 depends_on: vec![],
                 inputs: vec![],
                 outputs: vec![],
+                external_inputs: None,
                 description: Some("Special character test".to_string()),
             };
             let result = executor.execute_task("special", &task).await.unwrap();
@@ -823,10 +838,53 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some("Environment variable safety test".to_string()),
         };
         let result = executor.execute_task("env_test", &task).await.unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("; rm -rf /"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_graph_parallel_groups() {
+        // two independent tasks -> can run in same parallel group
+        let config = ExecutorConfig {
+            capture_output: true,
+            max_parallel: 2,
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+        let mut graph = TaskGraph::new();
+
+        let t1 = Task {
+            command: "echo".into(),
+            args: vec!["A".into()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            external_inputs: None,
+            description: None,
+        };
+        let t2 = Task {
+            command: "echo".into(),
+            args: vec!["B".into()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            external_inputs: None,
+            description: None,
+        };
+
+        graph.add_task("t1", t1).unwrap();
+        graph.add_task("t2", t2).unwrap();
+        let results = executor.execute_graph(&graph).await.unwrap();
+        assert_eq!(results.len(), 2);
+        let joined = results.iter().map(|r| r.stdout.clone()).collect::<String>();
+        assert!(joined.contains("A") && joined.contains("B"));
     }
 }
