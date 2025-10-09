@@ -173,8 +173,6 @@
 
       in
       {
-        schemas = flake-schemas.schemas;
-
         packages = {
           default = cuenv;
           inherit cuenv cue-bridge;
@@ -244,9 +242,12 @@
         });
 
         apps = {
-          default = flake-utils.lib.mkApp {
-            drv = cuenv;
-            exePath = "/bin/cuenv";
+          default = {
+            type = "app";
+            program = "${cuenv}/bin/cuenv";
+            meta = {
+              description = "cuenv CLI app";
+            };
           };
         };
       });

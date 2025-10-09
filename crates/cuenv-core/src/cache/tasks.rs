@@ -1,6 +1,6 @@
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
-use dirs::home_dir;
+use dirs::{cache_dir, home_dir};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -36,10 +36,71 @@ pub struct CacheEntry {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct CacheInputs {
+    cuenv_cache_dir: Option<PathBuf>,
+    xdg_cache_home: Option<PathBuf>,
+    os_cache_dir: Option<PathBuf>,
+    home_dir: Option<PathBuf>,
+    temp_dir: PathBuf,
+}
+
+fn cache_root_from_inputs(inputs: CacheInputs) -> Result<PathBuf> {
+    // Resolution order (first writable wins):
+    // 1) CUENV_CACHE_DIR (explicit override)
+    // 2) XDG_CACHE_HOME/cuenv/tasks
+    // 3) OS cache dir/cuenv/tasks
+    // 4) ~/.cuenv/cache/tasks (legacy)
+    // 5) TMPDIR/cuenv/cache/tasks (fallback)
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(dir) = inputs.cuenv_cache_dir.filter(|p| !p.as_os_str().is_empty()) {
+        candidates.push(dir);
+    }
+    if let Some(xdg) = inputs.xdg_cache_home {
+        candidates.push(xdg.join("cuenv/tasks"));
+    }
+    if let Some(os_cache) = inputs.os_cache_dir {
+        candidates.push(os_cache.join("cuenv/tasks"));
+    }
+    if let Some(home) = inputs.home_dir {
+        candidates.push(home.join(".cuenv/cache/tasks"));
+    }
+    candidates.push(inputs.temp_dir.join("cuenv/cache/tasks"));
+
+    for path in candidates {
+        if path.starts_with("/homeless-shelter") {
+            continue;
+        }
+        if path.exists() {
+            return Ok(path);
+        }
+        match std::fs::create_dir_all(&path) {
+            Ok(_) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => continue,
+            Err(_) => continue,
+        }
+    }
+    Err(Error::configuration(
+        "Failed to determine a writable cache directory",
+    ))
+}
+
 fn cache_root() -> Result<PathBuf> {
-    let home = home_dir()
-        .ok_or_else(|| Error::configuration("Failed to find home directory for cache"))?;
-    Ok(home.join(".cuenv/cache/tasks"))
+    let inputs = CacheInputs {
+        cuenv_cache_dir: std::env::var("CUENV_CACHE_DIR")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from),
+        xdg_cache_home: std::env::var("XDG_CACHE_HOME")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from),
+        os_cache_dir: cache_dir(),
+        home_dir: home_dir(),
+        temp_dir: std::env::temp_dir(),
+    };
+    cache_root_from_inputs(inputs)
 }
 
 pub fn key_to_path(key: &str) -> Result<PathBuf> {
@@ -192,6 +253,7 @@ pub fn compute_cache_key(envelope: &CacheKeyEnvelope) -> Result<(String, serde_j
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn cache_key_is_deterministic_and_order_invariant() {
@@ -231,5 +293,37 @@ mod tests {
         let (k2, _) = compute_cache_key(&e2).unwrap();
 
         assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn cache_root_skips_homeless_shelter() {
+        let tmp = std::env::temp_dir();
+        let inputs = CacheInputs {
+            cuenv_cache_dir: None,
+            xdg_cache_home: Some(PathBuf::from("/homeless-shelter/.cache")),
+            os_cache_dir: None,
+            home_dir: Some(PathBuf::from("/homeless-shelter")),
+            temp_dir: tmp.clone(),
+        };
+        let dir =
+            cache_root_from_inputs(inputs).expect("cache_root should choose a writable fallback");
+        assert!(!dir.starts_with("/homeless-shelter"));
+        assert!(dir.starts_with(&tmp));
+    }
+
+    #[test]
+    fn cache_root_respects_override_env() {
+        let tmp = std::env::temp_dir().join("cuenv-test-override");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let inputs = CacheInputs {
+            cuenv_cache_dir: Some(tmp.clone()),
+            xdg_cache_home: None,
+            os_cache_dir: None,
+            home_dir: None,
+            temp_dir: std::env::temp_dir(),
+        };
+        let dir = cache_root_from_inputs(inputs).expect("cache_root should use override");
+        assert!(dir.starts_with(&tmp));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
