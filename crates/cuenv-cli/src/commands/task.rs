@@ -335,7 +335,10 @@ fn find_git_root(start: &Path) -> Result<PathBuf> {
     let mut current = start;
     loop {
         if current.join(".git").exists() {
-            return Ok(current.to_path_buf());
+            // Canonicalize to resolve platform symlinks (e.g., macOS /var -> /private/var)
+            // so subsequent path containment checks use a stable prefix.
+            let canon = fs::canonicalize(current).unwrap_or_else(|_| current.to_path_buf());
+            return Ok(canon);
         }
         match current.parent() {
             Some(parent) => current = parent,
@@ -349,18 +352,21 @@ fn find_git_root(start: &Path) -> Result<PathBuf> {
 }
 
 fn canonicalize_within_root(root: &Path, path: &Path) -> Result<PathBuf> {
+    // Resolve both the root and candidate to canonical paths to avoid issues with
+    // platform-specific symlinks (notably macOS's /var -> /private/var).
+    let root_canon = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let canon = fs::canonicalize(path).map_err(|e| cuenv_core::Error::Io {
         source: e,
         path: Some(path.to_path_buf().into_boxed_path()),
         operation: "canonicalize".to_string(),
     })?;
-    if canon.starts_with(root) {
+    if canon.starts_with(&root_canon) {
         Ok(canon)
     } else {
         Err(cuenv_core::Error::configuration(format!(
             "Resolved path '{}' is outside repository root '{}'",
             canon.display(),
-            root.display()
+            root_canon.display()
         )))
     }
 }
