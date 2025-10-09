@@ -15,6 +15,9 @@ jobs:
   lint-and-format:
     name: lint-and-format
     runs-on: ubuntu-latest
+    env:
+      # Ensure CLI fallback uses the CUE binary provided by the dev shell
+      CUENV_CUE_BIN: cue
     steps:
       - uses: actions/checkout@v5
 
@@ -41,6 +44,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Set CUENV_CUE_BIN
+        run: echo "CUENV_CUE_BIN=cue" >> "$GITHUB_ENV"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
@@ -107,8 +113,13 @@ jobs:
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
 
-      - name: Run security audit
-        run: nix develop --accept-flake-config --command cargo audit
+      - name: Run security audit (pinned DB via flake check)
+        # Use the flake-defined audit check to avoid network/DB flakiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          system=$(nix eval --raw --expr builtins.currentSystem)
+          nix build -L .#checks.$system.cuenv-audit
 
       - name: Run dependency checks
         run: nix develop --accept-flake-config --command cargo deny check bans licenses advisories

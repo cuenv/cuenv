@@ -413,7 +413,12 @@ fn evaluate_manifest_with_fallback(
                 e
             );
             // Fallback: use the `cue` CLI to export JSON and parse it
-            let output = Command::new("cue")
+            // Allow overriding the cue binary via env for CI or non-standard setups
+            let cue_bin = std::env::var("CUENV_CUE_BIN")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "cue".to_string());
+            let output = Command::new(&cue_bin)
                 .arg("export")
                 .current_dir(dir)
                 .arg(".")
@@ -421,13 +426,17 @@ fn evaluate_manifest_with_fallback(
                 .map_err(|ioe| cuenv_core::Error::Io {
                     source: ioe,
                     path: Some(dir.to_path_buf().into_boxed_path()),
-                    operation: "cue export".to_string(),
+                    operation: format!("{cue_bin} export"),
                 })?;
 
             if !output.status.success() {
+                // Provide a clearer hint when the cue binary is missing or fails
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let hint = format!(
+                    "Fallback CUE CLI evaluation failed. Ensure the Go FFI bridge is available or install the 'cue' binary and set CUENV_CUE_BIN if needed. Tried binary: '{cue_bin}'."
+                );
                 return Err(cuenv_core::Error::configuration(format!(
-                    "'cue export' failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
+                    "'{cue_bin} export' failed: {stderr}\n{hint}"
                 )));
             }
 
