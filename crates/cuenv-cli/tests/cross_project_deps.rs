@@ -74,7 +74,7 @@ fn test_external_auto_run_and_materialization() {
     write_proj_b(root);
     write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB");
 
-    let (stdout, _stderr, success) = run_cuenv(&[
+    let (stdout, stderr, success) = run_cuenv(&[
         "task",
         "-p",
         root.join("projA").to_str().unwrap(),
@@ -83,7 +83,11 @@ fn test_external_auto_run_and_materialization() {
         "consume",
     ]);
 
-    assert!(success, "First run should succeed");
+    assert!(
+        success,
+        "First run should succeed.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        stdout, stderr
+    );
     assert!(stdout.contains("Task 'consume' completed") || stdout.contains("succeeded"));
 }
 
