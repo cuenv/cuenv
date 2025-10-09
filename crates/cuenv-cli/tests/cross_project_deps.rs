@@ -170,7 +170,10 @@ fn test_path_safety_outside_git_root() {
         "consume",
     ]);
 
-    assert!(!success, "Should fail when external path resolves outside git root");
+    assert!(
+        !success,
+        "Should fail when external path resolves outside git root"
+    );
 }
 
 #[test]

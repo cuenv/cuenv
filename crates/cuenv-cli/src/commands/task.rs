@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::io::Read as _;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// Execute a named task from the CUE configuration
@@ -107,19 +107,18 @@ pub async fn execute_task(
     );
 
     // Execute using the appropriate method
-    let results =
-        execute_task_with_strategy_hermetic(
-            path,
-            &evaluator,
-            &executor,
-            task_name,
-            task_def,
-            &task_graph,
-            &tasks,
-            manifest.env.as_ref(),
-            capture_output,
-        )
-        .await?;
+    let results = execute_task_with_strategy_hermetic(
+        path,
+        &evaluator,
+        &executor,
+        task_name,
+        task_def,
+        &task_graph,
+        &tasks,
+        manifest.env.as_ref(),
+        capture_output,
+    )
+    .await?;
 
     // Check for any failed tasks first
     for result in &results {
@@ -202,7 +201,11 @@ async fn run_task_hermetic(
 ) -> Result<cuenv_core::tasks::TaskResult> {
     // Discover git root
     let git_root = find_git_root(project_dir)?;
-    tracing::info!("Starting task '{}' with {} external mappings", name, task.external_inputs.as_ref().map_or(0, std::vec::Vec::len));
+    tracing::info!(
+        "Starting task '{}' with {} external mappings",
+        name,
+        task.external_inputs.as_ref().map_or(0, |v| v.len())
+    );
 
     // Prepare hermetic workspace
     let workspace = create_workspace_dir(name)?;
@@ -315,7 +318,11 @@ fn find_git_root(start: &Path) -> Result<PathBuf> {
         }
         match current.parent() {
             Some(parent) => current = parent,
-            None => return Err(cuenv_core::Error::configuration("Git root not found".to_string())),
+            None => {
+                return Err(cuenv_core::Error::configuration(
+                    "Git root not found".to_string(),
+                ));
+            }
         }
     }
 }
@@ -343,19 +350,23 @@ fn detect_package_name(dir: &Path) -> Result<String> {
         path: Some(dir.to_path_buf().into_boxed_path()),
         operation: "read_dir".to_string(),
     })? {
-        let path = entry.map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: None,
-            operation: "read_dir_entry".to_string(),
-        })?.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("cue")
-            && let Ok(content) = fs::read_to_string(&path)
-            && let Some(line) = content
-                .lines()
-                .find(|l| l.trim_start().starts_with("package "))
-        {
-            let pkg = line.trim_start().trim_start_matches("package ").trim();
-            return Ok(pkg.to_string());
+        let path = entry
+            .map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: None,
+                operation: "read_dir_entry".to_string(),
+            })?
+            .path();
+        if path.extension().and_then(|s| s.to_str()) == Some("cue") {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Some(line) = content
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("package "))
+                {
+                    let pkg = line.trim_start().trim_start_matches("package ").trim();
+                    return Ok(pkg.to_string());
+                }
+            }
         }
     }
     Err(cuenv_core::Error::configuration(format!(
@@ -365,14 +376,19 @@ fn detect_package_name(dir: &Path) -> Result<String> {
 }
 
 fn task_cache_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| cuenv_core::Error::configuration("No home dir".to_string()))?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| cuenv_core::Error::configuration("No home dir".to_string()))?;
     Ok(home.join(".cuenv").join("cache").join("tasks"))
 }
 
 fn create_workspace_dir(task_name: &str) -> Result<PathBuf> {
     let base = std::env::temp_dir().join("cuenv_workspaces");
     let _ = fs::create_dir_all(&base);
-    let dir = base.join(format!("{}-{}", task_name.replace(':', "_"), Uuid::new_v4()));
+    let dir = base.join(format!(
+        "{}-{}",
+        task_name.replace(':', "_"),
+        Uuid::new_v4()
+    ));
     fs::create_dir_all(&dir).map_err(|e| cuenv_core::Error::Io {
         source: e,
         path: Some(dir.clone().into_boxed_path()),
@@ -423,7 +439,11 @@ fn materialize_path(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-fn compute_task_cache_key(task: &Task, env: &Environment, workspace_inputs_root: &Path) -> Result<String> {
+fn compute_task_cache_key(
+    task: &Task,
+    env: &Environment,
+    workspace_inputs_root: &Path,
+) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(b"v1");
     hasher.update(task.command.as_bytes());
@@ -522,12 +542,19 @@ async fn resolve_and_materialize_external(
     workspace: &Path,
     capture_output: bool,
 ) -> Result<()> {
-    tracing::info!("Resolving external task: project='{}' task='{}' mappings={}",
-        ext.project, ext.task, ext.map.len());
+    tracing::info!(
+        "Resolving external task: project='{}' task='{}' mappings={}",
+        ext.project,
+        ext.task,
+        ext.map.len()
+    );
 
     // Resolve external project path
     let ext_dir = if ext.project.starts_with('/') {
-        canonicalize_within_root(git_root, &git_root.join(ext.project.trim_start_matches('/')))?
+        canonicalize_within_root(
+            git_root,
+            &git_root.join(ext.project.trim_start_matches('/')),
+        )?
     } else {
         canonicalize_within_root(git_root, &current_project_dir.join(&ext.project))?
     };
@@ -537,14 +564,19 @@ async fn resolve_and_materialize_external(
     let manifest: Cuenv = evaluator.evaluate_typed(&ext_dir, &package)?;
 
     // Locate external task
-    let task_def = manifest.tasks.get(&ext.task).ok_or_else(|| cuenv_core::Error::configuration(format!(
-        "External task '{}' not found in project {}",
-        ext.task, ext_dir.display()
-    )))?;
+    let task_def = manifest.tasks.get(&ext.task).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "External task '{}' not found in project {}",
+            ext.task,
+            ext_dir.display()
+        ))
+    })?;
     let task = match task_def {
         TaskDefinition::Single(t) => t.as_ref(),
         TaskDefinition::Group(_) => {
-            return Err(cuenv_core::Error::configuration("External task must be a single task".to_string()));
+            return Err(cuenv_core::Error::configuration(
+                "External task must be a single task".to_string(),
+            ));
         }
     };
 

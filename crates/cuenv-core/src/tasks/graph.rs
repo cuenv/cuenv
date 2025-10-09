@@ -45,7 +45,7 @@ impl TaskGraph {
     ) -> Result<Vec<NodeIndex>> {
         match definition {
             TaskDefinition::Single(task) => {
-                let node = self.add_task(name, (*task.clone()).clone())?;
+                let node = self.add_task(name, task.as_ref().clone())?;
                 Ok(vec![node])
             }
             TaskDefinition::Group(group) => self.build_from_group(name, group, all_tasks),
@@ -244,7 +244,7 @@ impl TaskGraph {
         for (name, definition) in tasks.tasks.iter() {
             match definition {
                 TaskDefinition::Single(task) => {
-                    self.add_task(name, (*task.clone()).clone())?;
+                    self.add_task(name, task.as_ref().clone())?;
                 }
                 TaskDefinition::Group(_) => {
                     // For groups, we'd need to expand them - this is more complex
@@ -275,7 +275,7 @@ impl TaskGraph {
             if let Some(definition) = all_tasks.get(&current_name) {
                 match definition {
                     TaskDefinition::Single(task) => {
-                        self.add_task(&current_name, (*task.clone()).clone())?;
+                        self.add_task(&current_name, task.as_ref().clone())?;
                         // Add dependencies to processing queue
                         for dep in &task.depends_on {
                             if !processed.contains(dep) {
@@ -465,7 +465,10 @@ mod tests {
 
         let mut parallel_tasks = HashMap::new();
         parallel_tasks.insert("first".to_string(), TaskDefinition::Single(Box::new(task1)));
-        parallel_tasks.insert("second".to_string(), TaskDefinition::Single(Box::new(task2)));
+        parallel_tasks.insert(
+            "second".to_string(),
+            TaskDefinition::Single(Box::new(task2)),
+        );
 
         let group = TaskGroup::Parallel(parallel_tasks);
 
