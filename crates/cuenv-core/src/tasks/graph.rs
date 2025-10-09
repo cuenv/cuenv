@@ -123,7 +123,7 @@ impl TaskGraph {
 
         let node = TaskNode {
             name: name.to_string(),
-            task: task.clone(),
+            task,
         };
 
         let node_index = self.graph.add_node(node);
