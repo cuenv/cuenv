@@ -26,6 +26,7 @@ Added to schema/tasks.cue:
 - `#Mapping { from: string, to: string }`
 
 Rules:
+
 - `from` values must be among the external task’s declared outputs. Directories map recursively.
 - Each `to` destination must be unique; collisions are disallowed.
 
@@ -50,6 +51,7 @@ Generated JSON schema has been regenerated from Rust types; future iteration wil
 ## Errors
 
 Clear actionable errors are returned for:
+
 - Git root not found or path resolves outside repo root
 - External task not found or not a single task
 - Mapping refers to non-declared output
@@ -60,6 +62,7 @@ Clear actionable errors are returned for:
 ## Tests
 
 Integration tests (`crates/cuenv-cli/tests/cross_project_deps.rs`) cover:
+
 - First run: external task auto-runs; dependent materializes vendor/app.txt; task succeeds
 - Second run: cache hits for both external and dependent; no re-execution
 - Invalidation: changing external input file content invalidates dependent via file-hash changes

@@ -10,6 +10,7 @@ use std::fmt::Write;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use uuid::Uuid;
 
 /// Execute a named task from the CUE configuration
@@ -30,7 +31,7 @@ pub async fn execute_task(
 
     // Evaluate CUE to get tasks and environment
     let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv = evaluator.evaluate_typed(Path::new(path), package)?;
+    let manifest: Cuenv = evaluate_manifest_with_fallback(&evaluator, Path::new(path), package)?;
     tracing::debug!("CUE evaluation successful");
 
     tracing::debug!(
@@ -141,7 +142,7 @@ pub async fn execute_task(
 }
 
 /// Execute a task using the appropriate strategy based on task type and dependencies
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn execute_task_with_strategy_hermetic(
     project_dir: &str,
     evaluator: &CueEvaluator,
@@ -209,7 +210,7 @@ async fn run_task_hermetic(
     tracing::info!(
         "Starting task '{}' with {} external mappings",
         name,
-        task.external_inputs.as_ref().map_or(0, |v| v.len())
+        task.external_inputs.as_ref().map_or(0, Vec::len)
     );
 
     // Prepare hermetic workspace
@@ -246,37 +247,36 @@ async fn run_task_hermetic(
         }
     }
 
-    // Compute cache key for this task using materialized inputs
-    let cache_key = compute_task_cache_key(task, &env, &workspace)?;
-    let cache_dir = task_cache_dir()?.join(&cache_key);
-    let outputs_dir = cache_dir.join("outputs");
-
-    // If cache exists, skip execution
-    if outputs_dir.exists() {
-        tracing::info!("Cache hit for task '{}'", name);
-        return Ok(cuenv_core::tasks::TaskResult {
-            name: name.to_string(),
-            exit_code: Some(0),
-            stdout: String::new(),
-            stderr: String::new(),
-            success: true,
-        });
+    // Augment inputs with mapped external destinations so they are included in
+    // the hermetic input set and cache key computed by the core executor.
+    let mut augmented_inputs = task.inputs.clone();
+    if let Some(exts) = &task.external_inputs {
+        for ext in exts {
+            for m in &ext.map {
+                if !augmented_inputs.contains(&m.to) {
+                    augmented_inputs.push(m.to.clone());
+                }
+            }
+        }
     }
 
-    // Execute in hermetic workspace
+    // Execute with project_root set to our prepared workspace so that the
+    // executor resolves inputs from there (including external materials).
     let exec = TaskExecutor::new(ExecutorConfig {
         capture_output,
         max_parallel: 0,
         environment: env.clone(),
-        working_dir: Some(workspace.clone()),
+        working_dir: None,
+        project_root: workspace.clone(),
+        materialize_outputs: None,
+        show_cache_path: false,
     });
 
-    let result = exec.execute_task(name, task).await?;
+    // Clone the task with augmented inputs
+    let mut task_aug = task.clone();
+    task_aug.inputs = augmented_inputs;
 
-    // On success, store declared outputs into cache
-    if result.success {
-        store_outputs_in_cache(&workspace, &task.outputs, &outputs_dir)?;
-    }
+    let result = exec.execute_task(name, &task_aug).await?;
 
     Ok(result)
 }
@@ -316,11 +316,9 @@ fn format_task_results(
         }
     }
 
-    if capture_output {
-        if output.is_empty() {
-            output = format!("Task '{task_name}' completed");
-        }
-    } else {
+    if capture_output && output.is_empty() {
+        output = format!("Task '{task_name}' completed");
+    } else if !capture_output {
         // In non-capturing mode, ensure we always include a clear completion
         // message even if we printed cached logs above.
         if output.is_empty() {
@@ -380,16 +378,14 @@ fn detect_package_name(dir: &Path) -> Result<String> {
                 operation: "read_dir_entry".to_string(),
             })?
             .path();
-        if path.extension().and_then(|s| s.to_str()) == Some("cue") {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Some(line) = content
-                    .lines()
-                    .find(|l| l.trim_start().starts_with("package "))
-                {
-                    let pkg = line.trim_start().trim_start_matches("package ").trim();
-                    return Ok(pkg.to_string());
-                }
-            }
+        if path.extension().and_then(|s| s.to_str()) == Some("cue")
+            && let Ok(content) = fs::read_to_string(&path)
+            && let Some(line) = content
+                .lines()
+                .find(|l| l.trim_start().starts_with("package "))
+        {
+            let pkg = line.trim_start().trim_start_matches("package ").trim();
+            return Ok(pkg.to_string());
         }
     }
     Err(cuenv_core::Error::configuration(format!(
@@ -398,10 +394,56 @@ fn detect_package_name(dir: &Path) -> Result<String> {
     )))
 }
 
-fn task_cache_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| cuenv_core::Error::configuration("No home dir".to_string()))?;
-    Ok(home.join(".cuenv").join("cache").join("tasks"))
+fn evaluate_manifest_with_fallback(
+    evaluator: &CueEvaluator,
+    dir: &Path,
+    package: &str,
+) -> Result<Cuenv> {
+    match evaluator.evaluate_typed(dir, package) {
+        Ok(m) => Ok(m),
+        Err(e) => {
+            tracing::warn!(
+                "FFI evaluation failed ({}); falling back to 'cue export'",
+                e
+            );
+            // Fallback: use the `cue` CLI to export JSON and parse it
+            let output = Command::new("cue")
+                .arg("export")
+                .current_dir(dir)
+                .arg(".")
+                .output()
+                .map_err(|ioe| cuenv_core::Error::Io {
+                    source: ioe,
+                    path: Some(dir.to_path_buf().into_boxed_path()),
+                    operation: "cue export".to_string(),
+                })?;
+
+            if !output.status.success() {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "'cue export' failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+
+            let json_str = String::from_utf8_lossy(&output.stdout).to_string();
+
+            serde_json::from_str::<Cuenv>(&json_str).map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to parse CUE JSON from fallback: {e}"
+                ))
+            })
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn task_cache_dir() -> PathBuf {
+    // Use OS temp dir for cache to ensure write access in sandboxed/test environments.
+    // This avoids relying on HOME/XDG locations that may be unavailable in Nix builds.
+    std::env::temp_dir()
+        .join(".cuenv")
+        .join("cache")
+        .join("tasks")
 }
 
 fn create_workspace_dir(task_name: &str) -> Result<PathBuf> {
@@ -462,6 +504,7 @@ fn materialize_path(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn compute_task_cache_key(
     task: &Task,
     env: &Environment,
@@ -507,6 +550,7 @@ fn compute_task_cache_key(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+#[allow(dead_code)]
 fn hash_path_recursive(hasher: &mut Sha256, path: &Path) -> Result<()> {
     if path.is_dir() {
         for entry in walkdir::WalkDir::new(path) {
@@ -543,6 +587,7 @@ fn hash_path_recursive(hasher: &mut Sha256, path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn store_outputs_in_cache(workspace: &Path, outputs: &[String], outputs_dir: &Path) -> Result<()> {
     fs::create_dir_all(outputs_dir).map_err(|e| cuenv_core::Error::Io {
         source: e,
@@ -557,6 +602,7 @@ fn store_outputs_in_cache(workspace: &Path, outputs: &[String], outputs_dir: &Pa
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn resolve_and_materialize_external(
     git_root: &Path,
     current_project_dir: &Path,
@@ -584,7 +630,7 @@ async fn resolve_and_materialize_external(
 
     // Detect package name and evaluate
     let package = detect_package_name(&ext_dir)?;
-    let manifest: Cuenv = evaluator.evaluate_typed(&ext_dir, &package)?;
+    let manifest: Cuenv = evaluate_manifest_with_fallback(evaluator, &ext_dir, &package)?;
 
     // Locate external task
     let task_def = manifest.tasks.get(&ext.task).ok_or_else(|| {
@@ -634,28 +680,43 @@ async fn resolve_and_materialize_external(
         }
     }
 
-    // Compute cache key for external task based on its inputs and environment
-    // Use a temporary workspace to materialize its inputs (if any)
-    let ext_workspace = create_workspace_dir(&format!("ext-{}", &ext.task))?;
-    for input in &task.inputs {
-        let src = ext_dir.join(input);
-        let dst = ext_workspace.join(input);
-        materialize_path(&src, &dst)?;
+    // Compute cache key exactly as core executor does
+    let input_resolver = cuenv_core::tasks::io::InputResolver::new(&ext_dir);
+    let resolved_inputs = input_resolver.resolve(&task.inputs)?;
+    let inputs_summary = resolved_inputs.to_summary_map();
+    let mut env_summary = BTreeMap::new();
+    for (k, v) in env.iter() {
+        env_summary.insert(k.clone(), v.clone());
     }
-    let ext_key = compute_task_cache_key(task, &env, &ext_workspace)?;
-    let cache_dir = task_cache_dir()?.join(&ext_key);
-    let outputs_dir = cache_dir.join("outputs");
+    let cuenv_version = env!("CARGO_PKG_VERSION").to_string();
+    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let shell_json = serde_json::to_value(&task.shell).ok();
+    let envelope = cuenv_core::cache::tasks::CacheKeyEnvelope {
+        inputs: inputs_summary,
+        command: task.command.clone(),
+        args: task.args.clone(),
+        shell: shell_json,
+        env: env_summary,
+        cuenv_version,
+        platform,
+    };
+    let (ext_key, _env_json) = cuenv_core::cache::tasks::compute_cache_key(&envelope)?;
 
-    if outputs_dir.exists() {
-        tracing::info!("Cache hit for external task '{}'", ext.task);
-    } else {
-        tracing::info!("Cache miss for external task '{}'; auto-running", ext.task);
-        // Run the external task in hermetic workspace
+    // Ensure cache exists (run if miss)
+    if cuenv_core::cache::tasks::lookup(&ext_key).is_none() {
+        tracing::info!(
+            "Cache miss for external task '{}' (key {})",
+            ext.task,
+            ext_key
+        );
         let exec = TaskExecutor::new(ExecutorConfig {
             capture_output,
             max_parallel: 0,
             environment: env.clone(),
-            working_dir: Some(ext_workspace.clone()),
+            working_dir: None,
+            project_root: ext_dir.clone(),
+            materialize_outputs: None,
+            show_cache_path: false,
         });
         let res = exec.execute_task(&ext.task, task).await?;
         if !res.success {
@@ -664,13 +725,17 @@ async fn resolve_and_materialize_external(
                 ext.task
             )));
         }
-        // Store outputs
-        store_outputs_in_cache(&ext_workspace, &task.outputs, &outputs_dir)?;
+    } else {
+        tracing::info!("Cache hit for external task '{}'", ext.task);
     }
 
-    // Materialize only selected outputs into dependent workspace
+    // Materialize selected outputs from cache into dependent workspace
+    let mat_dir = std::env::temp_dir().join("cuenv_ext_mat").join(&ext_key);
+    let _ = fs::remove_dir_all(&mat_dir);
+    fs::create_dir_all(&mat_dir).ok();
+    let _ = cuenv_core::cache::tasks::materialize_outputs(&ext_key, &mat_dir)?;
     for m in &ext.map {
-        let src = outputs_dir.join(&m.from);
+        let src = mat_dir.join(&m.from);
         let dst = workspace.join(&m.to);
         materialize_path(&src, &dst)?;
     }
