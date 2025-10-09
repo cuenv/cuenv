@@ -45,7 +45,7 @@ impl TaskGraph {
     ) -> Result<Vec<NodeIndex>> {
         match definition {
             TaskDefinition::Single(task) => {
-                let node = self.add_task(name, task.clone())?;
+                let node = self.add_task(name, task.as_ref().clone())?;
                 Ok(vec![node])
             }
             TaskDefinition::Group(group) => self.build_from_group(name, group, all_tasks),
@@ -123,7 +123,7 @@ impl TaskGraph {
 
         let node = TaskNode {
             name: name.to_string(),
-            task: task.clone(),
+            task,
         };
 
         let node_index = self.graph.add_node(node);
@@ -244,7 +244,7 @@ impl TaskGraph {
         for (name, definition) in tasks.tasks.iter() {
             match definition {
                 TaskDefinition::Single(task) => {
-                    self.add_task(name, task.clone())?;
+                    self.add_task(name, task.as_ref().clone())?;
                 }
                 TaskDefinition::Group(_) => {
                     // For groups, we'd need to expand them - this is more complex
@@ -275,7 +275,7 @@ impl TaskGraph {
             if let Some(definition) = all_tasks.get(&current_name) {
                 match definition {
                     TaskDefinition::Single(task) => {
-                        self.add_task(&current_name, task.clone())?;
+                        self.add_task(&current_name, task.as_ref().clone())?;
                         // Add dependencies to processing queue
                         for dep in &task.depends_on {
                             if !processed.contains(dep) {
@@ -317,6 +317,7 @@ mod tests {
             depends_on: deps,
             inputs: vec![],
             outputs: vec![],
+            external_inputs: None,
             description: Some(format!("Test task {}", name)),
         }
     }
@@ -440,8 +441,8 @@ mod tests {
         let task2 = create_test_task("t2", vec![]);
 
         let group = TaskGroup::Sequential(vec![
-            TaskDefinition::Single(task1),
-            TaskDefinition::Single(task2),
+            TaskDefinition::Single(Box::new(task1)),
+            TaskDefinition::Single(Box::new(task2)),
         ]);
 
         let nodes = graph.build_from_group("seq", &group, &tasks).unwrap();
@@ -463,8 +464,11 @@ mod tests {
         let task2 = create_test_task("t2", vec![]);
 
         let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("first".to_string(), TaskDefinition::Single(task1));
-        parallel_tasks.insert("second".to_string(), TaskDefinition::Single(task2));
+        parallel_tasks.insert("first".to_string(), TaskDefinition::Single(Box::new(task1)));
+        parallel_tasks.insert(
+            "second".to_string(),
+            TaskDefinition::Single(Box::new(task2)),
+        );
 
         let group = TaskGroup::Parallel(parallel_tasks);
 
