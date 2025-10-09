@@ -439,7 +439,8 @@ async fn execute_task_command_safe(
         }
         Err(e) => {
             perf_guard.finish(false);
-            Err(CliError::eval(e.to_string()))
+            // Include debug details to aid diagnostics in CI
+            Err(CliError::eval(format!("{e:?}")))
         }
     }
 }

@@ -30,6 +30,9 @@ thiserror = { workspace = true }
 miette = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+sha2 = { workspace = true }
+walkdir = "2.5"
+dirs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
