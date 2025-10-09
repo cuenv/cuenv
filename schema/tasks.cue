@@ -16,7 +16,17 @@ package schema
 	env?: [string]: #EnvironmentVariable
 
 	dependsOn?: [...string]
+	// Inputs accepted:
+	// - File paths relative to the env.cue root, e.g. "src/index.ts"
+	// - Directories (recursively included), e.g. "src" or "src/lib"
+	// - Glob patterns (first-class), e.g. "src/**/*.ts", "assets/**/*.{png,jpg}"
+	// All inputs are resolved relative to the project root and are the ONLY files
+	// made available inside the hermetic working directory when executing the task.
 	inputs?: [...string]
+	// Outputs accepted (same syntax as inputs): files, directories, and globs relative
+	// to the project root. Only declared outputs are indexed and persisted to the
+	// cache for later materialization. Writes to undeclared paths are allowed but
+	// will be warned about and are not indexed.
 	outputs?: [...string]
 	// Cross-project inputs from tasks in other projects (monorepo-only)
 	externalInputs?: [...#ExternalInput]
