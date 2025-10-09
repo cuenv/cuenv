@@ -781,4 +781,233 @@ env: {
             // FFI not available in test environment
         }
     }
+
+    #[test]
+    fn test_find_git_root_success_and_failure() {
+        let tmp = TempDir::new().unwrap();
+        // failure: no .git
+        let err = find_git_root(tmp.path()).expect_err("should fail without .git");
+        let _ = err; // silence unused
+
+        // success: with .git at parent
+        let proj = tmp.path().join("proj");
+        fs::create_dir_all(proj.join("sub")).unwrap();
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        let root = find_git_root(&proj).expect("should locate git root");
+        // canonicalization should normalize to tmp root
+        assert_eq!(root, std::fs::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn test_canonicalize_within_root_ok_and_reject_outside() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        let inside = root.join("a/b");
+        fs::create_dir_all(&inside).unwrap();
+        let ok = canonicalize_within_root(root, &inside).expect("inside should be ok");
+        let root_canon = std::fs::canonicalize(root).unwrap();
+        assert!(ok.starts_with(&root_canon));
+
+        // outside: a sibling temp dir
+        let other = TempDir::new().unwrap();
+        let outside = other.path().join("x");
+        fs::create_dir_all(&outside).unwrap();
+        let err = canonicalize_within_root(root, &outside).expect_err("should reject outside");
+        let _ = err; // silence unused
+    }
+
+    #[test]
+    fn test_detect_package_name_ok_and_err() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // ok
+        fs::write(dir.join("env.cue"), "package mypkg\n// rest").unwrap();
+        let pkg = detect_package_name(dir).expect("should detect package");
+        assert_eq!(pkg, "mypkg");
+
+        // err: empty dir
+        let empty = TempDir::new().unwrap();
+        let err = detect_package_name(empty.path()).expect_err("no package should error");
+        let _ = err;
+    }
+
+    #[test]
+    fn test_create_workspace_and_materialize_path() {
+        // create workspace
+        let dir = create_workspace_dir("task:name").expect("workspace created");
+        assert!(dir.exists());
+
+        // materialize file
+        let tmp = TempDir::new().unwrap();
+        let src_file = tmp.path().join("data.txt");
+        fs::write(&src_file, "hello").unwrap();
+        let dst_file = dir.join("copy/data.txt");
+        materialize_path(&src_file, &dst_file).expect("materialize file");
+        assert_eq!(fs::read_to_string(&dst_file).unwrap(), "hello");
+
+        // materialize directory
+        let src_dir = tmp.path().join("tree");
+        fs::create_dir_all(src_dir.join("nested")).unwrap();
+        fs::write(src_dir.join("nested/file.txt"), "content").unwrap();
+        let dst_dir = dir.join("tree_copy");
+        materialize_path(&src_dir, &dst_dir).expect("materialize dir");
+        assert_eq!(
+            fs::read_to_string(dst_dir.join("nested/file.txt")).unwrap(),
+            "content"
+        );
+    }
+
+    #[test]
+    fn test_compute_task_cache_key_changes_on_input_change() {
+        let tmp = TempDir::new().unwrap();
+        // prepare a workspace inputs root
+        let ws = tmp.path().join("ws");
+        fs::create_dir_all(ws.join("inputs")).unwrap();
+        fs::write(ws.join("inputs/a.txt"), "A").unwrap();
+
+        let mut env = Environment::new();
+        env.set("FOO".into(), "1".into());
+        let task = Task {
+            command: "echo".into(),
+            args: vec!["hi".into()],
+            shell: None,
+            env: std::collections::HashMap::default(),
+            depends_on: vec![],
+            inputs: vec!["inputs".into()],
+            outputs: vec![],
+            external_inputs: None,
+            description: None,
+        };
+
+        let k1 = compute_task_cache_key(&task, &env, &ws).expect("key1");
+        // mutate input
+        fs::write(ws.join("inputs/a.txt"), "B").unwrap();
+        let k2 = compute_task_cache_key(&task, &env, &ws).expect("key2");
+        assert_ne!(k1, k2, "key should change when input changes");
+    }
+
+    #[test]
+    fn test_format_task_results_variants() {
+        let r_ok = cuenv_core::tasks::TaskResult {
+            name: "t".into(),
+            exit_code: Some(0),
+            stdout: "hello".into(),
+            stderr: String::new(),
+            success: true,
+        };
+        let r_fail = cuenv_core::tasks::TaskResult {
+            name: "t".into(),
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: "boom".into(),
+            success: false,
+        };
+
+        // capture on: show status and fields
+        let s = format_task_results(vec![r_ok.clone(), r_fail.clone()], true, "t");
+        assert!(s.contains("succeeded"));
+        assert!(s.contains("Output:"));
+        assert!(s.contains("failed with exit code"));
+        assert!(s.contains("Error:"));
+
+        // capture off: logs passed through + completion line
+        let s2 = format_task_results(vec![r_ok], false, "t");
+        assert!(s2.contains("hello"));
+        assert!(s2.contains("Task 't' completed"));
+
+        // capture on with empty output -> default completion
+        let s3 = format_task_results(vec![], true, "abc");
+        assert_eq!(s3, "Task 'abc' completed");
+    }
+
+    #[tokio::test]
+    async fn test_run_task_hermetic_local_inputs_and_outputs() {
+        // project dir with .git and local inputs
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("proj");
+        fs::create_dir_all(proj.join(".git")).unwrap();
+        fs::create_dir_all(proj.join("inputs")).unwrap();
+        fs::write(proj.join("inputs/in.txt"), "data").unwrap();
+
+        let evaluator = cuengine::CueEvaluator::builder()
+            .no_retry()
+            .build()
+            .unwrap();
+
+        let task = Task {
+            command: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "mkdir -p out; cat inputs/in.txt > out/out.txt; echo done".into(),
+            ],
+            shell: None,
+            env: std::collections::HashMap::default(),
+            depends_on: vec![],
+            inputs: vec!["inputs".into()],
+            outputs: vec!["out/out.txt".into()],
+            external_inputs: None,
+            description: None,
+        };
+
+        // Execute directly via helper
+        let res = run_task_hermetic(&proj, &evaluator, "mytask", &task, None, true)
+            .await
+            .expect("hermetic run ok");
+        assert!(res.success);
+        assert!(res.stdout.contains("done"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_task_with_strategy_hermetic_single_task() {
+        // Build a single task that declares inputs/outputs to trigger hermetic path
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("proj");
+        fs::create_dir_all(proj.join(".git")).unwrap();
+        fs::create_dir_all(proj.join("inputs")).unwrap();
+        fs::write(proj.join("inputs/in.txt"), "x").unwrap();
+
+        let evaluator = cuengine::CueEvaluator::builder()
+            .no_retry()
+            .build()
+            .unwrap();
+        let exec = TaskExecutor::new(ExecutorConfig {
+            capture_output: true,
+            ..Default::default()
+        });
+
+        let task = Task {
+            command: "sh".into(),
+            args: vec!["-c".into(), "cp inputs/in.txt out.txt".into()],
+            shell: None,
+            env: std::collections::HashMap::default(),
+            depends_on: vec![],
+            inputs: vec!["inputs".into()],
+            outputs: vec!["out.txt".into()],
+            external_inputs: None,
+            description: None,
+        };
+        let def = TaskDefinition::Single(Box::new(task.clone()));
+        let mut all = Tasks::new();
+        all.tasks.insert("copy".into(), def.clone());
+        let mut g = TaskGraph::new();
+        g.build_from_definition("copy", &def, &all).unwrap();
+
+        let results = execute_task_with_strategy_hermetic(
+            proj.to_str().unwrap(),
+            &evaluator,
+            &exec,
+            "copy",
+            &def,
+            &g,
+            &all,
+            None,
+            true,
+        )
+        .await
+        .expect("execute hermetic ok");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success);
+    }
 }

@@ -845,4 +845,46 @@ mod tests {
         assert!(result.success);
         assert!(result.stdout.contains("; rm -rf /"));
     }
+
+    #[tokio::test]
+    async fn test_execute_graph_parallel_groups() {
+        // two independent tasks -> can run in same parallel group
+        let config = ExecutorConfig {
+            capture_output: true,
+            max_parallel: 2,
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+        let mut graph = TaskGraph::new();
+
+        let t1 = Task {
+            command: "echo".into(),
+            args: vec!["A".into()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            external_inputs: None,
+            description: None,
+        };
+        let t2 = Task {
+            command: "echo".into(),
+            args: vec!["B".into()],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            external_inputs: None,
+            description: None,
+        };
+
+        graph.add_task("t1", t1).unwrap();
+        graph.add_task("t2", t2).unwrap();
+        let results = executor.execute_graph(&graph).await.unwrap();
+        assert_eq!(results.len(), 2);
+        let joined = results.iter().map(|r| r.stdout.clone()).collect::<String>();
+        assert!(joined.contains("A") && joined.contains("B"));
+    }
 }
