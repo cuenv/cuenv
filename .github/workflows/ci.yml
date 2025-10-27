@@ -130,7 +130,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: sbom-${{ matrix.os }}
           path: sbom.json
@@ -180,7 +180,7 @@ jobs:
         continue-on-error: true # Don't fail CI on benchmark regression initially
 
       - name: Store benchmark result
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: benchmark-results
           path: target/criterion/
