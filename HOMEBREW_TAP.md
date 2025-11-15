@@ -42,6 +42,7 @@ brew untap cuenv/cuenv
 cuenv is a modern application build toolchain with typed environments and CUE-powered task orchestration.
 
 For more information, visit:
+
 - **Homepage**: https://github.com/cuenv/cuenv
 - **Documentation**: https://docs.cuenv.sh (coming soon)
 
