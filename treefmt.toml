@@ -17,3 +17,8 @@ command = "prettier"
 options = ["--write"]
 includes = ["*.json", "*.yml", "*.yaml", "*.md"]
 excludes = ["Cargo.lock", "*.toml"]
+
+[formatter.rubocop]
+command = "rubocop"
+options = ["--autocorrect", "--format", "quiet"]
+includes = ["*.rb"]
