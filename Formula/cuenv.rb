@@ -19,6 +19,19 @@ class Cuenv < Formula
 
   test do
     # Test that the binary exists and runs
-    system "#{bin}/cuenv", "--version"
+    assert_match "cuenv", shell_output("#{bin}/cuenv --version")
+
+    # Create a minimal CUE file to test environment variable printing
+    (testpath/"env.cue").write <<~EOS
+      env: {
+        FOO: "bar"
+        BAZ: "qux"
+      }
+    EOS
+
+    # Run cuenv env print and check output
+    output = shell_output("#{bin}/cuenv env print --path #{testpath} --package env")
+    assert_match "FOO=bar", output
+    assert_match "BAZ=qux", output
   end
 end
