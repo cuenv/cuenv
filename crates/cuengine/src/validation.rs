@@ -78,10 +78,17 @@ pub fn validate_package_name(name: &str, limits: &Limits) -> Result<()> {
     }
 
     // Check first character is alphabetic
-    if !name.chars().next().unwrap().is_alphabetic() {
-        return Err(Error::validation(
-            "Package name must start with an alphabetic character",
-        ));
+    // Note: We already validated name is not empty above, but handle defensively
+    match name.chars().next() {
+        Some(c) if !c.is_alphabetic() => {
+            return Err(Error::validation(
+                "Package name must start with an alphabetic character",
+            ));
+        }
+        None => {
+            return Err(Error::validation("Package name cannot be empty"));
+        }
+        _ => {}
     }
 
     Ok(())

@@ -51,9 +51,20 @@ pub struct ExecutorConfig {
 
 impl Default for ExecutorConfig {
     fn default() -> Self {
+        // Use environment variable to override default parallelism, otherwise use CPU count
+        let default_max_parallel = std::env::var("CUENV_MAX_PARALLEL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| {
+                // Default to number of CPUs, capped at 16 for safety
+                std::thread::available_parallelism()
+                    .map(|n| n.get().min(16))
+                    .unwrap_or(4)
+            });
+
         Self {
             capture_output: false,
-            max_parallel: 0,
+            max_parallel: default_max_parallel,
             environment: Environment::new(),
             working_dir: None,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -624,7 +635,9 @@ mod tests {
     async fn test_executor_config_default() {
         let config = ExecutorConfig::default();
         assert!(!config.capture_output);
-        assert_eq!(config.max_parallel, 0);
+        // Default should be based on CPU count, capped at 16
+        assert!(config.max_parallel > 0, "max_parallel should have a safe default");
+        assert!(config.max_parallel <= 16, "max_parallel should be capped at 16");
         assert!(config.environment.is_empty());
     }
 

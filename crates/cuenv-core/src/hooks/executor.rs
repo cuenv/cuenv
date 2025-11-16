@@ -698,6 +698,7 @@ mod tests {
             default_timeout_seconds: 60,
             fail_fast: true,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -746,6 +747,7 @@ mod tests {
             default_timeout_seconds: 1, // Set timeout to 1 second
             fail_fast: true,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
         let executor = HookExecutor::new(config).unwrap();
 
@@ -769,6 +771,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: true,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -846,6 +849,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -925,6 +929,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -973,6 +978,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: true,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -1087,6 +1093,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: true,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -1330,6 +1337,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -1386,6 +1394,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -1448,6 +1457,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();
@@ -1525,6 +1535,7 @@ mod tests {
             default_timeout_seconds: 30,
             fail_fast: false,
             state_dir: Some(temp_dir.path().to_path_buf()),
+            ..Default::default()
         };
 
         let executor = HookExecutor::new(config).unwrap();

@@ -12,6 +12,7 @@ mod cli;
 mod commands;
 mod events;
 mod performance;
+mod shutdown;
 mod tracing;
 mod tui;
 
@@ -536,10 +537,11 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     std::fs::remove_file(&config_file).ok();
 
     // Write PID file
-    let state_dir = config
-        .state_dir
-        .clone()
-        .unwrap_or_else(|| StateManager::default_state_dir().unwrap());
+    let state_dir = match config.state_dir.clone() {
+        Some(dir) => dir,
+        None => StateManager::default_state_dir()
+            .map_err(|e| CliError::other(format!("Failed to get default state directory: {e}")))?,
+    };
     eprintln!("[supervisor] Using state dir: {}", state_dir.display());
     let state_manager = StateManager::new(state_dir);
     let state_file = state_manager.get_state_file_path(&instance_hash);
@@ -552,6 +554,16 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     std::fs::write(&pid_file, format!("{}", std::process::id()))
         .map_err(|e| CliError::other(format!("Failed to write PID file: {e}")))?;
 
+    // Install cleanup guard to ensure PID file is removed on exit
+    let pid_file_clone = pid_file.clone();
+    let _cleanup_guard = shutdown::CleanupGuard::new(move || {
+        eprintln!("[supervisor] Cleaning up PID file");
+        std::fs::remove_file(&pid_file_clone).ok();
+    });
+
+    // Install signal handlers for graceful shutdown
+    let shutdown_coordinator = shutdown::install_signal_handlers();
+
     // Load the current state
     let mut state = state_manager
         .load_state(&instance_hash)
@@ -559,13 +571,29 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
         .map_err(|e| CliError::other(format!("Failed to load state: {e}")))?
         .ok_or_else(|| CliError::other("State not found for supervisor"))?;
 
-    // Execute the hooks
+    // Execute the hooks with cancellation support
     eprintln!(
         "[supervisor] Executing {} hooks for directory: {}",
         hooks.len(),
         directory_path.display()
     );
-    let result = execute_hooks(hooks, &directory_path, &config, &state_manager, &mut state).await;
+
+    let result = tokio::select! {
+        result = execute_hooks(hooks, &directory_path, &config, &state_manager, &mut state) => {
+            result
+        }
+        _ = shutdown_coordinator.wait_for_shutdown() => {
+            eprintln!("[supervisor] Shutdown signal received, stopping hook execution");
+            state.status = ExecutionStatus::Failed;
+            state.error_message = Some("Interrupted by shutdown signal".to_string());
+            state.finished_at = Some(chrono::Utc::now());
+            state_manager
+                .save_state(&state)
+                .await
+                .map_err(|e| CliError::other(format!("Failed to save state on shutdown: {e}")))?;
+            return Err(CliError::other("Interrupted by shutdown signal"));
+        }
+    };
 
     if let Err(e) = result {
         eprintln!("[supervisor] Hook execution failed: {e}");
@@ -588,9 +616,6 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
         .save_state(&state)
         .await
         .map_err(|e| CliError::other(format!("Failed to save final state: {e}")))?;
-
-    // Clean up PID file
-    std::fs::remove_file(&pid_file).ok();
 
     eprintln!("[supervisor] Completed successfully");
     Ok(())

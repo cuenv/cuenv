@@ -40,6 +40,7 @@ pub mod config;
 pub mod environment;
 pub mod hooks;
 pub mod manifest;
+pub mod metrics;
 pub mod secrets;
 pub mod shell;
 pub mod tasks;
