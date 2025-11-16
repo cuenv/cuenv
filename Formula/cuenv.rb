@@ -11,7 +11,7 @@ class Cuenv < Formula
 
   def install
     # Build the cuenv-cli binary
-    system "cargo", "build", "--release", "--package", "cuenv-cli"
+    system "cargo", "build", "--release", "--workspace"
 
     # Install the binary
     bin.install "target/release/cuenv"
