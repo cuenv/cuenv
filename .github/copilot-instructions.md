@@ -4,6 +4,23 @@
 
 cuenv is a Rust + Go FFI application that provides type-safe environment management and task orchestration using CUE configuration language. It consists of a core CUE evaluation engine (cuengine), shared utilities (cuenv-core), and CLI interface (cuenv-cli).
 
+## Additional Resources
+
+This repository includes specialized instructions and custom agents:
+
+- **Scoped Instructions** in `.github/instructions/`:
+  - `rust-code.instructions.md` - Rust development guidelines
+  - `cue-config.instructions.md` - CUE configuration best practices
+  - `testing.instructions.md` - Comprehensive testing guidance
+
+- **Custom Agents** in `.github/agents/`:
+  - `rust-expert.md` - Rust and FFI specialist
+  - `go-cue-expert.md` - Go bridge and CUE language expert
+  - `documentation-expert.md` - Technical writing specialist
+  - `testing-expert.md` - Testing and quality assurance expert
+
+- **Automated Setup**: `.github/copilot-setup-steps.yaml` - Environment setup automation
+
 ## Working Effectively
 
 ### Bootstrap and Build

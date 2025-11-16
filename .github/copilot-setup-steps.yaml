@@ -1,0 +1,72 @@
+---
+# GitHub Copilot Setup Steps
+# Automated environment setup for the cuenv repository
+# This file helps Copilot prepare the development environment
+
+steps:
+  - name: Check Rust installation
+    description: Verify Rust toolchain is installed
+    command: rustc --version && cargo --version
+    required: true
+    error_message: "Rust toolchain not found. Install from https://rustup.rs/"
+
+  - name: Check Go installation
+    description: Verify Go is installed for cuengine FFI bridge
+    command: go version
+    required: true
+    error_message: "Go not found. Install Go 1.21+ from https://go.dev/dl/"
+
+  - name: Check Nix (optional)
+    description: Check if Nix is available for reproducible builds
+    command: nix --version
+    required: false
+    error_message: "Nix not found. Optional but recommended for consistent development environment."
+
+  - name: Install dependencies
+    description: Download and compile all Rust dependencies
+    command: cargo fetch
+    required: true
+    working_directory: "."
+
+  - name: Build workspace
+    description: Build all crates in the workspace
+    command: cargo build --workspace --all-features
+    required: true
+    working_directory: "."
+    timeout_seconds: 180
+
+  - name: Run tests
+    description: Execute all tests to verify setup
+    command: cargo test --workspace --lib
+    required: true
+    working_directory: "."
+    timeout_seconds: 120
+
+  - name: Check formatting
+    description: Verify code formatting standards
+    command: cargo fmt --check
+    required: false
+    working_directory: "."
+
+  - name: Run clippy
+    description: Check code quality with clippy linter
+    command: cargo clippy --workspace --all-targets --all-features -- -D warnings
+    required: false
+    working_directory: "."
+    timeout_seconds: 60
+
+environment:
+  RUST_BACKTRACE: "1"
+  CARGO_INCREMENTAL: "1"
+
+notes: |
+  This repository uses Rust with Go FFI for CUE evaluation.
+  
+  **Build times:**
+  - Debug build: ~90 seconds
+  - Release build: ~45 seconds
+  - Test suite: ~45-60 seconds
+  
+  **Optional Nix setup:**
+  If Nix is available, use `nix develop` to enter a reproducible environment
+  with all dependencies pre-installed.
