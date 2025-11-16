@@ -46,12 +46,12 @@ pub fn install_signal_handlers() -> ShutdownCoordinator {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
 
-            let mut sigterm = signal(SignalKind::terminate())
-                .expect("Failed to install SIGTERM handler");
-            let mut sigint = signal(SignalKind::interrupt())
-                .expect("Failed to install SIGINT handler");
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("Failed to install SIGINT handler");
 
             tokio::select! {
                 _ = sigterm.recv() => {
@@ -67,10 +67,9 @@ pub fn install_signal_handlers() -> ShutdownCoordinator {
         {
             use tokio::signal::windows;
 
-            let mut ctrl_c = windows::ctrl_c()
-                .expect("Failed to install Ctrl+C handler");
-            let mut ctrl_break = windows::ctrl_break()
-                .expect("Failed to install Ctrl+Break handler");
+            let mut ctrl_c = windows::ctrl_c().expect("Failed to install Ctrl+C handler");
+            let mut ctrl_break =
+                windows::ctrl_break().expect("Failed to install Ctrl+Break handler");
 
             tokio::select! {
                 _ = ctrl_c.recv() => {
@@ -98,13 +97,6 @@ impl<F: FnOnce()> CleanupGuard<F> {
     pub fn new(cleanup: F) -> Self {
         Self {
             cleanup: Some(cleanup),
-        }
-    }
-
-    /// Explicitly run the cleanup and consume the guard
-    pub fn cleanup(mut self) {
-        if let Some(cleanup) = self.cleanup.take() {
-            cleanup();
         }
     }
 }

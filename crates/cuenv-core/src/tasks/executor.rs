@@ -636,8 +636,14 @@ mod tests {
         let config = ExecutorConfig::default();
         assert!(!config.capture_output);
         // Default should be based on CPU count, capped at 16
-        assert!(config.max_parallel > 0, "max_parallel should have a safe default");
-        assert!(config.max_parallel <= 16, "max_parallel should be capped at 16");
+        assert!(
+            config.max_parallel > 0,
+            "max_parallel should have a safe default"
+        );
+        assert!(
+            config.max_parallel <= 16,
+            "max_parallel should be capped at 16"
+        );
         assert!(config.environment.is_empty());
     }
 

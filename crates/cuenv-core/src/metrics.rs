@@ -3,8 +3,8 @@
 //! This module provides a functional approach to metrics collection and export
 //! for production monitoring and observability.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Metrics collector for production observability
@@ -76,7 +76,9 @@ impl MetricsCollector {
         if cache_hit {
             self.state.tasks_cache_hits.fetch_add(1, Ordering::Relaxed);
         } else {
-            self.state.tasks_cache_misses.fetch_add(1, Ordering::Relaxed);
+            self.state
+                .tasks_cache_misses
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         // Track concurrent tasks

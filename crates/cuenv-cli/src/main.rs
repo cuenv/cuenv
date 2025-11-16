@@ -475,6 +475,7 @@ async fn execute_exec_command_safe(
 }
 
 /// Run as a hook supervisor process
+#[allow(clippy::too_many_lines)] // Supervisor initialization requires multiple sequential steps
 async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     // Parse supervisor arguments
     let mut directory_path = PathBuf::new();
@@ -582,7 +583,7 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
         result = execute_hooks(hooks, &directory_path, &config, &state_manager, &mut state) => {
             result
         }
-        _ = shutdown_coordinator.wait_for_shutdown() => {
+        () = shutdown_coordinator.wait_for_shutdown() => {
             eprintln!("[supervisor] Shutdown signal received, stopping hook execution");
             state.status = ExecutionStatus::Failed;
             state.error_message = Some("Interrupted by shutdown signal".to_string());
