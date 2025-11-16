@@ -86,14 +86,14 @@ nix develop --command treefmt --fail-on-change  # Format all files
 
 ```bash
 # Test basic CLI functionality
-cargo run -- version
-cargo run -- env print --path examples/env-basic --package examples
+cargo run --bin cuenv -- version
+cargo run --bin cuenv -- env print --path examples/env-basic --package examples
 
 # Test JSON output format
-cargo run -- env print --path examples/env-basic --package examples --output-format json
+cargo run --bin cuenv -- env print --path examples/env-basic --package examples --output-format json
 
 # Test error handling with invalid path
-cargo run -- env print --path /nonexistent
+cargo run --bin cuenv -- env print --path /nonexistent
 ```
 
 Expected outputs:
@@ -153,7 +153,7 @@ ls examples/env-basic/
 cat examples/env-basic/env.cue
 
 # Test with the example
-cargo run -- env print --path examples/env-basic --package examples
+cargo run --bin cuenv -- env print --path examples/env-basic --package examples
 ```
 
 ### Testing Changes to Core Engine

@@ -143,13 +143,13 @@ examples/
 ### Manual Testing
 ```bash
 # Test basic functionality
-cargo run -- env print --path examples/env-basic --package examples
+cargo run --bin cuenv -- env print --path examples/env-basic --package examples
 
 # Test with specific environment
-cargo run -- env print --path examples/env-basic --package examples --env production
+cargo run --bin cuenv -- env print --path examples/env-basic --package examples --env production
 
 # Test JSON output
-cargo run -- env print --path examples/env-basic --package examples --output-format json
+cargo run --bin cuenv -- env print --path examples/env-basic --package examples --output-format json
 ```
 
 ### Validation
