@@ -23,6 +23,8 @@ class Cuenv < Formula
 
     # Create a minimal CUE file to test environment variable printing
     (testpath/"env.cue").write <<~EOS
+      package cuenv
+
       env: {
         FOO: "bar"
         BAZ: "qux"
@@ -30,7 +32,7 @@ class Cuenv < Formula
     EOS
 
     # Run cuenv env print and check output
-    output = shell_output("#{bin}/cuenv env print --path #{testpath} --package env")
+    output = shell_output("#{bin}/cuenv env print --path #{testpath}")
     assert_match "FOO=bar", output
     assert_match "BAZ=qux", output
   end

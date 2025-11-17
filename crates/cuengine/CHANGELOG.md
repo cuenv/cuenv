@@ -28,7 +28,7 @@
 - resolve CI failures by fixing formatting and clippy warnings ([726174d](https://github.com/cuenv/cuenv/commit/726174dfe78067d879e7ce90f33e33a3ac86183d))
 - resolve circular dependency between cuenv-core and cuengine ([#33](https://github.com/cuenv/cuenv/issues/33)) ([d0cafd3](https://github.com/cuenv/cuenv/commit/d0cafd3b429ef0f507d2f5609dfcfd5b0a8f557b))
 - resolve clippy collapsible-if warnings ([a669466](https://github.com/cuenv/cuenv/commit/a6694662e56beb2ccd324589496b754838246ad8))
-- resolve clippy warnings by using is*ascii*\* methods ([f674634](https://github.com/cuenv/cuenv/commit/f6746343ec42ed495e4aea739e3d3d1c00e60602))
+- resolve clippy warnings by using `is_ascii_*` methods ([f674634](https://github.com/cuenv/cuenv/commit/f6746343ec42ed495e4aea739e3d3d1c00e60602))
 - treefmt ([c2c6a8f](https://github.com/cuenv/cuenv/commit/c2c6a8f3d71756acbb060dfefc4581f055a5a48e))
 - use explicit versions in Cargo.toml for release-please compatibility ([0053329](https://github.com/cuenv/cuenv/commit/0053329d8e803510113ef395c2cfd7d416f982dd))
 - **windows:** link legacy_stdio_definitions to satisfy fprintf from Go c-archive; attempt to unbreak windows-latest CI ([2db8869](https://github.com/cuenv/cuenv/commit/2db8869ce96e35cceaf86e7f898b995d700c72e9))
