@@ -33,10 +33,9 @@ pub fn find_env_file(path: &Path, expected_package: &str) -> Result<EnvFileStatu
         });
     }
 
-    let canonical =
-        directory
-            .canonicalize()
-            .map_err(|e| Error::configuration(format!("Failed to canonicalize path: {e}")))?;
+    let canonical = directory
+        .canonicalize()
+        .map_err(|e| Error::configuration(format!("Failed to canonicalize path: {e}")))?;
 
     Ok(EnvFileStatus::Match(canonical))
 }
@@ -59,15 +58,14 @@ fn detect_package_name(env_file: &Path) -> Result<Option<String>> {
         }
 
         if let Some(rest) = trimmed.strip_prefix("package ") {
-            if let Some(name) = rest.split_whitespace().next() {
-                if !name.is_empty() {
-                    return Ok(Some(name.to_string()));
-                }
+            if let Some(name) = rest.split_whitespace().next()
+                && !name.is_empty()
+            {
+                return Ok(Some(name.to_string()));
             }
             return Ok(None);
-        } else {
-            break;
         }
+        break;
     }
 
     Ok(None)
@@ -82,7 +80,7 @@ fn strip_comments(source: &str) -> String {
             match chars.peek() {
                 Some('/') => {
                     chars.next();
-                    while let Some(next) = chars.next() {
+                    for next in chars.by_ref() {
                         if next == '\n' {
                             result.push('\n');
                             break;
@@ -93,7 +91,7 @@ fn strip_comments(source: &str) -> String {
                 Some('*') => {
                     chars.next();
                     let mut prev = '\0';
-                    while let Some(next) = chars.next() {
+                    for next in chars.by_ref() {
                         if prev == '*' && next == '/' {
                             break;
                         }
@@ -113,7 +111,7 @@ fn strip_comments(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_package_name, find_env_file, strip_comments, EnvFileStatus};
+    use super::{EnvFileStatus, detect_package_name, find_env_file, strip_comments};
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -121,12 +119,12 @@ mod tests {
 
     #[test]
     fn strip_comments_removes_line_and_block_comments() {
-        let source = r#"
+        let source = r"
 // line comment
 /* block
 comment */
 package cuenv // inline
-        "#;
+        ";
         let cleaned = strip_comments(source);
         assert!(cleaned.contains("package cuenv"));
         assert!(!cleaned.contains("line comment"));
@@ -136,11 +134,7 @@ package cuenv // inline
     #[test]
     fn detect_package_name_finds_package() {
         let mut file = NamedTempFile::new().unwrap();
-        writeln!(
-            file,
-            "// comment\npackage cuenv // inline\n\nenv: {{}}"
-        )
-        .unwrap();
+        writeln!(file, "// comment\npackage cuenv // inline\n\nenv: {{}}").unwrap();
 
         let package = detect_package_name(Path::new(file.path())).unwrap();
         assert_eq!(package, Some("cuenv".to_string()));

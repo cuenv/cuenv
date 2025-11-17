@@ -18,16 +18,14 @@ use tracing::info;
 fn env_file_issue_message(path: &str, package: &str, status: EnvFileStatus) -> String {
     match status {
         EnvFileStatus::Missing => format!("No env.cue file found in '{path}'"),
-        EnvFileStatus::PackageMismatch { found_package } => {
-            match found_package {
-                Some(found) => format!(
-                    "env.cue in '{path}' uses package '{found}', expected '{package}'"
-                ),
-                None => format!(
-                    "env.cue in '{path}' is missing a package declaration (expected '{package}')"
-                ),
+        EnvFileStatus::PackageMismatch { found_package } => match found_package {
+            Some(found) => {
+                format!("env.cue in '{path}' uses package '{found}', expected '{package}'")
             }
-        }
+            None => format!(
+                "env.cue in '{path}' is missing a package declaration (expected '{package}')"
+            ),
+        },
         EnvFileStatus::Match(_) => {
             unreachable!("env_file_issue_message should not be called with a match")
         }
@@ -265,9 +263,8 @@ pub async fn execute_env_check(
     shell: crate::cli::ShellType,
 ) -> Result<String> {
     // Check env.cue and canonicalize path - silent return if no env.cue
-    let directory = match env_file::find_env_file(Path::new(path), package)? {
-        EnvFileStatus::Match(dir) => dir,
-        _ => return Ok(String::new()), // Silent return for non-cuenv directories
+    let EnvFileStatus::Match(directory) = env_file::find_env_file(Path::new(path), package)? else {
+        return Ok(String::new()); // Silent return for non-cuenv directories
     };
 
     // Get the config hash
@@ -572,11 +569,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_env_load_package_mismatch_message() {
         let temp_dir = TempDir::new().unwrap();
-        fs::write(
-            temp_dir.path().join("env.cue"),
-            "package other\n\nenv: {}",
-        )
-        .unwrap();
+        fs::write(temp_dir.path().join("env.cue"), "package other\n\nenv: {}").unwrap();
 
         let output = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv")
             .await

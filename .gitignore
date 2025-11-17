@@ -15,6 +15,7 @@ Thumbs.db
 build/
 node_modules/
 package-lock.json
+/bun.lock
 
 # Generated artifacts
 *.cdx.json
@@ -26,4 +27,3 @@ lcov.info
 
 # Example build artifacts
 examples/*/target/
-
