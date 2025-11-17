@@ -7,6 +7,13 @@ This project uses a Nix flake for development. To run commands, use:
 Or enter the development shell with:
 `nix develop`
 
+## Version Control Policy
+
+- Use [`jj`](https://github.com/martinvonz/jj) for every version-control task in this repository.
+- Run `jj status`, `jj diff`, `jj log`, etc., instead of their Git equivalents.
+- When you need to interact with remotes, use `jj git push`/`jj git fetch` rather than any `git` commands.
+- Direct `git` invocations are prohibited; `jj` already manages the underlying Git storage for you.
+
 ## CRITICAL: Pre-Push Checklist
 
 **NEVER push code without running these checks:**
