@@ -5,6 +5,7 @@
 //! 2. Start supervisor if needed (async)
 //! 3. Return environment diff for shell evaluation
 
+use super::env_file::{self, EnvFileStatus};
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
     Result,
@@ -27,33 +28,44 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
         cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
     })?;
 
-    // Check if env.cue exists
-    let env_file = current_dir.join("env.cue");
-    if !env_file.exists() {
-        debug!("No env.cue found in {}", current_dir.display());
-        return Ok(format_no_op(shell));
-    }
+    // Check if env.cue exists with matching package
+    let directory = match env_file::find_env_file(&current_dir, package)? {
+        EnvFileStatus::Match(dir) => dir,
+        EnvFileStatus::Missing => {
+            debug!("No env.cue found in {}", current_dir.display());
+            return Ok(format_no_op(shell));
+        }
+        EnvFileStatus::PackageMismatch { found_package } => {
+            debug!(
+                "env.cue package mismatch in {}: found {:?}, expected {}",
+                current_dir.display(),
+                found_package,
+                package
+            );
+            return Ok(format_no_op(shell));
+        }
+    };
 
     // Always evaluate CUE to get current config (not a bottleneck)
-    debug!("Evaluating CUE for {}", current_dir.display());
+    debug!("Evaluating CUE for {}", directory.display());
     let evaluator = CueEvaluator::builder().build()?;
-    let config: Cuenv = evaluator.evaluate_typed(&current_dir, package)?;
+    let config: Cuenv = evaluator.evaluate_typed(&directory, package)?;
 
     // Load approval manager and check approval status
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
 
-    debug!("Checking approval for directory: {}", current_dir.display());
+    debug!("Checking approval for directory: {}", directory.display());
     // Convert Cuenv to Value for approval check (temporary until approval system is updated)
     let config_value = serde_json::to_value(&config).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
     })?;
-    let approval_status = check_approval_status(&approval_manager, &current_dir, &config_value)?;
+    let approval_status = check_approval_status(&approval_manager, &directory, &config_value)?;
 
     match approval_status {
         ApprovalStatus::NotApproved { .. } | ApprovalStatus::RequiresApproval { .. } => {
             // Return a comment that tells user to approve
-            return Ok(format_not_allowed(&current_dir, shell));
+            return Ok(format_not_allowed(&directory, shell));
         }
         ApprovalStatus::Approved => {
             // Continue with loading
@@ -66,7 +78,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
     // Check if state is ready
     let executor = HookExecutor::with_default_config()?;
     if let Some(state) = executor
-        .get_execution_status_for_instance(&current_dir, &config_hash)
+        .get_execution_status_for_instance(&directory, &config_hash)
         .await?
     {
         match state.status {
@@ -83,14 +95,14 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
                 // Hooks failed - return safe no-op
                 debug!(
                     "Hooks failed for {}: {:?}",
-                    current_dir.display(),
+                    directory.display(),
                     state.error_message
                 );
                 return Ok(format_no_op(shell));
             }
             ExecutionStatus::Running => {
                 // Still running - wait briefly
-                debug!("Hooks still running for {}", current_dir.display());
+                debug!("Hooks still running for {}", directory.display());
             }
             ExecutionStatus::Cancelled => {
                 // Cancelled - return safe no-op
@@ -99,13 +111,13 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
         }
     } else {
         // No state - need to start supervisor
-        info!("Starting hook execution for {}", current_dir.display());
+        info!("Starting hook execution for {}", directory.display());
 
         // Extract hooks from config
         let hooks = extract_hooks_from_config(&config);
         if !hooks.is_empty() {
             executor
-                .execute_hooks_background(current_dir.clone(), config_hash.clone(), hooks)
+                .execute_hooks_background(directory.clone(), config_hash.clone(), hooks)
                 .await?;
         }
     }
@@ -115,7 +127,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
 
     // Check again
     if let Some(state) = executor
-        .get_execution_status_for_instance(&current_dir, &config_hash)
+        .get_execution_status_for_instance(&directory, &config_hash)
         .await?
         && state.status == ExecutionStatus::Completed
     {
