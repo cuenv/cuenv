@@ -1,5 +1,6 @@
 //! Hook-related command implementations
 
+use super::env_file::{self, EnvFileStatus};
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
     Result,
@@ -14,26 +15,46 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-/// Helper to check if env.cue exists and return early if not
-fn check_env_file(path: &Path) -> Result<PathBuf> {
-    let directory = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        PathBuf::from(path)
-    };
+fn env_file_issue_message(path: &str, package: &str, status: EnvFileStatus) -> String {
+    match status {
+        EnvFileStatus::Missing => format!("No env.cue file found in '{path}'"),
+        EnvFileStatus::PackageMismatch { found_package } => {
+            match found_package {
+                Some(found) => format!(
+                    "env.cue in '{path}' uses package '{found}', expected '{package}'"
+                ),
+                None => format!(
+                    "env.cue in '{path}' is missing a package declaration (expected '{package}')"
+                ),
+            }
+        }
+        EnvFileStatus::Match(_) => {
+            unreachable!("env_file_issue_message should not be called with a match")
+        }
+    }
+}
 
-    let env_file = directory.join("env.cue");
-    if !env_file.exists() {
-        return Err(cuenv_core::Error::configuration(format!(
+fn require_env_file(path: &Path, package: &str) -> Result<PathBuf> {
+    match env_file::find_env_file(path, package)? {
+        EnvFileStatus::Match(dir) => Ok(dir),
+        EnvFileStatus::Missing => Err(cuenv_core::Error::configuration(format!(
             "No env.cue file found in '{}'",
             path.display()
-        )));
+        ))),
+        EnvFileStatus::PackageMismatch { found_package } => {
+            let message = match found_package {
+                Some(found) => format!(
+                    "env.cue in '{}' uses package '{found}', expected '{package}'",
+                    path.display()
+                ),
+                None => format!(
+                    "env.cue in '{}' is missing a package declaration (expected '{package}')",
+                    path.display()
+                ),
+            };
+            Err(cuenv_core::Error::configuration(message))
+        }
     }
-
-    // Canonicalize the path to ensure consistency
-    directory
-        .canonicalize()
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to canonicalize path: {e}")))
 }
 
 /// Helper to evaluate CUE configuration
@@ -69,8 +90,9 @@ fn get_config_hash(
 /// Execute env load command - evaluates config, checks approval, starts hook execution
 pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
     // Check env.cue and canonicalize path
-    let Ok(directory) = check_env_file(Path::new(path)) else {
-        return Ok(format!("No env.cue file found in '{path}'"));
+    let directory = match env_file::find_env_file(Path::new(path), package)? {
+        EnvFileStatus::Match(dir) => dir,
+        status => return Ok(env_file_issue_message(path, package, status)),
     };
 
     // Evaluate the CUE configuration
@@ -139,8 +161,9 @@ pub async fn execute_env_status(
     timeout_seconds: u64,
 ) -> Result<String> {
     // Check env.cue and canonicalize path
-    let Ok(directory) = check_env_file(Path::new(path)) else {
-        return Ok(format!("No env.cue file found in '{path}'"));
+    let directory = match env_file::find_env_file(Path::new(path), package)? {
+        EnvFileStatus::Match(dir) => dir,
+        status => return Ok(env_file_issue_message(path, package, status)),
     };
 
     // Get the config hash
@@ -190,7 +213,7 @@ pub async fn execute_env_status(
 /// Execute allow command - approve current directory's configuration
 pub async fn execute_allow(path: &str, package: &str, note: Option<String>) -> Result<String> {
     // Check env.cue and canonicalize path
-    let directory = check_env_file(Path::new(path))?;
+    let directory = require_env_file(Path::new(path), package)?;
 
     // Evaluate the CUE configuration
     let config = evaluate_config(&directory, package)?;
@@ -242,8 +265,9 @@ pub async fn execute_env_check(
     shell: crate::cli::ShellType,
 ) -> Result<String> {
     // Check env.cue and canonicalize path - silent return if no env.cue
-    let Ok(directory) = check_env_file(Path::new(path)) else {
-        return Ok(String::new()); // Silent return for non-cuenv directories
+    let directory = match env_file::find_env_file(Path::new(path), package)? {
+        EnvFileStatus::Match(dir) => dir,
+        _ => return Ok(String::new()), // Silent return for non-cuenv directories
     };
 
     // Get the config hash
@@ -404,6 +428,7 @@ __cuenv_hook"#
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
 
     #[test]
@@ -542,5 +567,20 @@ mod tests {
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("No env.cue file found"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_env_load_package_mismatch_message() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("env.cue"),
+            "package other\n\nenv: {}",
+        )
+        .unwrap();
+
+        let output = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv")
+            .await
+            .unwrap();
+        assert!(output.contains("uses package 'other'"));
     }
 }
