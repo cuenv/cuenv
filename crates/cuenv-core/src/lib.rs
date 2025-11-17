@@ -44,6 +44,9 @@ pub mod secrets;
 pub mod shell;
 pub mod tasks;
 
+/// Version of the `cuenv-core` crate (used by task cache metadata)
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[cfg(test)]
 mod schema_tests;
 

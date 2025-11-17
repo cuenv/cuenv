@@ -703,7 +703,7 @@ async fn resolve_and_materialize_external(
     for (k, v) in env.iter() {
         env_summary.insert(k.clone(), v.clone());
     }
-    let cuenv_version = env!("CARGO_PKG_VERSION").to_string();
+    let cuenv_version = cuenv_core::VERSION.to_string();
     let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
     let shell_json = serde_json::to_value(&task.shell).ok();
     let envelope = cuenv_core::cache::tasks::CacheKeyEnvelope {

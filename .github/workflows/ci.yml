@@ -118,7 +118,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          system=$(nix eval --raw --expr builtins.currentSystem)
+          system=$(nix eval --raw --impure --expr builtins.currentSystem)
           nix build -L .#checks.$system.cuenv-audit
 
       - name: Run dependency checks

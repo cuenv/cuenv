@@ -1,5 +1,5 @@
-pub(crate) mod env_file;
 pub mod env;
+pub(crate) mod env_file;
 pub mod exec;
 pub mod export;
 pub mod hooks;
