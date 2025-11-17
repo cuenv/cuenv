@@ -110,6 +110,18 @@ pub struct HookExecutionConfig {
     pub fail_fast: bool,
     /// Directory to store execution state
     pub state_dir: Option<PathBuf>,
+    /// Maximum number of concurrent hooks (0 = sequential execution)
+    /// Default: 4 for safety to prevent resource exhaustion
+    #[serde(default = "default_max_concurrent_hooks")]
+    pub max_concurrent_hooks: usize,
+}
+
+fn default_max_concurrent_hooks() -> usize {
+    // Default to sequential execution for safety, can be overridden
+    std::env::var("CUENV_MAX_CONCURRENT_HOOKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4)
 }
 
 impl Default for HookExecutionConfig {
@@ -118,6 +130,7 @@ impl Default for HookExecutionConfig {
             default_timeout_seconds: 300, // 5 minutes
             fail_fast: true,
             state_dir: None, // Will use default state dir
+            max_concurrent_hooks: default_max_concurrent_hooks(),
         }
     }
 }

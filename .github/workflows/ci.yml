@@ -118,8 +118,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          system=$(nix eval --raw --expr builtins.currentSystem)
-          nix build -L .#checks.$system.cuenv-audit
+          system=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+          nix build -L ".#checks.$system.cuenv-audit"
 
       - name: Run dependency checks
         run: nix develop --accept-flake-config --command cargo deny check bans licenses advisories
