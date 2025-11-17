@@ -21,6 +21,8 @@ use std::path::Path;
 use std::time::Duration;
 use tracing::{debug, info};
 
+const PENDING_APPROVAL_ENV: &str = "CUENV_PENDING_APPROVAL_DIR";
+
 /// Execute the export command - the main entry point for shell integration
 pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<String> {
     let shell = Shell::detect(shell_type);
@@ -263,16 +265,54 @@ fn format_env_diff_with_unset(
     output
 }
 
-/// Format "not allowed" message as a shell comment
-fn format_not_allowed(dir: &Path, _shell: Shell) -> String {
-    let comment_char = "#";
+/// Format "not allowed" message as an executable script snippet per shell.
+/// The script prints a helpful notice once per directory until approval is granted.
+fn format_not_allowed(dir: &Path, shell: Shell) -> String {
+    let dir_display = dir.to_string_lossy();
+    let escaped = escape_shell_value(&dir_display);
 
-    format!(
-        "{} Configuration not approved for {}\n{} Run 'cuenv allow' to approve\n",
-        comment_char,
-        dir.display(),
-        comment_char
-    )
+    match shell {
+        Shell::Bash | Shell::Zsh => format!(
+            r#"if [ "${{{pending}:-}}" != "{dir}" ]; then
+    printf '%s\n' "cuenv detected env.cue at {dir} but it requires approval."
+    printf '%s\n' "Run 'cuenv allow --path \"{dir}\"' to trust this configuration."
+    export {pending}="{dir}"
+fi
+:"#,
+            pending = PENDING_APPROVAL_ENV,
+            dir = escaped,
+        ),
+        Shell::Fish => {
+            let pending_ref = format!("${}", PENDING_APPROVAL_ENV);
+            format!(
+                r#"if not set -q {pending}
+    printf '%s\n' "cuenv detected env.cue at {dir} but it requires approval."
+    printf '%s\n' "Run 'cuenv allow --path \"{dir}\"' to trust this configuration."
+    set -x {pending} "{dir}"
+else if test "{pending_ref}" != "{dir}"
+    printf '%s\n' "cuenv detected env.cue at {dir} but it requires approval."
+    printf '%s\n' "Run 'cuenv allow --path \"{dir}\"' to trust this configuration."
+    set -x {pending} "{dir}"
+end
+true"#,
+                pending = PENDING_APPROVAL_ENV,
+                pending_ref = pending_ref,
+                dir = escaped,
+            )
+        }
+        Shell::PowerShell => {
+            let ps_dir = dir_display.replace('\'', "''");
+            format!(
+                r#"if ($env:{pending} -ne '{dir}') {{
+    Write-Host 'cuenv detected env.cue at {dir} but it requires approval.'
+    Write-Host 'Run ''cuenv allow --path "{dir}"'' to trust this configuration.'
+    $env:{pending} = '{dir}'
+}}"#,
+                pending = PENDING_APPROVAL_ENV,
+                dir = ps_dir,
+            )
+        }
+    }
 }
 
 /// Escape special characters in shell values
@@ -284,12 +324,26 @@ fn escape_shell_value(value: &str) -> String {
         .replace('`', "\\`")
 }
 
-/// Format a safe no-op command for the shell
+/// Format a safe no-op command for the shell while clearing pending approval notices
 fn format_no_op(shell: Shell) -> String {
     match shell {
-        Shell::Bash | Shell::Zsh => ":".to_string(),
-        Shell::Fish => "true".to_string(),
-        Shell::PowerShell => "# no changes".to_string(),
+        Shell::Bash | Shell::Zsh => format!(
+            r#"unset {pending} 2>/dev/null
+:"#,
+            pending = PENDING_APPROVAL_ENV,
+        ),
+        Shell::Fish => format!(
+            r#"if set -q {pending}
+    set -e {pending}
+end
+true"#,
+            pending = PENDING_APPROVAL_ENV,
+        ),
+        Shell::PowerShell => format!(
+            r#"if (Test-Path Env:{pending}) {{ Remove-Item Env:{pending} }}
+# no changes"#,
+            pending = PENDING_APPROVAL_ENV,
+        ),
     }
 }
 
@@ -300,6 +354,7 @@ mod tests {
     use cuenv_core::manifest::Cuenv;
     use cuenv_core::secrets::Secret;
     use std::collections::HashMap;
+    use std::path::Path;
 
     #[test]
     fn test_escape_shell_value() {
@@ -336,11 +391,33 @@ mod tests {
     }
 
     #[test]
-    fn test_format_no_op() {
-        assert_eq!(format_no_op(Shell::Bash), ":");
-        assert_eq!(format_no_op(Shell::Zsh), ":");
-        assert_eq!(format_no_op(Shell::Fish), "true");
-        assert_eq!(format_no_op(Shell::PowerShell), "# no changes");
+    fn test_format_no_op_clears_pending_state() {
+        let bash = format_no_op(Shell::Bash);
+        assert!(bash.contains("unset CUENV_PENDING_APPROVAL_DIR"));
+        assert!(bash.trim().ends_with(':'));
+
+        let fish = format_no_op(Shell::Fish);
+        assert!(fish.contains("set -e CUENV_PENDING_APPROVAL_DIR"));
+        assert!(fish.trim().ends_with("true"));
+
+        let zsh = format_no_op(Shell::Zsh);
+        assert!(zsh.contains("unset CUENV_PENDING_APPROVAL_DIR"));
+
+        let pwsh = format_no_op(Shell::PowerShell);
+        assert!(pwsh.contains("Remove-Item Env:CUENV_PENDING_APPROVAL_DIR"));
+    }
+
+    #[test]
+    fn test_format_not_allowed_emits_notice() {
+        let dir = Path::new("/tmp/project");
+        let bash_notice = format_not_allowed(dir, Shell::Bash);
+        assert!(bash_notice.contains("cuenv detected env.cue"));
+        assert!(bash_notice.contains("cuenv allow --path"));
+        assert!(bash_notice.contains("CUENV_PENDING_APPROVAL_DIR"));
+
+        let fish_notice = format_not_allowed(dir, Shell::Fish);
+        assert!(fish_notice.contains("set -x CUENV_PENDING_APPROVAL_DIR"));
+        assert!(fish_notice.contains("cuenv detected env.cue"));
     }
 
     #[test]

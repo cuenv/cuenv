@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cli"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "schema-validator"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
