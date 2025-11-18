@@ -1,17 +1,20 @@
 //! Hook-related command implementations
 
 use super::env_file::{self, EnvFileStatus};
+use crate::cli::StatusFormat;
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
     Result,
     hooks::{
         approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
         executor::HookExecutor,
-        types::Hook,
+        types::{Hook, ExecutionStatus},
+        HookExecutionState,
     },
 };
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -82,6 +85,76 @@ fn get_config_hash(
         Ok(cuenv_core::hooks::approval::compute_config_hash(
             &config_value,
         ))
+    }
+}
+
+/// Format status based on requested format
+fn format_status(state: &HookExecutionState, format: StatusFormat) -> String {
+    match format {
+        StatusFormat::Text => state.progress_display(),
+        StatusFormat::Short => match state.status {
+            ExecutionStatus::Running => format!("[{}/{}]", state.completed_hooks, state.total_hooks),
+            ExecutionStatus::Completed => "[OK]".to_string(),
+            ExecutionStatus::Failed => "[ERR]".to_string(),
+            ExecutionStatus::Cancelled => "[X]".to_string(),
+        },
+        StatusFormat::Starship => format_starship_status(state),
+    }
+}
+
+/// Format status for starship integration with rich information
+fn format_starship_status(state: &HookExecutionState) -> String {
+    use cuenv_core::hooks::state::HookExecutionState;
+
+    match state.status {
+        ExecutionStatus::Running => {
+            // Show current hook name + duration
+            if let Some(hook_display) = state.current_hook_display() {
+                if let Some(duration) = state.current_hook_duration() {
+                    let duration_str = HookExecutionState::format_duration(duration);
+                    format!("cuenv hook {} ({})", hook_display, duration_str)
+                } else {
+                    // Just started, no duration yet - use overall execution time
+                    let duration = state.duration();
+                    let duration_str = HookExecutionState::format_duration(duration);
+                    format!("cuenv hook {} ({})", hook_display, duration_str)
+                }
+            } else {
+                // Fallback if no current hook (shouldn't happen in Running state)
+                format!("🔄 {}/{}", state.completed_hooks, state.total_hooks)
+            }
+        }
+        ExecutionStatus::Completed => {
+            // Only show if within display timeout (ensures at least one display)
+            if state.should_display_completed() {
+                let duration = state.duration();
+                let duration_str = HookExecutionState::format_duration(duration);
+                format!("✅ {}", duration_str)
+            } else {
+                // State has expired, return empty string to hide from prompt
+                String::new()
+            }
+        }
+        ExecutionStatus::Failed => {
+            // Show failed state with error if within display timeout
+            if state.should_display_completed() {
+                if let Some(error_msg) = &state.error_message {
+                    // Extract just the command name from error if possible
+                    format!("❌ {}", error_msg.lines().next().unwrap_or("failed"))
+                } else {
+                    "❌ failed".to_string()
+                }
+            } else {
+                String::new()
+            }
+        }
+        ExecutionStatus::Cancelled => {
+            if state.should_display_completed() {
+                "🚫 cancelled".to_string()
+            } else {
+                String::new()
+            }
+        }
     }
 }
 
@@ -157,6 +230,7 @@ pub async fn execute_env_status(
     package: &str,
     wait: bool,
     timeout_seconds: u64,
+    format: StatusFormat,
 ) -> Result<String> {
     // Check env.cue and canonicalize path
     let directory = match env_file::find_env_file(Path::new(path), package)? {
@@ -177,7 +251,7 @@ pub async fn execute_env_status(
             .wait_for_completion(&directory, &config_hash, Some(timeout_seconds))
             .await
         {
-            Ok(state) => Ok(state.progress_display()),
+            Ok(state) => Ok(format_status(&state, format)),
             Err(cuenv_core::Error::Timeout { .. }) => {
                 // Timeout occurred, get current status
                 if let Some(state) = executor
@@ -187,7 +261,7 @@ pub async fn execute_env_status(
                     Ok(format!(
                         "Timeout after {} seconds. Current status: {}",
                         timeout_seconds,
-                        state.progress_display()
+                        format_status(&state, format)
                     ))
                 } else {
                     Ok("No hook execution in progress".to_string())
@@ -201,15 +275,24 @@ pub async fn execute_env_status(
             .get_execution_status_for_instance(&directory, &config_hash)
             .await?
         {
-            Ok(state.progress_display())
+            Ok(format_status(&state, format))
         } else {
-            Ok("No hook execution in progress".to_string())
+            match format {
+                StatusFormat::Text => Ok("No hook execution in progress".to_string()),
+                StatusFormat::Short => Ok("-".to_string()),
+                StatusFormat::Starship => Ok("".to_string()), // Empty for starship if nothing happening
+            }
         }
     }
 }
 
 /// Execute allow command - approve current directory's configuration
-pub async fn execute_allow(path: &str, package: &str, note: Option<String>) -> Result<String> {
+pub async fn execute_allow(
+    path: &str,
+    package: &str,
+    note: Option<String>,
+    yes: bool,
+) -> Result<String> {
     // Check env.cue and canonicalize path
     let directory = require_env_file(Path::new(path), package)?;
 
@@ -237,6 +320,29 @@ pub async fn execute_allow(path: &str, package: &str, note: Option<String>) -> R
     // Show what we're approving
     let summary = ConfigSummary::from_json(&config_value);
 
+    // If we need confirmation and yes flag is not set
+    if !yes {
+        let hooks = extract_hooks_from_config(&config);
+        if !hooks.is_empty() {
+            println!("The following hooks will be allowed:");
+            for hook in &hooks {
+                println!("  - Command: {}", hook.command);
+                if !hook.args.is_empty() {
+                    println!("    Args: {:?}", hook.args);
+                }
+            }
+            println!();
+            print!("Do you want to allow this configuration? [y/N] ");
+                        io::stdout().flush().map_err(|e| cuenv_core::Error::configuration(format!("IO error: {}", e)))?;
+            
+                        let mut input = String::new();
+                        io::stdin().read_line(&mut input).map_err(|e| cuenv_core::Error::configuration(format!("IO error: {}", e)))?;
+            if !input.trim().eq_ignore_ascii_case("y") {
+                return Ok("Aborted by user.".to_string());
+            }
+        }
+    }
+
     // Approve the configuration
     approval_manager
         .approve_config(&directory, config_hash.clone(), note)
@@ -249,11 +355,43 @@ pub async fn execute_allow(path: &str, package: &str, note: Option<String>) -> R
     Ok(format!(
         "Configuration approved for directory: {}\n\
          Contains: {}\n\
-         Hash: {}",
+         Hash: {}\n\
+         (Note: You may need to reload your environment, e.g., `cd .`, to apply changes)",
         directory.display(),
         summary.description(),
         &config_hash[..16]
     ))
+}
+
+/// Execute deny command - revoke approval for a directory
+pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<String> {
+    // Resolve directory path, but don't strictly require env.cue to exist
+    // (user might want to deny a directory they deleted)
+    let directory = if let Ok(EnvFileStatus::Match(dir)) = env_file::find_env_file(Path::new(path), package) {
+        dir
+    } else {
+        // If no env file, just use canonical path
+        Path::new(path).canonicalize().map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {}", path, e))
+        })?
+    };
+
+    // Initialize approval manager
+    let mut approval_manager = ApprovalManager::with_default_file()?;
+    approval_manager.load_approvals().await?;
+
+    // Revoke approval
+    if approval_manager.revoke_approval(&directory).await? {
+         Ok(format!(
+            "Revoked approval for directory: {}",
+            directory.display()
+        ))
+    } else {
+        Ok(format!(
+            "No approval found for directory: {}",
+            directory.display()
+        ))
+    }
 }
 
 /// Execute env check command - check hook status and output env for shell
@@ -525,7 +663,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_allow_no_directory() {
-        let result = execute_allow("/nonexistent/directory", "cuenv", None).await;
+        let result = execute_allow("/nonexistent/directory", "cuenv", None, false).await;
         assert!(result.is_err());
         // The error type is Configuration error, which doesn't include the detailed message in Display
         // Just verify it's an error for a non-existent directory
@@ -538,7 +676,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_allow_no_env_cue() {
         let temp_dir = TempDir::new().unwrap();
-        let result = execute_allow(temp_dir.path().to_str().unwrap(), "cuenv", None).await;
+        let result = execute_allow(temp_dir.path().to_str().unwrap(), "cuenv", None, false).await;
         assert!(result.is_err());
         // The error type is Configuration error for missing env.cue file
         assert!(matches!(
@@ -560,7 +698,7 @@ mod tests {
     async fn test_execute_env_status_no_file() {
         let temp_dir = TempDir::new().unwrap();
         let result =
-            execute_env_status(temp_dir.path().to_str().unwrap(), "cuenv", false, 30).await;
+            execute_env_status(temp_dir.path().to_str().unwrap(), "cuenv", false, 30, StatusFormat::Text).await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("No env.cue file found"));

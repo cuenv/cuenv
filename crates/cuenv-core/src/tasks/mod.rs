@@ -77,9 +77,33 @@ pub struct Task {
     #[serde(default, rename = "externalInputs")]
     pub external_inputs: Option<Vec<ExternalInput>>,
 
+    /// Workspace resolution configuration
+    #[serde(default, rename = "workspaceInputs")]
+    pub workspace_inputs: Option<WorkspaceInputs>,
+
     /// Description of the task
     #[serde(default)]
     pub description: Option<String>,
+}
+
+/// Configuration for workspace-aware dependency resolution
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceInputs {
+    /// Whether to enable workspace resolution
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Explicit package manager override
+    pub package_manager: Option<String>,
+    /// Explicit list of packages to include
+    #[serde(default)]
+    pub packages: Vec<String>,
+    /// Path to the lockfile
+    pub lockfile: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Task {
@@ -211,6 +235,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: None,
         };
 
@@ -244,6 +269,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("First task".to_string()),
         };
 
@@ -256,6 +282,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Second task".to_string()),
         };
 
@@ -280,6 +307,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Task 1".to_string()),
         };
 
@@ -292,6 +320,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Task 2".to_string()),
         };
 
@@ -320,6 +349,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Hello task".to_string()),
         };
 
@@ -346,6 +376,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Test task".to_string()),
         };
 

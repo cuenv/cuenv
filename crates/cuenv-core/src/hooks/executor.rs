@@ -79,7 +79,7 @@ impl HookExecutor {
             directory_path.clone(),
             instance_hash.clone(),
             config_hash.clone(),
-            total_hooks,
+            hooks.clone(),
         );
         state.previous_env = previous_env;
 

@@ -28,8 +28,9 @@ pub async fn execute_exec(
     // Set up environment from manifest
     let mut environment = Environment::new();
     if let Some(env) = &manifest.env {
-        // Build environment for exec command, applying policies
-        let env_vars = cuenv_core::environment::Environment::build_for_exec(command, &env.base);
+        // Build environment for exec command, applying policies and executing secret resolvers
+        let env_vars =
+            cuenv_core::environment::Environment::resolve_for_exec(command, &env.base).await?;
         for (key, value) in env_vars {
             environment.set(key, value);
         }

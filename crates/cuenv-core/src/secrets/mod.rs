@@ -2,10 +2,12 @@
 //!
 //! Based on schema/secrets.cue
 
+use crate::{Error, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use tokio::process::Command;
 
 /// Resolver for executing commands to retrieve secret values
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -54,6 +56,39 @@ impl Secret {
             command,
             args,
             extra,
+        }
+    }
+
+    /// Resolve the secret value
+    pub async fn resolve(&self) -> Result<String> {
+        match self.resolver.as_str() {
+            "exec" => {
+                let output = Command::new(&self.command)
+                    .args(&self.args)
+                    .output()
+                    .await
+                    .map_err(|e| {
+                        Error::configuration(format!(
+                            "Failed to execute secret resolver command '{}': {}",
+                            self.command, e
+                        ))
+                    })?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(Error::configuration(format!(
+                        "Secret resolver command '{}' failed: {}",
+                        self.command, stderr
+                    )));
+                }
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                Ok(stdout.trim().to_string())
+            }
+            other => Err(Error::configuration(format!(
+                "Unsupported secret resolver: {}",
+                other
+            ))),
         }
     }
 }
