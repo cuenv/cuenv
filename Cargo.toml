@@ -38,7 +38,7 @@ uuid = { version = "1.18", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.8.3"
 # New dependencies for hook execution system
-dirs = "5.0"
+dirs = "6.0"
 sha2 = "0.10"
 
 # Workspace detection and parsing dependencies
