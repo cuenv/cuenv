@@ -10,7 +10,7 @@ use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
     Result,
     hooks::{
-        approval::{ApprovalManager, ApprovalStatus, check_approval_status},
+        approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
         executor::HookExecutor,
         types::ExecutionStatus,
     },
@@ -22,6 +22,7 @@ use std::time::Duration;
 use tracing::{debug, info};
 
 const PENDING_APPROVAL_ENV: &str = "CUENV_PENDING_APPROVAL_DIR";
+const LOADED_DIR_ENV: &str = "CUENV_LOADED_DIR";
 
 /// Execute the export command - the main entry point for shell integration
 pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<String> {
@@ -66,8 +67,17 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
 
     match approval_status {
         ApprovalStatus::NotApproved { .. } | ApprovalStatus::RequiresApproval { .. } => {
-            // Return a comment that tells user to approve
-            return Ok(format_not_allowed(&directory, shell));
+            let summary = ConfigSummary::from_json(&config_value);
+            // Only require approval if there are hooks
+            if summary.has_hooks {
+                // Return a comment that tells user to approve
+                return Ok(format_not_allowed(
+                    &directory,
+                    shell,
+                    summary.hook_count,
+                ));
+            }
+            debug!("Auto-approving configuration with no hooks");
         }
         ApprovalStatus::Approved => {
             // Continue with loading
@@ -88,6 +98,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
                 // Environment is ready - format and return with diff support
                 let env_vars = collect_all_env_vars(&config, &state.environment_vars);
                 return Ok(format_env_diff_with_unset(
+                    &directory,
                     env_vars,
                     state.previous_env.as_ref(),
                     shell,
@@ -135,6 +146,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
     {
         let env_vars = collect_all_env_vars(&config, &state.environment_vars);
         return Ok(format_env_diff_with_unset(
+            &directory,
             env_vars,
             state.previous_env.as_ref(),
             shell,
@@ -148,7 +160,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
             "Returning partial environment ({} vars) while hooks run",
             static_env.len()
         );
-        return Ok(format_env_diff(static_env, shell));
+        return Ok(format_env_diff(&directory, static_env, shell));
     }
 
     // No environment available yet - return safe no-op
@@ -194,10 +206,60 @@ fn collect_all_env_vars(
     all_vars
 }
 
+/// Generate script to print "Loaded" message if entering a new directory
+fn format_loaded_check(dir: &Path, shell: Shell) -> String {
+    let dir_display = dir.to_string_lossy();
+    let escaped_dir = escape_shell_value(&dir_display);
+
+    match shell {
+        Shell::Bash | Shell::Zsh => format!(
+            r#"if [ "${{{loaded}:-}}" != "{escaped_dir}" ]; then
+    echo "Cuenv environment loaded" >&2
+    export {loaded}="{escaped_dir}"
+    unset {pending} 2>/dev/null
+fi"#,
+            loaded = LOADED_DIR_ENV,
+            pending = PENDING_APPROVAL_ENV,
+            escaped_dir = escaped_dir,
+        ),
+        Shell::Fish => format!(
+            r#"if not set -q {loaded}
+    echo "Cuenv environment loaded" >&2
+    set -x {loaded} "{escaped_dir}"
+    set -e {pending} 2>/dev/null
+else if test "${loaded}" != "{escaped_dir}"
+    echo "Cuenv environment loaded" >&2
+    set -x {loaded} "{escaped_dir}"
+    set -e {pending} 2>/dev/null
+end"#,
+            loaded = LOADED_DIR_ENV,
+            pending = PENDING_APPROVAL_ENV,
+            escaped_dir = escaped_dir,
+        ),
+        Shell::PowerShell => {
+            let ps_dir = dir_display.replace('\'', "''");
+            format!(
+                r#"if ($env:{loaded} -ne '{ps_dir}') {{
+    Write-Host 'Cuenv environment loaded'
+    $env:{loaded} = '{ps_dir}'
+    Remove-Item Env:{pending} -ErrorAction SilentlyContinue
+}}"#,
+                loaded = LOADED_DIR_ENV,
+                pending = PENDING_APPROVAL_ENV,
+                ps_dir = ps_dir,
+            )
+        }
+    }
+}
+
 /// Format environment variables as shell export commands
-fn format_env_diff(env: HashMap<String, String>, shell: Shell) -> String {
+fn format_env_diff(dir: &Path, env: HashMap<String, String>, shell: Shell) -> String {
     use std::fmt::Write;
     let mut output = String::new();
+
+    // Add loaded check/message
+    output.push_str(&format_loaded_check(dir, shell));
+    output.push('\n');
 
     for (key, value) in env {
         let escaped_value = escape_shell_value(&value);
@@ -219,12 +281,17 @@ fn format_env_diff(env: HashMap<String, String>, shell: Shell) -> String {
 
 /// Format environment diff with unset commands for removed variables
 fn format_env_diff_with_unset(
+    dir: &Path,
     current_env: HashMap<String, String>,
     previous_env: Option<&HashMap<String, String>>,
     shell: Shell,
 ) -> String {
     use std::fmt::Write;
     let mut output = String::new();
+
+    // Add loaded check/message
+    output.push_str(&format_loaded_check(dir, shell));
+    output.push('\n');
 
     // If we have a previous environment, generate unset commands for removed variables
     if let Some(prev) = previous_env {
@@ -267,49 +334,63 @@ fn format_env_diff_with_unset(
 
 /// Format "not allowed" message as an executable script snippet per shell.
 /// The script prints a helpful notice once per directory until approval is granted.
-fn format_not_allowed(dir: &Path, shell: Shell) -> String {
+fn format_not_allowed(dir: &Path, shell: Shell, hook_count: usize) -> String {
     let dir_display = dir.to_string_lossy();
     let escaped = escape_shell_value(&dir_display);
+    let hooks_str = if hook_count == 1 { "hook" } else { "hooks" };
 
     match shell {
         Shell::Bash | Shell::Zsh => format!(
             r#"if [ "${{{pending}:-}}" != "{dir}" ]; then
-    printf '%s\n' "cuenv detected env.cue at {dir} but it requires approval."
-    printf '%s\n' "Run 'cuenv allow --path \"{dir}\"' to trust this configuration."
+    printf '%s\n' "cuenv detected env.cue, but approval is required because this configuration contains {count} {hooks}."
+    printf '%s\n' "Run 'cuenv allow' to approve."
     export {pending}="{dir}"
+    unset {loaded} 2>/dev/null
 fi
 :"#,
             pending = PENDING_APPROVAL_ENV,
+            loaded = LOADED_DIR_ENV,
             dir = escaped,
+            count = hook_count,
+            hooks = hooks_str,
         ),
         Shell::Fish => {
             let pending_ref = format!("${}", PENDING_APPROVAL_ENV);
             format!(
                 r#"if not set -q {pending}
-    printf '%s\n' "cuenv detected env.cue at {dir} but it requires approval."
-    printf '%s\n' "Run 'cuenv allow --path \"{dir}\"' to trust this configuration."
+    printf '%s\n' "cuenv detected env.cue, but approval is required because this configuration contains {count} {hooks}."
+    printf '%s\n' "Run 'cuenv allow' to approve."
     set -x {pending} "{dir}"
+    set -e {loaded} 2>/dev/null
 else if test "{pending_ref}" != "{dir}"
-    printf '%s\n' "cuenv detected env.cue at {dir} but it requires approval."
-    printf '%s\n' "Run 'cuenv allow --path \"{dir}\"' to trust this configuration."
+    printf '%s\n' "cuenv detected env.cue, but approval is required because this configuration contains {count} {hooks}."
+    printf '%s\n' "Run 'cuenv allow' to approve."
     set -x {pending} "{dir}"
+    set -e {loaded} 2>/dev/null
 end
 true"#,
                 pending = PENDING_APPROVAL_ENV,
                 pending_ref = pending_ref,
+                loaded = LOADED_DIR_ENV,
                 dir = escaped,
+                count = hook_count,
+                hooks = hooks_str,
             )
         }
         Shell::PowerShell => {
             let ps_dir = dir_display.replace('\'', "''");
             format!(
                 r#"if ($env:{pending} -ne '{dir}') {{
-    Write-Host 'cuenv detected env.cue at {dir} but it requires approval.'
-    Write-Host 'Run ''cuenv allow --path "{dir}"'' to trust this configuration.'
+    Write-Host 'cuenv detected env.cue, but approval is required because this configuration contains {count} {hooks}.'
+    Write-Host 'Run ''cuenv allow'' to approve.'
     $env:{pending} = '{dir}'
+    Remove-Item Env:{loaded} -ErrorAction SilentlyContinue
 }}"#,
                 pending = PENDING_APPROVAL_ENV,
+                loaded = LOADED_DIR_ENV,
                 dir = ps_dir,
+                count = hook_count,
+                hooks = hooks_str,
             )
         }
     }
@@ -328,21 +409,28 @@ fn escape_shell_value(value: &str) -> String {
 fn format_no_op(shell: Shell) -> String {
     match shell {
         Shell::Bash | Shell::Zsh => format!(
-            r#"unset {pending} 2>/dev/null
+            r#"unset {pending} {loaded} 2>/dev/null
 :"#,
             pending = PENDING_APPROVAL_ENV,
+            loaded = LOADED_DIR_ENV,
         ),
         Shell::Fish => format!(
             r#"if set -q {pending}
     set -e {pending}
 end
+if set -q {loaded}
+    set -e {loaded}
+end
 true"#,
             pending = PENDING_APPROVAL_ENV,
+            loaded = LOADED_DIR_ENV,
         ),
         Shell::PowerShell => format!(
             r#"if (Test-Path Env:{pending}) {{ Remove-Item Env:{pending} }}
+if (Test-Path Env:{loaded}) {{ Remove-Item Env:{loaded} }}
 # no changes"#,
             pending = PENDING_APPROVAL_ENV,
+            loaded = LOADED_DIR_ENV,
         ),
     }
 }
@@ -391,57 +479,76 @@ mod tests {
     }
 
     #[test]
-    fn test_format_no_op_clears_pending_state() {
+    fn test_format_no_op_clears_state() {
         let bash = format_no_op(Shell::Bash);
-        assert!(bash.contains("unset CUENV_PENDING_APPROVAL_DIR"));
+        assert!(bash.contains("unset"));
+        assert!(bash.contains("CUENV_PENDING_APPROVAL_DIR"));
+        assert!(bash.contains("CUENV_LOADED_DIR"));
         assert!(bash.trim().ends_with(':'));
 
         let fish = format_no_op(Shell::Fish);
         assert!(fish.contains("set -e CUENV_PENDING_APPROVAL_DIR"));
+        assert!(fish.contains("set -e CUENV_LOADED_DIR"));
         assert!(fish.trim().ends_with("true"));
 
         let zsh = format_no_op(Shell::Zsh);
-        assert!(zsh.contains("unset CUENV_PENDING_APPROVAL_DIR"));
+        assert!(zsh.contains("unset"));
+        assert!(zsh.contains("CUENV_PENDING_APPROVAL_DIR"));
+        assert!(zsh.contains("CUENV_LOADED_DIR"));
 
         let pwsh = format_no_op(Shell::PowerShell);
         assert!(pwsh.contains("Remove-Item Env:CUENV_PENDING_APPROVAL_DIR"));
+        assert!(pwsh.contains("Remove-Item Env:CUENV_LOADED_DIR"));
     }
 
     #[test]
-    fn test_format_not_allowed_emits_notice() {
+    fn test_format_not_allowed_emits_notice_and_clears_loaded() {
         let dir = Path::new("/tmp/project");
-        let bash_notice = format_not_allowed(dir, Shell::Bash);
+        let bash_notice = format_not_allowed(dir, Shell::Bash, 1);
         assert!(bash_notice.contains("cuenv detected env.cue"));
-        assert!(bash_notice.contains("cuenv allow --path"));
-        assert!(bash_notice.contains("CUENV_PENDING_APPROVAL_DIR"));
+        assert!(bash_notice.contains("cuenv allow'")); // Simplified command
+        assert!(bash_notice.contains("contains 1 hook"));
+        assert!(bash_notice.contains("export CUENV_PENDING_APPROVAL_DIR="));
+        assert!(bash_notice.contains("unset CUENV_LOADED_DIR"));
 
-        let fish_notice = format_not_allowed(dir, Shell::Fish);
+        let fish_notice = format_not_allowed(dir, Shell::Fish, 2);
         assert!(fish_notice.contains("set -x CUENV_PENDING_APPROVAL_DIR"));
         assert!(fish_notice.contains("cuenv detected env.cue"));
+        assert!(fish_notice.contains("contains 2 hooks"));
+        assert!(fish_notice.contains("set -e CUENV_LOADED_DIR"));
     }
 
     #[test]
-    fn test_format_env_diff_exports_by_shell() {
+    fn test_format_env_diff_exports_and_loaded_message() {
+        let dir = Path::new("/tmp/project");
         let mut env = HashMap::new();
         env.insert("FOO".to_string(), "bar baz".to_string());
         env.insert("NUM".to_string(), "42".to_string());
 
-        let bash = format_env_diff(env.clone(), Shell::Bash);
+        let bash = format_env_diff(dir, env.clone(), Shell::Bash);
+        assert!(bash.contains("echo \"Cuenv environment loaded\" >&2"));
+        assert!(bash.contains("export CUENV_LOADED_DIR=\"/tmp/project\""));
         assert!(bash.contains("export FOO=\"bar baz\""));
         assert!(bash.contains("export NUM=\"42\""));
 
-        let zsh = format_env_diff(env.clone(), Shell::Zsh);
+        let zsh = format_env_diff(dir, env.clone(), Shell::Zsh);
+        assert!(zsh.contains("echo \"Cuenv environment loaded\" >&2"));
         assert!(zsh.contains("export FOO=\"bar baz\""));
 
-        let fish = format_env_diff(env.clone(), Shell::Fish);
+        let fish = format_env_diff(dir, env.clone(), Shell::Fish);
+        assert!(fish.contains("echo \"Cuenv environment loaded\" >&2"));
+        assert!(fish.contains("set -x CUENV_LOADED_DIR \"/tmp/project\""));
         assert!(fish.contains("set -x FOO \"bar baz\""));
 
-        let pwsh = format_env_diff(env, Shell::PowerShell);
+        let pwsh = format_env_diff(dir, env, Shell::PowerShell);
+        assert!(pwsh.contains("Write-Host 'Cuenv environment loaded'"));
+        assert!(pwsh.contains("$env:CUENV_LOADED_DIR = '/tmp/project'"));
         assert!(pwsh.contains("$env:FOO = \"bar baz\""));
     }
 
     #[test]
     fn test_format_env_diff_with_unset() {
+        let dir = Path::new("/tmp/project");
         let current = HashMap::from([
             ("A".to_string(), "1".to_string()),
             ("B".to_string(), "2".to_string()),
@@ -451,14 +558,18 @@ mod tests {
             ("REMOVED".to_string(), "x".to_string()),
         ]);
 
-        let out_bash = format_env_diff_with_unset(current.clone(), Some(&previous), Shell::Bash);
+        let out_bash =
+            format_env_diff_with_unset(dir, current.clone(), Some(&previous), Shell::Bash);
         assert!(out_bash.lines().any(|l| l == "unset REMOVED"));
         assert!(out_bash.contains("export A=\"1\""));
+        assert!(out_bash.contains("echo \"Cuenv environment loaded\""));
 
-        let out_fish = format_env_diff_with_unset(current.clone(), Some(&previous), Shell::Fish);
+        let out_fish =
+            format_env_diff_with_unset(dir, current.clone(), Some(&previous), Shell::Fish);
         assert!(out_fish.lines().any(|l| l == "set -e REMOVED"));
 
-        let out_pwsh = format_env_diff_with_unset(current, Some(&previous), Shell::PowerShell);
+        let out_pwsh =
+            format_env_diff_with_unset(dir, current, Some(&previous), Shell::PowerShell);
         assert!(out_pwsh.lines().any(|l| l == "Remove-Item Env:REMOVED"));
     }
 

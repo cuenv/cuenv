@@ -75,8 +75,9 @@ pub async fn execute_task(
     // Set up environment from manifest
     let mut environment = Environment::new();
     if let Some(env) = &manifest.env {
-        // Build environment for task, applying policies
-        let env_vars = cuenv_core::environment::Environment::build_for_task(task_name, &env.base);
+        // Build and resolve environment for task, applying policies and executing secret resolvers
+        let env_vars =
+            cuenv_core::environment::Environment::resolve_for_task(task_name, &env.base).await?;
         for (key, value) in env_vars {
             environment.set(key, value);
         }
@@ -88,7 +89,7 @@ pub async fn execute_task(
         max_parallel: 0,
         environment,
         working_dir: None,
-        project_root: Path::new(path).to_path_buf(),
+        project_root: std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf()),
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
         show_cache_path,
     };
@@ -162,8 +163,11 @@ async fn execute_task_with_strategy_hermetic(
                 .await
         }
         TaskDefinition::Single(t) => {
-            // If no hermetic features are used, fall back to original execution
-            if t.external_inputs.is_none() && t.inputs.is_empty() && t.outputs.is_empty() {
+            // If workspaceInputs is used, we MUST use the direct executor to access the real project root.
+            // If no hermetic features are used, fall back to original execution.
+            if t.workspace_inputs.is_some()
+                || (t.external_inputs.is_none() && t.inputs.is_empty() && t.outputs.is_empty())
+            {
                 if t.depends_on.is_empty() {
                     executor
                         .execute_definition(task_name, task_def, all_tasks)
@@ -241,7 +245,7 @@ async fn run_task_hermetic(
     // Compute environment for this task
     let mut env = Environment::new();
     if let Some(base) = env_base {
-        let vars = Environment::build_for_task(name, &base.base);
+        let vars = Environment::resolve_for_task(name, &base.base).await?;
         for (k, v) in vars {
             env.set(k, v);
         }
@@ -714,6 +718,8 @@ async fn resolve_and_materialize_external(
         env: env_summary,
         cuenv_version,
         platform,
+        workspace_lockfile_hash: None,
+        workspace_package_hashes: None,
     };
     let (ext_key, _env_json) = cuenv_core::cache::tasks::compute_cache_key(&envelope)?;
 
@@ -887,6 +893,7 @@ env: {
             inputs: vec!["inputs".into()],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: None,
         };
 
@@ -957,6 +964,7 @@ env: {
             inputs: vec!["inputs".into()],
             outputs: vec!["out/out.txt".into()],
             external_inputs: None,
+            workspace_inputs: None,
             description: None,
         };
 
@@ -995,6 +1003,7 @@ env: {
             inputs: vec!["inputs".into()],
             outputs: vec!["out.txt".into()],
             external_inputs: None,
+            workspace_inputs: None,
             description: None,
         };
         let def = TaskDefinition::Single(Box::new(task.clone()));

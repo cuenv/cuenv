@@ -32,51 +32,44 @@ impl DependencyResolver for GenericDependencyResolver {
         lockfile: &[LockfileEntry],
     ) -> Result<DependencyGraph> {
         let mut graph = DependencyGraph::new();
-        let mut node_map: HashMap<String, NodeIndex> = HashMap::new();
+        // Key by (name, version) to handle multiple versions of the same package
+        let mut node_map: HashMap<(String, String), NodeIndex> = HashMap::new();
 
         // 1. Create nodes for all lockfile entries
-        // We assume the lockfile contains all relevant dependencies, including workspace members
-        // if they are properly resolved.
         for entry in lockfile {
             let dep_ref = DependencyRef {
                 name: entry.name.clone(),
                 version_req: entry.version.clone(),
             };
             let idx = graph.add_node(dep_ref);
-            node_map.insert(entry.name.clone(), idx);
+            node_map.insert((entry.name.clone(), entry.version.clone()), idx);
         }
 
         // 2. Add edges based on dependencies declared in lockfile entries
         for entry in lockfile {
-            if let Some(&source_idx) = node_map.get(&entry.name) {
+            if let Some(&source_idx) = node_map.get(&(entry.name.clone(), entry.version.clone())) {
                 for dep in &entry.dependencies {
                     // Find the dependency in the graph
-                    // Note: This simple lookup by name assumes no version conflicts in the flat list
-                    // or that the lockfile entry list has unique names (flattened).
-                    // Real lockfiles might have multiple versions of the same package.
-                    // If 'lockfile' has multiple entries with same name but different versions,
-                    // `node_map` will only store the last one, which is incorrect.
-                    // TODO: Handle multiple versions correctly by keying on (name, version).
-                    
-                    // For now, we'll look up by name. If multiple exist, this needs refinement.
-                    // A robust implementation would use (name, version) for the map key.
-                    // Let's switch to that now.
-                    if let Some(&target_idx) = node_map.get(&dep.name) {
-                        // But wait, `dep` is a DependencyRef which has version_req.
-                        // The lockfile entry has a specific version.
-                        // We need to match the requirement to the resolved version.
-                        // Since we are building from a resolved lockfile, the `entry.dependencies`
-                        // usually point to other entries.
-                        // However, `DependencyRef` in `LockfileEntry` usually just has the name and requested version range.
-                        // We need to find which resolved entry matches.
-                        //
-                        // In a flattened lockfile (like simple node_modules), name is unique.
-                        // In a tree lockfile (npm v2/v3), it's complex.
-                        //
-                        // For the purpose of this implementation ticket (WS-6), and given the previous steps,
-                        // we will assume a simplified flat resolution or that `lockfile` passed here
-                        // is a flattened list of resolved packages.
+                    // We look up by (name, version_req). This assumes that the lockfile parser
+                    // populates `version_req` with the *resolved* version for that dependency,
+                    // or that the version requirement exactly matches one of the present versions.
+                    //
+                    // For many lockfiles (like Cargo.lock), the dependency list contains the
+                    // concrete version that was resolved.
+                    if let Some(&target_idx) = node_map.get(&(dep.name.clone(), dep.version_req.clone())) {
                         graph.add_edge(source_idx, target_idx, ());
+                    } else {
+                        // Fallback: If strict lookup fails (e.g. version_req is a range like "^1.0.0"),
+                        // we would ideally perform semver resolution against available nodes.
+                        // For now, we log a trace if we can't find the exact match.
+                        // This keeps the graph correct for well-formed resolved lockfiles.
+                        tracing::trace!(
+                            "Could not find exact match for dependency {} {} -> {} {}",
+                            entry.name,
+                            entry.version,
+                            dep.name,
+                            dep.version_req
+                        );
                     }
                 }
             }

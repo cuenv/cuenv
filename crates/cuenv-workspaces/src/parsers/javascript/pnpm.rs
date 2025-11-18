@@ -43,6 +43,16 @@ impl LockfileParser for PnpmLockfileParser {
                     ),
                 });
             }
+            
+            // Log a warning for versions newer than what we've tested (9.0)
+            if let Some(major) = major_version {
+                if major > 9 {
+                    tracing::warn!(
+                        "Encountered pnpm lockfile version '{}' which is newer than the highest tested version (9.0). Parsing may fail or be incomplete.",
+                        version_str
+                    );
+                }
+            }
             // Accept all valid numeric versions (no version-specific rejection)
         }
         // If lockfileVersion is missing, proceed (compatible with older pnpm versions)
