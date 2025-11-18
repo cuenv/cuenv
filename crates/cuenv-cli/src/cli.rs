@@ -229,8 +229,7 @@ pub struct Cli {
     )]
     pub level: crate::tracing::LogLevel,
 
-    #[arg(long, global = true, help = "Output format", value_enum, default_value_t = OutputFormat::Simple)]
-    pub format: OutputFormat,
+
 
     #[arg(long, global = true, help = "Emit JSON envelope regardless of format")]
     pub json: bool,
@@ -239,7 +238,15 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     #[command(about = "Show version information")]
-    Version,
+    Version {
+        #[arg(
+            long = "output-format",
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Simple
+        )]
+        output_format: OutputFormat,
+    },
     #[command(about = "Environment variable operations")]
     Env {
         #[command(subcommand)]
@@ -323,6 +330,26 @@ pub enum Commands {
         package: String,
         #[arg(long, help = "Optional note about this approval")]
         note: Option<String>,
+        #[arg(long, short = 'y', help = "Approve without prompting")]
+        yes: bool,
+    },
+    #[command(about = "Revoke approval for hook execution")]
+    Deny {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(long, help = "Revoke all approvals for this directory (default behavior currently)")]
+        all: bool,
     },
     #[command(
         about = "Export environment variables for shell evaluation",
@@ -338,6 +365,30 @@ pub enum Commands {
         )]
         package: String,
     },
+}
+
+/// Output format for status command
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, ValueEnum, Serialize, Deserialize, Default)]
+#[must_use]
+pub enum StatusFormat {
+    /// Default detailed text format
+    #[default]
+    Text,
+    /// Short format (e.g., "[3/5]")
+    Short,
+    /// Starship module format (JSON)
+    Starship,
+}
+
+impl std::fmt::Display for StatusFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            StatusFormat::Text => "text",
+            StatusFormat::Short => "short",
+            StatusFormat::Starship => "starship",
+        };
+        write!(f, "{s}")
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -400,6 +451,13 @@ pub enum EnvCommands {
         wait: bool,
         #[arg(long, help = "Timeout in seconds for waiting", default_value = "300")]
         timeout: u64,
+        #[arg(
+            long = "output-format",
+            help = "Output format",
+            value_enum,
+            default_value_t = StatusFormat::Text
+        )]
+        output_format: StatusFormat,
     },
     #[command(about = "Check hook status and output environment for shell")]
     Check {
@@ -445,7 +503,7 @@ pub enum ShellType {
 impl From<Commands> for Command {
     fn from(cmd: Commands) -> Self {
         match cmd {
-            Commands::Version => Command::Version,
+            Commands::Version { output_format } => Command::Version { format: output_format.to_string() },
             Commands::Env { subcommand } => match subcommand {
                 EnvCommands::Print {
                     path,
@@ -462,11 +520,13 @@ impl From<Commands> for Command {
                     package,
                     wait,
                     timeout,
+                    output_format,
                 } => Command::EnvStatus {
                     path,
                     package,
                     wait,
                     timeout,
+                    format: output_format,
                 },
                 EnvCommands::Check {
                     path,
@@ -509,11 +569,18 @@ impl From<Commands> for Command {
                 path,
                 package,
                 note,
+                yes,
             } => Command::Allow {
                 path,
                 package,
                 note,
+                yes,
             },
+            Commands::Deny {
+                path,
+                package,
+                all,
+            } => Command::Deny { path, package, all },
             Commands::Export { shell, package } => Command::Export { shell, package },
         }
     }
@@ -534,9 +601,12 @@ mod tests {
         let cli = Cli::try_parse_from(["cuenv", "version"]).unwrap();
 
         assert!(matches!(cli.level, LogLevel::Warn)); // Default log level
-        assert!(matches!(cli.format, OutputFormat::Simple)); // Default format
         assert!(!cli.json); // Default JSON is false
-        assert!(matches!(cli.command, Commands::Version));
+        if let Commands::Version { output_format } = cli.command {
+            assert_eq!(output_format, OutputFormat::Simple);
+        } else {
+            panic!("Expected Version command");
+        }
     }
 
     #[test]
@@ -576,28 +646,40 @@ mod tests {
 
     #[test]
     fn test_cli_format_option() {
-        let cli = Cli::try_parse_from(["cuenv", "--format", "json", "version"]).unwrap();
-        assert!(matches!(cli.format, OutputFormat::Json));
+        let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "json"]).unwrap();
+        if let Commands::Version { output_format } = cli.command {
+            assert_eq!(output_format, OutputFormat::Json);
+        } else {
+            panic!("Expected Version command");
+        }
     }
 
     #[test]
     fn test_cli_combined_flags() {
         let cli = Cli::try_parse_from([
-            "cuenv", "--level", "debug", "--json", "--format", "env", "version",
+            "cuenv", "--level", "debug", "--json", "version", "--output-format", "env",
         ])
         .unwrap();
 
         assert!(matches!(cli.level, LogLevel::Debug));
         assert!(cli.json);
-        assert!(matches!(cli.format, OutputFormat::Env));
-        assert!(matches!(cli.command, Commands::Version));
+        if let Commands::Version { output_format } = cli.command {
+            assert_eq!(output_format, OutputFormat::Env);
+        } else {
+            panic!("Expected Version command");
+        }
     }
 
     #[test]
     fn test_command_conversion() {
-        let version_cmd = Commands::Version;
+        let version_cmd = Commands::Version {
+            output_format: OutputFormat::Simple,
+        };
         let command: Command = version_cmd.into();
-        assert!(matches!(command, Command::Version));
+        match command {
+            Command::Version { format } => assert_eq!(format, "simple"),
+            _ => panic!("Expected Command::Version"),
+        }
     }
 
     #[test]
@@ -767,19 +849,31 @@ mod tests {
     #[test]
     fn test_output_format_value_enum() {
         // Test that the formats work with clap
-        let cli = Cli::try_parse_from(["cuenv", "--format", "simple", "version"]).unwrap();
-        assert!(matches!(cli.format, OutputFormat::Simple));
+        let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "simple"]).unwrap();
+        if let Commands::Version { output_format } = cli.command {
+            assert_eq!(output_format, OutputFormat::Simple);
+        } else {
+            panic!("Expected Version command");
+        }
 
-        let cli = Cli::try_parse_from(["cuenv", "--format", "env", "version"]).unwrap();
-        assert!(matches!(cli.format, OutputFormat::Env));
+        let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "env"]).unwrap();
+        if let Commands::Version { output_format } = cli.command {
+            assert_eq!(output_format, OutputFormat::Env);
+        } else {
+            panic!("Expected Version command");
+        }
 
-        let cli = Cli::try_parse_from(["cuenv", "--format", "json", "version"]).unwrap();
-        assert!(matches!(cli.format, OutputFormat::Json));
+        let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "json"]).unwrap();
+        if let Commands::Version { output_format } = cli.command {
+            assert_eq!(output_format, OutputFormat::Json);
+        } else {
+            panic!("Expected Version command");
+        }
     }
 
     #[test]
     fn test_invalid_output_format() {
-        let result = Cli::try_parse_from(["cuenv", "--format", "invalid", "version"]);
+        let result = Cli::try_parse_from(["cuenv", "version", "--output-format", "invalid"]);
         assert!(result.is_err());
     }
 

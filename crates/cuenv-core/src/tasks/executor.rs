@@ -5,13 +5,20 @@
 //! - Hermetic workdir populated from declared inputs (files/dirs/globs)
 //! - Persistent task result cache keyed by inputs + command + env + cuenv version + platform
 
-use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
+use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks, WorkspaceInputs};
 use crate::cache::tasks as task_cache;
 use crate::environment::Environment;
 use crate::tasks::io::{InputResolver, collect_outputs, populate_hermetic_dir};
 use crate::{Error, Result};
 use async_recursion::async_recursion;
 use chrono::Utc;
+use cuenv_workspaces::{
+    BunLockfileParser, CargoLockfileParser, CargoTomlDiscovery, LockfileEntry, LockfileParser,
+    NpmLockfileParser, PackageJsonDiscovery, PackageManager, PnpmLockfileParser,
+    PnpmWorkspaceDiscovery, Workspace, WorkspaceDiscovery, YarnClassicLockfileParser,
+    YarnModernLockfileParser, detect_from_command, detect_package_managers,
+    materializer::{Materializer, cargo_deps::CargoMaterializer, node_modules::NodeModulesMaterializer},
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -75,12 +82,33 @@ impl TaskExecutor {
 
     /// Execute a single task hermetically with caching
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
+        // Resolve workspace dependencies if enabled
+        let mut workspace_ctx: Option<(Workspace, Vec<LockfileEntry>)> = None;
+        let mut workspace_input_patterns = Vec::new();
+        let mut workspace_lockfile_hash = None;
+
+        if let Some(ws_inputs) = &task.workspace_inputs {
+            if ws_inputs.enabled {
+                let (ws, entries, paths, hash) =
+                    self.resolve_workspace(name, task, ws_inputs).await?;
+                workspace_ctx = Some((ws, entries));
+                workspace_input_patterns = paths;
+                workspace_lockfile_hash = hash;
+            }
+        }
+
         // Resolve inputs relative to project root
         let span_inputs = tracing::info_span!("inputs.resolve", task = %name);
         let resolved_inputs = {
             let _g = span_inputs.enter();
             let resolver = InputResolver::new(&self.config.project_root);
-            resolver.resolve(&task.inputs)?
+            let all_inputs: Vec<String> = task
+                .inputs
+                .iter()
+                .chain(workspace_input_patterns.iter())
+                .cloned()
+                .collect();
+            resolver.resolve(&all_inputs)?
         };
 
         // Build cache key envelope
@@ -105,6 +133,9 @@ impl TaskExecutor {
             env: env_summary.clone(),
             cuenv_version: cuenv_version.clone(),
             platform: platform.clone(),
+            workspace_lockfile_hash: workspace_lockfile_hash.clone(),
+            // Package hashes are implicitly included in inputs_summary because we added member paths to inputs
+            workspace_package_hashes: None,
         };
         let (cache_key, envelope_json) = task_cache::compute_cache_key(&envelope)?;
 
@@ -178,6 +209,12 @@ impl TaskExecutor {
         {
             let _g = span_populate.enter();
             populate_hermetic_dir(&resolved_inputs, &hermetic_root)?;
+        }
+
+        // Materialize workspace artifacts (node_modules, target)
+        if let Some((ws, entries)) = workspace_ctx {
+            self.materialize_workspace(&ws, &entries, &hermetic_root)
+                .await?;
         }
 
         // Initial snapshot to detect undeclared writes
@@ -280,6 +317,8 @@ impl TaskExecutor {
         let success = status.success();
         if !success {
             tracing::warn!(task = %name, exit = exit_code, "Task failed");
+            tracing::error!(task = %name, "Task stdout:\n{}", stdout);
+            tracing::error!(task = %name, "Task stderr:\n{}", stderr);
         } else {
             tracing::info!(task = %name, "Task completed successfully");
         }
@@ -374,6 +413,26 @@ impl TaskExecutor {
             {
                 let _g = cache_span.enter();
                 task_cache::save_result(&cache_key, &meta, &outputs_stage, &hermetic_root, logs)?;
+            }
+
+            // Materialize outputs back to project root
+            for rel in &outputs {
+                let src = hermetic_root.join(rel);
+                let dst = self.config.project_root.join(rel);
+                if src.exists() {
+                    if let Some(parent) = dst.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    // We use copy instead of rename to keep hermetic dir intact for snapshots/logs if needed,
+                    // although it's temporary.
+                    if let Err(e) = std::fs::copy(&src, &dst) {
+                        tracing::warn!(
+                            "Failed to copy output {} back to project root: {}",
+                            rel.display(),
+                            e
+                        );
+                    }
+                }
             }
         } else {
             // Optionally persist logs in a failure/ subdir: not implemented for brevity
@@ -537,6 +596,169 @@ impl TaskExecutor {
         Ok(all_results)
     }
 
+    async fn resolve_workspace(
+        &self,
+        _task_name: &str,
+        task: &Task,
+        config: &WorkspaceInputs,
+    ) -> Result<(Workspace, Vec<LockfileEntry>, Vec<String>, Option<String>)> {
+        let root = self.config.project_root.clone();
+        let command = task.command.clone();
+        let config_pm = config.package_manager.clone();
+        let packages = config.packages.clone();
+
+        // Use spawn_blocking for heavy lifting
+        tokio::task::spawn_blocking(move || {
+            // 1. Detect Package Manager
+            let manager = if let Some(pm_str) = config_pm {
+                match pm_str.as_str() {
+                    "npm" => PackageManager::Npm,
+                    "bun" => PackageManager::Bun,
+                    "pnpm" => PackageManager::Pnpm,
+                    "yarn" => PackageManager::YarnModern, // Default to modern if unspecified
+                    "yarn-classic" => PackageManager::YarnClassic,
+                    "cargo" => PackageManager::Cargo,
+                    _ => {
+                        return Err(Error::configuration(format!(
+                            "Unknown package manager: {}",
+                            pm_str
+                        )));
+                    }
+                }
+            } else {
+                // Auto-detect
+                // Priority: command hint -> lockfiles
+                let hint = detect_from_command(&command);
+                let detected = detect_package_managers(&root).map_err(|e| {
+                    Error::configuration(format!("Failed to detect package managers: {}", e))
+                })?;
+
+                if let Some(h) = hint {
+                    if detected.contains(&h) {
+                        h
+                    } else if !detected.is_empty() {
+                        // Prefer detected files
+                        detected[0]
+                    } else {
+                        // No files detected, but hint exists.
+                        return Err(Error::configuration("No workspace configuration found"));
+                    }
+                } else if !detected.is_empty() {
+                    detected[0]
+                } else {
+                    return Err(Error::configuration(
+                        "Could not detect package manager for workspace resolution",
+                    ));
+                }
+            };
+
+            // 2. Discover Workspace
+            let discovery: Box<dyn WorkspaceDiscovery> = match manager {
+                PackageManager::Npm
+                | PackageManager::Bun
+                | PackageManager::YarnClassic
+                | PackageManager::YarnModern => Box::new(PackageJsonDiscovery),
+                PackageManager::Pnpm => Box::new(PnpmWorkspaceDiscovery),
+                PackageManager::Cargo => Box::new(CargoTomlDiscovery),
+            };
+
+            let workspace = discovery.discover(&root).map_err(|e| {
+                Error::configuration(format!("Failed to discover workspace: {}", e))
+            })?;
+
+            // 3. Parse Lockfile
+            let lockfile_path = workspace
+                .lockfile
+                .clone()
+                .ok_or_else(|| Error::configuration("Workspace resolution requires a lockfile"))?;
+
+            let parser: Box<dyn LockfileParser> = match manager {
+                PackageManager::Npm => Box::new(NpmLockfileParser),
+                PackageManager::Bun => Box::new(BunLockfileParser),
+                PackageManager::Pnpm => Box::new(PnpmLockfileParser),
+                PackageManager::YarnClassic => Box::new(YarnClassicLockfileParser),
+                PackageManager::YarnModern => Box::new(YarnModernLockfileParser),
+                PackageManager::Cargo => Box::new(CargoLockfileParser),
+            };
+
+            let entries = parser
+                .parse(&lockfile_path)
+                .map_err(|e| Error::configuration(format!("Failed to parse lockfile: {}", e)))?;
+
+            // Compute lockfile hash
+            let (hash, _) = crate::tasks::io::sha256_file(&lockfile_path)?;
+
+            // 4. Collect Inputs
+            let mut member_paths = Vec::new();
+
+            // Always include workspace configuration files
+            member_paths.push(manager.workspace_config_name().to_string());
+            if let Some(lock) = workspace.lockfile.as_ref() {
+                if let Ok(rel) = lock.strip_prefix(&root) {
+                    member_paths.push(rel.to_string_lossy().to_string());
+                }
+            }
+
+            if packages.is_empty() {
+                for member in &workspace.members {
+                    member_paths.push(member.path.to_string_lossy().to_string());
+                }
+            } else {
+                let mut to_visit: Vec<String> = packages.clone();
+                let mut visited = HashSet::new();
+
+                while let Some(pkg_name) = to_visit.pop() {
+                    if visited.contains(&pkg_name) {
+                        continue;
+                    }
+                    visited.insert(pkg_name.clone());
+
+                    if let Some(member) = workspace.find_member(&pkg_name) {
+                        member_paths.push(member.path.to_string_lossy().to_string());
+
+                        // Add dependencies
+                        if let Some(entry) = entries.iter().find(|e| e.name == pkg_name) {
+                            for dep in &entry.dependencies {
+                                // Check if dep is a workspace member
+                                if let Some(dep_entry) = entries.iter().find(|e| e.name == dep.name)
+                                {
+                                    if dep_entry.is_workspace_member {
+                                        to_visit.push(dep.name.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Ok((workspace, entries, member_paths, Some(hash)))
+        })
+        .await
+        .map_err(|e| Error::configuration(format!("Task execution panicked: {}", e)))?
+    }
+
+    async fn materialize_workspace(
+        &self,
+        workspace: &Workspace,
+        entries: &[LockfileEntry],
+        target_dir: &PathBuf,
+    ) -> Result<()> {
+        // Dispatch to appropriate materializer
+        let materializer: Box<dyn Materializer> = match workspace.manager {
+            PackageManager::Npm
+            | PackageManager::Bun
+            | PackageManager::Pnpm
+            | PackageManager::YarnClassic
+            | PackageManager::YarnModern => Box::new(NodeModulesMaterializer),
+            PackageManager::Cargo => Box::new(CargoMaterializer),
+        };
+
+        materializer
+            .materialize(workspace, entries, target_dir)
+            .map_err(|e| Error::configuration(format!("Materialization failed: {}", e)))
+    }
+
     fn clone_with_config(&self) -> Self {
         Self {
             config: self.config.clone(),
@@ -659,6 +881,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Hello task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -686,6 +909,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Print env task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -709,6 +933,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Failing task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -732,6 +957,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("First task".to_string()),
         };
         let task2 = Task {
@@ -743,6 +969,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Second task".to_string()),
         };
         let group = TaskGroup::Sequential(vec![
@@ -775,6 +1002,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Malicious task test".to_string()),
         };
         let result = executor
@@ -811,6 +1039,7 @@ mod tests {
                 inputs: vec![],
                 outputs: vec![],
                 external_inputs: None,
+                workspace_inputs: None,
                 description: Some("Special character test".to_string()),
             };
             let result = executor.execute_task("special", &task).await.unwrap();
@@ -839,6 +1068,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: Some("Environment variable safety test".to_string()),
         };
         let result = executor.execute_task("env_test", &task).await.unwrap();
@@ -866,6 +1096,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: None,
         };
         let t2 = Task {
@@ -877,6 +1108,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
+            workspace_inputs: None,
             description: None,
         };
 

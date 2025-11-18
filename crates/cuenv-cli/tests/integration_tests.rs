@@ -190,7 +190,7 @@ fn test_missing_subcommand() {
 
 #[test]
 fn test_combined_flags() {
-    let result = run_cuenv_command(&["--level", "info", "--json", "--format", "json", "version"]);
+    let result = run_cuenv_command(&["--level", "info", "--json", "version", "--output-format", "json"]);
 
     match result {
         Ok((stdout, _stderr, success)) => {

@@ -7,13 +7,16 @@ pub mod task;
 pub mod version;
 
 use crate::events::{Event, EventSender};
+use crate::cli::StatusFormat;
 use cuenv_core::Result;
 use tokio::time::{Duration, sleep};
 use tracing::{Level, event};
 
 #[derive(Debug, Clone)]
 pub enum Command {
-    Version,
+    Version {
+        format: String,
+    },
     EnvPrint {
         path: String,
         package: String,
@@ -28,6 +31,7 @@ pub enum Command {
         package: String,
         wait: bool,
         timeout: u64,
+        format: StatusFormat,
     },
     EnvCheck {
         path: String,
@@ -54,6 +58,12 @@ pub enum Command {
         path: String,
         package: String,
         note: Option<String>,
+        yes: bool,
+    },
+    Deny {
+        path: String,
+        package: String,
+        all: bool,
     },
     Export {
         shell: Option<String>,
@@ -74,7 +84,7 @@ impl CommandExecutor {
 
     pub async fn execute(&self, command: Command) -> Result<()> {
         match command {
-            Command::Version => self.execute_version().await,
+            Command::Version { format } => self.execute_version(format).await,
             Command::EnvPrint {
                 path,
                 package,
@@ -102,7 +112,8 @@ impl CommandExecutor {
                 package,
                 wait,
                 timeout,
-            } => self.execute_env_status(path, package, wait, timeout).await,
+                format,
+            } => self.execute_env_status(path, package, wait, timeout, format).await,
             Command::EnvCheck {
                 path,
                 package,
@@ -116,12 +127,14 @@ impl CommandExecutor {
                 path,
                 package,
                 note,
-            } => self.execute_allow(path, package, note).await,
+                yes,
+            } => self.execute_allow(path, package, note, yes).await,
+            Command::Deny { path, package, all } => self.execute_deny(path, package, all).await,
             Command::Export { shell, package } => self.execute_export(shell, package).await,
         }
     }
 
-    async fn execute_version(&self) -> Result<()> {
+    async fn execute_version(&self, _format: String) -> Result<()> {
         let command_name = "version";
 
         // Send command start event
@@ -314,6 +327,7 @@ impl CommandExecutor {
         package: String,
         wait: bool,
         timeout: u64,
+        format: StatusFormat,
     ) -> Result<()> {
         let command_name = "env status";
 
@@ -321,7 +335,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_env_status(&path, &package, wait, timeout).await {
+        match hooks::execute_env_status(&path, &package, wait, timeout, format).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -393,6 +407,7 @@ impl CommandExecutor {
         path: String,
         package: String,
         note: Option<String>,
+        yes: bool,
     ) -> Result<()> {
         let command_name = "allow";
 
@@ -400,7 +415,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_allow(&path, &package, note).await {
+        match hooks::execute_allow(&path, &package, note, yes).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -420,6 +435,34 @@ impl CommandExecutor {
         }
     }
 
+    async fn execute_deny(&self, path: String, package: String, all: bool) -> Result<()> {
+        let command_name = "deny";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_deny(&path, &package, all).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+/// Execute export command safely
     async fn execute_export(&self, shell: Option<String>, package: String) -> Result<()> {
         let command_name = "export";
 
@@ -490,7 +533,13 @@ mod tests {
     async fn test_execute_version_command() {
         let (executor, mut receiver) = create_test_executor();
 
-        let handle = tokio::spawn(async move { executor.execute(Command::Version).await });
+        let handle = tokio::spawn(async move {
+            executor
+                .execute(Command::Version {
+                    format: "simple".to_string(),
+                })
+                .await
+        });
 
         // Collect events
         let mut events = Vec::new();
@@ -525,7 +574,13 @@ mod tests {
     async fn test_execute_version_progress_events() {
         let (executor, mut receiver) = create_test_executor();
 
-        let handle = tokio::spawn(async move { executor.execute(Command::Version).await });
+        let handle = tokio::spawn(async move {
+            executor
+                .execute(Command::Version {
+                    format: "simple".to_string(),
+                })
+                .await
+        });
 
         // Collect progress events
         let mut progress_events = Vec::new();
@@ -614,8 +669,10 @@ mod tests {
     #[tokio::test]
     async fn test_command_enum_variants() {
         // Test Command enum creation
-        let version_cmd = Command::Version;
-        assert!(matches!(version_cmd, Command::Version));
+        let version_cmd = Command::Version {
+            format: "simple".to_string(),
+        };
+        assert!(matches!(version_cmd, Command::Version { .. }));
 
         let env_cmd = Command::EnvPrint {
             path: "/test/path".to_string(),
@@ -672,7 +729,11 @@ mod tests {
     async fn test_execute_version_command_flow() {
         let (executor, mut receiver) = create_test_executor();
 
-        let handle = tokio::spawn(async move { executor.execute_version().await });
+        let handle = tokio::spawn(async move {
+            executor
+                .execute_version("simple".to_string())
+                .await
+        });
 
         // Verify the complete flow
         let mut has_start = false;
@@ -706,7 +767,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_debug_trait() {
-        let cmd = Command::Version;
+        let cmd = Command::Version {
+            format: "simple".to_string(),
+        };
         let debug_str = format!("{cmd:?}");
         assert!(debug_str.contains("Version"));
 
@@ -724,9 +787,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_clone_trait() {
-        let original = Command::Version;
+        let original = Command::Version {
+            format: "simple".to_string(),
+        };
         let cloned = original.clone();
-        assert!(matches!(cloned, Command::Version));
+        assert!(matches!(cloned, Command::Version { .. }));
 
         let original = Command::EnvPrint {
             path: "/test".to_string(),
