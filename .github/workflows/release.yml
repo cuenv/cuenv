@@ -208,3 +208,57 @@ jobs:
           done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    runs-on: ubuntu-latest
+    needs: upload-release-assets
+    if: needs.check-release.outputs.release_created == 'true'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Update Homebrew Formula
+        # Required secret: HOMEBREW_TAP_TOKEN
+        # This secret must be configured in the repository settings.
+        # Permissions: Must be a GitHub token with write access to the cuenv/homebrew-cuenv repository.
+        # Purpose: Used to authenticate and push updates to the Homebrew tap formula.
+        env:
+          TAG_NAME: ${{ needs.check-release.outputs.tag_name }}
+          TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          # Configure git
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Calculate SHA256 of the source tarball
+          URL="https://github.com/cuenv/cuenv/archive/refs/tags/${TAG_NAME}.tar.gz"
+          echo "Downloading source from $URL..."
+          curl -L -o source.tar.gz "$URL"
+          SHA256=$(sha256sum source.tar.gz | awk '{print $1}')
+          rm source.tar.gz
+          echo "Calculated SHA256: $SHA256"
+
+          # Clone the tap repository
+          echo "Cloning homebrew-cuenv..."
+          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/cuenv/homebrew-cuenv.git" tap
+
+          # Update the formula
+          mkdir -p tap/Formula
+          
+          # Replace URL and SHA256 in the formula
+          sed -e "s|url \".*\"|url \"$URL\"|" \
+              -e "s|sha256 \".*\"|sha256 \"$SHA256\"|" \
+              Formula/cuenv.rb > tap/Formula/cuenv.rb
+          
+          echo "Updated formula content:"
+          head -n 10 tap/Formula/cuenv.rb
+
+          # Commit and push
+          cd tap
+          if [[ -n $(git status -s) ]]; then
+            git add Formula/cuenv.rb
+            git commit -m "bump: cuenv ${TAG_NAME}"
+            git push origin main || { echo 'Failed to push to homebrew-cuenv'; exit 1; }
+            echo "Successfully pushed to homebrew-cuenv"
+          else
+             echo "No changes to formula detected"
+          fi

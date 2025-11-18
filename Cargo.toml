@@ -4,6 +4,7 @@ members = [
     "crates/cuenv-core",
     "crates/cuengine",
     "crates/cuenv-cli",
+    "crates/cuenv-workspaces",
     "crates/schema-validator",
 ]
 
@@ -39,6 +40,11 @@ petgraph = "0.8.3"
 # New dependencies for hook execution system
 dirs = "5.0"
 sha2 = "0.10"
+
+# Workspace detection and parsing dependencies
+toml = "0.8"
+serde_yaml = "0.9"
+glob = "0.3"
 
 # Testing dependencies
 proptest = "1.0"
