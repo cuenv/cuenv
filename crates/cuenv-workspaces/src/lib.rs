@@ -183,6 +183,7 @@
 
 pub mod core;
 pub mod error;
+pub mod materializer;
 pub mod resolver;
 
 #[cfg(feature = "detection")]
