@@ -1,0 +1,10 @@
+{
+  "name": "tool-a",
+  "version": "1.0.0",
+  "dependencies": {
+    "tool-b": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  }
+}

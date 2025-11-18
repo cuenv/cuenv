@@ -1,0 +1,11 @@
+[package]
+name = "lib-a"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lib-b = { path = "../lib-b" }
+serde = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
