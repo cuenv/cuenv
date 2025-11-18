@@ -128,7 +128,7 @@ async fn initialize_cli_and_tracing() -> Result<crate::cli::Cli, CliError> {
 #[instrument(name = "cuenv_execute_command_safe")]
 async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), CliError> {
     match command {
-        Command::Version => match execute_version_command_safe().await {
+        Command::Version { format } => match execute_version_command_safe(format).await {
             Ok(()) => Ok(()),
             Err(e) => Err(CliError::other(format!("Version command failed: {e}"))),
         },
@@ -169,7 +169,8 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             package,
             wait,
             timeout,
-        } => match execute_env_status_command_safe(path, package, wait, timeout, json_mode).await {
+            format,
+        } => match execute_env_status_command_safe(path, package, wait, timeout, format, json_mode).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -186,10 +187,17 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             path,
             package,
             note,
-        } => match execute_allow_command_safe(path, package, note, json_mode).await {
+            yes,
+        } => match execute_allow_command_safe(path, package, note, yes, json_mode).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
+        Command::Deny { path, package, all } => {
+            match execute_deny_command_safe(path, package, all, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
         Command::Export { shell, package } => {
             match execute_export_command_safe(shell, package).await {
                 Ok(()) => Ok(()),
@@ -201,7 +209,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
 
 /// Execute version command safely
 #[instrument(name = "cuenv_execute_version_safe")]
-async fn execute_version_command_safe() -> Result<(), String> {
+async fn execute_version_command_safe(_format: String) -> Result<(), String> {
     let mut perf_guard = performance::PerformanceGuard::new("version_command");
     perf_guard.add_metadata("command_type", "version");
 
@@ -253,9 +261,10 @@ async fn execute_env_status_command_safe(
     package: String,
     wait: bool,
     timeout: u64,
+    format: crate::cli::StatusFormat,
     json_mode: bool,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_env_status(&path, &package, wait, timeout).await {
+    match commands::hooks::execute_env_status(&path, &package, wait, timeout, format).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -340,9 +349,10 @@ async fn execute_allow_command_safe(
     path: String,
     package: String,
     note: Option<String>,
+    yes: bool,
     json_mode: bool,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_allow(&path, &package, note).await {
+    match commands::hooks::execute_allow(&path, &package, note, yes).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -362,6 +372,38 @@ async fn execute_allow_command_safe(
         Err(e) => Err(CliError::eval_with_help(
             format!("Allow failed: {e}"),
             "Check that your env.cue file is valid and the directory exists",
+        )),
+    }
+}
+
+/// Execute deny command safely
+#[instrument(name = "cuenv_execute_deny_safe")]
+async fn execute_deny_command_safe(
+    path: String,
+    package: String,
+    all: bool,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::hooks::execute_deny(&path, &package, all).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "message": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Deny failed: {e}"),
+            "Check that the directory path is correct",
         )),
     }
 }
@@ -693,11 +735,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_conversion() {
-        use crate::cli::Commands;
+        use crate::cli::{Commands, OutputFormat};
 
         // Test Version command conversion
-        let cli_command = Commands::Version;
+        let cli_command = Commands::Version {
+            output_format: OutputFormat::Simple,
+        };
         let command: Command = cli_command.into();
-        assert!(matches!(command, Command::Version));
+        match command {
+            Command::Version { format } => assert_eq!(format, "simple"),
+            _ => panic!("Expected Command::Version"),
+        }
     }
 }

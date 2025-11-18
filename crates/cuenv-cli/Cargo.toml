@@ -39,3 +39,6 @@ tempfile = { workspace = true }
 cucumber = { workspace = true }
 tokio-test = { workspace = true }
 sha2 = { workspace = true }
+assert_cmd = "2.1.1"
+predicates = "3.1.3"
+which = "8.0.0"

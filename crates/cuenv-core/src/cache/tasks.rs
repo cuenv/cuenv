@@ -255,6 +255,12 @@ pub struct CacheKeyEnvelope {
     pub env: BTreeMap<String, String>,
     pub cuenv_version: String,
     pub platform: String,
+    /// Hash of the workspace lockfile (if relevant)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_lockfile_hash: Option<String>,
+    /// Hashes of workspace member packages (if relevant)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_package_hashes: Option<BTreeMap<String, String>>,
 }
 
 pub fn compute_cache_key(envelope: &CacheKeyEnvelope) -> Result<(String, serde_json::Value)> {
@@ -321,6 +327,8 @@ mod tests {
             env: env_a.clone(),
             cuenv_version: "0.1.1".into(),
             platform: "linux-x86_64".into(),
+            workspace_lockfile_hash: None,
+            workspace_package_hashes: None,
         };
         let (k1, _) = compute_cache_key(&e1).unwrap();
 
@@ -339,6 +347,8 @@ mod tests {
             env: env_b,
             cuenv_version: "0.1.1".into(),
             platform: "linux-x86_64".into(),
+            workspace_lockfile_hash: None,
+            workspace_package_hashes: None,
         };
         let (k2, _) = compute_cache_key(&e2).unwrap();
 

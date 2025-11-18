@@ -37,6 +37,7 @@ walkdir = "2.5"
 tar = "0.4"
 zstd = { version = "0.13", features = ["zstdmt"] }
 hex = "0.4"
+cuenv-workspaces = { version = "0.2.0", path = "../cuenv-workspaces", features = ["discovery-rust", "parsers-rust"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

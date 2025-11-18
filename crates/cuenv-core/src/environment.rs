@@ -150,6 +150,22 @@ impl EnvValue {
             },
         }
     }
+
+    /// Resolve the environment variable value, executing secrets if necessary
+    pub async fn resolve(&self) -> crate::Result<String> {
+        match self {
+            EnvValue::String(s) => Ok(s.clone()),
+            EnvValue::Int(i) => Ok(i.to_string()),
+            EnvValue::Bool(b) => Ok(b.to_string()),
+            EnvValue::Secret(s) => s.resolve().await,
+            EnvValue::WithPolicies(var) => match &var.value {
+                EnvValueSimple::String(s) => Ok(s.clone()),
+                EnvValueSimple::Int(i) => Ok(i.to_string()),
+                EnvValueSimple::Bool(b) => Ok(b.to_string()),
+                EnvValueSimple::Secret(s) => s.resolve().await,
+            },
+        }
+    }
 }
 
 /// Runtime environment variables for task execution
@@ -242,6 +258,20 @@ impl Environment {
             .collect()
     }
 
+    /// Build and resolve environment for a task, filtering based on policies
+    pub async fn resolve_for_task(
+        task_name: &str,
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> crate::Result<HashMap<String, String>> {
+        let mut resolved = HashMap::new();
+        for (key, value) in env_vars {
+            if value.is_accessible_by_task(task_name) {
+                resolved.insert(key.clone(), value.resolve().await?);
+            }
+        }
+        Ok(resolved)
+    }
+
     /// Build environment for exec command, filtering based on policies
     pub fn build_for_exec(
         command: &str,
@@ -252,6 +282,20 @@ impl Environment {
             .filter(|(_, value)| value.is_accessible_by_exec(command))
             .map(|(key, value)| (key.clone(), value.to_string_value()))
             .collect()
+    }
+
+    /// Build and resolve environment for exec command, filtering based on policies
+    pub async fn resolve_for_exec(
+        command: &str,
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> crate::Result<HashMap<String, String>> {
+        let mut resolved = HashMap::new();
+        for (key, value) in env_vars {
+            if value.is_accessible_by_exec(command) {
+                resolved.insert(key.clone(), value.resolve().await?);
+            }
+        }
+        Ok(resolved)
     }
 }
 

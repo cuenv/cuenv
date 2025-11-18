@@ -347,12 +347,19 @@ pub struct HookExecutionState {
     pub completed_hooks: usize,
     /// Index of currently executing hook (if any)
     pub current_hook_index: Option<usize>,
+    /// The list of hooks being executed (for display purposes)
+    #[serde(default)]
+    pub hooks: Vec<crate::hooks::types::Hook>,
     /// Results of completed hooks
     pub hook_results: HashMap<usize, HookResult>,
     /// Timestamp when execution started
     pub started_at: DateTime<Utc>,
     /// Timestamp when execution finished (if completed)
     pub finished_at: Option<DateTime<Utc>>,
+    /// Timestamp when the current hook started (if running)
+    pub current_hook_started_at: Option<DateTime<Utc>>,
+    /// Timestamp until which completed state should be displayed
+    pub completed_display_until: Option<DateTime<Utc>>,
     /// Error message if execution failed
     pub error_message: Option<String>,
     /// Environment variables captured from source hooks
@@ -367,8 +374,9 @@ impl HookExecutionState {
         directory_path: PathBuf,
         instance_hash: String,
         config_hash: String,
-        total_hooks: usize,
+        hooks: Vec<crate::hooks::types::Hook>,
     ) -> Self {
+        let total_hooks = hooks.len();
         Self {
             instance_hash,
             directory_path,
@@ -377,9 +385,12 @@ impl HookExecutionState {
             total_hooks,
             completed_hooks: 0,
             current_hook_index: None,
+            hooks,
             hook_results: HashMap::new(),
             started_at: Utc::now(),
             finished_at: None,
+            current_hook_started_at: None,
+            completed_display_until: None,
             error_message: None,
             environment_vars: HashMap::new(),
             previous_env: None,
@@ -389,6 +400,7 @@ impl HookExecutionState {
     /// Mark a hook as currently executing
     pub fn mark_hook_running(&mut self, hook_index: usize) {
         self.current_hook_index = Some(hook_index);
+        self.current_hook_started_at = Some(Utc::now());
         info!(
             "Started executing hook {} of {}",
             hook_index + 1,
@@ -401,6 +413,7 @@ impl HookExecutionState {
         self.hook_results.insert(hook_index, result.clone());
         self.completed_hooks += 1;
         self.current_hook_index = None;
+        self.current_hook_started_at = None;
 
         if result.success {
             info!(
@@ -418,13 +431,18 @@ impl HookExecutionState {
             self.status = ExecutionStatus::Failed;
             self.error_message = result.error.clone();
             self.finished_at = Some(Utc::now());
+            // Keep failed state visible for 2 seconds (enough for at least one starship poll)
+            self.completed_display_until = Some(Utc::now() + chrono::Duration::seconds(2));
             return;
         }
 
         // Check if all hooks are complete
         if self.completed_hooks == self.total_hooks {
             self.status = ExecutionStatus::Completed;
-            self.finished_at = Some(Utc::now());
+            let now = Utc::now();
+            self.finished_at = Some(now);
+            // Keep completed state visible for 2 seconds (enough for at least one starship poll)
+            self.completed_display_until = Some(now + chrono::Duration::seconds(2));
             info!("All {} hooks completed successfully", self.total_hooks);
         }
     }
@@ -486,6 +504,77 @@ impl HookExecutionState {
         let end = self.finished_at.unwrap_or_else(Utc::now);
         end - self.started_at
     }
+
+    /// Get current hook duration (if a hook is currently running)
+    pub fn current_hook_duration(&self) -> Option<chrono::Duration> {
+        self.current_hook_started_at
+            .map(|started| Utc::now() - started)
+    }
+
+    /// Get the currently executing hook
+    pub fn current_hook(&self) -> Option<&crate::hooks::types::Hook> {
+        self.current_hook_index
+            .and_then(|idx| self.hooks.get(idx))
+    }
+
+    /// Format duration in human-readable format (e.g., "2.3s", "1m 15s", "2h 5m")
+    pub fn format_duration(duration: chrono::Duration) -> String {
+        let total_secs = duration.num_seconds();
+
+        if total_secs < 60 {
+            // Less than 1 minute: show as decimal seconds
+            let millis = duration.num_milliseconds();
+            format!("{:.1}s", millis as f64 / 1000.0)
+        } else if total_secs < 3600 {
+            // Less than 1 hour: show minutes and seconds
+            let mins = total_secs / 60;
+            let secs = total_secs % 60;
+            if secs == 0 {
+                format!("{}m", mins)
+            } else {
+                format!("{}m {}s", mins, secs)
+            }
+        } else {
+            // 1 hour or more: show hours and minutes
+            let hours = total_secs / 3600;
+            let mins = (total_secs % 3600) / 60;
+            if mins == 0 {
+                format!("{}h", hours)
+            } else {
+                format!("{}h {}m", hours, mins)
+            }
+        }
+    }
+
+    /// Get a short description of the current or next hook for display
+    pub fn current_hook_display(&self) -> Option<String> {
+        // If there's a current hook index, use that
+        let hook = if let Some(hook) = self.current_hook() {
+            Some(hook)
+        } else if self.status == ExecutionStatus::Running && self.completed_hooks < self.total_hooks {
+            // If we're running but no current hook index yet, show the next hook to execute
+            self.hooks.get(self.completed_hooks)
+        } else {
+            None
+        };
+
+        hook.map(|h| {
+            // Extract just the command name (first part before any path separators)
+            let cmd_name = h.command.split('/').last().unwrap_or(&h.command);
+
+            // Format: just the command name (no args, to keep it concise)
+            format!("`{}`", cmd_name)
+        })
+    }
+
+    /// Check if the completed state should still be displayed
+    pub fn should_display_completed(&self) -> bool {
+        if let Some(display_until) = self.completed_display_until {
+            Utc::now() < display_until
+        } else {
+            false
+        }
+    }
 }
 
 /// Compute a hash for a unique execution instance (directory + config)
@@ -538,8 +627,25 @@ mod tests {
         let config_hash = "test_config_hash".to_string();
         let instance_hash = compute_instance_hash(&directory_path, &config_hash);
 
+        let hooks = vec![
+            Hook {
+                command: "echo".to_string(),
+                args: vec!["test1".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+            Hook {
+                command: "echo".to_string(),
+                args: vec!["test2".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+        ];
+
         let mut state =
-            HookExecutionState::new(directory_path, instance_hash.clone(), config_hash, 2);
+            HookExecutionState::new(directory_path, instance_hash.clone(), config_hash, hooks);
 
         // Save initial state
         state_manager.save_state(&state).await.unwrap();
@@ -594,7 +700,30 @@ mod tests {
         let directory_path = PathBuf::from("/test/dir");
         let instance_hash = "test_hash".to_string();
         let config_hash = "config_hash".to_string();
-        let mut state = HookExecutionState::new(directory_path, instance_hash, config_hash, 3);
+        let hooks = vec![
+            Hook {
+                command: "echo".to_string(),
+                args: vec!["test1".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+            Hook {
+                command: "echo".to_string(),
+                args: vec!["test2".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+            Hook {
+                command: "echo".to_string(),
+                args: vec!["test3".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+        ];
+        let mut state = HookExecutionState::new(directory_path, instance_hash, config_hash, hooks);
 
         // Initial state
         assert_eq!(state.status, ExecutionStatus::Running);
@@ -650,7 +779,13 @@ mod tests {
             PathBuf::from("/test"),
             "hash".to_string(),
             "config".to_string(),
-            1,
+            vec![Hook {
+                command: "echo".to_string(),
+                args: vec![],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            }],
         );
         cancelled_state.mark_cancelled(Some("User cancelled".to_string()));
         assert_eq!(cancelled_state.status, ExecutionStatus::Cancelled);
@@ -662,7 +797,23 @@ mod tests {
         let directory_path = PathBuf::from("/test/dir");
         let instance_hash = "test_hash".to_string();
         let config_hash = "config_hash".to_string();
-        let mut state = HookExecutionState::new(directory_path, instance_hash, config_hash, 2);
+        let hooks = vec![
+            Hook {
+                command: "echo".to_string(),
+                args: vec!["test1".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+            Hook {
+                command: "echo".to_string(),
+                args: vec!["test2".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+        ];
+        let mut state = HookExecutionState::new(directory_path, instance_hash, config_hash, hooks);
 
         // Running state
         let display = state.progress_display();
@@ -700,10 +851,13 @@ mod tests {
             total_hooks: 1,
             completed_hooks: 1,
             current_hook_index: None,
+            hooks: vec![],
             hook_results: HashMap::new(),
             environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::hours(1),
             finished_at: Some(Utc::now() - chrono::Duration::minutes(30)),
+            current_hook_started_at: None,
+            completed_display_until: None,
             error_message: None,
             previous_env: None,
         };
@@ -716,10 +870,13 @@ mod tests {
             total_hooks: 2,
             completed_hooks: 1,
             current_hook_index: Some(1),
+            hooks: vec![],
             hook_results: HashMap::new(),
             environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::minutes(5),
             finished_at: None,
+            current_hook_started_at: None,
+            completed_display_until: None,
             error_message: None,
             previous_env: None,
         };
@@ -732,10 +889,13 @@ mod tests {
             total_hooks: 1,
             completed_hooks: 0,
             current_hook_index: None,
+            hooks: vec![],
             hook_results: HashMap::new(),
             environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::hours(2),
             finished_at: Some(Utc::now() - chrono::Duration::hours(1)),
+            current_hook_started_at: None,
+            completed_display_until: None,
             error_message: Some("Test failure".to_string()),
             previous_env: None,
         };
@@ -773,10 +933,13 @@ mod tests {
             total_hooks: 1,
             completed_hooks: 0,
             current_hook_index: Some(0),
+            hooks: vec![],
             hook_results: HashMap::new(),
             environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::hours(3),
             finished_at: None,
+            current_hook_started_at: None,
+            completed_display_until: None,
             error_message: None,
             previous_env: None,
         };
@@ -790,10 +953,13 @@ mod tests {
             total_hooks: 1,
             completed_hooks: 0,
             current_hook_index: Some(0),
+            hooks: vec![],
             hook_results: HashMap::new(),
             environment_vars: HashMap::new(),
             started_at: Utc::now() - chrono::Duration::minutes(5),
             finished_at: None,
+            current_hook_started_at: None,
+            completed_display_until: None,
             error_message: None,
             previous_env: None,
         };
@@ -858,10 +1024,13 @@ mod tests {
             total_hooks: 10,
             completed_hooks: 0,
             current_hook_index: Some(0),
+            hooks: vec![],
             hook_results: HashMap::new(),
             environment_vars: HashMap::new(),
             started_at: Utc::now(),
             finished_at: None,
+            current_hook_started_at: None,
+            completed_display_until: None,
             error_message: None,
             previous_env: None,
         };
@@ -928,10 +1097,13 @@ mod tests {
             total_hooks: 1,
             completed_hooks: 1,
             current_hook_index: None,
+            hooks: vec![],
             hook_results: HashMap::new(),
             environment_vars: HashMap::new(),
             started_at: Utc::now(),
             finished_at: Some(Utc::now()),
+            current_hook_started_at: None,
+            completed_display_until: None,
             error_message: Some("Error: 错误信息 with émojis 🔥💥".to_string()),
             previous_env: None,
         };
@@ -998,6 +1170,7 @@ mod tests {
                 total_hooks: 1,
                 completed_hooks: if i % 3 == 0 { 1 } else { 0 },
                 current_hook_index: if i % 3 == 1 { Some(0) } else { None },
+                hooks: vec![],
                 hook_results: HashMap::new(),
                 environment_vars: HashMap::new(),
                 started_at: Utc::now() - chrono::Duration::hours(i as i64),
@@ -1006,6 +1179,8 @@ mod tests {
                 } else {
                     None
                 },
+                current_hook_started_at: None,
+                completed_display_until: None,
                 error_message: if i % 3 == 2 {
                     Some(format!("Error {}", i))
                 } else {
