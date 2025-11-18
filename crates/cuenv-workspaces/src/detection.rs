@@ -163,7 +163,10 @@ pub fn detect_from_command(command: &str) -> Option<PackageManager> {
         "bun" => Some(PackageManager::Bun),
         "bunx" => Some(PackageManager::Bun),
         "pnpm" => Some(PackageManager::Pnpm),
-        "yarn" => Some(PackageManager::YarnClassic), // Default to Classic, needs context to determine version
+        "yarn" => {
+            tracing::warn!("'yarn' command detected; defaulting to YarnClassic. For accurate version detection, use lockfile analysis via detect_yarn_version().");
+            Some(PackageManager::YarnClassic)
+        },
         "node" => Some(PackageManager::Npm),         // Node.js typically implies npm
         _ => None,
     }

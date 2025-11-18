@@ -31,9 +31,21 @@ impl Materializer for CargoMaterializer {
 
         if workspace_target.exists() {
             if env_target.exists() {
-                 // If it exists (e.g. from previous run or created by inputs), remove it?
-                 // Or assumes it's empty.
-                 // fs::remove_dir_all(&env_target)?; 
+                // If it exists (e.g. from previous run or created by inputs), remove it
+                // to allow symlinking the shared target directory.
+                if env_target.is_symlink() || env_target.is_file() {
+                    std::fs::remove_file(&env_target).map_err(|e| Error::Io {
+                        source: e,
+                        path: Some(env_target.clone()),
+                        operation: "removing existing target symlink/file".to_string(),
+                    })?;
+                } else {
+                    std::fs::remove_dir_all(&env_target).map_err(|e| Error::Io {
+                        source: e,
+                        path: Some(env_target.clone()),
+                        operation: "removing existing target directory".to_string(),
+                    })?;
+                }
             }
             
             // We assume target_dir is the root of the hermetic environment.

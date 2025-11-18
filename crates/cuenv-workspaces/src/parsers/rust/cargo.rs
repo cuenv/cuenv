@@ -174,9 +174,12 @@ fn load_workspace_members(cargo_toml_path: &Path) -> Result<WorkspaceMembers> {
     }
 
     if members.is_empty() {
+        // Accept single-package repositories as valid workspaces (already handled above).
+        // This error only occurs if no members were found at all, which implies an invalid
+        // or empty workspace definition that doesn't match any members.
         return Err(Error::LockfileParseFailed {
             path: cargo_toml_path.to_path_buf(),
-            message: "No workspace members declared in Cargo.toml".to_string(),
+            message: "No workspace members or package declared in Cargo.toml".to_string(),
         });
     }
 

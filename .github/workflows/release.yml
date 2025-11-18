@@ -217,6 +217,10 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Update Homebrew Formula
+        # Required secret: HOMEBREW_TAP_TOKEN
+        # This secret must be configured in the repository settings.
+        # Permissions: Must be a GitHub token with write access to the cuenv/homebrew-cuenv repository.
+        # Purpose: Used to authenticate and push updates to the Homebrew tap formula.
         env:
           TAG_NAME: ${{ needs.check-release.outputs.tag_name }}
           TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -253,7 +257,7 @@ jobs:
           if [[ -n $(git status -s) ]]; then
             git add Formula/cuenv.rb
             git commit -m "bump: cuenv ${TAG_NAME}"
-            git push origin main
+            git push origin main || { echo 'Failed to push to homebrew-cuenv'; exit 1; }
             echo "Successfully pushed to homebrew-cuenv"
           else
              echo "No changes to formula detected"
