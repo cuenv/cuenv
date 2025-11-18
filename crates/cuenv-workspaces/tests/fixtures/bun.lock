@@ -1,0 +1,44 @@
+// Bun lockfile
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "test-workspace",
+      "version": "1.0.0",
+      "dependencies": {
+        "lodash": "^4.17.21"
+      }
+    },
+    "packages/app": {
+      "name": "@test/app",
+      "version": "0.1.0",
+      "dependencies": {
+        "react": "^18.0.0"
+      }
+    }
+  },
+  "packages": {
+    "lodash": [
+      "lodash@npm:4.17.21",
+      "",
+      {},
+      "sha512-lodash123"
+    ],
+    "react": [
+      "react@npm:18.2.0",
+      "",
+      {
+        "dependencies": {
+          "loose-envify": "^1.1.0"
+        }
+      },
+      "sha512-react123"
+    ],
+    "loose-envify": [
+      "loose-envify@npm:1.4.0",
+      "",
+      {},
+      "sha512-envify123"
+    ]
+  }
+}

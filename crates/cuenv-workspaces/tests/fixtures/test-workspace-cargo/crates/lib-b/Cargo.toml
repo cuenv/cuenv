@@ -1,0 +1,8 @@
+[package]
+name = "lib-b"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror = "1.0"
+tracing = "0.1"
