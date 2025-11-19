@@ -205,7 +205,7 @@ fn parse_descriptor(lockfile_path: &Path, descriptor: &str) -> Result<(String, S
         // Scoped package: "@scope/name@protocol:version"
         if let Some(second_at) = rest.find('@') {
             let at_idx = second_at + 1;
-            let name = &descriptor[..=at_idx];
+            let name = &descriptor[..at_idx];
             let rest = &descriptor[at_idx + 1..];
             Ok((name.to_string(), rest.to_string()))
         } else {

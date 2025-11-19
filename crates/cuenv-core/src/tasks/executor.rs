@@ -54,6 +54,8 @@ pub struct ExecutorConfig {
     pub project_root: PathBuf,
     /// Optional: materialize cached outputs on cache hit
     pub materialize_outputs: Option<PathBuf>,
+    /// Optional: cache directory override
+    pub cache_dir: Option<PathBuf>,
     /// Optional: print cache path on hits/misses
     pub show_cache_path: bool,
 }
@@ -67,6 +69,7 @@ impl Default for ExecutorConfig {
             working_dir: None,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             materialize_outputs: None,
+            cache_dir: None,
             show_cache_path: false,
         }
     }
@@ -144,7 +147,7 @@ impl TaskExecutor {
         let span_cache = tracing::info_span!("cache.lookup", task = %name, key = %cache_key);
         let cache_hit = {
             let _g = span_cache.enter();
-            task_cache::lookup(&cache_key)
+            task_cache::lookup(&cache_key, self.config.cache_dir.as_deref())
         };
 
         if let Some(hit) = cache_hit {
@@ -160,7 +163,7 @@ impl TaskExecutor {
                 tracing::info!(cache_path = %hit.path.display(), "Cache path");
             }
             if let Some(dest) = &self.config.materialize_outputs {
-                let count = task_cache::materialize_outputs(&cache_key, dest)?;
+                let count = task_cache::materialize_outputs(&cache_key, dest, self.config.cache_dir.as_deref())?;
                 tracing::info!(materialized = count, dest = %dest.display(), "Materialized cached outputs");
             }
             // On cache hit, surface cached logs so behavior matches a fresh
@@ -413,7 +416,14 @@ impl TaskExecutor {
             let cache_span = tracing::info_span!("cache.save", key = %cache_key);
             {
                 let _g = cache_span.enter();
-                task_cache::save_result(&cache_key, &meta, &outputs_stage, &hermetic_root, logs)?;
+                task_cache::save_result(
+                    &cache_key,
+                    &meta,
+                    &outputs_stage,
+                    &hermetic_root,
+                    logs,
+                    self.config.cache_dir.as_deref(),
+                )?;
             }
 
             // Materialize outputs back to project root

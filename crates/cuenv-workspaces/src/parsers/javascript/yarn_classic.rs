@@ -261,7 +261,7 @@ fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Vec<Lockf
             let name = if let Some(rest) = first_descriptor.strip_prefix('@') {
                 // Scoped package: @scope/name@version
                 if let Some(second_at) = rest.find('@') {
-                    rest[..=second_at].to_string()
+                    format!("@{}", &rest[..second_at])
                 } else {
                     first_descriptor.to_string()
                 }

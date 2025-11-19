@@ -18,7 +18,10 @@
     },
     "dir": {
       "description": "Working directory for command execution (defaults to \".\")",
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "default": null
     },
     "inputs": {
@@ -31,8 +34,13 @@
     },
     "source": {
       "description": "Whether to source the command output as shell script to capture environment changes",
-      "type": ["boolean", "null"]
+      "type": [
+        "boolean",
+        "null"
+      ]
     }
   },
-  "required": ["command"]
+  "required": [
+    "command"
+  ]
 }

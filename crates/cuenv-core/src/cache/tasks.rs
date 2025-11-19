@@ -120,12 +120,17 @@ fn cache_root() -> Result<PathBuf> {
     cache_root_from_inputs(inputs)
 }
 
-pub fn key_to_path(key: &str) -> Result<PathBuf> {
-    Ok(cache_root()?.join(key))
+pub fn key_to_path(key: &str, root: Option<&Path>) -> Result<PathBuf> {
+    let base = if let Some(r) = root {
+        r.to_path_buf()
+    } else {
+        cache_root()?
+    };
+    Ok(base.join(key))
 }
 
-pub fn lookup(key: &str) -> Option<CacheEntry> {
-    let path = match key_to_path(key) {
+pub fn lookup(key: &str, root: Option<&Path>) -> Option<CacheEntry> {
+    let path = match key_to_path(key, root) {
         Ok(p) => p,
         Err(_) => return None,
     };
@@ -150,8 +155,9 @@ pub fn save_result(
     outputs_root: &Path,
     hermetic_root: &Path,
     logs: TaskLogs,
+    root: Option<&Path>,
 ) -> Result<()> {
-    let path = key_to_path(key)?;
+    let path = key_to_path(key, root)?;
     fs::create_dir_all(&path).map_err(|e| Error::Io {
         source: e,
         path: Some(path.clone().into()),
@@ -215,9 +221,9 @@ pub fn save_result(
     Ok(())
 }
 
-pub fn materialize_outputs(key: &str, destination: &Path) -> Result<usize> {
+pub fn materialize_outputs(key: &str, destination: &Path, root: Option<&Path>) -> Result<usize> {
     let entry =
-        lookup(key).ok_or_else(|| Error::configuration(format!("Cache key not found: {key}")))?;
+        lookup(key, root).ok_or_else(|| Error::configuration(format!("Cache key not found: {key}")))?;
     let out_dir = entry.path.join("outputs");
     if !out_dir.exists() {
         return Ok(0);
@@ -391,7 +397,6 @@ mod tests {
     fn save_and_materialize_outputs_roundtrip() {
         // Force cache root into a temp directory to avoid touching user dirs
         let cache_tmp = TempDir::new().expect("tempdir");
-        let _guard = EnvVarGuard::set("CUENV_CACHE_DIR", cache_tmp.path().to_string_lossy());
 
         // Prepare fake outputs
         let outputs = TempDir::new().expect("outputs tempdir");
@@ -452,10 +457,11 @@ mod tests {
         };
 
         let key = "roundtrip-key-123";
-        save_result(key, &meta, outputs.path(), herm.path(), logs).expect("save_result");
+        save_result(key, &meta, outputs.path(), herm.path(), logs, Some(cache_tmp.path()))
+            .expect("save_result");
 
         // Verify cache layout
-        let base = key_to_path(key).expect("key_to_path");
+        let base = key_to_path(key, Some(cache_tmp.path())).expect("key_to_path");
         assert!(base.join("metadata.json").exists());
         assert!(base.join("outputs/foo.txt").exists());
         assert!(base.join("outputs/dir/bar.bin").exists());
@@ -466,7 +472,8 @@ mod tests {
 
         // Materialize into fresh destination
         let dest = TempDir::new().expect("dest tempdir");
-        let copied = materialize_outputs(key, dest.path()).expect("materialize_outputs");
+        let copied = materialize_outputs(key, dest.path(), Some(cache_tmp.path()))
+            .expect("materialize_outputs");
         assert_eq!(copied, 2);
         assert_eq!(std::fs::read(dest.path().join("foo.txt")).unwrap(), b"foo");
         assert_eq!(
