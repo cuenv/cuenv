@@ -50,12 +50,7 @@
     "CacheMode": {
       "description": "Cache mode options",
       "type": "string",
-      "enum": [
-        "off",
-        "read",
-        "read-write",
-        "write"
-      ]
+      "enum": ["off", "read", "read-write", "write"]
     },
     "Config": {
       "description": "Main configuration structure for cuenv",
@@ -63,16 +58,10 @@
       "properties": {
         "auditMode": {
           "description": "Security and debugging",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": ["boolean", "null"]
         },
         "cacheEnabled": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": ["boolean", "null"]
         },
         "cacheMode": {
           "description": "Cache configuration",
@@ -86,20 +75,14 @@
           ]
         },
         "defaultCapabilities": {
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "type": "string"
           }
         },
         "defaultEnvironment": {
           "description": "Default environment settings",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "outputFormat": {
           "description": "Task output format",
@@ -114,10 +97,7 @@
         },
         "traceOutput": {
           "description": "Chrome trace generation",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": ["boolean", "null"]
         }
       }
     },
@@ -127,10 +107,7 @@
       "properties": {
         "environment": {
           "description": "Environment-specific overrides",
-          "type": [
-            "object",
-            "null"
-          ],
+          "type": ["object", "null"],
           "additionalProperties": {
             "type": "object",
             "additionalProperties": {
@@ -188,10 +165,7 @@
       "properties": {
         "policies": {
           "description": "Optional access policies",
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "$ref": "#/$defs/Policy"
           }
@@ -201,9 +175,7 @@
           "$ref": "#/$defs/EnvValueSimple"
         }
       },
-      "required": [
-        "value"
-      ]
+      "required": ["value"]
     },
     "ExternalInput": {
       "description": "Cross-project external input declaration",
@@ -225,11 +197,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "project",
-        "task",
-        "map"
-      ]
+      "required": ["project", "task", "map"]
     },
     "Hook": {
       "description": "A hook represents a command that can be executed when entering or exiting environments\nBased on schema/hooks.cue #ExecHook definition",
@@ -249,10 +217,7 @@
         },
         "dir": {
           "description": "Working directory for command execution (defaults to \".\")",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "default": null
         },
         "inputs": {
@@ -265,15 +230,10 @@
         },
         "source": {
           "description": "Whether to source the command output as shell script to capture environment changes",
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": ["boolean", "null"]
         }
       },
-      "required": [
-        "command"
-      ]
+      "required": ["command"]
     },
     "HookList": {
       "description": "Hook list can be a single hook or an array of hooks",
@@ -330,21 +290,12 @@
           "type": "string"
         }
       },
-      "required": [
-        "from",
-        "to"
-      ]
+      "required": ["from", "to"]
     },
     "OutputFormat": {
       "description": "Task output format options",
       "type": "string",
-      "enum": [
-        "tui",
-        "spinner",
-        "simple",
-        "tree",
-        "json"
-      ]
+      "enum": ["tui", "spinner", "simple", "tree", "json"]
     },
     "Policy": {
       "description": "Policy for controlling environment variable access",
@@ -352,20 +303,14 @@
       "properties": {
         "allowExec": {
           "description": "Allowlist of exec commands that can access this variable",
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "type": "string"
           }
         },
         "allowTasks": {
           "description": "Allowlist of task names that can access this variable",
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "type": "string"
           }
@@ -394,10 +339,7 @@
         }
       },
       "additionalProperties": true,
-      "required": [
-        "resolver",
-        "command"
-      ]
+      "required": ["resolver", "command"]
     },
     "Shell": {
       "description": "Shell configuration for task execution",
@@ -405,17 +347,11 @@
       "properties": {
         "command": {
           "description": "Shell executable name (e.g., \"bash\", \"fish\", \"zsh\")",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "flag": {
           "description": "Flag for command execution (e.g., \"-c\", \"--command\")",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       }
     },
@@ -445,10 +381,7 @@
         },
         "description": {
           "description": "Description of the task",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "default": null
         },
         "env": {
@@ -459,10 +392,7 @@
         },
         "externalInputs": {
           "description": "Cross-project inputs",
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "default": null,
           "items": {
             "$ref": "#/$defs/ExternalInput"
@@ -509,9 +439,7 @@
           "default": null
         }
       },
-      "required": [
-        "command"
-      ]
+      "required": ["command"]
     },
     "TaskDefinition": {
       "description": "A task definition can be either a single task or a group of tasks",
@@ -556,17 +484,11 @@
         },
         "lockfile": {
           "description": "Path to the lockfile",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "packageManager": {
           "description": "Explicit package manager override",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "packages": {
           "description": "Explicit list of packages to include",

@@ -13,14 +13,14 @@ const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 #[test]
 fn test_parse_real_cargo_lock() {
     let parser = CargoLockfileParser;
-    let entries = parse_repo_lockfile(&parser);
+    let entries = parse_repo_lockfile(parser);
     assert!(entries.len() > 100, "expected a sizable lockfile");
 }
 
 #[test]
 fn test_identifies_cuenv_workspace_members() {
     let parser = CargoLockfileParser;
-    let entries = parse_repo_lockfile(&parser);
+    let entries = parse_repo_lockfile(parser);
     let expected = ["cuenv-core", "cuenv-cli", "cuengine", "cuenv-workspaces"];
 
     for name in expected {
@@ -39,7 +39,7 @@ fn test_identifies_cuenv_workspace_members() {
 #[test]
 fn test_external_dependencies_are_registry() {
     let parser = CargoLockfileParser;
-    let entries = parse_repo_lockfile(&parser);
+    let entries = parse_repo_lockfile(parser);
     let expected = ["serde", "tokio"];
 
     for name in expected {
@@ -55,7 +55,7 @@ fn test_external_dependencies_are_registry() {
 #[test]
 fn test_workspace_member_dependencies() {
     let parser = CargoLockfileParser;
-    let entries = parse_repo_lockfile(&parser);
+    let entries = parse_repo_lockfile(parser);
     let cli = entries
         .iter()
         .find(|e| e.name == "cuenv-cli")
@@ -97,7 +97,7 @@ fn test_handles_invalid_cargo_lock() {
     }
 }
 
-fn parse_repo_lockfile(parser: &CargoLockfileParser) -> Vec<LockfileEntry> {
+fn parse_repo_lockfile(parser: CargoLockfileParser) -> Vec<LockfileEntry> {
     let lock_path = Path::new(REPO_ROOT).join("Cargo.lock");
     parser
         .parse(&lock_path)
@@ -109,7 +109,7 @@ fn create_test_workspace(members: &[&str]) -> TempDir {
     let mut manifest = String::from("[workspace]\n");
     manifest.push_str("members = [\n");
     for member in members {
-        manifest.push_str(&format!("    \"{}\",\n", member));
+        manifest.push_str(&format!("    \"{member}\",\n"));
     }
     manifest.push_str("]\n");
     write_cargo_toml(temp.path(), &manifest);
@@ -117,11 +117,11 @@ fn create_test_workspace(members: &[&str]) -> TempDir {
     for member in members {
         let path = temp.path().join(member);
         fs::create_dir_all(&path).unwrap();
-        let name = Path::new(member)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| member.replace('/', "-"));
-        let member_manifest = format!("[package]\nname = \"{}\"\nversion = \"0.1.0\"\n", name);
+        let name = Path::new(member).file_name().map_or_else(
+            || member.replace('/', "-"),
+            |n| n.to_string_lossy().to_string(),
+        );
+        let member_manifest = format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n");
         fs::write(path.join("Cargo.toml"), member_manifest).unwrap();
     }
 

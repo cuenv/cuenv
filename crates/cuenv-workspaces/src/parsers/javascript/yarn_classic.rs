@@ -27,11 +27,12 @@ impl LockfileParser for YarnClassicLockfileParser {
         .ok()
         .and_then(
             |r: std::result::Result<
-                Vec<yarn_lock_parser::Entry<'_>>,
+                yarn_lock_parser::Lockfile<'_>,
                 yarn_lock_parser::YarnLockError,
             >| r.ok(),
         )
-        .map(|parsed_entries| {
+        .map(|lockfile| {
+            let parsed_entries = lockfile.entries;
             let detailed_entries = parse_lockfile_details(&contents);
             let mut result = Vec::new();
 
@@ -41,7 +42,7 @@ impl LockfileParser for YarnClassicLockfileParser {
 
                 let (resolved, integrity, dependencies) = detailed_entries.get(i).map_or_else(
                     || (None, None, Vec::new()),
-                    |(r, i, d)| (r.clone(), i.clone(), d.clone()),
+                    |(r, i, d): &LockfileDetail| (r.clone(), i.clone(), d.clone()),
                 );
 
                 result.push(build_lockfile_entry(
