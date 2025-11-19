@@ -78,6 +78,21 @@ jobs:
       - name: Run final tests
         run: nix develop --accept-flake-config --command cargo nextest run --workspace --release
 
+      - name: Dry run publish cuenv-workspaces
+        run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuenv-workspaces
+
+      # Get trusted publishing token for cuenv-workspaces
+      - name: Authenticate with crates.io (cuenv-workspaces)
+        uses: crates-io/crates-io-auth-action@v1
+        with:
+          crate: cuenv-workspaces
+
+      - name: Publish cuenv-workspaces to crates.io
+        run: nix develop --accept-flake-config --command cargo publish -p cuenv-workspaces
+
+      - name: Wait for crates.io indexing (cuenv-workspaces)
+        run: sleep 300 # Wait 5 minutes for crates.io to index cuenv-workspaces
+
       - name: Dry run publish cuenv-core
         run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuenv-core
 
@@ -105,6 +120,20 @@ jobs:
       - name: Publish cuengine to crates.io
         run: nix develop --accept-flake-config --command cargo publish -p cuengine
 
+      - name: Wait for crates.io indexing (cuenv-core/cuengine)
+        run: sleep 300 # Wait 5 minutes for crates.io to index cuengine
+
+      - name: Dry run publish cuenv-cli
+        run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuenv-cli
+
+      # Get trusted publishing token for cuenv-cli
+      - name: Authenticate with crates.io (cuenv-cli)
+        uses: crates-io/crates-io-auth-action@v1
+        with:
+          crate: cuenv-cli
+
+      - name: Publish cuenv-cli to crates.io
+        run: nix develop --accept-flake-config --command cargo publish -p cuenv-cli
   build-release-artifacts:
     runs-on: ${{ matrix.os }}
     needs: check-release
@@ -243,12 +272,12 @@ jobs:
 
           # Update the formula
           mkdir -p tap/Formula
-          
+
           # Replace URL and SHA256 in the formula
           sed -e "s|url \".*\"|url \"$URL\"|" \
               -e "s|sha256 \".*\"|sha256 \"$SHA256\"|" \
               Formula/cuenv.rb > tap/Formula/cuenv.rb
-          
+
           echo "Updated formula content:"
           head -n 10 tap/Formula/cuenv.rb
 

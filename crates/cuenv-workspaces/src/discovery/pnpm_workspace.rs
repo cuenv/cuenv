@@ -24,10 +24,10 @@ impl WorkspaceDiscovery for PnpmWorkspaceDiscovery {
         let _: PnpmWorkspace = read_yaml_file(&workspace_yaml_path)?;
 
         let members = self.find_members(root)?;
-        
+
         let mut workspace = Workspace::new(root.to_path_buf(), PackageManager::Pnpm);
         workspace.members = members;
-        
+
         let lockfile = root.join("pnpm-lock.yaml");
         if lockfile.exists() {
             workspace.lockfile = Some(lockfile);
@@ -47,7 +47,7 @@ impl WorkspaceDiscovery for PnpmWorkspaceDiscovery {
             if self.validate_member(&path)? {
                 let manifest_path = path.join("package.json");
                 let member_pkg: PackageJson = read_json_file(&manifest_path)?;
-                
+
                 if let Some(name) = member_pkg.name {
                     let mut dependencies = Vec::new();
                     if let Some(deps) = member_pkg.dependencies {
@@ -102,7 +102,7 @@ impl WorkspaceDiscovery for PnpmWorkspaceDiscovery {
                 }
             }
             Err(Error::Json { .. }) => Ok(false), // Invalid JSON: silently skip this member
-            Err(e) => Err(e), // I/O error: propagate
+            Err(e) => Err(e),                     // I/O error: propagate
         }
     }
 }

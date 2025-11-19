@@ -6,10 +6,10 @@ use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::{
     Result,
     hooks::{
+        HookExecutionState,
         approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
         executor::HookExecutor,
-        types::{Hook, ExecutionStatus},
-        HookExecutionState,
+        types::{ExecutionStatus, Hook},
     },
 };
 use serde_json::Value;
@@ -93,7 +93,9 @@ fn format_status(state: &HookExecutionState, format: StatusFormat) -> String {
     match format {
         StatusFormat::Text => state.progress_display(),
         StatusFormat::Short => match state.status {
-            ExecutionStatus::Running => format!("[{}/{}]", state.completed_hooks, state.total_hooks),
+            ExecutionStatus::Running => {
+                format!("[{}/{}]", state.completed_hooks, state.total_hooks)
+            }
             ExecutionStatus::Completed => "[OK]".to_string(),
             ExecutionStatus::Failed => "[ERR]".to_string(),
             ExecutionStatus::Cancelled => "[X]".to_string(),
@@ -112,12 +114,12 @@ fn format_starship_status(state: &HookExecutionState) -> String {
             if let Some(hook_display) = state.current_hook_display() {
                 if let Some(duration) = state.current_hook_duration() {
                     let duration_str = HookExecutionState::format_duration(duration);
-                    format!("cuenv hook {} ({})", hook_display, duration_str)
+                    format!("cuenv hook {hook_display} ({duration_str})")
                 } else {
                     // Just started, no duration yet - use overall execution time
                     let duration = state.duration();
                     let duration_str = HookExecutionState::format_duration(duration);
-                    format!("cuenv hook {} ({})", hook_display, duration_str)
+                    format!("cuenv hook {hook_display} ({duration_str})")
                 }
             } else {
                 // Fallback if no current hook (shouldn't happen in Running state)
@@ -129,7 +131,7 @@ fn format_starship_status(state: &HookExecutionState) -> String {
             if state.should_display_completed() {
                 let duration = state.duration();
                 let duration_str = HookExecutionState::format_duration(duration);
-                format!("✅ {}", duration_str)
+                format!("✅ {duration_str}")
             } else {
                 // State has expired, return empty string to hide from prompt
                 String::new()
@@ -280,7 +282,7 @@ pub async fn execute_env_status(
             match format {
                 StatusFormat::Text => Ok("No hook execution in progress".to_string()),
                 StatusFormat::Short => Ok("-".to_string()),
-                StatusFormat::Starship => Ok("".to_string()), // Empty for starship if nothing happening
+                StatusFormat::Starship => Ok(String::new()), // Empty for starship if nothing happening
             }
         }
     }
@@ -333,10 +335,14 @@ pub async fn execute_allow(
             }
             println!();
             print!("Do you want to allow this configuration? [y/N] ");
-                        io::stdout().flush().map_err(|e| cuenv_core::Error::configuration(format!("IO error: {}", e)))?;
-            
-                        let mut input = String::new();
-                        io::stdin().read_line(&mut input).map_err(|e| cuenv_core::Error::configuration(format!("IO error: {}", e)))?;
+            io::stdout()
+                .flush()
+                .map_err(|e| cuenv_core::Error::configuration(format!("IO error: {e}")))?;
+
+            let mut input = String::new();
+            io::stdin()
+                .read_line(&mut input)
+                .map_err(|e| cuenv_core::Error::configuration(format!("IO error: {e}")))?;
             if !input.trim().eq_ignore_ascii_case("y") {
                 return Ok("Aborted by user.".to_string());
             }
@@ -367,14 +373,15 @@ pub async fn execute_allow(
 pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<String> {
     // Resolve directory path, but don't strictly require env.cue to exist
     // (user might want to deny a directory they deleted)
-    let directory = if let Ok(EnvFileStatus::Match(dir)) = env_file::find_env_file(Path::new(path), package) {
-        dir
-    } else {
-        // If no env file, just use canonical path
-        Path::new(path).canonicalize().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {}", path, e))
-        })?
-    };
+    let directory =
+        if let Ok(EnvFileStatus::Match(dir)) = env_file::find_env_file(Path::new(path), package) {
+            dir
+        } else {
+            // If no env file, just use canonical path
+            Path::new(path).canonicalize().map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to resolve path '{path}': {e}"))
+            })?
+        };
 
     // Initialize approval manager
     let mut approval_manager = ApprovalManager::with_default_file()?;
@@ -382,7 +389,7 @@ pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<Strin
 
     // Revoke approval
     if approval_manager.revoke_approval(&directory).await? {
-         Ok(format!(
+        Ok(format!(
             "Revoked approval for directory: {}",
             directory.display()
         ))
@@ -697,8 +704,14 @@ mod tests {
     #[tokio::test]
     async fn test_execute_env_status_no_file() {
         let temp_dir = TempDir::new().unwrap();
-        let result =
-            execute_env_status(temp_dir.path().to_str().unwrap(), "cuenv", false, 30, StatusFormat::Text).await;
+        let result = execute_env_status(
+            temp_dir.path().to_str().unwrap(),
+            "cuenv",
+            false,
+            30,
+            StatusFormat::Text,
+        )
+        .await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("No env.cue file found"));

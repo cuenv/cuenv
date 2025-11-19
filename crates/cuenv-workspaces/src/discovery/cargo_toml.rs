@@ -50,15 +50,18 @@ impl WorkspaceDiscovery for CargoTomlDiscovery {
             // defines a multi-package workspace. Without it, we have a single-package project,
             // which we represent as an empty workspace (zero members).
             let mut workspace = Workspace::new(root.to_path_buf(), PackageManager::Cargo);
-            workspace.lockfile = root.join("Cargo.lock").exists().then(|| root.join("Cargo.lock"));
+            workspace.lockfile = root
+                .join("Cargo.lock")
+                .exists()
+                .then(|| root.join("Cargo.lock"));
             return Ok(workspace);
         }
 
         let members = self.find_members(root)?;
-        
+
         let mut workspace = Workspace::new(root.to_path_buf(), PackageManager::Cargo);
         workspace.members = members;
-        
+
         let lockfile = root.join("Cargo.lock");
         if lockfile.exists() {
             workspace.lockfile = Some(lockfile);
@@ -74,9 +77,8 @@ impl WorkspaceDiscovery for CargoTomlDiscovery {
         // If [workspace] is missing, return an empty list (single-package repository).
         // This is consistent with discover() treating missing [workspace] as a valid
         // empty workspace rather than an error.
-        let workspace = match cargo_toml.workspace {
-            Some(ws) => ws,
-            None => return Ok(Vec::new()),
+        let Some(workspace) = cargo_toml.workspace else {
+            return Ok(Vec::new());
         };
 
         let exclusions = workspace.exclude.unwrap_or_default();
@@ -87,7 +89,7 @@ impl WorkspaceDiscovery for CargoTomlDiscovery {
             if self.validate_member(&path)? {
                 let manifest_path = path.join("Cargo.toml");
                 let member_pkg: CargoToml = read_toml_file(&manifest_path)?;
-                
+
                 if let Some(package) = member_pkg.package {
                     let mut dependencies = Vec::new();
                     if let Some(deps) = member_pkg.dependencies {
@@ -132,14 +134,14 @@ impl WorkspaceDiscovery for CargoTomlDiscovery {
         // Try parsing to ensure it has a [package] section with a name
         match read_toml_file::<CargoToml>(&manifest_path) {
             Ok(pkg) => {
-                if pkg.package.map(|p| !p.name.is_empty()).unwrap_or(false) {
+                if pkg.package.is_some_and(|p| !p.name.is_empty()) {
                     Ok(true)
                 } else {
                     Ok(false)
                 }
             }
             Err(Error::Toml { .. }) => Ok(false), // Invalid TOML: silently skip this member
-            Err(e) => Err(e), // I/O error: propagate
+            Err(e) => Err(e),                     // I/O error: propagate
         }
     }
 }
