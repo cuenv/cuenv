@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload Generated Schemas
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: generated-schemas
           path: |
@@ -147,7 +147,7 @@ jobs:
 
       - name: Upload schema diff
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: schema-diff
           path: schema-diff.txt
