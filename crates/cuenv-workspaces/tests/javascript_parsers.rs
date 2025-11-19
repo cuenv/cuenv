@@ -36,7 +36,7 @@ mod npm_tests {
             workspace_root.source,
             DependencySource::Workspace(_)
         ));
-        assert!(workspace_root.dependencies.len() >= 1);
+        assert!(!workspace_root.dependencies.is_empty());
 
         // Check workspace member
         let app = entries
@@ -64,7 +64,7 @@ mod npm_tests {
             .expect("react dependency not found");
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(react.dependencies.len() >= 1);
+        assert!(!react.dependencies.is_empty());
         assert_eq!(react.dependencies[0].name, "loose-envify");
     }
 
@@ -134,7 +134,7 @@ mod bun_tests {
             .expect("react dependency not found");
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(react.dependencies.len() >= 1);
+        assert!(!react.dependencies.is_empty());
     }
 
     #[test]
@@ -192,7 +192,7 @@ mod pnpm_tests {
             .expect("react dependency not found");
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(react.dependencies.len() >= 1);
+        assert!(!react.dependencies.is_empty());
         assert_eq!(react.dependencies[0].name, "loose-envify");
     }
 
@@ -243,7 +243,7 @@ mod yarn_classic_tests {
             .expect("react dependency not found");
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(react.dependencies.len() >= 1);
+        assert!(!react.dependencies.is_empty());
         assert_eq!(react.dependencies[0].name, "loose-envify");
     }
 
@@ -357,7 +357,7 @@ mod yarn_modern_tests {
             .expect("react dependency not found");
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
-        assert!(react.dependencies.len() >= 1);
+        assert!(!react.dependencies.is_empty());
     }
 
     #[test]

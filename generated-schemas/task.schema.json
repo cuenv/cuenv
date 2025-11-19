@@ -33,11 +33,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "project",
-        "task",
-        "map"
-      ]
+      "required": ["project", "task", "map"]
     },
     "Mapping": {
       "description": "Mapping of external output to local workspace path",
@@ -52,10 +48,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "from",
-        "to"
-      ]
+      "required": ["from", "to"]
     },
     "Shell": {
       "description": "Shell configuration for task execution",
@@ -63,17 +56,11 @@
       "properties": {
         "command": {
           "description": "Shell executable name (e.g., \"bash\", \"fish\", \"zsh\")",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "flag": {
           "description": "Flag for command execution (e.g., \"-c\", \"--command\")",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       }
     },
@@ -103,10 +90,7 @@
         },
         "description": {
           "description": "Description of the task",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "default": null
         },
         "env": {
@@ -117,10 +101,7 @@
         },
         "externalInputs": {
           "description": "Cross-project inputs",
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "default": null,
           "items": {
             "$ref": "#/$defs/ExternalInput"
@@ -167,9 +148,7 @@
           "default": null
         }
       },
-      "required": [
-        "command"
-      ]
+      "required": ["command"]
     },
     "TaskGroup": {
       "description": "Represents a group of tasks with execution mode",
@@ -201,17 +180,11 @@
         },
         "lockfile": {
           "description": "Path to the lockfile",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "packageManager": {
           "description": "Explicit package manager override",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "packages": {
           "description": "Explicit list of packages to include",

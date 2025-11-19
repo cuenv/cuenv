@@ -405,7 +405,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace_root = temp.path();
         write_workspace_manifest(workspace_root, &["crates/app"], &[]);
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
 
         let lock_contents = r#"version = 4
 
@@ -443,8 +443,8 @@ checksum = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234"
         let temp = TempDir::new().unwrap();
         let workspace_root = temp.path();
         write_workspace_manifest(workspace_root, &["crates/app", "crates/shared"], &[]);
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/shared"), "shared", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/shared"), "shared", "0.1.0");
 
         let lock_contents = r#"version = 4
 
@@ -483,8 +483,8 @@ version = "0.1.0"
             &["crates/api", "crates/shared"],
             &["shared"],
         );
-        write_member_manifest(workspace_root.join("crates/api"), "api", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/shared"), "shared", "0.2.0");
+        write_member_manifest(&workspace_root.join("crates/api"), "api", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/shared"), "shared", "0.2.0");
 
         let lock_contents = r#"version = 4
 
@@ -558,12 +558,9 @@ version = "0.2.0"
         fs::write(root.join("Cargo.toml"), content).unwrap();
     }
 
-    fn write_member_manifest(dir: PathBuf, name: &str, version: &str) {
-        fs::create_dir_all(&dir).unwrap();
-        let manifest = format!(
-            "[package]\nname = \"{}\"\nversion = \"{}\"\n",
-            name, version
-        );
+    fn write_member_manifest(dir: &Path, name: &str, version: &str) {
+        fs::create_dir_all(dir).unwrap();
+        let manifest = format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n");
         fs::write(dir.join("Cargo.toml"), manifest).unwrap();
     }
 
@@ -580,9 +577,9 @@ version = "0.2.0"
         write_workspace_manifest(workspace_root, &["crates/*"], &[]);
 
         // Create multiple crates matching the pattern
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/lib"), "lib", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/utils"), "utils", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/lib"), "lib", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/utils"), "utils", "0.1.0");
 
         let lock_contents = r#"version = 4
 
@@ -628,9 +625,9 @@ version = "0.1.0"
         );
 
         // Create multiple crates, one of which should be excluded
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/lib"), "lib", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/excluded"), "excluded", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/lib"), "lib", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/excluded"), "excluded", "0.1.0");
 
         let lock_contents = r#"version = 4
 
@@ -677,15 +674,15 @@ version = "0.1.0"
         );
 
         // Create multiple crates, some matching the exclude pattern
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/lib"), "lib", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/lib"), "lib", "0.1.0");
         write_member_manifest(
-            workspace_root.join("crates/test-utils"),
+            &workspace_root.join("crates/test-utils"),
             "test-utils",
             "0.1.0",
         );
         write_member_manifest(
-            workspace_root.join("crates/test-helpers"),
+            &workspace_root.join("crates/test-helpers"),
             "test-helpers",
             "0.1.0",
         );
@@ -738,9 +735,9 @@ version = "0.1.0"
         // Create workspace with both explicit paths and glob patterns
         write_workspace_manifest(workspace_root, &["core", "crates/*"], &[]);
 
-        write_member_manifest(workspace_root.join("core"), "core", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/lib"), "lib", "0.1.0");
+        write_member_manifest(&workspace_root.join("core"), "core", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/lib"), "lib", "0.1.0");
 
         let lock_contents = r#"version = 4
 
@@ -780,9 +777,9 @@ version = "0.1.0"
         // Create workspace with nested glob pattern
         write_workspace_manifest(workspace_root, &["crates/*/*"], &[]);
 
-        write_member_manifest(workspace_root.join("crates/backend/api"), "api", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/backend/db"), "db", "0.1.0");
-        write_member_manifest(workspace_root.join("crates/frontend/ui"), "ui", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/backend/api"), "api", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/backend/db"), "db", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/frontend/ui"), "ui", "0.1.0");
 
         let lock_contents = r#"version = 4
 
@@ -819,7 +816,7 @@ version = "0.1.0"
         let temp = TempDir::new().unwrap();
         let workspace_root = temp.path();
         write_workspace_manifest(workspace_root, &["crates/app"], &[]);
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
 
         let lock_contents = r#"version = 4
 
@@ -852,11 +849,11 @@ source = "git+https://github.com/example/git-dep?branch=main#abcdef123456"
         let temp = TempDir::new().unwrap();
         let workspace_root = temp.path();
         write_workspace_manifest(workspace_root, &["crates/app"], &[]);
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
 
         // Create a path dependency outside the workspace
         let external_path = temp.path().join("external/path-dep");
-        write_member_manifest(external_path.clone(), "path-dep", "0.1.0");
+        write_member_manifest(&external_path, "path-dep", "0.1.0");
 
         let lock_contents = format!(
             r#"version = 4
@@ -894,7 +891,7 @@ source = "path+file://{}"
         let temp = TempDir::new().unwrap();
         let workspace_root = temp.path();
         write_workspace_manifest(workspace_root, &["crates/app"], &[]);
-        write_member_manifest(workspace_root.join("crates/app"), "app", "0.1.0");
+        write_member_manifest(&workspace_root.join("crates/app"), "app", "0.1.0");
 
         let lock_contents = r#"version = 4
 
