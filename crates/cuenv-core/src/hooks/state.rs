@@ -513,8 +513,7 @@ impl HookExecutionState {
 
     /// Get the currently executing hook
     pub fn current_hook(&self) -> Option<&crate::hooks::types::Hook> {
-        self.current_hook_index
-            .and_then(|idx| self.hooks.get(idx))
+        self.current_hook_index.and_then(|idx| self.hooks.get(idx))
     }
 
     /// Format duration in human-readable format (e.g., "2.3s", "1m 15s", "2h 5m")
@@ -551,7 +550,8 @@ impl HookExecutionState {
         // If there's a current hook index, use that
         let hook = if let Some(hook) = self.current_hook() {
             Some(hook)
-        } else if self.status == ExecutionStatus::Running && self.completed_hooks < self.total_hooks {
+        } else if self.status == ExecutionStatus::Running && self.completed_hooks < self.total_hooks
+        {
             // If we're running but no current hook index yet, show the next hook to execute
             self.hooks.get(self.completed_hooks)
         } else {
@@ -560,7 +560,7 @@ impl HookExecutionState {
 
         hook.map(|h| {
             // Extract just the command name (first part before any path separators)
-            let cmd_name = h.command.split('/').last().unwrap_or(&h.command);
+            let cmd_name = h.command.split('/').next_back().unwrap_or(&h.command);
 
             // Format: just the command name (no args, to keep it concise)
             format!("`{}`", cmd_name)

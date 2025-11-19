@@ -6,6 +6,7 @@
 //! their toolchain.
 
 #[cfg(feature = "parser-cargo")]
+/// Cargo lockfile parser module.
 pub mod cargo;
 
 #[cfg(feature = "parser-cargo")]

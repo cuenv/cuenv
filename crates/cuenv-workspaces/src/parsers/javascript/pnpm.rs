@@ -38,20 +38,18 @@ impl LockfileParser for PnpmLockfileParser {
                 return Err(Error::LockfileParseFailed {
                     path: lockfile_path.to_path_buf(),
                     message: format!(
-                        "Invalid pnpm lockfileVersion format: '{}'. Expected a numeric version like '6.0'.",
-                        version_str
+                        "Invalid pnpm lockfileVersion format: '{version_str}'. Expected a numeric version like '6.0'.",
                     ),
                 });
             }
-            
+
             // Log a warning for versions newer than what we've tested (9.0)
-            if let Some(major) = major_version {
-                if major > 9 {
-                    tracing::warn!(
-                        "Encountered pnpm lockfile version '{}' which is newer than the highest tested version (9.0). Parsing may fail or be incomplete.",
-                        version_str
-                    );
-                }
+            if let Some(major) = major_version
+                && major > 9
+            {
+                tracing::warn!(
+                    "Encountered pnpm lockfile version '{version_str}' which is newer than the highest tested version (9.0). Parsing may fail or be incomplete.",
+                );
             }
             // Accept all valid numeric versions (no version-specific rejection)
         }
@@ -81,7 +79,7 @@ impl LockfileParser for PnpmLockfileParser {
         )
     }
 
-    fn lockfile_name(&self) -> &str {
+    fn lockfile_name(&self) -> &'static str {
         "pnpm-lock.yaml"
     }
 }
@@ -107,6 +105,7 @@ struct PnpmImporter {
     #[serde(default)]
     optional_dependencies: BTreeMap<String, String>,
     #[serde(default)]
+    #[allow(dead_code)]
     specifiers: BTreeMap<String, String>,
 }
 
@@ -127,8 +126,10 @@ struct PnpmPackage {
     #[serde(default)]
     integrity: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     dev: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     optional: bool,
 }
 
@@ -190,8 +191,8 @@ fn entry_from_package(
             PnpmResolution::Object(map) => map
                 .get("integrity")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            _ => None,
+                .map(ToString::to_string),
+            PnpmResolution::Git { .. } => None,
         })
     });
 

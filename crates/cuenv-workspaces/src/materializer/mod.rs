@@ -3,7 +3,7 @@
 //! This module handles the "materialization" step where dependencies resolved
 //! in the graph are made available to the task execution environment.
 //! This typically involves:
-//! - Locating the dependency artifacts (in global cache, local node_modules, etc.)
+//! - Locating the dependency artifacts (in global cache, local `node_modules`, etc.)
 //! - Symlinking or copying them into the hermetic environment
 //! - Ensuring workspace members are linked correctly
 
@@ -20,6 +20,12 @@ pub trait Materializer {
     ///
     /// This should populate `target_dir` (e.g., with a `node_modules` folder
     /// or `target` directory) containing the necessary dependencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dependencies cannot be linked or copied into the
+    /// target directory (for example, due to missing files or filesystem
+    /// permission issues).
     fn materialize(
         &self,
         workspace: &Workspace,

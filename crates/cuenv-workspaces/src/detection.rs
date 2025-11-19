@@ -72,7 +72,7 @@ pub fn detect_package_managers(root: &Path) -> Result<Vec<PackageManager>> {
     tracing::debug!("Detecting package managers in: {}", root.display());
 
     // Find all lockfiles present
-    let lockfiles = find_lockfiles(root)?;
+    let lockfiles = find_lockfiles(root);
     tracing::debug!("Found {} lockfile(s)", lockfiles.len());
 
     // Build confidence scores for each detected manager
@@ -158,16 +158,15 @@ pub fn detect_from_command(command: &str) -> Option<PackageManager> {
 
     match cmd {
         "cargo" => Some(PackageManager::Cargo),
-        "npm" => Some(PackageManager::Npm),
-        "npx" => Some(PackageManager::Npm),
-        "bun" => Some(PackageManager::Bun),
-        "bunx" => Some(PackageManager::Bun),
+        "npm" | "npx" | "node" => Some(PackageManager::Npm),
+        "bun" | "bunx" => Some(PackageManager::Bun),
         "pnpm" => Some(PackageManager::Pnpm),
         "yarn" => {
-            tracing::warn!("'yarn' command detected; defaulting to YarnClassic. For accurate version detection, use lockfile analysis via detect_yarn_version().");
+            tracing::warn!(
+                "'yarn' command detected; defaulting to YarnClassic. For accurate version detection, use lockfile analysis via detect_yarn_version()."
+            );
             Some(PackageManager::YarnClassic)
-        },
-        "node" => Some(PackageManager::Npm),         // Node.js typically implies npm
+        }
         _ => None,
     }
 }
@@ -192,20 +191,24 @@ pub fn detect_from_command(command: &str) -> Option<PackageManager> {
 /// // If both Cargo and Bun were detected, Bun will be first
 /// # Ok::<(), cuenv_workspaces::Error>(())
 /// ```
+///
+/// # Errors
+///
+/// Returns an error if filesystem detection fails (e.g., unreadable directory).
 pub fn detect_with_command_hint(root: &Path, command: Option<&str>) -> Result<Vec<PackageManager>> {
     let mut managers = detect_package_managers(root)?;
 
     // If we have a command hint, try to prioritize that manager
-    if let Some(cmd) = command {
-        if let Some(hinted_manager) = detect_from_command(cmd) {
-            // Find the hinted manager in the list
-            if let Some(pos) = managers.iter().position(|m| *m == hinted_manager) {
-                // Move it to the front if it's not already there
-                if pos > 0 {
-                    let manager = managers.remove(pos);
-                    managers.insert(0, manager);
-                    tracing::debug!("Prioritized {} based on command hint", manager);
-                }
+    if let Some(cmd) = command
+        && let Some(hinted_manager) = detect_from_command(cmd)
+    {
+        // Find the hinted manager in the list
+        if let Some(pos) = managers.iter().position(|m| *m == hinted_manager) {
+            // Move it to the front if it's not already there
+            if pos > 0 {
+                let manager = managers.remove(pos);
+                managers.insert(0, manager);
+                tracing::debug!("Prioritized {} based on command hint", manager);
             }
         }
     }
@@ -217,7 +220,7 @@ pub fn detect_with_command_hint(root: &Path, command: Option<&str>) -> Result<Ve
 ///
 /// Returns a list of tuples containing the detected package manager and the
 /// path to its lockfile.
-fn find_lockfiles(root: &Path) -> Result<Vec<(PackageManager, PathBuf)>> {
+fn find_lockfiles(root: &Path) -> Vec<(PackageManager, PathBuf)> {
     let mut lockfiles = Vec::new();
 
     let candidates = [
@@ -229,53 +232,48 @@ fn find_lockfiles(root: &Path) -> Result<Vec<(PackageManager, PathBuf)>> {
     ];
 
     for manager in candidates {
-        match manager {
-            PackageManager::Bun => {
-                let binary_lockfile = root.join(manager.lockfile_name());
-                if binary_lockfile.exists() {
-                    lockfiles.push((manager, binary_lockfile));
-                    continue;
-                }
-
-                let text_lockfile = root.join("bun.lock");
-                if text_lockfile.exists() {
-                    lockfiles.push((manager, text_lockfile));
-                }
+        if manager == PackageManager::Bun {
+            let binary_lockfile = root.join(manager.lockfile_name());
+            if binary_lockfile.exists() {
+                lockfiles.push((manager, binary_lockfile));
+                continue;
             }
-            _ => {
-                let lockfile_path = root.join(manager.lockfile_name());
-                if lockfile_path.exists() {
-                    lockfiles.push((manager, lockfile_path));
-                }
+
+            let text_lockfile = root.join("bun.lock");
+            if text_lockfile.exists() {
+                lockfiles.push((manager, text_lockfile));
+            }
+        } else {
+            let lockfile_path = root.join(manager.lockfile_name());
+            if lockfile_path.exists() {
+                lockfiles.push((manager, lockfile_path));
             }
         }
     }
 
-    Ok(lockfiles)
+    lockfiles
 }
 
 fn detect_manager_from_package_json(
     root: &Path,
     detected_managers: &HashSet<PackageManager>,
 ) -> Result<Option<PackageManager>> {
-    let package_json = match read_package_json(root)? {
-        Some(value) => value,
-        None => return Ok(None),
+    let Some(package_json) = read_package_json(root)? else {
+        return Ok(None);
     };
 
     let hinted_manager = package_json
         .get("packageManager")
-        .and_then(|value| value.as_str())
+        .and_then(serde_json::Value::as_str)
         .and_then(parse_package_manager_hint);
 
-    let manager = match hinted_manager {
-        Some(manager) => manager,
-        None => {
-            if has_js_manager(detected_managers) {
-                return Ok(None);
-            }
-            PackageManager::Npm
+    let manager = if let Some(manager) = hinted_manager {
+        manager
+    } else {
+        if has_js_manager(detected_managers) {
+            return Ok(None);
         }
+        PackageManager::Npm
     };
 
     if is_manager_detected(detected_managers, manager) {
@@ -300,7 +298,7 @@ fn read_package_json(root: &Path) -> Result<Option<serde_json::Value>> {
     let parsed = serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
         Error::InvalidWorkspaceConfig {
             path: path.clone(),
-            message: format!("Invalid JSON: {}", e),
+            message: format!("Invalid JSON: {e}"),
         }
     })?;
 
@@ -335,8 +333,8 @@ fn parse_package_manager_hint(hint: &str) -> Option<PackageManager> {
 }
 
 fn parse_major_version(input: &str) -> Option<u64> {
-    let trimmed = input.trim().trim_start_matches(|c| c == 'v' || c == 'V');
-    let digits: String = trimmed.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let trimmed = input.trim().trim_start_matches(['v', 'V']);
+    let digits: String = trimmed.chars().take_while(char::is_ascii_digit).collect();
 
     if digits.is_empty() {
         return None;
@@ -395,7 +393,7 @@ fn validate_workspace_config(root: &Path, manager: PackageManager) -> Result<boo
             serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
                 Error::InvalidWorkspaceConfig {
                     path: config_path,
-                    message: format!("Invalid JSON: {}", e),
+                    message: format!("Invalid JSON: {e}"),
                 }
             })?;
             Ok(true)
@@ -404,7 +402,7 @@ fn validate_workspace_config(root: &Path, manager: PackageManager) -> Result<boo
             // Parse as TOML (Cargo.toml)
             toml::from_str::<toml::Value>(&content).map_err(|e| Error::InvalidWorkspaceConfig {
                 path: config_path,
-                message: format!("Invalid TOML: {}", e),
+                message: format!("Invalid TOML: {e}"),
             })?;
             Ok(true)
         }
@@ -413,7 +411,7 @@ fn validate_workspace_config(root: &Path, manager: PackageManager) -> Result<boo
             serde_yaml::from_str::<serde_yaml::Value>(&content).map_err(|e| {
                 Error::InvalidWorkspaceConfig {
                     path: config_path,
-                    message: format!("Invalid YAML: {}", e),
+                    message: format!("Invalid YAML: {e}"),
                 }
             })?;
             Ok(true)
@@ -480,7 +478,7 @@ fn prioritize_managers(detections: Vec<(PackageManager, u8)>) -> Vec<PackageMana
         match c2.cmp(c1) {
             std::cmp::Ordering::Equal => {
                 // If confidence is equal, use manager priority
-                manager_priority(m1).cmp(&manager_priority(m2))
+                manager_priority(*m1).cmp(&manager_priority(*m2))
             }
             other => other,
         }
@@ -492,7 +490,7 @@ fn prioritize_managers(detections: Vec<(PackageManager, u8)>) -> Vec<PackageMana
 /// Returns a priority value for deterministic ordering when confidence is equal.
 ///
 /// Lower values = higher priority
-fn manager_priority(manager: &PackageManager) -> u8 {
+fn manager_priority(manager: PackageManager) -> u8 {
     match manager {
         PackageManager::Cargo => 0,
         PackageManager::Bun => 1,
@@ -670,7 +668,7 @@ package@^1.0.0:
         let temp_dir = create_test_workspace();
         create_lockfile(temp_dir.path(), PackageManager::Cargo);
 
-        let result = find_lockfiles(temp_dir.path()).unwrap();
+        let result = find_lockfiles(temp_dir.path());
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, PackageManager::Cargo);
@@ -681,7 +679,7 @@ package@^1.0.0:
         let temp_dir = create_test_workspace();
         create_lockfile(temp_dir.path(), PackageManager::Npm);
 
-        let result = find_lockfiles(temp_dir.path()).unwrap();
+        let result = find_lockfiles(temp_dir.path());
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, PackageManager::Npm);
@@ -693,7 +691,7 @@ package@^1.0.0:
         create_lockfile(temp_dir.path(), PackageManager::Cargo);
         create_lockfile(temp_dir.path(), PackageManager::Npm);
 
-        let result = find_lockfiles(temp_dir.path()).unwrap();
+        let result = find_lockfiles(temp_dir.path());
 
         assert_eq!(result.len(), 2);
         let managers: Vec<_> = result.iter().map(|(m, _)| *m).collect();
@@ -705,7 +703,7 @@ package@^1.0.0:
     fn test_find_lockfiles_none() {
         let temp_dir = create_test_workspace();
 
-        let result = find_lockfiles(temp_dir.path()).unwrap();
+        let result = find_lockfiles(temp_dir.path());
 
         assert_eq!(result.len(), 0);
     }
@@ -718,7 +716,7 @@ package@^1.0.0:
         fs::write(temp_dir.path().join("bun.lockb"), "binary").unwrap();
         fs::write(temp_dir.path().join("bun.lock"), "text").unwrap();
 
-        let result = find_lockfiles(temp_dir.path()).unwrap();
+        let result = find_lockfiles(temp_dir.path());
 
         // Should only detect one Bun lockfile (the binary one)
         assert_eq!(result.len(), 1);
@@ -1014,17 +1012,17 @@ package@^1.0.0:
 
     #[test]
     fn test_manager_priority() {
-        assert!(manager_priority(&PackageManager::Cargo) < manager_priority(&PackageManager::Bun));
-        assert!(manager_priority(&PackageManager::Bun) < manager_priority(&PackageManager::Pnpm));
+        assert!(manager_priority(PackageManager::Cargo) < manager_priority(PackageManager::Bun));
+        assert!(manager_priority(PackageManager::Bun) < manager_priority(PackageManager::Pnpm));
         assert!(
-            manager_priority(&PackageManager::Pnpm) < manager_priority(&PackageManager::YarnModern)
+            manager_priority(PackageManager::Pnpm) < manager_priority(PackageManager::YarnModern)
         );
         assert!(
-            manager_priority(&PackageManager::YarnModern)
-                < manager_priority(&PackageManager::YarnClassic)
+            manager_priority(PackageManager::YarnModern)
+                < manager_priority(PackageManager::YarnClassic)
         );
         assert!(
-            manager_priority(&PackageManager::YarnClassic) < manager_priority(&PackageManager::Npm)
+            manager_priority(PackageManager::YarnClassic) < manager_priority(PackageManager::Npm)
         );
     }
 }
