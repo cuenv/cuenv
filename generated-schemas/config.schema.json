@@ -6,16 +6,10 @@
   "properties": {
     "auditMode": {
       "description": "Security and debugging",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": ["boolean", "null"]
     },
     "cacheEnabled": {
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": ["boolean", "null"]
     },
     "cacheMode": {
       "description": "Cache configuration",
@@ -29,20 +23,14 @@
       ]
     },
     "defaultCapabilities": {
-      "type": [
-        "array",
-        "null"
-      ],
+      "type": ["array", "null"],
       "items": {
         "type": "string"
       }
     },
     "defaultEnvironment": {
       "description": "Default environment settings",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     },
     "outputFormat": {
       "description": "Task output format",
@@ -57,33 +45,19 @@
     },
     "traceOutput": {
       "description": "Chrome trace generation",
-      "type": [
-        "boolean",
-        "null"
-      ]
+      "type": ["boolean", "null"]
     }
   },
   "$defs": {
     "CacheMode": {
       "description": "Cache mode options",
       "type": "string",
-      "enum": [
-        "off",
-        "read",
-        "read-write",
-        "write"
-      ]
+      "enum": ["off", "read", "read-write", "write"]
     },
     "OutputFormat": {
       "description": "Task output format options",
       "type": "string",
-      "enum": [
-        "tui",
-        "spinner",
-        "simple",
-        "tree",
-        "json"
-      ]
+      "enum": ["tui", "spinner", "simple", "tree", "json"]
     }
   }
 }

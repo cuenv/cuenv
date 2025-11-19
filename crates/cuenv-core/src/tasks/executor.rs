@@ -163,7 +163,11 @@ impl TaskExecutor {
                 tracing::info!(cache_path = %hit.path.display(), "Cache path");
             }
             if let Some(dest) = &self.config.materialize_outputs {
-                let count = task_cache::materialize_outputs(&cache_key, dest, self.config.cache_dir.as_deref())?;
+                let count = task_cache::materialize_outputs(
+                    &cache_key,
+                    dest,
+                    self.config.cache_dir.as_deref(),
+                )?;
                 tracing::info!(materialized = count, dest = %dest.display(), "Materialized cached outputs");
             }
             // On cache hit, surface cached logs so behavior matches a fresh

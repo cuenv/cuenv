@@ -222,8 +222,8 @@ pub fn save_result(
 }
 
 pub fn materialize_outputs(key: &str, destination: &Path, root: Option<&Path>) -> Result<usize> {
-    let entry =
-        lookup(key, root).ok_or_else(|| Error::configuration(format!("Cache key not found: {key}")))?;
+    let entry = lookup(key, root)
+        .ok_or_else(|| Error::configuration(format!("Cache key not found: {key}")))?;
     let out_dir = entry.path.join("outputs");
     if !out_dir.exists() {
         return Ok(0);
@@ -457,8 +457,15 @@ mod tests {
         };
 
         let key = "roundtrip-key-123";
-        save_result(key, &meta, outputs.path(), herm.path(), logs, Some(cache_tmp.path()))
-            .expect("save_result");
+        save_result(
+            key,
+            &meta,
+            outputs.path(),
+            herm.path(),
+            logs,
+            Some(cache_tmp.path()),
+        )
+        .expect("save_result");
 
         // Verify cache layout
         let base = key_to_path(key, Some(cache_tmp.path())).expect("key_to_path");

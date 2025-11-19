@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 use cuenv_workspaces::WorkspaceDiscovery;
 use std::path::{Path, PathBuf};
 
