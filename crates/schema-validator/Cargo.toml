@@ -23,4 +23,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3.0"
-proptest = "1.0"
+proptest = "1.9"
