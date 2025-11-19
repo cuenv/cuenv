@@ -48,7 +48,7 @@ glob = "0.3"
 
 # Testing dependencies
 proptest = "1.0"
-criterion = "0.5"
+criterion = "0.7"
 tempfile = "3.0"
 
 # BDD testing dependencies
