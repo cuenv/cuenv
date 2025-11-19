@@ -91,6 +91,7 @@ pub async fn execute_task(
         working_dir: None,
         project_root: std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf()),
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
+        cache_dir: None,
         show_cache_path,
     };
 
@@ -273,6 +274,7 @@ async fn run_task_hermetic(
         working_dir: None,
         project_root: workspace.clone(),
         materialize_outputs: None,
+        cache_dir: None,
         show_cache_path: false,
     });
 
@@ -724,7 +726,7 @@ async fn resolve_and_materialize_external(
     let (ext_key, _env_json) = cuenv_core::cache::tasks::compute_cache_key(&envelope)?;
 
     // Ensure cache exists (run if miss)
-    if cuenv_core::cache::tasks::lookup(&ext_key).is_none() {
+    if cuenv_core::cache::tasks::lookup(&ext_key, None).is_none() {
         tracing::info!(
             "Cache miss for external task '{}' (key {})",
             ext.task,
@@ -737,6 +739,7 @@ async fn resolve_and_materialize_external(
             working_dir: None,
             project_root: ext_dir.clone(),
             materialize_outputs: None,
+            cache_dir: None,
             show_cache_path: false,
         });
         let res = exec.execute_task(&ext.task, task).await?;
@@ -754,7 +757,7 @@ async fn resolve_and_materialize_external(
     let mat_dir = std::env::temp_dir().join("cuenv_ext_mat").join(&ext_key);
     let _ = fs::remove_dir_all(&mat_dir);
     fs::create_dir_all(&mat_dir).ok();
-    let _ = cuenv_core::cache::tasks::materialize_outputs(&ext_key, &mat_dir)?;
+    let _ = cuenv_core::cache::tasks::materialize_outputs(&ext_key, &mat_dir, None)?;
     for m in &ext.map {
         let src = mat_dir.join(&m.from);
         let dst = workspace.join(&m.to);

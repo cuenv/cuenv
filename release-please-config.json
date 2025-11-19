@@ -14,6 +14,20 @@
       "package-name": "cuengine",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true
+    },
+    "crates/cuenv-cli": {
+      "release-type": "rust",
+      "component": "cuenv-cli",
+      "package-name": "cuenv-cli",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true
+    },
+    "crates/cuenv-workspaces": {
+      "release-type": "rust",
+      "component": "cuenv-workspaces",
+      "package-name": "cuenv-workspaces",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true
     }
   },
   "plugins": ["cargo-workspace"],
