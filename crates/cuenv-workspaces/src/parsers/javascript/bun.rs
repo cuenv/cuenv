@@ -17,8 +17,7 @@ impl LockfileParser for BunLockfileParser {
         if lockfile_path
             .file_name()
             .and_then(|n| n.to_str())
-            .map(|n| n == "bun.lockb")
-            .unwrap_or(false)
+            .is_some_and(|n| n == "bun.lockb")
         {
             return Err(Error::LockfileParseFailed {
                 path: lockfile_path.to_path_buf(),
@@ -33,15 +32,16 @@ impl LockfileParser for BunLockfileParser {
         })?;
 
         // Parse JSONC using jsonc-parser and convert to serde_json::Value
-        let json_value = jsonc_parser::parse_to_value(&contents, &Default::default())
-            .map_err(|err| Error::LockfileParseFailed {
-                path: lockfile_path.to_path_buf(),
-                message: format!("Failed to parse bun.lock as JSONC: {err:?}"),
-            })?
-            .ok_or_else(|| Error::LockfileParseFailed {
-                path: lockfile_path.to_path_buf(),
-                message: "Empty or invalid JSONC content".to_string(),
-            })?;
+        let json_value =
+            jsonc_parser::parse_to_value(&contents, &jsonc_parser::ParseOptions::default())
+                .map_err(|err| Error::LockfileParseFailed {
+                    path: lockfile_path.to_path_buf(),
+                    message: format!("Failed to parse bun.lock as JSONC: {err:?}"),
+                })?
+                .ok_or_else(|| Error::LockfileParseFailed {
+                    path: lockfile_path.to_path_buf(),
+                    message: "Empty or invalid JSONC content".to_string(),
+                })?;
 
         // Convert jsonc_parser::JsonValue to serde_json::Value
         let value: Value = convert_jsonc_to_serde_value(json_value);
@@ -87,7 +87,7 @@ impl LockfileParser for BunLockfileParser {
         matches!(path.file_name().and_then(|n| n.to_str()), Some("bun.lock"))
     }
 
-    fn lockfile_name(&self) -> &str {
+    fn lockfile_name(&self) -> &'static str {
         "bun.lock"
     }
 }
@@ -165,10 +165,7 @@ fn entry_from_workspace(path_key: &str, workspace: &BunWorkspace) -> LockfileEnt
         .name
         .as_deref()
         .filter(|value| !value.is_empty())
-        .map_or_else(
-            || workspace_name_from_path(path_key),
-            |value| value.to_string(),
-        );
+        .map_or_else(|| workspace_name_from_path(path_key), ToString::to_string);
 
     let mut dependencies = Vec::new();
     push_dependencies(&mut dependencies, &workspace.dependencies);
@@ -219,7 +216,7 @@ fn parse_array_package(lockfile_path: &Path, name: &str, items: &[Value]) -> Res
 
     let locator =
         items
-            .get(0)
+            .first()
             .and_then(Value::as_str)
             .ok_or_else(|| Error::LockfileParseFailed {
                 path: lockfile_path.to_path_buf(),
@@ -239,7 +236,7 @@ fn parse_array_package(lockfile_path: &Path, name: &str, items: &[Value]) -> Res
     let checksum = items
         .get(3)
         .and_then(Value::as_str)
-        .map(|value| value.to_string())
+        .map(ToString::to_string)
         .or_else(|| metadata.integrity.clone())
         .or_else(|| metadata.checksum.clone());
 
@@ -369,9 +366,7 @@ fn parse_locator(
     };
 
     let version = match protocol {
-        "npm" | "registry" => remainder.to_string(),
         "github" => remainder.split('#').nth(1).unwrap_or(remainder).to_string(),
-        "git" | "git+https" | "git+ssh" => remainder.to_string(),
         "file" | "workspace" => "0.0.0".to_string(),
         _ => remainder.to_string(),
     };
@@ -397,9 +392,7 @@ fn convert_jsonc_to_serde_value(jsonc_value: jsonc_parser::JsonValue) -> Value {
             if let Ok(i) = n.parse::<i64>() {
                 Value::Number(i.into())
             } else if let Ok(f) = n.parse::<f64>() {
-                serde_json::Number::from_f64(f)
-                    .map(Value::Number)
-                    .unwrap_or(Value::Null)
+                serde_json::Number::from_f64(f).map_or(Value::Null, Value::Number)
             } else {
                 Value::Null
             }

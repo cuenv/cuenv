@@ -128,7 +128,7 @@ async fn initialize_cli_and_tracing() -> Result<crate::cli::Cli, CliError> {
 #[instrument(name = "cuenv_execute_command_safe")]
 async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), CliError> {
     match command {
-        Command::Version { format } => match execute_version_command_safe(format).await {
+        Command::Version { format: _ } => match execute_version_command_safe().await {
             Ok(()) => Ok(()),
             Err(e) => Err(CliError::other(format!("Version command failed: {e}"))),
         },
@@ -144,8 +144,17 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             path,
             package,
             name,
-            ..
-        } => match execute_task_command_safe(path, package, name).await {
+            materialize_outputs,
+            show_cache_path,
+        } => match execute_task_command_safe(
+            path,
+            package,
+            name,
+            materialize_outputs,
+            show_cache_path,
+        )
+        .await
+        {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -170,7 +179,9 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             wait,
             timeout,
             format,
-        } => match execute_env_status_command_safe(path, package, wait, timeout, format, json_mode).await {
+        } => match execute_env_status_command_safe(path, package, wait, timeout, format, json_mode)
+            .await
+        {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -209,7 +220,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
 
 /// Execute version command safely
 #[instrument(name = "cuenv_execute_version_safe")]
-async fn execute_version_command_safe(_format: String) -> Result<(), String> {
+async fn execute_version_command_safe() -> Result<(), String> {
     let mut perf_guard = performance::PerformanceGuard::new("version_command");
     perf_guard.add_metadata("command_type", "version");
 
@@ -466,12 +477,21 @@ async fn execute_task_command_safe(
     path: String,
     package: String,
     name: Option<String>,
+    materialize_outputs: Option<String>,
+    show_cache_path: bool,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
 
-    let result =
-        commands::task::execute_task(&path, &package, name.as_deref(), false, None, false).await;
+    let result = commands::task::execute_task(
+        &path,
+        &package,
+        name.as_deref(),
+        false,
+        materialize_outputs.as_deref(),
+        show_cache_path,
+    )
+    .await;
 
     match result {
         Ok(output) => {

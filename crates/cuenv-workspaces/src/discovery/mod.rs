@@ -64,6 +64,11 @@ pub use pnpm_workspace::PnpmWorkspaceDiscovery;
 ///
 /// A sorted list of unique, absolute paths (rooted under `root`) that match the patterns and are not excluded.
 ///
+/// # Errors
+///
+/// Returns an error if any glob pattern is invalid or if the filesystem cannot
+/// be read while resolving glob matches.
+///
 /// # Implementation Notes
 ///
 /// Patterns are constructed using Path operations to ensure cross-platform compatibility.
@@ -97,13 +102,11 @@ pub fn resolve_glob_patterns(
 
         let paths = glob(&pattern_str).map_err(|e| Error::InvalidWorkspaceConfig {
             path: root.to_path_buf(),
-            message: format!("Invalid glob pattern '{}': {}", pattern, e),
+            message: format!("Invalid glob pattern '{pattern}': {e}"),
         })?;
 
-        for entry in paths {
-            if let Ok(path) = entry {
-                excluded_paths.insert(path);
-            }
+        for path in paths.flatten() {
+            excluded_paths.insert(path);
         }
     }
 
@@ -115,14 +118,12 @@ pub fn resolve_glob_patterns(
 
         let paths = glob(&pattern_str).map_err(|e| Error::InvalidWorkspaceConfig {
             path: root.to_path_buf(),
-            message: format!("Invalid glob pattern '{}': {}", pattern, e),
+            message: format!("Invalid glob pattern '{pattern}': {e}"),
         })?;
 
-        for entry in paths {
-            if let Ok(path) = entry {
-                if path.is_dir() && !excluded_paths.contains(&path) {
-                    matched_paths.insert(path);
-                }
+        for path in paths.flatten() {
+            if path.is_dir() && !excluded_paths.contains(&path) {
+                matched_paths.insert(path);
             }
         }
     }
@@ -133,6 +134,10 @@ pub fn resolve_glob_patterns(
 }
 
 /// Reads and parses a JSON file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or parsed as valid JSON.
 pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let content = fs::read_to_string(path).map_err(|e| Error::Io {
         source: e,
@@ -147,6 +152,10 @@ pub fn read_json_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 /// Reads and parses a YAML file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or parsed as valid YAML.
 #[cfg(feature = "serde_yaml")]
 pub fn read_yaml_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let content = fs::read_to_string(path).map_err(|e| Error::Io {
@@ -162,6 +171,10 @@ pub fn read_yaml_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
 }
 
 /// Reads and parses a TOML file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or parsed as valid TOML.
 #[cfg(feature = "toml")]
 pub fn read_toml_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let content = fs::read_to_string(path).map_err(|e| Error::Io {

@@ -6,14 +6,19 @@
 //! their toolchain.
 
 #[cfg(feature = "parser-bun")]
+/// Bun lockfile parser module.
 pub mod bun;
 #[cfg(feature = "parser-npm")]
+/// npm lockfile parser module.
 pub mod npm;
 #[cfg(feature = "parser-pnpm")]
+/// pnpm lockfile parser module.
 pub mod pnpm;
 #[cfg(feature = "parser-yarn-classic")]
+/// Yarn Classic lockfile parser module.
 pub mod yarn_classic;
 #[cfg(feature = "parser-yarn-modern")]
+/// Yarn Modern lockfile parser module.
 pub mod yarn_modern;
 
 #[cfg(feature = "parser-bun")]

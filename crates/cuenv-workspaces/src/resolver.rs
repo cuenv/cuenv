@@ -5,9 +5,7 @@
 //! workspace configuration (manifests) with resolved lockfile data.
 
 use crate::core::traits::{DependencyGraph, DependencyResolver};
-use crate::core::types::{
-    DependencyRef, LockfileEntry, PackageManager, Workspace,
-};
+use crate::core::types::{DependencyRef, LockfileEntry, PackageManager, Workspace};
 use crate::discovery::read_json_file;
 use crate::error::Result;
 use petgraph::graph::NodeIndex;
@@ -56,7 +54,9 @@ impl DependencyResolver for GenericDependencyResolver {
                     //
                     // For many lockfiles (like Cargo.lock), the dependency list contains the
                     // concrete version that was resolved.
-                    if let Some(&target_idx) = node_map.get(&(dep.name.clone(), dep.version_req.clone())) {
+                    if let Some(&target_idx) =
+                        node_map.get(&(dep.name.clone(), dep.version_req.clone()))
+                    {
                         graph.add_edge(source_idx, target_idx, ());
                     } else {
                         // Fallback: If strict lookup fails (e.g. version_req is a range like "^1.0.0"),
@@ -88,7 +88,7 @@ impl DependencyResolver for GenericDependencyResolver {
                 | PackageManager::Pnpm
                 | PackageManager::YarnClassic
                 | PackageManager::YarnModern => self.parse_js_deps(&member.manifest_path)?,
-                PackageManager::Cargo => self.parse_rust_deps(&member.manifest_path)?,
+                PackageManager::Cargo => Self::parse_rust_deps(&member.manifest_path)?,
             };
 
             workspace_deps.extend(deps);
@@ -148,7 +148,7 @@ impl GenericDependencyResolver {
         Ok(result)
     }
 
-    fn parse_rust_deps(&self, path: &Path) -> Result<Vec<DependencyRef>> {
+    fn parse_rust_deps(path: &Path) -> Result<Vec<DependencyRef>> {
         #[cfg(feature = "toml")]
         {
             #[derive(Deserialize)]
@@ -165,14 +165,12 @@ impl GenericDependencyResolver {
 
             let mut add_deps = |deps: HashMap<String, toml::Value>| {
                 for (name, value) in deps {
-                    let is_workspace = match value {
-                        toml::Value::String(_) => false, // Regular version string
-                        toml::Value::Table(t) => {
-                            t.get("workspace")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false)
-                        }
-                        _ => false,
+                    let is_workspace = if let toml::Value::Table(t) = &value {
+                        t.get("workspace")
+                            .and_then(toml::Value::as_bool)
+                            .unwrap_or(false)
+                    } else {
+                        false
                     };
 
                     if is_workspace {

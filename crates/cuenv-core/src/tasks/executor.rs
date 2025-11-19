@@ -17,10 +17,12 @@ use cuenv_workspaces::{
     NpmLockfileParser, PackageJsonDiscovery, PackageManager, PnpmLockfileParser,
     PnpmWorkspaceDiscovery, Workspace, WorkspaceDiscovery, YarnClassicLockfileParser,
     YarnModernLockfileParser, detect_from_command, detect_package_managers,
-    materializer::{Materializer, cargo_deps::CargoMaterializer, node_modules::NodeModulesMaterializer},
+    materializer::{
+        Materializer, cargo_deps::CargoMaterializer, node_modules::NodeModulesMaterializer,
+    },
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -87,14 +89,13 @@ impl TaskExecutor {
         let mut workspace_input_patterns = Vec::new();
         let mut workspace_lockfile_hash = None;
 
-        if let Some(ws_inputs) = &task.workspace_inputs {
-            if ws_inputs.enabled {
-                let (ws, entries, paths, hash) =
-                    self.resolve_workspace(name, task, ws_inputs).await?;
-                workspace_ctx = Some((ws, entries));
-                workspace_input_patterns = paths;
-                workspace_lockfile_hash = hash;
-            }
+        if let Some(ws_inputs) = &task.workspace_inputs
+            && ws_inputs.enabled
+        {
+            let (ws, entries, paths, hash) = self.resolve_workspace(name, task, ws_inputs).await?;
+            workspace_ctx = Some((ws, entries));
+            workspace_input_patterns = paths;
+            workspace_lockfile_hash = hash;
         }
 
         // Resolve inputs relative to project root
@@ -606,9 +607,19 @@ impl TaskExecutor {
         let command = task.command.clone();
         let config_pm = config.package_manager.clone();
         let packages = config.packages.clone();
+        let lockfile_override = config.lockfile.clone();
 
         // Use spawn_blocking for heavy lifting
         tokio::task::spawn_blocking(move || {
+            let lockfile_override_path = lockfile_override.as_ref().map(|lock| {
+                let candidate = PathBuf::from(lock);
+                if candidate.is_absolute() {
+                    candidate
+                } else {
+                    root.join(lock)
+                }
+            });
+
             // 1. Detect Package Manager
             let manager = if let Some(pm_str) = config_pm {
                 match pm_str.as_str() {
@@ -629,9 +640,19 @@ impl TaskExecutor {
                 // Auto-detect
                 // Priority: command hint -> lockfiles
                 let hint = detect_from_command(&command);
-                let detected = detect_package_managers(&root).map_err(|e| {
-                    Error::configuration(format!("Failed to detect package managers: {}", e))
-                })?;
+                let detected = match detect_package_managers(&root) {
+                    Ok(list) => list,
+                    Err(e) => {
+                        if lockfile_override_path.is_some() {
+                            Vec::new()
+                        } else {
+                            return Err(Error::configuration(format!(
+                                "Failed to detect package managers: {}",
+                                e
+                            )));
+                        }
+                    }
+                };
 
                 if let Some(h) = hint {
                     if detected.contains(&h) {
@@ -639,12 +660,25 @@ impl TaskExecutor {
                     } else if !detected.is_empty() {
                         // Prefer detected files
                         detected[0]
+                    } else if let Some(ref override_path) = lockfile_override_path {
+                        infer_manager_from_lockfile(override_path).ok_or_else(|| {
+                            Error::configuration(
+                                "Unable to infer package manager from lockfile override",
+                            )
+                        })?
                     } else {
-                        // No files detected, but hint exists.
-                        return Err(Error::configuration("No workspace configuration found"));
+                        return Err(Error::configuration(
+                            "No workspace configuration found; specify packageManager",
+                        ));
                     }
                 } else if !detected.is_empty() {
                     detected[0]
+                } else if let Some(ref override_path) = lockfile_override_path {
+                    infer_manager_from_lockfile(override_path).ok_or_else(|| {
+                        Error::configuration(
+                            "Unable to infer package manager from lockfile override",
+                        )
+                    })?
                 } else {
                     return Err(Error::configuration(
                         "Could not detect package manager for workspace resolution",
@@ -667,10 +701,19 @@ impl TaskExecutor {
             })?;
 
             // 3. Parse Lockfile
-            let lockfile_path = workspace
-                .lockfile
-                .clone()
-                .ok_or_else(|| Error::configuration("Workspace resolution requires a lockfile"))?;
+            let lockfile_path = if let Some(path) = lockfile_override_path {
+                if !path.exists() {
+                    return Err(Error::configuration(format!(
+                        "Workspace lockfile override does not exist: {}",
+                        path.display()
+                    )));
+                }
+                path
+            } else {
+                workspace.lockfile.clone().ok_or_else(|| {
+                    Error::configuration("Workspace resolution requires a lockfile")
+                })?
+            };
 
             let parser: Box<dyn LockfileParser> = match manager {
                 PackageManager::Npm => Box::new(NpmLockfileParser),
@@ -693,10 +736,10 @@ impl TaskExecutor {
 
             // Always include workspace configuration files
             member_paths.push(manager.workspace_config_name().to_string());
-            if let Some(lock) = workspace.lockfile.as_ref() {
-                if let Ok(rel) = lock.strip_prefix(&root) {
-                    member_paths.push(rel.to_string_lossy().to_string());
-                }
+            if let Ok(rel) = lockfile_path.strip_prefix(&root) {
+                member_paths.push(rel.to_string_lossy().to_string());
+            } else {
+                member_paths.push(lockfile_path.to_string_lossy().to_string());
             }
 
             if packages.is_empty() {
@@ -719,12 +762,10 @@ impl TaskExecutor {
                         // Add dependencies
                         if let Some(entry) = entries.iter().find(|e| e.name == pkg_name) {
                             for dep in &entry.dependencies {
-                                // Check if dep is a workspace member
                                 if let Some(dep_entry) = entries.iter().find(|e| e.name == dep.name)
+                                    && dep_entry.is_workspace_member
                                 {
-                                    if dep_entry.is_workspace_member {
-                                        to_visit.push(dep.name.clone());
-                                    }
+                                    to_visit.push(dep.name.clone());
                                 }
                             }
                         }
@@ -742,7 +783,7 @@ impl TaskExecutor {
         &self,
         workspace: &Workspace,
         entries: &[LockfileEntry],
-        target_dir: &PathBuf,
+        target_dir: &Path,
     ) -> Result<()> {
         // Dispatch to appropriate materializer
         let materializer: Box<dyn Materializer> = match workspace.manager {
@@ -763,6 +804,17 @@ impl TaskExecutor {
         Self {
             config: self.config.clone(),
         }
+    }
+}
+
+fn infer_manager_from_lockfile(path: &Path) -> Option<PackageManager> {
+    match path.file_name().and_then(|n| n.to_str())? {
+        "package-lock.json" => Some(PackageManager::Npm),
+        "bun.lockb" => Some(PackageManager::Bun),
+        "pnpm-lock.yaml" => Some(PackageManager::Pnpm),
+        "yarn.lock" => Some(PackageManager::YarnModern),
+        "Cargo.lock" => Some(PackageManager::Cargo),
+        _ => None,
     }
 }
 

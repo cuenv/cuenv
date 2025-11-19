@@ -229,8 +229,6 @@ pub struct Cli {
     )]
     pub level: crate::tracing::LogLevel,
 
-
-
     #[arg(long, global = true, help = "Emit JSON envelope regardless of format")]
     pub json: bool,
 }
@@ -348,7 +346,10 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
-        #[arg(long, help = "Revoke all approvals for this directory (default behavior currently)")]
+        #[arg(
+            long,
+            help = "Revoke all approvals for this directory (default behavior currently)"
+        )]
         all: bool,
     },
     #[command(
@@ -503,7 +504,9 @@ pub enum ShellType {
 impl From<Commands> for Command {
     fn from(cmd: Commands) -> Self {
         match cmd {
-            Commands::Version { output_format } => Command::Version { format: output_format.to_string() },
+            Commands::Version { output_format } => Command::Version {
+                format: output_format.to_string(),
+            },
             Commands::Env { subcommand } => match subcommand {
                 EnvCommands::Print {
                     path,
@@ -576,11 +579,7 @@ impl From<Commands> for Command {
                 note,
                 yes,
             },
-            Commands::Deny {
-                path,
-                package,
-                all,
-            } => Command::Deny { path, package, all },
+            Commands::Deny { path, package, all } => Command::Deny { path, package, all },
             Commands::Export { shell, package } => Command::Export { shell, package },
         }
     }
@@ -657,7 +656,13 @@ mod tests {
     #[test]
     fn test_cli_combined_flags() {
         let cli = Cli::try_parse_from([
-            "cuenv", "--level", "debug", "--json", "version", "--output-format", "env",
+            "cuenv",
+            "--level",
+            "debug",
+            "--json",
+            "version",
+            "--output-format",
+            "env",
         ])
         .unwrap();
 

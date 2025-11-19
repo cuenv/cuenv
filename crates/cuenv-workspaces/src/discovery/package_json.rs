@@ -25,7 +25,7 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
         }
 
         let package_json: PackageJson = read_json_file(&package_json_path)?;
-        
+
         // If no workspaces field, verify it's a valid package but return empty workspace
         // logic could vary, but usually a workspace needs the workspaces field
         if package_json.workspaces.is_none() {
@@ -43,7 +43,7 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
 
         let members = self.find_members(root)?;
         let manager = detect_manager(root);
-        
+
         let mut workspace = Workspace::new(root.to_path_buf(), manager);
         workspace.members = members;
         workspace.lockfile = find_lockfile(root, manager);
@@ -68,7 +68,7 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
             if self.validate_member(&path)? {
                 let manifest_path = path.join("package.json");
                 let member_pkg: PackageJson = read_json_file(&manifest_path)?;
-                
+
                 if let Some(name) = member_pkg.name {
                     let mut dependencies = Vec::new();
                     if let Some(deps) = member_pkg.dependencies {
@@ -120,7 +120,7 @@ impl WorkspaceDiscovery for PackageJsonDiscovery {
                 }
             }
             Err(Error::Json { .. }) => Ok(false), // Invalid JSON: silently skip this member
-            Err(e) => Err(e), // I/O error: propagate
+            Err(e) => Err(e),                     // I/O error: propagate
         }
     }
 }

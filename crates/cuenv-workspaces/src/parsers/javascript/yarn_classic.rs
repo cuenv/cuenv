@@ -25,41 +25,43 @@ impl LockfileParser for YarnClassicLockfileParser {
             yarn_lock_parser::parse_str(&contents)
         }))
         .ok()
-        .and_then(|r| r.ok())
-        .and_then(|parsed_entries| {
-            // Parse manually to extract detailed information (resolved, integrity, dependencies)
-            parse_lockfile_details(&contents)
-                .ok()
-                .map(|detailed_entries| {
-                    let mut result = Vec::new();
+        .and_then(
+            |r: std::result::Result<
+                Vec<yarn_lock_parser::Entry<'_>>,
+                yarn_lock_parser::YarnLockError,
+            >| r.ok(),
+        )
+        .map(|parsed_entries| {
+            let detailed_entries = parse_lockfile_details(&contents);
+            let mut result = Vec::new();
 
-                    // Combine the data from yarn_lock_parser (name, version) with our detailed parsing
-                    for (i, basic_entry) in parsed_entries.iter().enumerate() {
-                        let name = basic_entry.name.to_string();
-                        let version = basic_entry.version.to_string();
+            for (i, basic_entry) in parsed_entries.iter().enumerate() {
+                let name = basic_entry.name.to_string();
+                let version = basic_entry.version.to_string();
 
-                        // Match with detailed entry by index
-                        let (resolved, integrity, dependencies) = detailed_entries
-                            .get(i)
-                            .map(|(r, i, d)| (r.clone(), i.clone(), d.clone()))
-                            .unwrap_or_else(|| (None, None, Vec::new()));
+                let (resolved, integrity, dependencies) = detailed_entries.get(i).map_or_else(
+                    || (None, None, Vec::new()),
+                    |(r, i, d)| (r.clone(), i.clone(), d.clone()),
+                );
 
-                        result.push(build_lockfile_entry(
-                            name,
-                            version,
-                            resolved,
-                            integrity,
-                            dependencies,
-                        ));
-                    }
+                result.push(build_lockfile_entry(
+                    name,
+                    version,
+                    resolved,
+                    integrity,
+                    dependencies,
+                ));
+            }
 
-                    result
-                })
+            result
         })
-        .unwrap_or_else(|| {
-            // Fall back to fully manual parsing if yarn_lock_parser fails or panics
-            parse_yarn_lockfile_fully(&contents, lockfile_path).unwrap_or_default()
-        });
+        .map_or_else(
+            || {
+                // Fall back to fully manual parsing if yarn_lock_parser fails or panics
+                parse_yarn_lockfile_fully(&contents, lockfile_path)
+            },
+            |entries| entries,
+        );
 
         Ok(entries)
     }
@@ -102,7 +104,7 @@ impl LockfileParser for YarnClassicLockfileParser {
                 if !line.starts_with(' ')
                     && !line.starts_with('\t')
                     && !line.starts_with('#')
-                    && line.contains("@")
+                    && line.contains('@')
                     && line.ends_with(':')
                     && !line.starts_with('"')
                 // Modern uses quoted keys
@@ -116,12 +118,12 @@ impl LockfileParser for YarnClassicLockfileParser {
         false
     }
 
-    fn lockfile_name(&self) -> &str {
+    fn lockfile_name(&self) -> &'static str {
         "yarn.lock"
     }
 }
 
-/// Build a LockfileEntry from parsed components
+/// Build a `LockfileEntry` from parsed components
 fn build_lockfile_entry(
     name: String,
     version: String,
@@ -129,16 +131,16 @@ fn build_lockfile_entry(
     integrity: Option<String>,
     dependencies: Vec<DependencyRef>,
 ) -> LockfileEntry {
-    let source = if let Some(ref resolved_url) = resolved {
+    let source = if let Some(resolved_url) = resolved {
         if resolved_url.starts_with("git+") || resolved_url.contains("://github.com/") {
-            DependencySource::Git(resolved_url.clone())
+            DependencySource::Git(resolved_url)
         } else if resolved_url.starts_with("file:") {
             DependencySource::Path(PathBuf::from(resolved_url.trim_start_matches("file:")))
         } else {
-            DependencySource::Registry(resolved_url.clone())
+            DependencySource::Registry(resolved_url)
         }
     } else {
-        DependencySource::Registry(format!("npm:{}", name))
+        DependencySource::Registry(format!("npm:{name}"))
     };
 
     LockfileEntry {
@@ -151,11 +153,9 @@ fn build_lockfile_entry(
     }
 }
 
-/// Parse additional details from Yarn Classic lockfile that yarn_lock_parser doesn't provide.
-/// Returns a vector of (resolved_url, integrity, dependencies) in the same order as entries appear.
-fn parse_lockfile_details(
-    contents: &str,
-) -> Result<Vec<(Option<String>, Option<String>, Vec<DependencyRef>)>> {
+/// Parse additional details from Yarn Classic lockfile that `yarn_lock_parser` doesn't provide.
+/// Returns a vector of (`resolved_url`, `integrity`, `dependencies`) in the same order as entries appear.
+fn parse_lockfile_details(contents: &str) -> Vec<LockfileDetail> {
     let mut details = Vec::new();
     let mut current_resolved: Option<String> = None;
     let mut current_integrity: Option<String> = None;
@@ -216,12 +216,12 @@ fn parse_lockfile_details(
         details.push((current_resolved, current_integrity, current_dependencies));
     }
 
-    Ok(details)
+    details
 }
 
-/// Fully manual parser for Yarn Classic lockfiles (used as fallback when yarn_lock_parser fails).
+/// Fully manual parser for Yarn Classic lockfiles (used as fallback when `yarn_lock_parser` fails).
 /// This parses everything including name, version, resolved, integrity, and dependencies.
-fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Result<Vec<LockfileEntry>> {
+fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Vec<LockfileEntry> {
     let mut entries = Vec::new();
     let mut current_name: Option<String> = None;
     let mut current_version: Option<String> = None;
@@ -241,10 +241,12 @@ fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Result<Ve
         // Check if this is a package header (no leading whitespace)
         if !line.starts_with(' ') && !line.starts_with('\t') {
             // Save the previous entry if exists
-            if in_entry && current_name.is_some() && current_version.is_some() {
+            if in_entry
+                && let (Some(name), Some(version)) = (current_name.take(), current_version.take())
+            {
                 entries.push(build_lockfile_entry(
-                    current_name.take().unwrap(),
-                    current_version.take().unwrap(),
+                    name,
+                    version,
                     current_resolved.take(),
                     current_integrity.take(),
                     std::mem::take(&mut current_dependencies),
@@ -256,10 +258,10 @@ fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Result<Ve
             let descriptor = trimmed.trim_end_matches(':').trim_matches('"');
             let first_descriptor = descriptor.split(',').next().unwrap_or(descriptor).trim();
 
-            let name = if first_descriptor.starts_with('@') {
+            let name = if let Some(rest) = first_descriptor.strip_prefix('@') {
                 // Scoped package: @scope/name@version
-                if let Some(second_at) = first_descriptor[1..].find('@') {
-                    first_descriptor[..second_at + 1].to_string()
+                if let Some(second_at) = rest.find('@') {
+                    rest[..=second_at].to_string()
                 } else {
                     first_descriptor.to_string()
                 }
@@ -304,17 +306,17 @@ fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Result<Ve
     }
 
     // Save the last entry
-    if in_entry && current_name.is_some() && current_version.is_some() {
+    if in_entry && let (Some(name), Some(version)) = (current_name, current_version) {
         entries.push(build_lockfile_entry(
-            current_name.unwrap(),
-            current_version.unwrap(),
+            name,
+            version,
             current_resolved,
             current_integrity,
             current_dependencies,
         ));
     }
 
-    Ok(entries)
+    entries
 }
 
 #[cfg(test)]
@@ -428,3 +430,4 @@ repeat-string@^1.0.0:
         assert!(!parser.supports_lockfile(Path::new("package-lock.json")));
     }
 }
+type LockfileDetail = (Option<String>, Option<String>, Vec<DependencyRef>);

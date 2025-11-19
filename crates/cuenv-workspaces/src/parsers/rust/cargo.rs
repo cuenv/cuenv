@@ -58,12 +58,12 @@ impl LockfileParser for CargoLockfileParser {
         let packages = lockfile.packages;
         let mut entries = Vec::with_capacity(packages.len());
 
-        for package in packages.iter() {
+        for package in &packages {
             let name = package.name.to_string();
             let version = package.version.to_string();
             let is_workspace_member = is_workspace_member(&name, &workspace_members);
             let source = determine_source(package, workspace_root, &workspace_members);
-            let checksum = package.checksum.as_ref().map(|c| c.to_string());
+            let checksum = package.checksum.as_ref().map(ToString::to_string);
             let dependencies = map_cargo_dependencies(&package.dependencies);
 
             entries.push(LockfileEntry {
@@ -86,7 +86,7 @@ impl LockfileParser for CargoLockfileParser {
         )
     }
 
-    fn lockfile_name(&self) -> &str {
+    fn lockfile_name(&self) -> &'static str {
         "Cargo.lock"
     }
 }
@@ -211,18 +211,18 @@ fn collect_members(
                 .to_str()
                 .ok_or_else(|| Error::LockfileParseFailed {
                     path: workspace_root.to_path_buf(),
-                    message: format!("Invalid UTF-8 in glob pattern: {}", pattern),
+                    message: format!("Invalid UTF-8 in glob pattern: {pattern}"),
                 })?;
 
             let entries = glob(glob_str).map_err(|err| Error::LockfileParseFailed {
                 path: workspace_root.to_path_buf(),
-                message: format!("Invalid glob pattern '{}': {}", pattern, err),
+                message: format!("Invalid glob pattern '{pattern}': {err}"),
             })?;
 
             for entry in entries {
                 let member_dir = entry.map_err(|err| Error::LockfileParseFailed {
                     path: workspace_root.to_path_buf(),
-                    message: format!("Glob error for pattern '{}': {}", pattern, err),
+                    message: format!("Glob error for pattern '{pattern}': {err}"),
                 })?;
 
                 if !member_dir.is_dir() {
@@ -258,14 +258,12 @@ fn collect_members(
 fn should_exclude(workspace_root: &Path, member_dir: &Path, exclude_patterns: &[String]) -> bool {
     use glob::Pattern;
 
-    let relative_path = match member_dir.strip_prefix(workspace_root) {
-        Ok(rel) => rel,
-        Err(_) => return false,
+    let Ok(relative_path) = member_dir.strip_prefix(workspace_root) else {
+        return false;
     };
 
-    let path_str = match relative_path.to_str() {
-        Some(s) => s,
-        None => return false,
+    let Some(path_str) = relative_path.to_str() else {
+        return false;
     };
 
     for exclude_pattern in exclude_patterns {
@@ -276,10 +274,10 @@ fn should_exclude(workspace_root: &Path, member_dir: &Path, exclude_patterns: &[
 
         if has_glob {
             // Use glob pattern matching
-            if let Ok(pattern) = Pattern::new(exclude_pattern) {
-                if pattern.matches(path_str) {
-                    return true;
-                }
+            if let Ok(pattern) = Pattern::new(exclude_pattern)
+                && pattern.matches(path_str)
+            {
+                return true;
             }
         } else {
             // Exact match
@@ -313,8 +311,7 @@ fn process_member_dir(
         let name = package.name;
         let relative_path = member_dir
             .strip_prefix(workspace_root)
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| member_dir.to_path_buf());
+            .map_or_else(|_| member_dir.to_path_buf(), PathBuf::from);
         members.entry(name).or_insert(relative_path);
     }
 

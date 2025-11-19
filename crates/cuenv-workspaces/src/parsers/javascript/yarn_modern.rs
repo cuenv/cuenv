@@ -28,7 +28,7 @@ impl LockfileParser for YarnModernLockfileParser {
         // Extract packages, excluding __metadata
         let packages = if let serde_yaml::Value::Mapping(mut map) = value {
             // Remove __metadata key if present
-            map.remove(&serde_yaml::Value::String("__metadata".to_string()));
+            map.remove(serde_yaml::Value::String("__metadata".to_string()));
 
             // Deserialize remaining map into packages
             serde_yaml::from_value::<std::collections::BTreeMap<String, YarnModernPackage>>(
@@ -100,7 +100,7 @@ impl LockfileParser for YarnModernLockfileParser {
                 if !line.starts_with(' ')
                     && !line.starts_with('\t')
                     && !line.starts_with('#')
-                    && line.contains("@")
+                    && line.contains('@')
                     && line.ends_with(':')
                     && !line.starts_with('"')
                 // v1 doesn't quote keys
@@ -114,7 +114,7 @@ impl LockfileParser for YarnModernLockfileParser {
         false
     }
 
-    fn lockfile_name(&self) -> &str {
+    fn lockfile_name(&self) -> &'static str {
         "yarn.lock"
     }
 }
@@ -145,6 +145,7 @@ struct YarnModernPackage {
     checksum: Option<String>,
     /// Language and package manager metadata
     #[serde(default, rename = "languageName")]
+    #[allow(dead_code)]
     language_name: Option<String>,
     /// Link type
     #[serde(default, rename = "linkType")]
@@ -162,7 +163,7 @@ fn entry_from_package(
 
     // Get the resolved version from either resolution or version field
     let (version, source) = if let Some(resolution) = &package.resolution {
-        parse_resolution(resolution, &name)?
+        parse_resolution(resolution, &name)
     } else if let Some(version) = &package.version {
         (
             version.clone(),
@@ -176,11 +177,7 @@ fn entry_from_package(
     };
 
     // Determine if this is a workspace member
-    let is_workspace_member = package
-        .link_type
-        .as_deref()
-        .map(|lt| lt == "soft")
-        .unwrap_or(false)
+    let is_workspace_member = package.link_type.as_deref().is_some_and(|lt| lt == "soft")
         || matches!(&source, DependencySource::Workspace(_));
 
     // Extract dependencies
@@ -204,11 +201,11 @@ fn parse_descriptor(lockfile_path: &Path, descriptor: &str) -> Result<(String, S
     // Descriptors have format: "package-name@protocol:version"
     // Examples: "left-pad@npm:^1.3.0", "@babel/core@npm:^7.0.0", "my-pkg@workspace:."
 
-    if descriptor.starts_with('@') {
+    if let Some(rest) = descriptor.strip_prefix('@') {
         // Scoped package: "@scope/name@protocol:version"
-        if let Some(second_at) = descriptor[1..].find('@') {
+        if let Some(second_at) = rest.find('@') {
             let at_idx = second_at + 1;
-            let name = &descriptor[..at_idx];
+            let name = &descriptor[..=at_idx];
             let rest = &descriptor[at_idx + 1..];
             Ok((name.to_string(), rest.to_string()))
         } else {
@@ -232,7 +229,7 @@ fn parse_descriptor(lockfile_path: &Path, descriptor: &str) -> Result<(String, S
     }
 }
 
-fn parse_resolution(resolution: &str, package_name: &str) -> Result<(String, DependencySource)> {
+fn parse_resolution(resolution: &str, package_name: &str) -> (String, DependencySource) {
     // Resolutions look like:
     // - "left-pad@npm:1.3.0"
     // - "@babel/core@npm:7.22.5"
@@ -253,20 +250,14 @@ fn parse_resolution(resolution: &str, package_name: &str) -> Result<(String, Dep
         };
 
         match protocol {
-            "npm" | "registry" => {
-                // Version is after the colon
-                Ok((
-                    after_colon.to_string(),
-                    DependencySource::Registry(format!("npm:{package_name}@{after_colon}")),
-                ))
-            }
-            "workspace" => {
-                // Workspace path is after the colon
-                Ok((
-                    "0.0.0".to_string(),
-                    DependencySource::Workspace(PathBuf::from(after_colon)),
-                ))
-            }
+            "npm" | "registry" => (
+                after_colon.to_string(),
+                DependencySource::Registry(format!("npm:{package_name}@{after_colon}")),
+            ),
+            "workspace" => (
+                "0.0.0".to_string(),
+                DependencySource::Workspace(PathBuf::from(after_colon)),
+            ),
             "git" | "git+https" | "git+ssh" => {
                 // Git resolution: extract commit hash if present
                 let (repo, commit) = if let Some(hash_idx) = after_colon.rfind('#') {
@@ -277,32 +268,26 @@ fn parse_resolution(resolution: &str, package_name: &str) -> Result<(String, Dep
                 } else {
                     (after_colon, "HEAD".to_string())
                 };
-                Ok((
+                (
                     commit.clone(),
                     DependencySource::Git(format!("{protocol}:{repo}#{commit}")),
-                ))
+                )
             }
-            "file" => {
-                // File path
-                Ok((
-                    "0.0.0".to_string(),
-                    DependencySource::Path(PathBuf::from(after_colon)),
-                ))
-            }
-            _ => {
-                // Unknown protocol, treat as registry
-                Ok((
-                    after_colon.to_string(),
-                    DependencySource::Registry(resolution.to_string()),
-                ))
-            }
+            "file" => (
+                "0.0.0".to_string(),
+                DependencySource::Path(PathBuf::from(after_colon)),
+            ),
+            _ => (
+                after_colon.to_string(),
+                DependencySource::Registry(resolution.to_string()),
+            ),
         }
     } else {
         // No protocol separator, treat as version
-        Ok((
+        (
             resolution.to_string(),
             DependencySource::Registry(format!("npm:{package_name}@{resolution}")),
-        ))
+        )
     }
 }
 

@@ -6,8 +6,8 @@ pub mod hooks;
 pub mod task;
 pub mod version;
 
-use crate::events::{Event, EventSender};
 use crate::cli::StatusFormat;
+use crate::events::{Event, EventSender};
 use cuenv_core::Result;
 use tokio::time::{Duration, sleep};
 use tracing::{Level, event};
@@ -113,7 +113,10 @@ impl CommandExecutor {
                 wait,
                 timeout,
                 format,
-            } => self.execute_env_status(path, package, wait, timeout, format).await,
+            } => {
+                self.execute_env_status(path, package, wait, timeout, format)
+                    .await
+            }
             Command::EnvCheck {
                 path,
                 package,
@@ -462,7 +465,7 @@ impl CommandExecutor {
         }
     }
 
-/// Execute export command safely
+    /// Execute export command safely
     async fn execute_export(&self, shell: Option<String>, package: String) -> Result<()> {
         let command_name = "export";
 
@@ -729,11 +732,8 @@ mod tests {
     async fn test_execute_version_command_flow() {
         let (executor, mut receiver) = create_test_executor();
 
-        let handle = tokio::spawn(async move {
-            executor
-                .execute_version("simple".to_string())
-                .await
-        });
+        let handle =
+            tokio::spawn(async move { executor.execute_version("simple".to_string()).await });
 
         // Verify the complete flow
         let mut has_start = false;
