@@ -9,6 +9,7 @@ use petgraph::algo::{is_cyclic_directed, toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::IntoNodeReferences;
 use std::collections::{HashMap, HashSet};
+use tracing::debug;
 
 /// A node in the task graph
 #[derive(Debug, Clone)]
@@ -128,6 +129,7 @@ impl TaskGraph {
 
         let node_index = self.graph.add_node(node);
         self.name_to_node.insert(name.to_string(), node_index);
+        debug!("Added task node '{}'", name);
 
         Ok(node_index)
     }
@@ -265,6 +267,12 @@ impl TaskGraph {
         let mut to_process = vec![task_name.to_string()];
         let mut processed = HashSet::new();
 
+        debug!(
+            "Building graph for '{}' with tasks {:?}",
+            task_name,
+            all_tasks.list_tasks()
+        );
+
         // First pass: Collect all tasks that need to be included
         while let Some(current_name) = to_process.pop() {
             if processed.contains(&current_name) {
@@ -288,6 +296,8 @@ impl TaskGraph {
                         self.build_from_definition(&current_name, definition, all_tasks)?;
                     }
                 }
+            } else {
+                debug!("Task '{}' not found while building graph", current_name);
             }
         }
 

@@ -191,7 +191,7 @@ impl PackageManager {
     pub fn lockfile_name(&self) -> &str {
         match self {
             Self::Npm => "package-lock.json",
-            Self::Bun => "bun.lockb",
+            Self::Bun => "bun.lock",
             Self::Pnpm => "pnpm-lock.yaml",
             Self::YarnClassic | Self::YarnModern => "yarn.lock",
             Self::Cargo => "Cargo.lock",
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn test_package_manager_lockfile_name() {
         assert_eq!(PackageManager::Npm.lockfile_name(), "package-lock.json");
-        assert_eq!(PackageManager::Bun.lockfile_name(), "bun.lockb");
+        assert_eq!(PackageManager::Bun.lockfile_name(), "bun.lock");
         assert_eq!(PackageManager::Pnpm.lockfile_name(), "pnpm-lock.yaml");
         assert_eq!(PackageManager::YarnClassic.lockfile_name(), "yarn.lock");
         assert_eq!(PackageManager::YarnModern.lockfile_name(), "yarn.lock");
