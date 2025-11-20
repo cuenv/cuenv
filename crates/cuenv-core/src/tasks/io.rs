@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
+use tracing;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedInputFile {
@@ -276,9 +277,25 @@ pub fn snapshot_workspace_tar_zst(src_root: &Path, dst_file: &Path) -> Result<()
     let enc = zstd::Encoder::new(file, 3)
         .map_err(|e| Error::configuration(format!("zstd encoder error: {e}")))?;
     let mut builder = tar::Builder::new(enc);
-    builder
-        .append_dir_all(".", src_root)
-        .map_err(|e| Error::configuration(format!("tar append failed: {e}")))?;
+
+    match builder.append_dir_all(".", src_root) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Workspace contents can legitimately disappear during a task (e.g.
+            // package managers removing temp files). Skip snapshotting instead
+            // of failing the whole task cache write.
+            let _ = fs::remove_file(dst_file);
+            tracing::warn!(
+                root = %src_root.display(),
+                "Skipping workspace snapshot; files disappeared during archive: {e}"
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(Error::configuration(format!("tar append failed: {e}")));
+        }
+    }
+
     let enc = builder
         .into_inner()
         .map_err(|e| Error::configuration(format!("tar finalize failed: {e}")))?;

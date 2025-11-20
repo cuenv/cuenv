@@ -142,7 +142,7 @@ enum WorkspacesField {
 }
 
 fn detect_manager(root: &Path) -> PackageManager {
-    if root.join("bun.lockb").exists() {
+    if root.join("bun.lock").exists() {
         PackageManager::Bun
     } else if root.join("yarn.lock").exists() {
         // Could distinguish classic/modern by parsing, but for now default to modern or classic?

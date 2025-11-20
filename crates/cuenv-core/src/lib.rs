@@ -58,7 +58,7 @@ use thiserror::Error;
 /// Main error type for cuenv operations with enhanced diagnostics
 #[derive(Error, Debug, Diagnostic)]
 pub enum Error {
-    #[error("Configuration error")]
+    #[error("Configuration error: {message}")]
     #[diagnostic(
         code(cuenv::config::invalid),
         help("Check your cuenv.cue configuration file for syntax errors or invalid values")
@@ -71,7 +71,7 @@ pub enum Error {
         message: String,
     },
 
-    #[error("FFI operation failed")]
+    #[error("FFI operation failed in {function}: {message}")]
     #[diagnostic(code(cuenv::ffi::error))]
     Ffi {
         function: &'static str,
@@ -80,7 +80,7 @@ pub enum Error {
         help: Option<String>,
     },
 
-    #[error("CUE parsing failed")]
+    #[error("CUE parsing failed: {message}")]
     #[diagnostic(code(cuenv::cue::parse_error))]
     CueParse {
         path: Box<Path>,
@@ -122,7 +122,7 @@ pub enum Error {
     )]
     Timeout { seconds: u64 },
 
-    #[error("Validation failed")]
+    #[error("Validation failed: {message}")]
     #[diagnostic(code(cuenv::validation::failed))]
     Validation {
         #[source_code]
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn test_error_configuration() {
         let err = Error::configuration("test message");
-        assert_eq!(err.to_string(), "Configuration error");
+        assert_eq!(err.to_string(), "Configuration error: test message");
 
         if let Error::Configuration { message, .. } = err {
             assert_eq!(message, "test message");
@@ -527,7 +527,10 @@ mod tests {
     #[test]
     fn test_error_ffi() {
         let err = Error::ffi("test_function", "FFI failed");
-        assert_eq!(err.to_string(), "FFI operation failed");
+        assert_eq!(
+            err.to_string(),
+            "FFI operation failed in test_function: FFI failed"
+        );
 
         if let Error::Ffi {
             function,
@@ -565,7 +568,7 @@ mod tests {
     fn test_error_cue_parse() {
         let path = Path::new("/test/path.cue");
         let err = Error::cue_parse(path, "parsing failed");
-        assert_eq!(err.to_string(), "CUE parsing failed");
+        assert_eq!(err.to_string(), "CUE parsing failed: parsing failed");
 
         if let Error::CueParse {
             path: p, message, ..
@@ -614,7 +617,7 @@ mod tests {
     #[test]
     fn test_error_validation() {
         let err = Error::validation("validation failed");
-        assert_eq!(err.to_string(), "Validation failed");
+        assert_eq!(err.to_string(), "Validation failed: validation failed");
 
         if let Error::Validation {
             message, related, ..
@@ -698,13 +701,16 @@ mod tests {
     #[test]
     fn test_error_display() {
         let errors = vec![
-            (Error::configuration("test"), "Configuration error"),
-            (Error::ffi("func", "msg"), "FFI operation failed"),
+            (Error::configuration("test"), "Configuration error: test"),
+            (
+                Error::ffi("func", "msg"),
+                "FFI operation failed in func: msg",
+            ),
             (
                 Error::cue_parse(Path::new("/test"), "msg"),
-                "CUE parsing failed",
+                "CUE parsing failed: msg",
             ),
-            (Error::validation("msg"), "Validation failed"),
+            (Error::validation("msg"), "Validation failed: msg"),
             (
                 Error::Timeout { seconds: 10 },
                 "Operation timed out after 10 seconds",

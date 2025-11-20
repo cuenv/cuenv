@@ -24,7 +24,7 @@ use cuenv_workspaces::{
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::task::JoinSet;
@@ -38,6 +38,9 @@ pub struct TaskResult {
     pub stderr: String,
     pub success: bool,
 }
+
+/// Number of lines from stdout/stderr to include when summarizing failures
+pub const TASK_FAILURE_SNIPPET_LINES: usize = 20;
 
 /// Task executor configuration
 #[derive(Debug, Clone)]
@@ -101,19 +104,44 @@ impl TaskExecutor {
             workspace_lockfile_hash = hash;
         }
 
-        // Resolve inputs relative to project root
+        // Resolve inputs relative to the workspace root (if any) while keeping
+        // project-scoped inputs anchored to the original project path.
+        let workspace_root = workspace_ctx.as_ref().map(|(ws, _)| ws.root.clone());
+        let project_prefix = workspace_root
+            .as_ref()
+            .and_then(|root| self.config.project_root.strip_prefix(root).ok())
+            .map(|p| p.to_path_buf());
+        let input_root = workspace_root
+            .clone()
+            .unwrap_or_else(|| self.config.project_root.clone());
+
         let span_inputs = tracing::info_span!("inputs.resolve", task = %name);
         let resolved_inputs = {
             let _g = span_inputs.enter();
-            let resolver = InputResolver::new(&self.config.project_root);
-            let all_inputs: Vec<String> = task
-                .inputs
-                .iter()
-                .chain(workspace_input_patterns.iter())
-                .cloned()
-                .collect();
+            let resolver = InputResolver::new(&input_root);
+            let mut all_inputs: Vec<String> = Vec::new();
+
+            if let Some(prefix) = project_prefix.as_ref() {
+                for input in &task.inputs {
+                    all_inputs.push(prefix.join(input).to_string_lossy().to_string());
+                }
+            } else {
+                all_inputs.extend(task.inputs.iter().cloned());
+            }
+
+            all_inputs.extend(workspace_input_patterns.iter().cloned());
             resolver.resolve(&all_inputs)?
         };
+        if task_trace_enabled() {
+            tracing::info!(
+                task = %name,
+                input_root = %input_root.display(),
+                project_root = %self.config.project_root.display(),
+                inputs_count = resolved_inputs.files.len(),
+                workspace_inputs = workspace_input_patterns.len(),
+                "Resolved task inputs"
+            );
+        }
 
         // Build cache key envelope
         let inputs_summary: BTreeMap<String, String> = resolved_inputs.to_summary_map();
@@ -261,17 +289,31 @@ impl TaskExecutor {
             cmd
         };
 
-        // Set working directory override if provided
-        if let Some(dir) = &self.config.working_dir {
-            cmd.current_dir(dir);
-        }
-
+        let workdir = if let Some(dir) = &self.config.working_dir {
+            dir.clone()
+        } else if let Some(prefix) = project_prefix.as_ref() {
+            hermetic_root.join(prefix)
+        } else {
+            hermetic_root.clone()
+        };
+        let _ = std::fs::create_dir_all(&workdir);
+        cmd.current_dir(&workdir);
         // Set environment variables (resolved + system), set CWD
         let env_vars = self.config.environment.merge_with_system();
+        if task_trace_enabled() {
+            tracing::info!(
+                task = %name,
+                hermetic_root = %hermetic_root.display(),
+                workdir = %workdir.display(),
+                command = %task.command,
+                args = ?task.args,
+                env_count = env_vars.len(),
+                "Launching task command"
+            );
+        }
         for (k, v) in env_vars {
             cmd.env(k, v);
         }
-        cmd.current_dir(&hermetic_root);
 
         // Configure output: always capture to ensure consistent behavior on
         // cache hits and allow callers to decide what to print.
@@ -286,12 +328,17 @@ impl TaskExecutor {
         let stdout_handle = child.stdout.take();
         let stderr_handle = child.stderr.take();
 
-        let stdout_task = async {
+        let stream_logs = !self.config.capture_output;
+
+        let stdout_task = async move {
             if let Some(stdout) = stdout_handle {
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
                 let mut stdout_lines = Vec::new();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    if stream_logs {
+                        println!("{line}");
+                    }
                     stdout_lines.push(line);
                 }
                 stdout_lines.join("\n")
@@ -300,12 +347,15 @@ impl TaskExecutor {
             }
         };
 
-        let stderr_task = async {
+        let stderr_task = async move {
             if let Some(stderr) = stderr_handle {
                 let reader = BufReader::new(stderr);
                 let mut lines = reader.lines();
                 let mut stderr_lines = Vec::new();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    if stream_logs {
+                        eprintln!("{line}");
+                    }
                     stderr_lines.push(line);
                 }
                 stderr_lines.join("\n")
@@ -332,7 +382,15 @@ impl TaskExecutor {
         }
 
         // Collect declared outputs and warn on undeclared writes
-        let outputs = collect_outputs(&hermetic_root, &task.outputs)?;
+        let output_patterns: Vec<String> = if let Some(prefix) = project_prefix.as_ref() {
+            task.outputs
+                .iter()
+                .map(|o| prefix.join(o).to_string_lossy().to_string())
+                .collect()
+        } else {
+            task.outputs.clone()
+        };
+        let outputs = collect_outputs(&hermetic_root, &output_patterns)?;
         let outputs_set: HashSet<PathBuf> = outputs.iter().cloned().collect();
         let mut output_index: Vec<task_cache::OutputIndexEntry> = Vec::new();
 
@@ -344,20 +402,25 @@ impl TaskExecutor {
         std::fs::create_dir_all(&outputs_stage).ok();
 
         for rel in &outputs {
+            let rel_for_project = project_prefix
+                .as_ref()
+                .and_then(|prefix| rel.strip_prefix(prefix).ok())
+                .unwrap_or(rel)
+                .to_path_buf();
             let src = hermetic_root.join(rel);
             // Intentionally avoid `let`-chains here to preserve readability
             // and to align with review guidance; allow clippy's collapsible-if.
             #[allow(clippy::collapsible_if)]
             if let Ok(meta) = std::fs::metadata(&src) {
                 if meta.is_file() {
-                    let dst = outputs_stage.join(rel);
+                    let dst = outputs_stage.join(&rel_for_project);
                     if let Some(parent) = dst.parent() {
                         let _ = std::fs::create_dir_all(parent);
                     }
                     let _ = std::fs::copy(&src, &dst);
                     let (sha, _size) = crate::tasks::io::sha256_file(&src).unwrap_or_default();
                     output_index.push(task_cache::OutputIndexEntry {
-                        rel_path: rel.to_string_lossy().to_string(),
+                        rel_path: rel_for_project.to_string_lossy().to_string(),
                         size: meta.len(),
                         sha256: sha,
                     });
@@ -432,8 +495,13 @@ impl TaskExecutor {
 
             // Materialize outputs back to project root
             for rel in &outputs {
+                let rel_for_project = project_prefix
+                    .as_ref()
+                    .and_then(|prefix| rel.strip_prefix(prefix).ok())
+                    .unwrap_or(rel)
+                    .to_path_buf();
                 let src = hermetic_root.join(rel);
-                let dst = self.config.project_root.join(rel);
+                let dst = self.config.project_root.join(&rel_for_project);
                 if src.exists() {
                     if let Some(parent) = dst.parent() {
                         std::fs::create_dir_all(parent).ok();
@@ -505,10 +573,11 @@ impl TaskExecutor {
                 .await?;
             for result in &task_results {
                 if !result.success {
-                    return Err(Error::configuration(format!(
-                        "Task '{}' failed in sequential group",
-                        result.name
-                    )));
+                    let message = format!(
+                        "Sequential task group '{prefix}' halted.\n\n{}",
+                        summarize_task_failure(result, TASK_FAILURE_SNIPPET_LINES)
+                    );
+                    return Err(Error::configuration(message));
                 }
             }
             results.extend(task_results);
@@ -524,6 +593,18 @@ impl TaskExecutor {
     ) -> Result<Vec<TaskResult>> {
         let mut join_set = JoinSet::new();
         let all_tasks = Arc::new(all_tasks.clone());
+        let mut all_results = Vec::new();
+        let mut merge_results = |results: Vec<TaskResult>| -> Result<()> {
+            if let Some(failed) = results.iter().find(|r| !r.success) {
+                let message = format!(
+                    "Parallel task group '{prefix}' halted.\n\n{}",
+                    summarize_task_failure(failed, TASK_FAILURE_SNIPPET_LINES)
+                );
+                return Err(Error::configuration(message));
+            }
+            all_results.extend(results);
+            Ok(())
+        };
         for (name, task_def) in tasks {
             let task_name = format!("{}.{}", prefix, name);
             let task_def = task_def.clone();
@@ -539,7 +620,7 @@ impl TaskExecutor {
                 && let Some(result) = join_set.join_next().await
             {
                 match result {
-                    Ok(Ok(_)) => {}
+                    Ok(Ok(results)) => merge_results(results)?,
                     Ok(Err(e)) => return Err(e),
                     Err(e) => {
                         return Err(Error::configuration(format!(
@@ -550,10 +631,9 @@ impl TaskExecutor {
                 }
             }
         }
-        let mut all_results = Vec::new();
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok(Ok(results)) => all_results.extend(results),
+                Ok(Ok(results)) => merge_results(results)?,
                 Ok(Err(e)) => return Err(e),
                 Err(e) => {
                     return Err(Error::configuration(format!(
@@ -591,10 +671,11 @@ impl TaskExecutor {
                 match result {
                     Ok(Ok(task_result)) => {
                         if !task_result.success {
-                            return Err(Error::configuration(format!(
-                                "Task '{}' failed",
-                                task_result.name
-                            )));
+                            let message = format!(
+                                "Task graph execution halted.\n\n{}",
+                                summarize_task_failure(&task_result, TASK_FAILURE_SNIPPET_LINES)
+                            );
+                            return Err(Error::configuration(message));
                         }
                         all_results.push(task_result);
                     }
@@ -618,14 +699,17 @@ impl TaskExecutor {
         config: &WorkspaceInputs,
     ) -> Result<(Workspace, Vec<LockfileEntry>, Vec<String>, Option<String>)> {
         let root = self.config.project_root.clone();
+        let task_label = _task_name.to_string();
         let command = task.command.clone();
         let config_pm = config.package_manager.clone();
-        let packages = config.packages.clone();
+        let mut packages = config.packages.clone();
         let lockfile_override = config.lockfile.clone();
+
+        let mut traverse_workspace_deps = !packages.is_empty();
 
         // Use spawn_blocking for heavy lifting
         tokio::task::spawn_blocking(move || {
-            let lockfile_override_path = lockfile_override.as_ref().map(|lock| {
+            let override_for_detection = lockfile_override.as_ref().map(|lock| {
                 let candidate = PathBuf::from(lock);
                 if candidate.is_absolute() {
                     candidate
@@ -657,7 +741,7 @@ impl TaskExecutor {
                 let detected = match detect_package_managers(&root) {
                     Ok(list) => list,
                     Err(e) => {
-                        if lockfile_override_path.is_some() {
+                        if override_for_detection.is_some() {
                             Vec::new()
                         } else {
                             return Err(Error::configuration(format!(
@@ -674,7 +758,7 @@ impl TaskExecutor {
                     } else if !detected.is_empty() {
                         // Prefer detected files
                         detected[0]
-                    } else if let Some(ref override_path) = lockfile_override_path {
+                    } else if let Some(ref override_path) = override_for_detection {
                         infer_manager_from_lockfile(override_path).ok_or_else(|| {
                             Error::configuration(
                                 "Unable to infer package manager from lockfile override",
@@ -687,7 +771,7 @@ impl TaskExecutor {
                     }
                 } else if !detected.is_empty() {
                     detected[0]
-                } else if let Some(ref override_path) = lockfile_override_path {
+                } else if let Some(ref override_path) = override_for_detection {
                     infer_manager_from_lockfile(override_path).ok_or_else(|| {
                         Error::configuration(
                             "Unable to infer package manager from lockfile override",
@@ -700,6 +784,28 @@ impl TaskExecutor {
                 }
             };
 
+            // Resolve the actual workspace root by walking up until we find a
+            // directory that declares a workspace for this package manager.
+            let workspace_root = find_workspace_root(manager, &root);
+            if task_trace_enabled() {
+                tracing::info!(
+                    task = %task_label,
+                    manager = %manager,
+                    project_root = %root.display(),
+                    workspace_root = %workspace_root.display(),
+                    "Resolved workspace root for package manager"
+                );
+            }
+
+            let lockfile_override_path = lockfile_override.as_ref().map(|lock| {
+                let candidate = PathBuf::from(lock);
+                if candidate.is_absolute() {
+                    candidate
+                } else {
+                    workspace_root.join(lock)
+                }
+            });
+
             // 2. Discover Workspace
             let discovery: Box<dyn WorkspaceDiscovery> = match manager {
                 PackageManager::Npm
@@ -710,7 +816,7 @@ impl TaskExecutor {
                 PackageManager::Cargo => Box::new(CargoTomlDiscovery),
             };
 
-            let workspace = discovery.discover(&root).map_err(|e| {
+            let workspace = discovery.discover(&workspace_root).map_err(|e| {
                 Error::configuration(format!("Failed to discover workspace: {}", e))
             })?;
 
@@ -741,16 +847,46 @@ impl TaskExecutor {
             let entries = parser
                 .parse(&lockfile_path)
                 .map_err(|e| Error::configuration(format!("Failed to parse lockfile: {}", e)))?;
+            if task_trace_enabled() {
+                tracing::info!(
+                    task = %task_label,
+                    lockfile = %lockfile_path.display(),
+                    members = entries.len(),
+                    "Parsed workspace lockfile"
+                );
+            }
 
             // Compute lockfile hash
             let (hash, _) = crate::tasks::io::sha256_file(&lockfile_path)?;
+
+            // Infer packages when none explicitly provided by scoping to the
+            // current workspace member. (We intentionally avoid pulling all
+            // transitive deps here to keep hashing fast for large monorepos.)
+            if packages.is_empty() {
+                let current_member = workspace
+                    .members
+                    .iter()
+                    .find(|m| workspace_root.join(&m.path) == root || root.starts_with(workspace_root.join(&m.path)));
+                if let Some(member) = current_member {
+                    let inferred = vec![member.name.clone()];
+                    if task_trace_enabled() {
+                        tracing::info!(
+                            task = %task_label,
+                            inferred_packages = ?inferred,
+                            "Inferred workspace packages from current project"
+                        );
+                    }
+                    packages = inferred;
+                    traverse_workspace_deps = false;
+                }
+            }
 
             // 4. Collect Inputs
             let mut member_paths = Vec::new();
 
             // Always include workspace configuration files
             member_paths.push(manager.workspace_config_name().to_string());
-            if let Ok(rel) = lockfile_path.strip_prefix(&root) {
+            if let Ok(rel) = lockfile_path.strip_prefix(&workspace_root) {
                 member_paths.push(rel.to_string_lossy().to_string());
             } else {
                 member_paths.push(lockfile_path.to_string_lossy().to_string());
@@ -758,7 +894,10 @@ impl TaskExecutor {
 
             if packages.is_empty() {
                 for member in &workspace.members {
-                    member_paths.push(member.path.to_string_lossy().to_string());
+                    let manifest_rel = member
+                        .path
+                        .join(manager.workspace_config_name());
+                    member_paths.push(manifest_rel.to_string_lossy().to_string());
                 }
             } else {
                 let mut to_visit: Vec<String> = packages.clone();
@@ -771,20 +910,34 @@ impl TaskExecutor {
                     visited.insert(pkg_name.clone());
 
                     if let Some(member) = workspace.find_member(&pkg_name) {
-                        member_paths.push(member.path.to_string_lossy().to_string());
+                        let manifest_rel = member
+                            .path
+                            .join(manager.workspace_config_name());
+                        member_paths.push(manifest_rel.to_string_lossy().to_string());
 
-                        // Add dependencies
-                        if let Some(entry) = entries.iter().find(|e| e.name == pkg_name) {
-                            for dep in &entry.dependencies {
-                                if let Some(dep_entry) = entries.iter().find(|e| e.name == dep.name)
-                                    && dep_entry.is_workspace_member
-                                {
-                                    to_visit.push(dep.name.clone());
+                        // Add dependencies when explicitly requested
+                        if traverse_workspace_deps {
+                            if let Some(entry) = entries.iter().find(|e| e.name == pkg_name) {
+                                for dep in &entry.dependencies {
+                                    if let Some(dep_entry) =
+                                        entries.iter().find(|e| e.name == dep.name)
+                                        && dep_entry.is_workspace_member
+                                    {
+                                        to_visit.push(dep.name.clone());
+                                    }
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            if task_trace_enabled() {
+                tracing::info!(
+                    task = %task_label,
+                    members = ?member_paths,
+                    "Workspace input member paths selected"
+                );
             }
 
             Ok((workspace, entries, member_paths, Some(hash)))
@@ -821,10 +974,141 @@ impl TaskExecutor {
     }
 }
 
+fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
+    let mut current = start
+        .canonicalize()
+        .unwrap_or_else(|_| start.to_path_buf());
+
+    loop {
+        let is_root = match manager {
+            PackageManager::Npm
+            | PackageManager::Bun
+            | PackageManager::YarnClassic
+            | PackageManager::YarnModern => package_json_has_workspaces(&current),
+            PackageManager::Pnpm => current.join("pnpm-workspace.yaml").exists(),
+            PackageManager::Cargo => cargo_toml_has_workspace(&current),
+        };
+
+        if is_root {
+            return current;
+        }
+
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        } else {
+            return start.to_path_buf();
+        }
+    }
+}
+
+fn package_json_has_workspaces(dir: &Path) -> bool {
+    let path = dir.join("package.json");
+    let content = std::fs::read_to_string(&path);
+    let Ok(json) = content.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    })) else {
+        return false;
+    };
+
+    match json.get("workspaces") {
+        Some(serde_json::Value::Array(arr)) => !arr.is_empty(),
+        Some(serde_json::Value::Object(map)) => map
+            .get("packages")
+            .and_then(|packages| packages.as_array())
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn cargo_toml_has_workspace(dir: &Path) -> bool {
+    let path = dir.join("Cargo.toml");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+
+    content.contains("[workspace]")
+}
+
+fn task_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("CUENV_TRACE_TASKS")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+/// Build a compact, user-friendly summary for a failed task, including the
+/// exit code and the tail of stdout/stderr to help with diagnostics.
+pub fn summarize_task_failure(result: &TaskResult, max_output_lines: usize) -> String {
+    let exit_code = result
+        .exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let mut sections = Vec::new();
+    sections.push(format!(
+        "Task '{}' failed with exit code {}.",
+        result.name, exit_code
+    ));
+
+    let output = format_failure_streams(result, max_output_lines);
+    if output.is_empty() {
+        sections.push(
+            "No stdout/stderr were captured; rerun with RUST_LOG=debug to stream task logs."
+                .to_string(),
+        );
+    } else {
+        sections.push(output);
+    }
+
+    sections.join("\n\n")
+}
+
+fn format_failure_streams(result: &TaskResult, max_output_lines: usize) -> String {
+    let mut streams = Vec::new();
+
+    if let Some(stdout) = summarize_stream("stdout", &result.stdout, max_output_lines) {
+        streams.push(stdout);
+    }
+
+    if let Some(stderr) = summarize_stream("stderr", &result.stderr, max_output_lines) {
+        streams.push(stderr);
+    }
+
+    streams.join("\n\n")
+}
+
+fn summarize_stream(label: &str, content: &str, max_output_lines: usize) -> Option<String> {
+    let normalized = content.trim_end();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let lines: Vec<&str> = normalized.lines().collect();
+    let total = lines.len();
+    let start = total.saturating_sub(max_output_lines);
+    let snippet = lines[start..].join("\n");
+
+    let header = if total > max_output_lines {
+        format!("{label} (last {max_output_lines} of {total} lines):")
+    } else {
+        format!("{label}:")
+    };
+
+    Some(format!("{header}\n{snippet}"))
+}
+
 fn infer_manager_from_lockfile(path: &Path) -> Option<PackageManager> {
     match path.file_name().and_then(|n| n.to_str())? {
         "package-lock.json" => Some(PackageManager::Npm),
-        "bun.lockb" => Some(PackageManager::Bun),
+        "bun.lock" => Some(PackageManager::Bun),
         "pnpm-lock.yaml" => Some(PackageManager::Pnpm),
         "yarn.lock" => Some(PackageManager::YarnModern),
         "Cargo.lock" => Some(PackageManager::Cargo),
@@ -907,6 +1191,8 @@ pub async fn execute_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_executor_config_default() {
@@ -981,6 +1267,115 @@ mod tests {
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test_value"));
+    }
+
+    #[tokio::test]
+    async fn test_workspace_inputs_include_workspace_root_when_project_is_nested() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Workspace root with workspaces + lockfile
+        fs::write(
+            root.join("package.json"),
+            r#"{
+  "name": "root-app",
+  "version": "0.0.0",
+  "workspaces": ["packages/*", "apps/*"],
+  "dependencies": {
+    "@rawkodeacademy/content-technologies": "workspace:*"
+  }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("bun.lock"),
+            r#"{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "root-app",
+      "dependencies": {
+        "@rawkodeacademy/content-technologies": "workspace:*"
+      }
+    },
+    "packages/content-technologies": {
+      "name": "@rawkodeacademy/content-technologies",
+      "version": "0.0.1"
+    }
+  },
+  "packages": {}
+}"#,
+        )
+        .unwrap();
+
+        // Workspace member packages
+        fs::create_dir_all(root.join("packages/content-technologies")).unwrap();
+        fs::write(
+            root.join("packages/content-technologies/package.json"),
+            r#"{
+  "name": "@rawkodeacademy/content-technologies",
+  "version": "0.0.1"
+}"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(root.join("apps/site")).unwrap();
+        fs::write(
+            root.join("apps/site/package.json"),
+            r#"{
+  "name": "site",
+  "version": "0.0.0",
+  "dependencies": {
+    "@rawkodeacademy/content-technologies": "workspace:*"
+  }
+}"#,
+        )
+        .unwrap();
+
+        let config = ExecutorConfig {
+            capture_output: true,
+            project_root: root.join("apps/site"),
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+
+        let task = Task {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "find .. -maxdepth 3 -type d | sort".to_string(),
+            ],
+            shell: None,
+            env: HashMap::new(),
+            depends_on: vec![],
+            inputs: vec!["package.json".to_string()],
+            outputs: vec![],
+            external_inputs: None,
+            workspace_inputs: Some(WorkspaceInputs {
+                enabled: true,
+                package_manager: Some("bun".to_string()),
+                packages: Vec::new(),
+                lockfile: None,
+            }),
+            description: None,
+        };
+
+        let result = executor.execute_task("install", &task).await.unwrap();
+        assert!(
+            result.success,
+            "command failed stdout='{}' stderr='{}'",
+            result.stdout,
+            result.stderr
+        );
+        assert!(
+            result
+                .stdout
+                .split_whitespace()
+                .any(|line| line.ends_with("packages/content-technologies")),
+            "should include workspace member from workspace root; stdout='{}' stderr='{}'",
+            result.stdout,
+            result.stderr
+        );
     }
 
     #[tokio::test]

@@ -3,7 +3,10 @@
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
-use cuenv_core::tasks::{ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, Tasks};
+use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
+use cuenv_core::tasks::{
+    ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, TaskIndex, Tasks,
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
@@ -39,10 +42,13 @@ pub async fn execute_task(
         manifest.tasks.len()
     );
 
+    // Build a canonical index to support nested task paths
+    let task_index = TaskIndex::build(&manifest.tasks)?;
+
     // If no task specified, list available tasks
     if task_name.is_none() {
         tracing::debug!("Listing available tasks");
-        let tasks: Vec<&str> = manifest.tasks.keys().map(String::as_str).collect();
+        let tasks: Vec<&str> = task_index.list().iter().map(|t| t.name.as_str()).collect();
         tracing::debug!("Found {} tasks to list: {:?}", tasks.len(), tasks);
 
         if tasks.is_empty() {
@@ -56,19 +62,34 @@ pub async fn execute_task(
         return Ok(output);
     }
 
-    let task_name = task_name.unwrap();
-    tracing::debug!("Looking for specific task: {}", task_name);
+    let requested_task = task_name.unwrap();
+    tracing::debug!("Looking for specific task: {}", requested_task);
 
-    // Check if task exists
-    let task_def = manifest.tasks.get(task_name).ok_or_else(|| {
-        let available: Vec<&str> = manifest.tasks.keys().map(String::as_str).collect();
-        tracing::error!(
-            "Task '{}' not found in available tasks: {:?}",
-            task_name,
-            available
-        );
-        cuenv_core::Error::configuration(format!("Task '{task_name}' not found"))
+    // Resolve task via canonical index (supports nested paths and ':' alias)
+    let task_entry = task_index.resolve(requested_task).map_err(|e| {
+        tracing::error!("Task resolution failed: {}", e);
+        e
     })?;
+    let canonical_task_name = task_entry.name.clone();
+    tracing::debug!(
+        "Task index entries: {:?}",
+        task_index
+            .list()
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    let tasks = task_index.to_tasks();
+    tracing::debug!("Indexed tasks for execution: {:?}", tasks.list_tasks());
+    tracing::debug!(
+        "Requested task '{}' present: {}",
+        requested_task,
+        tasks.get(requested_task).is_some()
+    );
+    let task_def = tasks.get(&canonical_task_name).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!("Task '{}' not found", canonical_task_name))
+    })?;
+    let task_name = canonical_task_name.as_str();
 
     tracing::debug!("Found task definition: {:?}", task_def);
 
@@ -97,11 +118,6 @@ pub async fn execute_task(
 
     let executor = TaskExecutor::new(config);
 
-    // Convert manifest tasks to Tasks struct
-    let tasks = Tasks {
-        tasks: manifest.tasks.clone(),
-    };
-
     // Build task graph for dependency-aware execution
     tracing::debug!("Building task graph for task: {}", task_name);
     let mut task_graph = TaskGraph::new();
@@ -128,14 +144,12 @@ pub async fn execute_task(
     )
     .await?;
 
-    // Check for any failed tasks first
-    for result in &results {
-        if !result.success {
-            return Err(cuenv_core::Error::configuration(format!(
-                "Task '{}' failed with exit code {:?}",
-                result.name, result.exit_code
-            )));
-        }
+    // Check for any failed tasks first and return a rich summary
+    if let Some(failed) = results.iter().find(|r| !r.success) {
+        return Err(cuenv_core::Error::configuration(summarize_task_failure(
+            failed,
+            TASK_FAILURE_SNIPPET_LINES,
+        )));
     }
 
     // Format results

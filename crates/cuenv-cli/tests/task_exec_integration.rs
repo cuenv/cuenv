@@ -288,6 +288,86 @@ tasks: {
 }
 
 #[test]
+fn test_nested_task_paths_and_aliases() {
+    let temp_dir = TempDir::new().unwrap();
+    let cue_content = r#"package test
+
+env: {}
+
+tasks: {
+    bun: {
+        install: {
+            command: "echo"
+            args: ["bun install"]
+        }
+        test: {
+            command: "echo"
+            args: ["bun test"]
+            dependsOn: ["install"]
+        }
+    }
+}
+"#;
+
+    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+
+    // Listing should include canonical dotted paths
+    let (stdout, _, success) = run_cuenv(&[
+        "task",
+        "-p",
+        temp_dir.path().to_str().unwrap(),
+        "--package",
+        "test",
+    ]);
+    assert!(success, "Listing nested tasks should succeed");
+    assert!(stdout.contains("bun"), "Should list parent group");
+    assert!(
+        stdout.contains("bun.install"),
+        "Should list nested task with dotted name"
+    );
+
+    // Execute using dotted path
+    let (stdout, _, success) = run_cuenv(&[
+        "task",
+        "-p",
+        temp_dir.path().to_str().unwrap(),
+        "--package",
+        "test",
+        "bun.install",
+    ]);
+    assert!(success, "Should run nested task via dotted syntax");
+    assert!(stdout.contains("bun install"));
+
+    // Execute using colon alias
+    let (stdout, _, success) = run_cuenv(&[
+        "task",
+        "-p",
+        temp_dir.path().to_str().unwrap(),
+        "--package",
+        "test",
+        "bun:install",
+    ]);
+    assert!(success, "Should run nested task via colon syntax");
+    assert!(stdout.contains("bun install"));
+
+    // Dependency should resolve to canonical nested name
+    let (stdout, _, success) = run_cuenv(&[
+        "task",
+        "-p",
+        temp_dir.path().to_str().unwrap(),
+        "--package",
+        "test",
+        "bun.test",
+    ]);
+    assert!(success, "Dependent nested task should run");
+    assert!(
+        stdout.contains("bun install"),
+        "Dependency should execute using canonical path"
+    );
+    assert!(stdout.contains("bun test"));
+}
+
+#[test]
 fn test_nonexistent_task_error() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test

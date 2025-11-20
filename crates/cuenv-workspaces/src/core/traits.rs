@@ -88,7 +88,7 @@ pub trait WorkspaceDiscovery {
 ///
 /// Each package manager has its own lockfile format:
 /// - npm: `package-lock.json`
-/// - Bun: `bun.lockb` (binary format)
+/// - Bun: `bun.lock` (JSONC format)
 /// - pnpm: `pnpm-lock.yaml`
 /// - Yarn Classic: `yarn.lock`
 /// - Yarn Modern: `yarn.lock` (different format)
