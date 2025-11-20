@@ -4,11 +4,13 @@
 
 pub mod executor;
 pub mod graph;
+pub mod index;
 pub mod io;
 
 // Re-export executor and graph modules
 pub use executor::*;
 pub use graph::*;
+pub use index::{IndexedTask, TaskIndex, TaskPath};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

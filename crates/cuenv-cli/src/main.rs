@@ -464,7 +464,7 @@ async fn execute_env_print_command_safe(
         Err(e) => {
             perf_guard.finish(false);
             Err(CliError::eval_with_help(
-                format!("Failed to print environment variables: {e:?}"),
+                format!("Failed to print environment variables: {e}"),
                 "Check your CUE files and package configuration",
             ))
         }
@@ -501,8 +501,10 @@ async fn execute_task_command_safe(
         }
         Err(e) => {
             perf_guard.finish(false);
-            // Include debug details to aid diagnostics in CI
-            Err(CliError::eval(format!("{e:?}")))
+            Err(CliError::eval_with_help(
+                e.to_string(),
+                "Re-run with --level=debug to stream task output from child processes",
+            ))
         }
     }
 }

@@ -232,22 +232,9 @@ fn find_lockfiles(root: &Path) -> Vec<(PackageManager, PathBuf)> {
     ];
 
     for manager in candidates {
-        if manager == PackageManager::Bun {
-            let binary_lockfile = root.join(manager.lockfile_name());
-            if binary_lockfile.exists() {
-                lockfiles.push((manager, binary_lockfile));
-                continue;
-            }
-
-            let text_lockfile = root.join("bun.lock");
-            if text_lockfile.exists() {
-                lockfiles.push((manager, text_lockfile));
-            }
-        } else {
-            let lockfile_path = root.join(manager.lockfile_name());
-            if lockfile_path.exists() {
-                lockfiles.push((manager, lockfile_path));
-            }
+        let lockfile_path = root.join(manager.lockfile_name());
+        if lockfile_path.exists() {
+            lockfiles.push((manager, lockfile_path));
         }
     }
 
@@ -709,19 +696,17 @@ package@^1.0.0:
     }
 
     #[test]
-    fn test_find_lockfiles_bun_prefers_binary() {
+    fn test_find_lockfiles_bun_text() {
         let temp_dir = create_test_workspace();
 
-        // Create both binary and text lockfiles
-        fs::write(temp_dir.path().join("bun.lockb"), "binary").unwrap();
         fs::write(temp_dir.path().join("bun.lock"), "text").unwrap();
 
         let result = find_lockfiles(temp_dir.path());
 
-        // Should only detect one Bun lockfile (the binary one)
+        // Should detect the text bun.lock
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, PackageManager::Bun);
-        assert_eq!(result[0].1.file_name().unwrap(), "bun.lockb");
+        assert_eq!(result[0].1.file_name().unwrap(), "bun.lock");
     }
 
     #[test]

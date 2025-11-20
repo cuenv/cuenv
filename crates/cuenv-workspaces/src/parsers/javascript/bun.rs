@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Parser for Bun `bun.lock` / `bun.lockb` files.
+/// Parser for Bun `bun.lock` files (text/JSONC). Binary `bun.lockb` is rejected.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct BunLockfileParser;
 
@@ -223,22 +223,36 @@ fn parse_array_package(lockfile_path: &Path, name: &str, items: &[Value]) -> Res
                 message: format!("Package {name} missing locator entry"),
             })?;
 
-    let metadata = items
+    let mut checksum_override = None;
+    let metadata_val = items
         .get(2)
         .cloned()
         .unwrap_or(Value::Object(Map::default()));
-    let metadata: BunPackageMetadata =
-        serde_json::from_value(metadata).map_err(|err| Error::LockfileParseFailed {
-            path: lockfile_path.to_path_buf(),
-            message: format!("{name}: invalid metadata object: {err}"),
-        })?;
+
+    let metadata: BunPackageMetadata = match metadata_val {
+        Value::Object(_) => serde_json::from_value(metadata_val).map_err(|err| {
+            Error::LockfileParseFailed {
+                path: lockfile_path.to_path_buf(),
+                message: format!("{name}: invalid metadata object: {err}"),
+            }
+        })?,
+        Value::String(s) => {
+            // Some lockfiles use a terse tuple form where the third slot is a
+            // checksum string instead of an object. Treat it as a checksum and
+            // otherwise fall back to default metadata.
+            checksum_override = Some(s);
+            BunPackageMetadata::default()
+        }
+        _ => BunPackageMetadata::default(),
+    };
 
     let checksum = items
         .get(3)
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .or_else(|| metadata.integrity.clone())
-        .or_else(|| metadata.checksum.clone());
+        .or_else(|| metadata.checksum.clone())
+        .or(checksum_override);
 
     build_package_entry(lockfile_path, name, locator, checksum, &metadata)
 }
@@ -521,5 +535,32 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_metadata_string_in_tuple() {
+        let lock = r#"
+        {
+          "lockfileVersion": 1,
+          "workspaces": {},
+          "packages": {
+            "@emmetio/css-parser": ["npm:@emmetio/css-parser@0.0.1", null, "ramya-rao-a-css-parser-370c480"]
+          }
+        }
+        "#;
+
+        let file = write_lock(lock);
+        let parser = BunLockfileParser;
+        let entries = parser.parse(file.path()).expect("parse bun lock");
+
+        let pkg = entries
+            .iter()
+            .find(|entry| entry.name == "@emmetio/css-parser")
+            .expect("package parsed");
+        assert_eq!(pkg.version, "0.0.1");
+        assert_eq!(
+            pkg.checksum.as_deref(),
+            Some("ramya-rao-a-css-parser-370c480")
+        );
     }
 }

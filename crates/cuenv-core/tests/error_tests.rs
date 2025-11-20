@@ -6,38 +6,53 @@ use std::path::Path;
 #[test]
 fn test_configuration_error() {
     let error = Error::configuration("config is invalid");
-    assert_eq!(error.to_string(), "Configuration error");
+    assert_eq!(error.to_string(), "Configuration error: config is invalid");
 
     let error = Error::configuration(String::from("another config error"));
-    assert_eq!(error.to_string(), "Configuration error");
+    assert_eq!(
+        error.to_string(),
+        "Configuration error: another config error"
+    );
 }
 
 #[test]
 fn test_ffi_error() {
     let error = Error::ffi("evaluate", "failed to call FFI");
-    assert_eq!(error.to_string(), "FFI operation failed");
+    assert_eq!(
+        error.to_string(),
+        "FFI operation failed in evaluate: failed to call FFI"
+    );
 
     let error = Error::ffi("parse", String::from("invalid input"));
-    assert_eq!(error.to_string(), "FFI operation failed");
+    assert_eq!(
+        error.to_string(),
+        "FFI operation failed in parse: invalid input"
+    );
 }
 
 #[test]
 fn test_cue_parse_error() {
     let path = Path::new("/path/to/file.cue");
     let error = Error::cue_parse(path, "syntax error at line 5");
-    assert_eq!(error.to_string(), "CUE parsing failed");
+    assert_eq!(
+        error.to_string(),
+        "CUE parsing failed: syntax error at line 5"
+    );
 
     let error = Error::cue_parse(path, String::from("unexpected token"));
-    assert_eq!(error.to_string(), "CUE parsing failed");
+    assert_eq!(error.to_string(), "CUE parsing failed: unexpected token");
 }
 
 #[test]
 fn test_validation_error() {
     let error = Error::validation("input is too long");
-    assert_eq!(error.to_string(), "Validation failed");
+    assert_eq!(error.to_string(), "Validation failed: input is too long");
 
     let error = Error::validation(String::from("invalid character in name"));
-    assert_eq!(error.to_string(), "Validation failed");
+    assert_eq!(
+        error.to_string(),
+        "Validation failed: invalid character in name"
+    );
 }
 
 #[test]
