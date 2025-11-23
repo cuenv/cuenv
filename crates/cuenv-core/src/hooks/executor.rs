@@ -624,7 +624,8 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     // Usually yes, syntax error aborts execution of the script.
     
     // Let's try to reproduce SYNTAX ERROR.
-    let script = format!("{}\nenv -0", filtered_script);
+    const DELIMITER: &str = "__CUENV_ENV_START__";
+    let script = format!("{}\necho -ne '\\0{}\\0'; env -0", filtered_script, DELIMITER);
     cmd.arg(script);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -645,8 +646,33 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         // We continue to try to parse stdout.
     }
 
-    // Parse the null-separated environment output
-    let env_output = String::from_utf8_lossy(&output.stdout);
+    // Parse the output. We expect: <script_output>\0<DELIMITER>\0<env_vars>\0...
+    let stdout_bytes = &output.stdout;
+    let delimiter_bytes = format!("\0{}\0", DELIMITER).into_bytes();
+    
+    // Find the delimiter in the output
+    let env_start_index = stdout_bytes
+        .windows(delimiter_bytes.len())
+        .position(|window| window == delimiter_bytes);
+
+    let env_output_bytes = if let Some(idx) = env_start_index {
+        // We found the delimiter, everything after it is the environment
+        &stdout_bytes[idx + delimiter_bytes.len()..]
+    } else {
+        debug!("Environment delimiter not found in hook output");
+        // Fallback: try to use the whole output if delimiter missing, 
+        // but this is risky if stdout has garbage.
+        // However, if env -0 ran, it's usually at the end.
+        // But without delimiter, we can't separate garbage from vars safely.
+        // We'll try to parse anyway, effectively reverting to previous behavior,
+        // but with the risk of corruption if garbage exists.
+        // Given we added delimiter specifically to avoid this, maybe we should return empty?
+        // But if script crashed before printing delimiter, we capture nothing.
+        // If we return empty, at least we don't return corrupted vars.
+        &[]
+    };
+
+    let env_output = String::from_utf8_lossy(env_output_bytes);
     let mut env_delta = HashMap::new();
 
     for line in env_output.split('\0') {
