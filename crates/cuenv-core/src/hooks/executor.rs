@@ -528,6 +528,8 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         shell_script.len()
     );
 
+    tracing::error!("Raw shell script from hook:\n{}", shell_script);
+
     let shell = detect_shell();
     debug!("Using shell: {}", shell);
 
@@ -551,11 +553,37 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         }
     }
 
-    // Now execute the script and capture the environment after
+    // Filter out lines that are likely status messages or not shell assignments
+    let filtered_lines: Vec<&str> = shell_script
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return false;
+            }
+
+            // Filter out known status/error prefixes that might pollute stdout
+            if trimmed.starts_with("✓")
+                || trimmed.starts_with("sh:")
+                || trimmed.starts_with("bash:")
+            {
+                return false;
+            }
+
+            // Otherwise keep it. We trust the tool to output valid shell code
+            // (including multiline strings, comments, unsets, aliases, etc.)
+            true
+        })
+        .collect();
+
+    let filtered_script = filtered_lines.join("\n");
+    tracing::error!("Filtered shell script:\n{}", filtered_script);
+
+    // Now execute the filtered script and capture the environment after
     let mut cmd = Command::new(shell);
     cmd.arg("-c");
     // Create a script that sources the exports and then prints the environment
-    let script = format!("{}\nenv -0", shell_script);
+    let script = format!("{}\nenv -0", filtered_script);
     cmd.arg(script);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -629,6 +657,12 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
     // Set working directory
     if let Some(dir) = &hook.dir {
         cmd.current_dir(dir);
+    }
+
+    // Force SHELL to match the evaluator shell for source hooks
+    // This ensures tools like devenv output compatible syntax (e.g. avoid fish syntax)
+    if hook.source.unwrap_or(false) {
+        cmd.env("SHELL", detect_shell());
     }
 
     // Execute with timeout

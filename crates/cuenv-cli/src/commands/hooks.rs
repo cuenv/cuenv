@@ -9,6 +9,7 @@ use cuenv_core::{
         HookExecutionState,
         approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
         executor::HookExecutor,
+        state::{StateManager, compute_instance_hash},
         types::{ExecutionStatus, Hook},
     },
 };
@@ -286,6 +287,121 @@ pub async fn execute_env_status(
             }
         }
     }
+}
+
+/// Inspect cached hook state and captured environment
+pub async fn execute_env_inspect(path: &str, package: &str) -> Result<String> {
+    use std::fmt::Write;
+    // Validate env.cue presence and canonicalize
+    let directory = require_env_file(Path::new(path), package)?;
+
+    // Compute config hash using the same path approval uses
+    let mut approval_manager = ApprovalManager::with_default_file()?;
+    approval_manager.load_approvals().await?;
+    let config_hash = get_config_hash(&directory, package, &approval_manager)?;
+
+    // Locate state file
+    let instance_hash = compute_instance_hash(&directory, &config_hash);
+    let state_manager = StateManager::with_default_dir()?;
+    let state_path = state_manager.get_state_file_path(&instance_hash);
+
+    // Try to load exact state
+    if let Some(state) = state_manager.load_state(&instance_hash).await? {
+        let mut output = String::new();
+
+        writeln!(&mut output, "Directory: {}", directory.display()).ok();
+        writeln!(&mut output, "Config hash: {config_hash}").ok();
+        writeln!(&mut output, "Instance hash: {instance_hash}").ok();
+        writeln!(&mut output, "State file: {}", state_path.display()).ok();
+        writeln!(&mut output, "Status: {:?}", state.status).ok();
+        writeln!(
+            &mut output,
+            "Hooks: {}/{}",
+            state.completed_hooks, state.total_hooks
+        )
+        .ok();
+        writeln!(&mut output, "Started: {}", state.started_at).ok();
+        if let Some(finished) = state.finished_at {
+            writeln!(&mut output, "Finished: {finished}").ok();
+        }
+
+        // Captured hook environment
+        let mut env_keys: Vec<_> = state.environment_vars.keys().collect();
+        env_keys.sort();
+        writeln!(&mut output, "Captured env ({} vars):", env_keys.len()).ok();
+        for key in env_keys {
+            if let Some(value) = state.environment_vars.get(key) {
+                writeln!(&mut output, "  {key}={value}").ok();
+            }
+        }
+
+        // Previous environment for diff
+        if let Some(prev) = state.previous_env.as_ref() {
+            let mut prev_keys: Vec<_> = prev.keys().collect();
+            prev_keys.sort();
+            writeln!(
+                &mut output,
+                "Previous env snapshot ({} vars):",
+                prev_keys.len()
+            )
+            .ok();
+            for key in prev_keys {
+                if let Some(value) = prev.get(key) {
+                    writeln!(&mut output, "  {key}={value}").ok();
+                }
+            }
+        }
+
+        return Ok(output);
+    }
+
+    // No exact state found; gather any other states for this directory for debugging
+    let mut matching_states = Vec::new();
+    for state in state_manager.list_active_states().await? {
+        if state.directory_path == directory {
+            matching_states.push(state);
+        }
+    }
+
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "No cached state found for {} (config hash {}, instance hash {}).",
+        directory.display(),
+        config_hash,
+        instance_hash
+    )
+    .ok();
+    writeln!(&mut output, "Expected state file: {}", state_path.display()).ok();
+
+    if matching_states.is_empty() {
+        writeln!(
+            &mut output,
+            "No other states for this directory were found."
+        )
+        .ok();
+    } else {
+        writeln!(
+            &mut output,
+            "Found {} state(s) for this directory with different config hashes:",
+            matching_states.len()
+        )
+        .ok();
+        for state in matching_states {
+            writeln!(
+                &mut output,
+                "  status={:?} config_hash={} state_file={}",
+                state.status,
+                state.config_hash,
+                state_manager
+                    .get_state_file_path(&state.instance_hash)
+                    .display()
+            )
+            .ok();
+        }
+    }
+
+    Ok(output)
 }
 
 /// Execute allow command - approve current directory's configuration
@@ -600,6 +716,7 @@ mod tests {
                 ])),
                 on_exit: None,
             }),
+            workspaces: None,
             tasks: std::collections::HashMap::new(),
         };
 
@@ -629,6 +746,7 @@ mod tests {
                 })),
                 on_exit: None,
             }),
+            workspaces: None,
             tasks: std::collections::HashMap::new(),
         };
 
@@ -646,6 +764,7 @@ mod tests {
             config: None,
             env: None,
             hooks: None,
+            workspaces: None,
             tasks: std::collections::HashMap::new(),
         };
 
