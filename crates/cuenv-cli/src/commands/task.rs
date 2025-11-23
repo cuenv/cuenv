@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
 
+use super::export::get_environment_with_hooks;
+
 /// Execute a named task from the CUE configuration
+#[allow(clippy::too_many_lines)]
 pub async fn execute_task(
     path: &str,
     package: &str,
@@ -87,19 +90,33 @@ pub async fn execute_task(
         tasks.get(requested_task).is_some()
     );
     let task_def = tasks.get(&canonical_task_name).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!("Task '{}' not found", canonical_task_name))
+        cuenv_core::Error::configuration(format!("Task '{canonical_task_name}' not found"))
     })?;
     let task_name = canonical_task_name.as_str();
 
     tracing::debug!("Found task definition: {:?}", task_def);
 
-    // Set up environment from manifest
+    // Get environment with hook-generated vars merged in
+    let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let base_env_vars = get_environment_with_hooks(&directory, &manifest).await?;
+
+    // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut environment = Environment::new();
     if let Some(env) = &manifest.env {
-        // Build and resolve environment for task, applying policies and executing secret resolvers
-        let env_vars =
+        // First apply the base environment (static + hooks)
+        for (key, value) in &base_env_vars {
+            environment.set(key.clone(), value.clone());
+        }
+
+        // Then apply any task-specific overrides with policies and secret resolution
+        let task_env_vars =
             cuenv_core::environment::Environment::resolve_for_task(task_name, &env.base).await?;
-        for (key, value) in env_vars {
+        for (key, value) in task_env_vars {
+            environment.set(key, value);
+        }
+    } else {
+        // No manifest env, just use hook-generated environment
+        for (key, value) in base_env_vars {
             environment.set(key, value);
         }
     }
@@ -114,6 +131,7 @@ pub async fn execute_task(
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
         cache_dir: None,
         show_cache_path,
+        workspaces: manifest.workspaces.clone(),
     };
 
     let executor = TaskExecutor::new(config);
@@ -178,9 +196,9 @@ async fn execute_task_with_strategy_hermetic(
                 .await
         }
         TaskDefinition::Single(t) => {
-            // If workspaceInputs is used, we MUST use the direct executor to access the real project root.
+            // If workspaces are used, we MUST use the direct executor to access the real project root.
             // If no hermetic features are used, fall back to original execution.
-            if t.workspace_inputs.is_some()
+            if !t.workspaces.is_empty()
                 || (t.external_inputs.is_none() && t.inputs.is_empty() && t.outputs.is_empty())
             {
                 if t.depends_on.is_empty() {
@@ -258,8 +276,25 @@ async fn run_task_hermetic(
     }
 
     // Compute environment for this task
+    // Note: For hermetic tasks, we build a temporary manifest to get hook environment
     let mut env = Environment::new();
     if let Some(base) = env_base {
+        // Build a minimal manifest to get hook environment
+        let temp_manifest = Cuenv {
+            config: None,
+            env: Some(base.clone()),
+            hooks: None,
+            tasks: std::collections::HashMap::new(),
+            workspaces: None,
+        };
+        let base_env_vars = get_environment_with_hooks(project_dir, &temp_manifest).await?;
+
+        // Apply base environment (static + hooks)
+        for (k, v) in &base_env_vars {
+            env.set(k.clone(), v.clone());
+        }
+
+        // Apply task-specific overrides
         let vars = Environment::resolve_for_task(name, &base.base).await?;
         for (k, v) in vars {
             env.set(k, v);
@@ -290,6 +325,7 @@ async fn run_task_hermetic(
         materialize_outputs: None,
         cache_dir: None,
         show_cache_path: false,
+        workspaces: None,
     });
 
     // Clone the task with augmented inputs
@@ -708,8 +744,18 @@ async fn resolve_and_materialize_external(
 
     // Build environment for external task (isolated)
     let mut env = Environment::new();
-    if let Some(base) = manifest.env.as_ref() {
-        let vars = Environment::build_for_task(&ext.task, &base.base);
+    if let Some(_base) = manifest.env.as_ref() {
+        // Get base environment with hook-generated vars
+        let base_env_vars = get_environment_with_hooks(&ext_dir, &manifest).await?;
+
+        // Apply base environment (static + hooks)
+        for (k, v) in &base_env_vars {
+            env.set(k.clone(), v.clone());
+        }
+
+        // Note: External tasks use build_for_task which doesn't resolve secrets/policies
+        // This is intentional for hermetic execution
+        let vars = Environment::build_for_task(&ext.task, &manifest.env.as_ref().unwrap().base);
         for (k, v) in vars {
             env.set(k, v);
         }
@@ -734,7 +780,7 @@ async fn resolve_and_materialize_external(
         env: env_summary,
         cuenv_version,
         platform,
-        workspace_lockfile_hash: None,
+        workspace_lockfile_hashes: None,
         workspace_package_hashes: None,
     };
     let (ext_key, _env_json) = cuenv_core::cache::tasks::compute_cache_key(&envelope)?;
@@ -755,6 +801,7 @@ async fn resolve_and_materialize_external(
             materialize_outputs: None,
             cache_dir: None,
             show_cache_path: false,
+            workspaces: None,
         });
         let res = exec.execute_task(&ext.task, task).await?;
         if !res.success {
@@ -910,7 +957,7 @@ env: {
             inputs: vec!["inputs".into()],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: None,
         };
 
@@ -981,7 +1028,7 @@ env: {
             inputs: vec!["inputs".into()],
             outputs: vec!["out/out.txt".into()],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: None,
         };
 
@@ -1008,6 +1055,7 @@ env: {
             .unwrap();
         let exec = TaskExecutor::new(ExecutorConfig {
             capture_output: true,
+            workspaces: None,
             ..Default::default()
         });
 
@@ -1020,7 +1068,7 @@ env: {
             inputs: vec!["inputs".into()],
             outputs: vec!["out.txt".into()],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: None,
         };
         let def = TaskDefinition::Single(Box::new(task.clone()));

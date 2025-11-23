@@ -584,6 +584,10 @@ pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     hasher.update(path.to_string_lossy().as_bytes());
     hasher.update(b":");
     hasher.update(config_hash.as_bytes());
+    // Include cuenv version in hash to invalidate cache on upgrades
+    // This is important when internal logic (like environment capturing) changes
+    hasher.update(b":");
+    hasher.update(crate::VERSION.as_bytes());
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 

@@ -5,9 +5,10 @@
 //! - Hermetic workdir populated from declared inputs (files/dirs/globs)
 //! - Persistent task result cache keyed by inputs + command + env + cuenv version + platform
 
-use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks, WorkspaceInputs};
+use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
 use crate::cache::tasks as task_cache;
 use crate::environment::Environment;
+use crate::manifest::WorkspaceConfig;
 use crate::tasks::io::{InputResolver, collect_outputs, populate_hermetic_dir};
 use crate::{Error, Result};
 use async_recursion::async_recursion;
@@ -61,6 +62,8 @@ pub struct ExecutorConfig {
     pub cache_dir: Option<PathBuf>,
     /// Optional: print cache path on hits/misses
     pub show_cache_path: bool,
+    /// Global workspace configuration
+    pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
 }
 
 impl Default for ExecutorConfig {
@@ -74,6 +77,7 @@ impl Default for ExecutorConfig {
             materialize_outputs: None,
             cache_dir: None,
             show_cache_path: false,
+            workspaces: None,
         }
     }
 }
@@ -82,7 +86,6 @@ impl Default for ExecutorConfig {
 pub struct TaskExecutor {
     config: ExecutorConfig,
 }
-
 impl TaskExecutor {
     pub fn new(config: ExecutorConfig) -> Self {
         Self { config }
@@ -91,27 +94,44 @@ impl TaskExecutor {
     /// Execute a single task hermetically with caching
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
         // Resolve workspace dependencies if enabled
-        let mut workspace_ctx: Option<(Workspace, Vec<LockfileEntry>)> = None;
+        let mut workspace_ctxs: Vec<(Workspace, Vec<LockfileEntry>)> = Vec::new();
         let mut workspace_input_patterns = Vec::new();
-        let mut workspace_lockfile_hash = None;
+        let mut workspace_lockfile_hashes = BTreeMap::new();
 
-        if let Some(ws_inputs) = &task.workspace_inputs
-            && ws_inputs.enabled
-        {
-            let (ws, entries, paths, hash) = self.resolve_workspace(name, task, ws_inputs).await?;
-            workspace_ctx = Some((ws, entries));
-            workspace_input_patterns = paths;
-            workspace_lockfile_hash = hash;
+        for workspace_name in &task.workspaces {
+            if let Some(global_workspaces) = &self.config.workspaces {
+                if let Some(ws_config) = global_workspaces.get(workspace_name) {
+                    if ws_config.enabled {
+                        let (ws, entries, paths, hash) = self
+                            .resolve_workspace(name, task, workspace_name, ws_config)
+                            .await?;
+                        workspace_ctxs.push((ws, entries));
+                        workspace_input_patterns.extend(paths);
+                        if let Some(h) = hash {
+                            workspace_lockfile_hashes.insert(workspace_name.clone(), h);
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        task = %name,
+                        workspace = %workspace_name,
+                        "Workspace not found in global configuration"
+                    );
+                }
+            }
         }
 
         // Resolve inputs relative to the workspace root (if any) while keeping
         // project-scoped inputs anchored to the original project path.
-        let workspace_root = workspace_ctx.as_ref().map(|(ws, _)| ws.root.clone());
-        let project_prefix = workspace_root
+        // Use the first workspace as the primary root if multiple are present,
+        // or fallback to project root. This might need refinement for multi-workspace tasks.
+        let primary_workspace_root = workspace_ctxs.first().map(|(ws, _)| ws.root.clone());
+
+        let project_prefix = primary_workspace_root
             .as_ref()
             .and_then(|root| self.config.project_root.strip_prefix(root).ok())
             .map(|p| p.to_path_buf());
-        let input_root = workspace_root
+        let input_root = primary_workspace_root
             .clone()
             .unwrap_or_else(|| self.config.project_root.clone());
 
@@ -156,6 +176,11 @@ impl TaskExecutor {
         let cuenv_version = env!("CARGO_PKG_VERSION").to_string();
         let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
         let shell_json = serde_json::to_value(&task.shell).ok();
+        let workspace_lockfile_hashes_opt = if workspace_lockfile_hashes.is_empty() {
+            None
+        } else {
+            Some(workspace_lockfile_hashes)
+        };
 
         let envelope = task_cache::CacheKeyEnvelope {
             inputs: inputs_summary.clone(),
@@ -165,7 +190,7 @@ impl TaskExecutor {
             env: env_summary.clone(),
             cuenv_version: cuenv_version.clone(),
             platform: platform.clone(),
-            workspace_lockfile_hash: workspace_lockfile_hash.clone(),
+            workspace_lockfile_hashes: workspace_lockfile_hashes_opt,
             // Package hashes are implicitly included in inputs_summary because we added member paths to inputs
             workspace_package_hashes: None,
         };
@@ -248,7 +273,7 @@ impl TaskExecutor {
         }
 
         // Materialize workspace artifacts (node_modules, target)
-        if let Some((ws, entries)) = workspace_ctx {
+        for (ws, entries) in workspace_ctxs {
             self.materialize_workspace(&ws, &entries, &hermetic_root)
                 .await?;
         }
@@ -696,18 +721,33 @@ impl TaskExecutor {
         &self,
         _task_name: &str,
         task: &Task,
-        config: &WorkspaceInputs,
+        workspace_name: &str,
+        config: &WorkspaceConfig,
     ) -> Result<(Workspace, Vec<LockfileEntry>, Vec<String>, Option<String>)> {
         let root = self.config.project_root.clone();
         let task_label = _task_name.to_string();
         let command = task.command.clone();
         let config_pm = config.package_manager.clone();
-        let mut packages = config.packages.clone();
-        let lockfile_override = config.lockfile.clone();
+        let config_root = config.root.clone();
+        // WorkspaceConfig doesn't support 'packages' filtering yet, so assume full workspace deps for now,
+        // or imply it from context. If we want package filtering, we need to add it to WorkspaceConfig
+        // or assume all deps.
+        // However, the previous logic used `packages` from WorkspaceInputs.
+        // For now, let's assume traversing all dependencies if not specified.
+        // But wait, `WorkspaceConfig` in schema doesn't have `packages`.
+        // So we probably default to "all relevant" or auto-infer from current directory if we are inside a package.
+        let mut packages = Vec::new();
 
-        let mut traverse_workspace_deps = !packages.is_empty();
+        // If we are in a subdirectory that matches a workspace member, we might want to infer that package.
+        // The previous logic did that if `packages` was empty.
+
+        let lockfile_override: Option<String> = None; // WorkspaceConfig doesn't have lockfile override yet.
+        // If we need it, we should add it to WorkspaceConfig. For now assume standard discovery.
+
+        let mut traverse_workspace_deps = true;
 
         // Use spawn_blocking for heavy lifting
+        let workspace_name_owned = workspace_name.to_string();
         tokio::task::spawn_blocking(move || {
             let override_for_detection = lockfile_override.as_ref().map(|lock| {
                 let candidate = PathBuf::from(lock);
@@ -719,12 +759,13 @@ impl TaskExecutor {
             });
 
             // 1. Detect Package Manager
+            // Priority: 1. explicit config, 2. workspace name (if it matches a PM), 3. auto-detect
             let manager = if let Some(pm_str) = config_pm {
                 match pm_str.as_str() {
                     "npm" => PackageManager::Npm,
                     "bun" => PackageManager::Bun,
                     "pnpm" => PackageManager::Pnpm,
-                    "yarn" => PackageManager::YarnModern, // Default to modern if unspecified
+                    "yarn" => PackageManager::YarnModern,
                     "yarn-classic" => PackageManager::YarnClassic,
                     "cargo" => PackageManager::Cargo,
                     _ => {
@@ -735,58 +776,74 @@ impl TaskExecutor {
                     }
                 }
             } else {
-                // Auto-detect
-                // Priority: command hint -> lockfiles
-                let hint = detect_from_command(&command);
-                let detected = match detect_package_managers(&root) {
-                    Ok(list) => list,
-                    Err(e) => {
-                        if override_for_detection.is_some() {
-                            Vec::new()
+                // Try to match workspace name to package manager
+                match workspace_name_owned.as_str() {
+                    "npm" => PackageManager::Npm,
+                    "bun" => PackageManager::Bun,
+                    "pnpm" => PackageManager::Pnpm,
+                    "yarn" => PackageManager::YarnModern,
+                    "cargo" => PackageManager::Cargo,
+                    _ => {
+                         // Auto-detect if name doesn't match
+                        // Priority: command hint -> lockfiles
+                        let hint = detect_from_command(&command);
+                        let detected = match detect_package_managers(&root) {
+                            Ok(list) => list,
+                            Err(e) => {
+                                if override_for_detection.is_some() {
+                                    Vec::new()
+                                } else {
+                                    return Err(Error::configuration(format!(
+                                        "Failed to detect package managers: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        };
+
+                        if let Some(h) = hint {
+                            if detected.contains(&h) {
+                                h
+                            } else if !detected.is_empty() {
+                                // Prefer detected files
+                                detected[0]
+                            } else if let Some(ref override_path) = override_for_detection {
+                                infer_manager_from_lockfile(override_path).ok_or_else(|| {
+                                    Error::configuration(
+                                        "Unable to infer package manager from lockfile override",
+                                    )
+                                })?
+                            } else {
+                                return Err(Error::configuration(
+                                    format!("No package manager specified for workspace '{}' and could not detect one", workspace_name_owned),
+                                ));
+                            }
+                        } else if !detected.is_empty() {
+                            detected[0]
+                        } else if let Some(ref override_path) = override_for_detection {
+                            infer_manager_from_lockfile(override_path).ok_or_else(|| {
+                                Error::configuration(
+                                    "Unable to infer package manager from lockfile override",
+                                )
+                            })?
                         } else {
-                            return Err(Error::configuration(format!(
-                                "Failed to detect package managers: {}",
-                                e
-                            )));
+                            return Err(Error::configuration(
+                                "Could not detect package manager for workspace resolution",
+                            ));
                         }
                     }
-                };
-
-                if let Some(h) = hint {
-                    if detected.contains(&h) {
-                        h
-                    } else if !detected.is_empty() {
-                        // Prefer detected files
-                        detected[0]
-                    } else if let Some(ref override_path) = override_for_detection {
-                        infer_manager_from_lockfile(override_path).ok_or_else(|| {
-                            Error::configuration(
-                                "Unable to infer package manager from lockfile override",
-                            )
-                        })?
-                    } else {
-                        return Err(Error::configuration(
-                            "No workspace configuration found; specify packageManager",
-                        ));
-                    }
-                } else if !detected.is_empty() {
-                    detected[0]
-                } else if let Some(ref override_path) = override_for_detection {
-                    infer_manager_from_lockfile(override_path).ok_or_else(|| {
-                        Error::configuration(
-                            "Unable to infer package manager from lockfile override",
-                        )
-                    })?
-                } else {
-                    return Err(Error::configuration(
-                        "Could not detect package manager for workspace resolution",
-                    ));
                 }
             };
 
             // Resolve the actual workspace root by walking up until we find a
             // directory that declares a workspace for this package manager.
-            let workspace_root = find_workspace_root(manager, &root);
+            // If config.root is set, use that.
+            let workspace_root = if let Some(root_override) = &config_root {
+                root.join(root_override)
+            } else {
+                find_workspace_root(manager, &root)
+            };
+
             if task_trace_enabled() {
                 tracing::info!(
                     task = %task_label,
@@ -916,8 +973,9 @@ impl TaskExecutor {
                         member_paths.push(manifest_rel.to_string_lossy().to_string());
 
                         // Add dependencies when explicitly requested
-                        if traverse_workspace_deps {
-                            if let Some(entry) = entries.iter().find(|e| e.name == pkg_name) {
+                        if traverse_workspace_deps
+                            && let Some(entry) = entries.iter().find(|e| e.name == pkg_name)
+                        {
                                 for dep in &entry.dependencies {
                                     if let Some(dep_entry) =
                                         entries.iter().find(|e| e.name == dep.name)
@@ -926,7 +984,6 @@ impl TaskExecutor {
                                         to_visit.push(dep.name.clone());
                                     }
                                 }
-                            }
                         }
                     }
                 }
@@ -975,9 +1032,7 @@ impl TaskExecutor {
 }
 
 fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
-    let mut current = start
-        .canonicalize()
-        .unwrap_or_else(|_| start.to_path_buf());
+    let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
 
     loop {
         let is_root = match manager {
@@ -1004,9 +1059,10 @@ fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
 fn package_json_has_workspaces(dir: &Path) -> bool {
     let path = dir.join("package.json");
     let content = std::fs::read_to_string(&path);
-    let Ok(json) = content.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })) else {
+    let Ok(json) = content.and_then(|s| {
+        serde_json::from_str::<serde_json::Value>(&s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }) else {
         return false;
     };
 
@@ -1233,7 +1289,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: Some("Hello task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -1261,7 +1317,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: Some("Print env task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -1332,9 +1388,20 @@ mod tests {
         )
         .unwrap();
 
+        let mut workspaces = HashMap::new();
+        workspaces.insert(
+            "bun".to_string(),
+            WorkspaceConfig {
+                enabled: true,
+                package_manager: Some("bun".to_string()),
+                root: None,
+            },
+        );
+
         let config = ExecutorConfig {
             capture_output: true,
             project_root: root.join("apps/site"),
+            workspaces: Some(workspaces),
             ..Default::default()
         };
         let executor = TaskExecutor::new(config);
@@ -1351,12 +1418,7 @@ mod tests {
             inputs: vec!["package.json".to_string()],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: Some(WorkspaceInputs {
-                enabled: true,
-                package_manager: Some("bun".to_string()),
-                packages: Vec::new(),
-                lockfile: None,
-            }),
+            workspaces: vec!["bun".to_string()],
             description: None,
         };
 
@@ -1364,8 +1426,7 @@ mod tests {
         assert!(
             result.success,
             "command failed stdout='{}' stderr='{}'",
-            result.stdout,
-            result.stderr
+            result.stdout, result.stderr
         );
         assert!(
             result
@@ -1394,7 +1455,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: Some("Failing task".to_string()),
         };
         let result = executor.execute_task("test", &task).await.unwrap();
@@ -1418,7 +1479,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: Some("First task".to_string()),
         };
         let task2 = Task {
@@ -1430,7 +1491,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: Some("Second task".to_string()),
         };
         let group = TaskGroup::Sequential(vec![
@@ -1463,7 +1524,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: Some("Malicious task test".to_string()),
         };
         let result = executor
@@ -1500,7 +1561,7 @@ mod tests {
                 inputs: vec![],
                 outputs: vec![],
                 external_inputs: None,
-                workspace_inputs: None,
+                workspaces: vec![],
                 description: Some("Special character test".to_string()),
             };
             let result = executor.execute_task("special", &task).await.unwrap();
@@ -1529,7 +1590,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: Some("Environment variable safety test".to_string()),
         };
         let result = executor.execute_task("env_test", &task).await.unwrap();
@@ -1557,7 +1618,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: None,
         };
         let t2 = Task {
@@ -1569,7 +1630,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: None,
         };
 
