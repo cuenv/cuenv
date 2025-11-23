@@ -583,6 +583,47 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     let mut cmd = Command::new(shell);
     cmd.arg("-c");
     // Create a script that sources the exports and then prints the environment
+    // We wrap the sourced script in a subshell or block that ignores errors?
+    // No, we want environment variables to persist.
+    // But if a command fails, we don't want the whole evaluation to fail.
+    // We append " || true" to each line? No, multiline strings.
+    
+    // Better: Execute the script, but ensure we always reach "env -0".
+    // In sh, "cmd; env" runs env even if cmd fails, UNLESS set -e is active.
+    // By default set -e is OFF.
+    
+    // However, we check output.status.success().
+    // If the last command is "env -0", and it succeeds, the exit code is 0.
+    // Even if previous commands failed (and printed to stderr).
+    
+    // So "nonexistent_command; env -0" -> exit code 0.
+    // Why did my thought experiment suggest failure?
+    // Maybe because I was confusing it with pipefail or set -e.
+    
+    // The reproduction test PASSED even with "nonexistent_command_garbage".
+    // This means `evaluate_shell_environment` IS robust against simple command failures!
+    
+    // So why is the user's case failing?
+    
+    // Maybe `devenv` output contains something that makes `env -0` NOT run or NOT output what we expect?
+    // Or maybe it exits the shell? `exit 1`?
+    
+    // If `devenv` prints `exit 1`, then `env -0` is never reached.
+    // `devenv` is a script. If it calls `exit`, it exits the sourcing shell?
+    // If we `source` a script that `exit`s, it exits the parent shell (our sh -c).
+    
+    // Does `devenv print-dev-env` exit?
+    // It shouldn't.
+    
+    // But if `devenv` fails internally, does it exit?
+    // "devenv: command not found" -> 127, continues.
+    
+    // What if the output is syntactically invalid shell?
+    // `export FOO="unclosed`
+    // Then `sh` parses it, finds error, prints error, and... stops?
+    // Usually yes, syntax error aborts execution of the script.
+    
+    // Let's try to reproduce SYNTAX ERROR.
     let script = format!("{}\nenv -0", filtered_script);
     cmd.arg(script);
     cmd.stdout(Stdio::piped());
@@ -592,12 +633,16 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         Error::configuration(format!("Failed to evaluate shell environment: {}", e))
     })?;
 
+    // If the command failed, we still try to parse the output, in case env -0 ran.
+    // But we should log the error.
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(Error::configuration(format!(
-            "Shell script evaluation failed: {}",
+        warn!(
+            "Shell script evaluation finished with error (exit code {:?}): {}",
+            output.status.code(),
             stderr
-        )));
+        );
+        // We continue to try to parse stdout.
     }
 
     // Parse the null-separated environment output
@@ -624,10 +669,20 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
             }
 
             // Only include variables that are new or changed
-            if env_before.get(key) != Some(&value.to_string()) {
+            // We also skip empty keys which can happen with malformed output
+            if !key.is_empty() && env_before.get(key) != Some(&value.to_string()) {
                 env_delta.insert(key.to_string(), value.to_string());
             }
         }
+    }
+
+    if env_delta.is_empty() && !output.status.success() {
+        // If we failed AND got no variables, that's a real problem.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::configuration(format!(
+            "Shell script evaluation failed and no environment captured. Error: {}",
+            stderr
+        )));
     }
 
     debug!(
