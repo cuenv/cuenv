@@ -203,6 +203,87 @@ fn collect_all_env_vars(
     all_vars
 }
 
+/// Get environment variables with hook-generated vars merged in
+///
+/// This function checks if hooks have completed and merges their environment
+/// with the static environment from the CUE manifest. This is used by
+/// `cuenv task` and `cuenv exec` to ensure they have access to hook-generated
+/// environment variables.
+///
+/// This function ensures hooks are running and waits for their completion.
+pub async fn get_environment_with_hooks(
+    directory: &Path,
+    config: &Cuenv,
+) -> Result<HashMap<String, String>> {
+    // Start with static environment from CUE manifest
+    let static_env = extract_static_env_vars(config);
+
+    // Compute config hash for this directory + config
+    let config_value = serde_json::to_value(config).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
+    })?;
+    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
+
+    let executor = HookExecutor::with_default_config()?;
+
+    // Check if state exists
+    let status = executor
+        .get_execution_status_for_instance(directory, &config_hash)
+        .await?;
+
+    // If no state exists, start execution
+    if status.is_none() {
+        let hooks = extract_hooks_from_config(config);
+        if hooks.is_empty() {
+            // No hooks to run, just return static env
+            return Ok(static_env);
+        }
+
+        info!("Starting hook execution for {}", directory.display());
+        executor
+            .execute_hooks_background(directory.to_path_buf(), config_hash.clone(), hooks)
+            .await?;
+    }
+
+    // Wait for completion (timeout 60s for now, could be configurable)
+    debug!("Waiting for hooks to complete for {}", directory.display());
+    match executor
+        .wait_for_completion(directory, &config_hash, Some(60))
+        .await
+    {
+        Ok(state) => {
+            match state.status {
+                ExecutionStatus::Completed => {
+                    // Hooks completed - merge their environment with static env
+                    Ok(collect_all_env_vars(config, &state.environment_vars))
+                }
+                ExecutionStatus::Failed => {
+                    // Hooks failed - log and use static environment only
+                    debug!(
+                        "Hooks failed for {}: {:?}",
+                        directory.display(),
+                        state.error_message
+                    );
+                    Ok(static_env)
+                }
+                ExecutionStatus::Cancelled => {
+                    // Hooks cancelled - use static environment only
+                    debug!("Hooks cancelled for {}", directory.display());
+                    Ok(static_env)
+                }
+                ExecutionStatus::Running => Ok(static_env),
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Error or timeout waiting for hooks: {}, using static environment",
+                e
+            );
+            Ok(static_env)
+        }
+    }
+}
+
 /// Generate script to print "Loaded" message if entering a new directory
 #[allow(clippy::uninlined_format_args)]
 fn format_loaded_check(dir: &Path, shell: Shell) -> String {
@@ -588,6 +669,7 @@ mod tests {
             config: None,
             env: Some(env_cfg),
             hooks: None,
+            workspaces: None,
             tasks: HashMap::new(),
         };
 
@@ -615,6 +697,7 @@ mod tests {
                 environment: None,
             }),
             hooks: None,
+            workspaces: None,
             tasks: HashMap::new(),
         };
 
