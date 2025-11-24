@@ -506,7 +506,6 @@ Licensed under the [GNU Affero General Public License v3.0](LICENSE).
 ## Links
 
 - **Documentation**: [docs.cuenv.sh](https://docs.cuenv.sh) 🚧
-- **Original POC**: [github.com/rawkode/cuenv](https://github.com/rawkode/cuenv)
 - **CUE Language**: [cuelang.org](https://cuelang.org)
 - **Discussion**: [GitHub Discussions](https://github.com/cuenv/cuenv/discussions)
 
