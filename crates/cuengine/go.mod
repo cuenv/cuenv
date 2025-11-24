@@ -1,4 +1,4 @@
-module github.com/rawkode/cuenv/libcue-bridge
+module github.com/cuenv/cuenv/libcue-bridge
 
 go 1.21
 
