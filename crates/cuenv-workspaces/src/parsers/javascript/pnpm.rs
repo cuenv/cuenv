@@ -332,6 +332,7 @@ fn push_dependencies(target: &mut Vec<DependencyRef>, deps: &BTreeMap<String, St
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_raw_string_hashes, clippy::uninlined_format_args)]
 mod tests {
     use super::*;
     use std::io::Write;

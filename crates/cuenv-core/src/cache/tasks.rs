@@ -285,12 +285,14 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
+    #[allow(dead_code)]
     struct EnvVarGuard {
         key: String,
         prev: Option<String>,
     }
 
     impl EnvVarGuard {
+        #[allow(dead_code)]
         fn set<K: Into<String>, V: Into<String>>(key: K, value: V) -> Self {
             let key_s = key.into();
             let prev = std::env::var(&key_s).ok();
