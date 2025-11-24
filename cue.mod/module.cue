@@ -4,7 +4,7 @@ language: {
 }
 deps: {
 	"github.com/rawkode/cuenv@v0": {
-		v:       "v0.6.2"
+		v: "v0.7.0"
 		default: true
 	}
 }
