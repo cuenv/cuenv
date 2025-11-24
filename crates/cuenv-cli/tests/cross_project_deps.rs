@@ -5,8 +5,8 @@ use std::process::Command;
 use tempfile::TempDir;
 
 fn run_cuenv(args: &[&str]) -> (String, String, bool) {
-    let output = Command::new("cargo")
-        .args(["run", "--bin", "cuenv", "--"])
+    let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
+    let output = Command::new(cuenv_bin)
         .args(args)
         .output()
         .expect("Failed to run cuenv");
@@ -18,7 +18,7 @@ fn run_cuenv(args: &[&str]) -> (String, String, bool) {
     (stdout, stderr, success)
 }
 
-fn write_proj_b(dir: &Path) {
+fn write_proj_b(dir: &Path, version: &str) {
     let projb = dir.join("projB");
     fs::create_dir_all(projb.join("src")).unwrap();
     // package detection relies on first package line
@@ -29,14 +29,14 @@ env: {}
 tasks: {
   build: {
     command: "sh"
-    args: ["-c", "mkdir -p dist/assets; cp src/version.txt dist/app.txt; echo asset > dist/assets/file.txt"]
+    args: ["-c", "mkdir -p dist/assets; cp -f src/version.txt dist/app.txt; echo asset > dist/assets/file.txt"]
     inputs: ["src/version.txt"]
     outputs: ["dist/app.txt", "dist/assets"]
   }
 }
 "#;
     fs::write(projb.join("env.cue"), cue_b).unwrap();
-    fs::write(projb.join("src/version.txt"), "v1").unwrap();
+    fs::write(projb.join("src/version.txt"), version).unwrap();
 }
 
 fn write_proj_a(dir: &Path, mapping_from: &str, mapping_to: &str, external_project: &str) {
@@ -71,7 +71,7 @@ fn test_external_auto_run_and_materialization() {
     // Create fake git root
     fs::create_dir_all(root.join(".git")).unwrap();
 
-    write_proj_b(root);
+    write_proj_b(root, "v1-auto");
     write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB");
 
     let (stdout, stderr, success) = run_cuenv(&[
@@ -97,11 +97,11 @@ fn test_cache_hits_and_invalidation() {
     let root = tmp.path();
     fs::create_dir_all(root.join(".git")).unwrap();
 
-    write_proj_b(root);
+    write_proj_b(root, "v1-cache");
     write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB");
 
     // First run (populate cache)
-    let (_out1, _err1, ok1) = run_cuenv(&[
+    let (out1, err1, ok1) = run_cuenv(&[
         "task",
         "-p",
         root.join("projA").to_str().unwrap(),
@@ -109,10 +109,10 @@ fn test_cache_hits_and_invalidation() {
         "projA",
         "consume",
     ]);
-    assert!(ok1);
+    assert!(ok1, "Run 1 failed. stdout: {}, stderr: {}", out1, err1);
 
     // Second run (should hit cache)
-    let (_out2, _err2, ok2) = run_cuenv(&[
+    let (out2, err2, ok2) = run_cuenv(&[
         "task",
         "-p",
         root.join("projA").to_str().unwrap(),
@@ -120,11 +120,11 @@ fn test_cache_hits_and_invalidation() {
         "projA",
         "consume",
     ]);
-    assert!(ok2);
+    assert!(ok2, "Run 2 failed. stdout: {}, stderr: {}", out2, err2);
 
     // Change external input content and rerun
     fs::write(root.join("projB/src/version.txt"), "v2").unwrap();
-    let (_out3, _err3, ok3) = run_cuenv(&[
+    let (out3, err3, ok3) = run_cuenv(&[
         "task",
         "-p",
         root.join("projA").to_str().unwrap(),
@@ -132,7 +132,11 @@ fn test_cache_hits_and_invalidation() {
         "projA",
         "consume",
     ]);
-    assert!(ok3, "Should re-run after external change");
+    assert!(
+        ok3,
+        "Should re-run after external change. stdout: {}, stderr: {}",
+        out3, err3
+    );
 }
 
 #[test]
@@ -141,7 +145,7 @@ fn test_mapping_error_undeclared_output() {
     let root = tmp.path();
     fs::create_dir_all(root.join(".git")).unwrap();
 
-    write_proj_b(root);
+    write_proj_b(root, "v1-map");
     write_proj_a(root, "dist/missing.txt", "vendor/app.txt", "../projB");
 
     let (_stdout, stderr, success) = run_cuenv(&[
@@ -187,7 +191,7 @@ fn test_collision_duplicate_dest() {
     fs::create_dir_all(root.join(".git")).unwrap();
 
     // Write projB
-    write_proj_b(root);
+    write_proj_b(root, "v1-coll");
 
     // Write projA with two mappings to same 'to'
     let proja = root.join("projA");
