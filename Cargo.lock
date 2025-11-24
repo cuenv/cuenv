@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "cuengine"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cc",
  "criterion",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-recursion",
  "chrono",
@@ -706,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-workspaces"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cargo-lock",
  "cargo_toml",
@@ -2484,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "schema-validator"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",

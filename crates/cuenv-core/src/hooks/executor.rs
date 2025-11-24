@@ -565,15 +565,15 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     let mut shell = detect_shell().await;
 
     for line in shell_script.lines() {
-        if let Some(path) = line.strip_prefix("BASH='") {
-            if let Some(end) = path.find('\'') {
-                let bash_path = &path[..end];
-                let path = PathBuf::from(bash_path);
-                if path.exists() {
-                    debug!("Detected Nix bash in script: {}", bash_path);
-                    shell = bash_path.to_string();
-                    break;
-                }
+        if let Some(path) = line.strip_prefix("BASH='")
+            && let Some(end) = path.find('\'')
+        {
+            let bash_path = &path[..end];
+            let path = PathBuf::from(bash_path);
+            if path.exists() {
+                debug!("Detected Nix bash in script: {}", bash_path);
+                shell = bash_path.to_string();
+                break;
             }
         }
     }
@@ -712,7 +712,7 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         debug!("Environment delimiter not found in hook output");
         // Log the tail of stdout to diagnose why delimiter is missing
         let len = stdout_bytes.len();
-        let start = if len > 1000 { len - 1000 } else { 0 };
+        let start = len.saturating_sub(1000);
         let tail = String::from_utf8_lossy(&stdout_bytes[start..]);
         warn!(
             "Delimiter missing. Tail of stdout (last 1000 bytes):\n{}",

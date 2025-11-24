@@ -103,10 +103,12 @@
                 pkgs.lib.hasSuffix "\.sum" path;
               isBridgeHeader = pkgs.lib.hasSuffix "bridge.h" path;
               isCueFile = pkgs.lib.hasSuffix "\.cue" path;
+              isJsonFile = pkgs.lib.hasSuffix "\.json" path;
+              isYamlFile = pkgs.lib.hasSuffix "\.yaml" path || pkgs.lib.hasSuffix "\.yml" path;
               isDirectory = type == "directory";
             in
             isRustFile || isTomlFile || isLockFile ||
-            isGoFile || isBridgeHeader || isCueFile || isDirectory;
+            isGoFile || isBridgeHeader || isCueFile || isJsonFile || isYamlFile || isDirectory;
         };
 
         # Bridge setup helper
