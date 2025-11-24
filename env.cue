@@ -15,12 +15,43 @@ tasks: {
 	}
 
 	fmt: {
+		_inputs: [
+			".config",
+			".gitignore",
+			".release-please-manifest.json",
+			"AGENTS.md",
+			"bun.lock",
+			"Cargo.lock",
+			"Cargo.toml",
+			"crates",
+			"cue.mod",
+			"deny.toml",
+			"docs",
+			"env.cue",
+			"examples",
+			"features",
+			"flake.lock",
+			"flake.nix",
+			"Formula",
+			"GEMINI.md",
+			"HOMEBREW_TAP.md",
+			"license.md",
+			"package.json",
+			"readme.md",
+			"release-please-config.json",
+			"release.toml",
+			"schema",
+			"tests",
+			"treefmt.toml",
+		]
 		fix: {
 			command: "treefmt"
+			inputs: _inputs
 		}
 		check: {
 			command: "treefmt"
 			args: ["--fail-on-change"]
+			inputs: _inputs
 		}
 	}
 

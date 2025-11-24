@@ -111,9 +111,9 @@
 
         # Bridge setup helper
         setupBridge = ''
-          mkdir -p target/debug target/release
-          cp -r ${cue-bridge}/debug/* target/debug/ || true
-          cp -r ${cue-bridge}/release/* target/release/ || true
+          mkdir -p crates/cuenv-core/src/target/debug crates/cuenv-core/src/target/release
+          cp -r ${cue-bridge}/debug/* crates/cuenv-core/src/target/debug/ || true
+          cp -r ${cue-bridge}/release/* crates/cuenv-core/src/target/release/ || true
         '';
 
 
