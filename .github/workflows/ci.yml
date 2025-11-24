@@ -28,10 +28,10 @@ jobs:
         run: nix build .#cuenv
 
       - name: Check formatting
-        run: ./result/bin/cuenv task run fmt check
+        run: ./result/bin/cuenv task fmt.check
 
       - name: Run clippy
-        run: ./result/bin/cuenv task run lint
+        run: ./result/bin/cuenv task lint
 
   test-suite:
     name: test-suite
@@ -78,18 +78,18 @@ jobs:
         run: nix build .#cuenv
 
       - name: Build workspace
-        run: ./result/bin/cuenv task run build
+        run: ./result/bin/cuenv task build
 
       - name: Run tests
-        run: ./result/bin/cuenv task run test unit
+        run: ./result/bin/cuenv task test.unit
 
       - name: Run doctests
-        run: ./result/bin/cuenv task run test doc
+        run: ./result/bin/cuenv task test.doc
 
       - name: Run BDD tests
         # BDD tests use cucumber and are incompatible with nextest
         # See: https://github.com/cucumber-rs/cucumber/issues/370
-        run: ./result/bin/cuenv task run test bdd
+        run: ./result/bin/cuenv task test.bdd
 
   supply-chain-security:
     name: supply-chain-security
@@ -108,14 +108,14 @@ jobs:
         run: nix build .#cuenv
 
       - name: Run security audit
-        run: ./result/bin/cuenv task run security audit
+        run: ./result/bin/cuenv task security.audit
 
       - name: Run dependency checks
-        run: ./result/bin/cuenv task run security deny
+        run: ./result/bin/cuenv task security.deny
 
       # Generate SBOM only on Linux (primary platform)
       - name: Generate SBOM
-        run: ./result/bin/cuenv task run sbom
+        run: ./result/bin/cuenv task sbom
         if: matrix.os == 'ubuntu-latest'
 
       - name: Upload SBOM artifact
@@ -138,7 +138,7 @@ jobs:
         run: nix build .#cuenv
 
       - name: Generate coverage
-        run: ./result/bin/cuenv task run coverage
+        run: ./result/bin/cuenv task coverage
         env:
           ENABLE_LLVM_COV: "1"
 
@@ -163,7 +163,7 @@ jobs:
         run: nix build .#cuenv
 
       - name: Run benchmarks
-        run: ./result/bin/cuenv task run bench
+        run: ./result/bin/cuenv task bench
         continue-on-error: true # Don't fail CI on benchmark regression initially
 
       - name: Store benchmark result
