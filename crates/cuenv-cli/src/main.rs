@@ -575,6 +575,7 @@ async fn execute_exec_command_safe(
 }
 
 /// Run as a hook supervisor process
+#[allow(clippy::too_many_lines)]
 async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     // Parse supervisor arguments
     let mut directory_path = PathBuf::new();
@@ -622,10 +623,7 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
             directory_path.display(),
             e
         );
-        return Err(CliError::other(format!(
-            "Failed to change directory: {}",
-            e
-        )));
+        return Err(CliError::other(format!("Failed to change directory: {e}")));
     }
 
     eprintln!("[supervisor] Starting with args: {args:?}");
