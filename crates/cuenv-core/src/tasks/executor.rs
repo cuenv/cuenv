@@ -241,7 +241,7 @@ impl TaskExecutor {
                     } else {
                         format!("{} {}", task.command, task.args.join(" "))
                     };
-                    println!("> [{name}] {cmd_str} (cached)");
+                    eprintln!("> [{name}] {cmd_str} (cached)");
                 }
                 return Ok(TaskResult {
                     name: name.to_string(),
@@ -360,7 +360,7 @@ impl TaskExecutor {
             } else {
                 format!("{} {}", task.command, task.args.join(" "))
             };
-            println!("> [{name}] {cmd_str}");
+            eprintln!("> [{name}] {cmd_str}");
         }
 
         let start = std::time::Instant::now();
@@ -607,7 +607,7 @@ impl TaskExecutor {
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         if !self.config.capture_output {
-            println!("> Running sequential group: {prefix}");
+            eprintln!("> Running sequential group: {prefix}");
         }
         let mut results = Vec::new();
         for (i, task_def) in tasks.iter().enumerate() {
@@ -638,7 +638,7 @@ impl TaskExecutor {
         // Check for "default" task to override parallel execution
         if let Some(default_task) = tasks.get("default") {
             if !self.config.capture_output {
-                println!("> Executing default task for group '{prefix}'");
+                eprintln!("> Executing default task for group '{prefix}'");
             }
             // Execute only the default task, using the group prefix directly
             // since "default" is implicit when invoking the group name
@@ -649,7 +649,7 @@ impl TaskExecutor {
         }
 
         if !self.config.capture_output {
-            println!(
+            eprintln!(
                 "> Running parallel group: {prefix} (max_parallel={})",
                 self.config.max_parallel
             );
@@ -972,7 +972,7 @@ impl TaskExecutor {
                         );
                     }
                     packages = inferred;
-                    traverse_workspace_deps = false;
+                    traverse_workspace_deps = true;
                 }
             }
 
@@ -1011,17 +1011,29 @@ impl TaskExecutor {
                         member_paths.push(manifest_rel.to_string_lossy().to_string());
 
                         // Add dependencies when explicitly requested
-                        if traverse_workspace_deps
-                            && let Some(entry) = entries.iter().find(|e| e.name == pkg_name)
-                        {
+                        if traverse_workspace_deps {
+                            let mut dependency_candidates: HashSet<String> = HashSet::new();
+
+                            if let Some(entry) = entries.iter().find(|e| e.name == pkg_name) {
                                 for dep in &entry.dependencies {
-                                    if let Some(dep_entry) =
-                                        entries.iter().find(|e| e.name == dep.name)
-                                        && dep_entry.is_workspace_member
+                                    if entries
+                                        .iter()
+                                        .any(|e| e.name == dep.name && e.is_workspace_member)
                                     {
-                                        to_visit.push(dep.name.clone());
+                                        dependency_candidates.insert(dep.name.clone());
                                     }
                                 }
+                            }
+
+                            for dep_name in &member.dependencies {
+                                if workspace.find_member(dep_name).is_some() {
+                                    dependency_candidates.insert(dep_name.clone());
+                                }
+                            }
+
+                            for dep_name in dependency_candidates {
+                                to_visit.push(dep_name);
+                            }
                         }
                     }
                 }
@@ -1381,6 +1393,8 @@ mod tests {
 }"#,
         )
         .unwrap();
+        // Deliberately omit the workspace member name for apps/site to mimic lockfiles
+        // that only record member paths, ensuring we can still discover dependencies.
         fs::write(
             root.join("bun.lock"),
             r#"{
@@ -1395,6 +1409,12 @@ mod tests {
     "packages/content-technologies": {
       "name": "@rawkodeacademy/content-technologies",
       "version": "0.0.1"
+    },
+    "apps/site": {
+      "version": "0.0.0",
+      "dependencies": {
+        "@rawkodeacademy/content-technologies": "workspace:*"
+      }
     }
   },
   "packages": {}
@@ -1448,7 +1468,7 @@ mod tests {
             command: "sh".to_string(),
             args: vec![
                 "-c".to_string(),
-                "find .. -maxdepth 3 -type d | sort".to_string(),
+                "find ../.. -maxdepth 4 -type d | sort".to_string(),
             ],
             shell: None,
             env: HashMap::new(),

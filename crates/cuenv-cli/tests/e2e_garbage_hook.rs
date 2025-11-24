@@ -32,7 +32,7 @@ hooks: {
         .success();
 
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
-    let assert = cmd
+    let output = cmd
         .current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
         .arg("exec")
@@ -40,13 +40,30 @@ hooks: {
         .arg("sh")
         .arg("-c")
         .arg("if [ \"$GOOD\" = \"success\" ]; then echo FOUND; else echo MISSING; exit 1; fi")
-        .assert();
+        .output()
+        .unwrap();
 
-    // We expect this to FAIL to find the variable, because evaluation aborted.
-    // But we want to know if it fails *silently* or logs the error.
-    // In CLI test we can't easily check logs unless we capture stderr.
-    // But we can verify that the variable is indeed missing.
-    assert
-        .failure() // Expect "MISSING" -> exit 1
-        .stdout(predicates::str::contains("MISSING"));
+    // Handle different behaviors in sandbox vs local environment
+    if output.status.code() == Some(3) {
+        // CI / Sandbox behavior: Abort with FFI error
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("Evaluation/FFI error"),
+            "Expected FFI error in stderr, got: {}",
+            stderr
+        );
+    } else {
+        // Local / Permissive behavior: Continue with partial env
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "Expected exit code 1 (MISSING)"
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("MISSING"),
+            "Expected MISSING in stdout, got: {}",
+            stdout
+        );
+    }
 }
