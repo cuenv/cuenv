@@ -21,7 +21,7 @@ hooks: {
 }
 "#;
     fs::write(path.join("env.cue"), cue_content).unwrap();
-    
+
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
 
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
@@ -32,7 +32,8 @@ hooks: {
         .success();
 
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
-    let assert = cmd.current_dir(path)
+    let assert = cmd
+        .current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
         .arg("exec")
         .arg("--")
@@ -45,6 +46,7 @@ hooks: {
     // But we want to know if it fails *silently* or logs the error.
     // In CLI test we can't easily check logs unless we capture stderr.
     // But we can verify that the variable is indeed missing.
-    assert.failure() // Expect "MISSING" -> exit 1
+    assert
+        .failure() // Expect "MISSING" -> exit 1
         .stdout(predicates::str::contains("MISSING"));
 }

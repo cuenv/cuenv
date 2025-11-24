@@ -617,8 +617,15 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
 
     // Change to the target directory so hooks run in the correct context
     if let Err(e) = std::env::set_current_dir(&directory_path) {
-        eprintln!("[supervisor] Failed to change directory to {}: {}", directory_path.display(), e);
-        return Err(CliError::other(format!("Failed to change directory: {}", e)));
+        eprintln!(
+            "[supervisor] Failed to change directory to {}: {}",
+            directory_path.display(),
+            e
+        );
+        return Err(CliError::other(format!(
+            "Failed to change directory: {}",
+            e
+        )));
     }
 
     eprintln!("[supervisor] Starting with args: {args:?}");

@@ -444,14 +444,14 @@ pub async fn execute_hooks(
                 // We rely on our robust delimiter-based parsing to extract what we can.
                 if hook.source.unwrap_or(false) {
                     if !hook_result.stdout.is_empty() {
-                         debug!("Evaluating source hook output for environment variables (success={})", hook_result.success);
+                        debug!(
+                            "Evaluating source hook output for environment variables (success={})",
+                            hook_result.success
+                        );
                         match evaluate_shell_environment(&hook_result.stdout).await {
                             Ok(env_vars) => {
                                 let count = env_vars.len();
-                                debug!(
-                                    "Captured {} environment variables from source hook",
-                                    count
-                                );
+                                debug!("Captured {} environment variables from source hook", count);
                                 if count > 0 {
                                     // Merge captured environment variables into state
                                     for (key, value) in env_vars {
@@ -465,7 +465,10 @@ pub async fn execute_hooks(
                             }
                         }
                     } else {
-                         warn!("Source hook produced empty stdout. Stderr content:\n{}", hook_result.stderr);
+                        warn!(
+                            "Source hook produced empty stdout. Stderr content:\n{}",
+                            hook_result.stderr
+                        );
                     }
                 }
 
@@ -524,7 +527,7 @@ async fn detect_shell() -> String {
     if is_shell_capable("bash").await {
         return "bash".to_string();
     }
-    
+
     // Try zsh (common on macOS where bash is old)
     if is_shell_capable("zsh").await {
         return "zsh".to_string();
@@ -541,7 +544,7 @@ async fn is_shell_capable(shell: &str) -> bool {
         .arg("-c")
         .arg(check_script)
         .output()
-        .await 
+        .await
     {
         Ok(output) => output.status.success(),
         Err(_) => false,
@@ -560,7 +563,7 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     // Try to find the specific bash binary that produced this script (common in Nix/devenv)
     // This avoids compatibility issues with system bash (e.g. macOS bash 3.2 vs Nix bash 5.x)
     let mut shell = detect_shell().await;
-    
+
     for line in shell_script.lines() {
         if let Some(path) = line.strip_prefix("BASH='") {
             if let Some(end) = path.find('\'') {
@@ -631,45 +634,48 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     // No, we want environment variables to persist.
     // But if a command fails, we don't want the whole evaluation to fail.
     // We append " || true" to each line? No, multiline strings.
-    
+
     // Better: Execute the script, but ensure we always reach "env -0".
     // In sh, "cmd; env" runs env even if cmd fails, UNLESS set -e is active.
     // By default set -e is OFF.
-    
+
     // However, we check output.status.success().
     // If the last command is "env -0", and it succeeds, the exit code is 0.
     // Even if previous commands failed (and printed to stderr).
-    
+
     // So "nonexistent_command; env -0" -> exit code 0.
     // Why did my thought experiment suggest failure?
     // Maybe because I was confusing it with pipefail or set -e.
-    
+
     // The reproduction test PASSED even with "nonexistent_command_garbage".
     // This means `evaluate_shell_environment` IS robust against simple command failures!
-    
+
     // So why is the user's case failing?
-    
+
     // Maybe `devenv` output contains something that makes `env -0` NOT run or NOT output what we expect?
     // Or maybe it exits the shell? `exit 1`?
-    
+
     // If `devenv` prints `exit 1`, then `env -0` is never reached.
     // `devenv` is a script. If it calls `exit`, it exits the sourcing shell?
     // If we `source` a script that `exit`s, it exits the parent shell (our sh -c).
-    
+
     // Does `devenv print-dev-env` exit?
     // It shouldn't.
-    
+
     // But if `devenv` fails internally, does it exit?
     // "devenv: command not found" -> 127, continues.
-    
+
     // What if the output is syntactically invalid shell?
     // `export FOO="unclosed`
     // Then `sh` parses it, finds error, prints error, and... stops?
     // Usually yes, syntax error aborts execution of the script.
-    
+
     // Let's try to reproduce SYNTAX ERROR.
     const DELIMITER: &str = "__CUENV_ENV_START__";
-    let script = format!("{}\necho -ne '\\0{}\\0'; env -0", filtered_script, DELIMITER);
+    let script = format!(
+        "{}\necho -ne '\\0{}\\0'; env -0",
+        filtered_script, DELIMITER
+    );
     cmd.arg(script);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -693,7 +699,7 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     // Parse the output. We expect: <script_output>\0<DELIMITER>\0<env_vars>\0...
     let stdout_bytes = &output.stdout;
     let delimiter_bytes = format!("\0{}\0", DELIMITER).into_bytes();
-    
+
     // Find the delimiter in the output
     let env_start_index = stdout_bytes
         .windows(delimiter_bytes.len())
@@ -708,9 +714,12 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         let len = stdout_bytes.len();
         let start = if len > 1000 { len - 1000 } else { 0 };
         let tail = String::from_utf8_lossy(&stdout_bytes[start..]);
-        warn!("Delimiter missing. Tail of stdout (last 1000 bytes):\n{}", tail);
-        
-        // Fallback: try to use the whole output if delimiter missing, 
+        warn!(
+            "Delimiter missing. Tail of stdout (last 1000 bytes):\n{}",
+            tail
+        );
+
+        // Fallback: try to use the whole output if delimiter missing,
         // but this is risky if stdout has garbage.
         // However, if env -0 ran, it's usually at the end.
         // But without delimiter, we can't separate garbage from vars safely.
