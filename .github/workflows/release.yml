@@ -134,6 +134,27 @@ jobs:
 
       - name: Publish cuenv-cli to crates.io
         run: nix develop --accept-flake-config --command cargo publish -p cuenv-cli
+
+  publish-cue:
+    runs-on: ubuntu-latest
+    needs: check-release
+    if: needs.check-release.outputs.release_created == 'true'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
+
+      - name: Publish CUE module
+        run: nix develop --accept-flake-config --command cue mod publish ${{ needs.check-release.outputs.tag_name }}
+        env:
+          CUE_REGISTRY: registry.cue.works
+          CUE_TOKEN: ${{ secrets.CUE_TOKEN }}
+
   build-release-artifacts:
     runs-on: ${{ matrix.os }}
     needs: check-release
