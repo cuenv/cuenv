@@ -44,6 +44,13 @@
         "$ref": "#/$defs/TaskDefinition"
       },
       "default": {}
+    },
+    "workspaces": {
+      "description": "Workspaces configuration",
+      "type": ["object", "null"],
+      "additionalProperties": {
+        "$ref": "#/$defs/WorkspaceConfig"
+      }
     }
   },
   "$defs": {
@@ -426,17 +433,13 @@
           ],
           "default": null
         },
-        "workspaceInputs": {
-          "description": "Workspace resolution configuration",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WorkspaceInputs"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+        "workspaces": {
+          "description": "Workspaces to mount/enable for this task",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": ["command"]
@@ -473,30 +476,22 @@
         }
       ]
     },
-    "WorkspaceInputs": {
-      "description": "Configuration for workspace-aware dependency resolution",
+    "WorkspaceConfig": {
+      "description": "Workspace configuration",
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Whether to enable workspace resolution",
+          "description": "Enable or disable the workspace",
           "type": "boolean",
           "default": true
         },
-        "lockfile": {
-          "description": "Path to the lockfile",
-          "type": ["string", "null"]
-        },
         "packageManager": {
-          "description": "Explicit package manager override",
+          "description": "Optional: manually specify the package manager",
           "type": ["string", "null"]
         },
-        "packages": {
-          "description": "Explicit list of packages to include",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
+        "root": {
+          "description": "Optional: manually specify the root of the workspace relative to env.cue",
+          "type": ["string", "null"]
         }
       }
     }

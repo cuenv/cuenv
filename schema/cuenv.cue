@@ -4,5 +4,6 @@ package schema
 	config?: #Config
 	env?: #Env
 	hooks?: #Hooks
+	workspaces?: #Workspaces
 	tasks: [string]: #Tasks | *{}
 }

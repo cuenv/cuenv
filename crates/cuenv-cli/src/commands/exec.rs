@@ -6,6 +6,8 @@ use cuenv_core::environment::Environment;
 use cuenv_core::tasks::execute_command;
 use std::path::Path;
 
+use super::export::get_environment_with_hooks;
+
 /// Execute an arbitrary command with the CUE environment
 pub async fn execute_exec(
     path: &str,
@@ -25,13 +27,31 @@ pub async fn execute_exec(
     let evaluator = CueEvaluator::builder().build()?;
     let manifest: Cuenv = evaluator.evaluate_typed(Path::new(path), package)?;
 
-    // Set up environment from manifest
+    // Get environment with hook-generated vars merged in
+    let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let base_env_vars = get_environment_with_hooks(&directory, &manifest).await?;
+    tracing::debug!(
+        "Base environment variables after hooks: {:?}",
+        base_env_vars
+    );
+
+    // Apply command-specific policies and secret resolvers on top of the merged environment
     let mut environment = Environment::new();
     if let Some(env) = &manifest.env {
-        // Build environment for exec command, applying policies and executing secret resolvers
-        let env_vars =
+        // First apply the base environment (static + hooks)
+        for (key, value) in &base_env_vars {
+            environment.set(key.clone(), value.clone());
+        }
+
+        // Then apply any command-specific overrides with policies and secret resolution
+        let exec_env_vars =
             cuenv_core::environment::Environment::resolve_for_exec(command, &env.base).await?;
-        for (key, value) in env_vars {
+        for (key, value) in exec_env_vars {
+            environment.set(key, value);
+        }
+    } else {
+        // No manifest env, just use hook-generated environment
+        for (key, value) in base_env_vars {
             environment.set(key, value);
         }
     }

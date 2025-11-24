@@ -328,7 +328,7 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             external_inputs: None,
-            workspace_inputs: None,
+            workspaces: vec![],
             description: Some(format!("Test task {}", name)),
         }
     }

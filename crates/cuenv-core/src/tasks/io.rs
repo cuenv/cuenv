@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use walkdir::WalkDir;
 use tracing;
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
 pub struct ResolvedInputFile {

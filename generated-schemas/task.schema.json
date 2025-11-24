@@ -135,17 +135,13 @@
           ],
           "default": null
         },
-        "workspaceInputs": {
-          "description": "Workspace resolution configuration",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/WorkspaceInputs"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+        "workspaces": {
+          "description": "Workspaces to mount/enable for this task",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
         }
       },
       "required": ["command"]
@@ -168,33 +164,6 @@
           }
         }
       ]
-    },
-    "WorkspaceInputs": {
-      "description": "Configuration for workspace-aware dependency resolution",
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "description": "Whether to enable workspace resolution",
-          "type": "boolean",
-          "default": true
-        },
-        "lockfile": {
-          "description": "Path to the lockfile",
-          "type": ["string", "null"]
-        },
-        "packageManager": {
-          "description": "Explicit package manager override",
-          "type": ["string", "null"]
-        },
-        "packages": {
-          "description": "Explicit list of packages to include",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        }
-      }
     }
   }
 }

@@ -159,6 +159,7 @@ fn test_round_trip_serialization() {
             })),
             on_exit: None,
         }),
+        workspaces: None,
         tasks: HashMap::new(),
     };
 

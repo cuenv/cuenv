@@ -16,7 +16,10 @@ mod npm_tests {
         let parser = NpmLockfileParser;
 
         if !fixture_path.exists() {
-            eprintln!("Skipping npm fixture test; missing {}", fixture_path.display());
+            eprintln!(
+                "Skipping npm fixture test; missing {}",
+                fixture_path.display()
+            );
             return;
         }
 
