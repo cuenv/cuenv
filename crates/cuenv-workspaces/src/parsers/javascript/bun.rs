@@ -230,12 +230,12 @@ fn parse_array_package(lockfile_path: &Path, name: &str, items: &[Value]) -> Res
         .unwrap_or(Value::Object(Map::default()));
 
     let metadata: BunPackageMetadata = match metadata_val {
-        Value::Object(_) => serde_json::from_value(metadata_val).map_err(|err| {
-            Error::LockfileParseFailed {
+        Value::Object(_) => {
+            serde_json::from_value(metadata_val).map_err(|err| Error::LockfileParseFailed {
                 path: lockfile_path.to_path_buf(),
                 message: format!("{name}: invalid metadata object: {err}"),
-            }
-        })?,
+            })?
+        }
         Value::String(s) => {
             // Some lockfiles use a terse tuple form where the third slot is a
             // checksum string instead of an object. Treat it as a checksum and

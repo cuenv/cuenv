@@ -31,6 +31,9 @@ package schema
 	// Cross-project inputs from tasks in other projects (monorepo-only)
 	externalInputs?: [...#ExternalInput]
 
+	// Workspaces to mount/enable for this task
+	workspaces?: [...string]
+
 	description?: string
 }
 

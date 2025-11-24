@@ -185,6 +185,12 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
+        Command::EnvInspect { path, package } => {
+            match execute_env_inspect_command_safe(path, package, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
         Command::EnvCheck {
             path,
             package,
@@ -328,6 +334,37 @@ async fn execute_env_check_command_safe(
         Err(e) => Err(CliError::eval_with_help(
             format!("Env check failed: {e}"),
             "Check that your env.cue file exists and hooks have completed successfully",
+        )),
+    }
+}
+
+/// Execute env inspect command safely
+#[instrument(name = "cuenv_execute_env_inspect_safe")]
+async fn execute_env_inspect_command_safe(
+    path: String,
+    package: String,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::hooks::execute_env_inspect(&path, &package).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "state": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Env inspect failed: {e}"),
+            "Check that your env.cue is approved and hooks have run at least once",
         )),
     }
 }
@@ -577,6 +614,12 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .try_init();
+
+    // Change to the target directory so hooks run in the correct context
+    if let Err(e) = std::env::set_current_dir(&directory_path) {
+        eprintln!("[supervisor] Failed to change directory to {}: {}", directory_path.display(), e);
+        return Err(CliError::other(format!("Failed to change directory: {}", e)));
+    }
 
     eprintln!("[supervisor] Starting with args: {args:?}");
     eprintln!("[supervisor] Directory: {}", directory_path.display());

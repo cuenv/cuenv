@@ -258,13 +258,14 @@ pub async fn get_environment_with_hooks(
                     Ok(collect_all_env_vars(config, &state.environment_vars))
                 }
                 ExecutionStatus::Failed => {
-                    // Hooks failed - log and use static environment only
+                    // Hooks failed - log but still try to use any environment variables captured
+                    // This is critical for tools that print exports before crashing
                     debug!(
-                        "Hooks failed for {}: {:?}",
+                        "Hooks failed for {}: {:?}. Using captured environment.",
                         directory.display(),
                         state.error_message
                     );
-                    Ok(static_env)
+                    Ok(collect_all_env_vars(config, &state.environment_vars))
                 }
                 ExecutionStatus::Cancelled => {
                     // Hooks cancelled - use static environment only
