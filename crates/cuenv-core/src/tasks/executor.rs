@@ -235,6 +235,14 @@ impl TaskExecutor {
             // missing (older cache format), fall through to execute to
             // backfill logs for future hits.
             if !(stdout.is_empty() && stderr.is_empty()) {
+                if !self.config.capture_output {
+                    let cmd_str = if task.command.is_empty() {
+                        task.args.join(" ")
+                    } else {
+                        format!("{} {}", task.command, task.args.join(" "))
+                    };
+                    println!("> [{name}] {cmd_str} (cached)");
+                }
                 return Ok(TaskResult {
                     name: name.to_string(),
                     exit_code: Some(0),
