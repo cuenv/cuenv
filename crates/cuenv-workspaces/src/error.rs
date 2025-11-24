@@ -214,6 +214,7 @@ impl From<toml::de::Error> for Error {
 }
 
 #[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
 mod tests {
     use super::*;
     use std::path::PathBuf;

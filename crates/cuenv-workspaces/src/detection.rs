@@ -489,6 +489,7 @@ fn manager_priority(manager: PackageManager) -> u8 {
 }
 
 #[cfg(test)]
+#[allow(clippy::match_same_arms)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

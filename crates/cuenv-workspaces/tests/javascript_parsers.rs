@@ -266,7 +266,6 @@ mod yarn_classic_tests {
     #[test]
     fn yarn_classic_parser_detects_v1_lockfile_via_content_sniffing() {
         use std::fs;
-        use std::io::Write;
         use tempfile::TempDir;
 
         // Create a unique temp directory with a yarn.lock file containing v1 content

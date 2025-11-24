@@ -515,7 +515,6 @@ mod tests {
 
     #[test]
     fn rejects_binary_lockb_format() {
-        use std::io::Write;
         use tempfile::TempDir;
 
         let lock = r#"{"lockfileVersion": 1, "packages": {}}"#;

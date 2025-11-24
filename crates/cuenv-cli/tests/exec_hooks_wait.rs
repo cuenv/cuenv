@@ -1,3 +1,5 @@
+//! Integration test for exec hooks waiting behavior
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -25,6 +27,7 @@ hooks: {
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
 
     // 1. Approve the config
+    #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
     cmd.current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin) // Ensure supervisor uses correct binary
@@ -34,8 +37,9 @@ hooks: {
 
     // 2. Exec command that checks for the variable
     // We check that HOOK_VAR is "success".
-    // Since the hook sleeps for 2s, and cuenv exec (currently) only waits 10ms,
+    // Since the hook sleeps for 0.1s, and cuenv exec (currently) only waits 10ms,
     // this should fail if the bug exists.
+    #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
     let output = cmd.current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin) // Ensure supervisor uses correct binary
@@ -53,8 +57,7 @@ hooks: {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains("Evaluation/FFI error"),
-            "Expected FFI error in sandbox, got: {}",
-            stderr
+            "Expected FFI error in sandbox, got: {stderr}"
         );
     } else {
         assert!(
@@ -66,8 +69,7 @@ hooks: {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             stdout.contains("FOUND"),
-            "Expected FOUND in stdout, got: {}",
-            stdout
+            "Expected FOUND in stdout, got: {stdout}"
         );
     }
 }

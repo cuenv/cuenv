@@ -5,6 +5,8 @@ use std::fs;
 use std::panic;
 use std::path::{Path, PathBuf};
 
+type LockfileDetail = (Option<String>, Option<String>, Vec<DependencyRef>);
+
 /// Parser for Yarn Classic (v1.x) `yarn.lock` files.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct YarnClassicLockfileParser;
@@ -431,4 +433,3 @@ repeat-string@^1.0.0:
         assert!(!parser.supports_lockfile(Path::new("package-lock.json")));
     }
 }
-type LockfileDetail = (Option<String>, Option<String>, Vec<DependencyRef>);

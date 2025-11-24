@@ -195,7 +195,7 @@ fn test_pnpm_workspace_malformed_yaml() {
     assert!(result.is_err());
     match result.unwrap_err() {
         cuenv_workspaces::Error::Yaml { .. } => {}
-        e => panic!("Expected Yaml error, got {:?}", e),
+        e => panic!("Expected Yaml error, got {e:?}"),
     }
 }
 
@@ -206,11 +206,11 @@ fn test_pnpm_workspace_exclusions() {
     let root = temp.path();
 
     // Create pnpm-workspace.yaml with exclusions
-    let workspace_yaml = r#"
+    let workspace_yaml = r"
     packages:
       - 'packages/*'
       - '!packages/excluded'
-    "#;
+    ";
     std::fs::write(root.join("pnpm-workspace.yaml"), workspace_yaml).unwrap();
 
     // Create included package
@@ -387,13 +387,13 @@ fn test_pnpm_mixed_exclusions() {
     let root = temp.path();
 
     // Create pnpm-workspace.yaml with mixed includes and excludes
-    let workspace_yaml = r#"
+    let workspace_yaml = r"
     packages:
       - 'packages/*'
       - '!packages/exclude-me'
       - 'apps/*'
       - '!apps/test-*'
-    "#;
+    ";
     std::fs::write(root.join("pnpm-workspace.yaml"), workspace_yaml).unwrap();
 
     // packages/pkg-a (include)

@@ -1,3 +1,5 @@
+//! Integration test for hooks with multiline exports
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -25,6 +27,7 @@ hooks: {
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
 
     // 1. Approve config
+    #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
     cmd.current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
@@ -34,6 +37,7 @@ hooks: {
 
     // 2. Exec command to check variables
     // Check SINGLE variable first - if multiline broke the script, this will likely be missing too
+    #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
     let output = cmd.current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
@@ -51,16 +55,14 @@ hooks: {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains("Evaluation/FFI error"),
-            "Expected FFI error in sandbox, got: {}",
-            stderr
+            "Expected FFI error in sandbox, got: {stderr}"
         );
     } else {
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             stdout.contains("FOUND_MULTI"),
-            "Expected FOUND_MULTI in stdout, got: {}",
-            stdout
+            "Expected FOUND_MULTI in stdout, got: {stdout}"
         );
     }
 }

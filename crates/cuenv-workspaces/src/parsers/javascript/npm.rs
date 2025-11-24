@@ -202,8 +202,8 @@ fn infer_package_name(pkg_path: &str, pkg_entry: &PackageEntry, workspace_name: 
 fn map_dependencies(deps: &BTreeMap<String, String>) -> Vec<DependencyRef> {
     deps.iter()
         .map(|(name, version)| DependencyRef {
-            name: name.to_string(),
-            version_req: version.to_string(),
+            name: name.clone(),
+            version_req: version.clone(),
         })
         .collect()
 }

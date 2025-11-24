@@ -109,7 +109,9 @@ fn create_test_workspace(members: &[&str]) -> TempDir {
     let mut manifest = String::from("[workspace]\n");
     manifest.push_str("members = [\n");
     for member in members {
-        manifest.push_str(&format!("    \"{member}\",\n"));
+        manifest.push_str("    \"");
+        manifest.push_str(member);
+        manifest.push_str("\",\n");
     }
     manifest.push_str("]\n");
     write_cargo_toml(temp.path(), &manifest);

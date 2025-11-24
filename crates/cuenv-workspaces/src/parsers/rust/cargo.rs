@@ -393,11 +393,11 @@ fn extract_path_from_url(url_str: &str, workspace_root: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
+#[allow(clippy::uninlined_format_args, clippy::format_push_string)]
 mod tests {
     use super::*;
     use crate::error::Error;
     use std::fs;
-    use std::io::Write;
     use tempfile::TempDir;
 
     #[test]
