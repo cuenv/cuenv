@@ -146,12 +146,14 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             name,
             materialize_outputs,
             show_cache_path,
+            help,
         } => match execute_task_command_safe(
             path,
             package,
             name,
             materialize_outputs,
             show_cache_path,
+            help,
         )
         .await
         {
@@ -516,6 +518,7 @@ async fn execute_task_command_safe(
     name: Option<String>,
     materialize_outputs: Option<String>,
     show_cache_path: bool,
+    help: bool,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
@@ -527,6 +530,7 @@ async fn execute_task_command_safe(
         false,
         materialize_outputs.as_deref(),
         show_cache_path,
+        help,
     )
     .await;
 
