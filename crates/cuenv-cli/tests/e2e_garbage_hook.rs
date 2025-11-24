@@ -1,3 +1,5 @@
+//! Integration test for hooks with syntax errors
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
@@ -24,6 +26,7 @@ hooks: {
 
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
 
+    #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
     cmd.current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
@@ -31,6 +34,7 @@ hooks: {
         .assert()
         .success();
 
+    #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
     let output = cmd
         .current_dir(path)
@@ -49,8 +53,7 @@ hooks: {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains("Evaluation/FFI error"),
-            "Expected FFI error in stderr, got: {}",
-            stderr
+            "Expected FFI error in stderr, got: {stderr}"
         );
     } else {
         // Local / Permissive behavior: Continue with partial env
@@ -62,8 +65,7 @@ hooks: {
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             stdout.contains("MISSING"),
-            "Expected MISSING in stdout, got: {}",
-            stdout
+            "Expected MISSING in stdout, got: {stdout}"
         );
     }
 }
