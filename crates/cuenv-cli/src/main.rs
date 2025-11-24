@@ -623,7 +623,18 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
             directory_path.display(),
             e
         );
+<<<<<<< Updated upstream
         return Err(CliError::other(format!("Failed to change directory: {e}")));
+||||||| Stash base
+        return Err(CliError::other(format!(
+            "Failed to change directory: {}",
+            e
+        )));
+=======
+        return Err(CliError::other(format!(
+            "Failed to change directory: {e}"
+        )));
+>>>>>>> Stashed changes
     }
 
     eprintln!("[supervisor] Starting with args: {args:?}");
