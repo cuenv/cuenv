@@ -24,14 +24,14 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Build development environment
-        run: nix develop --accept-flake-config --command echo "Development environment ready"
+      - name: Build cuenv
+        run: nix build .#cuenv
 
       - name: Check formatting
-        run: nix develop --accept-flake-config --command treefmt --fail-on-change
+        run: ./result/bin/cuenv task run fmt check
 
       - name: Run clippy
-        run: nix develop --accept-flake-config --command cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: ./result/bin/cuenv task run lint
 
   test-suite:
     name: test-suite
@@ -74,28 +74,22 @@ jobs:
             ${{ runner.os }}-${{ matrix.rust }}-target-v2-
             ${{ runner.os }}-target-v2-
 
-      - name: Build development environment
-        run: nix develop --accept-flake-config --command echo "Development environment ready"
+      - name: Build cuenv
+        run: nix build .#cuenv
 
       - name: Build workspace
-        run: nix develop --accept-flake-config --command cargo build --workspace --all-features
+        run: ./result/bin/cuenv task run build
 
       - name: Run tests
-        run: nix develop --accept-flake-config --command cargo nextest run --workspace --all-features
+        run: ./result/bin/cuenv task run test unit
 
       - name: Run doctests
-        run: nix develop --accept-flake-config --command cargo test --doc --workspace
+        run: ./result/bin/cuenv task run test doc
 
       - name: Run BDD tests
         # BDD tests use cucumber and are incompatible with nextest
         # See: https://github.com/cucumber-rs/cucumber/issues/370
-        run: nix develop --accept-flake-config --command cargo test --test bdd
-
-      # Go bridge tests disabled due to CGO issues in CI
-      # - name: Test Go bridge
-      #   run: nix develop --accept-flake-config --command bash -c "cd crates/cuengine && CGO_ENABLED=1 go test -v ./..."
-      #   env:
-      #     CGO_ENABLED: "1"
+        run: ./result/bin/cuenv task run test bdd
 
   supply-chain-security:
     name: supply-chain-security
@@ -110,23 +104,18 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Build development environment
-        run: nix develop --accept-flake-config --command echo "Development environment ready"
+      - name: Build cuenv
+        run: nix build .#cuenv
 
-      - name: Run security audit (pinned DB via flake check)
-        # Use the flake-defined audit check to avoid network/DB flakiness
-        shell: bash
-        run: |
-          set -euo pipefail
-          system=$(nix eval --raw --impure --expr builtins.currentSystem)
-          nix build -L .#checks.$system.cuenv-audit
+      - name: Run security audit
+        run: ./result/bin/cuenv task run security audit
 
       - name: Run dependency checks
-        run: nix develop --accept-flake-config --command cargo deny check bans licenses advisories
+        run: ./result/bin/cuenv task run security deny
 
       # Generate SBOM only on Linux (primary platform)
       - name: Generate SBOM
-        run: nix develop --accept-flake-config --command cargo cyclonedx --override-filename sbom.json
+        run: ./result/bin/cuenv task run sbom
         if: matrix.os == 'ubuntu-latest'
 
       - name: Upload SBOM artifact
@@ -145,13 +134,11 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Build development environment
-        run: nix develop --accept-flake-config --command echo "Development environment ready"
-        env:
-          ENABLE_LLVM_COV: "1"
+      - name: Build cuenv
+        run: nix build .#cuenv
 
       - name: Generate coverage
-        run: nix develop --accept-flake-config --command cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+        run: ./result/bin/cuenv task run coverage
         env:
           ENABLE_LLVM_COV: "1"
 
@@ -172,11 +159,11 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Build development environment
-        run: nix develop --accept-flake-config --command echo "Development environment ready"
+      - name: Build cuenv
+        run: nix build .#cuenv
 
       - name: Run benchmarks
-        run: nix develop --accept-flake-config --command cargo bench --workspace --no-fail-fast
+        run: ./result/bin/cuenv task run bench
         continue-on-error: true # Don't fail CI on benchmark regression initially
 
       - name: Store benchmark result
