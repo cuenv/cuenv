@@ -345,6 +345,16 @@ impl TaskExecutor {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        let stream_logs = !self.config.capture_output;
+        if stream_logs {
+            let cmd_str = if task.command.is_empty() {
+                task.args.join(" ")
+            } else {
+                format!("{} {}", task.command, task.args.join(" "))
+            };
+            println!("> [{name}] {cmd_str}");
+        }
+
         let start = std::time::Instant::now();
         let mut child = cmd
             .spawn()
@@ -352,8 +362,6 @@ impl TaskExecutor {
 
         let stdout_handle = child.stdout.take();
         let stderr_handle = child.stderr.take();
-
-        let stream_logs = !self.config.capture_output;
 
         let stdout_task = async move {
             if let Some(stdout) = stdout_handle {
@@ -590,6 +598,9 @@ impl TaskExecutor {
         tasks: &[TaskDefinition],
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
+        if !self.config.capture_output {
+            println!("> Running sequential group: {prefix}");
+        }
         let mut results = Vec::new();
         for (i, task_def) in tasks.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
@@ -616,6 +627,12 @@ impl TaskExecutor {
         tasks: &HashMap<String, TaskDefinition>,
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
+        if !self.config.capture_output {
+            println!(
+                "> Running parallel group: {prefix} (max_parallel={})",
+                self.config.max_parallel
+            );
+        }
         let mut join_set = JoinSet::new();
         let all_tasks = Arc::new(all_tasks.clone());
         let mut all_results = Vec::new();
