@@ -11,6 +11,25 @@ use crate::environment::Env;
 use crate::hooks::Hook;
 use crate::tasks::TaskDefinition;
 
+/// Workspace configuration
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceConfig {
+    /// Enable or disable the workspace
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Optional: manually specify the root of the workspace relative to env.cue
+    pub root: Option<String>,
+
+    /// Optional: manually specify the package manager
+    pub package_manager: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Collection of hooks that can be executed
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 pub struct Hooks {
@@ -57,6 +76,10 @@ pub struct Cuenv {
     /// Hooks configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Hooks>,
+
+    /// Workspaces configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
 
     /// Tasks configuration
     #[serde(default)]

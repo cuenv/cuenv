@@ -33,6 +33,10 @@ pub enum Command {
         timeout: u64,
         format: StatusFormat,
     },
+    EnvInspect {
+        path: String,
+        package: String,
+    },
     EnvCheck {
         path: String,
         package: String,
@@ -117,6 +121,7 @@ impl CommandExecutor {
                 self.execute_env_status(path, package, wait, timeout, format)
                     .await
             }
+            Command::EnvInspect { path, package } => self.execute_env_inspect(path, package).await,
             Command::EnvCheck {
                 path,
                 package,
@@ -371,6 +376,33 @@ impl CommandExecutor {
         });
 
         match hooks::execute_env_check(&path, &package, shell).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_env_inspect(&self, path: String, package: String) -> Result<()> {
+        let command_name = "env inspect";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match hooks::execute_env_inspect(&path, &package).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),

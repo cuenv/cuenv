@@ -197,6 +197,11 @@ impl HookExecutor {
             cmd.env("CUENV_APPROVAL_FILE", approval_file);
         }
 
+        // Pass through RUST_LOG for debugging
+        if let Ok(rust_log) = std::env::var("RUST_LOG") {
+            cmd.env("RUST_LOG", rust_log);
+        }
+
         // Platform-specific detachment configuration
         #[cfg(unix)]
         {
@@ -433,27 +438,34 @@ pub async fn execute_hooks(
         // Record the result
         match result {
             Ok(hook_result) => {
-                // If this is a source hook and it succeeded, evaluate its output
-                if hook.source.unwrap_or(false)
-                    && hook_result.success
-                    && !hook_result.stdout.is_empty()
-                {
-                    debug!("Evaluating source hook output for environment variables");
-                    match evaluate_shell_environment(&hook_result.stdout).await {
-                        Ok(env_vars) => {
-                            debug!(
-                                "Captured {} environment variables from source hook",
-                                env_vars.len()
-                            );
-                            // Merge captured environment variables into state
-                            for (key, value) in env_vars {
-                                state.environment_vars.insert(key, value);
+                // If this is a source hook, evaluate its output to capture environment variables.
+                // We do this even if the hook failed (exit code != 0), because tools like devenv
+                // might output valid environment exports before crashing or exiting with error.
+                // We rely on our robust delimiter-based parsing to extract what we can.
+                if hook.source.unwrap_or(false) {
+                    if !hook_result.stdout.is_empty() {
+                         debug!("Evaluating source hook output for environment variables (success={})", hook_result.success);
+                        match evaluate_shell_environment(&hook_result.stdout).await {
+                            Ok(env_vars) => {
+                                let count = env_vars.len();
+                                debug!(
+                                    "Captured {} environment variables from source hook",
+                                    count
+                                );
+                                if count > 0 {
+                                    // Merge captured environment variables into state
+                                    for (key, value) in env_vars {
+                                        state.environment_vars.insert(key, value);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to evaluate source hook output: {}", e);
+                                // Don't fail the hook execution further, just log the error
                             }
                         }
-                        Err(e) => {
-                            warn!("Failed to evaluate source hook output: {}", e);
-                            // Don't fail the hook execution, just log the error
-                        }
+                    } else {
+                         warn!("Source hook produced empty stdout. Stderr content:\n{}", hook_result.stderr);
                     }
                 }
 
@@ -507,18 +519,33 @@ pub async fn execute_hooks(
 }
 
 /// Detect which shell to use for environment evaluation
-fn detect_shell() -> &'static str {
-    // Check if bash is available
-    if std::process::Command::new("bash")
-        .arg("--version")
-        .output()
-        .is_ok()
-    {
-        return "bash";
+async fn detect_shell() -> String {
+    // Try bash first
+    if is_shell_capable("bash").await {
+        return "bash".to_string();
+    }
+    
+    // Try zsh (common on macOS where bash is old)
+    if is_shell_capable("zsh").await {
+        return "zsh".to_string();
     }
 
-    // Fall back to POSIX sh
-    "sh"
+    // Fall back to sh (likely to fail for advanced scripts but better than nothing)
+    "sh".to_string()
+}
+
+/// Check if a shell supports modern features like case fallthrough (;&)
+async fn is_shell_capable(shell: &str) -> bool {
+    let check_script = "case x in x) true ;& y) true ;; esac";
+    match Command::new(shell)
+        .arg("-c")
+        .arg(check_script)
+        .output()
+        .await 
+    {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
 /// Evaluate shell script and extract resulting environment variables
@@ -528,13 +555,30 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         shell_script.len()
     );
 
-    tracing::error!("Raw shell script from hook:\n{}", shell_script);
+    tracing::trace!("Raw shell script from hook:\n{}", shell_script);
 
-    let shell = detect_shell();
+    // Try to find the specific bash binary that produced this script (common in Nix/devenv)
+    // This avoids compatibility issues with system bash (e.g. macOS bash 3.2 vs Nix bash 5.x)
+    let mut shell = detect_shell().await;
+    
+    for line in shell_script.lines() {
+        if let Some(path) = line.strip_prefix("BASH='") {
+            if let Some(end) = path.find('\'') {
+                let bash_path = &path[..end];
+                let path = PathBuf::from(bash_path);
+                if path.exists() {
+                    debug!("Detected Nix bash in script: {}", bash_path);
+                    shell = bash_path.to_string();
+                    break;
+                }
+            }
+        }
+    }
+
     debug!("Using shell: {}", shell);
 
     // First, get the environment before running the script
-    let mut cmd_before = Command::new(shell);
+    let mut cmd_before = Command::new(&shell);
     cmd_before.arg("-c");
     cmd_before.arg("env -0");
     cmd_before.stdout(Stdio::piped());
@@ -660,6 +704,12 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         &stdout_bytes[idx + delimiter_bytes.len()..]
     } else {
         debug!("Environment delimiter not found in hook output");
+        // Log the tail of stdout to diagnose why delimiter is missing
+        let len = stdout_bytes.len();
+        let start = if len > 1000 { len - 1000 } else { 0 };
+        let tail = String::from_utf8_lossy(&stdout_bytes[start..]);
+        warn!("Delimiter missing. Tail of stdout (last 1000 bytes):\n{}", tail);
+        
         // Fallback: try to use the whole output if delimiter missing, 
         // but this is risky if stdout has garbage.
         // However, if env -0 ran, it's usually at the end.
@@ -743,7 +793,7 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
     // Force SHELL to match the evaluator shell for source hooks
     // This ensures tools like devenv output compatible syntax (e.g. avoid fish syntax)
     if hook.source.unwrap_or(false) {
-        cmd.env("SHELL", detect_shell());
+        cmd.env("SHELL", detect_shell().await);
     }
 
     // Execute with timeout

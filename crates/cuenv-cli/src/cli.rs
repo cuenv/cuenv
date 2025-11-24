@@ -460,6 +460,22 @@ pub enum EnvCommands {
         )]
         output_format: StatusFormat,
     },
+    #[command(about = "Inspect cached hook state for the current config")]
+    Inspect {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
     #[command(about = "Check hook status and output environment for shell")]
     Check {
         #[arg(
@@ -531,6 +547,7 @@ impl From<Commands> for Command {
                     timeout,
                     format: output_format,
                 },
+                EnvCommands::Inspect { path, package } => Command::EnvInspect { path, package },
                 EnvCommands::Check {
                     path,
                     package,
