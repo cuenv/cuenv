@@ -635,6 +635,19 @@ impl TaskExecutor {
         tasks: &HashMap<String, TaskDefinition>,
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
+        // Check for "default" task to override parallel execution
+        if let Some(default_task) = tasks.get("default") {
+            if !self.config.capture_output {
+                println!("> Executing default task for group '{prefix}'");
+            }
+            // Execute only the default task, using the group prefix directly
+            // since "default" is implicit when invoking the group name
+            let task_name = format!("{}.default", prefix);
+            return self
+                .execute_definition(&task_name, default_task, all_tasks)
+                .await;
+        }
+
         if !self.config.capture_output {
             println!(
                 "> Running parallel group: {prefix} (max_parallel={})",
