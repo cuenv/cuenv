@@ -48,6 +48,7 @@ tasks: {
 			command: "treefmt"
 			inputs: _inputs
 		}
+		default: fix
 		check: {
 			command: "treefmt"
 			args: ["--fail-on-change"]
