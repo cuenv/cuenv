@@ -27,7 +27,13 @@ pub async fn execute_task(
     capture_output: bool,
     materialize_outputs: Option<&str>,
     show_cache_path: bool,
+    help: bool,
 ) -> Result<String> {
+    // Handle CLI help immediately if no task specified
+    if task_name.is_none() && help {
+        return Ok(get_task_cli_help());
+    }
+
     tracing::info!(
         "Executing task from path: {}, package: {}, task: {:?}",
         path,
@@ -51,22 +57,43 @@ pub async fn execute_task(
     // If no task specified, list available tasks
     if task_name.is_none() {
         tracing::debug!("Listing available tasks");
-        let tasks: Vec<&str> = task_index.list().iter().map(|t| t.name.as_str()).collect();
-        tracing::debug!("Found {} tasks to list: {:?}", tasks.len(), tasks);
+        let tasks = task_index.list();
+        tracing::debug!("Found {} tasks to list", tasks.len());
 
         if tasks.is_empty() {
             return Ok("No tasks defined in the configuration".to_string());
         }
 
-        let mut output = String::from("Available tasks:\n");
-        for task in tasks {
-            writeln!(output, "  - {task}").unwrap();
-        }
-        return Ok(output);
+        return Ok(render_task_tree(tasks));
     }
 
     let requested_task = task_name.unwrap();
     tracing::debug!("Looking for specific task: {}", requested_task);
+
+    // If help requested for specific task/group
+    if help {
+        let tasks = task_index.list();
+        let prefix = format!("{requested_task}.");
+        let subtasks: Vec<&cuenv_core::tasks::IndexedTask> = tasks
+            .iter()
+            .filter(|t| t.name == requested_task || t.name.starts_with(&prefix))
+            .copied()
+            .collect();
+
+        if subtasks.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Task '{requested_task}' not found",
+            )));
+        }
+
+        // If it's a single task without subtasks
+        if subtasks.len() == 1 && subtasks[0].name == requested_task {
+            return Ok(format_task_detail(subtasks[0]));
+        }
+
+        // It's a group or task with subtasks
+        return Ok(render_task_tree(subtasks));
+    }
 
     // Resolve task via canonical index (supports nested paths and ':' alias)
     let task_entry = task_index.resolve(requested_task).map_err(|e| {
@@ -828,6 +855,174 @@ async fn resolve_and_materialize_external(
     Ok(())
 }
 
+fn get_task_cli_help() -> String {
+    r"Execute a task defined in CUE configuration
+
+Usage: cuenv task [OPTIONS] [NAME]
+
+Arguments:
+  [NAME]  Name of the task to execute (list tasks if not provided)
+
+Options:
+  -p, --path <PATH>                  Path to directory containing CUE files [default: .]
+      --package <PACKAGE>            Name of the CUE package to evaluate [default: cuenv]
+      --materialize-outputs <DIR>    Materialize cached outputs to this directory on cache hit (off by default)
+      --show-cache-path              Print the cache path for this task key
+      --help                         Print help"
+        .to_string()
+}
+
+fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
+    let mut output = String::new();
+    writeln!(output, "Task: {}", task.name).unwrap();
+
+    match &task.definition {
+        TaskDefinition::Single(t) => {
+            if let Some(desc) = &t.description {
+                writeln!(output, "Description: {desc}").unwrap();
+            }
+            writeln!(output, "Command: {}", t.command).unwrap();
+            if !t.args.is_empty() {
+                writeln!(output, "Args: {:?}", t.args).unwrap();
+            }
+            if !t.depends_on.is_empty() {
+                writeln!(output, "Depends on: {:?}", t.depends_on).unwrap();
+            }
+            if !t.inputs.is_empty() {
+                writeln!(output, "Inputs: {:?}", t.inputs).unwrap();
+            }
+            if !t.outputs.is_empty() {
+                writeln!(output, "Outputs: {:?}", t.outputs).unwrap();
+            }
+        }
+        TaskDefinition::Group(g) => {
+            writeln!(output, "Type: Task Group").unwrap();
+            match g {
+                cuenv_core::tasks::TaskGroup::Sequential(_) => {
+                    writeln!(output, "Mode: Sequential").unwrap()
+                }
+                cuenv_core::tasks::TaskGroup::Parallel(_) => {
+                    writeln!(output, "Mode: Parallel").unwrap()
+                }
+            }
+        }
+    }
+    output
+}
+
+#[derive(Default)]
+struct TaskTreeNode {
+    description: Option<String>,
+    children: BTreeMap<String, TaskTreeNode>,
+    is_task: bool,
+}
+
+fn render_task_tree(tasks: Vec<&cuenv_core::tasks::IndexedTask>) -> String {
+    let mut roots: BTreeMap<String, TaskTreeNode> = BTreeMap::new();
+
+    // Build the tree
+    for task in tasks {
+        let parts: Vec<&str> = task.name.split('.').collect();
+        let mut current_level = &mut roots;
+
+        for (i, part) in parts.iter().enumerate() {
+            let is_last = i == parts.len() - 1;
+            let node = current_level.entry((*part).to_string()).or_default();
+
+            if is_last {
+                node.is_task = true;
+                // Extract description from definition
+                let desc = match &task.definition {
+                    TaskDefinition::Single(t) => t.description.clone(),
+                    TaskDefinition::Group(g) => match g {
+                        cuenv_core::tasks::TaskGroup::Sequential(sub) => {
+                            sub.first().and_then(|t| match t {
+                                TaskDefinition::Single(st) => st.description.clone(),
+                                TaskDefinition::Group(_) => None,
+                            })
+                        }
+                        cuenv_core::tasks::TaskGroup::Parallel(_) => {
+                            // For parallel groups, maybe no shared description easily available unless explicitly added to group?
+                            // The current Task definition puts description on Task struct.
+                            // If it's a group, the definition is TaskDefinition::Group which contains TaskGroup.
+                            // TaskGroup doesn't have a description field itself in the struct definition I read earlier.
+                            // Wait, let me check TaskDefinition again.
+                            None
+                        }
+                    },
+                };
+                node.description = desc;
+            }
+
+            current_level = &mut node.children;
+        }
+    }
+
+    let mut output = String::from("Available tasks:\n");
+
+    // Calculate max width for alignment
+    // We need to traverse the tree to find the printed length of the name column
+    // width = indentation + name_len + 2 (for space and padding)
+    let max_width = calculate_tree_width(&roots, 0);
+
+    print_tree_nodes(&roots, &mut output, max_width, "");
+
+    output
+}
+
+fn calculate_tree_width(nodes: &BTreeMap<String, TaskTreeNode>, depth: usize) -> usize {
+    let mut max = 0;
+    for (name, node) in nodes {
+        // Length calculation:
+        // depth * 3 (indentation) + 3 (marker "├─ ") + name.len()
+        // Actually let's be precise with the print logic:
+        // Root items: "├─ name" (len = 3 + name)
+        // Nested: "│  ├─ name" (len = depth*3 + 3 + name)
+        let len = (depth * 3) + 3 + name.len();
+        if len > max {
+            max = len;
+        }
+        let child_max = calculate_tree_width(&node.children, depth + 1);
+        if child_max > max {
+            max = child_max;
+        }
+    }
+    max
+}
+
+fn print_tree_nodes(
+    nodes: &BTreeMap<String, TaskTreeNode>,
+    output: &mut String,
+    max_width: usize,
+    prefix: &str,
+) {
+    let count = nodes.len();
+    for (i, (name, node)) in nodes.iter().enumerate() {
+        let is_last_item = i == count - 1;
+
+        let marker = if is_last_item { "└─ " } else { "├─ " };
+
+        let current_line_len =
+            prefix.chars().count() + marker.chars().count() + name.chars().count();
+
+        write!(output, "{prefix}{marker}{name}").unwrap();
+
+        if let Some(desc) = &node.description {
+            // Pad with dots
+            let padding = max_width.saturating_sub(current_line_len);
+            // Add a minimum spacing
+            let dots = ".".repeat(padding + 4);
+            write!(output, " {dots} {desc}").unwrap();
+        }
+        writeln!(output).unwrap();
+
+        let child_prefix = if is_last_item { "   " } else { "│  " };
+        let new_prefix = format!("{prefix}{child_prefix}");
+
+        print_tree_nodes(&node.children, output, max_width, &new_prefix);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,6 +1044,7 @@ env: {
             None,
             false,
             None,
+            false,
             false,
         )
         .await;
@@ -1092,5 +1288,64 @@ env: {
         .expect("execute hermetic ok");
         assert_eq!(results.len(), 1);
         assert!(results[0].success);
+    }
+
+    #[test]
+    fn test_render_task_tree() {
+        use cuenv_core::tasks::IndexedTask;
+        // Helper to create a dummy task
+        let make_task = |desc: Option<&str>| Task {
+            command: "echo".into(),
+            args: vec![],
+            shell: None,
+            env: std::collections::HashMap::default(),
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            external_inputs: None,
+            workspaces: vec![],
+            description: desc.map(|s| s.to_string()),
+        };
+
+        let t_build = IndexedTask {
+            name: "build".into(),
+            definition: TaskDefinition::Single(Box::new(make_task(Some("Build the project")))),
+            is_group: false,
+        };
+        let t_fmt_check = IndexedTask {
+            name: "fmt.check".into(),
+            definition: TaskDefinition::Single(Box::new(make_task(Some("Check formatting")))),
+            is_group: false,
+        };
+        let t_fmt_fix = IndexedTask {
+            name: "fmt.fix".into(),
+            definition: TaskDefinition::Single(Box::new(make_task(Some("Fix formatting")))),
+            is_group: false,
+        };
+
+        // Provide them in mixed order to verify sorting
+        let tasks = vec![&t_fmt_fix, &t_build, &t_fmt_check];
+        let output = render_task_tree(tasks);
+
+        // We can't match exact lines easily because of dot padding calculation,
+        // but we can check structure and presence of content.
+
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines[0], "Available tasks:");
+
+        // build is first alphabetically
+        assert!(lines[1].starts_with("├─ build"));
+        assert!(lines[1].contains("Build the project"));
+
+        // fmt is second/last
+        assert!(lines[2].starts_with("└─ fmt"));
+
+        // children of fmt
+        // fmt is last, so children have "   " prefix
+        assert!(lines[3].starts_with("   ├─ check"));
+        assert!(lines[3].contains("Check formatting"));
+
+        assert!(lines[4].starts_with("   └─ fix"));
+        assert!(lines[4].contains("Fix formatting"));
     }
 }

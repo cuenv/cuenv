@@ -1,6 +1,9 @@
 package cuenv
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"list"
+	"github.com/cuenv/cuenv/schema"
+)
 
 schema.#Cuenv
 
@@ -8,7 +11,7 @@ hooks: onEnter: {
 	schema.#NixFlake
 }
 
-tasks: {
+tasks: schema.#Rust & {
 	// Common inputs for Rust/Cargo tasks
 	_cargoInputs: [
 		"Cargo.toml",
@@ -16,10 +19,11 @@ tasks: {
 		"crates",
 	]
 
-	lint: {
-		command: "cargo"
+    #BaseInputs: _cargoInputs
+
+	lint: schema.#Rust.#Clippy & {
 		args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
-		inputs: _cargoInputs
+        inputs: #BaseInputs
 	}
 
 	fmt: {
@@ -68,7 +72,7 @@ tasks: {
 		unit: {
 			command: "cargo"
 			args: ["nextest", "run", "--workspace", "--all-features"]
-			inputs: _cargoInputs + ["tests", "features"]
+			inputs: list.Concat([_cargoInputs, ["tests", "features"]])
 		}
 		doc: {
 			command: "cargo"
@@ -78,14 +82,12 @@ tasks: {
 		bdd: {
 			command: "cargo"
 			args: ["test", "--test", "bdd"]
-			inputs: _cargoInputs + ["tests", "features"]
+			inputs: list.Concat([_cargoInputs, ["tests", "features"]])
 		}
 	}
 
 	build: {
-		command: "cargo"
 		args: ["build", "--workspace", "--all-features"]
-		inputs: _cargoInputs
 	}
 
 	security: {
@@ -97,7 +99,7 @@ tasks: {
 		deny: {
 			command: "cargo"
 			args: ["deny", "check", "bans", "licenses", "advisories"]
-			inputs: _cargoInputs + ["deny.toml"]
+			inputs: list.Concat([_cargoInputs, ["deny.toml"]])
 		}
 	}
 
