@@ -83,6 +83,7 @@ tasks: schema.#Rust & {
 			command: "cargo"
 			args: ["test", "--test", "bdd"]
 			inputs: list.Concat([_cargoInputs, ["tests", "features"]])
+			outputs: [".test"]
 		}
 	}
 
