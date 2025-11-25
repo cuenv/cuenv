@@ -18,6 +18,8 @@ jobs:
     env:
       # Ensure CLI fallback uses the CUE binary provided by the dev shell
       CUENV_CUE_BIN: cue
+      # Run hooks in foreground to avoid issues with detached processes in CI
+      CUENV_FOREGROUND_HOOKS: "1"
     steps:
       - uses: actions/checkout@v5
 
@@ -45,8 +47,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set CUENV_CUE_BIN
-        run: echo "CUENV_CUE_BIN=cue" >> "$GITHUB_ENV"
+      - name: Set CUENV environment
+        run: |
+          echo "CUENV_CUE_BIN=cue" >> "$GITHUB_ENV"
+          echo "CUENV_FOREGROUND_HOOKS=1" >> "$GITHUB_ENV"
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
@@ -98,6 +102,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+    env:
+      CUENV_FOREGROUND_HOOKS: "1"
     steps:
       - uses: actions/checkout@v5
 
@@ -128,6 +134,8 @@ jobs:
   coverage:
     name: coverage
     runs-on: ubuntu-latest
+    env:
+      CUENV_FOREGROUND_HOOKS: "1"
     steps:
       - uses: actions/checkout@v5
 
@@ -153,6 +161,8 @@ jobs:
   benchmarks:
     name: benchmarks
     runs-on: ubuntu-latest
+    env:
+      CUENV_FOREGROUND_HOOKS: "1"
     steps:
       - uses: actions/checkout@v5
 
