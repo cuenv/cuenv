@@ -225,7 +225,7 @@ async fn run_hooks_foreground(
 
     // Create execution config
     let hook_config = HookExecutionConfig {
-        default_timeout_seconds: 120, // 2 minutes for nix print-dev-env
+        default_timeout_seconds: 600, // 10 minutes for nix print-dev-env
         fail_fast: true,
         state_dir: None,
     };

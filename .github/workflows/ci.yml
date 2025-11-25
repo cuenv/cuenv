@@ -12,8 +12,31 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  build-cuenv:
+    name: Build cuenv
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+      - name: Build cuenv
+        run: |
+          nix build .#cuenv
+          mkdir -p dist
+          cp -L result/bin/cuenv dist/cuenv
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuenv-${{ matrix.os }}
+          path: dist/cuenv
+          if-no-files-found: error
+
   lint-and-format:
     name: lint-and-format
+    needs: build-cuenv
     runs-on: ubuntu-latest
     env:
       # Ensure CLI fallback uses the CUE binary provided by the dev shell
@@ -26,17 +49,26 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Build cuenv
-        run: nix build .#cuenv
+      - name: Download cuenv
+        uses: actions/download-artifact@v4
+        with:
+          name: cuenv-ubuntu-latest
+          path: bin
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Check formatting
-        run: ./result/bin/cuenv task fmt.check
+        run: cuenv task fmt.check
 
       - name: Run clippy
-        run: ./result/bin/cuenv task lint
+        run: cuenv task lint
 
   test-suite:
     name: test-suite
+    needs: build-cuenv
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -54,6 +86,17 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
+      - name: Download cuenv
+        uses: actions/download-artifact@v4
+        with:
+          name: cuenv-${{ matrix.os }}
+          path: bin
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -78,25 +121,23 @@ jobs:
             ${{ runner.os }}-${{ matrix.rust }}-target-v2-
             ${{ runner.os }}-target-v2-
 
-      - name: Build cuenv
-        run: nix build .#cuenv
-
       - name: Build workspace
-        run: ./result/bin/cuenv task build
+        run: cuenv task build
 
       - name: Run tests
-        run: ./result/bin/cuenv task test.unit
+        run: cuenv task test.unit
 
       - name: Run doctests
-        run: ./result/bin/cuenv task test.doc
+        run: cuenv task test.doc
 
       - name: Run BDD tests
         # BDD tests use cucumber and are incompatible with nextest
         # See: https://github.com/cucumber-rs/cucumber/issues/370
-        run: ./result/bin/cuenv task test.bdd
+        run: cuenv task test.bdd
 
   supply-chain-security:
     name: supply-chain-security
+    needs: build-cuenv
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -110,18 +151,26 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Build cuenv
-        run: nix build .#cuenv
+      - name: Download cuenv
+        uses: actions/download-artifact@v4
+        with:
+          name: cuenv-${{ matrix.os }}
+          path: bin
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Run security audit
-        run: ./result/bin/cuenv task security.audit
+        run: cuenv task security.audit
 
       - name: Run dependency checks
-        run: ./result/bin/cuenv task security.deny
+        run: cuenv task security.deny
 
       # Generate SBOM only on Linux (primary platform)
       - name: Generate SBOM
-        run: ./result/bin/cuenv task sbom
+        run: cuenv task sbom
         if: matrix.os == 'ubuntu-latest'
 
       - name: Upload SBOM artifact
@@ -133,6 +182,7 @@ jobs:
 
   coverage:
     name: coverage
+    needs: build-cuenv
     runs-on: ubuntu-latest
     env:
       CUENV_FOREGROUND_HOOKS: "1"
@@ -142,11 +192,19 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Build cuenv
-        run: nix build .#cuenv
+      - name: Download cuenv
+        uses: actions/download-artifact@v4
+        with:
+          name: cuenv-ubuntu-latest
+          path: bin
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Generate coverage
-        run: ./result/bin/cuenv task coverage
+        run: cuenv task coverage
         env:
           ENABLE_LLVM_COV: "1"
 
@@ -160,6 +218,7 @@ jobs:
 
   benchmarks:
     name: benchmarks
+    needs: build-cuenv
     runs-on: ubuntu-latest
     env:
       CUENV_FOREGROUND_HOOKS: "1"
@@ -169,11 +228,19 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Build cuenv
-        run: nix build .#cuenv
+      - name: Download cuenv
+        uses: actions/download-artifact@v4
+        with:
+          name: cuenv-ubuntu-latest
+          path: bin
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Run benchmarks
-        run: ./result/bin/cuenv task bench
+        run: cuenv task bench
         continue-on-error: true # Don't fail CI on benchmark regression initially
 
       - name: Store benchmark result
