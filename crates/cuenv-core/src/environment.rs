@@ -241,6 +241,79 @@ impl Environment {
         self.vars.is_empty()
     }
 
+    /// Resolve a command to its full path using this environment's PATH.
+    /// This is necessary because when spawning a process, the OS looks up
+    /// the executable in the current process's PATH, not the environment
+    /// that will be set on the child process.
+    ///
+    /// Returns the full path if found, or the original command if not found
+    /// (letting the spawn fail with a proper error).
+    pub fn resolve_command(&self, command: &str) -> String {
+        // If command is already an absolute path, use it directly
+        if command.starts_with('/') {
+            tracing::debug!(command = %command, "Command is already absolute path");
+            return command.to_string();
+        }
+
+        // Get the PATH from this environment, falling back to system PATH
+        let path_value = self
+            .vars
+            .get("PATH")
+            .cloned()
+            .or_else(|| env::var("PATH").ok())
+            .unwrap_or_default();
+
+        tracing::debug!(
+            command = %command,
+            env_has_path = self.vars.contains_key("PATH"),
+            path_len = path_value.len(),
+            "Resolving command in PATH"
+        );
+
+        // Search for the command in each PATH directory
+        for dir in path_value.split(':') {
+            if dir.is_empty() {
+                continue;
+            }
+            let candidate = std::path::Path::new(dir).join(command);
+            if candidate.is_file() {
+                // Check if it's executable (on Unix)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = std::fs::metadata(&candidate) {
+                        let permissions = metadata.permissions();
+                        if permissions.mode() & 0o111 != 0 {
+                            tracing::debug!(
+                                command = %command,
+                                resolved = %candidate.display(),
+                                "Command resolved to path"
+                            );
+                            return candidate.to_string_lossy().to_string();
+                        }
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    tracing::debug!(
+                        command = %command,
+                        resolved = %candidate.display(),
+                        "Command resolved to path"
+                    );
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+
+        // Command not found in PATH, return original (spawn will fail with proper error)
+        tracing::warn!(
+            command = %command,
+            env_path_set = self.vars.contains_key("PATH"),
+            "Command not found in PATH, returning original"
+        );
+        command.to_string()
+    }
+
     /// Iterate over environment variables
     pub fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
         self.vars.iter()
