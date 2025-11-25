@@ -291,6 +291,26 @@ pub async fn get_environment_with_hooks(
     })?;
     let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
 
+    // Check if foreground hook execution is requested (useful for CI environments
+    // where detached supervisor processes may not work correctly).
+    // When foreground hooks are requested, we always run them synchronously,
+    // ignoring any cached state from previous background executions.
+    let foreground_hooks = std::env::var("CUENV_FOREGROUND_HOOKS")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    if foreground_hooks {
+        let hooks = extract_hooks_from_config(config);
+        if hooks.is_empty() {
+            return Ok(static_env);
+        }
+        info!(
+            "Running hooks in foreground for {} (CUENV_FOREGROUND_HOOKS=1)",
+            directory.display()
+        );
+        return run_hooks_foreground(directory, &config_hash, hooks, config).await;
+    }
+
     let executor = HookExecutor::with_default_config()?;
 
     // Check if state exists
@@ -304,20 +324,6 @@ pub async fn get_environment_with_hooks(
         if hooks.is_empty() {
             // No hooks to run, just return static env
             return Ok(static_env);
-        }
-
-        // Check if foreground hook execution is requested (useful for CI environments
-        // where detached supervisor processes may not work correctly)
-        let foreground_hooks = std::env::var("CUENV_FOREGROUND_HOOKS")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
-
-        if foreground_hooks {
-            info!(
-                "Running hooks in foreground for {} (CUENV_FOREGROUND_HOOKS=1)",
-                directory.display()
-            );
-            return run_hooks_foreground(directory, &config_hash, hooks, config).await;
         }
 
         info!("Starting hook execution for {}", directory.display());
