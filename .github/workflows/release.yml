@@ -52,6 +52,8 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      CUENV_FOREGROUND_HOOKS: "1"
     steps:
       - uses: actions/checkout@v5
 
@@ -65,6 +67,17 @@ jobs:
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
 
+      - name: Build cuenv
+        run: |
+          nix build .#cuenv
+          mkdir -p bin
+          cp -L result/bin/cuenv bin/cuenv
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
+
       # Pre-build Go bridge to avoid Go dependency during crates.io publish
       - name: Pre-build Go bridge
         run: |
@@ -73,10 +86,10 @@ jobs:
           cp libcue_bridge.h target/release/
 
       - name: Verify workspace builds
-        run: nix develop --accept-flake-config --command cargo build --workspace --release
+        run: cuenv task release.build
 
       - name: Run final tests
-        run: nix develop --accept-flake-config --command cargo nextest run --workspace --release
+        run: cuenv task release.test
 
       - name: Dry run publish cuenv-workspaces
         run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuenv-workspaces
@@ -159,6 +172,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     needs: check-release
     if: needs.check-release.outputs.release_created == 'true'
+    env:
+      CUENV_FOREGROUND_HOOKS: "1"
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -202,8 +217,21 @@ jobs:
         run: nix develop --accept-flake-config --command echo "Development environment ready"
         if: matrix.os != 'windows-latest'
 
+      - name: Build cuenv (Unix)
+        run: |
+          nix build .#cuenv
+          mkdir -p bin
+          cp -L result/bin/cuenv bin/cuenv
+        if: matrix.os != 'windows-latest'
+
+      - name: Setup cuenv (Unix)
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
+        if: matrix.os != 'windows-latest'
+
       - name: Build release (Unix)
-        run: nix develop --accept-flake-config --command cargo build --workspace --release
+        run: cuenv task release.build
         if: matrix.os != 'windows-latest'
 
       - name: Build release (Windows)

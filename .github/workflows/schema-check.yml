@@ -24,6 +24,9 @@ jobs:
   schema-validation:
     name: Validate Schema Conformance
     runs-on: ubuntu-latest
+    env:
+      CUENV_FOREGROUND_HOOKS: "1"
+      CUENV_CUE_BIN: cue
 
     steps:
       - name: Checkout code
@@ -32,52 +35,28 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
 
-      - name: Setup CUE
+      - name: Build cuenv
         run: |
-          # Install CUE CLI
-          go install cuelang.org/go/cmd/cue@latest
-          echo "$HOME/go/bin" >> $GITHUB_PATH
+          nix build .#cuenv
+          mkdir -p bin
+          cp -L result/bin/cuenv bin/cuenv
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Generate Rust JSON Schemas
-        run: |
-          nix develop --accept-flake-config --command \
-            cargo run --package schema-validator -- generate \
-              --output generated-schemas
+        run: cuenv task schema.generate
 
       - name: Export CUE Schemas
-        run: |
-          # Export CUE schemas to JSON for comparison
-          cue export schema/*.cue > cue-schemas.json || true
-
-          # Try OpenAPI export as well
-          cue export --out openapi schema/*.cue > cue-openapi.json || true
+        run: cuenv task schema.export
 
       - name: Validate Test Fixtures
-        run: |
-          # Run conformance tests
-          nix develop --accept-flake-config --command \
-            cargo test --package cuenv-core schema_conformance
-
-          # Run schema validator on fixtures
-          if command -v cue &> /dev/null; then
-            nix develop --accept-flake-config --command \
-              cargo run --package schema-validator -- validate \
-                --fixtures tests/fixtures
-          else
-            echo "CUE not available, skipping fixture validation"
-          fi
+        run: cuenv task schema.validate
 
       - name: Check Schema Compatibility
-        run: |
-          # Compare Rust and CUE schemas
-          if [ -f "cue-schemas.json" ] && [ -d "generated-schemas" ]; then
-            nix develop --accept-flake-config --command \
-              cargo run --package schema-validator -- compare \
-                --cue-path schema \
-                --rust-path generated-schemas
-          else
-            echo "Skipping schema comparison - files not generated"
-          fi
+        run: cuenv task schema.compare
 
       - name: Upload Generated Schemas
         if: always()
