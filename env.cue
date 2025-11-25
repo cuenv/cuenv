@@ -72,7 +72,7 @@ tasks: schema.#Rust & {
 		unit: {
 			command: "cargo"
 			args: ["nextest", "run", "--workspace", "--all-features"]
-			inputs: list.Concat([_cargoInputs, ["tests", "features"]])
+			inputs: list.Concat([_cargoInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		}
 		doc: {
 			command: "cargo"
