@@ -113,7 +113,7 @@ tasks: schema.#Rust & {
 
 	coverage: {
 		command: "cargo"
-		args: ["llvm-cov", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
+		args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
 		inputs: _cargoInputs
 		outputs: ["lcov.info"]
 	}
