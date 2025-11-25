@@ -7,6 +7,8 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -124,6 +126,11 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 		Dir: goDir,
 	}
 
+	// Ensure the CUE loader can resolve module-relative imports (e.g., schema)
+	if moduleRoot := resolveCueModuleRoot(goDir); moduleRoot != "" {
+		cfg.ModuleRoot = moduleRoot
+	}
+
 	// Load the specific CUE package by name
 	// This matches the behavior of "cue export .:package-name" but from a specific directory
 	var instances []*build.Instance
@@ -165,6 +172,36 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	// Return success response with ordered JSON data
 	result = createSuccessResponse(jsonStr)
 	return result
+}
+
+// resolveCueModuleRoot attempts to find the nearest cue.mod root so imports work from nested directories
+func resolveCueModuleRoot(startDir string) string {
+	// Environment override takes precedence for packaged binaries
+	if envRoot := os.Getenv("CUENV_CUE_MODULE_ROOT"); envRoot != "" {
+		if info, err := os.Stat(filepath.Join(envRoot, "cue.mod", "module.cue")); err == nil && !info.IsDir() {
+			return envRoot
+		}
+	}
+
+	dir, err := filepath.Abs(startDir)
+	if err != nil {
+		dir = startDir
+	}
+
+	for {
+		moduleFile := filepath.Join(dir, "cue.mod", "module.cue")
+		if info, err := os.Stat(moduleFile); err == nil && !info.IsDir() {
+			return dir
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	return ""
 }
 
 // buildOrderedJSONString manually builds a JSON string from CUE value preserving field order
