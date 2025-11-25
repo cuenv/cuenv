@@ -9,15 +9,26 @@ on:
 jobs:
   website:
     runs-on: ubuntu-latest
+    env:
+      CUENV_FOREGROUND_HOOKS: "1"
     steps:
       - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: latest
-      - run: bun install
-        working-directory: ./docs
-      - run: bun run build
-        working-directory: ./docs
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+
+      - name: Build cuenv
+        run: |
+          nix build .#cuenv
+          mkdir -p bin
+          cp -L result/bin/cuenv bin/cuenv
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
+
+      - name: Build docs
+        run: cuenv task docs.build
         env:
           CI: "true"
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
