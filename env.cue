@@ -114,7 +114,7 @@ tasks: schema.#Rust & {
 	coverage: {
 		command: "cargo"
 		args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-		inputs: _cargoInputs
+		inputs: list.Concat([_cargoInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		outputs: ["lcov.info"]
 	}
 
