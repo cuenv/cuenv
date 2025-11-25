@@ -7,6 +7,12 @@ This project uses a Nix flake for development. To run commands, use:
 Or enter the development shell with:
 `nix develop`
 
+## cuenv Task Execution Policy
+
+- Always run project automation via `cuenv task <name>` (e.g., `cuenv task fmt.check`, `cuenv task lint`, `cuenv task test.unit`, `cuenv task coverage`, `cuenv task build`).
+- **Never** wrap these invocations in `nix develop`—the cuenv hooks automatically hydrate the required Nix environment.
+- Alternative command sequences (manual `nix develop`, direct `cargo`, etc.) are not accepted for validation; stick to the documented `cuenv task` flow.
+
 ## Version Control Policy
 
 - Use [`jj`](https://github.com/martinvonz/jj) for every version-control task in this repository.
