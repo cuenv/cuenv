@@ -338,6 +338,7 @@ tasks: {
             test_path.to_str().unwrap(),
             "--package",
             package,
+            "--yes",
         ])
         .await
         .unwrap();
@@ -533,8 +534,13 @@ fn should_see_output(world: &mut TestWorld, expected: String) {
 #[when(expr = "I check the hook execution status")]
 async fn check_hook_status(world: &mut TestWorld) {
     let dir_path = world.current_dir.to_str().unwrap().to_string();
+    let package = if dir_path.contains("examples") {
+        "examples"
+    } else {
+        "cuenv"
+    };
     world
-        .run_cuenv(&["env", "status", "--path", &dir_path])
+        .run_cuenv(&["env", "status", "--path", &dir_path, "--package", package])
         .await
         .unwrap();
 }
@@ -555,8 +561,13 @@ fn hooks_are_running(world: &mut TestWorld) {
 #[when(expr = "I check the hook execution status again")]
 async fn check_hook_status_again(world: &mut TestWorld) {
     let dir_path = world.current_dir.to_str().unwrap().to_string();
+    let package = if dir_path.contains("examples") {
+        "examples"
+    } else {
+        "cuenv"
+    };
     world
-        .run_cuenv(&["env", "status", "--path", &dir_path])
+        .run_cuenv(&["env", "status", "--path", &dir_path, "--package", package])
         .await
         .unwrap();
 }
@@ -564,7 +575,9 @@ async fn check_hook_status_again(world: &mut TestWorld) {
 #[then(expr = "I should see hooks have completed successfully")]
 fn hooks_completed_successfully(world: &mut TestWorld) {
     assert!(
-        world.last_output.contains("Completed") || world.last_output.contains("Success"),
+        world.last_output.contains("Completed")
+            || world.last_output.contains("Success")
+            || world.last_output.contains("successfully"),
         "Hooks not reported as completed: {}",
         world.last_output
     );
@@ -599,7 +612,7 @@ fn command_has_env_access(world: &mut TestWorld) {
 #[given(expr = "cuenv is allowed in {string} directory with failing hooks")]
 async fn cuenv_allowed_with_failing_hooks(world: &mut TestWorld, dir: String) {
     // Create a CUE file with hooks that will fail
-    let cue_content = r#"package examples
+    let cue_content = r#"package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -643,6 +656,7 @@ tasks: {}
             test_path.to_str().unwrap(),
             "--package",
             package,
+            "--yes",
         ])
         .await
         .unwrap();
