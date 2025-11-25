@@ -11,8 +11,9 @@ use cuenv_core::{
     Result,
     hooks::{
         approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
-        executor::HookExecutor,
-        types::ExecutionStatus,
+        executor::{HookExecutor, execute_hooks},
+        state::{HookExecutionState, StateManager, compute_instance_hash},
+        types::{ExecutionStatus, HookExecutionConfig},
     },
     shell::Shell,
 };
@@ -203,6 +204,72 @@ fn collect_all_env_vars(
     all_vars
 }
 
+/// Run hooks in the foreground (same process) instead of spawning a detached supervisor.
+/// This is useful for CI environments where detached processes may not work correctly.
+async fn run_hooks_foreground(
+    directory: &Path,
+    config_hash: &str,
+    hooks: Vec<cuenv_core::hooks::types::Hook>,
+    config: &Cuenv,
+) -> Result<HashMap<String, String>> {
+    let static_env = extract_static_env_vars(config);
+    let instance_hash = compute_instance_hash(directory, config_hash);
+
+    // Get or create state manager
+    let state_dir = if let Ok(dir) = std::env::var("CUENV_STATE_DIR") {
+        std::path::PathBuf::from(dir)
+    } else {
+        StateManager::default_state_dir()?
+    };
+    let state_manager = StateManager::new(state_dir);
+
+    // Create execution config
+    let hook_config = HookExecutionConfig {
+        default_timeout_seconds: 120, // 2 minutes for nix print-dev-env
+        fail_fast: true,
+        state_dir: None,
+    };
+
+    // Create initial state
+    let mut state = HookExecutionState::new(
+        directory.to_path_buf(),
+        instance_hash.clone(),
+        config_hash.to_string(),
+        hooks.clone(),
+    );
+
+    // Execute hooks synchronously in this process
+    debug!(
+        "Executing {} hooks in foreground for {}",
+        hooks.len(),
+        directory.display()
+    );
+
+    execute_hooks(hooks, directory, &hook_config, &state_manager, &mut state).await?;
+
+    // Check result
+    match state.status {
+        ExecutionStatus::Completed => {
+            info!(
+                "Foreground hooks completed successfully, captured {} env vars",
+                state.environment_vars.len()
+            );
+            Ok(collect_all_env_vars(config, &state.environment_vars))
+        }
+        ExecutionStatus::Failed => {
+            debug!(
+                "Foreground hooks failed: {:?}. Using captured environment.",
+                state.error_message
+            );
+            Ok(collect_all_env_vars(config, &state.environment_vars))
+        }
+        _ => {
+            debug!("Foreground hooks did not complete normally");
+            Ok(static_env)
+        }
+    }
+}
+
 /// Get environment variables with hook-generated vars merged in
 ///
 /// This function checks if hooks have completed and merges their environment
@@ -237,6 +304,20 @@ pub async fn get_environment_with_hooks(
         if hooks.is_empty() {
             // No hooks to run, just return static env
             return Ok(static_env);
+        }
+
+        // Check if foreground hook execution is requested (useful for CI environments
+        // where detached supervisor processes may not work correctly)
+        let foreground_hooks = std::env::var("CUENV_FOREGROUND_HOOKS")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        if foreground_hooks {
+            info!(
+                "Running hooks in foreground for {} (CUENV_FOREGROUND_HOOKS=1)",
+                directory.display()
+            );
+            return run_hooks_foreground(directory, &config_hash, hooks, config).await;
         }
 
         info!("Starting hook execution for {}", directory.display());
