@@ -41,21 +41,36 @@ pub struct TestWorld {
 
 impl TestWorld {
     async fn new() -> Self {
-        // Build the cuenv binary if needed
-        let output = Command::new("cargo")
-            .args(["build", "--bin", "cuenv"])
-            .output()
-            .await
-            .expect("Failed to build cuenv");
+        // Resolve the cuenv binary path, preferring an already built binary
+        let cuenv_binary = if let Ok(path) = std::env::var("CUENV_TEST_BIN") {
+            PathBuf::from(path)
+        } else if let Some(bin_path) = option_env!("CARGO_BIN_EXE_cuenv") {
+            PathBuf::from(bin_path)
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("target/debug/cuenv")
+        };
 
-        assert!(output.status.success(), "Failed to build cuenv binary");
+        // Build the cuenv binary only if it does not already exist
+        if !cuenv_binary.exists() {
+            let output = Command::new("cargo")
+                .args(["build", "--bin", "cuenv"])
+                .output()
+                .await
+                .expect("Failed to build cuenv");
 
-        let cuenv_binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target/debug/cuenv");
+            assert!(
+                output.status.success(),
+                "Failed to build cuenv binary: status={:?}, stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
 
         // Use a persistent directory in temp dir that won't be cleaned up during the test
         // This ensures the supervisor can write to it
