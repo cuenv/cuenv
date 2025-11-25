@@ -750,6 +750,13 @@ async fn see_hook_failure_message(world: &mut TestWorld) {
 // See: https://github.com/cucumber-rs/cucumber/issues/370
 #[tokio::main]
 async fn main() {
+    // Helper for nextest compatibility
+    // Nextest runs with --list --format terse to discover tests
+    // Since we run these tests separately, we can just ignore this command
+    if std::env::args().any(|arg| arg == "--list") {
+        return;
+    }
+
     TestWorld::cucumber()
         .run("tests/bdd/features/hooks.feature")
         .await;

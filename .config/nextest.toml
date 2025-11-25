@@ -35,13 +35,6 @@ failure-output = "immediate-final"
 filter = 'test(/^integration_/)'
 slow-timeout = "120s"
 
-# Exclude BDD tests from nextest as they use cucumber which is incompatible
-# See: https://github.com/cucumber-rs/cucumber/issues/370
-# Run BDD tests separately with: cargo test --test bdd
-[[profile.default.overrides]]
-filter = 'test(bdd)'
-ignored = true
-
 [test-groups]
 bdd = { max-threads = 1 }
 integration = { max-threads = 2 }
