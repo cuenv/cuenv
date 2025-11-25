@@ -252,7 +252,8 @@ pub enum Commands {
     },
     #[command(
         about = "Execute a task defined in CUE configuration",
-        visible_alias = "t"
+        visible_alias = "t",
+        disable_help_flag = true
     )]
     Task {
         #[arg(help = "Name of the task to execute (list tasks if not provided)")]
@@ -282,6 +283,8 @@ pub enum Commands {
             default_value_t = false
         )]
         show_cache_path: bool,
+        #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
+        help: bool,
     },
     #[command(
         about = "Execute a command with CUE environment variables",
@@ -564,12 +567,14 @@ impl From<Commands> for Command {
                 package,
                 materialize_outputs,
                 show_cache_path,
+                help,
             } => Command::Task {
                 path,
                 package,
                 name,
                 materialize_outputs,
                 show_cache_path,
+                help,
             },
             Commands::Exec {
                 command,
