@@ -152,7 +152,7 @@ pub async fn execute_task(
     let config = ExecutorConfig {
         capture_output,
         max_parallel: 0,
-        environment,
+        environment: environment.clone(),
         working_dir: None,
         project_root: std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf()),
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
@@ -185,6 +185,7 @@ pub async fn execute_task(
         &task_graph,
         &tasks,
         manifest.env.as_ref(),
+        &environment,
         capture_output,
     )
     .await?;
@@ -213,6 +214,7 @@ async fn execute_task_with_strategy_hermetic(
     task_graph: &TaskGraph,
     all_tasks: &Tasks,
     env_base: Option<&cuenv_core::environment::Env>,
+    hook_env: &Environment,
     capture_output: bool,
 ) -> Result<Vec<cuenv_core::tasks::TaskResult>> {
     match task_def {
@@ -248,6 +250,7 @@ async fn execute_task_with_strategy_hermetic(
                             &node.name,
                             &node.task,
                             env_base,
+                            hook_env,
                             capture_output,
                         )
                         .await?;
@@ -260,13 +263,14 @@ async fn execute_task_with_strategy_hermetic(
     }
 }
 
-/// Format task execution results for output
+/// Execute a single task hermetically with pre-computed hook environment
 async fn run_task_hermetic(
     project_dir: &Path,
     evaluator: &CueEvaluator,
     name: &str,
     task: &Task,
     env_base: Option<&cuenv_core::environment::Env>,
+    hook_env: &Environment,
     capture_output: bool,
 ) -> Result<cuenv_core::tasks::TaskResult> {
     // Discover git root
@@ -302,26 +306,14 @@ async fn run_task_hermetic(
         materialize_path(&src, &dst)?;
     }
 
-    // Compute environment for this task
-    // Note: For hermetic tasks, we build a temporary manifest to get hook environment
+    // Use the pre-computed hook environment
     let mut env = Environment::new();
+    // First apply hook environment (includes PATH and other Nix-provided variables)
+    for (k, v) in hook_env.iter() {
+        env.set(k.clone(), v.clone());
+    }
+    // Then apply task-specific overrides from env_base
     if let Some(base) = env_base {
-        // Build a minimal manifest to get hook environment
-        let temp_manifest = Cuenv {
-            config: None,
-            env: Some(base.clone()),
-            hooks: None,
-            tasks: std::collections::HashMap::new(),
-            workspaces: None,
-        };
-        let base_env_vars = get_environment_with_hooks(project_dir, &temp_manifest).await?;
-
-        // Apply base environment (static + hooks)
-        for (k, v) in &base_env_vars {
-            env.set(k.clone(), v.clone());
-        }
-
-        // Apply task-specific overrides
         let vars = Environment::resolve_for_task(name, &base.base).await?;
         for (k, v) in vars {
             env.set(k, v);
@@ -1229,7 +1221,8 @@ env: {
         };
 
         // Execute directly via helper
-        let res = run_task_hermetic(&proj, &evaluator, "mytask", &task, None, true)
+        let hook_env = Environment::new();
+        let res = run_task_hermetic(&proj, &evaluator, "mytask", &task, None, &hook_env, true)
             .await
             .expect("hermetic run ok");
         assert!(res.success);
@@ -1273,6 +1266,7 @@ env: {
         let mut g = TaskGraph::new();
         g.build_from_definition("copy", &def, &all).unwrap();
 
+        let hook_env = Environment::new();
         let results = execute_task_with_strategy_hermetic(
             proj.to_str().unwrap(),
             &evaluator,
@@ -1282,6 +1276,7 @@ env: {
             &g,
             &all,
             None,
+            &hook_env,
             true,
         )
         .await

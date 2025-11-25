@@ -289,33 +289,41 @@ impl TaskExecutor {
         // Initial snapshot to detect undeclared writes
         let initial_hashes: BTreeMap<String, String> = inputs_summary.clone();
 
+        // Resolve command path using the environment's PATH.
+        // This is necessary because when spawning a process, the OS looks up
+        // the executable in the current process's PATH, not the environment
+        // that will be set on the child process.
+        let resolved_command = self.config.environment.resolve_command(&task.command);
+
         // Build command
         let mut cmd = if let Some(shell) = &task.shell {
             if shell.command.is_some() && shell.flag.is_some() {
                 let shell_command = shell.command.as_ref().unwrap();
                 let shell_flag = shell.flag.as_ref().unwrap();
-                let mut cmd = Command::new(shell_command);
+                // Resolve shell command too
+                let resolved_shell = self.config.environment.resolve_command(shell_command);
+                let mut cmd = Command::new(&resolved_shell);
                 cmd.arg(shell_flag);
                 if task.args.is_empty() {
-                    cmd.arg(&task.command);
+                    cmd.arg(&resolved_command);
                 } else {
                     let full_command = if task.command.is_empty() {
                         task.args.join(" ")
                     } else {
-                        format!("{} {}", task.command, task.args.join(" "))
+                        format!("{} {}", resolved_command, task.args.join(" "))
                     };
                     cmd.arg(full_command);
                 }
                 cmd
             } else {
-                let mut cmd = Command::new(&task.command);
+                let mut cmd = Command::new(&resolved_command);
                 for arg in &task.args {
                     cmd.arg(arg);
                 }
                 cmd
             }
         } else {
-            let mut cmd = Command::new(&task.command);
+            let mut cmd = Command::new(&resolved_command);
             for arg in &task.args {
                 cmd.arg(arg);
             }
