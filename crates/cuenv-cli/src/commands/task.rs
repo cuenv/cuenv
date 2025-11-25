@@ -1299,7 +1299,7 @@ env: {
             outputs: vec![],
             external_inputs: None,
             workspaces: vec![],
-            description: desc.map(|s| s.to_string()),
+            description: desc.map(ToString::to_string),
         };
 
         let t_build = IndexedTask {
