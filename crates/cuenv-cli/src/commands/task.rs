@@ -899,10 +899,10 @@ fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
             writeln!(output, "Type: Task Group").unwrap();
             match g {
                 cuenv_core::tasks::TaskGroup::Sequential(_) => {
-                    writeln!(output, "Mode: Sequential").unwrap()
+                    writeln!(output, "Mode: Sequential").unwrap();
                 }
                 cuenv_core::tasks::TaskGroup::Parallel(_) => {
-                    writeln!(output, "Mode: Parallel").unwrap()
+                    writeln!(output, "Mode: Parallel").unwrap();
                 }
             }
         }
