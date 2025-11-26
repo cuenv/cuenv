@@ -1,10 +1,11 @@
 package schema
 
 // Environment variable value with optional policies
-#EnvironmentVariableWithPolicies: {
-	value: string | int | bool | #Secret
+// Closed to avoid ambiguity with direct #Secret usage in #EnvironmentVariable
+#EnvironmentVariableWithPolicies: close({
+	value:     string | int | bool | #Secret
 	policies?: [...#Policy]
-}
+})
 
 // Environment variable can be a simple value or a value with policies
 #EnvironmentVariable: string | int | bool | #Secret | #EnvironmentVariableWithPolicies
