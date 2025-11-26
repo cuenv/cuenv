@@ -16,9 +16,11 @@ package cuenv
 
 hooks: {
     onEnter: {
-        command: "sh"
-        args: ["-c", "echo 'export MULTI=\"line1\nline2\"'; echo 'export SINGLE=success'"]
-        source: true
+        multiline_hook: {
+            command: "sh"
+            args: ["-c", "echo 'export MULTI=\"line1\nline2\"'; echo 'export SINGLE=success'"]
+            source: true
+        }
     }
 }
 "#;

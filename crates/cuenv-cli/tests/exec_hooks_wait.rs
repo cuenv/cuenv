@@ -15,9 +15,11 @@ package cuenv
 
 hooks: {
     onEnter: {
-        command: "sh"
-        args: ["-c", "sleep 0.1 && echo export HOOK_VAR=success"]
-        source: true
+        slow_hook: {
+            command: "sh"
+            args: ["-c", "sleep 0.1 && echo export HOOK_VAR=success"]
+            source: true
+        }
     }
 }
 "#;
