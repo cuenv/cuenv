@@ -13,8 +13,10 @@ Thumbs.db
 
 # Documentation build artifacts
 build/
-!crates/cuengine/vendor/**/build/
 node_modules/
+
+# Go vendor directory (deps fetched via Nix vendorHash)
+crates/cuengine/vendor/
 package-lock.json
 /bun.lock
 
