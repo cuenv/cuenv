@@ -33,33 +33,15 @@ fn default_true() -> bool {
 /// Collection of hooks that can be executed
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 pub struct Hooks {
-    /// Hooks to execute when entering an environment
+    /// Named hooks to execute when entering an environment (map of name -> hook)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "onEnter")]
-    pub on_enter: Option<HookList>,
+    pub on_enter: Option<HashMap<String, Hook>>,
 
-    /// Hooks to execute when exiting an environment
+    /// Named hooks to execute when exiting an environment (map of name -> hook)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "onExit")]
-    pub on_exit: Option<HookList>,
-}
-
-/// Hook list can be a single hook or an array of hooks
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(untagged)]
-pub enum HookList {
-    Single(Hook),
-    Multiple(Vec<Hook>),
-}
-
-impl HookList {
-    /// Convert to a vector of hooks
-    pub fn to_vec(&self) -> Vec<Hook> {
-        match self {
-            HookList::Single(hook) => vec![hook.clone()],
-            HookList::Multiple(hooks) => hooks.clone(),
-        }
-    }
+    pub on_exit: Option<HashMap<String, Hook>>,
 }
 
 /// Root Cuenv configuration structure
@@ -92,21 +74,37 @@ impl Cuenv {
         Self::default()
     }
 
-    /// Get hooks to execute when entering environment
-    pub fn on_enter_hooks(&self) -> Vec<Hook> {
+    /// Get hooks to execute when entering environment as a map (name -> hook)
+    pub fn on_enter_hooks_map(&self) -> HashMap<String, Hook> {
         self.hooks
             .as_ref()
             .and_then(|h| h.on_enter.as_ref())
-            .map(|h| h.to_vec())
+            .cloned()
             .unwrap_or_default()
     }
 
-    /// Get hooks to execute when exiting environment
-    pub fn on_exit_hooks(&self) -> Vec<Hook> {
+    /// Get hooks to execute when entering environment, sorted by (order, name)
+    pub fn on_enter_hooks(&self) -> Vec<Hook> {
+        let map = self.on_enter_hooks_map();
+        let mut hooks: Vec<(String, Hook)> = map.into_iter().collect();
+        hooks.sort_by(|a, b| a.1.order.cmp(&b.1.order).then(a.0.cmp(&b.0)));
+        hooks.into_iter().map(|(_, h)| h).collect()
+    }
+
+    /// Get hooks to execute when exiting environment as a map (name -> hook)
+    pub fn on_exit_hooks_map(&self) -> HashMap<String, Hook> {
         self.hooks
             .as_ref()
             .and_then(|h| h.on_exit.as_ref())
-            .map(|h| h.to_vec())
+            .cloned()
             .unwrap_or_default()
+    }
+
+    /// Get hooks to execute when exiting environment, sorted by (order, name)
+    pub fn on_exit_hooks(&self) -> Vec<Hook> {
+        let map = self.on_exit_hooks_map();
+        let mut hooks: Vec<(String, Hook)> = map.into_iter().collect();
+        hooks.sort_by(|a, b| a.1.order.cmp(&b.1.order).then(a.0.cmp(&b.0)));
+        hooks.into_iter().map(|(_, h)| h).collect()
     }
 }

@@ -1,16 +1,18 @@
 package schema
 
 #Hooks: {
-	onEnter?: #Hook | [...#Hook]
-	onExit?: #Hook | [...#Hook]
+	onEnter?: [string]: #Hook
+	onExit?:  [string]: #Hook
 }
 
 #Hook: #ExecHook
 
 #ExecHook: {
-	command!: string
+	order?:     int | *100
+	propagate?: bool | *false
+	command!:   string
 	args?: [...string]
-	dir?: string | *"."
+	dir?:    string | *"."
 	inputs?: [...string]
 	source?: bool
 
