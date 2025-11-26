@@ -16,9 +16,11 @@ package cuenv
 
 hooks: {
     onEnter: {
-        command: "sh"
-        args: ["-c", "echo 'export BAD=\"unclosed'; echo 'export GOOD=success'"]
-        source: true
+        bad_hook: {
+            command: "sh"
+            args: ["-c", "echo 'export BAD=\"unclosed'; echo 'export GOOD=success'"]
+            source: true
+        }
     }
 }
 "#;
