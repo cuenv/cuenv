@@ -8,7 +8,9 @@ import (
 schema.#Cuenv
 
 hooks: {
-	onEnter: schema.#NixFlake
+	onEnter: {
+		nix: schema.#NixFlake
+	}
 }
 
 tasks: {

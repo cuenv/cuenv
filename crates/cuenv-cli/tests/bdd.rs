@@ -308,11 +308,13 @@ env: {
 
 // Hooks to execute when entering this directory
 hooks: {
-    onEnter: [{
-        command: "sh"
-        args: ["-c", "printf 'export CUENV_TEST=\"loaded_successfully\"\\nexport HOOK_VAR=\"from_hook\"\\nexport DYNAMIC_VALUE=\"computed\"\\n'"]
-        source: true
-    }]
+    onEnter: {
+        setup: {
+            command: "sh"
+            args: ["-c", "printf 'export CUENV_TEST=\"loaded_successfully\"\\nexport HOOK_VAR=\"from_hook\"\\nexport DYNAMIC_VALUE=\"computed\"\\n'"]
+            source: true
+        }
+    }
 }
 
 // Task definitions for the environment
@@ -638,10 +640,12 @@ env: {
 }
 
 hooks: {
-    onEnter: [{
-        command: "sh"
-        args: ["-c", "exit 1"]  // This command always fails with exit code 1
-    }]
+    onEnter: {
+        failing_hook: {
+            command: "sh"
+            args: ["-c", "exit 1"]  // This command always fails with exit code 1
+        }
+    }
 }
 
 tasks: {}
