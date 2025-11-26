@@ -17,6 +17,7 @@ import (
 	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
+	"cuelang.org/go/mod/modconfig"
 )
 
 const BridgeVersion = "bridge/1"
@@ -29,6 +30,7 @@ const (
 	ErrorCodeOrderedJSON  = "ORDERED_JSON"
 	ErrorCodePanicRecover = "PANIC_RECOVER"
 	ErrorCodeJSONMarshal  = "JSON_MARSHAL_ERROR"
+	ErrorCodeRegistryInit = "REGISTRY_INIT"
 )
 
 // BridgeError represents an error in the bridge response
@@ -121,15 +123,30 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	// Create CUE context
 	ctx := cuecontext.New()
 
+	// Explicitly initialize the CUE module registry
+	// This ensures proper access to the module cache and remote registry
+	registry, err := modconfig.NewRegistry(nil)
+	if err != nil {
+		hint := "Check CUE registry configuration (CUE_REGISTRY env var) and network access"
+		result = createErrorResponse(ErrorCodeRegistryInit,
+			fmt.Sprintf("Failed to initialize CUE registry: %v", err), &hint)
+		return result
+	}
+
 	// Create load configuration to load from specific directory
 	cfg := &load.Config{
-		Dir: goDir,
+		Dir:      goDir,
+		Registry: registry,
 	}
 
 	// Ensure the CUE loader can resolve module-relative imports (e.g., schema)
-	if moduleRoot := resolveCueModuleRoot(goDir); moduleRoot != "" {
+	moduleRoot := resolveCueModuleRoot(goDir)
+	if moduleRoot != "" {
 		cfg.ModuleRoot = moduleRoot
 	}
+
+	// Debug: Log what we're loading
+	fmt.Fprintf(os.Stderr, "DEBUG: Dir=%s, ModuleRoot=%s\n", goDir, moduleRoot)
 
 	// Load the specific CUE package by name
 	// This matches the behavior of "cue export .:package-name" but from a specific directory
