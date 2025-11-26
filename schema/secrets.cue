@@ -3,7 +3,7 @@ package schema
 // Base secret type with exec resolver
 #Secret: {
 	resolver: "exec"
-	command: string
+	command:  string
 	args?: [...string]
 	...
 }
