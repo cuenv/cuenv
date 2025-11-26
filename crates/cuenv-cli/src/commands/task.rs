@@ -19,11 +19,12 @@ use uuid::Uuid;
 use super::export::get_environment_with_hooks;
 
 /// Execute a named task from the CUE configuration
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub async fn execute_task(
     path: &str,
     package: &str,
     task_name: Option<&str>,
+    environment: Option<&str>,
     capture_output: bool,
     materialize_outputs: Option<&str>,
     show_cache_path: bool,
@@ -128,23 +129,30 @@ pub async fn execute_task(
     let base_env_vars = get_environment_with_hooks(&directory, &manifest, package).await?;
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
-    let mut environment = Environment::new();
+    let mut runtime_env = Environment::new();
     if let Some(env) = &manifest.env {
         // First apply the base environment (static + hooks)
         for (key, value) in &base_env_vars {
-            environment.set(key.clone(), value.clone());
+            runtime_env.set(key.clone(), value.clone());
         }
 
-        // Then apply any task-specific overrides with policies and secret resolution
+        // Get environment variables, applying environment-specific overrides if specified
+        let env_vars = if let Some(env_name) = environment {
+            env.for_environment(env_name)
+        } else {
+            env.base.clone()
+        };
+
+        // Then apply task-specific overrides with policies and secret resolution
         let task_env_vars =
-            cuenv_core::environment::Environment::resolve_for_task(task_name, &env.base).await?;
+            cuenv_core::environment::Environment::resolve_for_task(task_name, &env_vars).await?;
         for (key, value) in task_env_vars {
-            environment.set(key, value);
+            runtime_env.set(key, value);
         }
     } else {
         // No manifest env, just use hook-generated environment
         for (key, value) in base_env_vars {
-            environment.set(key, value);
+            runtime_env.set(key, value);
         }
     }
 
@@ -152,7 +160,7 @@ pub async fn execute_task(
     let config = ExecutorConfig {
         capture_output,
         max_parallel: 0,
-        environment: environment.clone(),
+        environment: runtime_env.clone(),
         working_dir: None,
         project_root: std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf()),
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
@@ -185,7 +193,7 @@ pub async fn execute_task(
         &task_graph,
         &tasks,
         manifest.env.as_ref(),
-        &environment,
+        &runtime_env,
         capture_output,
     )
     .await?;
@@ -1033,6 +1041,7 @@ env: {
         let result = execute_task(
             temp_dir.path().to_str().unwrap(),
             "test",
+            None,
             None,
             false,
             None,
