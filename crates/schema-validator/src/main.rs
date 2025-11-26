@@ -224,17 +224,65 @@ fn validate_fixture(fixture_path: &Path, should_pass: bool) -> Result<bool> {
 
 /// Validate a CUE file using the CUE CLI
 fn validate_with_cue(cue_path: &Path) -> Result<bool> {
+    // Find the project root by looking for cue.mod in ancestors
+    let project_root = find_cue_module_root(cue_path)?;
+
     let output = Command::new("cue")
         .args(["vet", cue_path.to_str().unwrap()])
+        .current_dir(&project_root)
         .output()
         .context("Failed to run 'cue vet' - is CUE installed?")?;
 
     Ok(output.status.success())
 }
 
+/// Find the project root by looking for cue.mod directory
+///
+/// First checks current working directory, then searches ancestors of the given path.
+/// This handles the case where fixtures are in subdirectories but cue.mod is at repo root.
+fn find_cue_module_root(path: &Path) -> Result<PathBuf> {
+    // First, check if cue.mod exists in current working directory
+    let cwd = std::env::current_dir()?;
+    if cwd.join("cue.mod").is_dir() {
+        return Ok(cwd);
+    }
+
+    // Search from current directory upward
+    let mut current = cwd.as_path();
+    while let Some(parent) = current.parent() {
+        if parent.join("cue.mod").is_dir() {
+            return Ok(parent.to_path_buf());
+        }
+        current = parent;
+    }
+
+    // Fallback: search from the file path upward
+    let abs_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+
+    let mut current = abs_path.as_path();
+    while let Some(parent) = current.parent() {
+        if parent.join("cue.mod").is_dir() {
+            return Ok(parent.to_path_buf());
+        }
+        current = parent;
+    }
+
+    anyhow::bail!(
+        "Could not find cue.mod directory in current directory or ancestors of {}",
+        path.display()
+    )
+}
+
 /// Export CUE to JSON for Rust validation
 fn export_cue_to_json(cue_path: &Path) -> Result<PathBuf> {
     let json_path = cue_path.with_extension("json");
+
+    // Find the project root by looking for cue.mod in ancestors
+    let project_root = find_cue_module_root(cue_path)?;
 
     let output = Command::new("cue")
         .args([
@@ -243,6 +291,7 @@ fn export_cue_to_json(cue_path: &Path) -> Result<PathBuf> {
             "-o",
             json_path.to_str().unwrap(),
         ])
+        .current_dir(&project_root)
         .output()
         .context("Failed to run 'cue export'")?;
 
