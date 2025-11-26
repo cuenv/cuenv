@@ -633,6 +633,8 @@ mod tests {
 
         let hooks = vec![
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["test1".to_string()],
                 dir: None,
@@ -640,6 +642,8 @@ mod tests {
                 source: None,
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["test2".to_string()],
                 dir: None,
@@ -666,6 +670,8 @@ mod tests {
 
         // Update state with hook result
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["test".to_string()],
             dir: None,
@@ -706,6 +712,8 @@ mod tests {
         let config_hash = "config_hash".to_string();
         let hooks = vec![
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["test1".to_string()],
                 dir: None,
@@ -713,6 +721,8 @@ mod tests {
                 source: None,
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["test2".to_string()],
                 dir: None,
@@ -720,6 +730,8 @@ mod tests {
                 source: None,
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["test3".to_string()],
                 dir: None,
@@ -741,6 +753,8 @@ mod tests {
 
         // Record successful hook result
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec![],
             dir: None,
@@ -784,6 +798,8 @@ mod tests {
             "hash".to_string(),
             "config".to_string(),
             vec![Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec![],
                 dir: None,
@@ -803,6 +819,8 @@ mod tests {
         let config_hash = "config_hash".to_string();
         let hooks = vec![
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["test1".to_string()],
                 dir: None,
@@ -810,6 +828,8 @@ mod tests {
                 source: None,
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["test2".to_string()],
                 dir: None,
@@ -1114,6 +1134,8 @@ mod tests {
 
         // Add hook result with unicode output
         let unicode_hook = Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec![],
             dir: None,

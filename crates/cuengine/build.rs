@@ -165,6 +165,15 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
     let mut cmd = Command::new("go");
     cmd.current_dir(bridge_dir).arg("build");
 
+    // Set macOS deployment target to match Rust's default (11.0)
+    // This prevents version mismatch linker errors when building on newer macOS
+    #[cfg(target_os = "macos")]
+    {
+        cmd.env("MACOSX_DEPLOYMENT_TARGET", "11.0");
+        cmd.env("CGO_CFLAGS", "-mmacosx-version-min=11.0");
+        cmd.env("CGO_LDFLAGS", "-mmacosx-version-min=11.0");
+    }
+
     // Use vendor directory if it exists (for Nix builds)
     if bridge_dir.join("vendor").exists() {
         cmd.arg("-mod=vendor");
