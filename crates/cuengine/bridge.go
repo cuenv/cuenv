@@ -10,10 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"unsafe"
 
-	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
@@ -140,13 +138,9 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	}
 
 	// Ensure the CUE loader can resolve module-relative imports (e.g., schema)
-	moduleRoot := resolveCueModuleRoot(goDir)
-	if moduleRoot != "" {
+	if moduleRoot := resolveCueModuleRoot(goDir); moduleRoot != "" {
 		cfg.ModuleRoot = moduleRoot
 	}
-
-	// Debug: Log what we're loading
-	fmt.Fprintf(os.Stderr, "DEBUG: Dir=%s, ModuleRoot=%s\n", goDir, moduleRoot)
 
 	// Load the specific CUE package by name
 	// This matches the behavior of "cue export .:package-name" but from a specific directory
@@ -177,17 +171,16 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 		return result
 	}
 
-	// Build JSON manually by iterating through CUE fields in order
-	// This completely bypasses Go's map randomization
-	jsonStr, err := buildOrderedJSONString(v)
+	// Use CUE's built-in JSON marshaling which correctly handles non-concrete values
+	jsonBytes, err := v.MarshalJSON()
 	if err != nil {
-		msg := fmt.Sprintf("Failed to build ordered JSON: %v", err)
+		msg := fmt.Sprintf("Failed to marshal JSON: %v", err)
 		result = createErrorResponse(ErrorCodeOrderedJSON, msg, nil)
 		return result
 	}
 
-	// Return success response with ordered JSON data
-	result = createSuccessResponse(jsonStr)
+	// Return success response with JSON data
+	result = createSuccessResponse(string(jsonBytes))
 	return result
 }
 
@@ -219,75 +212,6 @@ func resolveCueModuleRoot(startDir string) string {
 	}
 
 	return ""
-}
-
-// buildOrderedJSONString manually builds a JSON string from CUE value preserving field order
-func buildOrderedJSONString(v cue.Value) (string, error) {
-	switch v.Kind() {
-	case cue.StructKind:
-		var parts []string
-
-		// Iterate through fields in the order they appear in CUE
-		fields, err := v.Fields(cue.Optional(true))
-		if err != nil {
-			return "", fmt.Errorf("failed to get fields: %v", err)
-		}
-
-		for fields.Next() {
-			fieldName := fields.Label()
-			fieldValue := fields.Value()
-
-			// Build JSON key
-			keyJSON, err := json.Marshal(fieldName)
-			if err != nil {
-				return "", fmt.Errorf("failed to marshal field name %s: %v", fieldName, err)
-			}
-
-			// Recursively build value JSON
-			valueJSON, err := buildOrderedJSONString(fieldValue)
-			if err != nil {
-				return "", fmt.Errorf("failed to build JSON for field %s: %v", fieldName, err)
-			}
-
-			// Combine key:value
-			parts = append(parts, string(keyJSON)+":"+valueJSON)
-		}
-
-		return "{" + strings.Join(parts, ",") + "}", nil
-
-	case cue.ListKind:
-		var parts []string
-
-		// Iterate through list items
-		list, err := v.List()
-		if err != nil {
-			return "", fmt.Errorf("failed to get list: %v", err)
-		}
-
-		for list.Next() {
-			itemJSON, err := buildOrderedJSONString(list.Value())
-			if err != nil {
-				return "", err
-			}
-			parts = append(parts, itemJSON)
-		}
-
-		return "[" + strings.Join(parts, ",") + "]", nil
-
-	default:
-		// For primitive types, use standard JSON marshaling
-		var val interface{}
-		if err := v.Decode(&val); err != nil {
-			return "", fmt.Errorf("failed to decode primitive value: %v", err)
-		}
-
-		jsonBytes, err := json.Marshal(val)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal primitive value: %v", err)
-		}
-
-		return string(jsonBytes), nil
-	}
 }
 
 func main() {}
