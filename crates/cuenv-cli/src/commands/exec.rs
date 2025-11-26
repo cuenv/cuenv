@@ -14,6 +14,7 @@ pub async fn execute_exec(
     package: &str,
     command: &str,
     args: &[String],
+    environment_override: Option<&str>,
 ) -> Result<i32> {
     tracing::info!(
         "Executing command with CUE environment from path: {}, package: {}, command: {} {:?}",
@@ -36,28 +37,35 @@ pub async fn execute_exec(
     );
 
     // Apply command-specific policies and secret resolvers on top of the merged environment
-    let mut environment = Environment::new();
+    let mut runtime_env = Environment::new();
     if let Some(env) = &manifest.env {
         // First apply the base environment (static + hooks)
         for (key, value) in &base_env_vars {
-            environment.set(key.clone(), value.clone());
+            runtime_env.set(key.clone(), value.clone());
         }
+
+        // Get environment variables, applying environment-specific overrides if specified
+        let env_vars = if let Some(env_name) = environment_override {
+            env.for_environment(env_name)
+        } else {
+            env.base.clone()
+        };
 
         // Then apply any command-specific overrides with policies and secret resolution
         let exec_env_vars =
-            cuenv_core::environment::Environment::resolve_for_exec(command, &env.base).await?;
+            cuenv_core::environment::Environment::resolve_for_exec(command, &env_vars).await?;
         for (key, value) in exec_env_vars {
-            environment.set(key, value);
+            runtime_env.set(key, value);
         }
     } else {
         // No manifest env, just use hook-generated environment
         for (key, value) in base_env_vars {
-            environment.set(key, value);
+            runtime_env.set(key, value);
         }
     }
 
     // Execute the command with the environment
-    let exit_code = execute_command(command, args, &environment).await?;
+    let exit_code = execute_command(command, args, &runtime_env).await?;
 
     Ok(exit_code)
 }
@@ -83,6 +91,7 @@ env: {
             "test",
             "echo",
             &["test".to_string()],
+            None,
         )
         .await;
 
@@ -108,6 +117,7 @@ env: {
             "test",
             "sh",
             &["-c".to_string(), "echo Hello".to_string()],
+            None,
         )
         .await;
 

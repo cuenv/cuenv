@@ -46,6 +46,7 @@ pub enum Command {
         path: String,
         package: String,
         name: Option<String>,
+        environment: Option<String>,
         materialize_outputs: Option<String>,
         show_cache_path: bool,
         help: bool,
@@ -55,6 +56,7 @@ pub enum Command {
         package: String,
         command: String,
         args: Vec<String>,
+        environment: Option<String>,
     },
     ShellInit {
         shell: crate::cli::ShellType,
@@ -99,6 +101,7 @@ impl CommandExecutor {
                 path,
                 package,
                 name,
+                environment,
                 materialize_outputs,
                 show_cache_path,
                 help,
@@ -107,6 +110,7 @@ impl CommandExecutor {
                     path,
                     package,
                     name,
+                    environment,
                     materialize_outputs,
                     show_cache_path,
                     help,
@@ -118,7 +122,11 @@ impl CommandExecutor {
                 package,
                 command,
                 args,
-            } => self.execute_exec(path, package, command, args).await,
+                environment,
+            } => {
+                self.execute_exec(path, package, command, args, environment)
+                    .await
+            }
             Command::EnvLoad { path, package } => self.execute_env_load(path, package).await,
             Command::EnvStatus {
                 path,
@@ -226,11 +234,13 @@ impl CommandExecutor {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_task(
         &self,
         path: String,
         package: String,
         name: Option<String>,
+        environment: Option<String>,
         materialize_outputs: Option<String>,
         show_cache_path: bool,
         help: bool,
@@ -246,6 +256,7 @@ impl CommandExecutor {
             &path,
             &package,
             name.as_deref(),
+            environment.as_deref(),
             false,
             materialize_outputs.as_deref(),
             show_cache_path,
@@ -278,6 +289,7 @@ impl CommandExecutor {
         package: String,
         command: String,
         args: Vec<String>,
+        environment: Option<String>,
     ) -> Result<()> {
         let command_name = "exec";
 
@@ -286,7 +298,7 @@ impl CommandExecutor {
         });
 
         // Execute the exec command
-        match exec::execute_exec(&path, &package, &command, &args).await {
+        match exec::execute_exec(&path, &package, &command, &args, environment.as_deref()).await {
             Ok(exit_code) => {
                 let success = exit_code == 0;
                 self.send_event(Event::CommandComplete {

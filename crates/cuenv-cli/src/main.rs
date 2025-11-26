@@ -125,6 +125,7 @@ async fn initialize_cli_and_tracing() -> Result<crate::cli::Cli, CliError> {
 }
 
 /// Execute command safely without ? operator
+#[allow(clippy::too_many_lines)]
 #[instrument(name = "cuenv_execute_command_safe")]
 async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), CliError> {
     match command {
@@ -144,6 +145,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             path,
             package,
             name,
+            environment,
             materialize_outputs,
             show_cache_path,
             help,
@@ -151,6 +153,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             path,
             package,
             name,
+            environment,
             materialize_outputs,
             show_cache_path,
             help,
@@ -165,7 +168,8 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             package,
             command,
             args,
-        } => match execute_exec_command_safe(path, package, command, args).await {
+            environment,
+        } => match execute_exec_command_safe(path, package, command, args, environment).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -516,6 +520,7 @@ async fn execute_task_command_safe(
     path: String,
     package: String,
     name: Option<String>,
+    environment: Option<String>,
     materialize_outputs: Option<String>,
     show_cache_path: bool,
     help: bool,
@@ -527,6 +532,7 @@ async fn execute_task_command_safe(
         &path,
         &package,
         name.as_deref(),
+        environment.as_deref(),
         false,
         materialize_outputs.as_deref(),
         show_cache_path,
@@ -557,11 +563,14 @@ async fn execute_exec_command_safe(
     package: String,
     command: String,
     args: Vec<String>,
+    environment: Option<String>,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("exec_command");
     perf_guard.add_metadata("command_type", "exec");
 
-    let result = commands::exec::execute_exec(&path, &package, &command, &args).await;
+    let result =
+        commands::exec::execute_exec(&path, &package, &command, &args, environment.as_deref())
+            .await;
 
     match result {
         Ok(exit_code) => {
