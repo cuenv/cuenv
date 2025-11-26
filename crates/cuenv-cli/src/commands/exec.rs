@@ -29,7 +29,7 @@ pub async fn execute_exec(
 
     // Get environment with hook-generated vars merged in
     let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
-    let base_env_vars = get_environment_with_hooks(&directory, &manifest).await?;
+    let base_env_vars = get_environment_with_hooks(&directory, &manifest, package).await?;
     tracing::debug!(
         "Base environment variables after hooks: {:?}",
         base_env_vars
