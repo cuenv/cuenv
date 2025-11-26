@@ -32,6 +32,7 @@ const ERROR_CODE_BUILD_VALUE: &str = "BUILD_VALUE";
 const ERROR_CODE_ORDERED_JSON: &str = "ORDERED_JSON";
 const ERROR_CODE_PANIC_RECOVER: &str = "PANIC_RECOVER";
 const ERROR_CODE_JSON_MARSHAL: &str = "JSON_MARSHAL_ERROR";
+const ERROR_CODE_REGISTRY_INIT: &str = "REGISTRY_INIT";
 
 /// Error response from the Go bridge
 #[derive(Debug, Deserialize, Serialize)]
@@ -369,7 +370,9 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         };
 
         return match bridge_error.code.as_str() {
-            ERROR_CODE_INVALID_INPUT => Err(Error::configuration(full_message)),
+            ERROR_CODE_INVALID_INPUT | ERROR_CODE_REGISTRY_INIT => {
+                Err(Error::configuration(full_message))
+            }
             ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE => {
                 Err(Error::cue_parse(dir_path, full_message))
             }
@@ -787,6 +790,7 @@ env: {
         assert_eq!(ERROR_CODE_ORDERED_JSON, "ORDERED_JSON");
         assert_eq!(ERROR_CODE_PANIC_RECOVER, "PANIC_RECOVER");
         assert_eq!(ERROR_CODE_JSON_MARSHAL, "JSON_MARSHAL_ERROR");
+        assert_eq!(ERROR_CODE_REGISTRY_INIT, "REGISTRY_INIT");
     }
 
     #[test]
@@ -908,6 +912,11 @@ env: {
             (ERROR_CODE_ORDERED_JSON, "JSON test", None),
             (ERROR_CODE_PANIC_RECOVER, "Panic test", None),
             (ERROR_CODE_JSON_MARSHAL, "Marshal test", None),
+            (
+                ERROR_CODE_REGISTRY_INIT,
+                "Registry init test",
+                Some("Check CUE_REGISTRY".to_string()),
+            ),
             ("UNKNOWN_CODE", "Unknown error", None),
         ];
 
