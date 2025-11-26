@@ -59,7 +59,7 @@
           pname = "libcue-bridge";
           version = "0.1.1";
           src = ./crates/cuengine;
-          vendorHash = null;
+          vendorHash = "sha256-tHAcwRsNWNwPUkTlQT8mw3GNKsMFCMCKwdSq3KNad80=";
           go = pkgs.go_1_24;
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin darwinFrameworks;
 
