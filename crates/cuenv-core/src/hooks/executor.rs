@@ -883,6 +883,8 @@ mod tests {
         let executor = HookExecutor::with_default_config().unwrap();
 
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
             dir: None,
@@ -900,6 +902,8 @@ mod tests {
         let executor = HookExecutor::with_default_config().unwrap();
 
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "false".to_string(), // Command that always fails
             args: vec![],
             dir: None,
@@ -924,6 +928,8 @@ mod tests {
         let executor = HookExecutor::new(config).unwrap();
 
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "sleep".to_string(),
             args: vec!["10".to_string()], // Sleep for 10 seconds
             dir: None,
@@ -951,6 +957,8 @@ mod tests {
 
         let hooks = vec![
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["hook1".to_string()],
                 dir: None,
@@ -958,6 +966,8 @@ mod tests {
                 source: Some(false),
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["hook2".to_string()],
                 dir: None,
@@ -997,6 +1007,8 @@ mod tests {
 
         // Test that echo command works with any arguments
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["test message".to_string()],
             dir: None,
@@ -1028,6 +1040,8 @@ mod tests {
 
         // Create a long-running hook
         let hooks = vec![Hook {
+            order: 100,
+            propagate: false,
             command: "sleep".to_string(),
             args: vec!["10".to_string()],
             dir: None,
@@ -1078,6 +1092,8 @@ mod tests {
 
         // Use echo with multiple arguments
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args,
             dir: None,
@@ -1107,6 +1123,8 @@ mod tests {
 
         // Execute some hooks
         let hooks = vec![Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["test".to_string()],
             dir: None,
@@ -1162,6 +1180,8 @@ mod tests {
 
         // Start execution
         let hooks = vec![Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["test".to_string()],
             dir: None,
@@ -1192,7 +1212,7 @@ mod tests {
     //         executor.allow_command(custom_command.clone()).await;
     //
     //         // Test that the newly allowed command works
-    //         let hook = Hook {
+    //         let hook = Hook { order: 100, propagate: false,
     //             command: custom_command.clone(),
     //             args: vec!["--version".to_string()],
     //             dir: None,
@@ -1214,7 +1234,7 @@ mod tests {
     //         // Test removing a command from whitelist
     //         executor.disallow_command("echo").await;
     //
-    //         let hook = Hook {
+    //         let hook = Hook { order: 100, propagate: false,
     //             command: "echo".to_string(),
     //             args: vec!["test".to_string()],
     //             dir: None,
@@ -1236,7 +1256,7 @@ mod tests {
     //         // Test re-allowing a command
     //         executor.allow_command("echo".to_string()).await;
     //
-    //         let hook = Hook {
+    //         let hook = Hook { order: 100, propagate: false,
     //             command: "echo".to_string(),
     //             args: vec!["test".to_string()],
     //             dir: None,
@@ -1268,6 +1288,8 @@ mod tests {
 
         let hooks = vec![
             Hook {
+                order: 100,
+                propagate: false,
                 command: "false".to_string(), // Will fail
                 args: vec![],
                 dir: None,
@@ -1275,6 +1297,8 @@ mod tests {
                 source: Some(false),
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(), // Should not execute due to fail_fast
                 args: vec!["should not run".to_string()],
                 dir: None,
@@ -1282,6 +1306,8 @@ mod tests {
                 source: Some(false),
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(), // Should not execute due to fail_fast
                 args: vec!["also should not run".to_string()],
                 dir: None,
@@ -1318,6 +1344,8 @@ mod tests {
 
         let hooks2 = vec![
             Hook {
+                order: 100,
+                propagate: false,
                 command: "false".to_string(),
                 args: vec![],
                 dir: None,
@@ -1325,6 +1353,8 @@ mod tests {
                 source: Some(false),
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["this should run".to_string()],
                 dir: None,
@@ -1332,6 +1362,8 @@ mod tests {
                 source: Some(false),
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "false".to_string(), // Will fail and stop execution
                 args: vec![],
                 dir: None,
@@ -1339,6 +1371,8 @@ mod tests {
                 source: Some(false),
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["this should not run".to_string()],
                 dir: None,
@@ -1389,6 +1423,8 @@ mod tests {
 
         for args in test_args {
             let hook = Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: args.clone(),
                 dir: None,
@@ -1412,6 +1448,8 @@ mod tests {
 
         // Test with valid working directory
         let hook_with_valid_dir = Hook {
+            order: 100,
+            propagate: false,
             command: "pwd".to_string(),
             args: vec![],
             dir: Some(temp_dir.path().to_string_lossy().to_string()),
@@ -1428,6 +1466,8 @@ mod tests {
 
         // Test with non-existent working directory
         let hook_with_invalid_dir = Hook {
+            order: 100,
+            propagate: false,
             command: "pwd".to_string(),
             args: vec![],
             dir: Some("/nonexistent/directory/that/does/not/exist".to_string()),
@@ -1450,6 +1490,8 @@ mod tests {
 
         // Test with relative path working directory (should be validated)
         let hook_with_relative_dir = Hook {
+            order: 100,
+            propagate: false,
             command: "pwd".to_string(),
             args: vec![],
             dir: Some("./relative/path".to_string()),
@@ -1467,6 +1509,8 @@ mod tests {
 
         // Test simple hooks without dangerous characters
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["stdout output".to_string()],
             dir: None,
@@ -1480,6 +1524,8 @@ mod tests {
 
         // Test hook with non-zero exit code (using false command)
         let hook_with_exit_code = Hook {
+            order: 100,
+            propagate: false,
             command: "false".to_string(),
             args: vec![],
             dir: None,
@@ -1518,6 +1564,8 @@ mod tests {
         let mut config_hashes = Vec::new();
         for (i, dir) in directories.iter().enumerate() {
             let hooks = vec![Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec![format!("directory {}", i)],
                 dir: None,
@@ -1568,6 +1616,8 @@ mod tests {
         // Execute hooks with some failures
         let hooks = vec![
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["success 1".to_string()],
                 dir: None,
@@ -1575,6 +1625,8 @@ mod tests {
                 source: Some(false),
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "false".to_string(),
                 args: vec![],
                 dir: None,
@@ -1582,6 +1634,8 @@ mod tests {
                 source: Some(false),
             },
             Hook {
+                order: 100,
+                propagate: false,
                 command: "echo".to_string(),
                 args: vec!["success 2".to_string()],
                 dir: None,
@@ -1629,6 +1683,8 @@ mod tests {
 
         // Create hooks for first configuration
         let hooks1 = vec![Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["config1".to_string()],
             dir: None,
@@ -1638,6 +1694,8 @@ mod tests {
 
         // Create hooks for second configuration
         let hooks2 = vec![Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["config2".to_string()],
             dir: None,
@@ -1708,7 +1766,7 @@ mod tests {
         // Create a large hook configuration that would exceed typical arg limits
         let mut large_hooks = Vec::new();
         for i in 0..100 {
-            large_hooks.push(Hook {
+            large_hooks.push(Hook { order: 100, propagate: false,
                 command: "echo".to_string(),
                 args: vec![format!("This is a very long argument string number {} with lots of text to ensure we test the file-based argument passing mechanism properly", i)],
                 dir: None,

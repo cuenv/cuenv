@@ -5,10 +5,21 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
+/// Default order for hooks (100)
+fn default_order() -> i32 {
+    100
+}
+
 /// A hook represents a command that can be executed when entering or exiting environments
 /// Based on schema/hooks.cue #ExecHook definition
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct Hook {
+    /// Execution order within a single env.cue (lower runs first, default 100)
+    #[serde(default = "default_order")]
+    pub order: i32,
+    /// Whether this hook propagates to child directories (default false)
+    #[serde(default)]
+    pub propagate: bool,
     /// The command to execute
     pub command: String,
     /// Arguments to pass to the command
@@ -153,6 +164,8 @@ mod tests {
     #[test]
     fn test_hook_serialization() {
         let hook = Hook {
+            order: 50,
+            propagate: false,
             command: "npm".to_string(),
             args: vec!["install".to_string()],
             dir: Some("/tmp".to_string()),
@@ -171,6 +184,7 @@ mod tests {
         let json = r#"{"command": "echo", "args": ["hello"]}"#;
         let hook: Hook = serde_json::from_str(json).unwrap();
 
+        assert_eq!(hook.order, 100); // default order
         assert_eq!(hook.command, "echo");
         assert_eq!(hook.args, vec!["hello"]);
         assert_eq!(hook.dir, None);
@@ -181,6 +195,8 @@ mod tests {
     #[test]
     fn test_hook_result_success() {
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "echo".to_string(),
             args: vec!["test".to_string()],
             dir: None,
@@ -219,6 +235,8 @@ mod tests {
     #[test]
     fn test_hook_result_failure() {
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "false".to_string(),
             args: vec![],
             dir: None,
@@ -262,6 +280,8 @@ mod tests {
     #[test]
     fn test_hook_result_timeout() {
         let hook = Hook {
+            order: 100,
+            propagate: false,
             command: "sleep".to_string(),
             args: vec!["1000".to_string()],
             dir: None,

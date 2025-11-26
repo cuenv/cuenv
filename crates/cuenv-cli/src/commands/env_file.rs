@@ -71,6 +71,75 @@ fn detect_package_name(env_file: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
+/// Returns None if no cue.mod is found (will walk to filesystem root).
+pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
+    let mut current = if start.is_absolute() {
+        start.to_path_buf()
+    } else {
+        std::env::current_dir().ok()?.join(start)
+    };
+
+    // Canonicalize to resolve symlinks
+    current = current.canonicalize().ok()?;
+
+    loop {
+        if current.join("cue.mod").is_dir() {
+            return Some(current);
+        }
+
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => return None,
+        }
+    }
+}
+
+/// Walk up from `start` collecting directories containing env.cue files.
+/// Stops at the CUE module root (directory containing `cue.mod/`) or filesystem root.
+/// Returns directories in order from root to leaf (ancestor first).
+pub fn find_ancestor_env_files(start: &Path, expected_package: &str) -> Result<Vec<PathBuf>> {
+    let start_canonical = if start.is_absolute() {
+        start.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| Error::configuration(format!("Failed to get current directory: {e}")))?
+            .join(start)
+    }
+    .canonicalize()
+    .map_err(|e| Error::configuration(format!("Failed to canonicalize path: {e}")))?;
+
+    // Find the module root (stopping point)
+    let module_root = find_cue_module_root(&start_canonical);
+
+    let mut ancestors = Vec::new();
+    let mut current = start_canonical.clone();
+
+    loop {
+        // Check if this directory has an env.cue with matching package
+        if let EnvFileStatus::Match(dir) = find_env_file(&current, expected_package)? {
+            ancestors.push(dir);
+        }
+
+        // Stop if we've reached the module root
+        if let Some(ref root) = module_root
+            && current == *root
+        {
+            break;
+        }
+
+        // Move to parent
+        match current.parent() {
+            Some(parent) => current = parent.to_path_buf(),
+            None => break,
+        }
+    }
+
+    // Reverse to get root-to-leaf order (ancestors first)
+    ancestors.reverse();
+    Ok(ancestors)
+}
+
 fn strip_comments(source: &str) -> String {
     let mut result = String::with_capacity(source.len());
     let mut chars = source.chars().peekable();
@@ -111,7 +180,10 @@ fn strip_comments(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvFileStatus, detect_package_name, find_env_file, strip_comments};
+    use super::{
+        EnvFileStatus, detect_package_name, find_ancestor_env_files, find_cue_module_root,
+        find_env_file, strip_comments,
+    };
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -160,5 +232,126 @@ package cuenv // inline
             }
             _ => panic!("Expected package mismatch status"),
         }
+    }
+
+    #[test]
+    fn find_cue_module_root_finds_cue_mod() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        // Create cue.mod at root
+        fs::create_dir_all(root.join("cue.mod")).unwrap();
+
+        // Create nested directories
+        let nested = root.join("apps/site/src");
+        fs::create_dir_all(&nested).unwrap();
+
+        // Find module root from nested dir
+        let found = find_cue_module_root(&nested);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), root.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn find_cue_module_root_returns_none_when_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        // No cue.mod directory
+        let result = find_cue_module_root(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_ancestor_env_files_collects_all_ancestors() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        // Create structure:
+        // root/
+        //   cue.mod/
+        //   env.cue (package cuenv)
+        //   apps/
+        //     env.cue (package cuenv)
+        //     site/
+        //       env.cue (package cuenv)
+        fs::create_dir_all(root.join("cue.mod")).unwrap();
+        fs::write(root.join("env.cue"), "package cuenv\n").unwrap();
+
+        fs::create_dir_all(root.join("apps")).unwrap();
+        fs::write(root.join("apps/env.cue"), "package cuenv\n").unwrap();
+
+        fs::create_dir_all(root.join("apps/site")).unwrap();
+        fs::write(root.join("apps/site/env.cue"), "package cuenv\n").unwrap();
+
+        // Find ancestors from apps/site
+        let ancestors = find_ancestor_env_files(&root.join("apps/site"), "cuenv").unwrap();
+
+        // Should return [root, apps, apps/site] in root-to-leaf order
+        assert_eq!(ancestors.len(), 3);
+        assert_eq!(ancestors[0], root.canonicalize().unwrap());
+        assert_eq!(ancestors[1], root.join("apps").canonicalize().unwrap());
+        assert_eq!(ancestors[2], root.join("apps/site").canonicalize().unwrap());
+    }
+
+    #[test]
+    fn find_ancestor_env_files_stops_at_cue_mod() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        // Create structure with cue.mod in middle:
+        // root/
+        //   env.cue (should NOT be included - outside module)
+        //   monorepo/
+        //     cue.mod/
+        //     env.cue (should be included)
+        //     apps/
+        //       env.cue (should be included)
+        fs::write(root.join("env.cue"), "package cuenv\n").unwrap();
+
+        fs::create_dir_all(root.join("monorepo/cue.mod")).unwrap();
+        fs::write(root.join("monorepo/env.cue"), "package cuenv\n").unwrap();
+
+        fs::create_dir_all(root.join("monorepo/apps")).unwrap();
+        fs::write(root.join("monorepo/apps/env.cue"), "package cuenv\n").unwrap();
+
+        // Find ancestors from monorepo/apps
+        let ancestors = find_ancestor_env_files(&root.join("monorepo/apps"), "cuenv").unwrap();
+
+        // Should only return [monorepo, monorepo/apps] - not root
+        assert_eq!(ancestors.len(), 2);
+        assert_eq!(ancestors[0], root.join("monorepo").canonicalize().unwrap());
+        assert_eq!(
+            ancestors[1],
+            root.join("monorepo/apps").canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn find_ancestor_env_files_skips_wrong_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        // Create structure with mixed packages:
+        // root/
+        //   cue.mod/
+        //   env.cue (package cuenv)
+        //   apps/
+        //     env.cue (package other) - should be skipped
+        //     site/
+        //       env.cue (package cuenv)
+        fs::create_dir_all(root.join("cue.mod")).unwrap();
+        fs::write(root.join("env.cue"), "package cuenv\n").unwrap();
+
+        fs::create_dir_all(root.join("apps")).unwrap();
+        fs::write(root.join("apps/env.cue"), "package other\n").unwrap();
+
+        fs::create_dir_all(root.join("apps/site")).unwrap();
+        fs::write(root.join("apps/site/env.cue"), "package cuenv\n").unwrap();
+
+        let ancestors = find_ancestor_env_files(&root.join("apps/site"), "cuenv").unwrap();
+
+        // Should return [root, apps/site] - skipping apps (wrong package)
+        assert_eq!(ancestors.len(), 2);
+        assert_eq!(ancestors[0], root.canonicalize().unwrap());
+        assert_eq!(ancestors[1], root.join("apps/site").canonicalize().unwrap());
     }
 }

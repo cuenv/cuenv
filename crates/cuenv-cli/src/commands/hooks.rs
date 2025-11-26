@@ -692,28 +692,40 @@ mod tests {
     #[test]
     fn test_extract_hooks_from_config() {
         use cuenv_core::hooks::types::Hook;
-        use cuenv_core::manifest::{Cuenv, HookList, Hooks};
+        use cuenv_core::manifest::{Cuenv, Hooks};
+        use std::collections::HashMap;
+
+        let mut on_enter = HashMap::new();
+        on_enter.insert(
+            "npm".to_string(),
+            Hook {
+                order: 100,
+                propagate: false,
+                command: "npm".to_string(),
+                args: vec!["install".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+        );
+        on_enter.insert(
+            "docker".to_string(),
+            Hook {
+                order: 100,
+                propagate: false,
+                command: "docker-compose".to_string(),
+                args: vec!["up".to_string(), "-d".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+        );
 
         let config = Cuenv {
             config: None,
             env: None,
             hooks: Some(Hooks {
-                on_enter: Some(HookList::Multiple(vec![
-                    Hook {
-                        command: "npm".to_string(),
-                        args: vec!["install".to_string()],
-                        dir: None,
-                        inputs: vec![],
-                        source: None,
-                    },
-                    Hook {
-                        command: "docker-compose".to_string(),
-                        args: vec!["up".to_string(), "-d".to_string()],
-                        dir: None,
-                        inputs: vec![],
-                        source: None,
-                    },
-                ])),
+                on_enter: Some(on_enter),
                 on_exit: None,
             }),
             workspaces: None,
@@ -722,28 +734,36 @@ mod tests {
 
         let hooks = extract_hooks_from_config(&config);
         assert_eq!(hooks.len(), 2);
-        assert_eq!(hooks[0].command, "npm");
-        assert_eq!(hooks[0].args, vec!["install"]);
-        assert_eq!(hooks[1].command, "docker-compose");
-        assert_eq!(hooks[1].args, vec!["up", "-d"]);
+        // Sorted alphabetically by name when order is equal
+        assert_eq!(hooks[0].command, "docker-compose");
+        assert_eq!(hooks[1].command, "npm");
     }
 
     #[test]
     fn test_extract_hooks_single_hook() {
         use cuenv_core::hooks::types::Hook;
-        use cuenv_core::manifest::{Cuenv, HookList, Hooks};
+        use cuenv_core::manifest::{Cuenv, Hooks};
+        use std::collections::HashMap;
+
+        let mut on_enter = HashMap::new();
+        on_enter.insert(
+            "echo".to_string(),
+            Hook {
+                order: 100,
+                propagate: false,
+                command: "echo".to_string(),
+                args: vec!["hello".to_string()],
+                dir: None,
+                inputs: vec![],
+                source: None,
+            },
+        );
 
         let config = Cuenv {
             config: None,
             env: None,
             hooks: Some(Hooks {
-                on_enter: Some(HookList::Single(Hook {
-                    command: "echo".to_string(),
-                    args: vec!["hello".to_string()],
-                    dir: None,
-                    inputs: vec![],
-                    source: None,
-                })),
+                on_enter: Some(on_enter),
                 on_exit: None,
             }),
             workspaces: None,

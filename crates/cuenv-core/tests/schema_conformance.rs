@@ -122,7 +122,7 @@ fn test_round_trip_serialization() {
         config::{CacheMode, Config, OutputFormat},
         environment::{Env, EnvValue},
         hooks::types::Hook,
-        manifest::{Cuenv, HookList, Hooks},
+        manifest::{Cuenv, Hooks},
     };
     use std::collections::HashMap;
 
@@ -134,6 +134,20 @@ fn test_round_trip_serialization() {
     );
     env_vars.insert("PORT".to_string(), EnvValue::Int(3000));
     env_vars.insert("DEBUG".to_string(), EnvValue::Bool(true));
+
+    let mut on_enter_hooks = HashMap::new();
+    on_enter_hooks.insert(
+        "echo".to_string(),
+        Hook {
+            order: 100,
+            propagate: false,
+            command: "echo".to_string(),
+            args: vec!["Entering".to_string()],
+            dir: None,
+            inputs: vec![],
+            source: Some(false),
+        },
+    );
 
     let cuenv = Cuenv {
         config: Some(Config {
@@ -150,13 +164,7 @@ fn test_round_trip_serialization() {
             environment: None,
         }),
         hooks: Some(Hooks {
-            on_enter: Some(HookList::Single(Hook {
-                command: "echo".to_string(),
-                args: vec!["Entering".to_string()],
-                dir: None,
-                inputs: vec![],
-                source: Some(false),
-            })),
+            on_enter: Some(on_enter_hooks),
             on_exit: None,
         }),
         workspaces: None,

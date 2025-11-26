@@ -170,6 +170,32 @@ fn extract_hooks_from_config(config: &Cuenv) -> Vec<cuenv_core::hooks::types::Ho
     config.on_enter_hooks()
 }
 
+/// Resolve a hook's `dir` field relative to the env.cue directory where it's defined.
+/// If `dir` is None or ".", it becomes the `env_cue_dir`.
+/// If `dir` is a relative path, it's resolved relative to `env_cue_dir`.
+/// The result is always an absolute path.
+fn resolve_hook_dir(hook: &mut cuenv_core::hooks::types::Hook, env_cue_dir: &Path) {
+    let relative_dir = hook.dir.as_deref().unwrap_or(".");
+    let absolute_dir = env_cue_dir.join(relative_dir);
+
+    // Canonicalize if possible, otherwise use the joined path
+    let resolved = absolute_dir.canonicalize().unwrap_or(absolute_dir);
+
+    hook.dir = Some(resolved.to_string_lossy().to_string());
+}
+
+/// Extract hooks from a config and resolve their `dir` fields relative to the given directory.
+fn extract_hooks_with_resolved_dirs(
+    config: &Cuenv,
+    env_cue_dir: &Path,
+) -> Vec<cuenv_core::hooks::types::Hook> {
+    let mut hooks = config.on_enter_hooks();
+    for hook in &mut hooks {
+        resolve_hook_dir(hook, env_cue_dir);
+    }
+    hooks
+}
+
 /// Extract static environment variables from CUE config
 fn extract_static_env_vars(config: &Cuenv) -> HashMap<String, String> {
     let mut env_vars = HashMap::new();
@@ -270,6 +296,59 @@ async fn run_hooks_foreground(
     }
 }
 
+/// Collect hooks from all ancestor env.cue files, resolving their dirs.
+/// Returns hooks in root-to-leaf order (ancestors first).
+///
+/// Hooks from ancestor directories are only included if `propagate: true`.
+/// Hooks from the current directory are always included regardless of `propagate`.
+fn collect_hooks_from_ancestors(
+    directory: &Path,
+    package: &str,
+) -> Result<Vec<cuenv_core::hooks::types::Hook>> {
+    let evaluator = CueEvaluator::builder().build()?;
+    let ancestors = env_file::find_ancestor_env_files(directory, package)?;
+
+    let mut all_hooks = Vec::new();
+    let ancestors_len = ancestors.len();
+
+    for (i, ancestor_dir) in ancestors.into_iter().enumerate() {
+        let is_current_dir = i == ancestors_len - 1;
+
+        // Evaluate the CUE config for this ancestor
+        let config: Cuenv = match evaluator.evaluate_typed(&ancestor_dir, package) {
+            Ok(c) => c,
+            Err(e) => {
+                debug!(
+                    "Failed to evaluate {} for hooks: {}",
+                    ancestor_dir.display(),
+                    e
+                );
+                continue;
+            }
+        };
+
+        // Extract hooks and resolve their dirs relative to this ancestor
+        let mut hooks = extract_hooks_with_resolved_dirs(&config, &ancestor_dir);
+
+        // Filter: ancestor hooks only if propagate=true, current dir always included
+        if !is_current_dir {
+            hooks.retain(|h| h.propagate);
+        }
+
+        if !hooks.is_empty() {
+            debug!(
+                "Found {} hooks in {} (is_current={})",
+                hooks.len(),
+                ancestor_dir.display(),
+                is_current_dir
+            );
+        }
+        all_hooks.extend(hooks);
+    }
+
+    Ok(all_hooks)
+}
+
 /// Get environment variables with hook-generated vars merged in
 ///
 /// This function checks if hooks have completed and merges their environment
@@ -277,19 +356,43 @@ async fn run_hooks_foreground(
 /// `cuenv task` and `cuenv exec` to ensure they have access to hook-generated
 /// environment variables.
 ///
+/// This function walks up from `directory` to find all ancestor env.cue files
+/// with hooks, resolves each hook's `dir` field relative to its source env.cue,
+/// and executes hooks in root-to-leaf order.
+///
 /// This function ensures hooks are running and waits for their completion.
 pub async fn get_environment_with_hooks(
     directory: &Path,
     config: &Cuenv,
+    package: &str,
 ) -> Result<HashMap<String, String>> {
     // Start with static environment from CUE manifest
     let static_env = extract_static_env_vars(config);
 
-    // Compute config hash for this directory + config
+    // Collect hooks from all ancestors with resolved dirs
+    let all_hooks = collect_hooks_from_ancestors(directory, package)?;
+
+    if all_hooks.is_empty() {
+        return Ok(static_env);
+    }
+
+    debug!(
+        "Collected {} hooks from ancestors for {}",
+        all_hooks.len(),
+        directory.display()
+    );
+
+    // Compute config hash including all hooks
     let config_value = serde_json::to_value(config).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
     })?;
-    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
+    // Include hooks in hash to ensure cache invalidation when hooks change
+    let hooks_value = serde_json::to_value(&all_hooks).unwrap_or_default();
+    let combined_value = serde_json::json!({
+        "config": config_value,
+        "hooks": hooks_value,
+    });
+    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&combined_value);
 
     // Check if foreground hook execution is requested (useful for CI environments
     // where detached supervisor processes may not work correctly).
@@ -300,15 +403,12 @@ pub async fn get_environment_with_hooks(
         .unwrap_or(false);
 
     if foreground_hooks {
-        let hooks = extract_hooks_from_config(config);
-        if hooks.is_empty() {
-            return Ok(static_env);
-        }
         info!(
-            "Running hooks in foreground for {} (CUENV_FOREGROUND_HOOKS=1)",
+            "Running {} hooks in foreground for {} (CUENV_FOREGROUND_HOOKS=1)",
+            all_hooks.len(),
             directory.display()
         );
-        return run_hooks_foreground(directory, &config_hash, hooks, config).await;
+        return run_hooks_foreground(directory, &config_hash, all_hooks, config).await;
     }
 
     let executor = HookExecutor::with_default_config()?;
@@ -320,15 +420,13 @@ pub async fn get_environment_with_hooks(
 
     // If no state exists, start execution
     if status.is_none() {
-        let hooks = extract_hooks_from_config(config);
-        if hooks.is_empty() {
-            // No hooks to run, just return static env
-            return Ok(static_env);
-        }
-
-        info!("Starting hook execution for {}", directory.display());
+        info!(
+            "Starting execution of {} hooks for {}",
+            all_hooks.len(),
+            directory.display()
+        );
         executor
-            .execute_hooks_background(directory.to_path_buf(), config_hash.clone(), hooks)
+            .execute_hooks_background(directory.to_path_buf(), config_hash.clone(), all_hooks)
             .await?;
     }
 

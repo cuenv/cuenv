@@ -2,9 +2,11 @@
 mod tests {
     use crate::config::{CacheMode, Config, OutputFormat};
     use crate::environment::{Env, EnvValue};
-    use crate::manifest::{Cuenv, HookList};
+    use crate::hooks::types::Hook;
+    use crate::manifest::Cuenv;
     use crate::secrets::Secret;
     use schemars::schema_for;
+    use std::collections::HashMap;
 
     #[test]
     fn test_config_schema_generation() {
@@ -85,23 +87,31 @@ mod tests {
     }
 
     #[test]
-    fn test_hook_list_variants() {
+    fn test_hooks_map() {
         use serde_json::json;
 
-        // Test single hook
-        let single: HookList = serde_json::from_value(json!({
-            "command": "echo",
-            "args": ["hello"]
+        // Test single hook in map
+        let hooks: HashMap<String, Hook> = serde_json::from_value(json!({
+            "echo": {
+                "command": "echo",
+                "args": ["hello"]
+            }
         }))
         .unwrap();
-        assert_eq!(single.to_vec().len(), 1);
+        assert_eq!(hooks.len(), 1);
+        assert_eq!(hooks.get("echo").unwrap().command, "echo");
+        assert_eq!(hooks.get("echo").unwrap().order, 100); // default
 
-        // Test multiple hooks
-        let multiple: HookList = serde_json::from_value(json!([
-            {"command": "echo", "args": ["hello"]},
-            {"command": "echo", "args": ["world"]}
-        ]))
+        // Test multiple hooks in map
+        let hooks: HashMap<String, Hook> = serde_json::from_value(json!({
+            "nix": {"command": "nix", "order": 10, "propagate": true},
+            "setup": {"command": "setup", "order": 50}
+        }))
         .unwrap();
-        assert_eq!(multiple.to_vec().len(), 2);
+        assert_eq!(hooks.len(), 2);
+        assert_eq!(hooks.get("nix").unwrap().order, 10);
+        assert!(hooks.get("nix").unwrap().propagate);
+        assert_eq!(hooks.get("setup").unwrap().order, 50);
+        assert!(!hooks.get("setup").unwrap().propagate); // default false
     }
 }

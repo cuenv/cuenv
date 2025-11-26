@@ -125,7 +125,7 @@ pub async fn execute_task(
 
     // Get environment with hook-generated vars merged in
     let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
-    let base_env_vars = get_environment_with_hooks(&directory, &manifest).await?;
+    let base_env_vars = get_environment_with_hooks(&directory, &manifest, package).await?;
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut environment = Environment::new();
@@ -765,7 +765,7 @@ async fn resolve_and_materialize_external(
     let mut env = Environment::new();
     if let Some(_base) = manifest.env.as_ref() {
         // Get base environment with hook-generated vars
-        let base_env_vars = get_environment_with_hooks(&ext_dir, &manifest).await?;
+        let base_env_vars = get_environment_with_hooks(&ext_dir, &manifest, &package).await?;
 
         // Apply base environment (static + hooks)
         for (k, v) in &base_env_vars {
