@@ -272,6 +272,12 @@ pub enum Commands {
         )]
         package: String,
         #[arg(
+            long = "env",
+            short = 'e',
+            help = "Apply environment-specific overrides (e.g., development, production)"
+        )]
+        environment: Option<String>,
+        #[arg(
             long = "materialize-outputs",
             help = "Materialize cached outputs to this directory on cache hit (off by default)",
             value_name = "DIR"
@@ -308,6 +314,12 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
+        #[arg(
+            long = "env",
+            short = 'e',
+            help = "Apply environment-specific overrides (e.g., development, production)"
+        )]
+        environment: Option<String>,
     },
     #[command(about = "Shell integration commands")]
     Shell {
@@ -565,6 +577,7 @@ impl From<Commands> for Command {
                 name,
                 path,
                 package,
+                environment,
                 materialize_outputs,
                 show_cache_path,
                 help,
@@ -572,6 +585,7 @@ impl From<Commands> for Command {
                 path,
                 package,
                 name,
+                environment,
                 materialize_outputs,
                 show_cache_path,
                 help,
@@ -581,11 +595,13 @@ impl From<Commands> for Command {
                 args,
                 path,
                 package,
+                environment,
             } => Command::Exec {
                 path,
                 package,
                 command,
                 args,
+                environment,
             },
             Commands::Shell { subcommand } => match subcommand {
                 ShellCommands::Init { shell } => Command::ShellInit { shell },
