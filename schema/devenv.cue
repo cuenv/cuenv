@@ -8,4 +8,3 @@ package schema
 	source: true
 	inputs: ["devenv.nix", "devenv.lock", "devenv.yaml"]
 }
-
