@@ -1,0 +1,73 @@
+name: Release-plz
+
+permissions:
+  pull-requests: write
+  contents: write
+  id-token: write
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release-plz:
+    name: Release-plz
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  release-plz-release:
+    name: Release-plz Release
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            experimental-features = nix-command flakes
+
+      - name: Pre-build Go bridge
+        run: |
+          cd crates/cuengine
+          nix develop --accept-flake-config --command go build -buildmode=c-archive -o target/release/libcue_bridge.a bridge.go
+          cp libcue_bridge.h target/release/
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
