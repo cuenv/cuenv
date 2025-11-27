@@ -28,13 +28,7 @@ git clone https://github.com/cuenv/cuenv.git
 cd cuenv
 ```
 
-2. Build the project:
-
-```bash
-cargo build --release
-```
-
-3. Install locally:
+2. Install locally:
 
 ```bash
 cargo install --path crates/cuenv-cli
@@ -57,50 +51,46 @@ mkdir my-cuenv-project
 cd my-cuenv-project
 ```
 
-2. Initialize a cuenv environment:
-
-```bash
-cuenv init
-```
-
-3. Create a simple `env.cue` file:
+2. Create a simple `env.cue` file:
 
 ```cue
-package env
+package cuenv
 
 // Define your environment variables
-environment: {
-    NODE_ENV: "development"
-    PORT: "3000"
-    DATABASE_URL: "postgresql://localhost/myapp"
+env: {
+    NODE_ENV: "development" | "production"
+    PORT: string | *"3000"
 }
 
 // Define tasks
 tasks: {
-    build: {
-        description: "Build the application"
-        command: "npm run build"
-        depends: ["install"]
-    }
-
     install: {
         description: "Install dependencies"
-        command: "npm install"
+        command: "npm"
+        args: ["install"]
+    }
+
+    build: {
+        description: "Build the application"
+        command: "npm"
+        args: ["run", "build"]
+        dependsOn: ["install"]
     }
 
     dev: {
         description: "Start development server"
-        command: "npm run dev"
-        depends: ["install"]
-        environment: environment
+        command: "npm"
+        args: ["run", "dev"]
+        dependsOn: ["install"]
+        // Environment overrides can be handled via cuenv flags or different config structure
     }
 }
 ```
 
-4. Run a task:
+3. Run a task:
 
 ```bash
-cuenv run dev
+cuenv task dev
 ```
 
 ## What's Next?
@@ -152,22 +142,25 @@ Automate common development tasks:
 tasks: {
     test: {
         description: "Run all tests"
-        command: "cargo test --workspace"
+        command: "cargo"
+        args: ["test", "--workspace"]
     }
 
     lint: {
         description: "Run linting"
-        command: "cargo clippy -- -D warnings"
+        command: "cargo"
+        args: ["clippy", "--", "-D", "warnings"]
     }
 
     format: {
         description: "Format code"
-        command: "cargo fmt"
+        command: "cargo"
+        args: ["fmt"]
     }
 
     ci: {
         description: "Run CI pipeline"
-        depends: ["lint", "test", "format"]
+        dependsOn: ["lint", "test", "format"]
     }
 }
 ```

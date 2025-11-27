@@ -208,16 +208,18 @@ After installation, verify cuenv is working correctly:
 
 ```bash
 # Check version
-cuenv --version
-
-# Verify installation
-cuenv doctor
+cuenv version
 
 # Test basic functionality
 mkdir test-cuenv
 cd test-cuenv
-cuenv init
-cuenv validate
+# Create a simple configuration
+echo 'package cuenv' > env.cue
+echo 'env: {}' >> env.cue
+echo 'tasks: {}' >> env.cue
+
+# Verify it loads
+cuenv env print
 ```
 
 ## Shell Integration
@@ -228,7 +230,7 @@ Add to `~/.bashrc`:
 
 ```bash
 # cuenv shell integration
-eval "$(cuenv init --shell bash)"
+source <(cuenv shell init bash)
 ```
 
 ### Zsh
@@ -237,7 +239,7 @@ Add to `~/.zshrc`:
 
 ```zsh
 # cuenv shell integration
-eval "$(cuenv init --shell zsh)"
+source <(cuenv shell init zsh)
 ```
 
 ### Fish
@@ -246,7 +248,7 @@ Add to `~/.config/fish/config.fish`:
 
 ```fish
 # cuenv shell integration
-cuenv init --shell fish | source
+cuenv shell init fish | source
 ```
 
 ### Nushell
@@ -255,7 +257,8 @@ Add to `~/.config/nushell/config.nu`:
 
 ```nushell
 # cuenv shell integration
-cuenv init --shell nu
+cuenv shell init nu | save -f ~/.cuenv.nu
+source ~/.cuenv.nu
 ```
 
 ## IDE Integration
