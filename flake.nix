@@ -199,11 +199,7 @@
             inherit cargoArtifacts;
           });
 
-          cuenv-nextest = craneLib.cargoNextest (commonArgs // {
-            inherit cargoArtifacts;
-            partitions = 1;
-            partitionType = "count";
-          });
+          # Tests are handled by CI matrix for better coverage (MSRV + multi-platform)
 
           cuenv-audit = craneLib.cargoAudit {
             inherit src advisory-db;
