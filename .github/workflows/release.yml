@@ -1,177 +1,34 @@
 name: release
 
 on:
-  workflow_run:
-    workflows: ["release-please"]
-    types: [completed]
+  release:
+    types: [published]
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  check-release:
-    runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.get-release.outputs.release_created }}
-      tag_name: ${{ steps.get-release.outputs.tag_name }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Get release information
-        id: get-release
-        run: |
-          # Check if a release was just created by looking at recent releases
-          LATEST_RELEASE=$(gh release list --limit 1 --json tagName,publishedAt --jq '.[0]')
-          if [ "$LATEST_RELEASE" != "null" ]; then
-            TAG_NAME=$(echo "$LATEST_RELEASE" | jq -r '.tagName')
-            PUBLISHED_AT=$(echo "$LATEST_RELEASE" | jq -r '.publishedAt')
-
-            # Check if release was created in the last 5 minutes
-            CURRENT_TIME=$(date -u +%s)
-            RELEASE_TIME=$(date -u -d "$PUBLISHED_AT" +%s)
-            TIME_DIFF=$((CURRENT_TIME - RELEASE_TIME))
-
-            if [ $TIME_DIFF -lt 300 ]; then
-              echo "release_created=true" >> $GITHUB_OUTPUT
-              echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-            else
-              echo "release_created=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "release_created=false" >> $GITHUB_OUTPUT
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish:
-    runs-on: ubuntu-latest
-    needs: check-release
-    if: needs.check-release.outputs.release_created == 'true'
-    # Enable OIDC for trusted publishing to crates.io
-    permissions:
-      id-token: write
-      contents: read
-    env:
-      CUENV_FOREGROUND_HOOKS: "1"
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            experimental-features = nix-command flakes
-
-      - name: Build development environment
-        run: nix develop --accept-flake-config --command echo "Development environment ready"
-
-      - name: Build cuenv
-        run: |
-          nix build .#cuenv
-          mkdir -p bin
-          cp -L result/bin/cuenv bin/cuenv
-
-      - name: Setup cuenv
-        run: |
-          chmod +x bin/cuenv
-          echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      # Pre-build Go bridge to avoid Go dependency during crates.io publish
-      - name: Pre-build Go bridge
-        run: |
-          cd crates/cuengine
-          nix develop --accept-flake-config --command go build -buildmode=c-archive -o target/release/libcue_bridge.a bridge.go
-          cp libcue_bridge.h target/release/
-
-      - name: Verify workspace builds
-        run: cuenv task release.build
-
-      - name: Run final tests
-        run: cuenv task release.test
-
-      - name: Dry run publish cuenv-workspaces
-        run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuenv-workspaces
-
-      # Get trusted publishing token for cuenv-workspaces
-      - name: Authenticate with crates.io (cuenv-workspaces)
-        uses: crates-io/crates-io-auth-action@v1
-        with:
-          crate: cuenv-workspaces
-
-      - name: Publish cuenv-workspaces to crates.io
-        run: nix develop --accept-flake-config --command cargo publish -p cuenv-workspaces
-
-      - name: Wait for crates.io indexing (cuenv-workspaces)
-        run: sleep 300 # Wait 5 minutes for crates.io to index cuenv-workspaces
-
-      - name: Dry run publish cuenv-core
-        run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuenv-core
-
-      # Get trusted publishing token for cuenv-core
-      - name: Authenticate with crates.io (cuenv-core)
-        uses: crates-io/crates-io-auth-action@v1
-        with:
-          crate: cuenv-core
-
-      - name: Publish cuenv-core to crates.io
-        run: nix develop --accept-flake-config --command cargo publish -p cuenv-core
-
-      - name: Wait for crates.io indexing
-        run: sleep 300 # Wait 5 minutes for crates.io to index cuenv-core
-
-      - name: Dry run publish cuengine
-        run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuengine
-
-      # Get trusted publishing token for cuengine
-      - name: Authenticate with crates.io (cuengine)
-        uses: crates-io/crates-io-auth-action@v1
-        with:
-          crate: cuengine
-
-      - name: Publish cuengine to crates.io
-        run: nix develop --accept-flake-config --command cargo publish -p cuengine
-
-      - name: Wait for crates.io indexing (cuenv-core/cuengine)
-        run: sleep 300 # Wait 5 minutes for crates.io to index cuengine
-
-      - name: Dry run publish cuenv-cli
-        run: nix develop --accept-flake-config --command cargo publish --dry-run -p cuenv-cli
-
-      # Get trusted publishing token for cuenv-cli
-      - name: Authenticate with crates.io (cuenv-cli)
-        uses: crates-io/crates-io-auth-action@v1
-        with:
-          crate: cuenv-cli
-
-      - name: Publish cuenv-cli to crates.io
-        run: nix develop --accept-flake-config --command cargo publish -p cuenv-cli
-
   publish-cue:
     runs-on: ubuntu-latest
-    needs: check-release
-    if: needs.check-release.outputs.release_created == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/nix-installer-action@v16
         with:
           extra_nix_config: |
             accept-flake-config = true
             experimental-features = nix-command flakes
 
       - name: Publish CUE module
-        run: nix develop --accept-flake-config --command cue mod publish ${{ needs.check-release.outputs.tag_name }}
+        run: nix develop --accept-flake-config --command cue mod publish ${{ github.event.release.tag_name }}
         env:
           CUE_REGISTRY: registry.cue.works
           CUE_TOKEN: ${{ secrets.CUE_TOKEN }}
 
   build-release-artifacts:
     runs-on: ${{ matrix.os }}
-    needs: check-release
-    if: needs.check-release.outputs.release_created == 'true'
     env:
       CUENV_FOREGROUND_HOOKS: "1"
     strategy:
@@ -189,10 +46,10 @@ jobs:
             archive: zip
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Install Nix (Unix)
-        uses: DeterminateSystems/nix-installer-action@v19
+        uses: DeterminateSystems/nix-installer-action@v16
         with:
           extra_nix_config: |
             accept-flake-config = true
@@ -242,7 +99,7 @@ jobs:
         run: |
           mkdir -p release-artifacts
           if [ "${{ matrix.archive }}" = "tar.gz" ]; then
-            tar czf "release-artifacts/cuenv-${{ needs.check-release.outputs.tag_name }}-${{ matrix.target }}.tar.gz" \
+            tar czf "release-artifacts/cuenv-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz" \
               -C target/release \
               $(ls target/release/ | grep -E '^(cuenv|cuengine)$' || true)
           fi
@@ -251,7 +108,7 @@ jobs:
       - name: Create archive (Windows)
         run: |
           mkdir release-artifacts
-          Compress-Archive -Path "target/release/*.exe" -DestinationPath "release-artifacts/cuenv-${{ needs.check-release.outputs.tag_name }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/release/*.exe" -DestinationPath "release-artifacts/cuenv-${{ github.event.release.tag_name }}-${{ matrix.target }}.zip"
         if: matrix.os == 'windows-latest'
         shell: pwsh
 
@@ -263,13 +120,12 @@ jobs:
 
   upload-release-assets:
     runs-on: ubuntu-latest
-    needs: [check-release, build-release-artifacts]
-    if: needs.check-release.outputs.release_created == 'true'
+    needs: [build-release-artifacts]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
 
@@ -279,7 +135,7 @@ jobs:
             if [ -d "$artifact_dir" ]; then
               for file in "$artifact_dir"/*; do
                 if [ -f "$file" ]; then
-                  gh release upload "${{ needs.check-release.outputs.tag_name }}" "$file"
+                  gh release upload "${{ github.event.release.tag_name }}" "$file"
                 fi
               done
             fi
@@ -290,17 +146,12 @@ jobs:
   update-homebrew:
     runs-on: ubuntu-latest
     needs: upload-release-assets
-    if: needs.check-release.outputs.release_created == 'true'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Update Homebrew Formula
-        # Required secret: HOMEBREW_TAP_TOKEN
-        # This secret must be configured in the repository settings.
-        # Permissions: Must be a GitHub token with write access to the cuenv/homebrew-cuenv repository.
-        # Purpose: Used to authenticate and push updates to the Homebrew tap formula.
         env:
-          TAG_NAME: ${{ needs.check-release.outputs.tag_name }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
           TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           # Configure git
