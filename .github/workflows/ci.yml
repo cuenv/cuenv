@@ -33,10 +33,11 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
-      - name: Build cuenv and run CI
-        run: |
-          nix build .#cuenv
-          ./result/bin/cuenv task ci
+      - name: Build cuenv
+        run: nix build .#cuenv
+
+      - name: Run CI checks
+        run: nix develop --command ./result/bin/cuenv task ci
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -57,10 +58,11 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
-      - name: Build cuenv and run CI
-        run: |
-          nix build .#cuenv
-          ./result/bin/cuenv task ci
+      - name: Build cuenv
+        run: nix build .#cuenv
+
+      - name: Run CI checks
+        run: nix develop --command ./result/bin/cuenv task ci
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -83,7 +85,8 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
-      - name: Build cuenv and run release
-        run: |
-          nix build .#cuenv
-          ./result/bin/cuenv task release
+      - name: Build cuenv
+        run: nix build .#cuenv
+
+      - name: Run release task
+        run: nix develop --command ./result/bin/cuenv task release
