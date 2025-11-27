@@ -164,7 +164,7 @@ tasks: {
 				"-c",
 				"cue export schema/*.cue > cue-schemas.json || true; cue export --out openapi schema/*.cue > cue-openapi.json || true",
 			]
-			inputs: ["schema"]
+			inputs: ["schema", "cue.mod"]
 			outputs: [
 				"cue-schemas.json",
 				"cue-openapi.json",
@@ -188,7 +188,7 @@ tasks: {
 					"--fixtures",
 					"tests/fixtures",
 				]
-				inputs: list.Concat([#BaseInputs, ["schema", "tests/fixtures"]])
+				inputs: list.Concat([#BaseInputs, ["schema", "tests/fixtures", "cue.mod"]])
 			},
 		]
 
@@ -206,7 +206,7 @@ tasks: {
 				"generated-schemas",
 			]
 			dependsOn: ["generate"]
-			inputs: ["schema", "generated-schemas"]
+			inputs: ["schema", "generated-schemas", "cue.mod"]
 		}
 
 		ci: [
