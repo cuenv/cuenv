@@ -52,10 +52,12 @@ Unlike traditional build tools, cuenv leverages CUE's ability to compose and val
 cargo install cuenv
 
 # Initialize in your project
-cuenv init
+# Create an env.cue file manually for now (cuenv init coming soon)
+touch env.cue
 
 # Setup shell integration
-cuenv shell setup
+# Add to your shell config (e.g. .zshrc, .bashrc):
+source <(cuenv shell init bash)
 ```
 
 ### Basic Configuration
@@ -247,23 +249,19 @@ hooks: {
 # Task management
 cuenv task                           # List all tasks
 cuenv task build                     # Run build task
-cuenv task test.unit                 # Run specific subtask
-cuenv task --parallel build test    # Run multiple tasks
+cuenv task --env production build    # Run task in specific environment
 
 # Environment management
-cuenv env                            # Show current environment
-cuenv env --environment production  # Switch to production
+cuenv env print                      # Show current environment
+cuenv env check                      # Check hook status and shell output
 cuenv exec -- npm start             # Execute with loaded env
 
-# Project setup
-cuenv init                           # Create initial env.cue
-cuenv discover                       # Find all CUE packages
-cuenv shell setup                    # Configure shell integration
+# Security
+cuenv allow                          # Approve configuration
+cuenv deny                           # Revoke approval
 
-# Development
-cuenv cache clear                    # Clear task cache
-cuenv --audit task build            # Run in audit mode
-cuenv --trace-output task deploy     # Enable tracing
+# Setup
+cuenv shell init                     # Generate shell integration script
 ```
 
 ### Global Options
@@ -439,10 +437,10 @@ Multi-layered security approach (planned):
 
 ### Roadmap
 
-**Q1 2025:** Complete CLI, basic task execution, shell integration  
-**Q2 2025:** Secret management, Nix integration, beta release  
-**Q3 2025:** Security features, performance optimizations  
-**Q4 2025:** SaaS platform, enterprise features
+**Q4 2025:** Complete CLI, basic task execution, shell integration
+**Q1 2026:** Secret management, Nix integration, beta release
+**Q2 2026:** Security features, performance optimizations
+**Q3 2026:** SaaS platform, enterprise features
 
 ---
 

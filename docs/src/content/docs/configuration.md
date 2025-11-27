@@ -21,7 +21,7 @@ cuenv looks for configuration in the following order:
 ### Basic Structure
 
 ```cue
-package config
+package cuenv
 
 // Project metadata
 project: {
@@ -30,9 +30,9 @@ project: {
 }
 
 // Environment variables
-environment: {
-    NODE_ENV: "development"
-    PORT:     8080
+env: {
+    NODE_ENV: "development" | "production"
+    PORT:     string | *"8080"
     LOG_LEVEL: "info"
 }
 
@@ -40,13 +40,15 @@ environment: {
 tasks: {
     build: {
         description: "Build the project"
-        command:     "npm run build"
-        depends:     ["install"]
+        command:     "npm"
+        args:        ["run", "build"]
+        dependsOn:   ["install"]
     }
 
     install: {
         description: "Install dependencies"
-        command:     "npm install"
+        command:     "npm"
+        args:        ["install"]
     }
 }
 ```
@@ -58,18 +60,19 @@ tasks: {
 Define environment variables with type constraints:
 
 ```cue
-environment: {
+env: {
     // String variables
     NODE_ENV: "development" | "staging" | "production"
     SERVICE_NAME: string & =~"^[a-zA-Z][a-zA-Z0-9-]*$"
 
-    // Numeric variables
-    PORT: int & >=1024 & <=65535
-    WORKER_COUNT: int & >0 | *4  // Default to 4
+    // Numeric variables (CUE treats environment variables as strings, so conversion might be needed or validation logic adjusted)
+    // Typically env vars are strings:
+    PORT: string & =~"^[0-9]+$"
+    WORKER_COUNT: string | *"4"
 
-    // Boolean variables
-    DEBUG: bool | *false
-    ENABLE_METRICS: bool | *true
+    // Boolean variables (as strings)
+    DEBUG: "true" | "false" | *"false"
+    ENABLE_METRICS: "true" | "false" | *"true"
 }
 ```
 
@@ -85,17 +88,12 @@ Compose environments from multiple sources:
 }
 
 // Development environment
+// In cuenv, you typically use a single `env` block with conditional logic or unified types
+// But you can define specialized structs:
 development: #BaseEnv & {
     LOG_LEVEL: "debug"
-    DEBUG: true
+    DEBUG: "true"
     DATABASE_URL: "postgresql://localhost/myapp_dev"
-}
-
-// Production environment
-production: #BaseEnv & {
-    LOG_LEVEL: "info"
-    DEBUG: false
-    DATABASE_URL: string  // Must be provided at runtime
 }
 ```
 
@@ -104,7 +102,7 @@ production: #BaseEnv & {
 Use CUE's conditional logic for dynamic configuration:
 
 ```cue
-package config
+package cuenv
 
 // Configuration based on environment
 let env = "development"  // or from external source
@@ -113,14 +111,6 @@ if env == "development" {
     database: {
         host: "localhost"
         port: 5432
-    }
-}
-
-if env == "production" {
-    database: {
-        host: string  // Required from environment
-        port: int & >0
-        ssl:  true
     }
 }
 ```
@@ -133,21 +123,24 @@ if env == "production" {
 tasks: {
     test: {
         description: "Run tests"
-        command: "cargo test"
-        environment: {
+        command: "cargo"
+        args: ["test"]
+        env: {
             RUST_LOG: "debug"
         }
     }
 
     lint: {
         description: "Run linter"
-        command: "cargo clippy -- -D warnings"
+        command: "cargo"
+        args: ["clippy", "--", "-D", "warnings"]
     }
 
     build: {
         description: "Build project"
-        command: "cargo build --release"
-        depends: ["lint", "test"]
+        command: "cargo"
+        args: ["build", "--release"]
+        dependsOn: ["lint", "test"]
     }
 }
 ```
@@ -160,24 +153,20 @@ Define complex dependency graphs:
 tasks: {
     // Parallel tasks (no dependencies)
     "lint:rust": {
-        command: "cargo clippy"
+        command: "cargo"
+        args: ["clippy"]
     }
 
     "lint:js": {
-        command: "eslint ."
+        command: "eslint"
+        args: ["."]
     }
 
     // Sequential dependency
     test: {
-        command: "cargo test"
-        depends: ["lint:rust", "lint:js"]  // Waits for both
-    }
-
-    // Conditional dependencies
-    deploy: {
-        command: "kubectl apply -f k8s/"
-        depends: ["build", "test"]
-        if: environment.NODE_ENV == "production"
+        command: "cargo"
+        args: ["test"]
+        dependsOn: ["lint:rust", "lint:js"]  // Waits for both
     }
 }
 ```
@@ -392,17 +381,11 @@ config: {
 
 ### Built-in Validation
 
-cuenv automatically validates configuration against schemas:
+cuenv automatically validates configuration against schemas when tasks are run.
 
 ```bash
-# Validate current configuration
-cuenv validate
-
-# Validate specific files
-cuenv validate env.cue tasks.cue
-
-# Validate with custom schema
-cuenv validate --schema schema.cue config.cue
+# Check environment validity
+cuenv env check
 ```
 
 ### Custom Validators

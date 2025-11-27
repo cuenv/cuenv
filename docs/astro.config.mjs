@@ -36,7 +36,7 @@ export default defineConfig({
 					items: [
 						{ label: 'CUE Engine', slug: 'cuengine' },
 						{ label: 'Core Library', slug: 'cuenv-core' },
-						{ label: 'CLI Tool', slug: 'cuenv-cli' },
+						{ label: 'CLI Reference', slug: 'cuenv-cli' },
 					],
 				},
 				{
