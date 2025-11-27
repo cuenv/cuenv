@@ -82,8 +82,8 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
         }
     }
 
-    // Compute config hash for this directory + config
-    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
+    // Compute config hash for this directory + config (only hooks are included)
+    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config_value);
 
     // Check if state is ready
     let executor = HookExecutor::with_default_config()?;
@@ -392,7 +392,7 @@ pub async fn get_environment_with_hooks(
         "config": config_value,
         "hooks": hooks_value,
     });
-    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&combined_value);
+    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&combined_value);
 
     // Check if foreground hook execution is requested (useful for CI environments
     // where detached supervisor processes may not work correctly).
