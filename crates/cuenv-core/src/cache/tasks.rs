@@ -252,6 +252,74 @@ pub fn materialize_outputs(key: &str, destination: &Path, root: Option<&Path>) -
     Ok(count)
 }
 
+/// Index mapping task names to their latest cache keys (per project)
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TaskLatestIndex {
+    /// Map of (project_root_hash, task_name) -> cache_key
+    pub entries: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+fn latest_index_path(root: Option<&Path>) -> Result<PathBuf> {
+    let base = if let Some(r) = root {
+        r.to_path_buf()
+    } else {
+        cache_root()?
+    };
+    Ok(base.join("task-latest.json"))
+}
+
+fn project_hash(project_root: &Path) -> String {
+    let digest = Sha256::digest(project_root.to_string_lossy().as_bytes());
+    hex::encode(&digest[..8])
+}
+
+/// Record the latest cache key for a task in a project
+pub fn record_latest(
+    project_root: &Path,
+    task_name: &str,
+    cache_key: &str,
+    root: Option<&Path>,
+) -> Result<()> {
+    let path = latest_index_path(root)?;
+    let mut index: TaskLatestIndex = if path.exists() {
+        let content = fs::read_to_string(&path).unwrap_or_default();
+        serde_json::from_str(&content).unwrap_or_default()
+    } else {
+        TaskLatestIndex::default()
+    };
+
+    let proj_hash = project_hash(project_root);
+    index
+        .entries
+        .entry(proj_hash)
+        .or_default()
+        .insert(task_name.to_string(), cache_key.to_string());
+
+    let json = serde_json::to_string_pretty(&index)
+        .map_err(|e| Error::configuration(format!("Failed to serialize latest index: {e}")))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    fs::write(&path, json).map_err(|e| Error::Io {
+        source: e,
+        path: Some(path.into()),
+        operation: "write".into(),
+    })?;
+    Ok(())
+}
+
+/// Look up the latest cache key for a task in a project
+pub fn lookup_latest(project_root: &Path, task_name: &str, root: Option<&Path>) -> Option<String> {
+    let path = latest_index_path(root).ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&path).ok()?;
+    let index: TaskLatestIndex = serde_json::from_str(&content).ok()?;
+    let proj_hash = project_hash(project_root);
+    index.entries.get(&proj_hash)?.get(task_name).cloned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheKeyEnvelope {
     pub inputs: BTreeMap<String, String>,

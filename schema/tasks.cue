@@ -28,6 +28,9 @@ package schema
 	// cache for later materialization. Writes to undeclared paths are allowed but
 	// will be warned about and are not indexed.
 	outputs?: [...string]
+	// Consume cached outputs from other tasks in the same project.
+	// The referenced task's outputs are materialized into this task's hermetic workspace.
+	inputsFrom?: [...#TaskOutput]
 	// Cross-project inputs from tasks in other projects (monorepo-only)
 	externalInputs?: [...#ExternalInput]
 
@@ -62,6 +65,15 @@ package schema
 // - Directories in 'from' map recursively
 // - Each 'to' destination must be unique; collisions are disallowed
 // - External tasks run with their own environment; no env injection from dependents
+
+// Reference to another task's outputs within the same project
+#TaskOutput: {
+	// Name of the task whose cached outputs to consume (e.g. "docs.build")
+	task: string
+	// Optional explicit mapping of outputs. If omitted, all outputs are
+	// materialized at their original paths in the hermetic workspace.
+	map?: [...#Mapping]
+}
 
 // TaskGroup uses structure to determine execution mode:
 // - Array of tasks: Sequential execution (order preserved)

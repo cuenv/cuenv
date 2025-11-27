@@ -138,6 +138,12 @@ tasks: {
 			]
 			outputs: ["docs/dist"]
 		}
+		deploy: {
+			command: "bash"
+			args: ["-c", "cd docs && npx wrangler deploy"]
+			dependsOn: ["docs.build"]
+			inputsFrom: [{task: "docs.build"}]
+		}
 	}
 
 	schema: {
