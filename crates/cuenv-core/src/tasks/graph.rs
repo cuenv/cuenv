@@ -327,6 +327,7 @@ mod tests {
             depends_on: deps,
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some(format!("Test task {}", name)),

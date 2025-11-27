@@ -45,6 +45,17 @@ pub struct ExternalInput {
     pub map: Vec<Mapping>,
 }
 
+/// Reference to another task's outputs within the same project
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct TaskOutput {
+    /// Name of the task whose cached outputs to consume (e.g. "docs.build")
+    pub task: String,
+    /// Optional explicit mapping of outputs. If omitted, all outputs are
+    /// materialized at their original paths in the hermetic workspace.
+    #[serde(default)]
+    pub map: Option<Vec<Mapping>>,
+}
+
 /// A single executable task
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct Task {
@@ -74,6 +85,10 @@ pub struct Task {
     /// Output files/resources
     #[serde(default)]
     pub outputs: Vec<String>,
+
+    /// Consume cached outputs from other tasks in the same project
+    #[serde(default, rename = "inputsFrom")]
+    pub inputs_from: Option<Vec<TaskOutput>>,
 
     /// Cross-project inputs
     #[serde(default, rename = "externalInputs")]
@@ -216,6 +231,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: None,
@@ -250,6 +266,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("First task".to_string()),
@@ -263,6 +280,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Second task".to_string()),
@@ -288,6 +306,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Task 1".to_string()),
@@ -301,6 +320,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Task 2".to_string()),
@@ -330,6 +350,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Hello task".to_string()),
@@ -357,6 +378,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Test task".to_string()),
