@@ -18,279 +18,72 @@ permissions:
   id-token: write
 
 env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  # sccache for shared compilation caching across jobs
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: sccache
-  # Disable incremental compilation (not useful in CI, wastes disk space)
-  CARGO_INCREMENTAL: "0"
-  # Reduce debug info to save disk space
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
-  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CUENV_FOREGROUND_HOOKS: "1"
 
 jobs:
-  # Runs Nix checks (build, fmt, clippy, doc, audit) and produces Linux binary
-  nix-checks:
-    name: Nix checks + Linux build
+  ci-linux:
+    name: CI (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
-      - name: Run Nix checks
-        run: nix flake check
-      - name: Build and upload Linux binary
+
+      - name: Build cuenv and run CI
         run: |
           nix build .#cuenv
-          mkdir -p dist
-          cp -L result/bin/cuenv dist/cuenv
+          ./result/bin/cuenv task ci
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: cuenv-ubuntu-latest
-          path: dist/cuenv
+          path: result/bin/cuenv
           if-no-files-found: error
 
-  # macOS build runs in parallel
-  build-cuenv-macos:
-    name: Build cuenv (macOS)
+  ci-macos:
+    name: CI (macOS)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
-      - name: Build cuenv
+
+      - name: Build cuenv and run CI
         run: |
           nix build .#cuenv
-          mkdir -p dist
-          cp -L result/bin/cuenv dist/cuenv
+          ./result/bin/cuenv task ci
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: cuenv-macos-latest
-          path: dist/cuenv
+          path: result/bin/cuenv
           if-no-files-found: error
 
-  test-suite:
-    name: test-suite
-    needs: [nix-checks, build-cuenv-macos]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        rust: [stable, 1.85.0] # MSRV - Edition 2024 requires 1.85+
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Set CUENV environment
-        run: |
-          echo "CUENV_CUE_BIN=cue" >> "$GITHUB_ENV"
-          echo "CUENV_FOREGROUND_HOOKS=1" >> "$GITHUB_ENV"
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      - name: Download cuenv
-        uses: actions/download-artifact@v4
-        with:
-          name: cuenv-${{ matrix.os }}
-          path: bin
-
-      - name: Setup cuenv
-        run: |
-          chmod +x bin/cuenv
-          echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-deps-${{ runner.os }}-
-
-      - name: Build workspace
-        run: cuenv task build
-
-      - name: Run tests
-        run: cuenv task test.unit
-
-      - name: Run doctests
-        run: cuenv task test.doc
-
-      - name: Run BDD tests
-        # BDD tests use cucumber and are incompatible with nextest
-        # See: https://github.com/cucumber-rs/cucumber/issues/370
-        run: cuenv task test.bdd
-
-  supply-chain-security:
-    name: supply-chain-security
-    needs: nix-checks
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [ci-linux, ci-macos]
     runs-on: ubuntu-latest
-    env:
-      CUENV_FOREGROUND_HOOKS: "1"
     steps:
       - uses: actions/checkout@v5
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
-      - name: Download cuenv
-        uses: actions/download-artifact@v4
-        with:
-          name: cuenv-ubuntu-latest
-          path: bin
-
-      - name: Setup cuenv
+      - name: Build cuenv and run release
         run: |
-          chmod +x bin/cuenv
-          echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-deps-${{ runner.os }}-
-
-      - name: Run security audit
-        run: cuenv task security.audit
-
-      - name: Run dependency checks
-        run: cuenv task security.deny
-
-      - name: Generate SBOM
-        run: cuenv task sbom
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: sbom.json
-
-  coverage:
-    name: coverage
-    needs: nix-checks
-    runs-on: ubuntu-latest
-    env:
-      CUENV_FOREGROUND_HOOKS: "1"
-      # Explicitly set token for sccache to ensure it can access GHA cache
-      SCCACHE_GHA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      - name: Download cuenv
-        uses: actions/download-artifact@v4
-        with:
-          name: cuenv-ubuntu-latest
-          path: bin
-
-      - name: Setup cuenv
-        run: |
-          chmod +x bin/cuenv
-          echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-deps-${{ runner.os }}-
-
-      - name: Generate coverage
-        run: cuenv task coverage
-        env:
-          ENABLE_LLVM_COV: "1"
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
-          fail_ci_if_error: false # Soft gating - don't fail CI initially
-        continue-on-error: true
-
-  benchmarks:
-    name: benchmarks
-    needs: nix-checks
-    runs-on: ubuntu-latest
-    env:
-      CUENV_FOREGROUND_HOOKS: "1"
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      - name: Download cuenv
-        uses: actions/download-artifact@v4
-        with:
-          name: cuenv-ubuntu-latest
-          path: bin
-
-      - name: Setup cuenv
-        run: |
-          chmod +x bin/cuenv
-          echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-deps-${{ runner.os }}-
-
-      - name: Run benchmarks
-        run: cuenv task bench
-        continue-on-error: true # Don't fail CI on benchmark regression initially
-
-      - name: Store benchmark result
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: target/criterion/
+          nix build .#cuenv
+          ./result/bin/cuenv task release
