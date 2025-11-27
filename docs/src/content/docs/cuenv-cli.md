@@ -7,10 +7,10 @@ The `cuenv` CLI provides tools for managing environments, executing tasks, and i
 
 ## Global Options
 
-| Option              | Description                                     | Default |
-| ------------------- | ----------------------------------------------- | ------- |
-| `--level, -l`       | Set logging level (trace, debug, info, warn, error) | warn    |
-| `--json`            | Emit JSON envelope regardless of format         | false   |
+| Option        | Description                                         | Default |
+| ------------- | --------------------------------------------------- | ------- |
+| `--level, -l` | Set logging level (trace, debug, info, warn, error) | warn    |
+| `--json`      | Emit JSON envelope regardless of format             | false   |
 
 ## Commands
 
@@ -23,6 +23,7 @@ cuenv version [OPTIONS]
 ```
 
 **Options:**
+
 - `--output-format <FORMAT>`: Output format (simple, json, env). Default: simple.
 
 ### `cuenv env`
@@ -38,6 +39,7 @@ cuenv env print [OPTIONS]
 ```
 
 **Options:**
+
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--output-format <FORMAT>`: Output format (env, json, simple). Default: `env`
@@ -51,6 +53,7 @@ cuenv env load [OPTIONS]
 ```
 
 **Options:**
+
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 
@@ -63,6 +66,7 @@ cuenv env check [OPTIONS]
 ```
 
 **Options:**
+
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--shell <SHELL>`: Shell type for export format (bash, zsh, fish). Default: `bash`
@@ -76,9 +80,11 @@ cuenv task [NAME] [OPTIONS]
 ```
 
 **Arguments:**
+
 - `[NAME]`: Name of the task to execute. If not provided, lists available tasks.
 
 **Options:**
+
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-e, --env <ENVIRONMENT>`: Apply environment-specific overrides (e.g., development, production).
@@ -94,6 +100,7 @@ cuenv exec [OPTIONS] -- <COMMAND> [ARGS]...
 ```
 
 **Options:**
+
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-e, --env <ENVIRONMENT>`: Apply environment-specific overrides.
@@ -111,6 +118,7 @@ cuenv shell init <SHELL>
 ```
 
 **Arguments:**
+
 - `<SHELL>`: Shell type (fish, bash, zsh).
 
 ### Security Commands
@@ -124,6 +132,7 @@ cuenv allow [OPTIONS]
 ```
 
 **Options:**
+
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--note <NOTE>`: Optional note about this approval.
@@ -138,6 +147,7 @@ cuenv deny [OPTIONS]
 ```
 
 **Options:**
+
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--all`: Revoke all approvals for this directory.

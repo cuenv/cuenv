@@ -73,6 +73,7 @@ cuenv exec -- npm start
 ```
 
 This will:
+
 1. Evaluate the CUE configuration.
 2. Validate that all constraints are met (e.g., required variables are present).
 3. Execute the command with the environment variables injected.
@@ -97,4 +98,4 @@ If any constraint fails (e.g., a required string is missing, or a value doesn't 
 
 For sensitive values, use secret references instead of hardcoding them.
 
-*(Secret management documentation is coming soon)*
+_(Secret management documentation is coming soon)_

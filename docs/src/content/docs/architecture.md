@@ -32,6 +32,7 @@ cuenv is built as a layered system with clear separation of concerns:
 The CUE evaluation engine providing a safe Rust interface to the Go-based CUE evaluator.
 
 **Key responsibilities:**
+
 - FFI bridge between Rust and Go
 - Safe memory management with RAII wrappers
 - CUE expression evaluation
@@ -39,6 +40,7 @@ The CUE evaluation engine providing a safe Rust interface to the Go-based CUE ev
 - Retry logic for transient failures
 
 **Notable features:**
+
 - `CueEvaluator` - Main evaluator type with builder pattern configuration
 - `CStringPtr` - RAII wrapper for C strings returned from FFI
 - Response envelope parsing with structured error handling
@@ -60,6 +62,7 @@ let result = evaluator.evaluate()?;
 Core library containing shared types, configuration parsing, and domain logic.
 
 **Modules:**
+
 - `manifest` - CUE manifest parsing and the `Cuenv` type
 - `tasks` - Task definitions, execution, and dependencies
 - `environment` - Environment variable handling and validation
@@ -71,6 +74,7 @@ Core library containing shared types, configuration parsing, and domain logic.
 
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:
+
 - Source code snippets
 - Error spans
 - Contextual help messages
@@ -95,6 +99,7 @@ pub enum Error {
 The command-line interface built with `clap`.
 
 **Commands:**
+
 - `cuenv task [name]` - Execute or list tasks
 - `cuenv env print|check|load` - Environment operations
 - `cuenv exec -- <cmd>` - Run commands with environment
@@ -107,6 +112,7 @@ The command-line interface built with `clap`.
 Workspace management for monorepos.
 
 **Features:**
+
 - Detect and configure workspaces
 - Package manager integration (npm, pnpm, yarn, cargo, bun)
 - Workspace-aware task execution
@@ -147,7 +153,9 @@ All FFI responses use a structured JSON envelope:
 ```json
 {
   "version": "1.0.0",
-  "ok": { /* evaluation result */ },
+  "ok": {
+    /* evaluation result */
+  },
   "error": null
 }
 ```
@@ -168,15 +176,15 @@ Or on error:
 
 ### Error Codes
 
-| Code | Description |
-|------|-------------|
-| `INVALID_INPUT` | Invalid input parameters |
-| `LOAD_INSTANCE` | Failed to load CUE instance |
-| `BUILD_VALUE` | Failed to build CUE value |
-| `ORDERED_JSON` | JSON serialization failed |
-| `PANIC_RECOVER` | Recovered from Go panic |
-| `JSON_MARSHAL_ERROR` | JSON marshaling failed |
-| `REGISTRY_INIT` | Registry initialization failed |
+| Code                 | Description                    |
+| -------------------- | ------------------------------ |
+| `INVALID_INPUT`      | Invalid input parameters       |
+| `LOAD_INSTANCE`      | Failed to load CUE instance    |
+| `BUILD_VALUE`        | Failed to build CUE value      |
+| `ORDERED_JSON`       | JSON serialization failed      |
+| `PANIC_RECOVER`      | Recovered from Go panic        |
+| `JSON_MARSHAL_ERROR` | JSON marshaling failed         |
+| `REGISTRY_INIT`      | Registry initialization failed |
 
 ## Caching Architecture
 
@@ -194,6 +202,7 @@ pub struct EvaluationCache {
 ```
 
 **Cache key components:**
+
 - Directory path
 - Package name
 - File content hashes
@@ -211,6 +220,7 @@ Content-aware caching for task outputs:
 ```
 
 **Cache invalidation triggers:**
+
 - Input file changes (content hash)
 - Task definition changes
 - Environment variable changes
@@ -255,13 +265,13 @@ tasks: {
         command: "cargo"
         args: ["build"]
     }
-    
+
     // Sequential list
     deploy: [
         {command: "build"},
         {command: "push"},
     ]
-    
+
     // Nested (parallel groups)
     test: {
         unit: {command: "test-unit"}

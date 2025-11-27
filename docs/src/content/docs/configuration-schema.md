@@ -23,13 +23,13 @@ tasks: {...}
 
 **Fields:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `config` | `#Config` | No | Global configuration options |
-| `env` | `#Env` | No | Environment variable definitions |
-| `hooks` | `#Hooks` | No | Shell hooks for onEnter/onExit |
-| `tasks` | `{[string]: #Tasks}` | Yes | Task definitions |
-| `workspaces` | `#Workspaces` | No | Workspace configuration |
+| Field        | Type                 | Required | Description                      |
+| ------------ | -------------------- | -------- | -------------------------------- |
+| `config`     | `#Config`            | No       | Global configuration options     |
+| `env`        | `#Env`               | No       | Environment variable definitions |
+| `hooks`      | `#Hooks`             | No       | Shell hooks for onEnter/onExit   |
+| `tasks`      | `{[string]: #Tasks}` | Yes      | Task definitions                 |
+| `workspaces` | `#Workspaces`        | No       | Workspace configuration          |
 
 ## Configuration
 
@@ -45,19 +45,19 @@ config: {
 
 **Fields:**
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `outputFormat` | `string` | - | Task output format |
+| Field          | Type     | Default | Description        |
+| -------------- | -------- | ------- | ------------------ |
+| `outputFormat` | `string` | -       | Task output format |
 
 **Output Formats:**
 
-| Format | Description |
-|--------|-------------|
-| `tui` | Interactive terminal UI |
+| Format    | Description                |
+| --------- | -------------------------- |
+| `tui`     | Interactive terminal UI    |
 | `spinner` | Simple spinner with status |
-| `simple` | Plain text output |
-| `tree` | Tree-structured output |
-| `json` | JSON output for scripting |
+| `simple`  | Plain text output          |
+| `tree`    | Tree-structured output     |
+| `json`    | JSON output for scripting  |
 
 ## Environment
 
@@ -70,7 +70,7 @@ env: {
     NODE_ENV: "development"
     PORT: 3000
     DEBUG: true
-    
+
     // Environment-specific overrides
     environment: {
         production: {
@@ -89,19 +89,19 @@ A single environment variable value. Can be:
 env: {
     // Simple string
     NAME: "value"
-    
+
     // Number (converted to string when exported)
     PORT: 3000
-    
+
     // Boolean (converted to string when exported)
     DEBUG: true
-    
+
     // Secret reference
     API_KEY: schema.#Secret & {
         command: "op"
         args: ["read", "op://vault/item/field"]
     }
-    
+
     // Value with access policies
     DB_PASSWORD: {
         value: schema.#Secret & {...}
@@ -137,13 +137,13 @@ tasks: {
         command: "cargo"
         args: ["build"]
     }
-    
+
     // Sequential list
     deploy: [
         {command: "build"},
         {command: "push"},
     ]
-    
+
     // Nested group
     test: {
         unit: {command: "cargo", args: ["test", "--lib"]}
@@ -161,7 +161,7 @@ tasks: {
     build: {
         // Required
         command: "cargo"
-        
+
         // Optional
         args: ["build", "--release"]
         shell: schema.#Bash
@@ -179,18 +179,18 @@ tasks: {
 
 **Fields:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `command` | `string` | Yes | Command to execute |
-| `args` | `[...string]` | No | Command arguments |
-| `shell` | `#Shell` | No | Shell to use for execution |
-| `env` | `{[string]: #EnvironmentVariable}` | No | Task-specific environment |
-| `dependsOn` | `[...string]` | No | Task dependencies |
-| `inputs` | `[...string]` | No | Input file patterns for caching |
-| `outputs` | `[...string]` | No | Output file patterns for caching |
-| `description` | `string` | No | Human-readable description |
-| `workspaces` | `[...string]` | No | Workspaces to enable |
-| `externalInputs` | `[...#ExternalInput]` | No | Cross-project dependencies |
+| Field            | Type                               | Required | Description                      |
+| ---------------- | ---------------------------------- | -------- | -------------------------------- |
+| `command`        | `string`                           | Yes      | Command to execute               |
+| `args`           | `[...string]`                      | No       | Command arguments                |
+| `shell`          | `#Shell`                           | No       | Shell to use for execution       |
+| `env`            | `{[string]: #EnvironmentVariable}` | No       | Task-specific environment        |
+| `dependsOn`      | `[...string]`                      | No       | Task dependencies                |
+| `inputs`         | `[...string]`                      | No       | Input file patterns for caching  |
+| `outputs`        | `[...string]`                      | No       | Output file patterns for caching |
+| `description`    | `string`                           | No       | Human-readable description       |
+| `workspaces`     | `[...string]`                      | No       | Workspaces to enable             |
+| `externalInputs` | `[...#ExternalInput]`              | No       | Cross-project dependencies       |
 
 ### #TaskGroup
 
@@ -236,11 +236,11 @@ tasks: {
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `project` | `string` | Path to external project |
-| `task` | `string` | Task name in external project |
-| `map` | `[...#Mapping]` | Output mappings |
+| Field     | Type            | Description                   |
+| --------- | --------------- | ----------------------------- |
+| `project` | `string`        | Path to external project      |
+| `task`    | `string`        | Task name in external project |
+| `map`     | `[...#Mapping]` | Output mappings               |
 
 ## Hooks
 
@@ -273,7 +273,7 @@ A single hook definition.
 hooks: {
     onEnter: {
         nix: schema.#NixFlake
-        
+
         custom: {
             order: 50
             propagate: true
@@ -289,15 +289,15 @@ hooks: {
 
 **Fields:**
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `command` | `string` | required | Command to execute |
-| `args` | `[...string]` | `[]` | Command arguments |
-| `order` | `int` | 100 | Execution order (lower = earlier) |
-| `propagate` | `bool` | false | Export variables to children |
-| `dir` | `string` | "." | Working directory |
-| `inputs` | `[...string]` | `[]` | Input files for cache tracking |
-| `source` | `bool` | false | Source output as shell script |
+| Field       | Type          | Default  | Description                       |
+| ----------- | ------------- | -------- | --------------------------------- |
+| `command`   | `string`      | required | Command to execute                |
+| `args`      | `[...string]` | `[]`     | Command arguments                 |
+| `order`     | `int`         | 100      | Execution order (lower = earlier) |
+| `propagate` | `bool`        | false    | Export variables to children      |
+| `dir`       | `string`      | "."      | Working directory                 |
+| `inputs`    | `[...string]` | `[]`     | Input files for cache tracking    |
+| `source`    | `bool`        | false    | Source output as shell script     |
 
 ### #NixFlake
 
@@ -339,13 +339,13 @@ shell: {
 
 ### Built-in Shells
 
-| Type | Command | Flag |
-|------|---------|------|
-| `#Bash` | bash | -c |
-| `#Zsh` | zsh | -c |
-| `#Fish` | fish | -c |
-| `#Sh` | sh | -c |
-| `#Cmd` | cmd | /C |
+| Type          | Command    | Flag     |
+| ------------- | ---------- | -------- |
+| `#Bash`       | bash       | -c       |
+| `#Zsh`        | zsh        | -c       |
+| `#Fish`       | fish       | -c       |
+| `#Sh`         | sh         | -c       |
+| `#Cmd`        | cmd        | /C       |
 | `#PowerShell` | powershell | -Command |
 
 **Usage:**
@@ -378,11 +378,11 @@ env: {
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `resolver` | `"exec"` | Always "exec" |
-| `command` | `string` | Command to retrieve secret |
-| `args` | `[...string]` | Command arguments |
+| Field      | Type          | Description                |
+| ---------- | ------------- | -------------------------- |
+| `resolver` | `"exec"`      | Always "exec"              |
+| `command`  | `string`      | Command to retrieve secret |
+| `args`     | `[...string]` | Command arguments          |
 
 ### #OnePasswordRef
 
@@ -398,8 +398,8 @@ env: {
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field | Type     | Description             |
+| ----- | -------- | ----------------------- |
 | `ref` | `string` | 1Password reference URI |
 
 ### #GcpSecret
@@ -418,10 +418,10 @@ env: {
 
 **Fields:**
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
+| Field     | Type     | Default  | Description    |
+| --------- | -------- | -------- | -------------- |
 | `project` | `string` | required | GCP project ID |
-| `secret` | `string` | required | Secret name |
+| `secret`  | `string` | required | Secret name    |
 | `version` | `string` | "latest" | Secret version |
 
 ## Policies
@@ -444,10 +444,10 @@ env: {
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field        | Type          | Description                         |
+| ------------ | ------------- | ----------------------------------- |
 | `allowTasks` | `[...string]` | Tasks that can access this variable |
-| `allowExec` | `[...string]` | Exec commands that can access |
+| `allowExec`  | `[...string]` | Exec commands that can access       |
 
 ## Workspaces
 
@@ -469,11 +469,11 @@ workspaces: {
 
 **Fields:**
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | true | Enable this workspace |
-| `package_manager` | `string` | - | Package manager type |
-| `root` | `string` | - | Workspace root directory |
+| Field             | Type     | Default | Description              |
+| ----------------- | -------- | ------- | ------------------------ |
+| `enabled`         | `bool`   | true    | Enable this workspace    |
+| `package_manager` | `string` | -       | Package manager type     |
+| `root`            | `string` | -       | Workspace root directory |
 
 **Package Managers:**
 

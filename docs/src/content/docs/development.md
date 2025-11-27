@@ -31,6 +31,7 @@ direnv allow
 ```
 
 The Nix shell provides:
+
 - Rust toolchain with clippy, rustfmt, and rust-analyzer
 - Go for the CUE bridge
 - All required system dependencies
@@ -261,6 +262,7 @@ lldb target/debug/cuenv
 ### Common Issues
 
 **Go bridge build fails:**
+
 ```bash
 # Ensure Go is in PATH
 go version
@@ -271,6 +273,7 @@ cargo build
 ```
 
 **FFI panics:**
+
 - Check that Go code doesn't panic without recovery
 - Verify memory isn't double-freed
 - Enable trace logging to see FFI calls
@@ -296,11 +299,13 @@ Versions are automatically determined from commit messages:
 ### VS Code
 
 Recommended extensions:
+
 - rust-analyzer
 - Even Better TOML
 - cuelang.cue
 
 **settings.json:**
+
 ```json
 {
   "rust-analyzer.cargo.features": "all",
@@ -316,6 +321,7 @@ Recommended extensions:
 ### Neovim
 
 With nvim-lspconfig:
+
 ```lua
 require('lspconfig').rust_analyzer.setup{
   settings = {

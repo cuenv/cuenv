@@ -24,12 +24,12 @@ let evaluator = CueEvaluatorBuilder::new()
 
 **Methods:**
 
-| Method | Description |
-|--------|-------------|
-| `new()` | Create a new builder |
-| `directory(path)` | Set the directory containing CUE files |
-| `package(name)` | Set the CUE package name to evaluate |
-| `build()` | Build the evaluator, returns `Result<CueEvaluator>` |
+| Method            | Description                                         |
+| ----------------- | --------------------------------------------------- |
+| `new()`           | Create a new builder                                |
+| `directory(path)` | Set the directory containing CUE files              |
+| `package(name)`   | Set the CUE package name to evaluate                |
+| `build()`         | Build the evaluator, returns `Result<CueEvaluator>` |
 
 ### CueEvaluator
 
@@ -41,10 +41,10 @@ let result = evaluator.evaluate()?;
 
 **Methods:**
 
-| Method | Return Type | Description |
-|--------|-------------|-------------|
-| `evaluate()` | `Result<Cuenv>` | Evaluate CUE and return parsed manifest |
-| `evaluate_raw()` | `Result<String>` | Evaluate CUE and return raw JSON |
+| Method           | Return Type      | Description                             |
+| ---------------- | ---------------- | --------------------------------------- |
+| `evaluate()`     | `Result<Cuenv>`  | Evaluate CUE and return parsed manifest |
+| `evaluate_raw()` | `Result<String>` | Evaluate CUE and return raw JSON        |
 
 ### RetryConfig
 
@@ -63,12 +63,12 @@ let config = RetryConfig {
 
 **Fields:**
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `max_retries` | `u32` | 3 | Maximum retry attempts |
-| `initial_delay_ms` | `u64` | 100 | Initial delay between retries |
-| `max_delay_ms` | `u64` | 5000 | Maximum delay cap |
-| `backoff_factor` | `f64` | 2.0 | Exponential backoff multiplier |
+| Field              | Type  | Default | Description                    |
+| ------------------ | ----- | ------- | ------------------------------ |
+| `max_retries`      | `u32` | 3       | Maximum retry attempts         |
+| `initial_delay_ms` | `u64` | 100     | Initial delay between retries  |
+| `max_delay_ms`     | `u64` | 5000    | Maximum delay cap              |
+| `backoff_factor`   | `f64` | 2.0     | Exponential backoff multiplier |
 
 ## cuenv-core
 
@@ -86,13 +86,13 @@ let manifest: Cuenv = evaluator.evaluate()?;
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `config` | `Option<Config>` | Global configuration |
-| `env` | `Option<Env>` | Environment variables |
-| `hooks` | `Option<Hooks>` | Shell hooks |
-| `tasks` | `HashMap<String, Tasks>` | Task definitions |
-| `workspaces` | `Option<Workspaces>` | Workspace configuration |
+| Field        | Type                     | Description             |
+| ------------ | ------------------------ | ----------------------- |
+| `config`     | `Option<Config>`         | Global configuration    |
+| `env`        | `Option<Env>`            | Environment variables   |
+| `hooks`      | `Option<Hooks>`          | Shell hooks             |
+| `tasks`      | `HashMap<String, Tasks>` | Task definitions        |
+| `workspaces` | `Option<Workspaces>`     | Workspace configuration |
 
 ### Task Types
 
@@ -116,15 +116,15 @@ let task = SingleTask {
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `command` | `String` | Command to execute |
-| `args` | `Vec<String>` | Command arguments |
-| `env` | `Option<HashMap<String, Value>>` | Task-specific environment |
-| `shell` | `Option<Shell>` | Shell to use |
-| `depends_on` | `Option<Vec<String>>` | Task dependencies |
-| `inputs` | `Option<Vec<String>>` | Input file patterns |
-| `outputs` | `Option<Vec<String>>` | Output file patterns |
+| Field        | Type                             | Description               |
+| ------------ | -------------------------------- | ------------------------- |
+| `command`    | `String`                         | Command to execute        |
+| `args`       | `Vec<String>`                    | Command arguments         |
+| `env`        | `Option<HashMap<String, Value>>` | Task-specific environment |
+| `shell`      | `Option<Shell>`                  | Shell to use              |
+| `depends_on` | `Option<Vec<String>>`            | Task dependencies         |
+| `inputs`     | `Option<Vec<String>>`            | Input file patterns       |
+| `outputs`    | `Option<Vec<String>>`            | Output file patterns      |
 
 #### Tasks (enum)
 
@@ -151,6 +151,7 @@ use cuenv_core::environment::Env;
 ```
 
 Environment values can be:
+
 - Simple values (strings, numbers, booleans)
 - Structured values with policies
 - Secret references
@@ -167,10 +168,10 @@ use cuenv_core::hooks::{Hooks, ExecHook};
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
+| Field      | Type                    | Description                     |
+| ---------- | ----------------------- | ------------------------------- |
 | `on_enter` | `Option<Vec<ExecHook>>` | Hooks to run on directory entry |
-| `on_exit` | `Option<Vec<ExecHook>>` | Hooks to run on directory exit |
+| `on_exit`  | `Option<Vec<ExecHook>>` | Hooks to run on directory exit  |
 
 #### ExecHook
 
@@ -178,14 +179,14 @@ A single hook execution.
 
 **Fields:**
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `command` | `String` | required | Command to execute |
-| `args` | `Vec<String>` | `[]` | Command arguments |
-| `order` | `i32` | 0 | Execution order (lower = earlier) |
-| `propagate` | `bool` | false | Export to child processes |
-| `source` | `bool` | false | Source output as shell script |
-| `inputs` | `Vec<String>` | `[]` | Input files for cache tracking |
+| Field       | Type          | Default  | Description                       |
+| ----------- | ------------- | -------- | --------------------------------- |
+| `command`   | `String`      | required | Command to execute                |
+| `args`      | `Vec<String>` | `[]`     | Command arguments                 |
+| `order`     | `i32`         | 0        | Execution order (lower = earlier) |
+| `propagate` | `bool`        | false    | Export to child processes         |
+| `source`    | `bool`        | false    | Source output as shell script     |
+| `inputs`    | `Vec<String>` | `[]`     | Input files for cache tracking    |
 
 ### Secrets
 
@@ -199,11 +200,11 @@ use cuenv_core::secrets::Secret;
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `resolver` | `String` | Resolver type (always "exec") |
-| `command` | `String` | Command to retrieve secret |
-| `args` | `Vec<String>` | Command arguments |
+| Field      | Type          | Description                   |
+| ---------- | ------------- | ----------------------------- |
+| `resolver` | `String`      | Resolver type (always "exec") |
+| `command`  | `String`      | Command to retrieve secret    |
+| `args`     | `Vec<String>` | Command arguments             |
 
 #### Policy
 
@@ -215,10 +216,10 @@ use cuenv_core::secrets::Policy;
 
 **Fields:**
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `allow_tasks` | `Vec<String>` | Tasks that can access |
-| `allow_exec` | `Vec<String>` | Exec commands that can access |
+| Field         | Type          | Description                   |
+| ------------- | ------------- | ----------------------------- |
+| `allow_tasks` | `Vec<String>` | Tasks that can access         |
+| `allow_exec`  | `Vec<String>` | Exec commands that can access |
 
 ### Shell
 
@@ -251,15 +252,15 @@ use cuenv_core::Error;
 
 **Variants:**
 
-| Variant | Description |
-|---------|-------------|
+| Variant         | Description                            |
+| --------------- | -------------------------------------- |
 | `Configuration` | Configuration parsing/validation error |
-| `Ffi` | FFI operation failure |
-| `CueParse` | CUE parsing error |
-| `Io` | I/O operation failure |
-| `Task` | Task execution error |
-| `Secret` | Secret resolution error |
-| `Shell` | Shell integration error |
+| `Ffi`           | FFI operation failure                  |
+| `CueParse`      | CUE parsing error                      |
+| `Io`            | I/O operation failure                  |
+| `Task`          | Task execution error                   |
+| `Secret`        | Secret resolution error                |
+| `Shell`         | Shell integration error                |
 
 All errors implement `miette::Diagnostic` for rich error reporting:
 
@@ -271,7 +272,7 @@ fn run() -> Result<()> {
         .directory(".")
         .package("cuenv")
         .build()?;
-    
+
     let manifest = evaluator.evaluate()?;
     Ok(())
 }
@@ -324,15 +325,15 @@ if let Some(hit) = cache.get(&key)? {
 
 The cuenv CLI uses structured exit codes:
 
-| Code | Name | Description |
-|------|------|-------------|
-| 0 | Success | Operation completed successfully |
-| 1 | GeneralError | Generic error |
-| 2 | ConfigError | Configuration parsing/validation failed |
-| 3 | TaskError | Task execution failed |
-| 4 | NotApproved | Configuration not approved |
-| 5 | NotFound | Requested resource not found |
-| 64 | UsageError | Invalid command line usage |
+| Code | Name         | Description                             |
+| ---- | ------------ | --------------------------------------- |
+| 0    | Success      | Operation completed successfully        |
+| 1    | GeneralError | Generic error                           |
+| 2    | ConfigError  | Configuration parsing/validation failed |
+| 3    | TaskError    | Task execution failed                   |
+| 4    | NotApproved  | Configuration not approved              |
+| 5    | NotFound     | Requested resource not found            |
+| 64   | UsageError   | Invalid command line usage              |
 
 ## See Also
 

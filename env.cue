@@ -130,13 +130,11 @@ tasks: {
 	docs: {
 		build: {
 			command: "bash"
-			args: ["-c", "cd docs && bun install && bun run build"]
+			args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build"]
 			inputs: [
+				"package.json",
+				"bun.lock",
 				"docs",
-				"docs/package.json",
-				"docs/bun.lock",
-				"docs/astro.config.mjs",
-				"docs/tsconfig.json",
 			]
 			outputs: ["docs/dist"]
 		}
