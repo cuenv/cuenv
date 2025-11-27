@@ -30,61 +30,86 @@ env:
   CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
-  # Runs Nix checks (build, fmt, clippy, doc, audit) and produces Linux binary
-  nix-checks:
-    name: Nix checks + Linux build
+  # Lint and format check - runs immediately, fails fast
+  lint-fmt:
+    name: Lint & Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
-      - name: Run Nix checks
-        run: nix flake check
-      - name: Build and upload Linux binary
-        run: |
-          nix build .#cuenv
-          mkdir -p dist
-          cp -L result/bin/cuenv dist/cuenv
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: cuenv-ubuntu-latest
-          path: dist/cuenv
-          if-no-files-found: error
 
-  # macOS build runs in parallel
-  build-cuenv-macos:
-    name: Build cuenv (macOS)
-    runs-on: macos-latest
+      - name: Check formatting
+        run: nix develop --command cargo fmt -- --check
+
+      - name: Run clippy
+        run: nix develop --command cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # Linux build - runs in parallel with lint-fmt and build-macos
+  build-linux:
+    name: Build (Linux)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
+
       - name: Build cuenv
         run: |
           nix build .#cuenv
           mkdir -p dist
           cp -L result/bin/cuenv dist/cuenv
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cuenv-macos-latest
+          name: cuenv-linux
           path: dist/cuenv
           if-no-files-found: error
 
-  test-suite:
-    name: test-suite
-    needs: [nix-checks, build-cuenv-macos]
-    runs-on: ${{ matrix.os }}
+  # macOS build - runs in parallel with lint-fmt and build-linux
+  build-macos:
+    name: Build (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - name: Build cuenv
+        run: |
+          nix build .#cuenv
+          mkdir -p dist
+          cp -L result/bin/cuenv dist/cuenv
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuenv-macos
+          path: dist/cuenv
+          if-no-files-found: error
+
+  # Linux tests - only waits for Linux build
+  test-linux:
+    name: Test (Linux / ${{ matrix.rust }})
+    needs: [build-linux]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        rust: [stable, 1.85.0] # MSRV - Edition 2024 requires 1.85+
+        rust: [stable, 1.85.0]
 
     steps:
       - uses: actions/checkout@v5
@@ -96,13 +121,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - name: Download cuenv
         uses: actions/download-artifact@v4
         with:
-          name: cuenv-${{ matrix.os }}
+          name: cuenv-linux
           path: bin
 
       - name: Setup cuenv
@@ -134,13 +160,72 @@ jobs:
         run: cuenv task test.doc
 
       - name: Run BDD tests
-        # BDD tests use cucumber and are incompatible with nextest
-        # See: https://github.com/cucumber-rs/cucumber/issues/370
+        run: cuenv task test.bdd
+
+  # macOS tests - only waits for macOS build
+  test-macos:
+    name: Test (macOS / ${{ matrix.rust }})
+    needs: [build-macos]
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: [stable, 1.85.0]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set CUENV environment
+        run: |
+          echo "CUENV_CUE_BIN=cue" >> "$GITHUB_ENV"
+          echo "CUENV_FOREGROUND_HOOKS=1" >> "$GITHUB_ENV"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v19
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v2
+
+      - name: Download cuenv
+        uses: actions/download-artifact@v4
+        with:
+          name: cuenv-macos
+          path: bin
+
+      - name: Setup cuenv
+        run: |
+          chmod +x bin/cuenv
+          echo "$(pwd)/bin" >> $GITHUB_PATH
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-
+
+      - name: Build workspace
+        run: cuenv task build
+
+      - name: Run tests
+        run: cuenv task test.unit
+
+      - name: Run doctests
+        run: cuenv task test.doc
+
+      - name: Run BDD tests
         run: cuenv task test.bdd
 
   supply-chain-security:
-    name: supply-chain-security
-    needs: nix-checks
+    name: Supply Chain Security
+    needs: [build-linux]
     runs-on: ubuntu-latest
     env:
       CUENV_FOREGROUND_HOOKS: "1"
@@ -149,13 +234,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - name: Download cuenv
         uses: actions/download-artifact@v4
         with:
-          name: cuenv-ubuntu-latest
+          name: cuenv-linux
           path: bin
 
       - name: Setup cuenv
@@ -193,25 +279,25 @@ jobs:
           path: sbom.json
 
   coverage:
-    name: coverage
-    needs: nix-checks
+    name: Coverage
+    needs: [build-linux]
     runs-on: ubuntu-latest
     env:
       CUENV_FOREGROUND_HOOKS: "1"
-      # Explicitly set token for sccache to ensure it can access GHA cache
       SCCACHE_GHA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - name: Download cuenv
         uses: actions/download-artifact@v4
         with:
-          name: cuenv-ubuntu-latest
+          name: cuenv-linux
           path: bin
 
       - name: Setup cuenv
@@ -243,12 +329,12 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
-          fail_ci_if_error: false # Soft gating - don't fail CI initially
+          fail_ci_if_error: false
         continue-on-error: true
 
   benchmarks:
-    name: benchmarks
-    needs: nix-checks
+    name: Benchmarks
+    needs: [build-linux]
     runs-on: ubuntu-latest
     env:
       CUENV_FOREGROUND_HOOKS: "1"
@@ -257,13 +343,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
+
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
       - name: Download cuenv
         uses: actions/download-artifact@v4
         with:
-          name: cuenv-ubuntu-latest
+          name: cuenv-linux
           path: bin
 
       - name: Setup cuenv
@@ -287,7 +374,7 @@ jobs:
 
       - name: Run benchmarks
         run: cuenv task bench
-        continue-on-error: true # Don't fail CI on benchmark regression initially
+        continue-on-error: true
 
       - name: Store benchmark result
         uses: actions/upload-artifact@v4
