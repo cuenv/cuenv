@@ -6,81 +6,36 @@
 allow-branch = ["main"]
 # Consolidate all commits for a release into a single commit
 consolidate-commits = true
-# Create GitHub releases
-enable-features = ["github"]
+# All packages share the same version
+shared-version = "workspace"
+# Not independent versioning
+independent = false
 
-[package.metadata.release]
+[default]
 # Don't publish to crates.io by default (handled by CI)
 publish = false
 # Don't push tags (handled by release-please)
 tag = false
 # Don't push to remote (handled by release-please)
 push = false
-
-# Pre-release checks
-pre-release-commit-message = "chore: Release {{crate_name}} v{{version}}"
-pre-release-replacements = [
-  { file = "readme.md", search = "cuenv = \"[^\"]*\"", replace = "cuenv = \"{{version}}\"" },
-  { file = "CHANGELOG.md", search = "## Unreleased", replace = "## Unreleased\n\n## [{{version}}] - {{date}}" },
-]
-
-# Post-release updates  
-post-release-commit-message = "chore: Start next development iteration"
-post-release-replacements = []
-
-# Workspace member specific configuration
-[[workspace.members]]
-name = "cuenv-core"
-
-[workspace.members.metadata.release]
-# Core library can be published to crates.io
-publish = true
-# Verify before publishing
+# Verify before any release operations
 verify = true
-# Run tests before release
-pre-release-hook = ["cargo", "test", "--all-features"]
 
-[[workspace.members]]
-name = "cuengine" 
+# Pre-release commit message
+pre-release-commit-message = "chore: Release v{{version}}"
 
-[workspace.members.metadata.release]
-# FFI engine can be published to crates.io
+# Crate-specific publishing settings
+[packages.cuenv-workspaces]
 publish = true
-# Verify before publishing
-verify = true
-# Run tests before release (skip Go tests in CI)
-pre-release-hook = ["cargo", "test", "--all-features", "--lib"]
 
-[[workspace.members]]
-name = "cuenv-cli"
+[packages.cuenv-core]
+publish = true
 
-[workspace.members.metadata.release]
-# CLI binary is not published to crates.io (distributed via GitHub releases)
+[packages.cuengine]
+publish = true
+
+[packages.cuenv-cli]
+publish = true
+
+[packages.schema-validator]
 publish = false
-# Verify builds work
-verify = true
-# Build and test before release
-pre-release-hook = ["cargo", "build", "--release", "--all-features"]
-
-# Version dependency update rules
-[workspace.dependencies]
-# Update workspace dependencies automatically
-cuenv-core.version = "workspace"
-cuengine.version = "workspace"
-
-# Shared release settings
-[release]
-# Use release-please for changelog and versioning
-tag-message = "chore: Release v{{version}}"
-pre-release-hook = [
-    # Run full test suite
-    "cargo", "test", "--workspace", "--all-features",
-    # Run security audit  
-    "cargo", "audit",
-    # Check for banned/denied dependencies
-    "cargo", "deny", "check",
-    # Ensure formatting is correct
-    "cargo", "fmt", "--check",
-    # Ensure no clippy warnings
-    "cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings",
-]

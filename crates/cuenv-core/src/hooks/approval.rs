@@ -336,11 +336,11 @@ pub fn compute_approval_hash(config: &Value) -> String {
 
 /// Extract only hooks (onEnter/onExit) from config for approval hashing
 fn extract_hooks_for_hash(config: &Value) -> Value {
-    if let Some(obj) = config.as_object() {
-        if let Some(hooks) = obj.get("hooks") {
-            // Return a normalized structure with only hooks
-            return serde_json::json!({ "hooks": hooks });
-        }
+    if let Some(obj) = config.as_object()
+        && let Some(hooks) = obj.get("hooks")
+    {
+        // Return a normalized structure with only hooks
+        return serde_json::json!({ "hooks": hooks });
     }
     // No hooks = empty object (will hash to consistent value)
     serde_json::json!({})
