@@ -1,11 +1,15 @@
 [package]
 name = "cuenv-cli"
-version = "0.3.1"
+version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+documentation = "https://docs.rs/cuenv-cli"
+keywords.workspace = true
+categories = ["command-line-utilities", "config", "development-tools"]
+readme = "../../readme.md"
 description = "Event-driven CLI with inline TUI for cuenv"
 
 [[bin]]
