@@ -1,11 +1,11 @@
 [package]
 name = "schema-validator"
-version = "0.3.1"
-edition = "2024"
-license = "AGPL-3.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "CLI tool that validates cuenv schemas against JSON Schema"
-repository = "https://github.com/cuenv/cuenv"
-homepage = "https://github.com/cuenv/cuenv"
+repository.workspace = true
+homepage.workspace = true
 readme = "../../readme.md"
 keywords = ["cue", "validation", "schema"]
 categories = ["command-line-utilities", "config"]

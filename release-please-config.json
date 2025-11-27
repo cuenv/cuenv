@@ -1,39 +1,20 @@
 {
-  "release-type": "simple",
+  "release-type": "rust",
+  "bump-minor-pre-major": true,
   "packages": {
-    "crates/cuenv-core": {
+    ".": {
       "release-type": "rust",
-      "component": "cuenv-core",
-      "package-name": "cuenv-core",
-      "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true
-    },
-    "crates/cuengine": {
-      "release-type": "rust",
-      "component": "cuengine",
-      "package-name": "cuengine",
-      "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true
-    },
-    "crates/cuenv-cli": {
-      "release-type": "rust",
-      "component": "cuenv-cli",
-      "package-name": "cuenv-cli",
-      "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true
-    },
-    "crates/cuenv-workspaces": {
-      "release-type": "rust",
-      "component": "cuenv-workspaces",
-      "package-name": "cuenv-workspaces",
-      "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true
+      "component": "cuenv",
+      "package-name": "cuenv",
+      "changelog-path": "CHANGELOG.md"
     }
   },
-  "plugins": ["cargo-workspace"],
+  "plugins": [
+    {
+      "type": "cargo-workspace",
+      "merge": true
+    }
+  ],
   "group-pull-request-title-pattern": "chore: release ${version}",
-  "separate-pull-requests": false,
-  "skip-github-release": false,
-  "draft": false,
-  "prerelease": false
+  "separate-pull-requests": false
 }
