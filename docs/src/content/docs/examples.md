@@ -20,11 +20,11 @@ env: {
     // Basic string values
     DATABASE_URL: "postgres://localhost/mydb"
     APP_NAME:     "my-application"
-    
+
     // Boolean and numeric values
     DEBUG: true
     PORT:  3000
-    
+
     // String interpolation
     BASE_URL:     "https://api.example.com"
     API_ENDPOINT: "\(BASE_URL)/v1"
@@ -62,13 +62,13 @@ tasks: {
         command: "echo"
         args: ["Hello", env.NAME, "!"]
     }
-    
+
     // Task that uses environment variables
     show_env: {
         command: "printenv"
         args: ["NAME"]
     }
-    
+
     // Shell-specific task
     shell_example: {
         shell: schema.#Bash
@@ -149,7 +149,7 @@ tasks: {
             args: ["reset"]
         }
     }
-    
+
     // Another group
     test: {
         unit: {
@@ -227,11 +227,11 @@ schema.#Cuenv
 env: {
     NODE_ENV: "development" | "production" | *"development"
     PORT:     3000
-    
+
     // Database configuration
     DATABASE_URL: "postgresql://localhost:5432/myapp_dev"
     REDIS_URL:    "redis://localhost:6379"
-    
+
     // API keys (use secrets in production)
     JWT_SECRET: "dev-secret-change-in-production"
 }
@@ -242,12 +242,12 @@ tasks: {
         command: "npm"
         args: ["run", "dev"]
     }
-    
+
     build: {
         command: "npm"
         args: ["run", "build"]
     }
-    
+
     // Testing
     test: {
         unit: {
@@ -263,18 +263,18 @@ tasks: {
             args: ["run", "test:coverage"]
         }
     }
-    
+
     // Linting and formatting
     lint: {
         command: "npm"
         args: ["run", "lint"]
     }
-    
+
     format: {
         command: "npm"
         args: ["run", "format"]
     }
-    
+
     // Database operations
     db: {
         migrate: {
@@ -290,7 +290,7 @@ tasks: {
             args: ["prisma", "studio"]
         }
     }
-    
+
     // CI pipeline
     ci: [
         {command: "npm", args: ["ci"]},
@@ -324,24 +324,24 @@ tasks: {
         command: "cargo"
         args: ["build"]
     }
-    
+
     release: {
         command: "cargo"
         args: ["build", "--release"]
     }
-    
+
     // Testing
     test: {
         command: "cargo"
         args: ["test"]
     }
-    
+
     // Code quality
     lint: {
         command: "cargo"
         args: ["clippy", "--", "-D", "warnings"]
     }
-    
+
     format: {
         check: {
             command: "cargo"
@@ -352,13 +352,13 @@ tasks: {
             args: ["fmt"]
         }
     }
-    
+
     // Documentation
     doc: {
         command: "cargo"
         args: ["doc", "--open"]
     }
-    
+
     // CI pipeline
     ci: [
         {command: "cargo", args: ["fmt", "--check"]},
@@ -396,13 +396,13 @@ env: {
     APP_NAME: "my-app"
     PORT:     8080
     DEBUG:    true
-    
+
     // Restricted: only database tasks can access
     DB_PASSWORD: {
         value: schema.#Secret
         policies: [_databasePolicy]
     }
-    
+
     // Restricted: only deploy tasks can access
     DEPLOY_TOKEN: {
         value: schema.#Secret
@@ -416,13 +416,13 @@ tasks: {
         command: "migrate"
         args: ["up"]
     }
-    
+
     // Can access DEPLOY_TOKEN
     deploy: {
         command: "kubectl"
         args: ["apply", "-f", "k8s/"]
     }
-    
+
     // Cannot access restricted variables
     build: {
         command: "npm"
@@ -459,7 +459,7 @@ tasks: {
             {command: "cuenv", args: ["task", "dev"], dir: "services/web"},
         ]
     }
-    
+
     // Build all
     build: {
         all: [
@@ -467,7 +467,7 @@ tasks: {
             {command: "cuenv", args: ["task", "build"], dir: "services/web"},
         ]
     }
-    
+
     // Test all
     test: {
         all: [
@@ -523,10 +523,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install cuenv
         run: cargo install cuenv-cli
-      
+
       - name: Run CI pipeline
         run: cuenv task ci
 ```

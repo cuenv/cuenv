@@ -24,7 +24,7 @@ tasks: {
         description: "Build the application"
         command: "cargo"
         args: ["build", "--release"]
-        
+
         // Dependencies to run before this task
         dependsOn: ["lint", "test"]
 
@@ -68,6 +68,7 @@ cuenv task build
 cuenv analyzes the dependency graph defined by `dependsOn`. Tasks that do not depend on each other will be executed in parallel, maximizing resource usage.
 
 In the example above:
+
 1. `lint` and `test` start in parallel.
 2. `build` waits for both `lint` and `test` to complete successfully.
 3. If either fails, `build` is skipped.
@@ -79,7 +80,7 @@ cuenv supports computation caching. By defining `inputs` and `outputs`, cuenv ca
 - **Inputs**: Files or glob patterns that the task reads. If these haven't changed since the last successful run, the task might be skipped.
 - **Outputs**: Files or directories created by the task.
 
-*(Note: Full caching implementation is currently in development. Check the project status for updates.)*
+_(Note: Full caching implementation is currently in development. Check the project status for updates.)_
 
 ## Environment Injection
 
