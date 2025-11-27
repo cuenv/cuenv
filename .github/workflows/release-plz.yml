@@ -25,10 +25,6 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            experimental-features = nix-command flakes
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
@@ -53,16 +49,14 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            experimental-features = nix-command flakes
 
       - name: Pre-build Go bridge
         run: |
-          cd crates/cuengine
-          nix develop --accept-flake-config --command go build -buildmode=c-archive -o target/release/libcue_bridge.a bridge.go
-          cp libcue_bridge.h target/release/
+          nix build .#cue-bridge --accept-flake-config
+          mkdir -p crates/cuengine/target/release
+          ls -la result/
+          cp -L result/release/libcue_bridge.a crates/cuengine/target/release/
+          cp -L result/release/libcue_bridge.h crates/cuengine/target/release/
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
