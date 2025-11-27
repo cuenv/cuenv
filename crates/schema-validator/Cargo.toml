@@ -9,6 +9,7 @@ homepage.workspace = true
 readme = "../../readme.md"
 keywords = ["cue", "validation", "schema"]
 categories = ["command-line-utilities", "config"]
+publish = false
 
 [dependencies]
 cuenv-core = { workspace = true }
