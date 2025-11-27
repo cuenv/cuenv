@@ -18,8 +18,9 @@ use cuenv_core::{
     shell::Shell,
 };
 use std::collections::HashMap;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
 const PENDING_APPROVAL_ENV: &str = "CUENV_PENDING_APPROVAL_DIR";
@@ -361,6 +362,7 @@ fn collect_hooks_from_ancestors(
 /// and executes hooks in root-to-leaf order.
 ///
 /// This function ensures hooks are running and waits for their completion.
+#[allow(clippy::too_many_lines)]
 pub async fn get_environment_with_hooks(
     directory: &Path,
     config: &Cuenv,
@@ -430,43 +432,75 @@ pub async fn get_environment_with_hooks(
             .await?;
     }
 
-    // Wait for completion (timeout 60s for now, could be configurable)
+    // Wait for completion with progress indicator (timeout 60s)
     debug!("Waiting for hooks to complete for {}", directory.display());
-    match executor
-        .wait_for_completion(directory, &config_hash, Some(60))
-        .await
-    {
-        Ok(state) => {
-            match state.status {
-                ExecutionStatus::Completed => {
-                    // Hooks completed - merge their environment with static env
-                    Ok(collect_all_env_vars(config, &state.environment_vars))
-                }
-                ExecutionStatus::Failed => {
-                    // Hooks failed - log but still try to use any environment variables captured
-                    // This is critical for tools that print exports before crashing
-                    debug!(
-                        "Hooks failed for {}: {:?}. Using captured environment.",
-                        directory.display(),
-                        state.error_message
-                    );
-                    Ok(collect_all_env_vars(config, &state.environment_vars))
-                }
-                ExecutionStatus::Cancelled => {
-                    // Hooks cancelled - use static environment only
-                    debug!("Hooks cancelled for {}", directory.display());
-                    Ok(static_env)
-                }
-                ExecutionStatus::Running => Ok(static_env),
+
+    let poll_interval = Duration::from_millis(500);
+    let start_time = Instant::now();
+    let timeout_seconds = 60u64;
+    let is_tty = std::io::stderr().is_terminal();
+
+    loop {
+        if let Some(state) = executor
+            .get_execution_status_for_instance(directory, &config_hash)
+            .await?
+        {
+            // Show progress indicator on TTY
+            if is_tty && state.status == ExecutionStatus::Running {
+                let elapsed = start_time.elapsed().as_secs();
+                let hook_name = state
+                    .current_hook_display()
+                    .unwrap_or_else(|| "hook".to_string());
+                eprint!("\r\x1b[KWaiting for hook `{hook_name}` to complete... [{elapsed}s]");
+                let _ = std::io::stderr().flush();
             }
+
+            if state.is_complete() {
+                // Clear the progress line
+                if is_tty {
+                    eprint!("\r\x1b[K");
+                    let _ = std::io::stderr().flush();
+                }
+
+                return match state.status {
+                    ExecutionStatus::Completed => {
+                        Ok(collect_all_env_vars(config, &state.environment_vars))
+                    }
+                    ExecutionStatus::Failed => {
+                        debug!(
+                            "Hooks failed for {}: {:?}. Using captured environment.",
+                            directory.display(),
+                            state.error_message
+                        );
+                        Ok(collect_all_env_vars(config, &state.environment_vars))
+                    }
+                    ExecutionStatus::Cancelled => {
+                        debug!("Hooks cancelled for {}", directory.display());
+                        Ok(static_env)
+                    }
+                    ExecutionStatus::Running => Ok(static_env),
+                };
+            }
+        } else {
+            // No state found - this shouldn't happen since we started execution above
+            tracing::warn!("No execution state found, using static environment");
+            return Ok(static_env);
         }
-        Err(e) => {
+
+        // Check timeout
+        if start_time.elapsed().as_secs() >= timeout_seconds {
+            if is_tty {
+                eprint!("\r\x1b[K");
+                let _ = std::io::stderr().flush();
+            }
             tracing::warn!(
-                "Error or timeout waiting for hooks: {}, using static environment",
-                e
+                "Timeout waiting for hooks after {}s, using static environment",
+                timeout_seconds
             );
-            Ok(static_env)
+            return Ok(static_env);
         }
+
+        tokio::time::sleep(poll_interval).await;
     }
 }
 
