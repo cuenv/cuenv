@@ -34,6 +34,10 @@ cargo install cuenv-cli
 
 ### Method 2: From GitHub Releases
 
+:::note
+Pre-built binaries will be available once cuenv reaches stable release. For now, use Method 3 (From Source) or Method 4 (Using Nix).
+:::
+
 Download pre-built binaries from the [releases page](https://github.com/cuenv/cuenv/releases):
 
 **Linux (x86_64)**
@@ -263,22 +267,30 @@ source ~/.cuenv.nu
 
 ## IDE Integration
 
+:::note
+Official IDE extensions are planned for future releases. The instructions below describe planned functionality and third-party CUE support.
+:::
+
 ### Visual Studio Code
 
-Install the cuenv extension:
+:::caution
+The cuenv VS Code extension is not yet available. For CUE syntax support, use the CUE language extension.
+:::
 
 ```bash
-# Install from marketplace
-code --install-extension cuenv.cuenv-vscode
+# For CUE syntax highlighting (available now)
+code --install-extension cuelang.cue
 ```
 
 ### IntelliJ/CLion
 
-Install the cuenv plugin from JetBrains Marketplace.
+:::caution
+The cuenv plugin is not yet available. For CUE support, use the CUE plugin from JetBrains Marketplace.
+:::
 
 ### Vim/Neovim
 
-Add cuenv support with vim-cue:
+Add CUE syntax support with vim-cue:
 
 ```vim
 " Add to your vimrc
