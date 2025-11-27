@@ -1,11 +1,11 @@
 ---
-title: cuenv Documentation
+title: cuenv
 description: A modern application build toolchain with typed environments and CUE-powered task orchestration
 template: splash
 hero:
   title: |
-    cuenv
-  tagline: A modern application build toolchain with typed environments and CUE-powered task orchestration
+    <span class="text-gradient">cuenv</span>
+  tagline: A modern application build toolchain with typed environments and CUE-powered task orchestration.
   image:
     file: ../../assets/houston.webp
   actions:
@@ -20,82 +20,72 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
-import { Badge } from '@astrojs/starlight/components';
 
-<Badge text="Alpha" variant="caution" size="small" />
-
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Build Status](https://github.com/cuenv/cuenv/workflows/CI/badge.svg)](https://github.com/cuenv/cuenv/actions)
-[![Crates.io](https://img.shields.io/crates/v/cuenv)](https://crates.io/crates/cuenv)
-
-:::note[Status]
-Alpha - Core evaluation engine complete, CLI and task runner in active development
-:::
-
-## Overview
-
-cuenv is a next-generation build toolchain that brings type safety and powerful configuration management to application development. Built around CUE's constraint-based type system, cuenv provides a unified solution for environment management, task orchestration, and secure secret handling.
-
-Unlike traditional build tools, cuenv leverages CUE's ability to compose and validate configuration across directory hierarchies, making it particularly well-suited for monorepos and complex project structures. With integrated Nix support, security isolation, and extensible secret management, cuenv provides a complete development environment solution.
-
-**Perfect for:**
-
-- Monorepos requiring consistent environment management
-- Teams needing type-safe configuration  
-- Projects with complex build dependencies
-- Security-conscious development workflows
-
-## Key Features
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| ✅ **CUE Evaluation Engine** | Complete | Fast, reliable CUE evaluation with Rust performance |
-| 🚧 **CLI Interface** | In Development | Task execution and environment management |
-| 🚧 **Typed Environments** | In Development | Compose environment constraints from CUE modules |
-| 🚧 **Task Orchestration** | In Development | Parallel/sequential execution with smart dependencies |
-| 🚧 **Nix Integration** | In Development | Automatic software provisioning via Nix flakes |
-| 🚧 **Secret Management** | In Development | Extensible resolvers for 1Password, AWS, GCP, etc. |
-| 📋 **Security Isolation** | Planned | Linux namespaces, landlock, eBPF integration |
-| 🚧 **Shell Integration** | In Development | Smart hooks for bash, fish, zsh, nushell |
-| 🚧 **Dev Tool Integration** | In Development | Seamless Nix flake and Flox compatibility |
-
-**Legend:** ✅ Complete • 🚧 In Development • 📋 Planned
-
-## Quick Links
+## Why cuenv?
 
 <CardGrid>
-  <Card title="Get Started" icon="rocket">
-    [Quick start guide](/quick-start/) to get up and running in minutes
+  <Card title="Typed Environments" icon="setting">
+    Define your environment with CUE's powerful constraint system. Validate configuration before runtime.
   </Card>
-  <Card title="Installation" icon="add-document">
-    [Installation guide](/installation/) for different platforms
+  <Card title="Task Orchestration" icon="list-format">
+    Execute tasks in parallel with smart dependency management. Define complex workflows with ease.
   </Card>
-  <Card title="Examples" icon="open-book">
-    [Examples and use cases](/examples/) to learn from
+  <Card title="Secure by Default" icon="lock">
+    Integrated secret management and planned security isolation features (namespaces, landlock).
   </Card>
-  <Card title="API Reference" icon="document">
-    [API Documentation](/api-reference/) for developers
+  <Card title="Nix Integration" icon="linux">
+    Seamlessly manage dependencies and tools with Nix flakes (in development).
   </Card>
 </CardGrid>
 
-## Architecture Overview
+## Preview
 
-cuenv consists of three main components:
+Define your environment and tasks in `env.cue`:
 
-**cuengine**
-: The core CUE evaluation engine providing fast, reliable CUE processing with a Rust FFI interface.
+```cue
+package cuenv
 
-**cuenv-core**
-: The foundational library handling configuration management, task orchestration, and environment composition.
+// Typed configuration
+env: {
+    NODE_ENV: "development" | "production"
+    PORT: string | *"3000"
+}
 
-**cuenv-cli**
-: The command-line interface providing user-friendly access to cuenv's capabilities.
+// Task definitions
+tasks: {
+    build: {
+        command: "npm"
+        args: ["run", "build"]
+        dependsOn: ["install"]
+    }
+}
+```
 
-Each component is designed for modularity and can be used independently or as part of the complete cuenv toolchain.
+## Project Status
 
-## Community
+<div class="not-content">
+  <CardGrid stagger>
+    <Card title="Core Engine" icon="approve-check-circle">
+      Complete. Fast CUE evaluation with Rust performance and FFI integration.
+    </Card>
+    <Card title="CLI Interface" icon="warning">
+      Beta. Task execution, environment management, and shell integration are working.
+    </Card>
+    <Card title="Ecosystem" icon="puzzle">
+      In Development. Nix integration, secret management, and advanced security features are coming soon.
+    </Card>
+  </CardGrid>
+</div>
 
-- [GitHub Repository](https://github.com/cuenv/cuenv)
-- [Issue Tracker](https://github.com/cuenv/cuenv/issues)
-- [Discussions](https://github.com/cuenv/cuenv/discussions)
-- [Crates.io Package](https://crates.io/crates/cuenv)
+## Join the Community
+
+cuenv is open source and built for the community.
+
+<CardGrid>
+  <Card title="GitHub" icon="github">
+    [Star us on GitHub](https://github.com/cuenv/cuenv) and contribute to the code.
+  </Card>
+  <Card title="Discussions" icon="discord">
+    Join the conversation in [GitHub Discussions](https://github.com/cuenv/cuenv/discussions).
+  </Card>
+</CardGrid>
