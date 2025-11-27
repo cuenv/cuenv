@@ -33,8 +33,18 @@ jobs:
           CI: "true"
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Verify build output
+        run: |
+          echo "Checking docs/dist contents:"
+          ls -la docs/dist/
+          echo "Checking _worker.js directory:"
+          ls -la docs/dist/_worker.js/ || echo "ERROR: _worker.js directory not found!"
+          test -f docs/dist/_worker.js/index.js || (echo "Build failed - _worker.js/index.js not found" && exit 1)
+
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ./docs
+          packageManager: bun

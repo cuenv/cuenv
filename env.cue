@@ -204,7 +204,7 @@ tasks: {
 				"generated-schemas",
 			]
 			dependsOn: ["generate"]
-			inputs: ["schema", "generated-schemas", "cue.mod"]
+			inputs: list.Concat([#BaseInputs, ["schema", "generated-schemas", "cue.mod"]])
 		}
 
 		ci: [
