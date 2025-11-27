@@ -286,6 +286,38 @@ impl TaskExecutor {
                 .await?;
         }
 
+        // Materialize outputs from inputsFrom tasks
+        if let Some(ref inputs_from) = task.inputs_from {
+            for task_output in inputs_from {
+                let source_task = &task_output.task;
+                let source_cache_key = task_cache::lookup_latest(
+                    &self.config.project_root,
+                    source_task,
+                    self.config.cache_dir.as_deref(),
+                )
+                .ok_or_else(|| {
+                    Error::configuration(format!(
+                        "Task '{}' depends on outputs from '{}' but no cached result found. \
+                         Ensure '{}' runs before this task (add it to dependsOn).",
+                        name, source_task, source_task
+                    ))
+                })?;
+
+                // Materialize outputs into the hermetic directory
+                let materialized = task_cache::materialize_outputs(
+                    &source_cache_key,
+                    &hermetic_root,
+                    self.config.cache_dir.as_deref(),
+                )?;
+                tracing::info!(
+                    task = %name,
+                    source_task = %source_task,
+                    materialized = materialized,
+                    "Materialized outputs from dependent task"
+                );
+            }
+        }
+
         // Initial snapshot to detect undeclared writes
         let initial_hashes: BTreeMap<String, String> = inputs_summary.clone();
 
@@ -542,30 +574,15 @@ impl TaskExecutor {
                 )?;
             }
 
-            // Materialize outputs back to project root
-            for rel in &outputs {
-                let rel_for_project = project_prefix
-                    .as_ref()
-                    .and_then(|prefix| rel.strip_prefix(prefix).ok())
-                    .unwrap_or(rel)
-                    .to_path_buf();
-                let src = hermetic_root.join(rel);
-                let dst = self.config.project_root.join(&rel_for_project);
-                if src.exists() {
-                    if let Some(parent) = dst.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    // We use copy instead of rename to keep hermetic dir intact for snapshots/logs if needed,
-                    // although it's temporary.
-                    if let Err(e) = std::fs::copy(&src, &dst) {
-                        tracing::warn!(
-                            "Failed to copy output {} back to project root: {}",
-                            rel.display(),
-                            e
-                        );
-                    }
-                }
-            }
+            // Record this task's cache key as the latest for this project
+            task_cache::record_latest(
+                &self.config.project_root,
+                name,
+                &cache_key,
+                self.config.cache_dir.as_deref(),
+            )?;
+
+            // Outputs remain in cache only - dependent tasks use inputsFrom to consume them
         } else {
             // Optionally persist logs in a failure/ subdir: not implemented for brevity
         }
@@ -1346,6 +1363,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Hello task".to_string()),
@@ -1374,6 +1392,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Print env task".to_string()),
@@ -1483,6 +1502,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec!["package.json".to_string()],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec!["bun".to_string()],
             description: None,
@@ -1520,6 +1540,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Failing task".to_string()),
@@ -1544,6 +1565,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("First task".to_string()),
@@ -1556,6 +1578,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Second task".to_string()),
@@ -1589,6 +1612,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Malicious task test".to_string()),
@@ -1626,6 +1650,7 @@ mod tests {
                 depends_on: vec![],
                 inputs: vec![],
                 outputs: vec![],
+                inputs_from: None,
                 external_inputs: None,
                 workspaces: vec![],
                 description: Some("Special character test".to_string()),
@@ -1655,6 +1680,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: Some("Environment variable safety test".to_string()),
@@ -1683,6 +1709,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: None,
@@ -1695,6 +1722,7 @@ mod tests {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            inputs_from: None,
             external_inputs: None,
             workspaces: vec![],
             description: None,
