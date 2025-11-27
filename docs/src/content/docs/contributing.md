@@ -205,11 +205,11 @@ For changes to the CUE engine FFI:
 
 ### Documentation Structure
 
-Documentation uses AsciiDoc and Antora:
+Documentation uses [Astro](https://astro.build/) with [Starlight](https://starlight.astro.build/):
 
-- Source files in `docs/modules/ROOT/pages/`
-- Navigation defined in `docs/modules/ROOT/nav.adoc`
-- Build with `npm run docs:build`
+- Source files in `docs/src/content/docs/`
+- Configuration in `docs/astro.config.mjs`
+- Build with `bun run build`
 
 ### Writing Guidelines
 
@@ -221,14 +221,19 @@ Documentation uses AsciiDoc and Antora:
 ### Building Documentation
 
 ```bash
+cd docs
+
 # Install dependencies
-npm install
+bun install
 
-# Build documentation
-npm run docs:build
+# Development server with hot reload
+bun run dev
 
-# Serve locally for preview
-npm run docs:serve
+# Build for production
+bun run build
+
+# Preview production build
+bun run preview
 ```
 
 ## Bug Reports
