@@ -10,6 +10,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # sccache for shared compilation caching across jobs
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+  # Disable incremental compilation (not useful in CI, wastes disk space)
+  CARGO_INCREMENTAL: "0"
+  # Reduce debug info to save disk space
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   build-cuenv:
@@ -36,39 +44,17 @@ jobs:
           path: dist/cuenv
           if-no-files-found: error
 
-  lint-and-format:
-    name: lint-and-format
-    needs: build-cuenv
+  nix-checks:
+    name: Nix checks (fmt, clippy, audit)
     runs-on: ubuntu-latest
-    env:
-      # Ensure CLI fallback uses the CUE binary provided by the dev shell
-      CUENV_CUE_BIN: cue
-      # Run hooks in foreground to avoid issues with detached processes in CI
-      CUENV_FOREGROUND_HOOKS: "1"
     steps:
       - uses: actions/checkout@v5
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v19
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      - name: Download cuenv
-        uses: actions/download-artifact@v4
-        with:
-          name: cuenv-ubuntu-latest
-          path: bin
-
-      - name: Setup cuenv
-        run: |
-          chmod +x bin/cuenv
-          echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Check formatting
-        run: cuenv task fmt.check
-
-      - name: Run clippy
-        run: cuenv task lint
+      - name: Run Nix checks
+        run: nix flake check
 
   test-suite:
     name: test-suite
@@ -104,28 +90,19 @@ jobs:
           chmod +x bin/cuenv
           echo "$(pwd)/bin" >> $GITHUB_PATH
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-registry-
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
 
-      - name: Cache cargo index
+      - name: Cache cargo dependencies
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-git-
-
-      - name: Cache target directory
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ runner.os }}-${{ matrix.rust }}-target-v2-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-${{ matrix.rust }}-target-v2-
-            ${{ runner.os }}-target-v2-
+            cargo-deps-${{ runner.os }}-
 
       - name: Build workspace
         run: cuenv task build
@@ -144,11 +121,7 @@ jobs:
   supply-chain-security:
     name: supply-chain-security
     needs: build-cuenv
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: ubuntu-latest
     env:
       CUENV_FOREGROUND_HOOKS: "1"
     steps:
@@ -162,7 +135,7 @@ jobs:
       - name: Download cuenv
         uses: actions/download-artifact@v4
         with:
-          name: cuenv-${{ matrix.os }}
+          name: cuenv-ubuntu-latest
           path: bin
 
       - name: Setup cuenv
@@ -170,23 +143,34 @@ jobs:
           chmod +x bin/cuenv
           echo "$(pwd)/bin" >> $GITHUB_PATH
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-
+
       - name: Run security audit
         run: cuenv task security.audit
 
       - name: Run dependency checks
         run: cuenv task security.deny
 
-      # Generate SBOM only on Linux (primary platform)
       - name: Generate SBOM
         run: cuenv task sbom
-        if: matrix.os == 'ubuntu-latest'
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sbom-${{ matrix.os }}
+          name: sbom
           path: sbom.json
-        if: matrix.os == 'ubuntu-latest'
 
   coverage:
     name: coverage
@@ -212,6 +196,20 @@ jobs:
         run: |
           chmod +x bin/cuenv
           echo "$(pwd)/bin" >> $GITHUB_PATH
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-
 
       - name: Generate coverage
         run: cuenv task coverage
@@ -250,6 +248,20 @@ jobs:
         run: |
           chmod +x bin/cuenv
           echo "$(pwd)/bin" >> $GITHUB_PATH
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.7
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-deps-${{ runner.os }}-
 
       - name: Run benchmarks
         run: cuenv task bench
