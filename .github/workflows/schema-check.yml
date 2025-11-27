@@ -16,6 +16,11 @@ on:
       - "tests/fixtures/**"
       - ".github/workflows/schema-check.yml"
 
+# Required for Magic Nix Cache to authenticate with GitHub's cache API
+permissions:
+  contents: read
+  id-token: write
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
