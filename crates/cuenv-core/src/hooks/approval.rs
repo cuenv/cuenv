@@ -305,7 +305,7 @@ pub fn check_approval_status(
     directory_path: &Path,
     config: &Value,
 ) -> Result<ApprovalStatus> {
-    let current_hash = compute_config_hash(config);
+    let current_hash = compute_approval_hash(config);
 
     if manager.is_approved(directory_path, &current_hash)? {
         Ok(ApprovalStatus::Approved)
@@ -320,15 +320,30 @@ pub fn check_approval_status(
     }
 }
 
-/// Compute a hash of a configuration
-pub fn compute_config_hash(config: &Value) -> String {
+/// Compute a hash for approval based only on security-sensitive hooks.
+/// Only onEnter and onExit hooks are included since they execute arbitrary commands.
+/// Changes to env vars, tasks, config settings do NOT require re-approval.
+pub fn compute_approval_hash(config: &Value) -> String {
     let mut hasher = Sha256::new();
 
-    // Convert to canonical JSON string for consistent hashing
-    let canonical = serde_json::to_string(config).unwrap_or_default();
+    // Extract only the hooks portion for hashing
+    let hooks_only = extract_hooks_for_hash(config);
+    let canonical = serde_json::to_string(&hooks_only).unwrap_or_default();
     hasher.update(canonical.as_bytes());
 
     format!("{:x}", hasher.finalize())[..16].to_string()
+}
+
+/// Extract only hooks (onEnter/onExit) from config for approval hashing
+fn extract_hooks_for_hash(config: &Value) -> Value {
+    if let Some(obj) = config.as_object() {
+        if let Some(hooks) = obj.get("hooks") {
+            // Return a normalized structure with only hooks
+            return serde_json::json!({ "hooks": hooks });
+        }
+    }
+    // No hooks = empty object (will hash to consistent value)
+    serde_json::json!({})
 }
 
 /// Compute a directory key for the approvals map
@@ -578,29 +593,64 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_config_hash() {
+    fn test_approval_hash_only_includes_hooks() {
+        // Same hooks with different env vars should produce same hash
         let config1 = json!({
-            "env": {"TEST": "value"},
-            "hooks": {"onEnter": [{"command": "echo", "args": ["hello"]}]}
+            "env": {"TEST": "value1"},
+            "hooks": {"onEnter": {"setup": {"command": "echo", "args": ["hello"]}}}
         });
 
         let config2 = json!({
-            "hooks": {"onEnter": [{"command": "echo", "args": ["hello"]}]},
+            "env": {"TEST": "value2", "NEW_VAR": "new"},
+            "hooks": {"onEnter": {"setup": {"command": "echo", "args": ["hello"]}}}
+        });
+
+        let hash1 = compute_approval_hash(&config1);
+        let hash2 = compute_approval_hash(&config2);
+        assert_eq!(hash1, hash2, "Env changes should not affect approval hash");
+
+        // Different hooks should produce different hash
+        let config3 = json!({
+            "env": {"TEST": "value1"},
+            "hooks": {"onEnter": {"setup": {"command": "echo", "args": ["world"]}}}
+        });
+
+        let hash3 = compute_approval_hash(&config3);
+        assert_ne!(hash1, hash3, "Hook changes should affect approval hash");
+    }
+
+    #[test]
+    fn test_approval_hash_ignores_tasks() {
+        let config1 = json!({
+            "tasks": {"build": {"command": "npm", "args": ["run", "build"]}},
+            "hooks": {"onEnter": {"setup": {"command": "echo"}}}
+        });
+
+        let config2 = json!({
+            "tasks": {},
+            "hooks": {"onEnter": {"setup": {"command": "echo"}}}
+        });
+
+        let hash1 = compute_approval_hash(&config1);
+        let hash2 = compute_approval_hash(&config2);
+        assert_eq!(hash1, hash2, "Task changes should not affect approval hash");
+    }
+
+    #[test]
+    fn test_approval_hash_no_hooks() {
+        // Configs without hooks should produce same consistent hash
+        let config1 = json!({
             "env": {"TEST": "value"}
         });
 
-        // Different key order should produce same hash due to canonical JSON
-        let hash1 = compute_config_hash(&config1);
-        let hash2 = compute_config_hash(&config2);
-        assert_eq!(hash1, hash2);
-
-        let config3 = json!({
-            "env": {"TEST": "different_value"},
-            "hooks": {"onEnter": [{"command": "echo", "args": ["hello"]}]}
+        let config2 = json!({
+            "env": {"OTHER": "different"},
+            "tasks": {"test": {}}
         });
 
-        let hash3 = compute_config_hash(&config3);
-        assert_ne!(hash1, hash3);
+        let hash1 = compute_approval_hash(&config1);
+        let hash2 = compute_approval_hash(&config2);
+        assert_eq!(hash1, hash2, "Configs without hooks should have same hash");
     }
 
     #[test]
@@ -665,7 +715,7 @@ mod tests {
         assert!(matches!(status, ApprovalStatus::RequiresApproval { .. }));
 
         // Add approval with correct hash
-        let correct_hash = compute_config_hash(&config);
+        let correct_hash = compute_approval_hash(&config);
         manager.approvals.insert(
             compute_directory_key(directory),
             ApprovalRecord {
