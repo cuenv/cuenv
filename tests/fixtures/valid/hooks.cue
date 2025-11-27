@@ -5,25 +5,27 @@ import "github.com/cuenv/cuenv/schema"
 // Test various hook configurations
 schema.#Cuenv & {
 	hooks: {
-		// Single hook as object
+		// Hooks are maps with string keys
 		onEnter: {
-			command: "source"
-			args: [".env"]
-			source: true
-			dir: "."
-			inputs: [".env", "config.yaml"]
+			"source-env": {
+				command: "source"
+				args: [".env"]
+				source: true
+				dir:    "."
+				inputs: [".env", "config.yaml"]
+			}
 		}
-		
-		// Multiple hooks as array
-		onExit: [
-			{
+
+		// Multiple hooks as named entries in the map
+		onExit: {
+			"cleanup": {
 				command: "cleanup"
 				args: ["--force"]
-			},
-			{
+			}
+			"notify": {
 				command: "notify"
 				args: ["Environment deactivated"]
 			}
-		]
+		}
 	}
 }

@@ -83,7 +83,7 @@ fn get_config_hash(
     } else {
         // If not approved, compute it from current config
         let config_value = evaluate_config_as_value(directory, package)?;
-        Ok(cuenv_core::hooks::approval::compute_config_hash(
+        Ok(cuenv_core::hooks::approval::compute_approval_hash(
             &config_value,
         ))
     }
@@ -192,7 +192,7 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
 
             // Start background execution
             let executor = HookExecutor::with_default_config()?;
-            let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
+            let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config_value);
 
             let result = executor
                 .execute_hooks_background(directory.clone(), config_hash, hooks)
@@ -420,8 +420,8 @@ pub async fn execute_allow(
         cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
     })?;
 
-    // Compute configuration hash
-    let config_hash = cuenv_core::hooks::approval::compute_config_hash(&config_value);
+    // Compute configuration hash (only hooks are included for security purposes)
+    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config_value);
 
     // Initialize approval manager
     let mut approval_manager = ApprovalManager::with_default_file()?;

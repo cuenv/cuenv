@@ -20,19 +20,21 @@ schema.#Cuenv & {
 	}
 	
 	hooks: {
-		onEnter: [
-			{
+		onEnter: {
+			"greet": {
 				command: "echo"
 				args: ["Entering environment"]
-			},
-			{
-				command: "export"
-				source: true
 			}
-		]
+			"setup": {
+				command: "export"
+				source:  true
+			}
+		}
 		onExit: {
-			command: "echo"  
-			args: ["Exiting environment"]
+			"goodbye": {
+				command: "echo"
+				args: ["Exiting environment"]
+			}
 		}
 	}
 	
