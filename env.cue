@@ -83,7 +83,7 @@ tasks: {
 		bdd: {
 			command: "cargo"
 			args: ["test", "--test", "bdd"]
-			inputs:  list.Concat([#BaseInputs, ["tests", "features", "schema", "cue.mod"]])
+			inputs: list.Concat([#BaseInputs, ["tests", "features", "schema", "cue.mod"]])
 			outputs: [".test"]
 		}
 	}
@@ -117,7 +117,7 @@ tasks: {
 	coverage: {
 		command: "cargo"
 		args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-		inputs:  list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
+		inputs: list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		outputs: ["lcov.info"]
 	}
 
@@ -233,25 +233,5 @@ tasks: {
 			]
 			inputs: list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		}
-	}
-
-	// CI task - runs all checks, cuenv handles parallelism based on dependsOn graph
-	ci: {
-		command:     "echo"
-		args:        ["CI complete"]
-		description: "Run all CI checks"
-		dependsOn: [
-			"fmt.check",
-			"lint",
-			"build",
-			"test.unit",
-			"test.doc",
-			"test.bdd",
-			"security.audit",
-			"security.deny",
-			"coverage",
-			"bench",
-			"sbom",
-		]
 	}
 }
