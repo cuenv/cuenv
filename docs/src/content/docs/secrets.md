@@ -47,7 +47,7 @@ env: {
     DATABASE_PASSWORD: schema.#OnePasswordRef & {
         ref: "op://vault-name/item-name/password"
     }
-    
+
     // Another 1Password secret
     API_KEY: schema.#OnePasswordRef & {
         ref: "op://Development/API Keys/production"
@@ -56,11 +56,13 @@ env: {
 ```
 
 **Prerequisites:**
+
 - Install the [1Password CLI](https://developer.1password.com/docs/cli/)
 - Sign in with `op signin` or use a service account
 
 **How it works:**
 The `#OnePasswordRef` expands to:
+
 ```cue
 command: "op"
 args: ["read", "op://vault-name/item-name/password"]
@@ -79,7 +81,7 @@ env: {
         project: "my-gcp-project"
         secret:  "database-password"
     }
-    
+
     // Specific version
     API_KEY: schema.#GcpSecret & {
         project: "my-gcp-project"
@@ -90,12 +92,14 @@ env: {
 ```
 
 **Prerequisites:**
+
 - Install the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install)
 - Authenticate with `gcloud auth login`
 - Ensure the account has `secretmanager.versions.access` permission
 
 **How it works:**
 The `#GcpSecret` expands to:
+
 ```cue
 command: "gcloud"
 args: ["secrets", "versions", "access", "latest", "--secret", "database-password", "--project", "my-gcp-project"]
@@ -221,7 +225,7 @@ env: {
     // Unrestricted variables
     APP_NAME: "my-app"
     PORT:     8080
-    
+
     // Database password - only accessible to database tasks
     DB_PASSWORD: {
         value: schema.#OnePasswordRef & {
@@ -229,7 +233,7 @@ env: {
         }
         policies: [_dbPolicy]
     }
-    
+
     // Deploy token - only accessible to deployment tasks
     KUBE_TOKEN: {
         value: schema.#Secret & {
@@ -246,13 +250,13 @@ tasks: {
         command: "migrate"
         args: ["up"]
     }
-    
+
     // Can access KUBE_TOKEN
     deploy: {
         command: "kubectl"
         args: ["apply", "-f", "k8s/"]
     }
-    
+
     // Cannot access any restricted secrets
     build: {
         command: "cargo"
@@ -354,6 +358,7 @@ error: secret resolution failed
 ```
 
 **Fixes:**
+
 1. Verify the CLI tool is installed and in PATH
 2. Check authentication status (e.g., `op signin`, `gcloud auth login`)
 3. Verify the secret reference/path is correct

@@ -77,7 +77,7 @@ my-project/
             postgresql
             redis
           ];
-          
+
           shellHook = ''
             echo "Development environment loaded"
           '';
@@ -105,7 +105,7 @@ hooks: {
     onEnter: [
         // Load Nix flake environment first
         schema.#NixFlake,
-        
+
         // Then run custom setup
         {
             command: "echo"
@@ -176,7 +176,7 @@ env: {
     // App configuration
     NODE_ENV: "development" | "production"
     PORT:     3000
-    
+
     // Database (Nix provides the postgres binary)
     PGHOST:     "localhost"
     PGPORT:     "5432"
@@ -194,7 +194,7 @@ tasks: {
     // These commands come from Nix
     dev:    {command: "pnpm", args: ["run", "dev"]}
     build:  {command: "pnpm", args: ["run", "build"]}
-    
+
     db: {
         migrate: {command: "psql", args: ["-f", "migrations/up.sql"]}
         reset:   {command: "psql", args: ["-f", "migrations/reset.sql"]}
@@ -216,11 +216,11 @@ Use different Nix outputs for different scenarios:
         default = pkgs.mkShell {
           buildInputs = with pkgs; [ nodejs pnpm ];
         };
-        
+
         ci = pkgs.mkShell {
           buildInputs = with pkgs; [ nodejs pnpm chromium ];
         };
-        
+
         production = pkgs.mkShell {
           buildInputs = with pkgs; [ nodejs ];
         };
@@ -248,6 +248,7 @@ hooks: {
 cuenv works alongside direnv. If you're already using direnv with Nix:
 
 **.envrc:**
+
 ```bash
 use flake
 ```
@@ -307,6 +308,7 @@ nix flake init
 Nix evaluation can be slow on first run. Tips:
 
 1. **Use binary caches** in `flake.nix`:
+
    ```nix
    nixConfig = {
      extra-substituters = ["https://cache.nixos.org"];
@@ -359,11 +361,14 @@ This project uses Nix for tooling. Enter the development shell:
 
 \`\`\`bash
 nix develop
+
 # Or with cuenv (loads automatically)
+
 cd project-dir
 \`\`\`
 
 **Provided tools:**
+
 - Node.js 20.x
 - pnpm
 - PostgreSQL 16

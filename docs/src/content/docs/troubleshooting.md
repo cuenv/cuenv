@@ -95,6 +95,7 @@ error: cannot find package "github.com/myorg/schemas"
 **Fixes:**
 
 1. Ensure the CUE module is properly initialized:
+
    ```bash
    cue mod init github.com/myorg/myproject
    ```
@@ -122,12 +123,14 @@ CUE does not allow circular references. Restructure your configuration to elimin
 If environment hooks don't run when entering a directory:
 
 1. **Verify shell integration is loaded:**
+
    ```bash
    # Check if cuenv functions exist
    type _cuenv_hook 2>/dev/null || echo "Shell integration not loaded"
    ```
 
 2. **Re-source your shell config:**
+
    ```bash
    # Bash
    source ~/.bashrc
@@ -170,11 +173,13 @@ cuenv allow --note "Reviewed on 2025-01-15"
 ### Environment Variables Not Loading
 
 1. **Check if env.cue exists and is valid:**
+
    ```bash
    cuenv env print
    ```
 
 2. **Verify the package name:**
+
    ```bash
    # Default package is 'cuenv'
    cuenv env print --package cuenv
@@ -196,11 +201,13 @@ error: task 'build' not found
 **Fixes:**
 
 1. List available tasks:
+
    ```bash
    cuenv task
    ```
 
 2. Check task is defined in `env.cue`:
+
    ```cue
    tasks: {
        build: {
@@ -257,6 +264,7 @@ The command must be available in your PATH. Options:
 Large CUE configurations can be slow to evaluate. Tips:
 
 1. **Enable caching:**
+
    ```bash
    cuenv task build --cache read-write
    ```
@@ -292,6 +300,7 @@ If you can't resolve an issue:
 1. **Search existing issues:** [GitHub Issues](https://github.com/cuenv/cuenv/issues)
 
 2. **Create a new issue** with:
+
    - cuenv version (`cuenv version`)
    - Operating system and version
    - Complete error message
