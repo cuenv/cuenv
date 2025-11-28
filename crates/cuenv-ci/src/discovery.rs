@@ -15,6 +15,7 @@ pub struct Project {
 /// Returns an error if glob pattern matching fails
 pub fn discover_projects() -> Result<Vec<Project>> {
     let mut projects = Vec::new();
+    let package_re = regex::Regex::new(r"(?m)^package\s+cuenv\s*$").expect("Invalid regex");
 
     // Glob for all env.cue files
     let entries = glob("**/env.cue").map_err(|e| cuenv_core::Error::Configuration {
@@ -24,11 +25,26 @@ pub fn discover_projects() -> Result<Vec<Project>> {
     })?;
 
     for entry in entries.flatten() {
-        let parent_dir = entry.parent().unwrap_or(&entry);
+        // Check if file declares package cuenv
+        if let Ok(content) = std::fs::read_to_string(&entry) {
+            if !package_re.is_match(&content) {
+                continue;
+            }
+        } else {
+            continue;
+        }
+
+        let parent = entry.parent().unwrap_or_else(|| std::path::Path::new("."));
+        // Fix for empty path issue (root directory)
+        let dir_path = if parent.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            parent
+        };
 
         // Load the configuration
         // We assume the package name is "cuenv" based on convention
-        match evaluate_cue_package_typed::<Cuenv>(parent_dir, "cuenv") {
+        match evaluate_cue_package_typed::<Cuenv>(dir_path, "cuenv") {
             Ok(config) => {
                 projects.push(Project {
                     path: entry,
