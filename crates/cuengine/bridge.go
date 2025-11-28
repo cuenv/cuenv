@@ -7,6 +7,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -22,13 +23,14 @@ const BridgeVersion = "bridge/1"
 
 // Bridge error codes - keep in sync with Rust side
 const (
-	ErrorCodeInvalidInput = "INVALID_INPUT"
-	ErrorCodeLoadInstance = "LOAD_INSTANCE"
-	ErrorCodeBuildValue   = "BUILD_VALUE"
-	ErrorCodeOrderedJSON  = "ORDERED_JSON"
-	ErrorCodePanicRecover = "PANIC_RECOVER"
-	ErrorCodeJSONMarshal  = "JSON_MARSHAL_ERROR"
-	ErrorCodeRegistryInit = "REGISTRY_INIT"
+	ErrorCodeInvalidInput  = "INVALID_INPUT"
+	ErrorCodeLoadInstance  = "LOAD_INSTANCE"
+	ErrorCodeBuildValue    = "BUILD_VALUE"
+	ErrorCodeOrderedJSON   = "ORDERED_JSON"
+	ErrorCodePanicRecover  = "PANIC_RECOVER"
+	ErrorCodeJSONMarshal   = "JSON_MARSHAL_ERROR"
+	ErrorCodeRegistryInit  = "REGISTRY_INIT"
+	ErrorCodeDependencyRes = "DEPENDENCY_RESOLUTION"
 )
 
 // BridgeError represents an error in the bridge response
@@ -123,7 +125,11 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 
 	// Explicitly initialize the CUE module registry
 	// This ensures proper access to the module cache and remote registry
-	registry, err := modconfig.NewRegistry(nil)
+	// Use the same configuration as the CUE CLI to ensure proper registry access
+	registry, err := modconfig.NewRegistry(&modconfig.Config{
+		Transport:  http.DefaultTransport,
+		ClientType: "cuenv",
+	})
 	if err != nil {
 		hint := "Check CUE registry configuration (CUE_REGISTRY env var) and network access"
 		result = createErrorResponse(ErrorCodeRegistryInit,
@@ -131,14 +137,15 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 		return result
 	}
 
+	// Ensure the CUE loader can resolve module-relative imports (e.g., schema)
+	moduleRoot := resolveCueModuleRoot(goDir)
+
 	// Create load configuration to load from specific directory
 	cfg := &load.Config{
 		Dir:      goDir,
 		Registry: registry,
 	}
-
-	// Ensure the CUE loader can resolve module-relative imports (e.g., schema)
-	if moduleRoot := resolveCueModuleRoot(goDir); moduleRoot != "" {
+	if moduleRoot != "" {
 		cfg.ModuleRoot = moduleRoot
 	}
 

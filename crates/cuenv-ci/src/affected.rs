@@ -69,16 +69,36 @@ pub fn compute_affected_tasks(
 }
 
 fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
-    let Ok(glob) = glob::Pattern::new(pattern) else {
-        return false;
-    };
+    // If pattern doesn't contain glob characters, treat it as a path prefix
+    // e.g., "crates" should match "crates/foo/bar.rs"
+    let is_simple_path = !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[');
 
     for file in files {
-        // Check if file is inside the project root
-        if let Ok(relative_path) = file.strip_prefix(root)
-            && glob.matches_path(relative_path)
-        {
-            return true;
+        // Get relative path - if root is "." or empty, use file as-is
+        // Otherwise strip the prefix
+        let relative_path = if root == Path::new(".") || root.as_os_str().is_empty() {
+            file.as_path()
+        } else {
+            match file.strip_prefix(root) {
+                Ok(p) => p,
+                Err(_) => continue,
+            }
+        };
+
+        if is_simple_path {
+            // Check if the pattern is a prefix of the file path or exact match
+            let pattern_path = Path::new(pattern);
+            if relative_path.starts_with(pattern_path) || relative_path == pattern_path {
+                return true;
+            }
+        } else {
+            // Use glob matching for patterns with wildcards
+            let Ok(glob) = glob::Pattern::new(pattern) else {
+                continue;
+            };
+            if glob.matches_path(relative_path) {
+                return true;
+            }
         }
     }
 

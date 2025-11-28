@@ -82,12 +82,10 @@ jobs:
 
             let workflows_dir = std::path::Path::new(".github/workflows");
             if !workflows_dir.exists() {
-                std::fs::create_dir_all(workflows_dir).map_err(|e| {
-                    cuenv_core::Error::Io {
-                        source: e,
-                        path: Some(workflows_dir.to_path_buf().into_boxed_path()),
-                        operation: "create directory".to_string(),
-                    }
+                std::fs::create_dir_all(workflows_dir).map_err(|e| cuenv_core::Error::Io {
+                    source: e,
+                    path: Some(workflows_dir.to_path_buf().into_boxed_path()),
+                    operation: "create directory".to_string(),
                 })?;
             }
 
@@ -100,7 +98,10 @@ jobs:
                 }
             })?;
 
-            println!("Generated GitHub Actions workflow at: {}", workflow_path.display());
+            println!(
+                "Generated GitHub Actions workflow at: {}",
+                workflow_path.display()
+            );
             return Ok(());
         }
 
