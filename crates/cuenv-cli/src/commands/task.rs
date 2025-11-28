@@ -386,13 +386,9 @@ fn format_task_results(
                 }
             }
         } else {
-            // When not capturing output, we still want to print cached logs on
-            // cache hits (executor returns them in TaskResult). This ensures CLI
-            // behavior matches a fresh execution where child output is inherited.
-            if !result.stdout.is_empty() {
-                output.push_str(&result.stdout);
-                output.push('\n');
-            }
+            // When not capturing output, logs are streamed directly by the executor
+            // or printed from cache by the executor (if modified).
+            // We do NOT print them again here to avoid duplication.
         }
     }
 
@@ -1189,7 +1185,7 @@ env: {
 
         // capture off: logs passed through + completion line
         let s2 = format_task_results(vec![r_ok], false, "t");
-        assert!(s2.contains("hello"));
+        assert!(!s2.contains("hello")); // Output handled by executor now
         assert!(s2.contains("Task 't' completed"));
 
         // capture on with empty output -> default completion
