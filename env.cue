@@ -7,6 +7,17 @@ import (
 
 schema.#Cuenv
 
+ci: pipelines: [
+	{
+		name: "default"
+		when: {
+			branch: ["main", "master"]
+			defaultBranch: true
+		}
+		tasks: ["fmt.check", "lint", "test.unit", "build"]
+	}
+]
+
 hooks: {
 	onEnter: {
 		nix: schema.#NixFlake

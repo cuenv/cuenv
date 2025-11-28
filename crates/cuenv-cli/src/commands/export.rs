@@ -890,6 +890,7 @@ mod tests {
             env: Some(env_cfg),
             hooks: None,
             workspaces: None,
+            ci: None,
             tasks: HashMap::new(),
         };
 
@@ -918,6 +919,7 @@ mod tests {
             }),
             hooks: None,
             workspaces: None,
+            ci: None,
             tasks: HashMap::new(),
         };
 

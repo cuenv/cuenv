@@ -5,11 +5,12 @@ members = [
     "crates/cuengine",
     "crates/cuenv-cli",
     "crates/cuenv-workspaces",
+    "crates/cuenv-ci",
     "crates/schema-validator",
 ]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.6.0"
 edition = "2024"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
@@ -21,9 +22,10 @@ keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
-cuenv-core = { path = "crates/cuenv-core", version = "0.4.0" }
-cuenv-workspaces = { path = "crates/cuenv-workspaces", version = "0.4.0" }
-cuengine = { path = "crates/cuengine", version = "0.4.0" }
+cuenv-core = { path = "crates/cuenv-core", version = "0.6.0" }
+cuenv-workspaces = { path = "crates/cuenv-workspaces", version = "0.6.0" }
+cuenv-ci = { path = "crates/cuenv-ci", version = "0.6.0" }
+cuengine = { path = "crates/cuengine", version = "0.6.0" }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }

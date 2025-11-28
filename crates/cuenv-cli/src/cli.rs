@@ -381,6 +381,15 @@ pub enum Commands {
         )]
         package: String,
     },
+    #[command(about = "Run CI pipelines")]
+    Ci {
+        #[arg(long, help = "Show what would be executed without running it")]
+        dry_run: bool,
+        #[arg(long, help = "Force a specific pipeline to run")]
+        pipeline: Option<String>,
+        #[arg(long, help = "Generate CI workflow file (e.g., 'github')")]
+        generate: Option<String>,
+    },
 }
 
 /// Output format for status command
@@ -619,6 +628,15 @@ impl From<Commands> for Command {
             },
             Commands::Deny { path, package, all } => Command::Deny { path, package, all },
             Commands::Export { shell, package } => Command::Export { shell, package },
+            Commands::Ci {
+                dry_run,
+                pipeline,
+                generate,
+            } => Command::Ci {
+                dry_run,
+                pipeline,
+                generate,
+            },
         }
     }
 }

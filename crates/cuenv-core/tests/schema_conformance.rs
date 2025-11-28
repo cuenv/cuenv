@@ -168,6 +168,7 @@ fn test_round_trip_serialization() {
             on_exit: None,
         }),
         workspaces: None,
+        ci: None,
         tasks: HashMap::new(),
     };
 
