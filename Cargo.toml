@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/cuenv-events",
     "crates/cuenv-core",
     "crates/cuengine",
     "crates/cuenv-cli",
@@ -22,6 +23,7 @@ keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
+cuenv-events = { path = "crates/cuenv-events", version = "0.6.0" }
 cuenv-core = { path = "crates/cuenv-core", version = "0.6.0" }
 cuenv-workspaces = { path = "crates/cuenv-workspaces", version = "0.6.0" }
 cuenv-ci = { path = "crates/cuenv-ci", version = "0.6.0" }
@@ -35,7 +37,7 @@ libc = "0.2"
 tokio = { version = "1.0", features = ["full"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
 miette = { version = "7.0", features = ["fancy"] }
 uuid = { version = "1.18", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -43,6 +45,9 @@ petgraph = "0.8.3"
 # New dependencies for hook execution system
 dirs = "5.0"
 sha2 = "0.10"
+
+# Terminal detection
+atty = "0.2"
 
 # Workspace detection and parsing dependencies
 toml = "0.8"
@@ -69,3 +74,6 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+# Prevent direct console output - use cuenv_events emit macros instead
+print_stdout = "warn"
+print_stderr = "warn"

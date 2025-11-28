@@ -3,6 +3,8 @@
 //! These tests exercise the complete CLI functionality, including
 //! argument parsing, command execution, and output formatting.
 
+#![allow(clippy::print_stdout)]
+
 use std::process::Command;
 use std::str;
 
