@@ -2,6 +2,7 @@ use crate::commands::Command;
 use clap::{Parser, Subcommand, ValueEnum};
 use miette::{Diagnostic, Report};
 use serde::{Deserialize, Serialize};
+use std::io::{self, Write};
 use thiserror::Error;
 
 /// Exit codes for the CLI application
@@ -133,6 +134,8 @@ pub fn render_error(err: &CliError, json_mode: bool) {
         // Use miette for human-friendly error display
         let report = Report::new(err.clone());
         eprintln!("{report:?}");
+        // Ensure output is flushed before potential process exit
+        let _ = io::stderr().flush();
     }
 }
 
