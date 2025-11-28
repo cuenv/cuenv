@@ -82,8 +82,14 @@ impl CIProvider for GitHubProvider {
         })?;
 
         if !output.status.success() {
-            // Fallback or error? For now, return empty if git fails (maybe not in git repo?)
-            return Ok(vec![]);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(cuenv_core::Error::Configuration {
+                src: "git".to_string(),
+                span: None,
+                message: format!(
+                    "Failed to detect changed files via git diff. If running in GitHub Actions, ensure 'fetch-depth: 0' is set in your workflow.\nGit error: {stderr}"
+                ),
+            });
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
