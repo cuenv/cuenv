@@ -241,6 +241,9 @@ impl TaskExecutor {
                         format!("{} {}", task.command, task.args.join(" "))
                     };
                     eprintln!("> [{name}] {cmd_str} (cached)");
+                    // Print cached logs to stdout/stderr since we are not capturing
+                    print!("{}", stdout);
+                    eprint!("{}", stderr);
                 }
                 return Ok(TaskResult {
                     name: name.to_string(),
