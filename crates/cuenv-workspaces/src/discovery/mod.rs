@@ -27,11 +27,12 @@
 //! ```
 
 use crate::error::{Error, Result};
-use glob::glob;
+use glob::Pattern;
 use serde::de::DeserializeOwned;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
 
 #[cfg(feature = "discovery-cargo")]
 pub mod cargo_toml;
@@ -71,60 +72,83 @@ pub use pnpm_workspace::PnpmWorkspaceDiscovery;
 ///
 /// # Implementation Notes
 ///
-/// Patterns are constructed using Path operations to ensure cross-platform compatibility.
-/// The root path is not escaped for glob metacharacters, so roots containing `[`, `]`, `?`, `*`,
-/// `{`, or `}` may produce unexpected results. For typical workspace roots, this is not an issue.
+/// This implementation uses `walkdir` for efficient traversal and prunes common
+/// heavy directories (`node_modules`, `.git`, `target`, `dist`) to improve performance
 pub fn resolve_glob_patterns(
     root: &Path,
     patterns: &[String],
     exclusions: &[String],
 ) -> Result<Vec<PathBuf>> {
     let mut matched_paths = HashSet::new();
-    let mut excluded_paths = HashSet::new();
 
-    // Separate inclusion and exclusion patterns
+    // Compile patterns
     let mut inclusion_patterns = Vec::new();
-    let mut all_exclusions = exclusions.to_vec();
+    let mut exclusion_patterns = Vec::new();
 
-    for pattern in patterns {
-        if let Some(stripped) = pattern.strip_prefix('!') {
-            all_exclusions.push(stripped.to_string());
-        } else {
-            inclusion_patterns.push(pattern);
+    // Pre-compile default exclusions to avoid traversing heavy directories
+    let default_ignores = ["**/node_modules/**", "**/.git/**", "**/target/**", "**/dist/**"];
+    for ignore in default_ignores {
+        if let Ok(pat) = Pattern::new(ignore) {
+            exclusion_patterns.push(pat);
         }
     }
 
-    // Resolve exclusions first
-    for pattern in &all_exclusions {
-        // Build glob pattern using Path operations for cross-platform compatibility
-        let pattern_path = root.join(pattern);
-        let pattern_str = pattern_path.to_string_lossy();
-
-        let paths = glob(&pattern_str).map_err(|e| Error::InvalidWorkspaceConfig {
-            path: root.to_path_buf(),
-            message: format!("Invalid glob pattern '{pattern}': {e}"),
-        })?;
-
-        for path in paths.flatten() {
-            excluded_paths.insert(path);
+    for p in exclusions {
+        if let Ok(pat) = Pattern::new(p) {
+            exclusion_patterns.push(pat);
         }
     }
 
-    // Resolve inclusions
-    for pattern in inclusion_patterns {
-        // Build glob pattern using Path operations for cross-platform compatibility
-        let pattern_path = root.join(pattern);
-        let pattern_str = pattern_path.to_string_lossy();
-
-        let paths = glob(&pattern_str).map_err(|e| Error::InvalidWorkspaceConfig {
-            path: root.to_path_buf(),
-            message: format!("Invalid glob pattern '{pattern}': {e}"),
-        })?;
-
-        for path in paths.flatten() {
-            if path.is_dir() && !excluded_paths.contains(&path) {
-                matched_paths.insert(path);
+    for p in patterns {
+        if let Some(stripped) = p.strip_prefix('!') {
+            if let Ok(pat) = Pattern::new(stripped) {
+                exclusion_patterns.push(pat);
             }
+        } else if let Ok(pat) = Pattern::new(p) {
+            inclusion_patterns.push(pat);
+        }
+    }
+
+    // Walk the directory tree
+    let walker = WalkDir::new(root).follow_links(false);
+
+    for entry in walker
+        .into_iter()
+        .filter_entry(|e| {
+            let name = e.file_name().to_str().unwrap_or("");
+            // Standard directory ignores to prune search tree
+            if name == "node_modules" || name == ".git" || name == "target" || name == "dist" {
+                return false;
+            }
+            true
+        })
+        .filter_map(std::result::Result::ok)
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+
+        let path = entry.path();
+        // Skip root itself
+        if path == root {
+            continue;
+        }
+
+        // Relativize path for matching
+        let Ok(rel_path) = path.strip_prefix(root) else {
+            continue;
+        };
+
+        // Check exclusions
+        let is_excluded = exclusion_patterns.iter().any(|p| p.matches_path(rel_path));
+        if is_excluded {
+            continue;
+        }
+
+        // Check inclusions
+        let is_included = inclusion_patterns.iter().any(|p| p.matches_path(rel_path));
+        if is_included {
+            matched_paths.insert(path.to_path_buf());
         }
     }
 
