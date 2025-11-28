@@ -69,23 +69,15 @@ pub fn compute_affected_tasks(
 }
 
 fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
-    // Use glob matching.
-    // files are absolute or relative to repo root?
-    // pattern is relative to project root (env.cue dir).
-
-    // We need to normalize.
-    let pattern_path = root.join(pattern);
-    let pattern_str = pattern_path.to_string_lossy();
-
-    let Ok(glob) = glob::Pattern::new(&pattern_str) else {
+    let Ok(glob) = glob::Pattern::new(pattern) else {
         return false;
     };
 
     for file in files {
-        // Assume file is relative to repo root (cwd) or absolute.
-        // If we run from repo root, file is relative to repo root.
-        // We need to match it against pattern relative to repo root.
-        if glob.matches_path(file) {
+        // Check if file is inside the project root
+        if let Ok(relative_path) = file.strip_prefix(root)
+            && glob.matches_path(relative_path)
+        {
             return true;
         }
     }
