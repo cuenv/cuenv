@@ -232,7 +232,7 @@ impl From<std::io::Error> for Error {
         Error::Io {
             source,
             path: None,
-            operation: "unknown".to_string(),
+            operation: "unknown (unmapped error conversion)".to_string(),
         }
     }
 }
