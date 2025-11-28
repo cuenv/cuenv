@@ -19,9 +19,12 @@ cuenv uses an exec-based resolver pattern: instead of storing secrets directly i
 The base `#Secret` type defines the resolver pattern:
 
 ```cue
+package cuenv
+
 import "github.com/cuenv/cuenv/schema"
 
-// Basic secret with exec resolver
+schema.#Cuenv
+
 env: {
     MY_SECRET: schema.#Secret & {
         resolver: "exec"
@@ -40,7 +43,11 @@ When cuenv loads the environment, it executes the command and uses its output as
 cuenv includes a built-in 1Password resolver using the `op` CLI:
 
 ```cue
+package cuenv
+
 import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
 
 env: {
     // Reference a 1Password item
@@ -73,7 +80,11 @@ args: ["read", "op://vault-name/item-name/password"]
 Use GCP Secret Manager for cloud-native secret storage:
 
 ```cue
+package cuenv
+
 import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
 
 env: {
     // GCP secret with default "latest" version
@@ -203,68 +214,6 @@ env: {
 }
 ```
 
-## Access Policies
-
-Control which tasks and commands can access secrets using policies:
-
-```cue
-import "github.com/cuenv/cuenv/schema"
-
-// Define reusable policies
-_dbPolicy: schema.#Policy & {
-    allowTasks: ["migrate", "db_backup", "db_restore"]
-    allowExec: ["psql", "pg_dump", "pg_restore"]
-}
-
-_deployPolicy: schema.#Policy & {
-    allowTasks: ["deploy", "release"]
-    allowExec: ["kubectl", "helm"]
-}
-
-env: {
-    // Unrestricted variables
-    APP_NAME: "my-app"
-    PORT:     8080
-
-    // Database password - only accessible to database tasks
-    DB_PASSWORD: {
-        value: schema.#OnePasswordRef & {
-            ref: "op://Infrastructure/Database/password"
-        }
-        policies: [_dbPolicy]
-    }
-
-    // Deploy token - only accessible to deployment tasks
-    KUBE_TOKEN: {
-        value: schema.#Secret & {
-            command: "kubectl"
-            args: ["config", "view", "--raw", "-o", "jsonpath={.users[0].user.token}"]
-        }
-        policies: [_deployPolicy]
-    }
-}
-
-tasks: {
-    // Can access DB_PASSWORD
-    migrate: {
-        command: "migrate"
-        args: ["up"]
-    }
-
-    // Can access KUBE_TOKEN
-    deploy: {
-        command: "kubectl"
-        args: ["apply", "-f", "k8s/"]
-    }
-
-    // Cannot access any restricted secrets
-    build: {
-        command: "cargo"
-        args: ["build"]
-    }
-}
-```
-
 ## Best Practices
 
 ### 1. Never Commit Secrets
@@ -298,25 +247,7 @@ env: {
 }
 ```
 
-### 3. Scope Secrets with Policies
-
-Apply least-privilege access:
-
-```cue
-// Only allow access where needed
-DB_PASSWORD: {
-    value: schema.#GcpSecret & {
-        project: "prod"
-        secret:  "db-pass"
-    }
-    policies: [{
-        allowTasks: ["migrate"]
-        allowExec: ["psql"]
-    }]
-}
-```
-
-### 4. Create Reusable Definitions
+### 3. Create Reusable Definitions
 
 Define organization-specific secret patterns:
 
@@ -336,7 +267,7 @@ import "github.com/cuenv/cuenv/schema"
 }
 ```
 
-### 5. Test Secret Access
+### 4. Test Secret Access
 
 Verify secrets resolve correctly:
 
@@ -345,7 +276,7 @@ Verify secrets resolve correctly:
 cuenv env print
 
 # Test specific task's access
-cuenv task migrate --dry-run
+cuenv task migrate
 ```
 
 ## Troubleshooting
@@ -363,24 +294,6 @@ error: secret resolution failed
 2. Check authentication status (e.g., `op signin`, `gcloud auth login`)
 3. Verify the secret reference/path is correct
 4. Test the command manually
-
-### Permission Denied
-
-```
-error: access denied
-  Task 'build' cannot access DB_PASSWORD
-```
-
-**Fix:** Add the task to the secret's policy:
-
-```cue
-DB_PASSWORD: {
-    value: schema.#Secret & {...}
-    policies: [{
-        allowTasks: ["migrate", "build"]  // Add 'build'
-    }]
-}
-```
 
 ### Slow Secret Resolution
 

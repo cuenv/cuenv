@@ -211,7 +211,7 @@ error: task 'build' not found
    ```cue
    tasks: {
        build: {
-           command: "npm"
+           command: "bun"
            args: ["run", "build"]
        }
    }
@@ -251,8 +251,8 @@ The command must be available in your PATH. Options:
    ```cue
    tasks: {
        lint: {
-           command: "./node_modules/.bin/eslint"
-           args: ["."]
+           command: "bunx"
+           args: ["eslint", "."]
        }
    }
    ```
@@ -263,10 +263,10 @@ The command must be available in your PATH. Options:
 
 Large CUE configurations can be slow to evaluate. Tips:
 
-1. **Enable caching:**
+1. **Leverage the built-in task cache** by declaring accurate `inputs` and `outputs` for every task. Caching is automatic once those fields exist, and you can inspect the cache key for a task with:
 
    ```bash
-   cuenv task build --cache read-write
+   cuenv task build --show-cache-path
    ```
 
 2. **Split large configurations** into smaller, focused files

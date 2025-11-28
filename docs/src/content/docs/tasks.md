@@ -89,7 +89,7 @@ Tasks inherit the environment variables defined in your `env` block. You can als
 ```cue
 tasks: {
     test: {
-        command: "npm"
+        command: "bun"
         args: ["test"]
         env: {
             // Override or add specific variables
