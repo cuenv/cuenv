@@ -33,6 +33,7 @@ const ERROR_CODE_ORDERED_JSON: &str = "ORDERED_JSON";
 const ERROR_CODE_PANIC_RECOVER: &str = "PANIC_RECOVER";
 const ERROR_CODE_JSON_MARSHAL: &str = "JSON_MARSHAL_ERROR";
 const ERROR_CODE_REGISTRY_INIT: &str = "REGISTRY_INIT";
+const ERROR_CODE_DEPENDENCY_RES: &str = "DEPENDENCY_RESOLUTION";
 
 /// Error response from the Go bridge
 #[derive(Debug, Deserialize, Serialize)]
@@ -373,7 +374,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
             ERROR_CODE_INVALID_INPUT | ERROR_CODE_REGISTRY_INIT => {
                 Err(Error::configuration(full_message))
             }
-            ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE => {
+            ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE | ERROR_CODE_DEPENDENCY_RES => {
                 Err(Error::cue_parse(dir_path, full_message))
             }
             ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => {
@@ -791,6 +792,7 @@ env: {
         assert_eq!(ERROR_CODE_PANIC_RECOVER, "PANIC_RECOVER");
         assert_eq!(ERROR_CODE_JSON_MARSHAL, "JSON_MARSHAL_ERROR");
         assert_eq!(ERROR_CODE_REGISTRY_INIT, "REGISTRY_INIT");
+        assert_eq!(ERROR_CODE_DEPENDENCY_RES, "DEPENDENCY_RESOLUTION");
     }
 
     #[test]
@@ -916,6 +918,11 @@ env: {
                 ERROR_CODE_REGISTRY_INIT,
                 "Registry init test",
                 Some("Check CUE_REGISTRY".to_string()),
+            ),
+            (
+                ERROR_CODE_DEPENDENCY_RES,
+                "Dependency resolution test",
+                Some("Run 'cue mod tidy'".to_string()),
             ),
             ("UNKNOWN_CODE", "Unknown error", None),
         ];
