@@ -45,8 +45,62 @@ pub mod ci_cmd {
         generate: Option<String>,
     ) -> Result<()> {
         if let Some(provider) = generate {
+            if provider != "github" {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Unsupported CI provider: {provider}. Currently only 'github' is supported."
+                )));
+            }
+
             println!("Generating workflow for: {provider}");
-            // TODO: Implement generation logic
+
+            let workflow_content = r#"name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@v22
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Install cuenv
+        run: curl -fsSL https://cuenv.sh/install | sh
+
+      - name: Run CI
+        run: cuenv ci
+"#;
+
+            let workflows_dir = std::path::Path::new(".github/workflows");
+            if !workflows_dir.exists() {
+                std::fs::create_dir_all(workflows_dir).map_err(|e| {
+                    cuenv_core::Error::Io {
+                        source: e,
+                        path: Some(workflows_dir.to_path_buf().into_boxed_path()),
+                        operation: "create directory".to_string(),
+                    }
+                })?;
+            }
+
+            let workflow_path = workflows_dir.join("ci.yml");
+            std::fs::write(&workflow_path, workflow_content).map_err(|e| {
+                cuenv_core::Error::Io {
+                    source: e,
+                    path: Some(workflow_path.clone().into_boxed_path()),
+                    operation: "write workflow file".to_string(),
+                }
+            })?;
+
+            println!("Generated GitHub Actions workflow at: {}", workflow_path.display());
             return Ok(());
         }
 
