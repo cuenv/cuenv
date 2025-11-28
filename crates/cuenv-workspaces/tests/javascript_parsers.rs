@@ -1,5 +1,7 @@
 //! Integration tests for JavaScript lockfile parsers.
 
+#![allow(clippy::print_stderr)]
+
 use cuenv_workspaces::{DependencySource, LockfileParser};
 use std::path::Path;
 

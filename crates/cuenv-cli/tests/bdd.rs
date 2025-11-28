@@ -3,6 +3,8 @@
 //! These tests verify the behavior of the CLI through feature specifications,
 //! particularly focusing on shell integration and hook execution.
 
+#![allow(clippy::print_stderr)]
+
 use cucumber::{World, given, then, when};
 use std::collections::HashMap;
 use std::path::PathBuf;

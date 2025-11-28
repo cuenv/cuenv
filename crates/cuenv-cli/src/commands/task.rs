@@ -1,5 +1,8 @@
 //! Task execution command implementation
 
+// Some functions are reserved for hermetic execution which is temporarily disabled
+#![allow(dead_code)]
+
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
@@ -220,7 +223,7 @@ async fn execute_task_with_strategy_hermetic(
     task_graph: &TaskGraph,
     all_tasks: &Tasks,
     env_base: Option<&cuenv_core::environment::Env>,
-    hook_env: &Environment,
+    _hook_env: &Environment,
     capture_output: bool,
 ) -> Result<Vec<cuenv_core::tasks::TaskResult>> {
     match task_def {
@@ -231,39 +234,20 @@ async fn execute_task_with_strategy_hermetic(
                 .await
         }
         TaskDefinition::Single(t) => {
-            // If workspaces are used, we MUST use the direct executor to access the real project root.
-            // If no hermetic features are used, fall back to original execution.
-            if !t.workspaces.is_empty()
-                || (t.external_inputs.is_none() && t.inputs.is_empty() && t.outputs.is_empty())
-            {
-                if t.depends_on.is_empty() {
-                    executor
-                        .execute_definition(task_name, task_def, all_tasks)
-                        .await
-                } else {
-                    executor.execute_graph(task_graph).await
-                }
+            // NOTE: Hermetic execution is temporarily disabled in the core executor
+            // (see executor.rs TODO comment). We must use non-hermetic execution here
+            // to be consistent, otherwise tasks behave differently when run directly
+            // vs via a group.
+            //
+            // TODO: Re-enable hermetic execution when sandbox properly preserves
+            // monorepo structure and handles all edge cases.
+            let _ = (project_dir, evaluator, env_base, capture_output); // Suppress unused warnings
+            if t.depends_on.is_empty() {
+                executor
+                    .execute_definition(task_name, task_def, all_tasks)
+                    .await
             } else {
-                // Build parallel groups and run each task hermetically
-                let groups = task_graph.get_parallel_groups()?;
-                let mut all_results = Vec::new();
-                for group in groups {
-                    // Run group sequentially for simplicity; can be parallelized if needed
-                    for node in group {
-                        let result = run_task_hermetic(
-                            Path::new(project_dir),
-                            evaluator,
-                            &node.name,
-                            &node.task,
-                            env_base,
-                            hook_env,
-                            capture_output,
-                        )
-                        .await?;
-                        all_results.push(result);
-                    }
-                }
-                Ok(all_results)
+                executor.execute_graph(task_graph).await
             }
         }
     }

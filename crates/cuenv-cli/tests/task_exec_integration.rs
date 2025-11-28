@@ -1,5 +1,7 @@
 //! Integration tests for task and exec commands
 
+#![allow(clippy::print_stderr)]
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;

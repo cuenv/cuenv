@@ -393,6 +393,15 @@ pub enum Commands {
         #[arg(long, help = "Generate CI workflow file (e.g., 'github')")]
         generate: Option<String>,
     },
+    #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
+    Tui,
+    #[command(about = "Start web server for streaming cuenv events")]
+    Web {
+        #[arg(long, short = 'p', help = "Port to listen on", default_value = "3000")]
+        port: u16,
+        #[arg(long, help = "Host to bind to", default_value = "127.0.0.1")]
+        host: String,
+    },
 }
 
 /// Output format for status command
@@ -640,6 +649,8 @@ impl From<Commands> for Command {
                 pipeline,
                 generate,
             },
+            Commands::Tui => Command::Tui,
+            Commands::Web { port, host } => Command::Web { port, host },
         }
     }
 }
