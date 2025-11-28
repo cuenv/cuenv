@@ -664,7 +664,7 @@ mod tests {
         let err: Error = io_err.into();
 
         if let Error::Io { operation, .. } = err {
-            assert_eq!(operation, "unknown");
+            assert_eq!(operation, "unknown (unmapped error conversion)");
         } else {
             panic!("Expected Io error");
         }

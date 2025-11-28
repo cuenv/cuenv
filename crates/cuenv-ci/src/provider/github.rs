@@ -63,15 +63,25 @@ impl CIProvider for GitHubProvider {
         cmd.arg("diff").arg("--name-only");
 
         if let Some(base) = &self.context.base_ref {
-            // PR: origin/base...HEAD
-            // We assume origin is the remote. This might be brittle.
-            cmd.arg(format!("origin/{base}...HEAD"));
+            if !base.is_empty() {
+                // PR: origin/base...HEAD
+                // We assume origin is the remote. This might be brittle.
+                cmd.arg(format!("origin/{base}...HEAD"));
+            } else if let Ok(before_sha) = std::env::var("GITHUB_BEFORE") {
+                // Push event: use GITHUB_BEFORE which contains the SHA before the push
+                // This works even with shallow clones if the commit is fetched
+                cmd.arg(format!("{before_sha}..HEAD"));
+            } else {
+                // Fallback: compare against previous commit
+                // Note: This may fail on shallow clones without fetch-depth: 0
+                cmd.arg("HEAD^..HEAD");
+            }
+        } else if let Ok(before_sha) = std::env::var("GITHUB_BEFORE") {
+            // Push event: use GITHUB_BEFORE which contains the SHA before the push
+            cmd.arg(format!("{before_sha}..HEAD"));
         } else {
-            // Push: we need before/after from event payload strictly speaking,
-            // but for now let's just look at HEAD^..HEAD or similar if we can't determine range.
-            // Actually, for simple push, usually we want to see what changed in the pushed commits.
-            // GitHub Actions usually does a shallow clone. We need to ensure fetch-depth: 0 is used.
-            // For now, let's default to comparing against previous commit if no base ref.
+            // Fallback: compare against previous commit
+            // Note: This may fail on shallow clones without fetch-depth: 0
             cmd.arg("HEAD^..HEAD");
         }
 

@@ -1,20 +1,8 @@
-package cuenv
+package examples
 
-#Cuenv: {
-    ci?: {
-        pipelines: [...{
-            name: string
-            tasks: [...string]
-        }]
-    }
-    tasks: [string]: {
-        command: string
-        args?: [...string]
-        inputs?: [...string]
-    }
-}
+import "github.com/cuenv/cuenv/schema"
 
-#Cuenv
+schema.#Cuenv
 
 ci: pipelines: [
     {
