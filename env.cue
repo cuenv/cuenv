@@ -14,23 +14,34 @@ ci: pipelines: [
 			branch: ["main", "master"]
 			defaultBranch: true
 		}
-		tasks: ["fmt.check", "lint", "test.unit", "build"]
+		tasks: [
+			"fmt.check",
+			"lint",
+			"test.unit",
+			"test.doc",
+			"test.bdd",
+			"security.audit",
+			"security.deny",
+			"sbom",
+			"build",
+		]
 	},
 	{
-		name: "test"
-		tasks: ["test.unit", "test.doc", "test.bdd"]
-	},
-	{
-		name: "security"
-		tasks: ["security.audit", "security.deny", "sbom"]
-	},
-	{
-		name: "coverage"
-		tasks: ["coverage"]
-	},
-	{
-		name: "benchmarks"
-		tasks: ["bench"]
+		name: "pull-request"
+		when: {
+			pullRequest: true
+		}
+		tasks: [
+			"fmt.check",
+			"lint",
+			"test.unit",
+			"test.doc",
+			"test.bdd",
+			"security.audit",
+			"security.deny",
+			"sbom",
+			"build",
+		]
 	},
 ]
 
