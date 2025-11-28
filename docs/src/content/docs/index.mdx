@@ -6,8 +6,6 @@ hero:
   title: |
     <span class="text-gradient">cuenv</span>
   tagline: A modern application build toolchain with typed environments and CUE-powered task orchestration.
-  image:
-    file: ../../assets/houston.webp
   actions:
     - text: Quick Start
       link: /quick-start/
@@ -30,11 +28,11 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Task Orchestration" icon="list-format">
     Execute tasks in parallel with smart dependency management. Define complex workflows with ease.
   </Card>
-  <Card title="Secure by Default" icon="lock">
-    Integrated secret management and planned security isolation features (namespaces, landlock).
+  <Card title="Secret Management" icon="lock">
+    Exec-based secret resolvers integrate with 1Password, GCP Secret Manager, and any CLI tool.
   </Card>
-  <Card title="Nix Integration" icon="linux">
-    Seamlessly manage dependencies and tools with Nix flakes (in development).
+  <Card title="Nix Integration" icon="open-book">
+    Seamlessly manage dependencies and tools with Nix flakes for reproducible environments.
   </Card>
 </CardGrid>
 
@@ -45,17 +43,21 @@ Define your environment and tasks in `env.cue`:
 ```cue
 package cuenv
 
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
+
 // Typed configuration
 env: {
     NODE_ENV: "development" | "production"
-    PORT: string | *"3000"
+    PORT:     3000
 }
 
 // Task definitions
 tasks: {
     build: {
-        command: "npm"
-        args: ["run", "build"]
+        command:   "bun"
+        args:      ["run", "build"]
         dependsOn: ["install"]
     }
 }

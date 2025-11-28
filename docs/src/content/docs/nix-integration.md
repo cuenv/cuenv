@@ -102,16 +102,10 @@ env: {
 }
 
 hooks: {
-    onEnter: [
-        // Load Nix flake environment first
-        schema.#NixFlake,
-
-        // Then run custom setup
-        {
-            command: "echo"
-            args: ["Project environment ready!"]
-        }
-    ]
+    onEnter: {
+        // Load Nix flake environment
+        nix: schema.#NixFlake
+    }
 }
 
 tasks: {
@@ -130,9 +124,9 @@ cuenv provides a built-in `#NixFlake` hook type that loads your Nix development 
 import "github.com/cuenv/cuenv/schema"
 
 hooks: {
-    onEnter: [
-        schema.#NixFlake
-    ]
+    onEnter: {
+        nix: schema.#NixFlake
+    }
 }
 ```
 
@@ -184,10 +178,10 @@ env: {
 }
 
 hooks: {
-    onEnter: [
-        // Nix provides: node, pnpm, psql, redis-cli, etc.
-        schema.#NixFlake,
-    ]
+    onEnter: {
+        // Nix provides: bun, psql, redis-cli, etc.
+        nix: schema.#NixFlake
+    }
 }
 
 tasks: {
@@ -214,32 +208,18 @@ Use different Nix outputs for different scenarios:
     {
       devShells = {
         default = pkgs.mkShell {
-          buildInputs = with pkgs; [ nodejs pnpm ];
+          buildInputs = with pkgs; [ bun ];
         };
 
         ci = pkgs.mkShell {
-          buildInputs = with pkgs; [ nodejs pnpm chromium ];
+          buildInputs = with pkgs; [ bun chromium ];
         };
 
         production = pkgs.mkShell {
-          buildInputs = with pkgs; [ nodejs ];
+          buildInputs = with pkgs; [ bun ];
         };
       };
     };
-}
-```
-
-### Preloading (Performance)
-
-For faster shell startup, cuenv can preload Nix environments in the background:
-
-```cue
-hooks: {
-    onEnter: [
-        schema.#NixFlake & {
-            preload: true  // Cache environment for faster loads
-        }
-    ]
 }
 ```
 
@@ -269,7 +249,7 @@ env: {
 }
 
 tasks: {
-    dev: {command: "npm", args: ["run", "dev"]}
+    dev: {command: "bun", args: ["run", "dev"]}
 }
 ```
 
@@ -369,8 +349,7 @@ cd project-dir
 
 **Provided tools:**
 
-- Node.js 20.x
-- pnpm
+- Bun
 - PostgreSQL 16
 - Redis 7
 ```

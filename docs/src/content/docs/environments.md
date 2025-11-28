@@ -69,7 +69,7 @@ You can load the environment variables into your shell or execute commands with 
 Run a command with the validated environment:
 
 ```bash
-cuenv exec -- npm start
+cuenv exec -- bun start
 ```
 
 This will:
@@ -96,6 +96,4 @@ If any constraint fails (e.g., a required string is missing, or a value doesn't 
 
 ## Secret Management
 
-For sensitive values, use secret references instead of hardcoding them.
-
-_(Secret management documentation is coming soon)_
+For sensitive values, use secret references instead of hardcoding them. The [secret management guide](/secrets/) walks through the built-in resolvers and patterns.
