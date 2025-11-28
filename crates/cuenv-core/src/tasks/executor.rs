@@ -369,7 +369,11 @@ impl TaskExecutor {
         } else {
             hermetic_root.clone()
         };
-        let _ = std::fs::create_dir_all(&workdir);
+        std::fs::create_dir_all(&workdir).map_err(|e| Error::Io {
+            source: e,
+            path: Some(workdir.clone().into()),
+            operation: "create_dir_all".into(),
+        })?;
         cmd.current_dir(&workdir);
         // Set environment variables (resolved + system), set CWD
         let env_vars = self.config.environment.merge_with_system();
@@ -480,7 +484,11 @@ impl TaskExecutor {
         if outputs_stage.exists() {
             let _ = std::fs::remove_dir_all(&outputs_stage);
         }
-        std::fs::create_dir_all(&outputs_stage).ok();
+        std::fs::create_dir_all(&outputs_stage).map_err(|e| Error::Io {
+            source: e,
+            path: Some(outputs_stage.clone().into()),
+            operation: "create_dir_all".into(),
+        })?;
 
         for rel in &outputs {
             let rel_for_project = project_prefix
@@ -496,9 +504,17 @@ impl TaskExecutor {
                 if meta.is_file() {
                     let dst = outputs_stage.join(&rel_for_project);
                     if let Some(parent) = dst.parent() {
-                        let _ = std::fs::create_dir_all(parent);
+                        std::fs::create_dir_all(parent).map_err(|e| Error::Io {
+                            source: e,
+                            path: Some(parent.into()),
+                            operation: "create_dir_all".into(),
+                        })?;
                     }
-                    let _ = std::fs::copy(&src, &dst);
+                    std::fs::copy(&src, &dst).map_err(|e| Error::Io {
+                        source: e,
+                        path: Some(dst.into()),
+                        operation: "copy".into(),
+                    })?;
                     let (sha, _size) = crate::tasks::io::sha256_file(&src).unwrap_or_default();
                     output_index.push(task_cache::OutputIndexEntry {
                         rel_path: rel_for_project.to_string_lossy().to_string(),
