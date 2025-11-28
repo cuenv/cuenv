@@ -121,6 +121,62 @@ cuenv shell init <SHELL>
 
 - `<SHELL>`: Shell type (fish, bash, zsh).
 
+#### `cuenv env status`
+
+Show hook execution status.
+
+```bash
+cuenv env status [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `--wait`: Wait for hooks to complete before returning.
+- `--timeout <SECONDS>`: Timeout in seconds for waiting. Default: `300`
+- `--output-format <FORMAT>`: Output format (text, short, starship). Default: `text`
+
+#### `cuenv env inspect`
+
+Inspect cached hook state for the current config.
+
+```bash
+cuenv env inspect [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+
+### `cuenv ci`
+
+Run CI pipelines defined in your CUE configuration.
+
+```bash
+cuenv ci [OPTIONS]
+```
+
+**Options:**
+
+- `--dry-run`: Show what would be executed without running it.
+- `--pipeline <NAME>`: Force a specific pipeline to run.
+- `--generate <PROVIDER>`: Generate CI workflow file (currently only `github` is supported).
+
+**Example:**
+
+```bash
+# Run CI pipeline
+cuenv ci
+
+# See what would run without executing
+cuenv ci --dry-run
+
+# Generate GitHub Actions workflow
+cuenv ci --generate github
+```
+
 ### Security Commands
 
 #### `cuenv allow`

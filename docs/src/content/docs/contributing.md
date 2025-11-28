@@ -104,27 +104,33 @@ git push origin feature/my-new-feature
 - Write unit tests for all public functions
 
 ````rust
-/// Evaluates a CUE expression and returns the result.
+use cuengine::CueEvaluator;
+use cuenv_core::manifest::Cuenv;
+use std::path::Path;
+
+/// Evaluates the `cuenv` package inside `dir` and returns the typed manifest.
 ///
 /// # Arguments
 ///
-/// * `input` - The CUE expression to evaluate
-/// * `options` - Configuration options for evaluation
+/// * `dir` - Directory containing your `env.cue`
 ///
-/// # Returns
+/// # Errors
 ///
-/// Returns the evaluated result as JSON or an error
+/// Returns any evaluation or deserialization error emitted by the Go bridge.
 ///
 /// # Examples
 ///
 /// ```rust
-/// use cuengine::{evaluate_cue, EvaluationOptions};
-///
-/// let result = evaluate_cue("{ name: \"test\" }", &EvaluationOptions::default())?;
-/// assert_eq!(result["name"], "test");
+/// # use cuengine::CueEvaluator;
+/// # use std::path::Path;
+/// let evaluator = CueEvaluator::builder().build()?;
+/// let json = evaluator.evaluate(Path::new("./config"), "cuenv")?;
+/// assert!(json.contains("env"));
+/// # Ok::<_, cuenv_core::Error>(())
 /// ```
-pub fn evaluate_cue(input: &str, options: &EvaluationOptions) -> Result<Value, CueError> {
-    // Implementation
+pub fn load_manifest(dir: &Path) -> cuenv_core::Result<Cuenv> {
+    let evaluator = CueEvaluator::builder().build()?;
+    evaluator.evaluate_typed(dir, "cuenv")
 }
 ````
 
@@ -151,19 +157,14 @@ Write comprehensive tests using Rust's built-in test framework:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuengine::CueEvaluator;
+    use std::path::Path;
 
     #[test]
-    fn test_basic_evaluation() {
-        let input = "{ value: 42 }";
-        let result = evaluate_cue(input, &EvaluationOptions::default()).unwrap();
-        assert_eq!(result["value"], 42);
-    }
-
-    #[test]
-    fn test_error_handling() {
-        let input = "{ invalid syntax";
-        let result = evaluate_cue(input, &EvaluationOptions::default());
-        assert!(result.is_err());
+    fn evaluator_runs() {
+        let evaluator = CueEvaluator::builder().no_retry().build().unwrap();
+        let result = evaluator.evaluate(Path::new("."), "cuenv");
+        assert!(result.is_ok());
     }
 }
 ```
@@ -196,8 +197,8 @@ When adding new features:
 
 For changes to the CUE engine FFI:
 
-1. **Go Side**: Update `cue-engine/bridge.go`
-2. **Rust Side**: Update `cuengine/src/ffi.rs`
+1. **Go Side**: Update `crates/cuengine/bridge.go`
+2. **Rust Side**: Update `crates/cuengine/src/lib.rs`
 3. **Test Both**: Ensure both Go and Rust tests pass
 4. **Memory Safety**: Verify proper memory management
 
@@ -276,7 +277,7 @@ CUE evaluation fails with circular reference error
    ```
 ````
 
-2. Run `cuenv validate config.cue`
+2. Run `cuenv env print`
 
 ## Expected Behavior
 

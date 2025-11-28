@@ -9,30 +9,29 @@ Learn how to configure cuenv for your projects using CUE's powerful constraint-b
 
 cuenv uses CUE files for configuration, following a hierarchical structure that allows for composition and inheritance.
 
-### Default Configuration Files
+### Configuration Layout
 
-cuenv looks for configuration in the following order:
+cuenv evaluates the CUE package you point it at (by default the `cuenv` package in the current directory). Every `.cue` file that belongs to that package participates automatically—there is no fixed file ordering or special filename.
 
-1. `cuenv.cue` - Project-specific configuration
-2. `env.cue` - Environment definitions
-3. `tasks.cue` - Task definitions
-4. `.cuenv/` directory - Modular configurations
+Common organization patterns include:
+
+- Keeping an `env.cue` entry point that imports `schema.#Cuenv`
+- Splitting large sections into files such as `tasks.cue` or directories like `.cuenv/`
+- Importing shared packages from elsewhere in your CUE module (for example `import "github.com/myorg/common"`)
 
 ### Basic Structure
 
 ```cue
 package cuenv
 
-// Project metadata
-project: {
-    name:    "my-project"
-    version: "1.0.0"
-}
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
 
 // Environment variables
 env: {
-    NODE_ENV: "development" | "production"
-    PORT:     string | *"8080"
+    NODE_ENV:  "development" | "production"
+    PORT:      8080
     LOG_LEVEL: "info"
 }
 
@@ -40,14 +39,14 @@ env: {
 tasks: {
     build: {
         description: "Build the project"
-        command:     "npm"
+        command:     "bun"
         args:        ["run", "build"]
         dependsOn:   ["install"]
     }
 
     install: {
         description: "Install dependencies"
-        command:     "npm"
+        command:     "bun"
         args:        ["install"]
     }
 }
@@ -263,55 +262,36 @@ Add custom validation constraints:
 
 ### Secret References
 
-Reference external secrets in configuration:
+cuenv uses exec-based secret resolvers. Reference external secrets using the built-in types:
 
 ```cue
-environment: {
-    // Direct secret reference
-    DATABASE_PASSWORD: {
-        secret: "database-password"
-        key:    "password"
-        provider: "1password"  // or "aws-ssm", "gcp-secret-manager"
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
+
+env: {
+    // 1Password secret reference
+    DATABASE_PASSWORD: schema.#OnePasswordRef & {
+        ref: "op://vault-name/item-name/password"
     }
 
-    // Inline secret with templating
-    CONNECTION_STRING: "postgresql://user:${secrets.db.password}@localhost/myapp"
-}
+    // GCP Secret Manager
+    API_KEY: schema.#GcpSecret & {
+        project: "my-gcp-project"
+        secret:  "api-key"
+    }
 
-// Secret definitions
-secrets: {
-    db: {
-        password: {
-            provider: "1password"
-            vault:    "Development"
-            item:     "Database Credentials"
-            field:    "password"
-        }
+    // Custom exec-based resolver
+    CUSTOM_SECRET: schema.#Secret & {
+        command: "my-secret-tool"
+        args:    ["get", "my-secret"]
     }
 }
 ```
 
-### Secret Providers
-
-Configure different secret providers:
-
-```cue
-secretProviders: {
-    "1password": {
-        account: "my-team"
-        serviceAccountToken: "$OP_SERVICE_ACCOUNT_TOKEN"
-    }
-
-    "aws-ssm": {
-        region: "us-east-1"
-        prefix: "/myapp/"
-    }
-
-    "gcp-secret-manager": {
-        project: "my-project-123"
-    }
-}
-```
+See the [Secrets documentation](/secrets/) for more details on secret providers.
 
 ## Advanced Features
 

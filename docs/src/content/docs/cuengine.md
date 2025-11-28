@@ -34,140 +34,73 @@ Handles serialization/deserialization between Rust and Go data structures.
 
 ## API Reference
 
-### Core Functions
+### CueEvaluator
 
-#### `evaluate_cue`
-
-Evaluates a CUE expression and returns the result.
+`CueEvaluator` is the high-level interface for evaluating CUE packages. Build it via the fluent builder and call `evaluate` or `evaluate_typed`:
 
 ```rust
-pub fn evaluate_cue(
-    input: &str,
-    options: &EvaluationOptions,
-) -> Result<serde_json::Value, CueError>
+use cuengine::CueEvaluator;
+use cuenv_core::manifest::Cuenv;
+use std::path::Path;
+
+let evaluator = CueEvaluator::builder()
+    .max_output_size(10 * 1024 * 1024)
+    .no_retry()
+    .build()?;
+
+let manifest: Cuenv = evaluator.evaluate_typed(Path::new("./project"), "cuenv")?;
 ```
 
-**Parameters:**
+**Common methods**
 
-- `input`: The CUE expression to evaluate
-- `options`: Evaluation configuration options
+| Method                                                | Description                                                       |
+| ----------------------------------------------------- | ----------------------------------------------------------------- |
+| `builder()`                                           | Returns a `CueEvaluatorBuilder` with sane defaults                |
+| `evaluate(&self, dir: &Path, package: &str)`          | Returns the raw JSON string emitted by the Go bridge              |
+| `evaluate_typed<T>(&self, dir: &Path, package: &str)` | Deserializes the JSON into any `serde::de::DeserializeOwned` type |
+| `clear_cache()`                                       | Flushes the in-memory evaluation cache                            |
 
-**Returns:**
+**Builder options**
 
-- `Ok(Value)`: The evaluated result as JSON
-- `Err(CueError)`: Evaluation error with details
+| Method                         | Description                                                 |
+| ------------------------------ | ----------------------------------------------------------- |
+| `max_path_length(len)`         | Clamp accepted directory path length                        |
+| `max_package_name_length(len)` | Restrict package name length                                |
+| `max_output_size(bytes)`       | Reject bridge responses larger than `bytes`                 |
+| `retry_config(RetryConfig)`    | Customize retry/backoff behavior                            |
+| `no_retry()`                   | Disable retries                                             |
+| `cache_capacity(entries)`      | Number of cached evaluations to keep (`0` disables caching) |
+| `cache_ttl(duration)`          | Expiration for cached evaluations                           |
+| `build()`                      | Produce a `CueEvaluator`                                    |
 
-**Example:**
+### Free functions
+
+The crate also exposes thin wrappers when you do not need a reusable evaluator:
+
+- `evaluate_cue_package(path, package)` → `Result<String>`
+- `evaluate_cue_package_typed::<T>(path, package)` → `Result<T>`
+- `get_bridge_version()` → `Result<String>`
+
+### RetryConfig
 
 ```rust
-use cuengine::{evaluate_cue, EvaluationOptions};
+use cuengine::RetryConfig;
+use std::time::Duration;
 
-let input = r#"
-    name: "example"
-    version: "1.0.0"
-    environment: {
-        NODE_ENV: "production"
-        PORT: 8080
-    }
-"#;
-
-let options = EvaluationOptions::default();
-let result = evaluate_cue(input, &options)?;
-println!("{}", serde_json::to_string_pretty(&result)?);
+let retry = RetryConfig {
+    max_attempts: 4,
+    initial_delay: Duration::from_millis(50),
+    max_delay: Duration::from_secs(5),
+    exponential_base: 2.0,
+};
 ```
 
-#### `validate_cue`
-
-Validates CUE configuration against constraints.
-
-```rust
-pub fn validate_cue(
-    input: &str,
-    schema: Option<&str>,
-) -> Result<ValidationResult, CueError>
-```
-
-**Parameters:**
-
-- `input`: The CUE configuration to validate
-- `schema`: Optional schema for validation
-
-**Returns:**
-
-- `Ok(ValidationResult)`: Validation results and any issues
-- `Err(CueError)`: Validation error
-
-#### `get_bridge_version`
-
-Returns version information for compatibility checking.
-
-```rust
-pub fn get_bridge_version() -> Result<BridgeVersion, CueError>
-```
-
-**Returns:**
-
-- Bridge version information including Rust and Go component versions
-
-### Configuration Options
-
-#### `EvaluationOptions`
-
-```rust
-#[derive(Debug, Clone, Default)]
-pub struct EvaluationOptions {
-    /// Include concrete values only
-    pub concrete: bool,
-    /// Maximum evaluation depth
-    pub max_depth: Option<u32>,
-    /// Enable strict mode
-    pub strict: bool,
-    /// Include hidden fields
-    pub show_hidden: bool,
-}
-```
-
-#### `ValidationResult`
-
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ValidationResult {
-    /// Whether validation passed
-    pub valid: bool,
-    /// List of validation errors
-    pub errors: Vec<ValidationError>,
-    /// List of warnings
-    pub warnings: Vec<String>,
-}
-```
-
-### Error Handling
-
-The engine provides structured error types:
-
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum CueError {
-    #[error("Evaluation failed: {message}")]
-    EvaluationError {
-        message: String,
-        code: i32,
-        position: Option<Position>,
-    },
-
-    #[error("Validation failed: {message}")]
-    ValidationError {
-        message: String,
-        errors: Vec<ValidationError>,
-    },
-
-    #[error("FFI error: {message}")]
-    FfiError { message: String },
-
-    #[error("Serialization error: {0}")]
-    SerializationError(#[from] serde_json::Error),
-}
-```
+| Field              | Description                                       |
+| ------------------ | ------------------------------------------------- |
+| `max_attempts`     | Maximum retry attempts before surfacing the error |
+| `initial_delay`    | Delay before the first retry                      |
+| `max_delay`        | Ceiling applied to the exponential backoff        |
+| `exponential_base` | Multiplier for each successive delay              |
 
 ## Performance Characteristics
 
@@ -196,22 +129,14 @@ The CUE Engine is optimized for:
 ### Basic Usage
 
 ```rust
-use cuengine::{CueEngine, EvaluationOptions};
+use cuengine::CueEvaluator;
+use cuenv_core::Result;
+use std::path::Path;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let engine = CueEngine::new()?;
-
-    let config = r#"
-        database: {
-            host: "localhost"
-            port: 5432
-            name: "myapp"
-        }
-    "#;
-
-    let result = engine.evaluate(config, &EvaluationOptions::default())?;
-    println!("Database config: {}", result["database"]);
-
+fn main() -> Result<()> {
+    let evaluator = CueEvaluator::builder().build()?;
+    let json = evaluator.evaluate(Path::new("./config"), "cuenv")?;
+    println!("Manifest JSON: {json}");
     Ok(())
 }
 ```
@@ -219,28 +144,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Configuration Validation
 
 ```rust
-use cuengine::{validate_cue, ValidationOptions};
+use cuengine::CueEvaluator;
+use cuenv_core::{manifest::Cuenv, Error, Result};
+use std::path::Path;
 
-fn validate_app_config(config: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let schema = r#"
-        #Config: {
-            name: string
-            version: string & =~"^[0-9]+\\.[0-9]+\\.[0-9]+$"
-            environment: {
-                [string]: string | number | bool
-            }
-        }
+fn validate_app_config(dir: &Path) -> Result<()> {
+    let evaluator = CueEvaluator::builder().build()?;
+    let manifest: Cuenv = evaluator.evaluate_typed(dir, "cuenv")?;
 
-        config: #Config
-    "#;
-
-    let result = validate_cue(config, Some(schema))?;
-
-    if !result.valid {
-        for error in result.errors {
-            eprintln!("Validation error: {}", error.message);
-        }
-        return Err("Configuration validation failed".into());
+    if manifest.env.is_none() {
+        return Err(Error::configuration("env block is required".to_string()));
     }
 
     Ok(())
@@ -250,20 +163,20 @@ fn validate_app_config(config: &str) -> Result<(), Box<dyn std::error::Error>> {
 ### Batch Processing
 
 ```rust
-use cuengine::{CueEngine, EvaluationOptions};
+use cuengine::CueEvaluator;
+use cuenv_core::Result;
 use std::path::Path;
 
-fn process_config_directory(path: &Path) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
-    let engine = CueEngine::new()?;
-    let options = EvaluationOptions::default();
+fn process_config_directory(path: &Path) -> Result<Vec<String>> {
+    let evaluator = CueEvaluator::builder().no_retry().build()?;
     let mut results = Vec::new();
 
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         if entry.path().extension().map_or(false, |ext| ext == "cue") {
-            let content = std::fs::read_to_string(entry.path())?;
-            let result = engine.evaluate(&content, &options)?;
-            results.push(result);
+            if let Some(dir) = entry.path().parent() {
+                results.push(evaluator.evaluate(dir, "cuenv")?);
+            }
         }
     }
 
@@ -296,7 +209,7 @@ RUST_LOG=debug cargo test -p cuengine -- --nocapture
 Ensure the Go bridge library is properly built and accessible.
 
 **Memory Leaks**
-Check that all `CueEngine` instances are properly dropped.
+Ensure every `CueEvaluator` (and any cached evaluation result) is dropped when no longer needed.
 
 **Evaluation Timeouts**
 Increase timeout settings for complex CUE expressions.

@@ -38,7 +38,7 @@ env: {
 cuenv env print
 
 # Execute a command with these variables
-cuenv exec -- node server.js
+cuenv exec -- bun server.js
 ```
 
 ## Basic Tasks
@@ -213,9 +213,9 @@ cuenv allow
 # Shell integration will now auto-load when you cd into this directory
 ```
 
-## Node.js/TypeScript Project
+## Bun/TypeScript Project
 
-A complete example for a Node.js project:
+A complete example for a Bun project:
 
 ```cue
 package cuenv
@@ -239,64 +239,64 @@ env: {
 tasks: {
     // Development tasks
     dev: {
-        command: "npm"
+        command: "bun"
         args: ["run", "dev"]
     }
 
     build: {
-        command: "npm"
+        command: "bun"
         args: ["run", "build"]
     }
 
     // Testing
     test: {
         unit: {
-            command: "npm"
+            command: "bun"
             args: ["run", "test:unit"]
         }
         e2e: {
-            command: "npm"
+            command: "bun"
             args: ["run", "test:e2e"]
         }
         coverage: {
-            command: "npm"
+            command: "bun"
             args: ["run", "test:coverage"]
         }
     }
 
     // Linting and formatting
     lint: {
-        command: "npm"
+        command: "bun"
         args: ["run", "lint"]
     }
 
     format: {
-        command: "npm"
+        command: "bun"
         args: ["run", "format"]
     }
 
     // Database operations
     db: {
         migrate: {
-            command: "npx"
+            command: "bunx"
             args: ["prisma", "migrate", "dev"]
         }
         seed: {
-            command: "npx"
+            command: "bunx"
             args: ["prisma", "db", "seed"]
         }
         studio: {
-            command: "npx"
+            command: "bunx"
             args: ["prisma", "studio"]
         }
     }
 
     // CI pipeline
     ci: [
-        {command: "npm", args: ["ci"]},
-        {command: "npm", args: ["run", "lint"]},
-        {command: "npm", args: ["run", "test"]},
-        {command: "npm", args: ["run", "build"]},
+        {command: "bun", args: ["install", "--frozen-lockfile"]},
+        {command: "bun", args: ["run", "lint"]},
+        {command: "bun", args: ["run", "test"]},
+        {command: "bun", args: ["run", "build"]},
     ]
 }
 ```
@@ -425,7 +425,7 @@ tasks: {
 
     // Cannot access restricted variables
     build: {
-        command: "npm"
+        command: "bun"
         args: ["run", "build"]
     }
 }
@@ -455,28 +455,30 @@ tasks: {
     // Run all services
     dev: {
         all: [
-            {command: "cuenv", args: ["task", "dev"], dir: "services/api"},
-            {command: "cuenv", args: ["task", "dev"], dir: "services/web"},
+            {command: "cuenv", args: ["task", "dev", "--path", "services/api"]},
+            {command: "cuenv", args: ["task", "dev", "--path", "services/web"]},
         ]
     }
 
     // Build all
     build: {
         all: [
-            {command: "cuenv", args: ["task", "build"], dir: "services/api"},
-            {command: "cuenv", args: ["task", "build"], dir: "services/web"},
+            {command: "cuenv", args: ["task", "build", "--path", "services/api"]},
+            {command: "cuenv", args: ["task", "build", "--path", "services/web"]},
         ]
     }
 
     // Test all
     test: {
         all: [
-            {command: "cuenv", args: ["task", "test"], dir: "services/api"},
-            {command: "cuenv", args: ["task", "test"], dir: "services/web"},
+            {command: "cuenv", args: ["task", "test", "--path", "services/api"]},
+            {command: "cuenv", args: ["task", "test", "--path", "services/web"]},
         ]
     }
 }
 ```
+
+Each helper entry shells out to the `cuenv` CLI with `--path` so that every service runs its own `env.cue` without relying on a non-existent `dir` field in task definitions.
 
 **`services/api/env.cue`:**
 

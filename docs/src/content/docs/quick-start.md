@@ -56,33 +56,36 @@ cd my-cuenv-project
 ```cue
 package cuenv
 
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
+
 // Define your environment variables
 env: {
     NODE_ENV: "development" | "production"
-    PORT: string | *"3000"
+    PORT:     3000
 }
 
 // Define tasks
 tasks: {
     install: {
         description: "Install dependencies"
-        command: "npm"
-        args: ["install"]
+        command:     "bun"
+        args:        ["install"]
     }
 
     build: {
         description: "Build the application"
-        command: "npm"
-        args: ["run", "build"]
-        dependsOn: ["install"]
+        command:     "bun"
+        args:        ["run", "build"]
+        dependsOn:   ["install"]
     }
 
     dev: {
         description: "Start development server"
-        command: "npm"
-        args: ["run", "dev"]
-        dependsOn: ["install"]
-        // Environment overrides can be handled via cuenv flags or different config structure
+        command:     "bun"
+        args:        ["run", "dev"]
+        dependsOn:   ["install"]
     }
 }
 ```
@@ -105,31 +108,30 @@ cuenv task dev
 
 ### Monorepo Management
 
-cuenv excels at managing complex monorepos with multiple services:
+cuenv supports workspaces for managing complex monorepos. Define workspaces in your configuration:
 
 ```cue
-package env
+package cuenv
 
-// Shared environment
-shared: {
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
+
+// Shared environment variables
+env: {
     LOG_LEVEL: "info"
-    RUST_LOG: "debug"
+    RUST_LOG:  "debug"
 }
 
-// Service-specific configurations
-services: {
+// Workspace configuration (auto-detected from package managers)
+workspaces: {
     api: {
-        environment: shared & {
-            SERVICE_NAME: "api"
-            PORT: "8080"
-        }
+        enabled: true
+        package_manager: "bun"
     }
-
     worker: {
-        environment: shared & {
-            SERVICE_NAME: "worker"
-            QUEUE_URL: "redis://localhost"
-        }
+        enabled: true
+        package_manager: "cargo"
     }
 }
 ```
@@ -139,28 +141,36 @@ services: {
 Automate common development tasks:
 
 ```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
+
 tasks: {
     test: {
         description: "Run all tests"
-        command: "cargo"
-        args: ["test", "--workspace"]
+        command:     "cargo"
+        args:        ["test", "--workspace"]
     }
 
     lint: {
         description: "Run linting"
-        command: "cargo"
-        args: ["clippy", "--", "-D", "warnings"]
+        command:     "cargo"
+        args:        ["clippy", "--", "-D", "warnings"]
     }
 
     format: {
         description: "Format code"
-        command: "cargo"
-        args: ["fmt"]
+        command:     "cargo"
+        args:        ["fmt"]
     }
 
     ci: {
         description: "Run CI pipeline"
-        dependsOn: ["lint", "test", "format"]
+        command:     "echo"
+        args:        ["CI complete"]
+        dependsOn:   ["lint", "test", "format"]
     }
 }
 ```

@@ -7,44 +7,85 @@ This page documents the public APIs of cuenv's Rust crates. For schema definitio
 
 ## cuengine
 
-The CUE evaluation engine crate provides the interface to evaluate CUE configurations.
+The CUE evaluation engine crate provides the interface to evaluate CUE configurations through the Go FFI bridge.
 
 ### CueEvaluatorBuilder
 
-Builder for creating CUE evaluators with configurable options.
+Builder for configuring a `CueEvaluator`. The usual entry point is `CueEvaluator::builder()`, which returns this type.
 
 ```rust
-use cuengine::CueEvaluatorBuilder;
+use cuengine::{CueEvaluator, RetryConfig};
+use cuenv_core::manifest::Cuenv;
+use std::{path::Path, time::Duration};
 
-let evaluator = CueEvaluatorBuilder::new()
-    .directory("./project")
-    .package("cuenv")
+let evaluator = CueEvaluator::builder()
+    .max_output_size(10 * 1024 * 1024)
+    .retry_config(RetryConfig {
+        max_attempts: 5,
+        initial_delay: Duration::from_millis(50),
+        max_delay: Duration::from_secs(2),
+        exponential_base: 1.5,
+    })
     .build()?;
+
+let manifest: Cuenv = evaluator.evaluate_typed(Path::new("./project"), "cuenv")?;
 ```
 
-**Methods:**
+**Builder methods:**
 
-| Method            | Description                                         |
-| ----------------- | --------------------------------------------------- |
-| `new()`           | Create a new builder                                |
-| `directory(path)` | Set the directory containing CUE files              |
-| `package(name)`   | Set the CUE package name to evaluate                |
-| `build()`         | Build the evaluator, returns `Result<CueEvaluator>` |
+| Method                              | Description                                                        |
+| ----------------------------------- | ------------------------------------------------------------------ |
+| `new()` / `CueEvaluator::builder()` | Create a builder with default limits, retry config, and cache size |
+| `max_path_length(len)`              | Clamp the maximum accepted path length for evaluated directories   |
+| `max_package_name_length(len)`      | Limit the package name length validated before evaluation          |
+| `max_output_size(bytes)`            | Bound the JSON payload size returned from the bridge               |
+| `retry_config(RetryConfig)`         | Customize retry behavior (see below)                               |
+| `no_retry()`                        | Disable retries entirely                                           |
+| `cache_capacity(entries)`           | Configure the in-memory evaluation cache (set to `0` to disable)   |
+| `cache_ttl(duration)`               | Set the TTL for cached evaluation results                          |
+| `build()`                           | Create a `CueEvaluator`                                            |
 
 ### CueEvaluator
 
-The main evaluator type for CUE expressions.
+The main type for evaluating CUE packages.
 
 ```rust
-let result = evaluator.evaluate()?;
+use std::path::Path;
+
+let evaluator = CueEvaluator::builder().no_retry().build()?;
+let json = evaluator.evaluate(Path::new("./project"), "cuenv")?;
 ```
 
-**Methods:**
+**Key methods:**
 
-| Method           | Return Type      | Description                             |
-| ---------------- | ---------------- | --------------------------------------- |
-| `evaluate()`     | `Result<Cuenv>`  | Evaluate CUE and return parsed manifest |
-| `evaluate_raw()` | `Result<String>` | Evaluate CUE and return raw JSON        |
+| Method                                                | Description                                                    |
+| ----------------------------------------------------- | -------------------------------------------------------------- |
+| `builder()`                                           | Returns a `CueEvaluatorBuilder`                                |
+| `evaluate(&self, dir: &Path, package: &str)`          | Evaluates the package and returns the raw JSON string from CUE |
+| `evaluate_typed<T>(&self, dir: &Path, package: &str)` | Evaluates the package and deserializes it into `T`             |
+| `clear_cache()`                                       | Drops any cached evaluation results held by this evaluator     |
+
+### `evaluate_cue_package`
+
+The crate also exposes free functions when you don't need a cached evaluator:
+
+```rust
+use cuengine::{evaluate_cue_package, evaluate_cue_package_typed};
+use cuenv_core::manifest::Cuenv;
+use std::path::Path;
+
+let json = evaluate_cue_package(Path::new("./project"), "cuenv")?;
+let manifest: Cuenv = evaluate_cue_package_typed(Path::new("./project"), "cuenv")?;
+```
+
+### `get_bridge_version`
+
+Fetches the Go bridge version string for diagnostics:
+
+```rust
+let version = cuengine::get_bridge_version()?;
+println!("bridge reports {version}");
+```
 
 ### RetryConfig
 
@@ -52,23 +93,24 @@ Configuration for retry behavior on transient failures.
 
 ```rust
 use cuengine::RetryConfig;
+use std::time::Duration;
 
 let config = RetryConfig {
-    max_retries: 3,
-    initial_delay_ms: 100,
-    max_delay_ms: 5000,
-    backoff_factor: 2.0,
+    max_attempts: 4,
+    initial_delay: Duration::from_millis(100),
+    max_delay: Duration::from_secs(5),
+    exponential_base: 2.0,
 };
 ```
 
 **Fields:**
 
-| Field              | Type  | Default | Description                    |
-| ------------------ | ----- | ------- | ------------------------------ |
-| `max_retries`      | `u32` | 3       | Maximum retry attempts         |
-| `initial_delay_ms` | `u64` | 100     | Initial delay between retries  |
-| `max_delay_ms`     | `u64` | 5000    | Maximum delay cap              |
-| `backoff_factor`   | `f64` | 2.0     | Exponential backoff multiplier |
+| Field              | Type       | Default | Description                                 |
+| ------------------ | ---------- | ------- | ------------------------------------------- |
+| `max_attempts`     | `u32`      | `3`     | Maximum retry attempts                      |
+| `initial_delay`    | `Duration` | 100 ms  | Delay before the first retry                |
+| `max_delay`        | `Duration` | 10 s    | Upper bound for the backoff delay           |
+| `exponential_base` | `f32`      | `2.0`   | Multiplier applied to each successive delay |
 
 ## cuenv-core
 
@@ -96,48 +138,74 @@ let manifest: Cuenv = evaluator.evaluate()?;
 
 ### Task Types
 
-#### SingleTask
+#### Task
 
-A single command execution.
+Represents a single executable command pulled from CUE.
 
 ```rust
-use cuenv_core::tasks::SingleTask;
+use cuenv_core::tasks::Task;
+use serde_json::json;
+use std::collections::HashMap;
 
-let task = SingleTask {
-    command: "cargo".to_string(),
-    args: vec!["build".to_string()],
-    env: None,
+let mut env = HashMap::new();
+env.insert("RUST_LOG".into(), json!("info"));
+
+let build = Task {
+    command: "cargo".into(),
+    args: vec!["build".into(), "--release".into()],
     shell: None,
-    depends_on: None,
-    inputs: None,
-    outputs: None,
+    env,
+    depends_on: vec!["lint".into(), "test".into()],
+    inputs: vec!["src".into(), "Cargo.toml".into()],
+    outputs: vec!["target/release/app".into()],
+    inputs_from: None,
+    external_inputs: None,
+    workspaces: vec![],
+    description: Some("Build release binaries".into()),
 };
 ```
 
 **Fields:**
 
-| Field        | Type                             | Description               |
-| ------------ | -------------------------------- | ------------------------- |
-| `command`    | `String`                         | Command to execute        |
-| `args`       | `Vec<String>`                    | Command arguments         |
-| `env`        | `Option<HashMap<String, Value>>` | Task-specific environment |
-| `shell`      | `Option<Shell>`                  | Shell to use              |
-| `depends_on` | `Option<Vec<String>>`            | Task dependencies         |
-| `inputs`     | `Option<Vec<String>>`            | Input file patterns       |
-| `outputs`    | `Option<Vec<String>>`            | Output file patterns      |
+| Field             | Type                                 | Description                                          |
+| ----------------- | ------------------------------------ | ---------------------------------------------------- |
+| `command`         | `String`                             | Executable to run                                    |
+| `args`            | `Vec<String>`                        | Arguments for the command                            |
+| `shell`           | `Option<Shell>`                      | Override shell invocation (defaults to direct exec)  |
+| `env`             | `HashMap<String, serde_json::Value>` | Task-specific environment additions                  |
+| `depends_on`      | `Vec<String>`                        | Other tasks that must finish first                   |
+| `inputs`          | `Vec<String>`                        | Files/globs tracked for hermetic execution           |
+| `outputs`         | `Vec<String>`                        | Declared outputs that become cacheable artifacts     |
+| `inputs_from`     | `Option<Vec<TaskOutput>>`            | Consume outputs from other tasks in the same project |
+| `external_inputs` | `Option<Vec<ExternalInput>>`         | Consume outputs from another project in the repo     |
+| `workspaces`      | `Vec<String>`                        | Workspace names to enable (see schema)               |
+| `description`     | `Option<String>`                     | Human-friendly summary                               |
 
-#### Tasks (enum)
-
-Represents different task structures.
+#### TaskDefinition & TaskGroup
 
 ```rust
-use cuenv_core::tasks::Tasks;
+use cuenv_core::tasks::{TaskDefinition, TaskGroup};
 
-match task {
-    Tasks::Single(single) => { /* SingleTask */ }
-    Tasks::List(list) => { /* Vec<SingleTask> - sequential */ }
-    Tasks::Group(group) => { /* HashMap<String, Tasks> - nested */ }
-}
+let test_task = build.clone(); // assume another Task definition exists
+
+let group = TaskDefinition::Group(TaskGroup::Sequential(vec![
+    TaskDefinition::Single(Box::new(build.clone())),
+    TaskDefinition::Single(Box::new(test_task)),
+]));
+```
+
+- `TaskDefinition::Single(Task)` represents one command.
+- `TaskDefinition::Group(TaskGroup)` represents sequential (`Vec<TaskDefinition>`) or parallel (`HashMap<String, TaskDefinition>`) sub-tasks.
+
+#### Tasks
+
+`Tasks` is the top-level map of task names to their definitions (flattened when parsed from CUE).
+
+```rust
+use cuenv_core::tasks::{TaskDefinition, Tasks};
+
+let mut tasks = Tasks::new();
+tasks.tasks.insert("build".into(), TaskDefinition::Single(Box::new(build)));
 ```
 
 ### Environment
@@ -236,8 +304,11 @@ match shell {
     Shell::Bash => { /* Bash shell */ }
     Shell::Zsh => { /* Zsh shell */ }
     Shell::Fish => { /* Fish shell */ }
-    Shell::Nushell => { /* Nushell */ }
+    Shell::PowerShell => { /* PowerShell */ }
 }
+
+assert!(Shell::Bash.is_supported());
+assert!(!Shell::PowerShell.is_supported());
 ```
 
 ### Error Handling
@@ -303,37 +374,46 @@ let pkg_name = PackageName::try_from("cuenv")?;
 
 ### Cache
 
-#### TaskCache
+#### Task cache helpers
 
-Task output caching.
+The task cache utilities live under `cuenv_core::cache::tasks`.
 
 ```rust
-use cuenv_core::cache::TaskCache;
+use cuenv_core::cache::tasks::{
+    compute_cache_key, lookup, materialize_outputs, CacheKeyEnvelope,
+};
+use std::{collections::BTreeMap, path::Path};
 
-let cache = TaskCache::new()?;
-let key = cache.compute_key(&task, &inputs, &env)?;
+let envelope = CacheKeyEnvelope {
+    inputs: BTreeMap::new(),
+    command: "cargo".into(),
+    args: vec!["build".into()],
+    shell: None,
+    env: BTreeMap::new(),
+    cuenv_version: cuenv_core::VERSION.to_string(),
+    platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+    workspace_lockfile_hashes: None,
+    workspace_package_hashes: None,
+};
 
-if let Some(hit) = cache.get(&key)? {
-    // Use cached result
-} else {
-    // Execute task
-    cache.put(&key, &result)?;
+let (key, _) = compute_cache_key(&envelope)?;
+if let Some(entry) = lookup(&key, None) {
+    println!("cache hit stored at {}", entry.path.display());
+    materialize_outputs(&key, Path::new("artifacts"), None)?;
 }
 ```
+
+Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` are available when integrating custom executors with cuenv's cache layout.
 
 ## CLI Exit Codes
 
 The cuenv CLI uses structured exit codes:
 
-| Code | Name         | Description                             |
-| ---- | ------------ | --------------------------------------- |
-| 0    | Success      | Operation completed successfully        |
-| 1    | GeneralError | Generic error                           |
-| 2    | ConfigError  | Configuration parsing/validation failed |
-| 3    | TaskError    | Task execution failed                   |
-| 4    | NotApproved  | Configuration not approved              |
-| 5    | NotFound     | Requested resource not found            |
-| 64   | UsageError   | Invalid command line usage              |
+| Code | Name        | Description                                                                     |
+| ---- | ----------- | ------------------------------------------------------------------------------- |
+| 0    | Success     | Command completed successfully                                                  |
+| 2    | ConfigError | CLI/configuration error (`CliError::Config`)                                    |
+| 3    | EvalError   | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`) |
 
 ## See Also
 

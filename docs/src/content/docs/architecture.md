@@ -114,7 +114,7 @@ Workspace management for monorepos.
 **Features:**
 
 - Detect and configure workspaces
-- Package manager integration (npm, pnpm, yarn, cargo, bun)
+- Package manager integration (bun, pnpm, yarn, cargo)
 - Workspace-aware task execution
 
 ## FFI Bridge
