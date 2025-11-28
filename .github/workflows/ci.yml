@@ -112,13 +112,9 @@ jobs:
 
   # Linux tests - only waits for Linux build
   test-linux:
-    name: Test (Linux / ${{ matrix.rust }})
+    name: Test (Linux)
     needs: [build-linux]
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rust: [stable, 1.85.0]
 
     steps:
       - uses: actions/checkout@v5
@@ -159,27 +155,14 @@ jobs:
           restore-keys: |
             cargo-deps-${{ runner.os }}-
 
-      - name: Build workspace
-        run: cuenv task build
-
       - name: Run tests
-        run: cuenv task test.unit
-
-      - name: Run doctests
-        run: cuenv task test.doc
-
-      - name: Run BDD tests
-        run: cuenv task test.bdd
+        run: cuenv ci --pipeline test
 
   # macOS tests - only waits for macOS build
   test-macos:
-    name: Test (macOS / ${{ matrix.rust }})
+    name: Test (macOS)
     needs: [build-macos]
     runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        rust: [stable, 1.85.0]
 
     steps:
       - uses: actions/checkout@v5
@@ -220,17 +203,8 @@ jobs:
           restore-keys: |
             cargo-deps-${{ runner.os }}-
 
-      - name: Build workspace
-        run: cuenv task build
-
       - name: Run tests
-        run: cuenv task test.unit
-
-      - name: Run doctests
-        run: cuenv task test.doc
-
-      - name: Run BDD tests
-        run: cuenv task test.bdd
+        run: cuenv ci --pipeline test
 
   supply-chain-security:
     name: Supply Chain Security
@@ -272,14 +246,8 @@ jobs:
           restore-keys: |
             cargo-deps-${{ runner.os }}-
 
-      - name: Run security audit
-        run: cuenv task security.audit
-
-      - name: Run dependency checks
-        run: cuenv task security.deny
-
-      - name: Generate SBOM
-        run: cuenv task sbom
+      - name: Run security pipeline
+        run: cuenv ci --pipeline security
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@v4
@@ -329,7 +297,7 @@ jobs:
             cargo-deps-${{ runner.os }}-
 
       - name: Generate coverage
-        run: cuenv task coverage
+        run: cuenv ci --pipeline coverage
         env:
           ENABLE_LLVM_COV: "1"
 
@@ -382,7 +350,7 @@ jobs:
             cargo-deps-${{ runner.os }}-
 
       - name: Run benchmarks
-        run: cuenv task bench
+        run: cuenv ci --pipeline benchmarks
         continue-on-error: true
 
       - name: Store benchmark result
@@ -391,61 +359,3 @@ jobs:
           name: benchmark-results
           path: target/criterion/
 
-  # Test the cuenv ci command - context-aware pipeline execution
-  cuenv-ci:
-    name: Cuenv CI Pipeline
-    needs: [build-linux]
-    runs-on: ubuntu-latest
-    env:
-      CUENV_FOREGROUND_HOOKS: "1"
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          # Full history needed for git diff to detect changed files
-          fetch-depth: 0
-
-      - name: Set CUENV environment
-        run: |
-          echo "CUENV_CUE_BIN=cue" >> "$GITHUB_ENV"
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v19
-
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v2
-
-      - name: Download cuenv
-        uses: actions/download-artifact@v4
-        with:
-          name: cuenv-linux
-          path: bin
-
-      - name: Setup cuenv
-        run: |
-          chmod +x bin/cuenv
-          echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Cache cargo dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-          key: cargo-deps-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-deps-${{ runner.os }}-
-
-      - name: Run cuenv ci
-        run: cuenv ci
-
-      - name: Upload CI reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: cuenv-ci-reports
-          path: .cuenv/reports/
-          if-no-files-found: ignore
