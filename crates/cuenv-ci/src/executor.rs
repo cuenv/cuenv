@@ -81,10 +81,18 @@ pub async fn run_ci(
         if let Some(ci) = &config.ci {
             let pipeline = ci.pipelines.iter().find(|p| p.name == pipeline_name);
             if let Some(pipeline) = pipeline {
-                let project_root = project
-                    .path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."));
+                // Get the directory containing the env.cue file
+                // If parent is empty (file in current dir), use "." instead
+                let project_root = project.path.parent().map_or_else(
+                    || std::path::Path::new("."),
+                    |p| {
+                        if p.as_os_str().is_empty() {
+                            std::path::Path::new(".")
+                        } else {
+                            p
+                        }
+                    },
+                );
                 let affected =
                     compute_affected_tasks(&changed_files, &pipeline.tasks, config, project_root);
 
