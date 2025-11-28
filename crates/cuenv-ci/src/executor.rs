@@ -179,12 +179,8 @@ pub async fn run_ci(
                         let _ = std::fs::create_dir_all(&sha_dir);
 
                         // Sanitize project path for filename
-                        let project_filename = project
-                            .path
-                            .display()
-                            .to_string()
-                            .replace(['/', '\\'], "-")
-                            + ".json";
+                        let project_filename =
+                            project.path.display().to_string().replace(['/', '\\'], "-") + ".json";
                         let report_path = sha_dir.join(project_filename);
 
                         if let Err(e) = write_report(&report, &report_path) {
