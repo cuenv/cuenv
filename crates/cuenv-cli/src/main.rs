@@ -227,6 +227,27 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
                 Err(e) => Err(e),
             }
         }
+        Command::Ci {
+            dry_run,
+            pipeline,
+            generate,
+        } => match execute_ci_command_safe(dry_run, pipeline, generate).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+    }
+}
+
+/// Execute CI command safely
+#[instrument(name = "cuenv_execute_ci_safe")]
+async fn execute_ci_command_safe(
+    dry_run: bool,
+    pipeline: Option<String>,
+    generate: Option<String>,
+) -> Result<(), CliError> {
+    match commands::ci_cmd::execute_ci(dry_run, pipeline, generate).await {
+        Ok(()) => Ok(()),
+        Err(e) => Err(CliError::other(format!("CI execution failed: {e}"))),
     }
 }
 

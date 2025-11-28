@@ -30,3 +30,4 @@ lcov.info
 
 # Example build artifacts
 examples/*/target/
+.cuenv/

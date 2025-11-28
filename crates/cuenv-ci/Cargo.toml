@@ -1,0 +1,32 @@
+[package]
+name = "cuenv-ci"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "continuous-integration"]
+readme = "../../readme.md"
+description = "Context-aware CI pipeline execution for cuenv"
+
+[lints]
+workspace = true
+
+[dependencies]
+cuenv-core = { workspace = true }
+cuengine = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+miette = { workspace = true }
+async-trait = "0.1"
+chrono = { workspace = true }
+glob = "0.3"
+regex = "1.10"
+# We'll stick to shelling out to git for now as per spec preference for "native reporting"
+# but we might need git2 later if we want tighter integration. 
+# For now, standard process execution is safer/simpler for "git diff" logic.
