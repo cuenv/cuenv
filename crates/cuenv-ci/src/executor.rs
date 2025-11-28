@@ -22,6 +22,7 @@ pub trait TaskRunner: Send + Sync {
 ///
 /// # Panics
 /// Panics if project path has no parent directory (should not happen for valid paths)
+#[allow(clippy::too_many_lines)]
 pub async fn run_ci(
     dry_run: bool,
     specific_pipeline: Option<String>,
@@ -83,7 +84,10 @@ pub async fn run_ci(
         if let Some(ci) = &config.ci {
             let pipeline = ci.pipelines.iter().find(|p| p.name == pipeline_name);
             if let Some(pipeline) = pipeline {
-                let project_root = project.path.parent().unwrap();
+                let project_root = project
+                    .path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
                 let affected =
                     compute_affected_tasks(&changed_files, &pipeline.tasks, config, project_root);
 
@@ -104,18 +108,18 @@ pub async fn run_ci(
                     let mut pipeline_status = PipelineStatus::Success;
 
                     for task_name in affected {
-                        println!("  -> Executing {}", task_name);
+                        println!("  -> Executing {task_name}");
                         let task_start = std::time::Instant::now();
                         let result = runner.run_task(project_root, &task_name).await;
-                        let duration = task_start.elapsed().as_millis() as u64;
+                        let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
 
                         let status = match result {
-                            Ok(_) => {
-                                println!("  -> {} passed", task_name);
+                            Ok(()) => {
+                                println!("  -> {task_name} passed");
                                 TaskStatus::Success
                             }
                             Err(e) => {
-                                println!("  -> {} failed: {}", task_name, e);
+                                println!("  -> {task_name} failed: {e}");
                                 pipeline_status = PipelineStatus::Failed;
                                 TaskStatus::Failed
                             }
@@ -137,6 +141,7 @@ pub async fn run_ci(
                     }
 
                     let completed_at = Utc::now();
+                    #[allow(clippy::cast_sign_loss)]
                     let duration_ms = (completed_at - start_time).num_milliseconds() as u64;
 
                     // Generate report
@@ -165,7 +170,7 @@ pub async fn run_ci(
                     // Ensure report directory exists
                     let report_dir = std::path::Path::new(".cuenv/reports");
                     if let Err(e) = std::fs::create_dir_all(report_dir) {
-                        println!("Failed to create report directory: {}", e);
+                        println!("Failed to create report directory: {e}");
                     } else {
                         // Filename: safe project path + timestamp? or just project name?
                         // Spec said: .cuenv/reports/{sha}/{project}.json
@@ -178,13 +183,12 @@ pub async fn run_ci(
                             .path
                             .display()
                             .to_string()
-                            .replace('/', "-")
-                            .replace('\\', "-")
+                            .replace(['/', '\\'], "-")
                             + ".json";
                         let report_path = sha_dir.join(project_filename);
 
                         if let Err(e) = write_report(&report, &report_path) {
-                            println!("Failed to write report: {}", e);
+                            println!("Failed to write report: {e}");
                         } else {
                             println!("Report written to: {}", report_path.display());
                         }

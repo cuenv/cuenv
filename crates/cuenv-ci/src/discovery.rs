@@ -13,6 +13,9 @@ pub struct Project {
 ///
 /// # Errors
 /// Returns an error if glob pattern matching fails
+///
+/// # Panics
+/// Panics if the regex pattern is invalid (should not happen as it is hardcoded)
 pub fn discover_projects() -> Result<Vec<Project>> {
     let mut projects = Vec::new();
     let package_re = regex::Regex::new(r"(?m)^package\s+cuenv\s*$").expect("Invalid regex");
@@ -26,11 +29,11 @@ pub fn discover_projects() -> Result<Vec<Project>> {
 
     for entry in entries.flatten() {
         // Check if file declares package cuenv
-        if let Ok(content) = std::fs::read_to_string(&entry) {
-            if !package_re.is_match(&content) {
-                continue;
-            }
-        } else {
+        let Ok(content) = std::fs::read_to_string(&entry) else {
+            continue;
+        };
+
+        if !package_re.is_match(&content) {
             continue;
         }
 
@@ -44,26 +47,11 @@ pub fn discover_projects() -> Result<Vec<Project>> {
 
         // Load the configuration
         // We assume the package name is "cuenv" based on convention
-        match evaluate_cue_package_typed::<Cuenv>(dir_path, "cuenv") {
-            Ok(config) => {
-                projects.push(Project {
-                    path: entry,
-                    config,
-                });
-            }
-            Err(_e) => {
-                // In discovery phase, we might want to skip invalid configs or log a warning
-                // For now, we'll skip but could log if we had a logger set up here
-                // println!("Warning: Failed to load config at {:?}: {}", entry, e);
-
-                // However, if we want to be robust, we should probably return a Result with warnings?
-                // But to keep signature simple, let's just push what works.
-                // Or maybe we return a wrapper that includes errors?
-
-                // Let's stick to "skip if invalid" for now, as that's common for discovery.
-                // If the user explicitly runs on a path, that's different.
-                continue;
-            }
+        if let Ok(config) = evaluate_cue_package_typed::<Cuenv>(dir_path, "cuenv") {
+            projects.push(Project {
+                path: entry,
+                config,
+            });
         }
     }
 
