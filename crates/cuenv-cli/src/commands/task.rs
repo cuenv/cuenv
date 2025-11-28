@@ -97,10 +97,7 @@ pub async fn execute_task(
     }
 
     // Resolve task via canonical index (supports nested paths and ':' alias)
-    let task_entry = task_index.resolve(requested_task).map_err(|e| {
-        tracing::error!("Task resolution failed: {}", e);
-        e
-    })?;
+    let task_entry = task_index.resolve(requested_task)?;
     let canonical_task_name = task_entry.name.clone();
     tracing::debug!(
         "Task index entries: {:?}",
