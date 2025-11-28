@@ -15,6 +15,12 @@ package schema
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
 
+	// When true (default), task runs in an isolated hermetic directory with only
+	// declared inputs available. When false, task runs directly in the workspace
+	// root (if workspaces specified) or project root. Non-hermetic tasks are useful
+	// for install commands that need to write to the real filesystem.
+	hermetic?: bool | *true
+
 	dependsOn?: [...string]
 	// Inputs accepted:
 	// - File paths relative to the env.cue root, e.g. "src/index.ts"

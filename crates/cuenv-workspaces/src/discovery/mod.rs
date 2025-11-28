@@ -86,7 +86,12 @@ pub fn resolve_glob_patterns(
     let mut exclusion_patterns = Vec::new();
 
     // Pre-compile default exclusions to avoid traversing heavy directories
-    let default_ignores = ["**/node_modules/**", "**/.git/**", "**/target/**", "**/dist/**"];
+    let default_ignores = [
+        "**/node_modules/**",
+        "**/.git/**",
+        "**/target/**",
+        "**/dist/**",
+    ];
     for ignore in default_ignores {
         if let Ok(pat) = Pattern::new(ignore) {
             exclusion_patterns.push(pat);

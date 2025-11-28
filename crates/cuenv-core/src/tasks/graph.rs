@@ -321,16 +321,9 @@ mod tests {
     fn create_test_task(name: &str, deps: Vec<String>) -> Task {
         Task {
             command: format!("echo {}", name),
-            args: vec![],
-            shell: None,
-            env: HashMap::new(),
             depends_on: deps,
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some(format!("Test task {}", name)),
+            ..Default::default()
         }
     }
 

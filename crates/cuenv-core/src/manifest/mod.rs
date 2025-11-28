@@ -10,7 +10,7 @@ use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
-use crate::tasks::TaskDefinition;
+use crate::tasks::{Task, TaskDefinition};
 
 /// Workspace configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -111,5 +111,358 @@ impl Cuenv {
         let mut hooks: Vec<(String, Hook)> = map.into_iter().collect();
         hooks.sort_by(|a, b| a.1.order.cmp(&b.1.order).then(a.0.cmp(&b.0)));
         hooks.into_iter().map(|(_, h)| h).collect()
+    }
+
+    /// Inject implicit tasks and dependencies based on workspace declarations.
+    ///
+    /// When a workspace is declared (e.g., `workspaces: bun: {}`), this method:
+    /// 1. Creates an install task for that workspace if one doesn't already exist
+    /// 2. Adds the install task as a dependency to all tasks that use that workspace
+    ///
+    /// This ensures users don't need to manually define common tasks like
+    /// `bun.install` or manually wire up dependencies.
+    pub fn with_implicit_tasks(mut self) -> Self {
+        let Some(workspaces) = &self.workspaces else {
+            return self;
+        };
+
+        // Collect which workspaces have known install tasks
+        let mut workspace_install_tasks: HashMap<String, String> = HashMap::new();
+
+        for (name, config) in workspaces {
+            if !config.enabled {
+                continue;
+            }
+
+            // Only known workspace types get implicit install tasks
+            if !matches!(name.as_str(), "bun" | "npm" | "pnpm" | "yarn" | "cargo") {
+                continue;
+            }
+
+            let install_task_name = format!("{}.install", name);
+            workspace_install_tasks.insert(name.clone(), install_task_name.clone());
+
+            // Don't override user-defined tasks
+            if self.tasks.contains_key(&install_task_name) {
+                continue;
+            }
+
+            if let Some(task) = Self::create_implicit_install_task(name) {
+                self.tasks
+                    .insert(install_task_name, TaskDefinition::Single(Box::new(task)));
+            }
+        }
+
+        // Add implicit dependencies: tasks using a workspace should depend on its install task
+        Self::add_implicit_workspace_dependencies(&mut self.tasks, &workspace_install_tasks);
+
+        self
+    }
+
+    /// Add implicit dependencies for tasks that use workspaces.
+    fn add_implicit_workspace_dependencies(
+        tasks: &mut HashMap<String, TaskDefinition>,
+        workspace_install_tasks: &HashMap<String, String>,
+    ) {
+        for (task_name, task_def) in tasks.iter_mut() {
+            Self::add_dependencies_to_definition(task_name, task_def, workspace_install_tasks);
+        }
+    }
+
+    /// Recursively add workspace dependencies to a task definition.
+    fn add_dependencies_to_definition(
+        task_name: &str,
+        task_def: &mut TaskDefinition,
+        workspace_install_tasks: &HashMap<String, String>,
+    ) {
+        use crate::tasks::TaskGroup;
+
+        match task_def {
+            TaskDefinition::Single(task) => {
+                for workspace_name in &task.workspaces {
+                    if let Some(install_task) = workspace_install_tasks.get(workspace_name) {
+                        // Don't add self-dependency (the install task itself)
+                        if task_name == install_task {
+                            continue;
+                        }
+                        // Don't add duplicate dependency
+                        if !task.depends_on.contains(install_task) {
+                            task.depends_on.push(install_task.clone());
+                        }
+                    }
+                }
+            }
+            TaskDefinition::Group(group) => match group {
+                TaskGroup::Sequential(tasks) => {
+                    for (i, sub_task) in tasks.iter_mut().enumerate() {
+                        let sub_name = format!("{}[{}]", task_name, i);
+                        Self::add_dependencies_to_definition(
+                            &sub_name,
+                            sub_task,
+                            workspace_install_tasks,
+                        );
+                    }
+                }
+                TaskGroup::Parallel(tasks) => {
+                    for (name, sub_task) in tasks.iter_mut() {
+                        let sub_name = format!("{}.{}", task_name, name);
+                        Self::add_dependencies_to_definition(
+                            &sub_name,
+                            sub_task,
+                            workspace_install_tasks,
+                        );
+                    }
+                }
+            },
+        }
+    }
+
+    /// Create an implicit install task for a known workspace type.
+    fn create_implicit_install_task(workspace_name: &str) -> Option<Task> {
+        let (command, args, description) = match workspace_name {
+            "bun" => ("bun", vec!["install"], "Install bun dependencies"),
+            "npm" => ("npm", vec!["install"], "Install npm dependencies"),
+            "pnpm" => ("pnpm", vec!["install"], "Install pnpm dependencies"),
+            "yarn" => ("yarn", vec!["install"], "Install yarn dependencies"),
+            "cargo" => ("cargo", vec!["fetch"], "Fetch cargo dependencies"),
+            _ => return None, // Unknown workspace type, don't create implicit task
+        };
+
+        Some(Task {
+            command: command.to_string(),
+            args: args.into_iter().map(String::from).collect(),
+            workspaces: vec![workspace_name.to_string()],
+            hermetic: false, // Install tasks must run in real workspace root
+            description: Some(description.to_string()),
+            ..Default::default()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_implicit_bun_install_task() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "bun".into(),
+            WorkspaceConfig {
+                enabled: true,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        let cuenv = cuenv.with_implicit_tasks();
+        assert!(cuenv.tasks.contains_key("bun.install"));
+
+        let task_def = cuenv.tasks.get("bun.install").unwrap();
+        let task = task_def.as_single().unwrap();
+        assert_eq!(task.command, "bun");
+        assert_eq!(task.args, vec!["install"]);
+        assert_eq!(task.workspaces, vec!["bun"]);
+    }
+
+    #[test]
+    fn test_implicit_npm_install_task() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "npm".into(),
+            WorkspaceConfig {
+                enabled: true,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        let cuenv = cuenv.with_implicit_tasks();
+        assert!(cuenv.tasks.contains_key("npm.install"));
+    }
+
+    #[test]
+    fn test_implicit_cargo_fetch_task() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "cargo".into(),
+            WorkspaceConfig {
+                enabled: true,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        let cuenv = cuenv.with_implicit_tasks();
+        assert!(cuenv.tasks.contains_key("cargo.install"));
+
+        let task_def = cuenv.tasks.get("cargo.install").unwrap();
+        let task = task_def.as_single().unwrap();
+        assert_eq!(task.command, "cargo");
+        assert_eq!(task.args, vec!["fetch"]);
+    }
+
+    #[test]
+    fn test_no_override_user_defined_task() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "bun".into(),
+            WorkspaceConfig {
+                enabled: true,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        // User defines their own bun.install task
+        let user_task = Task {
+            command: "custom-bun".to_string(),
+            args: vec!["custom-install".to_string()],
+            ..Default::default()
+        };
+        cuenv.tasks.insert(
+            "bun.install".into(),
+            TaskDefinition::Single(Box::new(user_task)),
+        );
+
+        let cuenv = cuenv.with_implicit_tasks();
+
+        // User's task should not be overridden
+        let task_def = cuenv.tasks.get("bun.install").unwrap();
+        let task = task_def.as_single().unwrap();
+        assert_eq!(task.command, "custom-bun");
+    }
+
+    #[test]
+    fn test_disabled_workspace_no_implicit_task() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "bun".into(),
+            WorkspaceConfig {
+                enabled: false,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        let cuenv = cuenv.with_implicit_tasks();
+        assert!(!cuenv.tasks.contains_key("bun.install"));
+    }
+
+    #[test]
+    fn test_unknown_workspace_no_implicit_task() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "unknown-package-manager".into(),
+            WorkspaceConfig {
+                enabled: true,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        let cuenv = cuenv.with_implicit_tasks();
+        assert!(!cuenv.tasks.contains_key("unknown-package-manager.install"));
+    }
+
+    #[test]
+    fn test_no_workspaces_unchanged() {
+        let cuenv = Cuenv::new();
+        let cuenv = cuenv.with_implicit_tasks();
+        assert!(cuenv.tasks.is_empty());
+    }
+
+    #[test]
+    fn test_implicit_dependency_added_to_workspace_task() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "bun".into(),
+            WorkspaceConfig {
+                enabled: true,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        // User defines a task that uses the bun workspace
+        let user_task = Task {
+            command: "bun".to_string(),
+            args: vec!["run".to_string(), "dev".to_string()],
+            workspaces: vec!["bun".to_string()],
+            ..Default::default()
+        };
+        cuenv
+            .tasks
+            .insert("dev".into(), TaskDefinition::Single(Box::new(user_task)));
+
+        let cuenv = cuenv.with_implicit_tasks();
+
+        // The dev task should now depend on bun.install
+        let task_def = cuenv.tasks.get("dev").unwrap();
+        let task = task_def.as_single().unwrap();
+        assert!(
+            task.depends_on.contains(&"bun.install".to_string()),
+            "Task using bun workspace should auto-depend on bun.install"
+        );
+    }
+
+    #[test]
+    fn test_install_task_does_not_depend_on_itself() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "bun".into(),
+            WorkspaceConfig {
+                enabled: true,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        let cuenv = cuenv.with_implicit_tasks();
+
+        // The bun.install task should NOT depend on itself
+        let task_def = cuenv.tasks.get("bun.install").unwrap();
+        let task = task_def.as_single().unwrap();
+        assert!(
+            !task.depends_on.contains(&"bun.install".to_string()),
+            "Install task should not depend on itself"
+        );
+    }
+
+    #[test]
+    fn test_no_duplicate_dependencies() {
+        let mut cuenv = Cuenv::new();
+        cuenv.workspaces = Some(HashMap::from([(
+            "bun".into(),
+            WorkspaceConfig {
+                enabled: true,
+                root: None,
+                package_manager: None,
+            },
+        )]));
+
+        // User defines a task that already depends on bun.install
+        let user_task = Task {
+            command: "bun".to_string(),
+            args: vec!["run".to_string(), "dev".to_string()],
+            workspaces: vec!["bun".to_string()],
+            depends_on: vec!["bun.install".to_string()],
+            ..Default::default()
+        };
+        cuenv
+            .tasks
+            .insert("dev".into(), TaskDefinition::Single(Box::new(user_task)));
+
+        let cuenv = cuenv.with_implicit_tasks();
+
+        // Should not add duplicate dependency
+        let task_def = cuenv.tasks.get("dev").unwrap();
+        let task = task_def.as_single().unwrap();
+        let count = task
+            .depends_on
+            .iter()
+            .filter(|d| *d == "bun.install")
+            .count();
+        assert_eq!(count, 1, "Should not have duplicate bun.install dependency");
     }
 }
