@@ -293,11 +293,11 @@ cuenv allow
 cuenv deny
 ```
 
-| Option             | Description                                   |
-| ------------------ | --------------------------------------------- |
-| `--env, -e`        | Environment to use (dev, staging, production) |
-| `--cache`          | Cache mode (off, read, read-write, write)     |
-| `--output-format`  | Output format (tui, spinner, simple, tree)    |
+| Option            | Description                                   |
+| ----------------- | --------------------------------------------- |
+| `--env, -e`       | Environment to use (dev, staging, production) |
+| `--cache`         | Cache mode (off, read, read-write, write)     |
+| `--output-format` | Output format (tui, spinner, simple, tree)    |
 
 ---
 
@@ -318,13 +318,13 @@ cuenv deny
 
 ## Status
 
-| Component              | Status         |
-| ---------------------- | -------------- |
-| CUE Evaluation Engine  | ✅ Complete    |
-| CLI + Task Runner      | 🚧 Development |
-| Secret Management      | 🚧 Development |
-| Shell Integration      | 🚧 Development |
-| Security Isolation     | 📋 Planned     |
+| Component             | Status         |
+| --------------------- | -------------- |
+| CUE Evaluation Engine | ✅ Complete    |
+| CLI + Task Runner     | 🚧 Development |
+| Secret Management     | 🚧 Development |
+| Shell Integration     | 🚧 Development |
+| Security Isolation    | 📋 Planned     |
 
 ---
 
