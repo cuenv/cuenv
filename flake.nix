@@ -115,8 +115,16 @@
         # Bridge setup helper
         setupBridge = ''
           mkdir -p crates/cuenv-core/src/target/debug crates/cuenv-core/src/target/release
-          cp -r ${cue-bridge}/debug/* crates/cuenv-core/src/target/debug/ || true
-          cp -r ${cue-bridge}/release/* crates/cuenv-core/src/target/release/ || true
+          
+          # Remove existing files to avoid permission issues with read-only nix store files
+          rm -f crates/cuenv-core/src/target/debug/libcue_bridge.*
+          rm -f crates/cuenv-core/src/target/release/libcue_bridge.*
+
+          cp -r ${cue-bridge}/debug/* crates/cuenv-core/src/target/debug/
+          cp -r ${cue-bridge}/release/* crates/cuenv-core/src/target/release/
+          
+          # Ensure the copied files are writable
+          chmod -R +w crates/cuenv-core/src/target
         '';
 
 
@@ -168,6 +176,7 @@
           pkg-config
           llvmPackages.bintools
           bun
+          sccache
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
           patchelf
