@@ -29,15 +29,12 @@ pub async fn run_ci(
     runner: Arc<dyn TaskRunner>,
 ) -> Result<()> {
     // 1. Detect Provider
-    let provider: Arc<Box<dyn CIProvider>> = if let Some(p) = GitHubProvider::detect() {
-        Arc::new(Box::new(p))
+    let provider: Arc<dyn CIProvider> = if let Some(p) = GitHubProvider::detect() {
+        Arc::new(p)
+    } else if let Some(p) = LocalProvider::detect() {
+        Arc::new(p)
     } else {
-        // Fallback to local
-        if let Some(p) = LocalProvider::detect() {
-            Arc::new(Box::new(p))
-        } else {
-            return Err(cuenv_core::Error::configuration("No CI provider detected"));
-        }
+        return Err(cuenv_core::Error::configuration("No CI provider detected"));
     };
 
     let context = provider.context();
