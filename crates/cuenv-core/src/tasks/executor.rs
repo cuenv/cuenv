@@ -416,34 +416,56 @@ impl TaskExecutor {
         let stderr_handle = child.stderr.take();
 
         let stdout_task = async move {
-            if let Some(stdout) = stdout_handle {
-                let reader = BufReader::new(stdout);
-                let mut lines = reader.lines();
-                let mut stdout_lines = Vec::new();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if stream_logs {
-                        println!("{line}");
+            if let Some(mut stdout) = stdout_handle {
+                let mut output = Vec::new();
+                let mut buf = [0u8; 4096];
+                use std::io::Write;
+                use tokio::io::AsyncReadExt;
+
+                loop {
+                    match stdout.read(&mut buf).await {
+                        Ok(0) => break, // EOF
+                        Ok(n) => {
+                            let chunk = &buf[0..n];
+                            if stream_logs {
+                                let mut handle = std::io::stdout().lock();
+                                let _ = handle.write_all(chunk);
+                                let _ = handle.flush();
+                            }
+                            output.extend_from_slice(chunk);
+                        }
+                        Err(_) => break,
                     }
-                    stdout_lines.push(line);
                 }
-                stdout_lines.join("\n")
+                String::from_utf8_lossy(&output).to_string()
             } else {
                 String::new()
             }
         };
 
         let stderr_task = async move {
-            if let Some(stderr) = stderr_handle {
-                let reader = BufReader::new(stderr);
-                let mut lines = reader.lines();
-                let mut stderr_lines = Vec::new();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if stream_logs {
-                        eprintln!("{line}");
+            if let Some(mut stderr) = stderr_handle {
+                let mut output = Vec::new();
+                let mut buf = [0u8; 4096];
+                use std::io::Write;
+                use tokio::io::AsyncReadExt;
+
+                loop {
+                    match stderr.read(&mut buf).await {
+                        Ok(0) => break, // EOF
+                        Ok(n) => {
+                            let chunk = &buf[0..n];
+                            if stream_logs {
+                                let mut handle = std::io::stderr().lock();
+                                let _ = handle.write_all(chunk);
+                                let _ = handle.flush();
+                            }
+                            output.extend_from_slice(chunk);
+                        }
+                        Err(_) => break,
                     }
-                    stderr_lines.push(line);
                 }
-                stderr_lines.join("\n")
+                String::from_utf8_lossy(&output).to_string()
             } else {
                 String::new()
             }
