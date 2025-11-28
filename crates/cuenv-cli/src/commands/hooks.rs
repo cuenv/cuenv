@@ -729,6 +729,7 @@ mod tests {
                 on_exit: None,
             }),
             workspaces: None,
+            ci: None,
             tasks: std::collections::HashMap::new(),
         };
 
@@ -767,6 +768,7 @@ mod tests {
                 on_exit: None,
             }),
             workspaces: None,
+            ci: None,
             tasks: std::collections::HashMap::new(),
         };
 
@@ -785,6 +787,7 @@ mod tests {
             env: None,
             hooks: None,
             workspaces: None,
+            ci: None,
             tasks: std::collections::HashMap::new(),
         };
 

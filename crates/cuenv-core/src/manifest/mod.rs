@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
@@ -62,6 +63,10 @@ pub struct Cuenv {
     /// Workspaces configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
+
+    /// CI configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci: Option<CI>,
 
     /// Tasks configuration
     #[serde(default)]
