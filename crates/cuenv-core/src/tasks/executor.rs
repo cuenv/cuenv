@@ -90,243 +90,600 @@ impl TaskExecutor {
         Self { config }
     }
 
-    /// Execute a single task hermetically with caching
+    /// Execute a single task
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
-        // Resolve workspace dependencies if enabled
-        let mut workspace_ctxs: Vec<(Workspace, Vec<LockfileEntry>)> = Vec::new();
-        let mut workspace_input_patterns = Vec::new();
-        let mut workspace_lockfile_hashes = BTreeMap::new();
+        // All tasks run directly in workspace/project root (hermetic sandbox disabled)
+        return self.execute_task_non_hermetic(name, task).await;
 
-        for workspace_name in &task.workspaces {
-            if let Some(global_workspaces) = &self.config.workspaces {
-                if let Some(ws_config) = global_workspaces.get(workspace_name) {
-                    if ws_config.enabled {
-                        let (ws, entries, paths, hash) = self
-                            .resolve_workspace(name, task, workspace_name, ws_config)
-                            .await?;
-                        workspace_ctxs.push((ws, entries));
-                        workspace_input_patterns.extend(paths);
-                        if let Some(h) = hash {
-                            workspace_lockfile_hashes.insert(workspace_name.clone(), h);
+        // TODO: Re-enable hermetic execution when sandbox properly preserves monorepo structure
+        #[allow(unreachable_code)]
+        {
+            // Resolve workspace dependencies if enabled
+            let mut workspace_ctxs: Vec<(Workspace, Vec<LockfileEntry>)> = Vec::new();
+            let mut workspace_input_patterns = Vec::new();
+            let mut workspace_lockfile_hashes = BTreeMap::new();
+
+            for workspace_name in &task.workspaces {
+                if let Some(global_workspaces) = &self.config.workspaces {
+                    if let Some(ws_config) = global_workspaces.get(workspace_name) {
+                        if ws_config.enabled {
+                            let (ws, entries, paths, hash) = self
+                                .resolve_workspace(name, task, workspace_name, ws_config)
+                                .await?;
+                            workspace_ctxs.push((ws, entries));
+                            workspace_input_patterns.extend(paths);
+                            if let Some(h) = hash {
+                                workspace_lockfile_hashes.insert(workspace_name.clone(), h);
+                            }
                         }
+                    } else {
+                        tracing::warn!(
+                            task = %name,
+                            workspace = %workspace_name,
+                            "Workspace not found in global configuration"
+                        );
+                    }
+                }
+            }
+
+            // Resolve inputs relative to the workspace root (if any) while keeping
+            // project-scoped inputs anchored to the original project path.
+            // Use the first workspace as the primary root if multiple are present,
+            // or fallback to project root. This might need refinement for multi-workspace tasks.
+            let primary_workspace_root = workspace_ctxs.first().map(|(ws, _)| ws.root.clone());
+
+            let project_prefix = primary_workspace_root
+                .as_ref()
+                .and_then(|root| self.config.project_root.strip_prefix(root).ok())
+                .map(|p| p.to_path_buf());
+            let input_root = primary_workspace_root
+                .clone()
+                .unwrap_or_else(|| self.config.project_root.clone());
+
+            let span_inputs = tracing::info_span!("inputs.resolve", task = %name);
+            let resolved_inputs = {
+                let _g = span_inputs.enter();
+                let resolver = InputResolver::new(&input_root);
+                let mut all_inputs: Vec<String> = Vec::new();
+
+                if let Some(prefix) = project_prefix.as_ref() {
+                    for input in &task.inputs {
+                        all_inputs.push(prefix.join(input).to_string_lossy().to_string());
                     }
                 } else {
-                    tracing::warn!(
-                        task = %name,
-                        workspace = %workspace_name,
-                        "Workspace not found in global configuration"
-                    );
+                    all_inputs.extend(task.inputs.iter().cloned());
                 }
+
+                all_inputs.extend(workspace_input_patterns.iter().cloned());
+                resolver.resolve(&all_inputs)?
+            };
+            if task_trace_enabled() {
+                tracing::info!(
+                    task = %name,
+                    input_root = %input_root.display(),
+                    project_root = %self.config.project_root.display(),
+                    inputs_count = resolved_inputs.files.len(),
+                    workspace_inputs = workspace_input_patterns.len(),
+                    "Resolved task inputs"
+                );
             }
-        }
 
-        // Resolve inputs relative to the workspace root (if any) while keeping
-        // project-scoped inputs anchored to the original project path.
-        // Use the first workspace as the primary root if multiple are present,
-        // or fallback to project root. This might need refinement for multi-workspace tasks.
-        let primary_workspace_root = workspace_ctxs.first().map(|(ws, _)| ws.root.clone());
-
-        let project_prefix = primary_workspace_root
-            .as_ref()
-            .and_then(|root| self.config.project_root.strip_prefix(root).ok())
-            .map(|p| p.to_path_buf());
-        let input_root = primary_workspace_root
-            .clone()
-            .unwrap_or_else(|| self.config.project_root.clone());
-
-        let span_inputs = tracing::info_span!("inputs.resolve", task = %name);
-        let resolved_inputs = {
-            let _g = span_inputs.enter();
-            let resolver = InputResolver::new(&input_root);
-            let mut all_inputs: Vec<String> = Vec::new();
-
-            if let Some(prefix) = project_prefix.as_ref() {
-                for input in &task.inputs {
-                    all_inputs.push(prefix.join(input).to_string_lossy().to_string());
-                }
+            // Build cache key envelope
+            let inputs_summary: BTreeMap<String, String> = resolved_inputs.to_summary_map();
+            // Ensure deterministic order is already guaranteed by BTreeMap
+            let env_summary: BTreeMap<String, String> = self
+                .config
+                .environment
+                .vars
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let cuenv_version = env!("CARGO_PKG_VERSION").to_string();
+            let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+            let shell_json = serde_json::to_value(&task.shell).ok();
+            let workspace_lockfile_hashes_opt = if workspace_lockfile_hashes.is_empty() {
+                None
             } else {
-                all_inputs.extend(task.inputs.iter().cloned());
-            }
+                Some(workspace_lockfile_hashes)
+            };
 
-            all_inputs.extend(workspace_input_patterns.iter().cloned());
-            resolver.resolve(&all_inputs)?
-        };
-        if task_trace_enabled() {
-            tracing::info!(
-                task = %name,
-                input_root = %input_root.display(),
-                project_root = %self.config.project_root.display(),
-                inputs_count = resolved_inputs.files.len(),
-                workspace_inputs = workspace_input_patterns.len(),
-                "Resolved task inputs"
-            );
-        }
+            let envelope = task_cache::CacheKeyEnvelope {
+                inputs: inputs_summary.clone(),
+                command: task.command.clone(),
+                args: task.args.clone(),
+                shell: shell_json,
+                env: env_summary.clone(),
+                cuenv_version: cuenv_version.clone(),
+                platform: platform.clone(),
+                workspace_lockfile_hashes: workspace_lockfile_hashes_opt,
+                // Package hashes are implicitly included in inputs_summary because we added member paths to inputs
+                workspace_package_hashes: None,
+            };
+            let (cache_key, envelope_json) = task_cache::compute_cache_key(&envelope)?;
 
-        // Build cache key envelope
-        let inputs_summary: BTreeMap<String, String> = resolved_inputs.to_summary_map();
-        // Ensure deterministic order is already guaranteed by BTreeMap
-        let env_summary: BTreeMap<String, String> = self
-            .config
-            .environment
-            .vars
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let cuenv_version = env!("CARGO_PKG_VERSION").to_string();
-        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-        let shell_json = serde_json::to_value(&task.shell).ok();
-        let workspace_lockfile_hashes_opt = if workspace_lockfile_hashes.is_empty() {
-            None
-        } else {
-            Some(workspace_lockfile_hashes)
-        };
+            // Cache lookup
+            let span_cache = tracing::info_span!("cache.lookup", task = %name, key = %cache_key);
+            let cache_hit = {
+                let _g = span_cache.enter();
+                task_cache::lookup(&cache_key, self.config.cache_dir.as_deref())
+            };
 
-        let envelope = task_cache::CacheKeyEnvelope {
-            inputs: inputs_summary.clone(),
-            command: task.command.clone(),
-            args: task.args.clone(),
-            shell: shell_json,
-            env: env_summary.clone(),
-            cuenv_version: cuenv_version.clone(),
-            platform: platform.clone(),
-            workspace_lockfile_hashes: workspace_lockfile_hashes_opt,
-            // Package hashes are implicitly included in inputs_summary because we added member paths to inputs
-            workspace_package_hashes: None,
-        };
-        let (cache_key, envelope_json) = task_cache::compute_cache_key(&envelope)?;
-
-        // Cache lookup
-        let span_cache = tracing::info_span!("cache.lookup", task = %name, key = %cache_key);
-        let cache_hit = {
-            let _g = span_cache.enter();
-            task_cache::lookup(&cache_key, self.config.cache_dir.as_deref())
-        };
-
-        if let Some(hit) = cache_hit {
-            tracing::info!(
-                task = %name,
-                key = %cache_key,
-                path = %hit.path.display(),
-                "Task {} cache hit: {}. Skipping execution.",
-                name,
-                cache_key
-            );
-            if self.config.show_cache_path {
-                tracing::info!(cache_path = %hit.path.display(), "Cache path");
-            }
-            if let Some(dest) = &self.config.materialize_outputs {
-                let count = task_cache::materialize_outputs(
-                    &cache_key,
-                    dest,
-                    self.config.cache_dir.as_deref(),
-                )?;
-                tracing::info!(materialized = count, dest = %dest.display(), "Materialized cached outputs");
-            }
-            // On cache hit, surface cached logs so behavior matches a fresh
-            // execution from the caller's perspective. We return them in the
-            // TaskResult even if `capture_output` is false, allowing callers
-            // (like the CLI) to print cached logs explicitly.
-            let stdout_path = hit.path.join("logs").join("stdout.log");
-            let stderr_path = hit.path.join("logs").join("stderr.log");
-            let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
-            let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
-            // If logs are present, we can return immediately. If logs are
-            // missing (older cache format), fall through to execute to
-            // backfill logs for future hits.
-            if !(stdout.is_empty() && stderr.is_empty()) {
-                if !self.config.capture_output {
-                    let cmd_str = if task.command.is_empty() {
-                        task.args.join(" ")
-                    } else {
-                        format!("{} {}", task.command, task.args.join(" "))
-                    };
-                    eprintln!("> [{name}] {cmd_str} (cached)");
-                    // Print cached logs to stdout/stderr since we are not capturing
-                    print!("{}", stdout);
-                    eprint!("{}", stderr);
-                }
-                return Ok(TaskResult {
-                    name: name.to_string(),
-                    exit_code: Some(0),
-                    stdout,
-                    stderr,
-                    success: true,
-                });
-            } else {
+            if let Some(hit) = cache_hit {
                 tracing::info!(
                     task = %name,
                     key = %cache_key,
-                    "Cache entry lacks logs; executing to backfill logs"
+                    path = %hit.path.display(),
+                    "Task {} cache hit: {}. Skipping execution.",
+                    name,
+                    cache_key
+                );
+                if self.config.show_cache_path {
+                    tracing::info!(cache_path = %hit.path.display(), "Cache path");
+                }
+                if let Some(dest) = &self.config.materialize_outputs {
+                    let count = task_cache::materialize_outputs(
+                        &cache_key,
+                        dest,
+                        self.config.cache_dir.as_deref(),
+                    )?;
+                    tracing::info!(materialized = count, dest = %dest.display(), "Materialized cached outputs");
+                }
+                // On cache hit, surface cached logs so behavior matches a fresh
+                // execution from the caller's perspective. We return them in the
+                // TaskResult even if `capture_output` is false, allowing callers
+                // (like the CLI) to print cached logs explicitly.
+                let stdout_path = hit.path.join("logs").join("stdout.log");
+                let stderr_path = hit.path.join("logs").join("stderr.log");
+                let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+                let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+                // If logs are present, we can return immediately. If logs are
+                // missing (older cache format), fall through to execute to
+                // backfill logs for future hits.
+                if !(stdout.is_empty() && stderr.is_empty()) {
+                    if !self.config.capture_output {
+                        let cmd_str = if task.command.is_empty() {
+                            task.args.join(" ")
+                        } else {
+                            format!("{} {}", task.command, task.args.join(" "))
+                        };
+                        eprintln!("> [{name}] {cmd_str} (cached)");
+                        // Print cached logs to stdout/stderr since we are not capturing
+                        print!("{}", stdout);
+                        eprint!("{}", stderr);
+                    }
+                    return Ok(TaskResult {
+                        name: name.to_string(),
+                        exit_code: Some(0),
+                        stdout,
+                        stderr,
+                        success: true,
+                    });
+                } else {
+                    tracing::info!(
+                        task = %name,
+                        key = %cache_key,
+                        "Cache entry lacks logs; executing to backfill logs"
+                    );
+                }
+            }
+
+            tracing::info!(
+                task = %name,
+                key = %cache_key,
+                "Task {} executing hermetically… key {}",
+                name,
+                cache_key
+            );
+
+            let hermetic_root = create_hermetic_dir(name, &cache_key)?;
+            if self.config.show_cache_path {
+                tracing::info!(hermetic_root = %hermetic_root.display(), "Hermetic working directory");
+            }
+
+            // Seed working directory with inputs
+            let span_populate =
+                tracing::info_span!("inputs.populate", files = resolved_inputs.files.len());
+            {
+                let _g = span_populate.enter();
+                populate_hermetic_dir(&resolved_inputs, &hermetic_root)?;
+            }
+
+            // Materialize workspace artifacts (node_modules, target)
+            for (ws, entries) in workspace_ctxs {
+                self.materialize_workspace(&ws, &entries, &hermetic_root)
+                    .await?;
+            }
+
+            // Materialize outputs from inputsFrom tasks
+            if let Some(ref inputs_from) = task.inputs_from {
+                for task_output in inputs_from {
+                    let source_task = &task_output.task;
+                    let source_cache_key = task_cache::lookup_latest(
+                        &self.config.project_root,
+                        source_task,
+                        self.config.cache_dir.as_deref(),
+                    )
+                    .ok_or_else(|| {
+                        Error::configuration(format!(
+                            "Task '{}' depends on outputs from '{}' but no cached result found. \
+                         Ensure '{}' runs before this task (add it to dependsOn).",
+                            name, source_task, source_task
+                        ))
+                    })?;
+
+                    // Materialize outputs into the hermetic directory
+                    let materialized = task_cache::materialize_outputs(
+                        &source_cache_key,
+                        &hermetic_root,
+                        self.config.cache_dir.as_deref(),
+                    )?;
+                    tracing::info!(
+                        task = %name,
+                        source_task = %source_task,
+                        materialized = materialized,
+                        "Materialized outputs from dependent task"
+                    );
+                }
+            }
+
+            // Initial snapshot to detect undeclared writes
+            let initial_hashes: BTreeMap<String, String> = inputs_summary.clone();
+
+            // Resolve command path using the environment's PATH.
+            // This is necessary because when spawning a process, the OS looks up
+            // the executable in the current process's PATH, not the environment
+            // that will be set on the child process.
+            let resolved_command = self.config.environment.resolve_command(&task.command);
+
+            // Build command
+            let mut cmd = if let Some(shell) = &task.shell {
+                if shell.command.is_some() && shell.flag.is_some() {
+                    let shell_command = shell.command.as_ref().unwrap();
+                    let shell_flag = shell.flag.as_ref().unwrap();
+                    // Resolve shell command too
+                    let resolved_shell = self.config.environment.resolve_command(shell_command);
+                    let mut cmd = Command::new(&resolved_shell);
+                    cmd.arg(shell_flag);
+                    if task.args.is_empty() {
+                        cmd.arg(&resolved_command);
+                    } else {
+                        let full_command = if task.command.is_empty() {
+                            task.args.join(" ")
+                        } else {
+                            format!("{} {}", resolved_command, task.args.join(" "))
+                        };
+                        cmd.arg(full_command);
+                    }
+                    cmd
+                } else {
+                    let mut cmd = Command::new(&resolved_command);
+                    for arg in &task.args {
+                        cmd.arg(arg);
+                    }
+                    cmd
+                }
+            } else {
+                let mut cmd = Command::new(&resolved_command);
+                for arg in &task.args {
+                    cmd.arg(arg);
+                }
+                cmd
+            };
+
+            let workdir = if let Some(dir) = &self.config.working_dir {
+                dir.clone()
+            } else if let Some(prefix) = project_prefix.as_ref() {
+                hermetic_root.join(prefix)
+            } else {
+                hermetic_root.clone()
+            };
+            std::fs::create_dir_all(&workdir).map_err(|e| Error::Io {
+                source: e,
+                path: Some(workdir.clone().into()),
+                operation: "create_dir_all".into(),
+            })?;
+            cmd.current_dir(&workdir);
+            // Set environment variables (resolved + system), set CWD
+            let env_vars = self.config.environment.merge_with_system();
+            if task_trace_enabled() {
+                tracing::info!(
+                    task = %name,
+                    hermetic_root = %hermetic_root.display(),
+                    workdir = %workdir.display(),
+                    command = %task.command,
+                    args = ?task.args,
+                    env_count = env_vars.len(),
+                    "Launching task command"
                 );
             }
+            for (k, v) in env_vars {
+                cmd.env(k, v);
+            }
+
+            // Configure output: always capture to ensure consistent behavior on
+            // cache hits and allow callers to decide what to print.
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+
+            let stream_logs = !self.config.capture_output;
+            if stream_logs {
+                let cmd_str = if task.command.is_empty() {
+                    task.args.join(" ")
+                } else {
+                    format!("{} {}", task.command, task.args.join(" "))
+                };
+                eprintln!("> [{name}] {cmd_str}");
+            }
+
+            let start = std::time::Instant::now();
+            let mut child = cmd.spawn().map_err(|e| {
+                Error::configuration(format!("Failed to spawn task '{}': {}", name, e))
+            })?;
+
+            let stdout_handle = child.stdout.take();
+            let stderr_handle = child.stderr.take();
+
+            let stdout_task = async move {
+                if let Some(mut stdout) = stdout_handle {
+                    let mut output = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    use std::io::Write;
+                    use tokio::io::AsyncReadExt;
+
+                    loop {
+                        match stdout.read(&mut buf).await {
+                            Ok(0) => break, // EOF
+                            Ok(n) => {
+                                let chunk = &buf[0..n];
+                                if stream_logs {
+                                    let mut handle = std::io::stdout().lock();
+                                    let _ = handle.write_all(chunk);
+                                    let _ = handle.flush();
+                                }
+                                output.extend_from_slice(chunk);
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    String::from_utf8_lossy(&output).to_string()
+                } else {
+                    String::new()
+                }
+            };
+
+            let stderr_task = async move {
+                if let Some(mut stderr) = stderr_handle {
+                    let mut output = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    use std::io::Write;
+                    use tokio::io::AsyncReadExt;
+
+                    loop {
+                        match stderr.read(&mut buf).await {
+                            Ok(0) => break, // EOF
+                            Ok(n) => {
+                                let chunk = &buf[0..n];
+                                if stream_logs {
+                                    let mut handle = std::io::stderr().lock();
+                                    let _ = handle.write_all(chunk);
+                                    let _ = handle.flush();
+                                }
+                                output.extend_from_slice(chunk);
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    String::from_utf8_lossy(&output).to_string()
+                } else {
+                    String::new()
+                }
+            };
+
+            let (stdout, stderr) = tokio::join!(stdout_task, stderr_task);
+
+            let status = child.wait().await.map_err(|e| {
+                Error::configuration(format!("Failed to wait for task '{}': {}", name, e))
+            })?;
+            let duration = start.elapsed();
+
+            let exit_code = status.code().unwrap_or(1);
+            let success = status.success();
+            if !success {
+                tracing::warn!(task = %name, exit = exit_code, "Task failed");
+                tracing::error!(task = %name, "Task stdout:\n{}", stdout);
+                tracing::error!(task = %name, "Task stderr:\n{}", stderr);
+            } else {
+                tracing::info!(task = %name, "Task completed successfully");
+            }
+
+            // Collect declared outputs and warn on undeclared writes
+            let output_patterns: Vec<String> = if let Some(prefix) = project_prefix.as_ref() {
+                task.outputs
+                    .iter()
+                    .map(|o| prefix.join(o).to_string_lossy().to_string())
+                    .collect()
+            } else {
+                task.outputs.clone()
+            };
+            let outputs = collect_outputs(&hermetic_root, &output_patterns)?;
+            let outputs_set: HashSet<PathBuf> = outputs.iter().cloned().collect();
+            let mut output_index: Vec<task_cache::OutputIndexEntry> = Vec::new();
+
+            // Stage outputs into a temp dir for cache persistence
+            let outputs_stage = std::env::temp_dir().join(format!("cuenv-outputs-{}", cache_key));
+            if outputs_stage.exists() {
+                let _ = std::fs::remove_dir_all(&outputs_stage);
+            }
+            std::fs::create_dir_all(&outputs_stage).map_err(|e| Error::Io {
+                source: e,
+                path: Some(outputs_stage.clone().into()),
+                operation: "create_dir_all".into(),
+            })?;
+
+            for rel in &outputs {
+                let rel_for_project = project_prefix
+                    .as_ref()
+                    .and_then(|prefix| rel.strip_prefix(prefix).ok())
+                    .unwrap_or(rel)
+                    .to_path_buf();
+                let src = hermetic_root.join(rel);
+                // Intentionally avoid `let`-chains here to preserve readability
+                // and to align with review guidance; allow clippy's collapsible-if.
+                #[allow(clippy::collapsible_if)]
+                if let Ok(meta) = std::fs::metadata(&src) {
+                    if meta.is_file() {
+                        let dst = outputs_stage.join(&rel_for_project);
+                        if let Some(parent) = dst.parent() {
+                            std::fs::create_dir_all(parent).map_err(|e| Error::Io {
+                                source: e,
+                                path: Some(parent.into()),
+                                operation: "create_dir_all".into(),
+                            })?;
+                        }
+                        std::fs::copy(&src, &dst).map_err(|e| Error::Io {
+                            source: e,
+                            path: Some(dst.into()),
+                            operation: "copy".into(),
+                        })?;
+                        let (sha, _size) = crate::tasks::io::sha256_file(&src).unwrap_or_default();
+                        output_index.push(task_cache::OutputIndexEntry {
+                            rel_path: rel_for_project.to_string_lossy().to_string(),
+                            size: meta.len(),
+                            sha256: sha,
+                        });
+                    }
+                }
+            }
+
+            // Detect undeclared writes
+            let mut warned = false;
+            for entry in walkdir::WalkDir::new(&hermetic_root)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                let p = entry.path();
+                if p.is_dir() {
+                    continue;
+                }
+                let rel = match p.strip_prefix(&hermetic_root) {
+                    Ok(r) => r.to_path_buf(),
+                    Err(_) => continue,
+                };
+                let rel_str = rel.to_string_lossy().to_string();
+                let (sha, _size) = crate::tasks::io::sha256_file(p).unwrap_or_default();
+                let initial = initial_hashes.get(&rel_str);
+                let changed = match initial {
+                    None => true,
+                    Some(prev) => prev != &sha,
+                };
+                if changed && !outputs_set.contains(&rel) {
+                    if !warned {
+                        tracing::warn!(task = %name, "Detected writes to undeclared paths; these are not cached as outputs");
+                        warned = true;
+                    }
+                    tracing::debug!(path = %rel_str, "Undeclared write");
+                }
+            }
+
+            // Persist cache entry on success
+            if success {
+                let meta = task_cache::TaskResultMeta {
+                    task_name: name.to_string(),
+                    command: task.command.clone(),
+                    args: task.args.clone(),
+                    env_summary,
+                    inputs_summary: inputs_summary.clone(),
+                    created_at: Utc::now(),
+                    cuenv_version,
+                    platform,
+                    duration_ms: duration.as_millis(),
+                    exit_code,
+                    cache_key_envelope: envelope_json.clone(),
+                    output_index,
+                };
+                let logs = task_cache::TaskLogs {
+                    // Persist logs regardless of capture setting so cache hits can
+                    // reproduce output faithfully.
+                    stdout: Some(stdout.clone()),
+                    stderr: Some(stderr.clone()),
+                };
+                let cache_span = tracing::info_span!("cache.save", key = %cache_key);
+                {
+                    let _g = cache_span.enter();
+                    task_cache::save_result(
+                        &cache_key,
+                        &meta,
+                        &outputs_stage,
+                        &hermetic_root,
+                        logs,
+                        self.config.cache_dir.as_deref(),
+                    )?;
+                }
+
+                // Record this task's cache key as the latest for this project
+                task_cache::record_latest(
+                    &self.config.project_root,
+                    name,
+                    &cache_key,
+                    self.config.cache_dir.as_deref(),
+                )?;
+
+                // Outputs remain in cache only - dependent tasks use inputsFrom to consume them
+            } else {
+                // Optionally persist logs in a failure/ subdir: not implemented for brevity
+            }
+
+            Ok(TaskResult {
+                name: name.to_string(),
+                exit_code: Some(exit_code),
+                stdout,
+                stderr,
+                success,
+            })
         }
+    }
+
+    /// Execute a task non-hermetically (directly in workspace/project root)
+    ///
+    /// Used for tasks like `bun install` that need to write to the real filesystem.
+    async fn execute_task_non_hermetic(&self, name: &str, task: &Task) -> Result<TaskResult> {
+        // Determine working directory:
+        // - Install tasks (hermetic: false with workspaces) run from workspace root
+        // - All other tasks run from project root
+        let workdir = if !task.hermetic && !task.workspaces.is_empty() {
+            // Find workspace root for install tasks
+            let workspace_name = &task.workspaces[0];
+            let manager = match workspace_name.as_str() {
+                "bun" => PackageManager::Bun,
+                "npm" => PackageManager::Npm,
+                "pnpm" => PackageManager::Pnpm,
+                "yarn" => PackageManager::YarnModern,
+                "cargo" => PackageManager::Cargo,
+                _ => PackageManager::Npm, // fallback
+            };
+            find_workspace_root(manager, &self.config.project_root)
+        } else {
+            self.config.project_root.clone()
+        };
 
         tracing::info!(
             task = %name,
-            key = %cache_key,
-            "Task {} executing hermetically… key {}",
-            name,
-            cache_key
+            workdir = %workdir.display(),
+            hermetic = false,
+            "Executing non-hermetic task"
         );
 
-        let hermetic_root = create_hermetic_dir(name, &cache_key)?;
-        if self.config.show_cache_path {
-            tracing::info!(hermetic_root = %hermetic_root.display(), "Hermetic working directory");
+        // Print command being run
+        let cmd_str = if task.command.is_empty() {
+            task.args.join(" ")
+        } else {
+            format!("{} {}", task.command, task.args.join(" "))
+        };
+        if !self.config.capture_output {
+            eprintln!("> [{name}] {cmd_str}");
         }
 
-        // Seed working directory with inputs
-        let span_populate =
-            tracing::info_span!("inputs.populate", files = resolved_inputs.files.len());
-        {
-            let _g = span_populate.enter();
-            populate_hermetic_dir(&resolved_inputs, &hermetic_root)?;
-        }
-
-        // Materialize workspace artifacts (node_modules, target)
-        for (ws, entries) in workspace_ctxs {
-            self.materialize_workspace(&ws, &entries, &hermetic_root)
-                .await?;
-        }
-
-        // Materialize outputs from inputsFrom tasks
-        if let Some(ref inputs_from) = task.inputs_from {
-            for task_output in inputs_from {
-                let source_task = &task_output.task;
-                let source_cache_key = task_cache::lookup_latest(
-                    &self.config.project_root,
-                    source_task,
-                    self.config.cache_dir.as_deref(),
-                )
-                .ok_or_else(|| {
-                    Error::configuration(format!(
-                        "Task '{}' depends on outputs from '{}' but no cached result found. \
-                         Ensure '{}' runs before this task (add it to dependsOn).",
-                        name, source_task, source_task
-                    ))
-                })?;
-
-                // Materialize outputs into the hermetic directory
-                let materialized = task_cache::materialize_outputs(
-                    &source_cache_key,
-                    &hermetic_root,
-                    self.config.cache_dir.as_deref(),
-                )?;
-                tracing::info!(
-                    task = %name,
-                    source_task = %source_task,
-                    materialized = materialized,
-                    "Materialized outputs from dependent task"
-                );
-            }
-        }
-
-        // Initial snapshot to detect undeclared writes
-        let initial_hashes: BTreeMap<String, String> = inputs_summary.clone();
-
-        // Resolve command path using the environment's PATH.
-        // This is necessary because when spawning a process, the OS looks up
-        // the executable in the current process's PATH, not the environment
-        // that will be set on the child process.
+        // Resolve command path
         let resolved_command = self.config.environment.resolve_command(&task.command);
 
         // Build command
@@ -334,7 +691,6 @@ impl TaskExecutor {
             if shell.command.is_some() && shell.flag.is_some() {
                 let shell_command = shell.command.as_ref().unwrap();
                 let shell_flag = shell.flag.as_ref().unwrap();
-                // Resolve shell command too
                 let resolved_shell = self.config.environment.resolve_command(shell_command);
                 let mut cmd = Command::new(&resolved_shell);
                 cmd.arg(shell_flag);
@@ -364,276 +720,73 @@ impl TaskExecutor {
             cmd
         };
 
-        let workdir = if let Some(dir) = &self.config.working_dir {
-            dir.clone()
-        } else if let Some(prefix) = project_prefix.as_ref() {
-            hermetic_root.join(prefix)
-        } else {
-            hermetic_root.clone()
-        };
-        std::fs::create_dir_all(&workdir).map_err(|e| Error::Io {
-            source: e,
-            path: Some(workdir.clone().into()),
-            operation: "create_dir_all".into(),
-        })?;
+        // Set working directory and environment
         cmd.current_dir(&workdir);
-        // Set environment variables (resolved + system), set CWD
         let env_vars = self.config.environment.merge_with_system();
-        if task_trace_enabled() {
-            tracing::info!(
-                task = %name,
-                hermetic_root = %hermetic_root.display(),
-                workdir = %workdir.display(),
-                command = %task.command,
-                args = ?task.args,
-                env_count = env_vars.len(),
-                "Launching task command"
-            );
-        }
-        for (k, v) in env_vars {
+        for (k, v) in &env_vars {
             cmd.env(k, v);
         }
 
-        // Configure output: always capture to ensure consistent behavior on
-        // cache hits and allow callers to decide what to print.
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        // Execute - always capture output for consistent behavior
+        // If not in capture mode, stream output to terminal in real-time
+        if self.config.capture_output {
+            let output = cmd
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| Error::Io {
+                    source: e,
+                    path: None,
+                    operation: format!("spawn task {}", name),
+                })?;
 
-        let stream_logs = !self.config.capture_output;
-        if stream_logs {
-            let cmd_str = if task.command.is_empty() {
-                task.args.join(" ")
-            } else {
-                format!("{} {}", task.command, task.args.join(" "))
-            };
-            eprintln!("> [{name}] {cmd_str}");
-        }
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let exit_code = output.status.code().unwrap_or(-1);
+            let success = output.status.success();
 
-        let start = std::time::Instant::now();
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| Error::configuration(format!("Failed to spawn task '{}': {}", name, e)))?;
-
-        let stdout_handle = child.stdout.take();
-        let stderr_handle = child.stderr.take();
-
-        let stdout_task = async move {
-            if let Some(mut stdout) = stdout_handle {
-                let mut output = Vec::new();
-                let mut buf = [0u8; 4096];
-                use std::io::Write;
-                use tokio::io::AsyncReadExt;
-
-                loop {
-                    match stdout.read(&mut buf).await {
-                        Ok(0) => break, // EOF
-                        Ok(n) => {
-                            let chunk = &buf[0..n];
-                            if stream_logs {
-                                let mut handle = std::io::stdout().lock();
-                                let _ = handle.write_all(chunk);
-                                let _ = handle.flush();
-                            }
-                            output.extend_from_slice(chunk);
-                        }
-                        Err(_) => break,
-                    }
-                }
-                String::from_utf8_lossy(&output).to_string()
-            } else {
-                String::new()
+            if !success {
+                tracing::warn!(task = %name, exit = exit_code, "Task failed");
+                tracing::error!(task = %name, "Task stdout:\n{}", stdout);
+                tracing::error!(task = %name, "Task stderr:\n{}", stderr);
             }
-        };
 
-        let stderr_task = async move {
-            if let Some(mut stderr) = stderr_handle {
-                let mut output = Vec::new();
-                let mut buf = [0u8; 4096];
-                use std::io::Write;
-                use tokio::io::AsyncReadExt;
-
-                loop {
-                    match stderr.read(&mut buf).await {
-                        Ok(0) => break, // EOF
-                        Ok(n) => {
-                            let chunk = &buf[0..n];
-                            if stream_logs {
-                                let mut handle = std::io::stderr().lock();
-                                let _ = handle.write_all(chunk);
-                                let _ = handle.flush();
-                            }
-                            output.extend_from_slice(chunk);
-                        }
-                        Err(_) => break,
-                    }
-                }
-                String::from_utf8_lossy(&output).to_string()
-            } else {
-                String::new()
-            }
-        };
-
-        let (stdout, stderr) = tokio::join!(stdout_task, stderr_task);
-
-        let status = child.wait().await.map_err(|e| {
-            Error::configuration(format!("Failed to wait for task '{}': {}", name, e))
-        })?;
-        let duration = start.elapsed();
-
-        let exit_code = status.code().unwrap_or(1);
-        let success = status.success();
-        if !success {
-            tracing::warn!(task = %name, exit = exit_code, "Task failed");
-            tracing::error!(task = %name, "Task stdout:\n{}", stdout);
-            tracing::error!(task = %name, "Task stderr:\n{}", stderr);
+            Ok(TaskResult {
+                name: name.to_string(),
+                exit_code: Some(exit_code),
+                stdout,
+                stderr,
+                success,
+            })
         } else {
-            tracing::info!(task = %name, "Task completed successfully");
-        }
+            // Stream output directly to terminal (interactive mode)
+            let status = cmd
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .status()
+                .await
+                .map_err(|e| Error::Io {
+                    source: e,
+                    path: None,
+                    operation: format!("spawn task {}", name),
+                })?;
 
-        // Collect declared outputs and warn on undeclared writes
-        let output_patterns: Vec<String> = if let Some(prefix) = project_prefix.as_ref() {
-            task.outputs
-                .iter()
-                .map(|o| prefix.join(o).to_string_lossy().to_string())
-                .collect()
-        } else {
-            task.outputs.clone()
-        };
-        let outputs = collect_outputs(&hermetic_root, &output_patterns)?;
-        let outputs_set: HashSet<PathBuf> = outputs.iter().cloned().collect();
-        let mut output_index: Vec<task_cache::OutputIndexEntry> = Vec::new();
+            let exit_code = status.code().unwrap_or(-1);
+            let success = status.success();
 
-        // Stage outputs into a temp dir for cache persistence
-        let outputs_stage = std::env::temp_dir().join(format!("cuenv-outputs-{}", cache_key));
-        if outputs_stage.exists() {
-            let _ = std::fs::remove_dir_all(&outputs_stage);
-        }
-        std::fs::create_dir_all(&outputs_stage).map_err(|e| Error::Io {
-            source: e,
-            path: Some(outputs_stage.clone().into()),
-            operation: "create_dir_all".into(),
-        })?;
-
-        for rel in &outputs {
-            let rel_for_project = project_prefix
-                .as_ref()
-                .and_then(|prefix| rel.strip_prefix(prefix).ok())
-                .unwrap_or(rel)
-                .to_path_buf();
-            let src = hermetic_root.join(rel);
-            // Intentionally avoid `let`-chains here to preserve readability
-            // and to align with review guidance; allow clippy's collapsible-if.
-            #[allow(clippy::collapsible_if)]
-            if let Ok(meta) = std::fs::metadata(&src) {
-                if meta.is_file() {
-                    let dst = outputs_stage.join(&rel_for_project);
-                    if let Some(parent) = dst.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| Error::Io {
-                            source: e,
-                            path: Some(parent.into()),
-                            operation: "create_dir_all".into(),
-                        })?;
-                    }
-                    std::fs::copy(&src, &dst).map_err(|e| Error::Io {
-                        source: e,
-                        path: Some(dst.into()),
-                        operation: "copy".into(),
-                    })?;
-                    let (sha, _size) = crate::tasks::io::sha256_file(&src).unwrap_or_default();
-                    output_index.push(task_cache::OutputIndexEntry {
-                        rel_path: rel_for_project.to_string_lossy().to_string(),
-                        size: meta.len(),
-                        sha256: sha,
-                    });
-                }
-            }
-        }
-
-        // Detect undeclared writes
-        let mut warned = false;
-        for entry in walkdir::WalkDir::new(&hermetic_root)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let p = entry.path();
-            if p.is_dir() {
-                continue;
-            }
-            let rel = match p.strip_prefix(&hermetic_root) {
-                Ok(r) => r.to_path_buf(),
-                Err(_) => continue,
-            };
-            let rel_str = rel.to_string_lossy().to_string();
-            let (sha, _size) = crate::tasks::io::sha256_file(p).unwrap_or_default();
-            let initial = initial_hashes.get(&rel_str);
-            let changed = match initial {
-                None => true,
-                Some(prev) => prev != &sha,
-            };
-            if changed && !outputs_set.contains(&rel) {
-                if !warned {
-                    tracing::warn!(task = %name, "Detected writes to undeclared paths; these are not cached as outputs");
-                    warned = true;
-                }
-                tracing::debug!(path = %rel_str, "Undeclared write");
-            }
-        }
-
-        // Persist cache entry on success
-        if success {
-            let meta = task_cache::TaskResultMeta {
-                task_name: name.to_string(),
-                command: task.command.clone(),
-                args: task.args.clone(),
-                env_summary,
-                inputs_summary: inputs_summary.clone(),
-                created_at: Utc::now(),
-                cuenv_version,
-                platform,
-                duration_ms: duration.as_millis(),
-                exit_code,
-                cache_key_envelope: envelope_json.clone(),
-                output_index,
-            };
-            let logs = task_cache::TaskLogs {
-                // Persist logs regardless of capture setting so cache hits can
-                // reproduce output faithfully.
-                stdout: Some(stdout.clone()),
-                stderr: Some(stderr.clone()),
-            };
-            let cache_span = tracing::info_span!("cache.save", key = %cache_key);
-            {
-                let _g = cache_span.enter();
-                task_cache::save_result(
-                    &cache_key,
-                    &meta,
-                    &outputs_stage,
-                    &hermetic_root,
-                    logs,
-                    self.config.cache_dir.as_deref(),
-                )?;
+            if !success {
+                tracing::warn!(task = %name, exit = exit_code, "Task failed");
             }
 
-            // Record this task's cache key as the latest for this project
-            task_cache::record_latest(
-                &self.config.project_root,
-                name,
-                &cache_key,
-                self.config.cache_dir.as_deref(),
-            )?;
-
-            // Outputs remain in cache only - dependent tasks use inputsFrom to consume them
-        } else {
-            // Optionally persist logs in a failure/ subdir: not implemented for brevity
+            Ok(TaskResult {
+                name: name.to_string(),
+                exit_code: Some(exit_code),
+                stdout: String::new(), // Output went to terminal
+                stderr: String::new(),
+                success,
+            })
         }
-
-        Ok(TaskResult {
-            name: name.to_string(),
-            exit_code: Some(exit_code),
-            stdout,
-            stderr,
-            success,
-        })
     }
 
     /// Execute a task definition (single task or group)
@@ -1398,15 +1551,8 @@ mod tests {
         let task = Task {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Hello task".to_string()),
+            ..Default::default()
         };
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(result.success);
@@ -1427,15 +1573,8 @@ mod tests {
         let task = Task {
             command: "printenv".to_string(),
             args: vec!["TEST_VAR".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Print env task".to_string()),
+            ..Default::default()
         };
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(result.success);
@@ -1537,15 +1676,9 @@ mod tests {
                 "-c".to_string(),
                 "find ../.. -maxdepth 4 -type d | sort".to_string(),
             ],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
             inputs: vec!["package.json".to_string()],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
             workspaces: vec!["bun".to_string()],
-            description: None,
+            ..Default::default()
         };
 
         let result = executor.execute_task("install", &task).await.unwrap();
@@ -1574,16 +1707,8 @@ mod tests {
         let executor = TaskExecutor::new(config);
         let task = Task {
             command: "false".to_string(),
-            args: vec![],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Failing task".to_string()),
+            ..Default::default()
         };
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(!result.success);
@@ -1600,28 +1725,14 @@ mod tests {
         let task1 = Task {
             command: "echo".to_string(),
             args: vec!["first".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("First task".to_string()),
+            ..Default::default()
         };
         let task2 = Task {
             command: "echo".to_string(),
             args: vec!["second".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Second task".to_string()),
+            ..Default::default()
         };
         let group = TaskGroup::Sequential(vec![
             TaskDefinition::Single(Box::new(task1)),
@@ -1647,15 +1758,8 @@ mod tests {
         let malicious_task = Task {
             command: "echo".to_string(),
             args: vec!["hello".to_string(), "; rm -rf /".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Malicious task test".to_string()),
+            ..Default::default()
         };
         let result = executor
             .execute_task("malicious", &malicious_task)
@@ -1685,15 +1789,8 @@ mod tests {
             let task = Task {
                 command: "echo".to_string(),
                 args: vec!["safe".to_string(), special_arg.to_string()],
-                shell: None,
-                env: HashMap::new(),
-                depends_on: vec![],
-                inputs: vec![],
-                outputs: vec![],
-                inputs_from: None,
-                external_inputs: None,
-                workspaces: vec![],
                 description: Some("Special character test".to_string()),
+                ..Default::default()
             };
             let result = executor.execute_task("special", &task).await.unwrap();
             assert!(result.success);
@@ -1715,15 +1812,8 @@ mod tests {
         let task = Task {
             command: "printenv".to_string(),
             args: vec!["DANGEROUS_VAR".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Environment variable safety test".to_string()),
+            ..Default::default()
         };
         let result = executor.execute_task("env_test", &task).await.unwrap();
         assert!(result.success);
@@ -1744,28 +1834,12 @@ mod tests {
         let t1 = Task {
             command: "echo".into(),
             args: vec!["A".into()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
-            description: None,
+            ..Default::default()
         };
         let t2 = Task {
             command: "echo".into(),
             args: vec!["B".into()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
-            description: None,
+            ..Default::default()
         };
 
         graph.add_task("t1", t1).unwrap();

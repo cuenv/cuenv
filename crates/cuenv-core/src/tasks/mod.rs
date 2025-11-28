@@ -16,6 +16,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+fn default_hermetic() -> bool {
+    true
+}
+
 /// Shell configuration for task execution
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct Shell {
@@ -74,6 +78,11 @@ pub struct Task {
     #[serde(default)]
     pub env: HashMap<String, serde_json::Value>,
 
+    /// When true (default), task runs in isolated hermetic directory.
+    /// When false, task runs directly in workspace/project root.
+    #[serde(default = "default_hermetic")]
+    pub hermetic: bool,
+
     /// Task dependencies (names of tasks that must run first)
     #[serde(default, rename = "dependsOn")]
     pub depends_on: Vec<String>,
@@ -101,6 +110,25 @@ pub struct Task {
     /// Description of the task
     #[serde(default)]
     pub description: Option<String>,
+}
+
+impl Default for Task {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            command: String::new(),
+            args: vec![],
+            env: HashMap::new(),
+            hermetic: true, // Default to hermetic execution
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            inputs_from: None,
+            external_inputs: None,
+            workspaces: vec![],
+            description: None,
+        }
+    }
 }
 
 impl Task {
@@ -225,22 +253,14 @@ mod tests {
     fn test_task_default_values() {
         let task = Task {
             command: "echo".to_string(),
-            shell: None,
-            args: vec![],
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
-            description: None,
+            ..Default::default()
         };
 
         assert!(task.shell.is_none());
         assert_eq!(task.command, "echo");
         assert_eq!(task.description(), "No description provided");
         assert!(task.args.is_empty());
+        assert!(task.hermetic); // default is true
     }
 
     #[test]
@@ -261,29 +281,15 @@ mod tests {
         let task1 = Task {
             command: "echo".to_string(),
             args: vec!["first".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("First task".to_string()),
+            ..Default::default()
         };
 
         let task2 = Task {
             command: "echo".to_string(),
             args: vec!["second".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Second task".to_string()),
+            ..Default::default()
         };
 
         let group = TaskGroup::Sequential(vec![
@@ -301,29 +307,15 @@ mod tests {
         let task1 = Task {
             command: "echo".to_string(),
             args: vec!["task1".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Task 1".to_string()),
+            ..Default::default()
         };
 
         let task2 = Task {
             command: "echo".to_string(),
             args: vec!["task2".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Task 2".to_string()),
+            ..Default::default()
         };
 
         let mut parallel_tasks = HashMap::new();
@@ -345,15 +337,8 @@ mod tests {
         let task = Task {
             command: "echo".to_string(),
             args: vec!["hello".to_string()],
-            shell: None,
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Hello task".to_string()),
+            ..Default::default()
         };
 
         tasks
@@ -372,16 +357,8 @@ mod tests {
     fn test_task_definition_helpers() {
         let task = Task {
             command: "test".to_string(),
-            shell: None,
-            args: vec![],
-            env: HashMap::new(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: Some("Test task".to_string()),
+            ..Default::default()
         };
 
         let single = TaskDefinition::Single(Box::new(task.clone()));
