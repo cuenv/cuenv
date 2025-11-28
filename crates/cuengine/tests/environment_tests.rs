@@ -1,5 +1,7 @@
 //! Tests for CUE evaluation and JSON parsing
 
+#![allow(clippy::print_stdout)]
+
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::environment::{EnvValue, Environment};
 use std::path::Path;

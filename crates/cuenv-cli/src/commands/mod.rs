@@ -185,6 +185,11 @@ pub enum Command {
         pipeline: Option<String>,
         generate: Option<String>,
     },
+    Tui,
+    Web {
+        port: u16,
+        host: String,
+    },
 }
 
 #[allow(dead_code)]
@@ -270,6 +275,8 @@ impl CommandExecutor {
                 pipeline,
                 generate,
             } => self.execute_ci(dry_run, pipeline, generate).await,
+            // Tui and Web are handled directly in main.rs, not through CommandExecutor
+            Command::Tui | Command::Web { .. } => Ok(()),
         }
     }
 

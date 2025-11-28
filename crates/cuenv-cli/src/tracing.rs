@@ -1,8 +1,9 @@
 //! Enhanced tracing configuration for cuenv CLI
 //!
 //! This module provides structured, contextual tracing with multiple output formats,
-//! correlation IDs, and performance instrumentation.
+//! correlation IDs, performance instrumentation, and structured event capture.
 
+use cuenv_events::{CuenvEventLayer, EventBus};
 use std::io;
 pub use tracing::Level;
 use tracing_subscriber::{filter::EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -96,6 +97,7 @@ pub fn correlation_id() -> Uuid {
 }
 
 /// Initialize tracing with the given configuration
+#[allow(dead_code)]
 pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
     let correlation_id = correlation_id();
 
@@ -171,6 +173,102 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
     );
 
     Ok(())
+}
+
+/// Initialize tracing with event capture support.
+///
+/// Returns an `EventBus` that can be used to subscribe to structured events
+/// and spawn renderers (CLI, JSON, TUI, etc.).
+#[allow(clippy::needless_pass_by_value)]
+pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventBus> {
+    // Sync correlation ID with cuenv_events
+    let corr_id = correlation_id();
+    cuenv_events::set_correlation_id(corr_id);
+
+    // Create event bus and layer
+    let event_bus = EventBus::new();
+    let event_layer = CuenvEventLayer::new(event_bus.sender().into_inner());
+
+    // Create base filter - always capture cuenv events at info level
+    let env_filter = if let Some(ref filter) = config.filter {
+        EnvFilter::try_new(filter)
+    } else {
+        EnvFilter::try_from_default_env().or_else(|_| {
+            let level_str = match config.level {
+                Level::TRACE => "trace",
+                Level::DEBUG => "debug",
+                Level::INFO => "info",
+                Level::WARN => "warn",
+                Level::ERROR => "error",
+            };
+            // Always capture cuenv events at info level for the event system
+            EnvFilter::try_new(format!(
+                "cuenv=info,cuenv_cli={level_str},cuenv_core={level_str},cuengine={level_str}"
+            ))
+        })
+    }
+    .map_err(|e| miette::miette!("Failed to create tracing filter: {e}"))?;
+
+    // Build registry with event layer
+    let registry = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(event_layer);
+
+    // Add format layer based on config
+    // Only add verbose output in JSON mode or when explicitly debugging
+    let is_verbose = config.level == Level::DEBUG || config.level == Level::TRACE;
+
+    match config.format {
+        TracingFormat::Json => {
+            // JSON mode: format layer always on for structured logs
+            let layer = tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(io::stderr)
+                .with_current_span(true)
+                .with_span_list(true);
+            registry.with(layer).init();
+        }
+        TracingFormat::Pretty if is_verbose => {
+            let layer = tracing_subscriber::fmt::layer()
+                .pretty()
+                .with_writer(io::stderr)
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true);
+            registry.with(layer).init();
+        }
+        TracingFormat::Compact if is_verbose => {
+            let layer = tracing_subscriber::fmt::layer()
+                .compact()
+                .with_writer(io::stderr)
+                .with_target(false)
+                .with_thread_ids(false);
+            registry.with(layer).init();
+        }
+        TracingFormat::Dev if is_verbose => {
+            let layer = tracing_subscriber::fmt::layer()
+                .with_writer(io::stderr)
+                .with_file(config.enable_file_location)
+                .with_line_number(config.enable_file_location)
+                .with_target(true)
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_level(true);
+            registry.with(layer).init();
+        }
+        _ => {
+            // Normal mode: no format layer, events go to renderers only
+            registry.init();
+        }
+    }
+
+    tracing::debug!(
+        correlation_id = %corr_id,
+        version = env!("CARGO_PKG_VERSION"),
+        "Event-based tracing initialized"
+    );
+
+    Ok(event_bus)
 }
 
 /// Create a new span for command execution with structured fields

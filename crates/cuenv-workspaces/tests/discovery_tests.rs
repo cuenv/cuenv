@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, clippy::print_stdout)]
 use cuenv_workspaces::WorkspaceDiscovery;
 use std::path::{Path, PathBuf};
 

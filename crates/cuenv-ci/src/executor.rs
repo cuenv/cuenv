@@ -1,3 +1,6 @@
+// CI executor outputs to stdout as part of its normal operation
+#![allow(clippy::print_stdout)]
+
 use crate::affected::compute_affected_tasks;
 use crate::discovery::discover_projects;
 use crate::provider::CIProvider;
