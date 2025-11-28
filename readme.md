@@ -1,6 +1,6 @@
 # cuenv
 
-**A modern application build toolchain with typed environments and CUE-powered task orchestration**
+**Two commands. Type-safe environments. Secrets that never leak. Tasks that run in parallel.**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Build Status](https://github.com/cuenv/cuenv/workflows/CI/badge.svg)](https://github.com/cuenv/cuenv/actions)
@@ -10,392 +10,298 @@
 
 ---
 
-## Overview
+## The Problem
 
-cuenv is a next-generation build toolchain that brings type safety and powerful configuration management to application development. Built around CUE's constraint-based type system, cuenv provides a unified solution for environment management, task orchestration, and secure secret handling.
+You've been here before:
 
-Unlike traditional build tools, cuenv leverages CUE's ability to compose and validate configuration across directory hierarchies, making it particularly well-suited for monorepos and complex project structures. With integrated Nix support, security isolation, and extensible secret management, cuenv provides a complete development environment solution.
+- **Secrets in `.env` files** that accidentally get committed, logged, or shared
+- **"Works on my machine"** because environment variables differ between developers
+- **Build scripts that can't run in parallel** so your CI takes forever
+- **Copy-paste task definitions** across projects with no validation
 
-**Perfect for:**
-
-- Monorepos requiring consistent environment management
-- Teams needing type-safe configuration
-- Projects with complex build dependencies
-- Security-conscious development workflows
+cuenv fixes this with two powerful primitives.
 
 ---
 
-## Features
+## Two Primitives, Infinite Possibilities
 
-| Feature                      | Status         | Description                                           |
-| ---------------------------- | -------------- | ----------------------------------------------------- |
-| ✅ **CUE Evaluation Engine** | Complete       | Fast, reliable CUE evaluation with Rust performance   |
-| 🚧 **CLI Interface**         | In Development | Task execution and environment management             |
-| 🚧 **Typed Environments**    | In Development | Compose environment constraints from CUE modules      |
-| 🚧 **Task Orchestration**    | In Development | Parallel/sequential execution with smart dependencies |
-| 🚧 **Nix Integration**       | In Development | Automatic software provisioning via Nix flakes        |
-| 🚧 **Secret Management**     | In Development | Extensible resolvers for 1Password, AWS, GCP, etc.    |
-| 📋 **Security Isolation**    | Planned        | Linux namespaces, landlock, eBPF integration          |
-| 🚧 **Shell Integration**     | In Development | Smart hooks for bash, fish, zsh, nushell              |
-| 🚧 **Dev Tool Integration**  | In Development | Seamless Nix flake and Flox compatibility             |
+### `cuenv exec -- <command>`: Run Anything, Securely
 
-**Legend:** ✅ Complete • 🚧 In Development • 📋 Planned
+```bash
+cuenv exec -- npm start
+cuenv exec -e production -- ./deploy.sh
+cuenv exec -- cargo build --release
+```
+
+Every command runs with:
+
+- **Validated environment** - CUE constraints ensure `NODE_ENV` is actually `"development" | "staging" | "production"`, not a typo
+- **Secrets resolved at runtime** - Pulled from 1Password, AWS, GCP, Vault—never stored in files, never in git history
+- **Environment-specific overrides** - Switch from dev to production with `-e production`
+
+```cue
+env: {
+    NODE_ENV: "development" | "staging" | "production"
+    PORT:     >0 & <65536 & *3000
+
+    // Secrets are resolved at runtime, redacted from logs
+    DB_PASSWORD: schema.#OnePasswordRef & {
+        ref: "op://vault/database/password"
+    }
+}
+```
+
+**Why this matters**: Your production credentials are never on disk. They're fetched when needed, used, and forgotten. `cuenv env print` shows `[SECRET]` instead of values. Shell exports exclude secrets entirely.
+
+---
+
+### `cuenv task <name>`: Orchestrated, Parallel, Cached
+
+```bash
+cuenv task build
+cuenv task test
+cuenv task -e production deploy
+```
+
+Every task runs with:
+
+- **Automatic dependency resolution** - `build` waits for `lint` and `test` if configured
+- **Parallel execution** - Independent subtasks run simultaneously
+- **Content-aware caching** - Skip tasks when inputs haven't changed
+- **Same secret + environment benefits** as `exec`
+
+```cue
+tasks: {
+    // Parallel: unit, integration, and lint run at the same time
+    test: {
+        unit:        { command: "npm", args: ["run", "test:unit"] }
+        integration: { command: "npm", args: ["run", "test:e2e"] }
+        lint:        { command: "npm", args: ["run", "lint"] }
+    }
+
+    // Sequential: each step waits for the previous
+    deploy: [
+        { command: "docker", args: ["build", "-t", "myapp", "."] }
+        { command: "docker", args: ["push", "myapp"] }
+        { command: "kubectl", args: ["apply", "-f", "k8s/"] }
+    ]
+
+    // Dependencies: build won't start until test completes
+    build: {
+        command:   "npm"
+        args:      ["run", "build"]
+        dependsOn: ["test"]
+        inputs:    ["src/**/*", "package.json"]
+        outputs:   ["dist/**/*"]
+    }
+}
+```
+
+**Why this matters**: Your test suite runs in parallel. Your CI is faster. If nothing changed, cached results are used. And every task inherits your validated environment and resolved secrets.
 
 ---
 
 ## Quick Start
 
-### Installation 🚧
-
 ```bash
 # Install cuenv
-cargo install cuenv
+nix profile install github:cuenv/cuenv
+# or: cargo install cuenv
 
-# Initialize in your project
-# Create an env.cue file manually for now (cuenv init coming soon)
-touch env.cue
-
-# Setup shell integration
-# Add to your shell config (e.g. .zshrc, .bashrc):
-source <(cuenv shell init bash)
-```
-
-### Basic Configuration
-
-Create an `env.cue` file in your project root:
-
-```cue
+# Create configuration
+cat > env.cue << 'EOF'
 package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
 schema.#Cuenv
 
-// Environment variables with type constraints
 env: {
-    NODE_ENV: "development" | "staging" | "production"
-    PORT:     >0 & <65536 & *3000
-    DEBUG:    bool | *false
-
-    // Environment-specific overrides
-    environment: production: {
-        NODE_ENV: "production"
-        DEBUG:    false
-    }
+    NODE_ENV: "development" | "production"
+    API_KEY:  schema.#OnePasswordRef & { ref: "op://dev/api/key" }
 }
 
-// Task definitions
 tasks: {
-    build: {
-        description: "Build the application"
-        command:     "npm"
-        args:        ["run", "build"]
-        inputs:      ["src/**/*", "package.json"]
-        outputs:     ["dist/**/*"]
-    }
-
-    test: {
-        description: "Run tests in parallel"
-        unit: {
-            command: "npm"
-            args:    ["run", "test:unit"]
-            inputs:  ["src/**/*.test.js"]
-        }
-        integration: {
-            command: "npm"
-            args:    ["run", "test:integration"]
-            inputs:  ["tests/**/*"]
-        }
-    }
+    dev:   { command: "npm", args: ["run", "dev"] }
+    build: { command: "npm", args: ["run", "build"] }
+    test:  { command: "npm", args: ["test"] }
 }
-```
+EOF
 
-### Running Tasks 🚧
+# Run commands with your secure environment
+cuenv exec -- npm install
+cuenv task dev
 
-```bash
 # List available tasks
 cuenv task
-
-# Run a specific task
-cuenv task build
-
-# Run with specific environment
-cuenv --env production task build
-
-# Execute with loaded environment
-cuenv exec npm start
 ```
 
 ---
 
-## Core Concepts
+## Use Cases
 
-### Typed Environments 🚧
+### Secure Your Secrets
 
-cuenv uses CUE's constraint system to provide type-safe environment management:
+Stop committing `.env` files. Define secrets with any provider—they're resolved only when needed:
 
 ```cue
-import (
-    "github.com/myorg/postgres/schema"
-    "github.com/myorg/redis/schema"
-)
+env: {
+    // 1Password
+    DB_PASSWORD: schema.#OnePasswordRef & { ref: "op://vault/db/password" }
 
-// Compose environment constraints from multiple modules
-env: postgres.#Config & redis.#Config & {
-    DATABASE_URL: string & =~"^postgresql://"
-    REDIS_URL:    string & =~"^redis://"
-    API_KEY:      #Secret & {
-        resolver: #OnePasswordRef & {
-            ref: "op://api-keys/production/key"
-        }
+    // AWS Secrets Manager
+    API_KEY: schema.#AWSSecretRef & { region: "us-west-2", name: "api-key" }
+
+    // HashiCorp Vault
+    STRIPE_KEY: schema.#VaultRef & { path: "secret/stripe", field: "key" }
+
+    // Or define your own resolver for any CLI
+    CUSTOM_SECRET: schema.#ExecResolver & {
+        command: "my-secret-tool"
+        args:    ["fetch", "my-secret"]
     }
 }
 ```
 
-### Task Orchestration 🚧
+Secrets are **never written to disk**, **never exported to your shell**, and **redacted from logs**.
 
-Control execution flow with CUE's structure:
+---
+
+### Validate Before You Run
+
+Catch configuration errors before they become runtime failures:
+
+```cue
+env: {
+    // Constrained to valid values only
+    NODE_ENV: "development" | "staging" | "production"
+    LOG_LEVEL: "debug" | "info" | "warn" | "error"
+
+    // Must match patterns
+    DATABASE_URL: string & =~"^postgresql://"
+    API_ENDPOINT: string & =~"^https://"
+
+    // Numeric bounds
+    PORT: >0 & <65536
+
+    // Defaults that can be overridden
+    TIMEOUT: string | *"30s"
+}
+```
+
+If someone sets `NODE_ENV: "prod"` instead of `"production"`, cuenv tells them immediately.
+
+---
+
+### Run Tasks in Parallel
+
+Object keys run in parallel. Arrays run sequentially. Dependencies are respected automatically:
 
 ```cue
 tasks: {
-    // Array structure = sequential execution
-    deploy: {
-        description: "Deploy application"
-        tasks: [
-            {command: "docker", args: ["build", "-t", "myapp", "."]},
-            {command: "docker", args: ["push", "myapp"]},
-            {command: "kubectl", args: ["apply", "-f", "k8s/"]}
-        ]
+    // These three run at the same time
+    lint: {
+        check:  { command: "eslint",   args: ["src/"] }
+        types:  { command: "tsc",      args: ["--noEmit"] }
+        format: { command: "prettier", args: ["--check", "."] }
     }
 
-    // Object structure = parallel execution
-    test: {
-        description: "Run all tests"
-        unit:        {command: "npm", args: ["run", "test:unit"]}
-        integration: {command: "npm", args: ["run", "test:e2e"]}
-        lint:        {command: "npm", args: ["run", "lint"]}
-    }
-}
-```
-
-### Secret Management 🚧
-
-Extensible secret resolution with multiple providers:
-
-```cue
-#OnePasswordRef: #Secret & {
-    ref: string
-    resolver: #ExecResolver & {
-        command: "op"
-        args: ["read", ref]
-    }
-}
-
-#AWSSecretRef: #Secret & {
-    region: string
-    name:   string
-    resolver: #ExecResolver & {
-        command: "aws"
-        args: ["secretsmanager", "get-secret-value",
-               "--region", region, "--secret-id", name,
-               "--query", "SecretString", "--output", "text"]
-    }
-}
-
-env: {
-    DB_PASSWORD: #OnePasswordRef & {
-        ref: "op://vault/database/password"
-    }
-    API_KEY: #AWSSecretRef & {
-        region: "us-west-2"
-        name:   "prod-api-key"
-    }
-}
-```
-
-### Shell Integration 🚧
-
-Automatic environment loading with shell hooks:
-
-```cue
-hooks: {
-    onEnter: [
-        // Load Nix environment
-        schema.#NixFlake & {preload: true},
-
-        // Custom initialization
-        {
-            command: "echo"
-            args: ["Entering cuenv environment..."]
-        }
+    // These run one after another
+    deploy: [
+        { command: "npm",     args: ["run", "build"] }
+        { command: "docker",  args: ["build", "-t", "app", "."] }
+        { command: "docker",  args: ["push", "app"] }
+        { command: "kubectl", args: ["rollout", "restart", "deployment/app"] }
     ]
 
-    onExit: [
-        {
-            command: "echo"
-            args: ["Goodbye!"]
-        }
-    ]
+    // This waits for lint to complete first
+    build: {
+        command:   "npm"
+        args:      ["run", "build"]
+        dependsOn: ["lint"]
+    }
 }
 ```
 
 ---
 
-## CLI Reference 🚧
+### Share Environments Across a Monorepo
 
-### Commands
+CUE configurations compose naturally. Define once, use everywhere:
 
-```bash
-# Task management
-cuenv task                           # List all tasks
-cuenv task build                     # Run build task
-cuenv task --env production build    # Run task in specific environment
-
-# Environment management
-cuenv env print                      # Show current environment
-cuenv env check                      # Check hook status and shell output
-cuenv exec -- npm start             # Execute with loaded env
-
-# Security
-cuenv allow                          # Approve configuration
-cuenv deny                           # Revoke approval
-
-# Setup
-cuenv shell init                     # Generate shell integration script
+```
+myproject/
+├── env.cue              # Global settings
+├── shared/
+│   └── database.cue     # Shared DB config
+├── services/
+│   ├── api/
+│   │   └── env.cue      # Inherits global + adds API-specific
+│   └── web/
+│       └── env.cue      # Inherits global + adds web-specific
 ```
 
-### Global Options
+```cue
+// services/api/env.cue
+import "github.com/myorg/shared/database"
+
+env: database.#Config & {
+    SERVICE_NAME: "api"
+    PORT: 8080
+}
+```
+
+---
+
+### Automatic Shell Integration
+
+When you `cd` into a cuenv project, your shell is configured automatically:
+
+```bash
+# Add to .zshrc / .bashrc
+eval "$(cuenv shell init zsh)"
+
+# Now just cd into your project
+cd ~/projects/myapp
+# → Environment loaded automatically
+# → Nix packages available (if configured)
+# → Ready to work
+```
+
+---
+
+## CLI Reference
+
+```bash
+# Execute commands with your validated environment + resolved secrets
+cuenv exec -- npm start
+cuenv exec -e production -- ./deploy.sh
+
+# Run named tasks with dependencies, parallelism, caching
+cuenv task build
+cuenv task -e staging test
+
+# View environment (secrets are redacted)
+cuenv env print
+cuenv env print --format json
+
+# Shell integration
+cuenv shell init zsh >> ~/.zshrc
+
+# Security approval for configurations
+cuenv allow
+cuenv deny
+```
 
 | Option             | Description                                   |
 | ------------------ | --------------------------------------------- |
 | `--env, -e`        | Environment to use (dev, staging, production) |
 | `--cache`          | Cache mode (off, read, read-write, write)     |
-| `--capability, -c` | Enable specific capabilities                  |
-| `--audit`          | Run in audit mode for security analysis       |
 | `--output-format`  | Output format (tui, spinner, simple, tree)    |
 
 ---
 
-## Advanced Usage
-
-### Monorepo Configuration 🚧
-
-cuenv excels at managing complex monorepo environments:
-
-```
-myproject/
-├── env.cue              # Root configuration
-├── services/
-│   ├── api/
-│   │   └── env.cue      # API-specific config
-│   └── frontend/
-│       └── env.cue      # Frontend-specific config
-└── shared/
-    └── postgres.cue     # Shared schemas
-```
-
-**Root `env.cue`:**
-
-```cue
-package cuenv
-
-// Global environment
-env: {
-    PROJECT_NAME: "myproject"
-    LOG_LEVEL:    "info" | "debug" | "error" | *"info"
-}
-
-// Workspace tasks
-tasks: {
-    "build-all": {
-        description: "Build all services"
-        tasks: [
-            {command: "cuenv", args: ["task", "build"], dir: "services/api"},
-            {command: "cuenv", args: ["task", "build"], dir: "services/frontend"}
-        ]
-    }
-}
-```
-
-### CI/CD Integration 🚧
-
-```yaml
-# .github/workflows/ci.yml
-name: CI
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v22
-      - run: curl -fsSL https://cuenv.sh/install | sh
-      - run: cuenv task ci.quality # Run quality checks
-      - run: cuenv task ci.test # Run all tests
-      - run: cuenv task ci.build # Build artifacts
-```
-
-### Custom Secret Resolvers 🚧
-
-Extend cuenv with your own secret providers:
-
-```cue
-#HashiCorpVaultRef: #Secret & {
-    vault_addr: string
-    path:       string
-    field:      string
-    resolver: #ExecResolver & {
-        command: "vault"
-        args: ["kv", "get", "-address=\(vault_addr)",
-               "-field=\(field)", path]
-    }
-}
-
-env: {
-    SECRET_KEY: #HashiCorpVaultRef & {
-        vault_addr: "https://vault.company.com"
-        path:       "secret/myapp"
-        field:      "api_key"
-    }
-}
-```
-
----
-
-## Architecture
-
-### CUE Evaluation Engine ✅
-
-The core of cuenv is `cuengine`, a high-performance CUE evaluation engine written in Rust with Go FFI integration:
-
-- **Performance**: Native Rust performance with optimized caching
-- **Memory Safety**: Zero-copy string handling and safe FFI boundaries
-- **Reliability**: Comprehensive error handling and recovery
-- **Extensibility**: Plugin architecture for custom functions
-
-### Caching Strategy ✅
-
-Intelligent caching system for fast repeated evaluations:
-
-- **Input Tracking**: File modification time and content hashing
-- **Dependency Resolution**: Automatic cache invalidation
-- **LRU Eviction**: Memory-efficient cache management
-- **Configurable TTL**: Flexible expiration policies
-
-### Security Model 📋
-
-Multi-layered security approach (planned):
-
-- **Linux Namespaces**: Process, network, and filesystem isolation
-- **Landlock**: Fine-grained filesystem access control
-- **eBPF Integration**: System call monitoring and filtering
-- **Capability System**: Principle of least privilege
-- **Audit Logging**: Comprehensive security event tracking
-
----
-
-## Comparison
+## How It Compares
 
 | Feature                | cuenv              | Make       | Bazel          | Taskfile   | direnv           |
 | ---------------------- | ------------------ | ---------- | -------------- | ---------- | ---------------- |
@@ -410,37 +316,15 @@ Multi-layered security approach (planned):
 
 ---
 
-## Project Status
+## Status
 
-### Current Phase: Alpha
-
-**Production Ready:**
-
-- ✅ CUE evaluation engine with comprehensive test suite
-- ✅ FFI bridge between Rust and Go
-- ✅ Caching and retry mechanisms
-- ✅ Input validation and error handling
-
-**In Active Development:**
-
-- 🚧 CLI interface and task runner
-- 🚧 Shell integration and hooks
-- 🚧 Secret management framework
-- 🚧 Nix integration layer
-
-**Planned Features:**
-
-- 📋 Security isolation (namespaces, landlock)
-- 📋 Web UI and monitoring
-- 📋 SaaS offering for teams
-- 📋 IDE integrations
-
-### Roadmap
-
-**Q4 2025:** Complete CLI, basic task execution, shell integration
-**Q1 2026:** Secret management, Nix integration, beta release
-**Q2 2026:** Security features, performance optimizations
-**Q3 2026:** SaaS platform, enterprise features
+| Component              | Status         |
+| ---------------------- | -------------- |
+| CUE Evaluation Engine  | ✅ Complete    |
+| CLI + Task Runner      | 🚧 Development |
+| Secret Management      | 🚧 Development |
+| Shell Integration      | 🚧 Development |
+| Security Isolation     | 📋 Planned     |
 
 ---
 
