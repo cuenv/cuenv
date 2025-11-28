@@ -1,0 +1,38 @@
+[package]
+name = "cuenv-events"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords = ["events", "tracing", "structured-logging"]
+categories = ["development-tools"]
+description = "Structured event system for cuenv - enables multiple UI frontends via unified event stream"
+
+[dependencies]
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "rt"] }
+
+# Identifiers and time
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+# Terminal detection
+atty = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

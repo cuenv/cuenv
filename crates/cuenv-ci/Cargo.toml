@@ -25,6 +25,7 @@ thiserror = { workspace = true }
 miette = { workspace = true }
 async-trait = "0.1"
 chrono = { workspace = true }
+cuenv-events = { workspace = true }
 glob = "0.3"
 regex = "1.10"
 # We'll stick to shelling out to git for now as per spec preference for "native reporting"

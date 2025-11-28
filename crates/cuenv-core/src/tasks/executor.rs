@@ -241,15 +241,14 @@ impl TaskExecutor {
                 // backfill logs for future hits.
                 if !(stdout.is_empty() && stderr.is_empty()) {
                     if !self.config.capture_output {
-                        let cmd_str = if task.command.is_empty() {
-                            task.args.join(" ")
-                        } else {
-                            format!("{} {}", task.command, task.args.join(" "))
-                        };
-                        eprintln!("> [{name}] {cmd_str} (cached)");
-                        // Print cached logs to stdout/stderr since we are not capturing
-                        print!("{}", stdout);
-                        eprint!("{}", stderr);
+                        cuenv_events::emit_task_cache_hit!(name, cache_key);
+                        // Emit cached logs as output events
+                        if !stdout.is_empty() {
+                            cuenv_events::emit_task_output!(name, "stdout", stdout);
+                        }
+                        if !stderr.is_empty() {
+                            cuenv_events::emit_task_output!(name, "stderr", stderr);
+                        }
                     }
                     return Ok(TaskResult {
                         name: name.to_string(),
@@ -412,7 +411,7 @@ impl TaskExecutor {
                 } else {
                     format!("{} {}", task.command, task.args.join(" "))
                 };
-                eprintln!("> [{name}] {cmd_str}");
+                cuenv_events::emit_task_started!(name, cmd_str, true);
             }
 
             let start = std::time::Instant::now();
@@ -673,14 +672,14 @@ impl TaskExecutor {
             "Executing non-hermetic task"
         );
 
-        // Print command being run
+        // Emit command being run
         let cmd_str = if task.command.is_empty() {
             task.args.join(" ")
         } else {
             format!("{} {}", task.command, task.args.join(" "))
         };
         if !self.config.capture_output {
-            eprintln!("> [{name}] {cmd_str}");
+            cuenv_events::emit_task_started!(name, cmd_str, false);
         }
 
         // Resolve command path
@@ -825,7 +824,7 @@ impl TaskExecutor {
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         if !self.config.capture_output {
-            eprintln!("> Running sequential group: {prefix}");
+            cuenv_events::emit_task_group_started!(prefix, true, tasks.len());
         }
         let mut results = Vec::new();
         for (i, task_def) in tasks.iter().enumerate() {
@@ -856,7 +855,7 @@ impl TaskExecutor {
         // Check for "default" task to override parallel execution
         if let Some(default_task) = tasks.get("default") {
             if !self.config.capture_output {
-                eprintln!("> Executing default task for group '{prefix}'");
+                cuenv_events::emit_task_group_started!(prefix, true, 1_usize);
             }
             // Execute only the default task, using the group prefix directly
             // since "default" is implicit when invoking the group name
@@ -867,10 +866,7 @@ impl TaskExecutor {
         }
 
         if !self.config.capture_output {
-            eprintln!(
-                "> Running parallel group: {prefix} (max_parallel={})",
-                self.config.max_parallel
-            );
+            cuenv_events::emit_task_group_started!(prefix, false, tasks.len());
         }
         let mut join_set = JoinSet::new();
         let all_tasks = Arc::new(all_tasks.clone());

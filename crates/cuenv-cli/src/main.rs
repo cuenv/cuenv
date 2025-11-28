@@ -5,11 +5,12 @@
 //! This binary provides command-line interface for CUE package evaluation,
 //! environment variable management, and task orchestration.
 
-// Individual clippy allows for specific justified cases can be added locally
-// where needed, rather than broad suppression
+// CLI binary needs to output to stdout/stderr - this is intentional
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod cli;
 mod commands;
+mod coordinator;
 mod events;
 mod performance;
 mod tracing;
@@ -21,6 +22,7 @@ use crate::tracing::{Level, TracingConfig, TracingFormat};
 use cuenv_core::hooks::execute_hooks;
 use cuenv_core::hooks::state::StateManager;
 use cuenv_core::hooks::{ExecutionStatus, Hook, HookExecutionConfig};
+use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use std::path::PathBuf;
 use tracing::instrument;
 
@@ -63,9 +65,9 @@ async fn real_main() -> Result<(), CliError> {
         return run_hook_supervisor(args).await;
     }
 
-    // Parse CLI arguments
-    let cli = match initialize_cli_and_tracing().await {
-        Ok(cli) => cli,
+    // Parse CLI arguments and initialize event system
+    let init_result = match initialize_cli_and_tracing().await {
+        Ok(result) => result,
         Err(e) => {
             return Err(CliError::config_with_help(
                 format!("Failed to parse CLI arguments: {e}"),
@@ -75,26 +77,35 @@ async fn real_main() -> Result<(), CliError> {
     };
 
     // Convert CLI command to internal command
-    let command: Command = cli.command.into();
+    let command: Command = init_result.cli.command.into();
 
     // Execute the command
-    match execute_command_safe(command, cli.json).await {
+    match execute_command_safe(command, init_result.cli.json).await {
         Ok(()) => Ok(()),
         Err(e) => Err(e),
     }
 }
 
+/// Result of CLI and tracing initialization
+struct InitResult {
+    cli: crate::cli::Cli,
+    /// Handle to the renderer task (if running)
+    _renderer_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
 /// Initialize CLI parsing and tracing configuration
 #[instrument(name = "cuenv_initialize_cli_and_tracing")]
-async fn initialize_cli_and_tracing() -> Result<crate::cli::Cli, CliError> {
+async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
     // Parse CLI arguments once
     let cli = parse();
 
     // Derive tracing configuration from parsed CLI
+    // In normal mode, use Pretty which suppresses output unless DEBUG level
+    // Dev format is verbose and always outputs - only use when explicitly requested
     let trace_format = if cli.json {
         TracingFormat::Json
     } else {
-        TracingFormat::Dev
+        TracingFormat::Pretty
     };
 
     let log_level = match cli.level {
@@ -105,23 +116,42 @@ async fn initialize_cli_and_tracing() -> Result<crate::cli::Cli, CliError> {
         crate::tracing::LogLevel::Error => Level::ERROR,
     };
 
-    // Initialize enhanced tracing
+    // Initialize enhanced tracing with event capture
     let tracing_config = TracingConfig {
-        format: trace_format,
+        format: trace_format.clone(),
         level: log_level,
         ..Default::default()
     };
 
-    match crate::tracing::init_tracing(tracing_config) {
-        Ok(()) => {}
+    let event_bus = match crate::tracing::init_tracing_with_events(tracing_config) {
+        Ok(bus) => bus,
         Err(e) => {
             return Err(CliError::config(format!(
                 "Failed to initialize tracing: {e}"
             )));
         }
-    }
+    };
 
-    Ok(cli)
+    // Spawn appropriate renderer based on output mode
+    let receiver = event_bus.subscribe();
+    let renderer_handle = if cli.json {
+        // JSON mode: output structured JSON events
+        let renderer = JsonRenderer::new();
+        Some(tokio::spawn(async move {
+            renderer.run(receiver).await;
+        }))
+    } else {
+        // CLI mode: pretty-print events to terminal
+        let renderer = CliRenderer::new();
+        Some(tokio::spawn(async move {
+            renderer.run(receiver).await;
+        }))
+    };
+
+    Ok(InitResult {
+        cli,
+        _renderer_handle: renderer_handle,
+    })
 }
 
 /// Execute command safely without ? operator
@@ -235,6 +265,14 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
+        Command::Tui => match execute_tui_command().await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::Web { port, host } => match execute_web_command(port, host).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
     }
 }
 
@@ -249,6 +287,56 @@ async fn execute_ci_command_safe(
         Ok(()) => Ok(()),
         Err(e) => Err(CliError::other(format!("CI execution failed: {e}"))),
     }
+}
+
+/// Execute TUI command - starts interactive event dashboard
+#[instrument(name = "cuenv_execute_tui")]
+async fn execute_tui_command() -> Result<(), CliError> {
+    use crate::coordinator::client::CoordinatorClient;
+    use crate::coordinator::protocol::UiType;
+
+    // Connect to coordinator as a TUI consumer
+    let Ok(mut client) = CoordinatorClient::connect_as_consumer(UiType::Tui).await else {
+        return Err(CliError::other(
+            "No cuenv coordinator is running.\n\n\
+             The TUI connects to an event coordinator to display events from other cuenv commands.\n\
+             To use the TUI:\n\
+             1. Run a cuenv command (e.g., 'cuenv t') in another terminal\n\
+             2. Then run 'cuenv tui' to watch the events\n\n\
+             Note: The coordinator is started automatically when running task commands."
+                .to_string(),
+        ));
+    };
+
+    cuenv_events::emit_command_started!("tui");
+
+    // Run the TUI event viewer
+    match crate::tui::run_event_viewer(&mut client).await {
+        Ok(()) => {
+            cuenv_events::emit_command_completed!("tui", true, 0_u64);
+            Ok(())
+        }
+        Err(e) => {
+            cuenv_events::emit_command_completed!("tui", false, 0_u64);
+            Err(CliError::other(format!("TUI error: {e}")))
+        }
+    }
+}
+
+/// Execute Web command - starts web server for event streaming
+#[instrument(name = "cuenv_execute_web")]
+async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
+    cuenv_events::emit_command_started!("web");
+
+    // For now, just print a placeholder message
+    // Full web server implementation would require adding a web framework dependency
+    cuenv_events::emit_stdout!(format!(
+        "Web server would start on http://{}:{}\nThis feature is not yet implemented.",
+        host, port
+    ));
+
+    cuenv_events::emit_command_completed!("web", true, 0_u64);
+    Ok(())
 }
 
 /// Execute version command safely
@@ -652,19 +740,31 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
 
     // Change to the target directory so hooks run in the correct context
     if let Err(e) = std::env::set_current_dir(&directory_path) {
-        eprintln!(
-            "[supervisor] Failed to change directory to {}: {}",
-            directory_path.display(),
-            e
+        cuenv_events::emit_supervisor_log!(
+            "supervisor",
+            format!(
+                "Failed to change directory to {}: {}",
+                directory_path.display(),
+                e
+            )
         );
         return Err(CliError::other(format!("Failed to change directory: {e}")));
     }
 
-    eprintln!("[supervisor] Starting with args: {args:?}");
-    eprintln!("[supervisor] Directory: {}", directory_path.display());
-    eprintln!("[supervisor] Instance hash: {instance_hash}");
-    eprintln!("[supervisor] Hooks file: {}", hooks_file.display());
-    eprintln!("[supervisor] Config file: {}", config_file.display());
+    cuenv_events::emit_supervisor_log!("supervisor", format!("Starting with args: {args:?}"));
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Directory: {}", directory_path.display())
+    );
+    cuenv_events::emit_supervisor_log!("supervisor", format!("Instance hash: {instance_hash}"));
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Hooks file: {}", hooks_file.display())
+    );
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Config file: {}", config_file.display())
+    );
 
     // Read and deserialize hooks and config from files
     let hooks_json = std::fs::read_to_string(&hooks_file)
@@ -686,12 +786,15 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
         .state_dir
         .clone()
         .unwrap_or_else(|| StateManager::default_state_dir().unwrap());
-    eprintln!("[supervisor] Using state dir: {}", state_dir.display());
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Using state dir: {}", state_dir.display())
+    );
     let state_manager = StateManager::new(state_dir);
     let state_file = state_manager.get_state_file_path(&instance_hash);
-    eprintln!(
-        "[supervisor] Looking for state file: {}",
-        state_file.display()
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Looking for state file: {}", state_file.display())
     );
 
     let pid_file = state_file.with_extension("pid");
@@ -706,15 +809,18 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
         .ok_or_else(|| CliError::other("State not found for supervisor"))?;
 
     // Execute the hooks
-    eprintln!(
-        "[supervisor] Executing {} hooks for directory: {}",
-        hooks.len(),
-        directory_path.display()
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!(
+            "Executing {} hooks for directory: {}",
+            hooks.len(),
+            directory_path.display()
+        )
     );
     let result = execute_hooks(hooks, &directory_path, &config, &state_manager, &mut state).await;
 
     if let Err(e) = result {
-        eprintln!("[supervisor] Hook execution failed: {e}");
+        cuenv_events::emit_supervisor_log!("supervisor", format!("Hook execution failed: {e}"));
         state.status = ExecutionStatus::Failed;
         state.error_message = Some(e.to_string());
         state.finished_at = Some(chrono::Utc::now());
@@ -726,9 +832,12 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     }
 
     // Save the final state with environment variables from source hooks
-    eprintln!(
-        "[supervisor] Saving final state with {} environment variables",
-        state.environment_vars.len()
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!(
+            "Saving final state with {} environment variables",
+            state.environment_vars.len()
+        )
     );
     state_manager
         .save_state(&state)
@@ -738,7 +847,7 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     // Clean up PID file
     std::fs::remove_file(&pid_file).ok();
 
-    eprintln!("[supervisor] Completed successfully");
+    cuenv_events::emit_supervisor_log!("supervisor", "Completed successfully");
     Ok(())
 }
 
@@ -789,7 +898,7 @@ mod tests {
         let trace_format = if json_flag {
             TracingFormat::Json
         } else {
-            TracingFormat::Dev
+            TracingFormat::Pretty
         };
         assert!(matches!(trace_format, TracingFormat::Json));
 
@@ -797,9 +906,9 @@ mod tests {
         let trace_format = if json_flag {
             TracingFormat::Json
         } else {
-            TracingFormat::Dev
+            TracingFormat::Pretty
         };
-        assert!(matches!(trace_format, TracingFormat::Dev));
+        assert!(matches!(trace_format, TracingFormat::Pretty));
     }
 
     #[test]
