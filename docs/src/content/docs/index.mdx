@@ -1,11 +1,11 @@
 ---
 title: cuenv
-description: A modern application build toolchain with typed environments and CUE-powered task orchestration
+description: Two commands. Type-safe environments. Secrets that never leak. Tasks that run in parallel.
 template: splash
 hero:
   title: |
     <span class="text-gradient">cuenv</span>
-  tagline: A modern application build toolchain with typed environments and CUE-powered task orchestration.
+  tagline: Two commands. Type-safe environments. Secrets that never leak. Tasks that run in parallel.
   actions:
     - text: Quick Start
       link: /quick-start/
@@ -19,26 +19,57 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Why cuenv?
+## The Problem
+
+You've been here before: secrets in `.env` files that get committed, "works on my machine" bugs, CI pipelines that can't run in parallel, and copy-paste task definitions with no validation.
+
+**cuenv fixes this with two primitives.**
+
+---
+
+## Two Primitives
 
 <CardGrid>
-  <Card title="Typed Environments" icon="setting">
-    Define your environment with CUE's powerful constraint system. Validate configuration before runtime.
+  <Card title="cuenv exec -- <command>" icon="rocket">
+    Run any command with validated environment variables and secrets resolved at runtime. Never store credentials on disk.
+
+    ```bash
+    cuenv exec -- npm start
+    cuenv exec -e production -- ./deploy.sh
+    ```
   </Card>
-  <Card title="Task Orchestration" icon="list-format">
-    Execute tasks in parallel with smart dependency management. Define complex workflows with ease.
-  </Card>
-  <Card title="Secret Management" icon="lock">
-    Exec-based secret resolvers integrate with 1Password, GCP Secret Manager, and any CLI tool.
-  </Card>
-  <Card title="Nix Integration" icon="open-book">
-    Seamlessly manage dependencies and tools with Nix flakes for reproducible environments.
+  <Card title="cuenv task <name>" icon="list-format">
+    Run named tasks with automatic dependency resolution, parallel execution, and content-aware caching.
+
+    ```bash
+    cuenv task build
+    cuenv task -e staging deploy
+    ```
   </Card>
 </CardGrid>
 
-## Preview
+---
 
-Define your environment and tasks in `env.cue`:
+## Why This Matters
+
+<CardGrid>
+  <Card title="Secrets Never Leak" icon="lock">
+    Secrets are fetched at runtime from 1Password, AWS, GCP, Vault—never written to disk, never exported to your shell, redacted from logs.
+  </Card>
+  <Card title="Validate Before You Run" icon="approve-check-circle">
+    CUE constraints catch `NODE_ENV: "prod"` typos before they become runtime failures. Type-safe configuration for your entire team.
+  </Card>
+  <Card title="Parallel by Default" icon="random">
+    Object keys run in parallel. Arrays run sequentially. Dependencies are respected. Your CI gets faster automatically.
+  </Card>
+  <Card title="Works Everywhere" icon="laptop">
+    Shell integration loads your environment when you `cd` into a project. Nix integration provisions tools automatically.
+  </Card>
+</CardGrid>
+
+---
+
+## See It In Action
 
 ```cue
 package cuenv
@@ -47,47 +78,57 @@ import "github.com/cuenv/cuenv/schema"
 
 schema.#Cuenv
 
-// Typed configuration
 env: {
-    NODE_ENV: "development" | "production"
-    PORT:     3000
+    NODE_ENV: "development" | "staging" | "production"
+
+    // Secrets resolved at runtime, never stored
+    DB_PASSWORD: schema.#OnePasswordRef & {
+        ref: "op://vault/database/password"
+    }
 }
 
-// Task definitions
 tasks: {
+    // These run in parallel
+    test: {
+        unit:        { command: "npm", args: ["run", "test:unit"] }
+        integration: { command: "npm", args: ["run", "test:e2e"] }
+        lint:        { command: "npm", args: ["run", "lint"] }
+    }
+
+    // This waits for test to complete
     build: {
-        command:   "bun"
+        command:   "npm"
         args:      ["run", "build"]
-        dependsOn: ["install"]
+        dependsOn: ["test"]
     }
 }
 ```
 
-## Project Status
+---
 
-<div class="not-content">
-  <CardGrid stagger>
-    <Card title="Core Engine" icon="approve-check-circle">
-      Complete. Fast CUE evaluation with Rust performance and FFI integration.
-    </Card>
-    <Card title="CLI Interface" icon="warning">
-      Alpha. Task execution, environment management, and shell integration are in active development.
-    </Card>
-    <Card title="Ecosystem" icon="puzzle">
-      In Development. Nix integration, secret management, and advanced security features are coming soon.
-    </Card>
-  </CardGrid>
-</div>
-
-## Join the Community
-
-cuenv is open source and built for the community.
+## Status
 
 <CardGrid>
-  <Card title="GitHub" icon="github">
-    [Star us on GitHub](https://github.com/cuenv/cuenv) and contribute to the code.
+  <Card title="Core Engine" icon="approve-check-circle">
+    Complete. Fast CUE evaluation with Rust performance.
   </Card>
-  <Card title="Discussions" icon="discord">
-    Join the conversation in [GitHub Discussions](https://github.com/cuenv/cuenv/discussions).
+  <Card title="CLI + Tasks" icon="warning">
+    Alpha. `exec` and `task` commands in active development.
+  </Card>
+  <Card title="Secrets + Shell" icon="puzzle">
+    In development. Secret resolvers and shell integration coming soon.
+  </Card>
+</CardGrid>
+
+---
+
+## Get Started
+
+<CardGrid>
+  <Card title="Quick Start" icon="right-arrow">
+    [Install cuenv and run your first command](/quick-start/) in under 5 minutes.
+  </Card>
+  <Card title="GitHub" icon="github">
+    [Star us on GitHub](https://github.com/cuenv/cuenv) and contribute to the project.
   </Card>
 </CardGrid>
