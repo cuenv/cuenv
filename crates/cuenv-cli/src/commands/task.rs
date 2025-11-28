@@ -44,7 +44,8 @@ pub async fn execute_task(
 
     // Evaluate CUE to get tasks and environment
     let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv = evaluate_manifest_with_fallback(&evaluator, Path::new(path), package)?;
+    let manifest: Cuenv = evaluate_manifest_with_fallback(&evaluator, Path::new(path), package)?
+        .with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
 
     tracing::debug!(
@@ -721,7 +722,8 @@ async fn resolve_and_materialize_external(
 
     // Detect package name and evaluate
     let package = detect_package_name(&ext_dir)?;
-    let manifest: Cuenv = evaluate_manifest_with_fallback(evaluator, &ext_dir, &package)?;
+    let manifest: Cuenv =
+        evaluate_manifest_with_fallback(evaluator, &ext_dir, &package)?.with_implicit_tasks();
 
     // Locate external task
     let task_def = manifest.tasks.get(&ext.task).ok_or_else(|| {
@@ -1141,15 +1143,8 @@ env: {
         let task = Task {
             command: "echo".into(),
             args: vec!["hi".into()],
-            shell: None,
-            env: std::collections::HashMap::default(),
-            depends_on: vec![],
             inputs: vec!["inputs".into()],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
-            description: None,
+            ..Default::default()
         };
 
         let k1 = compute_task_cache_key(&task, &env, &ws).expect("key1");
@@ -1213,15 +1208,9 @@ env: {
                 "-c".into(),
                 "mkdir -p out; cat inputs/in.txt > out/out.txt; echo done".into(),
             ],
-            shell: None,
-            env: std::collections::HashMap::default(),
-            depends_on: vec![],
             inputs: vec!["inputs".into()],
             outputs: vec!["out/out.txt".into()],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
-            description: None,
+            ..Default::default()
         };
 
         // Execute directly via helper
@@ -1255,15 +1244,9 @@ env: {
         let task = Task {
             command: "sh".into(),
             args: vec!["-c".into(), "cp inputs/in.txt out.txt".into()],
-            shell: None,
-            env: std::collections::HashMap::default(),
-            depends_on: vec![],
             inputs: vec!["inputs".into()],
             outputs: vec!["out.txt".into()],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
-            description: None,
+            ..Default::default()
         };
         let def = TaskDefinition::Single(Box::new(task.clone()));
         let mut all = Tasks::new();
@@ -1296,16 +1279,8 @@ env: {
         // Helper to create a dummy task
         let make_task = |desc: Option<&str>| Task {
             command: "echo".into(),
-            args: vec![],
-            shell: None,
-            env: std::collections::HashMap::default(),
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            inputs_from: None,
-            external_inputs: None,
-            workspaces: vec![],
             description: desc.map(ToString::to_string),
+            ..Default::default()
         };
 
         let t_build = IndexedTask {

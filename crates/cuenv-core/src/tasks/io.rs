@@ -126,10 +126,9 @@ impl InputResolver {
                     let glob = Glob::new(&glob_pat).map_err(|e| {
                         Error::configuration(format!("Invalid glob pattern '{glob_pat}': {e}"))
                     })?;
-                    let set = GlobSetBuilder::new()
-                        .add(glob)
-                        .build()
-                        .map_err(|e| Error::configuration(format!("Failed to build glob set: {e}")))?;
+                    let set = GlobSetBuilder::new().add(glob).build().map_err(|e| {
+                        Error::configuration(format!("Failed to build glob set: {e}"))
+                    })?;
                     dirs_to_walk.push((base_dir, set));
                 } else if abs.is_dir() {
                     // Directory - walk it with a recursive glob
@@ -137,10 +136,9 @@ impl InputResolver {
                     let glob = Glob::new(&glob_pat).map_err(|e| {
                         Error::configuration(format!("Invalid glob pattern '{glob_pat}': {e}"))
                     })?;
-                    let set = GlobSetBuilder::new()
-                        .add(glob)
-                        .build()
-                        .map_err(|e| Error::configuration(format!("Failed to build glob set: {e}")))?;
+                    let set = GlobSetBuilder::new().add(glob).build().map_err(|e| {
+                        Error::configuration(format!("Failed to build glob set: {e}"))
+                    })?;
                     dirs_to_walk.push((p.to_string(), set));
                 } else {
                     // Explicit file path
@@ -159,7 +157,8 @@ impl InputResolver {
         let mut files: Vec<ResolvedInputFile> = Vec::new();
 
         // Resolve explicit file paths directly (no walking needed)
-        let explicit_span = tracing::debug_span!("explicit_files.resolve", count = explicit_files.len());
+        let explicit_span =
+            tracing::debug_span!("explicit_files.resolve", count = explicit_files.len());
         {
             let _g = explicit_span.enter();
             for raw in &explicit_files {
@@ -179,15 +178,16 @@ impl InputResolver {
                     tracing::warn!(path = %raw, "Explicit input file not found");
                 }
             }
-            tracing::debug!(explicit_files_found = files.len(), "Explicit files resolved");
+            tracing::debug!(
+                explicit_files_found = files.len(),
+                "Explicit files resolved"
+            );
         }
 
         // Walk only the specific directories that need walking
         if !dirs_to_walk.is_empty() {
-            let walkdir_span = tracing::info_span!(
-                "walkdir.traverse",
-                dirs_count = dirs_to_walk.len()
-            );
+            let walkdir_span =
+                tracing::info_span!("walkdir.traverse", dirs_count = dirs_to_walk.len());
             let _g = walkdir_span.enter();
 
             let mut total_entries_visited: u64 = 0;
@@ -250,10 +250,7 @@ impl InputResolver {
         // Deterministic ordering
         files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
 
-        tracing::info!(
-            total_files = files.len(),
-            "Input resolution complete"
-        );
+        tracing::info!(total_files = files.len(), "Input resolution complete");
 
         Ok(ResolvedInputs { files })
     }
