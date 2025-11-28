@@ -22,7 +22,27 @@ This guide covers all installation methods for cuenv across different platforms 
 
 ## Installation Methods
 
-### Method 1: From Crates.io (Recommended)
+### Method 1: Using Nix (Recommended)
+
+If you have Nix installed, this is the preferred way to install cuenv:
+
+```bash
+# Install from flake
+nix profile install github:cuenv/cuenv
+
+# Or run directly
+nix run github:cuenv/cuenv -- --help
+```
+
+### Method 2: Using Homebrew
+
+For macOS and Linux users with Homebrew:
+
+```bash
+brew install cuenv/cuenv
+```
+
+### Method 3: From Crates.io
 
 :::note
 This method will be available once cuenv reaches stable release.
@@ -32,39 +52,15 @@ This method will be available once cuenv reaches stable release.
 cargo install cuenv-cli
 ```
 
-### Method 2: From GitHub Releases
+### Method 4: From GitHub Releases
 
 :::note
-Pre-built binaries will be available once cuenv reaches stable release. For now, use Method 3 (From Source) or Method 4 (Using Nix).
+Pre-built binaries will be available once cuenv reaches stable release.
 :::
 
-Download pre-built binaries from the [releases page](https://github.com/cuenv/cuenv/releases):
+Download pre-built binaries from the [releases page](https://github.com/cuenv/cuenv/releases).
 
-**Linux (x86_64)**
-
-```bash
-curl -LO https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x86_64.tar.gz
-tar xzf cuenv-linux-x86_64.tar.gz
-sudo mv cuenv /usr/local/bin/
-```
-
-**macOS (Intel)**
-
-```bash
-curl -LO https://github.com/cuenv/cuenv/releases/latest/download/cuenv-macos-x86_64.tar.gz
-tar xzf cuenv-macos-x86_64.tar.gz
-sudo mv cuenv /usr/local/bin/
-```
-
-**macOS (Apple Silicon)**
-
-```bash
-curl -LO https://github.com/cuenv/cuenv/releases/latest/download/cuenv-macos-aarch64.tar.gz
-tar xzf cuenv-macos-aarch64.tar.gz
-sudo mv cuenv /usr/local/bin/
-```
-
-### Method 3: From Source
+### Method 5: From Source
 
 Build from source for the latest development features:
 
@@ -80,19 +76,7 @@ cargo build --release
 cargo install --path crates/cuenv-cli
 ```
 
-### Method 4: Using Nix
-
-If you have Nix installed:
-
-```bash
-# Install from flake
-nix profile install github:cuenv/cuenv
-
-# Or run directly
-nix run github:cuenv/cuenv -- --help
-```
-
-### Method 5: Development Environment
+### Method 6: Development Environment
 
 For contributors and developers:
 
@@ -159,13 +143,8 @@ cargo install cuenv-cli
 
 #### Using Homebrew
 
-:::note
-Homebrew formula coming soon.
-:::
-
 ```bash
-# Future homebrew installation
-brew install cuenv
+brew install cuenv/cuenv
 ```
 
 #### Manual Installation
@@ -253,16 +232,6 @@ Add to `~/.config/fish/config.fish`:
 ```fish
 # cuenv shell integration
 cuenv shell init fish | source
-```
-
-### Nushell
-
-Add to `~/.config/nushell/config.nu`:
-
-```nushell
-# cuenv shell integration
-cuenv shell init nu | save -f ~/.cuenv.nu
-source ~/.cuenv.nu
 ```
 
 ## IDE Integration
