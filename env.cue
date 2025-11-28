@@ -15,7 +15,23 @@ ci: pipelines: [
 			defaultBranch: true
 		}
 		tasks: ["fmt.check", "lint", "test.unit", "build"]
-	}
+	},
+	{
+		name: "test"
+		tasks: ["test.unit", "test.doc", "test.bdd"]
+	},
+	{
+		name: "security"
+		tasks: ["security.audit", "security.deny", "sbom"]
+	},
+	{
+		name: "coverage"
+		tasks: ["coverage"]
+	},
+	{
+		name: "benchmarks"
+		tasks: ["bench"]
+	},
 ]
 
 hooks: {
