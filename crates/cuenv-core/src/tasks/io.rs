@@ -52,6 +52,7 @@ fn normalize_rel_path(p: &Path) -> PathBuf {
 }
 
 pub fn sha256_file(path: &Path) -> Result<(String, u64)> {
+    let _span = tracing::trace_span!("sha256_file", path = %path.display()).entered();
     let mut file = fs::File::open(path).map_err(|e| Error::Io {
         source: e,
         path: Some(path.into()),
@@ -73,6 +74,7 @@ pub fn sha256_file(path: &Path) -> Result<(String, u64)> {
         total += n as u64;
     }
     let digest = hasher.finalize();
+    tracing::trace!(path = %path.display(), size = total, "Hashed file");
     Ok((hex::encode(digest), total))
 }
 
@@ -88,92 +90,191 @@ impl InputResolver {
     }
 
     pub fn resolve(&self, patterns: &[String]) -> Result<ResolvedInputs> {
-        // Build a globset for all file patterns; directories are expanded via walk
-        let mut builder = GlobSetBuilder::new();
-        let mut raw_patterns: Vec<(String, bool)> = Vec::new(); // (pattern, is_dir_hint)
+        let resolve_span = tracing::info_span!(
+            "input_resolver.resolve",
+            root = %self.project_root.display(),
+            pattern_count = patterns.len()
+        );
+        let _resolve_guard = resolve_span.enter();
 
-        for pat in patterns {
-            let p = pat.trim();
-            if p.is_empty() {
-                continue;
+        tracing::debug!(
+            patterns = ?patterns,
+            "Starting input resolution"
+        );
+
+        // Categorize patterns: explicit files, directories to walk, and globs
+        let mut explicit_files: Vec<String> = Vec::new();
+        let mut dirs_to_walk: Vec<(String, GlobSet)> = Vec::new(); // (dir_path, globset for matching)
+
+        let pattern_span = tracing::debug_span!("patterns.analyze");
+        {
+            let _g = pattern_span.enter();
+            for pat in patterns {
+                let p = pat.trim();
+                if p.is_empty() {
+                    continue;
+                }
+
+                let looks_like_glob =
+                    p.contains('*') || p.contains('{') || p.contains('?') || p.contains('[');
+                let abs = self.project_root.join(p);
+
+                if looks_like_glob {
+                    // Extract base directory from glob pattern
+                    let base_dir = extract_glob_base(p);
+                    let glob_pat = p.to_string();
+                    let glob = Glob::new(&glob_pat).map_err(|e| {
+                        Error::configuration(format!("Invalid glob pattern '{glob_pat}': {e}"))
+                    })?;
+                    let set = GlobSetBuilder::new()
+                        .add(glob)
+                        .build()
+                        .map_err(|e| Error::configuration(format!("Failed to build glob set: {e}")))?;
+                    dirs_to_walk.push((base_dir, set));
+                } else if abs.is_dir() {
+                    // Directory - walk it with a recursive glob
+                    let glob_pat = format!("{}/**/*", p.trim_end_matches('/'));
+                    let glob = Glob::new(&glob_pat).map_err(|e| {
+                        Error::configuration(format!("Invalid glob pattern '{glob_pat}': {e}"))
+                    })?;
+                    let set = GlobSetBuilder::new()
+                        .add(glob)
+                        .build()
+                        .map_err(|e| Error::configuration(format!("Failed to build glob set: {e}")))?;
+                    dirs_to_walk.push((p.to_string(), set));
+                } else {
+                    // Explicit file path
+                    explicit_files.push(p.to_string());
+                }
             }
-            let abs = self.project_root.join(p);
-            let is_dir_hint = abs.is_dir();
-            raw_patterns.push((p.to_string(), is_dir_hint));
 
-            // If it looks like a glob, add as-is; else if dir, add /**
-            let looks_like_glob =
-                p.contains('*') || p.contains('{') || p.contains('?') || p.contains('[');
-            let glob_pat = if looks_like_glob {
-                p.to_string()
-            } else if is_dir_hint {
-                // ensure trailing slash insensitive recursive
-                format!("{}/**/*", p.trim_end_matches('/'))
-            } else {
-                p.to_string()
-            };
-            let glob = Glob::new(&glob_pat).map_err(|e| {
-                Error::configuration(format!("Invalid glob pattern '{glob_pat}': {e}"))
-            })?;
-            builder.add(glob);
+            tracing::debug!(
+                explicit_file_count = explicit_files.len(),
+                dirs_to_walk_count = dirs_to_walk.len(),
+                "Categorized input patterns"
+            );
         }
-        let set: GlobSet = builder
-            .build()
-            .map_err(|e| Error::configuration(format!("Failed to build glob set: {e}")))?;
 
-        // Walk project_root and pick files that match any pattern, plus explicit file paths
         let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
         let mut files: Vec<ResolvedInputFile> = Vec::new();
 
-        // Fast path: also queue explicit file paths even if the globset wouldn't match due to being plain path
-        for (raw, _is_dir) in &raw_patterns {
-            let abs = self.project_root.join(raw);
-            if abs.is_file() {
-                let rel = normalize_rel_path(Path::new(raw));
-                if seen.insert(rel.clone()) {
-                    let (hash, size) = sha256_file(&abs)?;
-                    files.push(ResolvedInputFile {
-                        rel_path: rel,
-                        source_path: canonical_or_abs(&abs)?,
-                        sha256: hash,
-                        size,
-                    });
+        // Resolve explicit file paths directly (no walking needed)
+        let explicit_span = tracing::debug_span!("explicit_files.resolve", count = explicit_files.len());
+        {
+            let _g = explicit_span.enter();
+            for raw in &explicit_files {
+                let abs = self.project_root.join(raw);
+                if abs.is_file() {
+                    let rel = normalize_rel_path(Path::new(raw));
+                    if seen.insert(rel.clone()) {
+                        let (hash, size) = sha256_file(&abs)?;
+                        files.push(ResolvedInputFile {
+                            rel_path: rel,
+                            source_path: canonical_or_abs(&abs)?,
+                            sha256: hash,
+                            size,
+                        });
+                    }
+                } else {
+                    tracing::warn!(path = %raw, "Explicit input file not found");
                 }
             }
+            tracing::debug!(explicit_files_found = files.len(), "Explicit files resolved");
         }
 
-        for entry in WalkDir::new(&self.project_root)
-            .follow_links(true)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            if path.is_dir() {
-                continue;
+        // Walk only the specific directories that need walking
+        if !dirs_to_walk.is_empty() {
+            let walkdir_span = tracing::info_span!(
+                "walkdir.traverse",
+                dirs_count = dirs_to_walk.len()
+            );
+            let _g = walkdir_span.enter();
+
+            let mut total_entries_visited: u64 = 0;
+            let mut total_files_matched: u64 = 0;
+            let mut total_bytes_hashed: u64 = 0;
+
+            for (base_dir, globset) in &dirs_to_walk {
+                let walk_root = self.project_root.join(base_dir);
+                if !walk_root.exists() {
+                    tracing::debug!(dir = %base_dir, "Directory does not exist, skipping");
+                    continue;
+                }
+
+                tracing::debug!(dir = %base_dir, "Walking directory for glob matches");
+
+                for entry in WalkDir::new(&walk_root)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    total_entries_visited += 1;
+                    let path = entry.path();
+                    if path.is_dir() {
+                        continue;
+                    }
+
+                    // Relative to project root (not walk root)
+                    let rel = match path.strip_prefix(&self.project_root) {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+                    let rel_norm = normalize_rel_path(rel);
+
+                    // Match against this specific globset
+                    if globset.is_match(rel_norm.as_path()) && seen.insert(rel_norm.clone()) {
+                        total_files_matched += 1;
+                        let src = canonical_or_abs(path)?;
+                        let (hash, size) = sha256_file(&src)?;
+                        total_bytes_hashed += size;
+                        files.push(ResolvedInputFile {
+                            rel_path: rel_norm,
+                            source_path: src,
+                            sha256: hash,
+                            size,
+                        });
+                    }
+                }
             }
-            // Relative to root
-            let rel = match path.strip_prefix(&self.project_root) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            let rel_norm = normalize_rel_path(rel);
-            // Match globset relative path
-            if set.is_match(rel_norm.as_path()) && seen.insert(rel_norm.clone()) {
-                let src = canonical_or_abs(path)?;
-                let (hash, size) = sha256_file(&src)?;
-                files.push(ResolvedInputFile {
-                    rel_path: rel_norm,
-                    source_path: src,
-                    sha256: hash,
-                    size,
-                });
-            }
+
+            tracing::info!(
+                entries_visited = total_entries_visited,
+                files_matched = total_files_matched,
+                total_bytes_hashed,
+                "WalkDir traversal complete"
+            );
+        } else {
+            tracing::debug!("No directories to walk, skipping WalkDir");
         }
 
         // Deterministic ordering
         files.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+
+        tracing::info!(
+            total_files = files.len(),
+            "Input resolution complete"
+        );
+
         Ok(ResolvedInputs { files })
     }
+}
+
+/// Extract the base directory from a glob pattern.
+/// For example:
+/// - `src/**/*.ts` -> `src`
+/// - `**/*.ts` -> `` (empty, meaning root)
+/// - `foo/bar/*.rs` -> `foo/bar`
+fn extract_glob_base(pattern: &str) -> String {
+    let mut base_parts = Vec::new();
+    for part in pattern.split('/') {
+        if part.contains('*') || part.contains('{') || part.contains('?') || part.contains('[') {
+            break;
+        }
+        if !part.is_empty() {
+            base_parts.push(part);
+        }
+    }
+    base_parts.join("/")
 }
 
 fn canonical_or_abs(p: &Path) -> Result<PathBuf> {
