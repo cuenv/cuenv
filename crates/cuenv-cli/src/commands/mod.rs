@@ -6,6 +6,55 @@ pub mod hooks;
 pub mod task;
 pub mod version;
 
+pub mod ci_cmd {
+    use crate::commands::task;
+    use async_trait::async_trait;
+    use cuenv_ci::executor::{TaskRunner, run_ci};
+    use cuenv_core::Result;
+    use std::sync::Arc;
+
+    struct CliTaskRunner;
+
+    #[async_trait]
+    impl TaskRunner for CliTaskRunner {
+        async fn run_task(&self, project_root: &std::path::Path, task_name: &str) -> Result<()> {
+            let path_str = project_root.to_string_lossy().to_string();
+            // We call execute_task. Note that execute_task expects path to folder with CUE files.
+            // It handles loading the config itself.
+            // We pass 'cuenv' as package name, matching what we used in discovery.
+            // The runner should probably reuse the loaded config if possible, but execute_task loads it again.
+            // For now this is fine.
+            task::execute_task(
+                &path_str,
+                "cuenv", // package
+                Some(task_name),
+                None,  // environment
+                false, // capture_output
+                None,  // materialize_outputs
+                false, // show_cache_path
+                false, // help
+            )
+            .await
+            .map(|_| ())
+        }
+    }
+
+    pub async fn execute_ci(
+        dry_run: bool,
+        pipeline: Option<String>,
+        generate: Option<String>,
+    ) -> Result<()> {
+        if let Some(provider) = generate {
+            println!("Generating workflow for: {provider}");
+            // TODO: Implement generation logic
+            return Ok(());
+        }
+
+        let runner = Arc::new(CliTaskRunner);
+        run_ci(dry_run, pipeline, runner).await
+    }
+}
+
 use crate::cli::StatusFormat;
 use crate::events::{Event, EventSender};
 use cuenv_core::Result;
@@ -75,6 +124,11 @@ pub enum Command {
     Export {
         shell: Option<String>,
         package: String,
+    },
+    Ci {
+        dry_run: bool,
+        pipeline: Option<String>,
+        generate: Option<String>,
     },
 }
 
@@ -156,6 +210,11 @@ impl CommandExecutor {
             } => self.execute_allow(path, package, note, yes).await,
             Command::Deny { path, package, all } => self.execute_deny(path, package, all).await,
             Command::Export { shell, package } => self.execute_export(shell, package).await,
+            Command::Ci {
+                dry_run,
+                pipeline,
+                generate,
+            } => self.execute_ci(dry_run, pipeline, generate).await,
         }
     }
 
@@ -534,6 +593,37 @@ impl CommandExecutor {
                     command: command_name.to_string(),
                     success: true,
                     output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_ci(
+        &self,
+        dry_run: bool,
+        pipeline: Option<String>,
+        generate: Option<String>,
+    ) -> Result<()> {
+        let command_name = "ci";
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match ci_cmd::execute_ci(dry_run, pipeline, generate).await {
+            Ok(()) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output: "CI execution completed".to_string(),
                 });
                 Ok(())
             }
