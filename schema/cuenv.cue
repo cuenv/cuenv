@@ -6,6 +6,7 @@ package schema
 	hooks?: #Hooks
 	workspaces?: #Workspaces
 	ci?: #CI
+	release?: #Release
 	tasks: [string]: #Tasks | *{}
 }
 

@@ -325,7 +325,9 @@ impl Visit for CuenvEventVisitor {
     }
 
     fn record_f64(&mut self, field: &Field, value: f64) {
-        if field.name() == "progress" { self.progress = Some(value as f32) }
+        if field.name() == "progress" {
+            self.progress = Some(value as f32)
+        }
     }
 
     fn record_bool(&mut self, field: &Field, value: bool) {
