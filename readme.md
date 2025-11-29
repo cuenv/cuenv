@@ -3,7 +3,7 @@
 **Two commands. Type-safe environments. Secrets that never leak. Tasks that run in parallel.**
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Build Status](https://github.com/cuenv/cuenv/workflows/CI/badge.svg)](https://github.com/cuenv/cuenv/actions)
+[![Build Status](https://github.com/cuenv/cuenv/workflows/ci/badge.svg)](https://github.com/cuenv/cuenv/actions)
 [![Crates.io](https://img.shields.io/crates/v/cuenv)](https://crates.io/crates/cuenv)
 
 > **Status**: Alpha - Core evaluation engine complete, CLI and task runner in active development
