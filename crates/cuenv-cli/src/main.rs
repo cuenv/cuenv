@@ -65,6 +65,11 @@ async fn real_main() -> Result<(), CliError> {
         return run_hook_supervisor(args).await;
     }
 
+    // Check if we're being called as the coordinator server
+    if args.len() > 1 && args[1] == "__coordinator" {
+        return run_coordinator().await;
+    }
+
     // Parse CLI arguments and initialize event system
     let init_result = match initialize_cli_and_tracing().await {
         Ok(result) => result,
@@ -694,6 +699,17 @@ async fn execute_exec_command_safe(
             Err(CliError::eval(e.to_string()))
         }
     }
+}
+
+/// Run as the coordinator server (internal - spawned by discovery)
+async fn run_coordinator() -> Result<(), CliError> {
+    use crate::coordinator::server::EventCoordinator;
+
+    let coordinator = EventCoordinator::new();
+    coordinator
+        .run()
+        .await
+        .map_err(|e| CliError::other(format!("Coordinator failed: {e}")))
 }
 
 /// Run as a hook supervisor process

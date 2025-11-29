@@ -179,7 +179,7 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
 ///
 /// Returns an `EventBus` that can be used to subscribe to structured events
 /// and spawn renderers (CLI, JSON, TUI, etc.).
-#[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::needless_pass_by_value)] // Config is small and taking by value is more ergonomic
 pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventBus> {
     // Sync correlation ID with cuenv_events
     let corr_id = correlation_id();

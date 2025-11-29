@@ -10,7 +10,7 @@ use crate::event::{
     CiEvent, CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, Stream,
     SystemEvent, TaskEvent,
 };
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 
 /// CLI renderer configuration.
 #[derive(Debug, Clone)]
@@ -24,7 +24,7 @@ pub struct CliRendererConfig {
 impl Default for CliRendererConfig {
     fn default() -> Self {
         Self {
-            colors: atty::is(atty::Stream::Stdout),
+            colors: io::stdout().is_terminal(),
             verbose: false,
         }
     }
