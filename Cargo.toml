@@ -46,9 +46,6 @@ petgraph = "0.8.3"
 dirs = "5.0"
 sha2 = "0.10"
 
-# Terminal detection
-atty = "0.2"
-
 # Workspace detection and parsing dependencies
 toml = "0.8"
 serde_yaml = "0.9"
