@@ -285,6 +285,36 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
+        Command::ChangesetAdd {
+            path,
+            summary,
+            description,
+            packages,
+        } => {
+            match execute_changeset_add_safe(path, summary, description, packages, json_mode).await
+            {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
+        Command::ChangesetStatus { path } => {
+            match execute_changeset_status_safe(path, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
+        Command::ReleaseVersion { path, dry_run } => {
+            match execute_release_version_safe(path, dry_run, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
+        Command::ReleasePublish { path, dry_run } => {
+            match execute_release_publish_safe(path, dry_run, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -872,6 +902,133 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
 
     cuenv_events::emit_supervisor_log!("supervisor", "Completed successfully");
     Ok(())
+}
+
+/// Execute changeset add command safely
+#[instrument(name = "cuenv_execute_changeset_add_safe")]
+async fn execute_changeset_add_safe(
+    path: String,
+    summary: String,
+    description: Option<String>,
+    packages: Vec<(String, String)>,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::release::execute_changeset_add(
+        &path,
+        &packages,
+        &summary,
+        description.as_deref(),
+    ) {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "message": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Changeset add failed: {e}"),
+            "Check package names and bump types (major, minor, patch)",
+        )),
+    }
+}
+
+/// Execute changeset status command safely
+#[instrument(name = "cuenv_execute_changeset_status_safe")]
+async fn execute_changeset_status_safe(path: String, json_mode: bool) -> Result<(), CliError> {
+    match commands::release::execute_changeset_status(&path) {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "status": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Changeset status failed: {e}"),
+            "Check that the path is valid",
+        )),
+    }
+}
+
+/// Execute release version command safely
+#[instrument(name = "cuenv_execute_release_version_safe")]
+async fn execute_release_version_safe(
+    path: String,
+    dry_run: bool,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::release::execute_release_version(&path, dry_run) {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "result": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Release version failed: {e}"),
+            "Create changesets first with 'cuenv changeset add'",
+        )),
+    }
+}
+
+/// Execute release publish command safely
+#[instrument(name = "cuenv_execute_release_publish_safe")]
+async fn execute_release_publish_safe(
+    path: String,
+    dry_run: bool,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::release::execute_release_publish(&path, dry_run) {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "result": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Release publish failed: {e}"),
+            "Check that packages are ready for publishing",
+        )),
+    }
 }
 
 // Note: These functions are currently unused but reserved for future async main implementation

@@ -689,6 +689,7 @@ dependencies = [
  "cuenv-ci",
  "cuenv-core",
  "cuenv-events",
+ "cuenv-release",
  "dirs",
  "futures",
  "libc",
@@ -752,6 +753,28 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "cuenv-release"
+version = "0.6.1"
+dependencies = [
+ "chrono",
+ "cuenv-core",
+ "cuenv-events",
+ "cuenv-workspaces",
+ "glob",
+ "miette",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "toml",
+ "tracing",
  "uuid",
 ]
 

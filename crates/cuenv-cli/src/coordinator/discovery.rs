@@ -133,17 +133,18 @@ async fn cleanup_stale_coordinator(socket: &Path) -> io::Result<()> {
 
     // Try to read and kill stale process
     if let Ok(pid_str) = tokio::fs::read_to_string(&pid_file).await
-        && let Ok(pid) = pid_str.trim().parse::<i32>() {
-            // Verify process is actually a cuenv coordinator before killing
-            #[cfg(unix)]
-            if is_cuenv_process(pid) {
-                // SAFETY: libc::kill with SIGTERM is safe after verifying PID ownership
-                unsafe {
-                    let _ = libc::kill(pid, libc::SIGTERM);
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+        && let Ok(pid) = pid_str.trim().parse::<i32>()
+    {
+        // Verify process is actually a cuenv coordinator before killing
+        #[cfg(unix)]
+        if is_cuenv_process(pid) {
+            // SAFETY: libc::kill with SIGTERM is safe after verifying PID ownership
+            unsafe {
+                let _ = libc::kill(pid, libc::SIGTERM);
             }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
 
     // Remove stale files
     let _ = tokio::fs::remove_file(socket).await;
@@ -185,9 +186,10 @@ async fn start_coordinator() -> io::Result<CoordinatorHandle> {
     for _ in 0..50 {
         tokio::time::sleep(Duration::from_millis(100)).await;
         if socket.exists()
-            && let CoordinatorStatus::Running { .. } = detect_coordinator().await {
-                return Ok(CoordinatorHandle::new(pid, socket));
-            }
+            && let CoordinatorStatus::Running { .. } = detect_coordinator().await
+        {
+            return Ok(CoordinatorHandle::new(pid, socket));
+        }
     }
 
     Err(io::Error::new(
@@ -216,10 +218,11 @@ async fn acquire_lock(lock_path: &Path) -> io::Result<LockGuard> {
                 // Check if lock is stale (older than 30 seconds)
                 if let Ok(meta) = tokio::fs::metadata(lock_path).await
                     && let Ok(modified) = meta.modified()
-                        && modified.elapsed().unwrap_or(Duration::ZERO) > Duration::from_secs(30) {
-                            let _ = tokio::fs::remove_file(lock_path).await;
-                            continue;
-                        }
+                    && modified.elapsed().unwrap_or(Duration::ZERO) > Duration::from_secs(30)
+                {
+                    let _ = tokio::fs::remove_file(lock_path).await;
+                    continue;
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(e) => return Err(e),

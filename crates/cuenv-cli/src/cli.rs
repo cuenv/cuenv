@@ -402,6 +402,16 @@ pub enum Commands {
         #[arg(long, help = "Host to bind to", default_value = "127.0.0.1")]
         host: String,
     },
+    #[command(about = "Manage changesets for release")]
+    Changeset {
+        #[command(subcommand)]
+        subcommand: ChangesetCommands,
+    },
+    #[command(about = "Release management operations")]
+    Release {
+        #[command(subcommand)]
+        subcommand: ReleaseCommands,
+    },
 }
 
 /// Output format for status command
@@ -553,7 +563,51 @@ pub enum ShellType {
     Zsh,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum ChangesetCommands {
+    #[command(about = "Add a new changeset")]
+    Add {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+        #[arg(long, short = 's', help = "Summary of the change")]
+        summary: String,
+        #[arg(long, short = 'd', help = "Detailed description of the change")]
+        description: Option<String>,
+        #[arg(
+            long,
+            short = 'P',
+            help = "Package and bump type (format: package:bump, e.g., my-pkg:minor)",
+            value_name = "PACKAGE:BUMP"
+        )]
+        packages: Vec<String>,
+    },
+    #[command(about = "Show pending changesets")]
+    Status {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReleaseCommands {
+    #[command(about = "Calculate and apply version bumps from changesets")]
+    Version {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+        #[arg(long, help = "Show what would change without making changes")]
+        dry_run: bool,
+    },
+    #[command(about = "Publish packages in topological order")]
+    Publish {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+        #[arg(long, help = "Show what would be published without publishing")]
+        dry_run: bool,
+    },
+}
+
 impl From<Commands> for Command {
+    #[allow(clippy::too_many_lines)]
     fn from(cmd: Commands) -> Self {
         match cmd {
             Commands::Version { output_format } => Command::Version {
@@ -651,6 +705,42 @@ impl From<Commands> for Command {
             },
             Commands::Tui => Command::Tui,
             Commands::Web { port, host } => Command::Web { port, host },
+            Commands::Changeset { subcommand } => match subcommand {
+                ChangesetCommands::Add {
+                    path,
+                    summary,
+                    description,
+                    packages,
+                } => {
+                    // Parse package:bump format
+                    let parsed_packages: Vec<(String, String)> = packages
+                        .iter()
+                        .filter_map(|p| {
+                            let parts: Vec<&str> = p.splitn(2, ':').collect();
+                            if parts.len() == 2 {
+                                Some((parts[0].to_string(), parts[1].to_string()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    Command::ChangesetAdd {
+                        path,
+                        summary,
+                        description,
+                        packages: parsed_packages,
+                    }
+                }
+                ChangesetCommands::Status { path } => Command::ChangesetStatus { path },
+            },
+            Commands::Release { subcommand } => match subcommand {
+                ReleaseCommands::Version { path, dry_run } => {
+                    Command::ReleaseVersion { path, dry_run }
+                }
+                ReleaseCommands::Publish { path, dry_run } => {
+                    Command::ReleasePublish { path, dry_run }
+                }
+            },
         }
     }
 }

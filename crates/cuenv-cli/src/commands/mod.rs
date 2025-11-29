@@ -3,6 +3,7 @@ pub(crate) mod env_file;
 pub mod exec;
 pub mod export;
 pub mod hooks;
+pub mod release;
 pub mod task;
 pub mod version;
 
@@ -190,6 +191,23 @@ pub enum Command {
         port: u16,
         host: String,
     },
+    ChangesetAdd {
+        path: String,
+        summary: String,
+        description: Option<String>,
+        packages: Vec<(String, String)>,
+    },
+    ChangesetStatus {
+        path: String,
+    },
+    ReleaseVersion {
+        path: String,
+        dry_run: bool,
+    },
+    ReleasePublish {
+        path: String,
+        dry_run: bool,
+    },
 }
 
 #[allow(dead_code)]
@@ -275,8 +293,13 @@ impl CommandExecutor {
                 pipeline,
                 generate,
             } => self.execute_ci(dry_run, pipeline, generate).await,
-            // Tui and Web are handled directly in main.rs, not through CommandExecutor
-            Command::Tui | Command::Web { .. } => Ok(()),
+            // Tui, Web, and release commands are handled directly in main.rs
+            Command::Tui
+            | Command::Web { .. }
+            | Command::ChangesetAdd { .. }
+            | Command::ChangesetStatus { .. }
+            | Command::ReleaseVersion { .. }
+            | Command::ReleasePublish { .. } => Ok(()),
         }
     }
 
