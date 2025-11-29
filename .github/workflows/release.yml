@@ -22,12 +22,12 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
         with:
-          extra_nix_config: |
+          extra-conf: |
             accept-flake-config = true
             experimental-features = nix-command flakes
 
       - name: Publish CUE module
-        run: nix develop --accept-flake-config --command cue mod publish ${{ github.event.release.tag_name }}
+        run: nix develop --accept-flake-config --command cue mod publish v${{ inputs.tag_name || github.event.release.tag_name }}
         env:
           CUE_REGISTRY: registry.cue.works
           CUE_TOKEN: ${{ secrets.CUE_TOKEN }}
@@ -56,7 +56,7 @@ jobs:
       - name: Install Nix (Unix)
         uses: DeterminateSystems/nix-installer-action@v16
         with:
-          extra_nix_config: |
+          extra-conf: |
             accept-flake-config = true
             experimental-features = nix-command flakes
         if: matrix.os != 'windows-latest'
