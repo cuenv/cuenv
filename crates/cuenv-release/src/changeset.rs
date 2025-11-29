@@ -146,9 +146,14 @@ impl Changeset {
     /// Generate a unique changeset ID.
     #[must_use]
     fn generate_id() -> String {
-        // Use UUID v4 for unique IDs, take first 12 chars for reasonable brevity
+        // Use UUID v4 for unique IDs, take first 12 hex chars (excluding hyphens) for reasonable brevity
         // while maintaining sufficient entropy to avoid collisions
-        Uuid::new_v4().to_string()[..12].replace('-', "")
+        Uuid::new_v4()
+            .to_string()
+            .replace('-', "")
+            .chars()
+            .take(12)
+            .collect()
     }
 
     /// Parse a changeset from its Markdown content.
@@ -499,8 +504,8 @@ mod tests {
         assert_eq!(changeset.summary, "Add feature");
         assert_eq!(changeset.packages.len(), 1);
         assert!(changeset.description.is_some());
-        // ID is 11 chars (first 12 of UUID with one hyphen removed)
-        assert_eq!(changeset.id.len(), 11);
+        // ID is 12 hex chars (from UUID with hyphens removed, taking first 12)
+        assert_eq!(changeset.id.len(), 12);
     }
 
     #[test]
