@@ -590,14 +590,16 @@ pub enum ChangesetCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum ReleaseCommands {
-    #[command(about = "Calculate and apply version bumps from changesets")]
+    #[command(
+        about = "Calculate and apply version bumps from changesets (manifest reading not yet implemented)"
+    )]
     Version {
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
         #[arg(long, help = "Show what would change without making changes")]
         dry_run: bool,
     },
-    #[command(about = "Publish packages in topological order")]
+    #[command(about = "Publish packages in topological order (not yet implemented)")]
     Publish {
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
