@@ -188,10 +188,23 @@ impl InlineTui {
     }
 }
 
+/// RAII guard that restores terminal state on drop
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = io::stdout().execute(crossterm::terminal::LeaveAlternateScreen);
+        let _ = io::stdout().execute(Show);
+    }
+}
+
 /// Run the TUI event viewer that displays events from the coordinator
 pub async fn run_event_viewer(client: &mut CoordinatorClient) -> io::Result<()> {
-    // Set up terminal
+    // Set up terminal with guard for cleanup on any exit path
     enable_raw_mode()?;
+    let _guard = TerminalGuard; // Restores terminal on drop, even on early return
+
     let mut stdout = io::stdout();
     stdout.execute(crossterm::terminal::EnterAlternateScreen)?;
     stdout.execute(Hide)?;
@@ -290,13 +303,7 @@ pub async fn run_event_viewer(client: &mut CoordinatorClient) -> io::Result<()> 
         })?;
     }
 
-    // Restore terminal
-    disable_raw_mode()?;
-    terminal
-        .backend_mut()
-        .execute(crossterm::terminal::LeaveAlternateScreen)?;
-    terminal.backend_mut().execute(Show)?;
-
+    // Guard handles terminal cleanup on drop
     Ok(())
 }
 
