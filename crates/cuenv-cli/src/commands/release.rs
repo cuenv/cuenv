@@ -135,6 +135,8 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
         output.push_str("Dry run - no changes will be made.\n\n");
     }
 
+    output.push_str("⚠️  Note: Manifest version reading not yet implemented.\n");
+    output.push_str("   Showing placeholder versions (0.0.0) - actual versions will differ.\n\n");
     output.push_str("Version changes:\n\n");
 
     // TODO(#roadmap): Read current versions from Cargo.toml/package.json manifests
@@ -143,7 +145,7 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
     for (pkg, bump) in &bumps {
         let current = Version::new(0, 0, 0); // Placeholder - will read from manifests
         let new_version = current.bump(*bump);
-        let _ = writeln!(output, "  {pkg}: {current} -> {new_version}");
+        let _ = writeln!(output, "  {pkg}: 0.0.0 (placeholder) -> {new_version}");
     }
 
     if !dry_run {
