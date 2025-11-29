@@ -82,7 +82,7 @@ impl Version {
 
 impl Default for Version {
     fn default() -> Self {
-        Self::new(0, 1, 0)
+        Self::new(0, 0, 0)
     }
 }
 
