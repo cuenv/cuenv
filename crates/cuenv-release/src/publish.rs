@@ -71,7 +71,8 @@ impl PublishPlan {
             ordered_names.push(graph[idx].clone());
         }
 
-        // Check for cycles (topo sort would have fewer nodes)
+        // Check for cycles: petgraph's Topo iterator stops early when it cannot find
+        // a node with no unvisited predecessors (i.e., when there's a cycle)
         if ordered_names.len() != packages.len() {
             return Err(Error::config(
                 "Dependency cycle detected in packages to publish",

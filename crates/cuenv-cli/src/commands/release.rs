@@ -137,10 +137,11 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
 
     output.push_str("Version changes:\n\n");
 
-    // For now, we just show what would happen
-    // TODO: Read current versions from Cargo.toml/package.json
+    // TODO(#roadmap): Read current versions from Cargo.toml/package.json manifests
+    // For now, we use a placeholder version to demonstrate the version bump calculation.
+    // The actual version reading requires manifest parsing which is tracked separately.
     for (pkg, bump) in &bumps {
-        let current = Version::new(0, 1, 0); // Placeholder
+        let current = Version::new(0, 0, 0); // Placeholder - will read from manifests
         let new_version = current.bump(*bump);
         let _ = writeln!(output, "  {pkg}: {current} -> {new_version}");
     }
