@@ -146,8 +146,9 @@ impl Changeset {
     /// Generate a unique changeset ID.
     #[must_use]
     fn generate_id() -> String {
-        // Use UUID v4 for unique IDs, take first 8 chars for brevity
-        Uuid::new_v4().to_string()[..8].to_string()
+        // Use UUID v4 for unique IDs, take first 12 chars for reasonable brevity
+        // while maintaining sufficient entropy to avoid collisions
+        Uuid::new_v4().to_string()[..12].replace('-', "")
     }
 
     /// Parse a changeset from its Markdown content.
@@ -238,12 +239,12 @@ impl Changeset {
             .to_string();
 
         // Rest is the description (if any non-empty content)
-        let description_parts: Vec<&str> = lines.skip_while(|l| l.trim().is_empty()).collect();
+        let remaining_lines: Vec<&str> = lines.skip_while(|l| l.trim().is_empty()).collect();
 
-        let description = if description_parts.is_empty() {
+        let description = if remaining_lines.is_empty() {
             None
         } else {
-            let desc = description_parts.join("\n").trim().to_string();
+            let desc = remaining_lines.join("\n").trim().to_string();
             if desc.is_empty() { None } else { Some(desc) }
         };
 
@@ -498,7 +499,8 @@ mod tests {
         assert_eq!(changeset.summary, "Add feature");
         assert_eq!(changeset.packages.len(), 1);
         assert!(changeset.description.is_some());
-        assert_eq!(changeset.id.len(), 8);
+        // ID is 11 chars (first 12 of UUID with one hyphen removed)
+        assert_eq!(changeset.id.len(), 11);
     }
 
     #[test]
