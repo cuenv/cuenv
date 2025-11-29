@@ -26,11 +26,15 @@ jobs:
             accept-flake-config = true
             experimental-features = nix-command flakes
 
+      - name: Login to CUE registry
+        run: nix develop --accept-flake-config --command cue login --token=${{ secrets.CUE_TOKEN }}
+        env:
+          CUE_REGISTRY: registry.cue.works
+
       - name: Publish CUE module
         run: nix develop --accept-flake-config --command cue mod publish v${{ inputs.tag_name || github.event.release.tag_name }}
         env:
           CUE_REGISTRY: registry.cue.works
-          CUE_TOKEN: ${{ secrets.CUE_TOKEN }}
 
   build-release-artifacts:
     runs-on: ${{ matrix.os }}
