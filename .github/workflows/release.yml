@@ -27,7 +27,7 @@ jobs:
             experimental-features = nix-command flakes
 
       - name: Login to CUE registry
-        run: nix develop --accept-flake-config --command cue login --token=${{ secrets.CUE_TOKEN }}
+        run: nix develop --accept-flake-config --command cue login --token=${{ secrets.CUE_REGISTRY_TOKEN }}
         env:
           CUE_REGISTRY: registry.cue.works
 
