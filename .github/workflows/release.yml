@@ -3,6 +3,11 @@ name: release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to release (e.g., 0.6.0)'
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -151,7 +156,7 @@ jobs:
 
       - name: Update Homebrew Formula
         env:
-          TAG_NAME: ${{ github.event.release.tag_name }}
+          TAG_NAME: ${{ inputs.tag_name || github.event.release.tag_name }}
           TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           # Configure git
@@ -167,8 +172,8 @@ jobs:
           echo "Calculated SHA256: $SHA256"
 
           # Clone the tap repository
-          echo "Cloning homebrew-cuenv..."
-          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/cuenv/homebrew-cuenv.git" tap
+          echo "Cloning homebrew-tap..."
+          git clone "https://x-access-token:${TAP_GITHUB_TOKEN}@github.com/cuenv/homebrew-tap.git" tap
 
           # Update the formula
           mkdir -p tap/Formula
@@ -186,8 +191,8 @@ jobs:
           if [[ -n $(git status -s) ]]; then
             git add Formula/cuenv.rb
             git commit -m "bump: cuenv ${TAG_NAME}"
-            git push origin main || { echo 'Failed to push to homebrew-cuenv'; exit 1; }
-            echo "Successfully pushed to homebrew-cuenv"
+            git push origin main || { echo 'Failed to push to homebrew-tap'; exit 1; }
+            echo "Successfully pushed to homebrew-tap"
           else
              echo "No changes to formula detected"
           fi
