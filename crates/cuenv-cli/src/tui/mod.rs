@@ -328,18 +328,14 @@ fn format_cuenv_event(event: &CuenvEvent) -> String {
                     )
                 }
                 TaskEvent::CacheHit { name, cache_key } => {
-                    format!(
-                        "[{timestamp}] {source} CACHE HIT {name} key={cache_key}"
-                    )
+                    format!("[{timestamp}] {source} CACHE HIT {name} key={cache_key}")
                 }
                 TaskEvent::Output {
                     name,
                     stream,
                     content,
                 } => {
-                    format!(
-                        "[{timestamp}] {source} OUTPUT {name}:{stream:?} {content}"
-                    )
+                    format!("[{timestamp}] {source} OUTPUT {name}:{stream:?} {content}")
                 }
                 TaskEvent::Completed {
                     name,

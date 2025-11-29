@@ -24,7 +24,6 @@ pub mod discovery;
 pub mod protocol;
 pub mod server;
 
-
 use std::path::PathBuf;
 
 /// Get the path to the coordinator socket.
