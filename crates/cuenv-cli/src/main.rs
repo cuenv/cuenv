@@ -85,17 +85,24 @@ async fn real_main() -> Result<(), CliError> {
     let command: Command = init_result.cli.command.into();
 
     // Execute the command
-    match execute_command_safe(command, init_result.cli.json).await {
-        Ok(()) => Ok(()),
-        Err(e) => Err(e),
+    let result = execute_command_safe(command, init_result.cli.json).await;
+
+    // Wait for renderer to finish processing any remaining events
+    if let Some(handle) = init_result.renderer_handle {
+        // Give renderer a moment to process final events, then abort if stuck
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), handle).await;
     }
+
+    result
 }
 
 /// Result of CLI and tracing initialization
 struct InitResult {
     cli: crate::cli::Cli,
-    /// Handle to the renderer task (if running)
-    _renderer_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the renderer task (if running).
+    /// This handle should be awaited before program exit to ensure
+    /// all events are properly rendered.
+    renderer_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Initialize CLI parsing and tracing configuration
@@ -155,7 +162,7 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
 
     Ok(InitResult {
         cli,
-        _renderer_handle: renderer_handle,
+        renderer_handle,
     })
 }
 
