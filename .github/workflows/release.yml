@@ -38,84 +38,48 @@ jobs:
       CUENV_FOREGROUND_HOOKS: "1"
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            archive: tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
-            archive: tar.gz
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            archive: zip
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Nix (Unix)
+      - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
         with:
           extra-conf: |
             accept-flake-config = true
             experimental-features = nix-command flakes
-        if: matrix.os != 'windows-latest'
 
-      - name: Install devenv (Unix)
+      - name: Install devenv
         run: nix profile install --accept-flake-config nixpkgs#devenv
-        if: matrix.os != 'windows-latest'
 
-      - name: Install Rust (Windows)
-        uses: dtolnay/rust-toolchain@stable
-        if: matrix.os == 'windows-latest'
-
-      - name: Install Go (Windows)
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24"
-        if: matrix.os == 'windows-latest'
-
-      - name: Build development environment (Unix)
+      - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
-        if: matrix.os != 'windows-latest'
 
-      - name: Build cuenv (Unix)
+      - name: Build cuenv
         run: |
           nix build .#cuenv
           mkdir -p bin
           cp -L result/bin/cuenv bin/cuenv
-        if: matrix.os != 'windows-latest'
 
-      - name: Setup cuenv (Unix)
+      - name: Setup cuenv
         run: |
           chmod +x bin/cuenv
           echo "$(pwd)/bin" >> $GITHUB_PATH
-        if: matrix.os != 'windows-latest'
 
-      - name: Build release (Unix)
+      - name: Build release
         run: cuenv task release.build
-        if: matrix.os != 'windows-latest'
 
-      - name: Build release (Windows)
-        run: cargo build --workspace --release
-        if: matrix.os == 'windows-latest'
-
-      - name: Create archive (Unix)
+      - name: Create archive
         run: |
           mkdir -p release-artifacts
-          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
-            tar czf "release-artifacts/cuenv-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz" \
-              -C target/release \
-              $(ls target/release/ | grep -E '^(cuenv|cuengine)$' || true)
-          fi
-        if: matrix.os != 'windows-latest'
-
-      - name: Create archive (Windows)
-        run: |
-          mkdir release-artifacts
-          Compress-Archive -Path "target/release/*.exe" -DestinationPath "release-artifacts/cuenv-${{ github.event.release.tag_name }}-${{ matrix.target }}.zip"
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
+          tar czf "release-artifacts/cuenv-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz" \
+            -C target/release \
+            $(ls target/release/ | grep -E '^(cuenv|cuengine)$' || true)
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
