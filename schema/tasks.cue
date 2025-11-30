@@ -43,7 +43,18 @@ package schema
 	// Workspaces to mount/enable for this task
 	workspaces?: [...string]
 
+	// Dagger-specific configuration for running this task in a container.
+	// When the Dagger backend is enabled, this block specifies container settings.
+	dagger?: #DaggerTaskConfig
+
 	description?: string
+}
+
+// Dagger-specific task configuration
+#DaggerTaskConfig: {
+	// Base container image for running the task (e.g., "ubuntu:22.04")
+	// Overrides the global backend.options.image if set.
+	image?: string
 }
 
 // External input reference to another project's task within the same Git root

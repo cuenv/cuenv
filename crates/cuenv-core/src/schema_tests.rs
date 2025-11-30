@@ -53,6 +53,7 @@ mod tests {
             trace_output: Some(false),
             default_environment: Some("dev".to_string()),
             default_capabilities: None,
+            backend: None,
         };
 
         let json = serde_json::to_string(&config).unwrap();
