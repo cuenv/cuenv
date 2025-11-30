@@ -233,19 +233,9 @@ impl TaskBackend for DaggerBackend {
             format!("{} {}", task.command, task.args.join(" "))
         };
 
-        // Build dagger run command
-        // dagger run --workdir /work sh -c "command"
-        let mut cmd = Command::new("dagger");
-        cmd.arg("call");
-        cmd.arg("--source").arg(project_root);
-
-        // Use dagger functions to build and execute
-        // For the spike, we use a simple approach: container().from(image).withWorkdir("/work").withMountedDirectory("/work", source).withExec([command]).stdout()
-        // But since dagger CLI doesn't support this directly, we use `dagger run`
-        // which runs a command in the Dagger execution environment
-
-        // For simplicity in this spike, we'll shell out to docker/podman as Dagger
-        // integration requires the dagger SDK which is not yet included.
+        // For simplicity in this spike, we use docker as the container runtime.
+        // Full Dagger SDK integration is out of scope for the spike but would
+        // replace this docker-based implementation in the future.
         // This demonstrates the backend abstraction pattern while keeping the spike simple.
 
         // Use docker as the container runtime for this spike
@@ -355,23 +345,25 @@ pub fn create_backend(config: Option<&BackendConfig>) -> Box<dyn TaskBackend> {
 }
 
 /// Check if a task should use the Dagger backend
+///
+/// A task is a Dagger task if:
+/// 1. The run's selected backend is `dagger`, AND
+/// 2. Either:
+///    - The task has a `dagger` block (with or without image), or
+///    - There is a global default image in `config.backend.options.image`
 pub fn should_use_dagger(task: &Task, global_config: Option<&BackendConfig>) -> bool {
-    // If global backend is Dagger AND (task has dagger config OR global has default image)
     if let Some(config) = global_config
         && config.backend_type == BackendType::Dagger
     {
-        // Task has explicit dagger config, or global has default image
-        let has_task_image = task
-            .dagger
-            .as_ref()
-            .and_then(|d| d.image.as_ref())
-            .is_some();
+        // Task has explicit dagger block (even if empty)
+        let has_task_dagger = task.dagger.is_some();
+        // Global has default image
         let has_global_image = config
             .options
             .as_ref()
             .and_then(|o| o.image.as_ref())
             .is_some();
-        return has_task_image || has_global_image;
+        return has_task_dagger || has_global_image;
     }
     false
 }
@@ -487,6 +479,26 @@ mod tests {
         };
         // No image configured anywhere, so shouldn't use dagger
         assert!(!should_use_dagger(&task, Some(&config)));
+    }
+
+    #[test]
+    fn test_should_use_dagger_with_empty_dagger_block_and_global_image() {
+        use super::super::DaggerTaskConfig;
+
+        // Task has empty dagger block, but global config has default image
+        let task = Task {
+            dagger: Some(DaggerTaskConfig { image: None }),
+            ..Default::default()
+        };
+        let config = BackendConfig {
+            backend_type: BackendType::Dagger,
+            options: Some(BackendOptions {
+                image: Some("ubuntu:22.04".to_string()),
+                platform: None,
+            }),
+        };
+        // Should use dagger because task has dagger block (even if empty)
+        assert!(should_use_dagger(&task, Some(&config)));
     }
 
     #[test]
