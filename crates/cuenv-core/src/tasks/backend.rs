@@ -357,21 +357,21 @@ pub fn create_backend(config: Option<&BackendConfig>) -> Box<dyn TaskBackend> {
 /// Check if a task should use the Dagger backend
 pub fn should_use_dagger(task: &Task, global_config: Option<&BackendConfig>) -> bool {
     // If global backend is Dagger AND (task has dagger config OR global has default image)
-    if let Some(config) = global_config {
-        if config.backend_type == BackendType::Dagger {
-            // Task has explicit dagger config, or global has default image
-            let has_task_image = task
-                .dagger
-                .as_ref()
-                .and_then(|d| d.image.as_ref())
-                .is_some();
-            let has_global_image = config
-                .options
-                .as_ref()
-                .and_then(|o| o.image.as_ref())
-                .is_some();
-            return has_task_image || has_global_image;
-        }
+    if let Some(config) = global_config
+        && config.backend_type == BackendType::Dagger
+    {
+        // Task has explicit dagger config, or global has default image
+        let has_task_image = task
+            .dagger
+            .as_ref()
+            .and_then(|d| d.image.as_ref())
+            .is_some();
+        let has_global_image = config
+            .options
+            .as_ref()
+            .and_then(|o| o.image.as_ref())
+            .is_some();
+        return has_task_image || has_global_image;
     }
     false
 }
@@ -452,10 +452,12 @@ mod tests {
     fn test_should_use_dagger_with_task_image() {
         use super::super::DaggerTaskConfig;
 
-        let mut task = Task::default();
-        task.dagger = Some(DaggerTaskConfig {
-            image: Some("ubuntu:22.04".to_string()),
-        });
+        let task = Task {
+            dagger: Some(DaggerTaskConfig {
+                image: Some("ubuntu:22.04".to_string()),
+            }),
+            ..Default::default()
+        };
         let config = BackendConfig {
             backend_type: BackendType::Dagger,
             options: None,
@@ -497,10 +499,12 @@ mod tests {
         };
         let backend = DaggerBackend::new(Some(&options));
 
-        let mut task = Task::default();
-        task.dagger = Some(DaggerTaskConfig {
-            image: Some("task:image".to_string()),
-        });
+        let task = Task {
+            dagger: Some(DaggerTaskConfig {
+                image: Some("task:image".to_string()),
+            }),
+            ..Default::default()
+        };
 
         assert_eq!(
             backend.get_image_for_task(&task),
