@@ -4,12 +4,13 @@
 #![allow(dead_code)]
 
 use cuengine::{CueEvaluator, Cuenv};
-use cuenv_core::Result;
+use cuenv_core::config::BackendConfig;
 use cuenv_core::environment::Environment;
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
     ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, TaskIndex, Tasks,
 };
+use cuenv_core::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
@@ -19,7 +20,55 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use uuid::Uuid;
 
+#[cfg(feature = "dagger-backend")]
+use dagger_sdk;
+
 use super::export::get_environment_with_hooks;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackendKind {
+    Host,
+    Dagger,
+}
+
+#[derive(Clone, Debug)]
+struct BackendSelection {
+    kind: BackendKind,
+    default_image: Option<String>,
+}
+
+fn parse_backend_kind(raw: &str) -> Result<BackendKind> {
+    match raw.to_lowercase().as_str() {
+        "host" => Ok(BackendKind::Host),
+        "dagger" => Ok(BackendKind::Dagger),
+        other => Err(Error::configuration(format!(
+            "Unsupported backend '{other}'. Supported backends: host, dagger",
+        ))),
+    }
+}
+
+fn resolve_backend_selection(
+    cli_backend: Option<&str>,
+    manifest_backend: Option<&BackendConfig>,
+) -> Result<BackendSelection> {
+    let manifest_backend_type = manifest_backend
+        .map(|config| config.backend_type.clone())
+        .unwrap_or_else(|| "host".to_string());
+
+    let backend_name = cli_backend
+        .map(|s| s.to_string())
+        .unwrap_or(manifest_backend_type);
+
+    let kind = parse_backend_kind(&backend_name)?;
+    let default_image = manifest_backend
+        .and_then(|config| config.options.as_ref())
+        .and_then(|opts| opts.image.clone());
+
+    Ok(BackendSelection {
+        kind,
+        default_image,
+    })
+}
 
 /// Execute a named task from the CUE configuration
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -31,6 +80,7 @@ pub async fn execute_task(
     capture_output: bool,
     materialize_outputs: Option<&str>,
     show_cache_path: bool,
+    backend: Option<&str>,
     help: bool,
 ) -> Result<String> {
     // Handle CLI help immediately if no task specified
@@ -50,6 +100,14 @@ pub async fn execute_task(
     let manifest: Cuenv = evaluate_manifest_with_fallback(&evaluator, Path::new(path), package)?
         .with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
+
+    let backend_selection = resolve_backend_selection(
+        backend,
+        manifest
+            .config
+            .as_ref()
+            .and_then(|config| config.backend.as_ref()),
+    )?;
 
     tracing::debug!(
         "Successfully parsed CUE evaluation, found {} tasks",
@@ -126,8 +184,9 @@ pub async fn execute_task(
     tracing::debug!("Found task definition: {:?}", task_def);
 
     // Get environment with hook-generated vars merged in
-    let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
-    let base_env_vars = get_environment_with_hooks(&directory, &manifest, package).await?;
+    let project_root =
+        std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let base_env_vars = get_environment_with_hooks(&project_root, &manifest, package).await?;
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut runtime_env = Environment::new();
@@ -163,7 +222,7 @@ pub async fn execute_task(
         max_parallel: 0,
         environment: runtime_env.clone(),
         working_dir: None,
-        project_root: std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf()),
+        project_root: project_root.clone(),
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
         cache_dir: None,
         show_cache_path,
@@ -186,7 +245,7 @@ pub async fn execute_task(
 
     // Execute using the appropriate method
     let results = execute_task_with_strategy_hermetic(
-        path,
+        &project_root,
         &evaluator,
         &executor,
         task_name,
@@ -196,6 +255,7 @@ pub async fn execute_task(
         manifest.env.as_ref(),
         &runtime_env,
         capture_output,
+        &backend_selection,
     )
     .await?;
 
@@ -215,7 +275,7 @@ pub async fn execute_task(
 /// Execute a task using the appropriate strategy based on task type and dependencies
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn execute_task_with_strategy_hermetic(
-    project_dir: &str,
+    project_dir: &Path,
     evaluator: &CueEvaluator,
     executor: &TaskExecutor,
     task_name: &str,
@@ -223,31 +283,59 @@ async fn execute_task_with_strategy_hermetic(
     task_graph: &TaskGraph,
     all_tasks: &Tasks,
     env_base: Option<&cuenv_core::environment::Env>,
-    _hook_env: &Environment,
+    runtime_env: &Environment,
     capture_output: bool,
+    backend: &BackendSelection,
 ) -> Result<Vec<cuenv_core::tasks::TaskResult>> {
     match task_def {
         TaskDefinition::Group(_) => {
+            if backend.kind == BackendKind::Dagger {
+                return Err(Error::configuration(
+                    "Dagger backend does not yet support task groups; select a single task or use the host backend"
+                        .to_string(),
+                ));
+            }
             // For groups (sequential/parallel), use the original group execution
             executor
                 .execute_definition(task_name, task_def, all_tasks)
                 .await
         }
         TaskDefinition::Single(t) => {
-            // NOTE: Hermetic execution is temporarily disabled in the core executor
-            // (see executor.rs TODO comment). We must use non-hermetic execution here
-            // to be consistent, otherwise tasks behave differently when run directly
-            // vs via a group.
-            //
-            // TODO: Re-enable hermetic execution when sandbox properly preserves
-            // monorepo structure and handles all edge cases.
-            let _ = (project_dir, evaluator, env_base, capture_output); // Suppress unused warnings
-            if t.depends_on.is_empty() {
-                executor
-                    .execute_definition(task_name, task_def, all_tasks)
-                    .await
-            } else {
-                executor.execute_graph(task_graph).await
+            match backend.kind {
+                BackendKind::Host => {
+                    // NOTE: Hermetic execution is temporarily disabled in the core executor
+                    // (see executor.rs TODO comment). We must use non-hermetic execution here
+                    // to be consistent, otherwise tasks behave differently when run directly
+                    // vs via a group.
+                    //
+                    // TODO: Re-enable hermetic execution when sandbox properly preserves
+                    // monorepo structure and handles all edge cases.
+                    let _ = (project_dir, evaluator, env_base, capture_output); // Suppress unused warnings
+                    if t.depends_on.is_empty() {
+                        executor
+                            .execute_definition(task_name, task_def, all_tasks)
+                            .await
+                    } else {
+                        executor.execute_graph(task_graph).await
+                    }
+                }
+                BackendKind::Dagger => {
+                    let dagger_backend = DaggerBackend::new(
+                        project_dir.to_path_buf(),
+                        backend.default_image.clone(),
+                    );
+                    let mut results = Vec::new();
+                    let ordered_tasks = task_graph.topological_sort()?;
+
+                    for node in ordered_tasks {
+                        let result = dagger_backend
+                            .run_task(&node.name, &node.task, runtime_env, capture_output)
+                            .await?;
+                        results.push(result);
+                    }
+
+                    Ok(results)
+                }
             }
         }
     }
@@ -344,6 +432,114 @@ async fn run_task_hermetic(
     let result = exec.execute_task(name, &task_aug).await?;
 
     Ok(result)
+}
+
+struct DaggerBackend {
+    project_root: PathBuf,
+    default_image: Option<String>,
+}
+
+impl DaggerBackend {
+    fn new(project_root: PathBuf, default_image: Option<String>) -> Self {
+        Self {
+            project_root,
+            default_image,
+        }
+    }
+}
+
+#[cfg(feature = "dagger-backend")]
+impl DaggerBackend {
+    async fn run_task(
+        &self,
+        name: &str,
+        task: &Task,
+        env: &Environment,
+        capture_output: bool,
+    ) -> Result<cuenv_core::tasks::TaskResult> {
+        let image = task
+            .dagger
+            .as_ref()
+            .and_then(|dagger| dagger.image.clone())
+            .or_else(|| self.default_image.clone())
+            .ok_or_else(|| {
+                Error::configuration(
+                    "Dagger backend requires an image. Set tasks.<name>.dagger.image or config.backend.options.image"
+                        .to_string(),
+                )
+            })?;
+
+        let command: Vec<String> = std::iter::once(task.command.clone())
+            .chain(task.args.clone())
+            .collect();
+
+        if command.is_empty() {
+            return Err(Error::configuration(
+                "Dagger task requires a command to execute".to_string(),
+            ));
+        }
+
+        let env_map = env.vars.clone();
+        let project_root = self.project_root.clone();
+        let task_name = name.to_string();
+
+        let (exit_code, stdout, stderr) = dagger_sdk::connect(|client| async move {
+            let host_dir = client
+                .host()
+                .directory(project_root.to_string_lossy().into_owned());
+
+            let mut container = client
+                .container()
+                .from(image)
+                .with_mounted_directory("/workspace", host_dir)
+                .with_workdir("/workspace");
+
+            for (key, value) in env_map.iter() {
+                container = container.with_env_variable(key.clone(), value.clone());
+            }
+
+            let exec = container.with_exec(command);
+            let stdout = exec.stdout().await?;
+            let stderr = exec.stderr().await?;
+            let exit_code = exec.exit_code().await? as i32;
+
+            Ok((exit_code, stdout, stderr))
+        })
+        .await
+        .map_err(|err| Error::configuration(format!("Dagger backend failed: {err}")))?;
+
+        Ok(cuenv_core::tasks::TaskResult {
+            name: task_name,
+            exit_code: Some(exit_code),
+            stdout: if capture_output {
+                stdout.clone()
+            } else {
+                stdout
+            },
+            stderr: if capture_output {
+                stderr.clone()
+            } else {
+                stderr
+            },
+            success: exit_code == 0,
+        })
+    }
+}
+
+#[cfg(not(feature = "dagger-backend"))]
+impl DaggerBackend {
+    async fn run_task(
+        &self,
+        _name: &str,
+        _task: &Task,
+        _env: &Environment,
+        _capture_output: bool,
+    ) -> Result<cuenv_core::tasks::TaskResult> {
+        Err(Error::configuration(
+            "Dagger backend not available; rebuild with the 'dagger-backend' feature to enable it"
+                .to_string(),
+        ))
+    }
 }
 
 fn format_task_results(
@@ -1025,6 +1221,7 @@ env: {
             false,
             None,
             false,
+            None,
             false,
         )
         .await;

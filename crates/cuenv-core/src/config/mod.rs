@@ -5,6 +5,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+fn default_backend_type() -> String {
+    "host".to_string()
+}
+
 /// Main configuration structure for cuenv
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +38,34 @@ pub struct Config {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_capabilities: Option<Vec<String>>,
+
+    /// Task backend configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendConfig>,
+}
+
+/// Backend configuration
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct BackendConfig {
+    /// Which backend to use for tasks
+    #[serde(default = "default_backend_type", rename = "type")]
+    pub backend_type: String,
+
+    /// Backend-specific options
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<BackendOptions>,
+}
+
+/// Backend-specific options supported by cuenv
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct BackendOptions {
+    /// Default container image for the Dagger backend
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+
+    /// Optional platform hint for the Dagger backend
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 /// Task output format options

@@ -12,8 +12,11 @@ package schema
 #Task: {
 	shell?: #Shell
 	command!: string
-	args?: [...string]
-	env?: [string]: #EnvironmentVariable
+        args?: [...string]
+        env?: [string]: #EnvironmentVariable
+
+        // Dagger-specific overrides for container execution
+        dagger?: #DaggerTask
 
 	// When true (default), task runs in an isolated hermetic directory with only
 	// declared inputs available. When false, task runs directly in the workspace
@@ -43,7 +46,12 @@ package schema
 	// Workspaces to mount/enable for this task
 	workspaces?: [...string]
 
-	description?: string
+        description?: string
+}
+
+#DaggerTask: {
+        image?: string
+        platform?: string
 }
 
 // External input reference to another project's task within the same Git root

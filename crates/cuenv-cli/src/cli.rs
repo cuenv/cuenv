@@ -292,6 +292,12 @@ pub enum Commands {
             default_value_t = false
         )]
         show_cache_path: bool,
+        #[arg(
+            long = "backend",
+            help = "Select task backend (overrides manifest config)",
+            value_name = "BACKEND"
+        )]
+        backend: Option<String>,
         #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
         help: bool,
     },
@@ -657,6 +663,7 @@ impl From<Commands> for Command {
                 environment,
                 materialize_outputs,
                 show_cache_path,
+                backend,
                 help,
             } => Command::Task {
                 path,
@@ -665,6 +672,7 @@ impl From<Commands> for Command {
                 environment,
                 materialize_outputs,
                 show_cache_path,
+                backend,
                 help,
             },
             Commands::Exec {

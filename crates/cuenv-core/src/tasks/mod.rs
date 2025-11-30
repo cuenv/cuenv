@@ -78,6 +78,10 @@ pub struct Task {
     #[serde(default)]
     pub env: HashMap<String, serde_json::Value>,
 
+    /// Dagger-specific overrides
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dagger: Option<TaskDaggerConfig>,
+
     /// When true (default), task runs in isolated hermetic directory.
     /// When false, task runs directly in workspace/project root.
     #[serde(default = "default_hermetic")]
@@ -119,6 +123,7 @@ impl Default for Task {
             command: String::new(),
             args: vec![],
             env: HashMap::new(),
+            dagger: None,
             hermetic: true, // Default to hermetic execution
             depends_on: vec![],
             inputs: vec![],
@@ -138,6 +143,16 @@ impl Task {
             .as_deref()
             .unwrap_or("No description provided")
     }
+}
+
+/// Dagger-specific task configuration
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct TaskDaggerConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 /// Represents a group of tasks with execution mode

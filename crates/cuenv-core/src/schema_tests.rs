@@ -15,6 +15,7 @@ mod tests {
         assert!(json.contains("\"title\": \"Config\""));
         assert!(json.contains("outputFormat"));
         assert!(json.contains("cacheMode"));
+        assert!(json.contains("backend"));
     }
 
     #[test]
@@ -53,6 +54,13 @@ mod tests {
             trace_output: Some(false),
             default_environment: Some("dev".to_string()),
             default_capabilities: None,
+            backend: Some(crate::config::BackendConfig {
+                backend_type: "dagger".to_string(),
+                options: Some(crate::config::BackendOptions {
+                    image: Some("alpine:3.20".to_string()),
+                    platform: None,
+                }),
+            }),
         };
 
         let json = serde_json::to_string(&config).unwrap();

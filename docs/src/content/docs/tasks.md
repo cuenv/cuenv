@@ -103,3 +103,41 @@ tasks: {
 ## Hermeticity (Planned)
 
 Future versions of cuenv will support hermetic execution, where tasks run in isolated environments (sandboxes) with only declared inputs available. This ensures reproducibility and prevents "it works on my machine" issues.
+
+## Experimental: Dagger task backend
+
+cuenv can target an experimental Dagger-backed executor for tasks. Enable it by selecting the `dagger` backend in your manifest (or via the `--backend dagger` flag) and providing a container image:
+
+```cue
+#Config: {
+    backend: {
+        type: "dagger"
+        options: {
+            image: "ubuntu:22.04"
+        }
+    }
+}
+
+tasks: {
+    dagger_hello: {
+        command: "echo"
+        args: ["hello from dagger"]
+        dagger: {
+            // Optional override; falls back to #Config.backend.options.image
+            image: "ubuntu:22.04"
+        }
+    }
+}
+```
+
+Run the task with the Dagger backend selected:
+
+```bash
+cuenv task dagger_hello --backend dagger
+```
+
+Notes:
+
+- The Dagger backend runs tasks sequentially and mounts your project at `/workspace` inside the container.
+- Build cuenv with the `dagger-backend` Cargo feature to enable the integration.
+- If the backend cannot initialize (for example, when the Dagger engine is unavailable), cuenv returns a clear configuration error and leaves host execution unchanged.

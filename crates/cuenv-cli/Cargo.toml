@@ -23,6 +23,10 @@ workspace = true
 name = "bdd"
 harness = false
 
+[features]
+default = []
+dagger-backend = ["dagger-sdk"]
+
 [dependencies]
 cuenv-core = { workspace = true }
 cuenv-ci = { workspace = true }
@@ -48,6 +52,7 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 walkdir = "2.5"
 dirs = { workspace = true }
+dagger-sdk = { version = "0.19.7", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
