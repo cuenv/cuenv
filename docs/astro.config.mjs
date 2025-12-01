@@ -43,6 +43,7 @@ export default defineConfig({
 					label: 'Guides',
 					items: [
 						{ label: 'Task Orchestration', slug: 'tasks' },
+						{ label: 'Dagger Backend', slug: 'dagger-backend' },
 						{ label: 'Typed Environments', slug: 'environments' },
 						{ label: 'Secret Management', slug: 'secrets' },
 						{ label: 'Nix Integration', slug: 'nix-integration' },
