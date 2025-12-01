@@ -31,6 +31,7 @@ pub async fn execute_task(
     capture_output: bool,
     materialize_outputs: Option<&str>,
     show_cache_path: bool,
+    backend: Option<&str>,
     help: bool,
 ) -> Result<String> {
     // Handle CLI help immediately if no task specified
@@ -168,6 +169,8 @@ pub async fn execute_task(
         cache_dir: None,
         show_cache_path,
         workspaces: manifest.workspaces.clone(),
+        backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
+        cli_backend: backend.map(|s| s.to_string()),
     };
 
     let executor = TaskExecutor::new(config);
@@ -321,6 +324,8 @@ async fn run_task_hermetic(
         cache_dir: None,
         show_cache_path: false,
         workspaces: None,
+        backend_config: None,
+        cli_backend: None,
     });
 
     let result = exec.execute_task(name, task).await?;
@@ -790,6 +795,8 @@ async fn resolve_and_materialize_project_reference(
             cache_dir: None,
             show_cache_path: false,
             workspaces: None,
+            backend_config: None,
+            cli_backend: None,
         });
         let res = exec.execute_task(&reference.task, task).await?;
         if !res.success {
@@ -829,6 +836,7 @@ Options:
       --package <PACKAGE>            Name of the CUE package to evaluate [default: cuenv]
       --materialize-outputs <DIR>    Materialize cached outputs to this directory on cache hit (off by default)
       --show-cache-path              Print the cache path for this task key
+      --backend <BACKEND>            Force specific execution backend (e.g., 'host', 'dagger')
       --help                         Print help"
         .to_string()
 }
@@ -1008,6 +1016,7 @@ env: {
             false,
             None,
             false,
+            None,
             false,
         )
         .await;

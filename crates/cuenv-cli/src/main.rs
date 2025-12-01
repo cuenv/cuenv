@@ -190,6 +190,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             environment,
             materialize_outputs,
             show_cache_path,
+            backend,
             help,
         } => match execute_task_command_safe(
             path,
@@ -198,6 +199,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             environment,
             materialize_outputs,
             show_cache_path,
+            backend,
             help,
         )
         .await
@@ -674,6 +676,7 @@ async fn execute_task_command_safe(
     environment: Option<String>,
     materialize_outputs: Option<String>,
     show_cache_path: bool,
+    backend: Option<String>,
     help: bool,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
@@ -687,6 +690,7 @@ async fn execute_task_command_safe(
         false,
         materialize_outputs.as_deref(),
         show_cache_path,
+        backend.as_deref(),
         help,
     )
     .await;
