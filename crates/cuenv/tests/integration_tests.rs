@@ -50,7 +50,7 @@ fn test_version_command_basic() {
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed");
-            assert!(stdout.contains("cuenv-cli"));
+            assert!(stdout.contains("cuenv"));
             assert!(stdout.contains(EXPECTED_VERSION));
             assert!(stdout.contains("Authors:"));
             assert!(stdout.contains("Target:"));
@@ -70,7 +70,7 @@ fn test_version_command_with_level_debug() {
             assert!(success, "Command should succeed");
 
             // stdout should still contain version info
-            assert!(stdout.contains("cuenv-cli"));
+            assert!(stdout.contains("cuenv"));
             assert!(stdout.contains(EXPECTED_VERSION));
 
             // stderr should contain debug logs when level is debug
@@ -89,7 +89,7 @@ fn test_version_command_with_level_error() {
             assert!(success, "Command should succeed");
 
             // stdout should contain version info
-            assert!(stdout.contains("cuenv-cli"));
+            assert!(stdout.contains("cuenv"));
             assert!(stdout.contains(EXPECTED_VERSION));
 
             // With error level, there should be minimal to no debug output in stderr
@@ -107,7 +107,7 @@ fn test_version_command_with_json_flag() {
             assert!(success, "Command should succeed");
 
             // stdout should still contain version info in normal format
-            assert!(stdout.contains("cuenv-cli"));
+            assert!(stdout.contains("cuenv"));
 
             // stderr should contain JSON formatted logs
             if !stderr.is_empty() {
@@ -126,7 +126,7 @@ fn test_version_command_short_level_flag() {
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed");
-            assert!(stdout.contains("cuenv-cli"));
+            assert!(stdout.contains("cuenv"));
             assert!(stdout.contains(EXPECTED_VERSION));
         }
         Err(e) => panic!("Failed to run cuenv version with short level flag: {e}"),
@@ -204,7 +204,7 @@ fn test_combined_flags() {
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed with combined flags");
-            assert!(stdout.contains("cuenv-cli"));
+            assert!(stdout.contains("cuenv"));
             assert!(stdout.contains(EXPECTED_VERSION));
         }
         Err(e) => panic!("Failed to run cuenv with combined flags: {e}"),

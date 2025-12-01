@@ -458,6 +458,6 @@ fn test_integration_real_cargo_toml() {
 
     // Check for other expected members
     assert!(workspace.find_member("cuenv-core").is_some());
-    assert!(workspace.find_member("cuenv-cli").is_some());
+    assert!(workspace.find_member("cuenv").is_some());
     assert!(workspace.find_member("cuengine").is_some());
 }

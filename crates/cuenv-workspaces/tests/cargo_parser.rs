@@ -21,7 +21,7 @@ fn test_parse_real_cargo_lock() {
 fn test_identifies_cuenv_workspace_members() {
     let parser = CargoLockfileParser;
     let entries = parse_repo_lockfile(parser);
-    let expected = ["cuenv-core", "cuenv-cli", "cuengine", "cuenv-workspaces"];
+    let expected = ["cuenv-core", "cuenv", "cuengine", "cuenv-workspaces"];
 
     for name in expected {
         let entry = entries
@@ -58,8 +58,8 @@ fn test_workspace_member_dependencies() {
     let entries = parse_repo_lockfile(parser);
     let cli = entries
         .iter()
-        .find(|e| e.name == "cuenv-cli")
-        .expect("missing cuenv-cli");
+        .find(|e| e.name == "cuenv")
+        .expect("missing cuenv");
 
     let dep_names: Vec<_> = cli.dependencies.iter().map(|d| d.name.as_str()).collect();
     assert!(dep_names.contains(&"cuenv-core"));
