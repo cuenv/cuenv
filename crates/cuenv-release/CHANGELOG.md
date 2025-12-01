@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(cli)* flush stderr on error and remove redundant error logging
+- _(cli)_ flush stderr on error and remove redundant error logging
 - work on docs
 - preparinmg to publish
 - resolve circular dependency between cuenv-core and cuengine ([#33](https://github.com/cuenv/cuenv/pull/33))
@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(cli)* flush stderr on error and remove redundant error logging
+- _(cli)_ flush stderr on error and remove redundant error logging
 - work on docs
 - preparinmg to publish
 - resolve circular dependency between cuenv-core and cuengine ([#33](https://github.com/cuenv/cuenv/pull/33))
