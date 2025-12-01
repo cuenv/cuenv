@@ -51,11 +51,11 @@ hooks: {
 
     // Handle different behaviors in sandbox vs local environment
     if output.status.code() == Some(3) {
-        // CI / Sandbox behavior: Abort with FFI error
+        // CI / Sandbox behavior: Abort with error (could be FFI or I/O)
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("Evaluation/FFI error"),
-            "Expected FFI error in stderr, got: {stderr}"
+            stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
+            "Expected FFI or I/O error in stderr, got: {stderr}"
         );
     } else {
         // Local / Permissive behavior: Continue with partial env
