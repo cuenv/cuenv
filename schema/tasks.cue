@@ -26,9 +26,10 @@ package schema
 	// - File paths relative to the env.cue root, e.g. "src/index.ts"
 	// - Directories (recursively included), e.g. "src" or "src/lib"
 	// - Glob patterns (first-class), e.g. "src/**/*.ts", "assets/**/*.{png,jpg}"
+	// - Project references that pull outputs from another task in the repo
 	// All inputs are resolved relative to the project root and are the ONLY files
 	// made available inside the hermetic working directory when executing the task.
-	inputs?: [...string]
+	inputs?: [...#Input]
 	// Outputs accepted (same syntax as inputs): files, directories, and globs relative
 	// to the project root. Only declared outputs are indexed and persisted to the
 	// cache for later materialization. Writes to undeclared paths are allowed but
@@ -37,17 +38,17 @@ package schema
 	// Consume cached outputs from other tasks in the same project.
 	// The referenced task's outputs are materialized into this task's hermetic workspace.
 	inputsFrom?: [...#TaskOutput]
-	// Cross-project inputs from tasks in other projects (monorepo-only)
-	externalInputs?: [...#ExternalInput]
-
 	// Workspaces to mount/enable for this task
 	workspaces?: [...string]
 
 	description?: string
 }
 
-// External input reference to another project's task within the same Git root
-#ExternalInput: {
+// Accepted task inputs
+#Input: string | #ProjectReference
+
+// Reference to another project's task within the same Git root
+#ProjectReference: {
 	// Path to external project root. May be absolute-from-repo-root (prefix "/")
 	// or relative to the env.cue declaring this dependency.
 	project: string

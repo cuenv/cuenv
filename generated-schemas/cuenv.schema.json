@@ -4,6 +4,17 @@
   "description": "Root Cuenv configuration structure",
   "type": "object",
   "properties": {
+    "ci": {
+      "description": "CI configuration",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CI"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "config": {
       "description": "Configuration settings",
       "anyOf": [
@@ -54,6 +65,18 @@
     }
   },
   "$defs": {
+    "CI": {
+      "type": "object",
+      "properties": {
+        "pipelines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Pipeline"
+          }
+        }
+      },
+      "required": ["pipelines"]
+    },
     "CacheMode": {
       "description": "Cache mode options",
       "type": "string",
@@ -184,28 +207,6 @@
       },
       "required": ["value"]
     },
-    "ExternalInput": {
-      "description": "Cross-project external input declaration",
-      "type": "object",
-      "properties": {
-        "map": {
-          "description": "Required explicit mappings",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Mapping"
-          }
-        },
-        "project": {
-          "description": "Path to project root relative to env.cue or absolute-from-repo-root",
-          "type": "string"
-        },
-        "task": {
-          "description": "Name of the external task in that project",
-          "type": "string"
-        }
-      },
-      "required": ["project", "task", "map"]
-    },
     "Hook": {
       "description": "A hook represents a command that can be executed when entering or exiting environments\nBased on schema/hooks.cue #ExecHook definition",
       "type": "object",
@@ -235,6 +236,17 @@
             "type": "string"
           }
         },
+        "order": {
+          "description": "Execution order within a single env.cue (lower runs first, default 100)",
+          "type": "integer",
+          "format": "int32",
+          "default": 100
+        },
+        "propagate": {
+          "description": "Whether this hook propagates to child directories (default false)",
+          "type": "boolean",
+          "default": false
+        },
         "source": {
           "description": "Whether to source the command output as shell script to capture environment changes",
           "type": ["boolean", "null"]
@@ -242,47 +254,38 @@
       },
       "required": ["command"]
     },
-    "HookList": {
-      "description": "Hook list can be a single hook or an array of hooks",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/Hook"
-        },
-        {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Hook"
-          }
-        }
-      ]
-    },
     "Hooks": {
       "description": "Collection of hooks that can be executed",
       "type": "object",
       "properties": {
         "onEnter": {
-          "description": "Hooks to execute when entering an environment",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HookList"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "description": "Named hooks to execute when entering an environment (map of name -> hook)",
+          "type": ["object", "null"],
+          "additionalProperties": {
+            "$ref": "#/$defs/Hook"
+          }
         },
         "onExit": {
-          "description": "Hooks to execute when exiting an environment",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/HookList"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "description": "Named hooks to execute when exiting an environment (map of name -> hook)",
+          "type": ["object", "null"],
+          "additionalProperties": {
+            "$ref": "#/$defs/Hook"
+          }
         }
       }
+    },
+    "Input": {
+      "description": "A single task input definition",
+      "anyOf": [
+        {
+          "description": "Local path/glob input",
+          "type": "string"
+        },
+        {
+          "description": "Cross-project reference",
+          "$ref": "#/$defs/ProjectReference"
+        }
+      ]
     },
     "Mapping": {
       "description": "Mapping of external output to local workspace path",
@@ -304,6 +307,70 @@
       "type": "string",
       "enum": ["tui", "spinner", "simple", "tree", "json"]
     },
+    "Pipeline": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "when": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PipelineCondition"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["name", "tasks"]
+    },
+    "PipelineCondition": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringOrVec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "defaultBranch": {
+          "type": ["boolean", "null"]
+        },
+        "manual": {
+          "type": ["boolean", "null"]
+        },
+        "pullRequest": {
+          "type": ["boolean", "null"]
+        },
+        "scheduled": {
+          "type": ["boolean", "null"]
+        },
+        "tag": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StringOrVec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      }
+    },
     "Policy": {
       "description": "Policy for controlling environment variable access",
       "type": "object",
@@ -323,6 +390,28 @@
           }
         }
       }
+    },
+    "ProjectReference": {
+      "description": "Cross-project input declaration",
+      "type": "object",
+      "properties": {
+        "map": {
+          "description": "Required explicit mappings",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mapping"
+          }
+        },
+        "project": {
+          "description": "Path to project root relative to env.cue or absolute-from-repo-root",
+          "type": "string"
+        },
+        "task": {
+          "description": "Name of the external task in that project",
+          "type": "string"
+        }
+      },
+      "required": ["project", "task", "map"]
     },
     "Secret": {
       "description": "Secret definition with resolver\nThis is the base type that can be extended in CUE",
@@ -362,6 +451,19 @@
         }
       }
     },
+    "StringOrVec": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "Task": {
       "description": "A single executable task",
       "type": "object",
@@ -397,20 +499,25 @@
           "additionalProperties": true,
           "default": {}
         },
-        "externalInputs": {
-          "description": "Cross-project inputs",
-          "type": ["array", "null"],
-          "default": null,
-          "items": {
-            "$ref": "#/$defs/ExternalInput"
-          }
+        "hermetic": {
+          "description": "When true (default), task runs in isolated hermetic directory.\nWhen false, task runs directly in workspace/project root.",
+          "type": "boolean",
+          "default": true
         },
         "inputs": {
           "description": "Input files/resources",
           "type": "array",
           "default": [],
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/Input"
+          }
+        },
+        "inputsFrom": {
+          "description": "Consume cached outputs from other tasks in the same project",
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/TaskOutput"
           }
         },
         "outputs": {
@@ -475,6 +582,25 @@
           }
         }
       ]
+    },
+    "TaskOutput": {
+      "description": "Reference to another task's outputs within the same project",
+      "type": "object",
+      "properties": {
+        "map": {
+          "description": "Optional explicit mapping of outputs. If omitted, all outputs are\nmaterialized at their original paths in the hermetic workspace.",
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/Mapping"
+          }
+        },
+        "task": {
+          "description": "Name of the task whose cached outputs to consume (e.g. \"docs.build\")",
+          "type": "string"
+        }
+      },
+      "required": ["task"]
     },
     "WorkspaceConfig": {
       "description": "Workspace configuration",

@@ -13,8 +13,36 @@
     }
   ],
   "$defs": {
-    "ExternalInput": {
-      "description": "Cross-project external input declaration",
+    "Input": {
+      "description": "A single task input definition",
+      "anyOf": [
+        {
+          "description": "Local path/glob input",
+          "type": "string"
+        },
+        {
+          "description": "Cross-project reference",
+          "$ref": "#/$defs/ProjectReference"
+        }
+      ]
+    },
+    "Mapping": {
+      "description": "Mapping of external output to local workspace path",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Path relative to external project root of a declared output from the external task",
+          "type": "string"
+        },
+        "to": {
+          "description": "Path inside the dependent task’s hermetic workspace where this file/dir will be materialized",
+          "type": "string"
+        }
+      },
+      "required": ["from", "to"]
+    },
+    "ProjectReference": {
+      "description": "Cross-project input declaration",
       "type": "object",
       "properties": {
         "map": {
@@ -34,21 +62,6 @@
         }
       },
       "required": ["project", "task", "map"]
-    },
-    "Mapping": {
-      "description": "Mapping of external output to local workspace path",
-      "type": "object",
-      "properties": {
-        "from": {
-          "description": "Path relative to external project root of a declared output from the external task",
-          "type": "string"
-        },
-        "to": {
-          "description": "Path inside the dependent task’s hermetic workspace where this file/dir will be materialized",
-          "type": "string"
-        }
-      },
-      "required": ["from", "to"]
     },
     "Shell": {
       "description": "Shell configuration for task execution",
@@ -99,20 +112,25 @@
           "additionalProperties": true,
           "default": {}
         },
-        "externalInputs": {
-          "description": "Cross-project inputs",
-          "type": ["array", "null"],
-          "default": null,
-          "items": {
-            "$ref": "#/$defs/ExternalInput"
-          }
+        "hermetic": {
+          "description": "When true (default), task runs in isolated hermetic directory.\nWhen false, task runs directly in workspace/project root.",
+          "type": "boolean",
+          "default": true
         },
         "inputs": {
           "description": "Input files/resources",
           "type": "array",
           "default": [],
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/Input"
+          }
+        },
+        "inputsFrom": {
+          "description": "Consume cached outputs from other tasks in the same project",
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/TaskOutput"
           }
         },
         "outputs": {
@@ -164,6 +182,25 @@
           }
         }
       ]
+    },
+    "TaskOutput": {
+      "description": "Reference to another task's outputs within the same project",
+      "type": "object",
+      "properties": {
+        "map": {
+          "description": "Optional explicit mapping of outputs. If omitted, all outputs are\nmaterialized at their original paths in the hermetic workspace.",
+          "type": ["array", "null"],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/Mapping"
+          }
+        },
+        "task": {
+          "description": "Name of the task whose cached outputs to consume (e.g. \"docs.build\")",
+          "type": "string"
+        }
+      },
+      "required": ["task"]
     }
   }
 }
