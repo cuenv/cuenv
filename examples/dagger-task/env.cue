@@ -17,8 +17,7 @@ config: {
 tasks: {
 	// Simple echo in Alpine
 	"hello": {
-		command: "echo"
-		args: ["Hello from a Dagger container!"]
+		command: "hostname"
 		dagger: {
 			image: "alpine:latest"
 		}
