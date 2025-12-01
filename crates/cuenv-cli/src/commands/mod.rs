@@ -33,6 +33,7 @@ pub mod ci_cmd {
                 false, // capture_output
                 None,  // materialize_outputs
                 false, // show_cache_path
+                None,  // backend
                 false, // help
             )
             .await
@@ -154,6 +155,7 @@ pub enum Command {
         environment: Option<String>,
         materialize_outputs: Option<String>,
         show_cache_path: bool,
+        backend: Option<String>,
         help: bool,
     },
     Exec {
@@ -236,6 +238,7 @@ impl CommandExecutor {
                 environment,
                 materialize_outputs,
                 show_cache_path,
+                backend,
                 help,
             } => {
                 self.execute_task(
@@ -245,6 +248,7 @@ impl CommandExecutor {
                     environment,
                     materialize_outputs,
                     show_cache_path,
+                    backend,
                     help,
                 )
                 .await
@@ -387,6 +391,7 @@ impl CommandExecutor {
         environment: Option<String>,
         materialize_outputs: Option<String>,
         show_cache_path: bool,
+        backend: Option<String>,
         help: bool,
     ) -> Result<()> {
         let command_name = "task";
@@ -404,6 +409,7 @@ impl CommandExecutor {
             false,
             materialize_outputs.as_deref(),
             show_cache_path,
+            backend.as_deref(),
             help,
         )
         .await

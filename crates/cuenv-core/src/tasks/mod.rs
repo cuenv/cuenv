@@ -2,12 +2,16 @@
 //!
 //! This module provides the core types for task execution, matching the CUE schema.
 
+pub mod backend;
 pub mod executor;
 pub mod graph;
 pub mod index;
 pub mod io;
 
 // Re-export executor and graph modules
+pub use backend::{
+    create_backend, should_use_dagger, DaggerBackend, HostBackend, TaskBackend,
+};
 pub use executor::*;
 pub use graph::*;
 pub use index::{IndexedTask, TaskIndex, TaskPath};
@@ -105,6 +109,10 @@ pub struct Task {
     #[serde(default)]
     pub env: HashMap<String, serde_json::Value>,
 
+    /// Dagger-specific configuration for running this task in a container
+    #[serde(default)]
+    pub dagger: Option<DaggerTaskConfig>,
+
     /// When true (default), task runs in isolated hermetic directory.
     /// When false, task runs directly in workspace/project root.
     #[serde(default = "default_hermetic")]
@@ -135,6 +143,15 @@ pub struct Task {
     pub description: Option<String>,
 }
 
+/// Dagger-specific task configuration
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct DaggerTaskConfig {
+    /// Base container image for running the task (e.g., "ubuntu:22.04")
+    /// Overrides the global backend.options.image if set.
+    #[serde(default)]
+    pub image: Option<String>,
+}
+
 impl Default for Task {
     fn default() -> Self {
         Self {
@@ -142,6 +159,7 @@ impl Default for Task {
             command: String::new(),
             args: vec![],
             env: HashMap::new(),
+            dagger: None,
             hermetic: true, // Default to hermetic execution
             depends_on: vec![],
             inputs: vec![],
