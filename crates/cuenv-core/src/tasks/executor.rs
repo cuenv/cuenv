@@ -5,8 +5,10 @@
 //! - Hermetic workdir populated from declared inputs (files/dirs/globs)
 //! - Persistent task result cache keyed by inputs + command + env + cuenv version + platform
 
+use super::backend::{TaskBackend, create_backend};
 use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
 use crate::cache::tasks as task_cache;
+use crate::config::BackendConfig;
 use crate::environment::Environment;
 use crate::manifest::WorkspaceConfig;
 use crate::tasks::io::{InputResolver, collect_outputs, populate_hermetic_dir};
@@ -63,6 +65,10 @@ pub struct ExecutorConfig {
     pub show_cache_path: bool,
     /// Global workspace configuration
     pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
+    /// Backend configuration
+    pub backend_config: Option<BackendConfig>,
+    /// CLI backend selection override
+    pub cli_backend: Option<String>,
 }
 
 impl Default for ExecutorConfig {
@@ -77,6 +83,8 @@ impl Default for ExecutorConfig {
             cache_dir: None,
             show_cache_path: false,
             workspaces: None,
+            backend_config: None,
+            cli_backend: None,
         }
     }
 }
@@ -84,14 +92,38 @@ impl Default for ExecutorConfig {
 /// Task executor
 pub struct TaskExecutor {
     config: ExecutorConfig,
+    backend: Box<dyn TaskBackend>,
 }
 impl TaskExecutor {
     pub fn new(config: ExecutorConfig) -> Self {
-        Self { config }
+        let backend = create_backend(
+            config.backend_config.as_ref(),
+            config.project_root.clone(),
+            config.cli_backend.as_deref(),
+        );
+        Self { config, backend }
     }
 
     /// Execute a single task
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
+        // Delegate execution to the configured backend
+        // For now, we pass the project root as the execution context.
+        // Hermetic execution logic is currently bypassed in favor of direct execution
+        // as per the current codebase state (see original TODOs).
+        // The backend implementation handles the specific execution details.
+        
+        // If using Dagger backend, we skip the workspace resolution and hermetic setup for now
+        // as it operates in a container.
+        if self.backend.name() == "dagger" {
+             return self.backend.execute(
+                name,
+                task,
+                &self.config.environment,
+                &self.config.project_root,
+                self.config.capture_output,
+            ).await;
+        }
+
         // All tasks run directly in workspace/project root (hermetic sandbox disabled)
         return self.execute_task_non_hermetic(name, task).await;
 
@@ -1280,9 +1312,9 @@ impl TaskExecutor {
     }
 
     fn clone_with_config(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-        }
+        let mut new_executor = Self::new(self.config.clone());
+        // Note: backend is recreated from config, which is what we want
+        new_executor
     }
 }
 

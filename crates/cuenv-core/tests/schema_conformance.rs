@@ -158,6 +158,7 @@ fn test_round_trip_serialization() {
             default_capabilities: None,
             default_environment: None,
             trace_output: None,
+            backend: None,
         }),
         env: Some(Env {
             base: env_vars,
