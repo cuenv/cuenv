@@ -1,7 +1,8 @@
 package schema
 
-#OnePasswordRef: #Secret & {
-	ref:     string
-	command: "op"
+#OnePasswordRef: close({
+	resolver: "exec"
+	ref:      string
+	command:  "op"
 	args: ["read", ref]
-}
+})
