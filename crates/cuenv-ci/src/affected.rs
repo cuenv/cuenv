@@ -16,19 +16,12 @@ pub fn compute_affected_tasks(
     for task_name in pipeline_tasks {
         if let Some(task_def) = config.tasks.get(task_name)
             && let Some(task) = task_def.as_single()
+            && task
+                .iter_path_inputs()
+                .any(|input_glob| matches_any(changed_files, project_root, input_glob))
         {
-            // Check inputs
-            if !task.inputs.is_empty() {
-                for input_glob in &task.inputs {
-                    // Resolve glob relative to project root
-                    // Check if any changed file matches this glob
-                    if matches_any(changed_files, project_root, input_glob) {
-                        directly_affected.insert(task_name.clone());
-                        affected.insert(task_name.clone());
-                        break;
-                    }
-                }
-            }
+            directly_affected.insert(task_name.clone());
+            affected.insert(task_name.clone());
         }
         // TODO: Handle task groups recursively?
     }

@@ -51,7 +51,7 @@ tasks: {{
   consume: {{
     command: "sh"
     args: ["-c", "mkdir -p out; cp vendor/app.txt out/used.txt; echo done"]
-    externalInputs: [{{
+    inputs: [{{
       project: "{external_project}"
       task: "build"
       map: [{{ from: "{mapping_from}", to: "{mapping_to}" }}]
@@ -207,7 +207,7 @@ tasks: {
   consume: {
     command: "sh"
     args: ["-c", "true"]
-    externalInputs: [{
+    inputs: [{
       project: "../projB"
       task: "build"
       map: [

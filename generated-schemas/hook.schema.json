@@ -29,6 +29,17 @@
         "type": "string"
       }
     },
+    "order": {
+      "description": "Execution order within a single env.cue (lower runs first, default 100)",
+      "type": "integer",
+      "format": "int32",
+      "default": 100
+    },
+    "propagate": {
+      "description": "Whether this hook propagates to child directories (default false)",
+      "type": "boolean",
+      "default": false
+    },
     "source": {
       "description": "Whether to source the command output as shell script to capture environment changes",
       "type": ["boolean", "null"]
