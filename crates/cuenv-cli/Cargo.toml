@@ -20,7 +20,7 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = []
+default = ["dagger-backend"]
 dagger-backend = ["cuenv-core/dagger-backend"]
 
 [[test]]
