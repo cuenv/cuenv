@@ -21,7 +21,7 @@ workspace = true
 
 [features]
 default = ["dagger-backend"]
-dagger-backend = ["cuenv-core/dagger-backend"]
+dagger-backend = ["dep:cuenv-dagger"]
 
 [[test]]
 name = "bdd"
@@ -29,6 +29,7 @@ harness = false
 
 [dependencies]
 cuenv-core = { workspace = true }
+cuenv-dagger = { workspace = true, optional = true }
 cuenv-ci = { workspace = true }
 cuenv-events = { workspace = true }
 cuenv-release = { workspace = true }

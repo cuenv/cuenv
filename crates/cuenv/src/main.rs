@@ -627,10 +627,17 @@ async fn execute_export_command_safe(
             print!("{output}");
             Ok(())
         }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Export failed: {e}"),
-            "Check that your env.cue file is valid",
-        )),
+        Err(e) => {
+            let mut cli_err: CliError = e.into();
+            match &mut cli_err {
+                CliError::Config { help, .. }
+                | CliError::Eval { help, .. }
+                | CliError::Other { help, .. } => {
+                    *help = Some("Check that your env.cue file is valid".to_string());
+                }
+            }
+            Err(cli_err)
+        }
     }
 }
 
@@ -659,15 +666,21 @@ async fn execute_env_print_command_safe(
         }
         Err(e) => {
             perf_guard.finish(false);
-            Err(CliError::eval_with_help(
-                format!("Failed to print environment variables: {e}"),
-                "Check your CUE files and package configuration",
-            ))
+            let mut cli_err: CliError = e.into();
+            match &mut cli_err {
+                CliError::Config { help, .. }
+                | CliError::Eval { help, .. }
+                | CliError::Other { help, .. } => {
+                    *help = Some("Check your CUE files and package configuration".to_string());
+                }
+            }
+            Err(cli_err)
         }
     }
 }
 
 /// Execute task command safely
+#[allow(clippy::too_many_arguments)]
 #[instrument(name = "cuenv_execute_task_safe")]
 async fn execute_task_command_safe(
     path: String,
@@ -703,10 +716,21 @@ async fn execute_task_command_safe(
         }
         Err(e) => {
             perf_guard.finish(false);
-            Err(CliError::eval_with_help(
-                e.to_string(),
-                "Re-run with --level=debug to stream task output from child processes",
-            ))
+            // Convert error to appropriate CLI error category
+            let mut cli_err: CliError = e.into();
+            // Add debug hint only for execution errors, not config errors
+            match &mut cli_err {
+                CliError::Config { .. } => {
+                    // Config errors (task not found, etc.) don't need the debug hint
+                }
+                CliError::Eval { help, .. } | CliError::Other { help, .. } => {
+                    *help = Some(
+                        "Re-run with --level=debug to stream task output from child processes"
+                            .to_string(),
+                    );
+                }
+            }
+            Err(cli_err)
         }
     }
 }
@@ -737,7 +761,7 @@ async fn execute_exec_command_safe(
         }
         Err(e) => {
             perf_guard.finish(false);
-            Err(CliError::eval(e.to_string()))
+            Err(e.into())
         }
     }
 }

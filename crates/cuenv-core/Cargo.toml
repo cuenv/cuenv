@@ -15,8 +15,7 @@ exclude = [
 ]
 
 [features]
-default = ["dagger-backend"]
-dagger-backend = ["dep:dagger-sdk"]
+default = []
 
 [dependencies]
 thiserror = "2.0"
@@ -31,7 +30,6 @@ async-recursion = "1.1"
 async-trait = "0.1"
 futures = "0.3"
 fs4 = { version = "0.11", features = ["tokio"] }
-dagger-sdk = { version = "0.19.7", optional = true }
 
 # Dependencies for hook execution system
 dirs = { workspace = true }
@@ -54,3 +52,4 @@ libc = "0.2"
 tempfile = { workspace = true }
 cucumber = { workspace = true }
 tokio-test = { workspace = true }
+eyre = "0.6"

@@ -1,0 +1,19 @@
+[package]
+name = "cuenv-dagger"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Dagger backend for cuenv task execution"
+
+[dependencies]
+cuenv-core = { path = "../cuenv-core", default-features = false }
+dagger-sdk = "0.19.7"
+async-trait = "0.1"
+tokio = { workspace = true }
+tracing = { workspace = true }

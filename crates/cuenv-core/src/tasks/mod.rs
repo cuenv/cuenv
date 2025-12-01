@@ -10,7 +10,8 @@ pub mod io;
 
 // Re-export executor and graph modules
 pub use backend::{
-    create_backend, should_use_dagger, DaggerBackend, HostBackend, TaskBackend,
+    BackendFactory, HostBackend, TaskBackend, create_backend, create_backend_with_factory,
+    should_use_dagger,
 };
 pub use executor::*;
 pub use graph::*;
@@ -51,20 +52,29 @@ pub enum Input {
     Path(String),
     /// Cross-project reference
     Project(ProjectReference),
+    /// Same-project task output reference
+    Task(TaskOutput),
 }
 
 impl Input {
     pub fn as_path(&self) -> Option<&String> {
         match self {
             Input::Path(path) => Some(path),
-            Input::Project(_) => None,
+            Input::Project(_) | Input::Task(_) => None,
         }
     }
 
     pub fn as_project(&self) -> Option<&ProjectReference> {
         match self {
-            Input::Path(_) => None,
             Input::Project(reference) => Some(reference),
+            Input::Path(_) | Input::Task(_) => None,
+        }
+    }
+
+    pub fn as_task_output(&self) -> Option<&TaskOutput> {
+        match self {
+            Input::Task(output) => Some(output),
+            Input::Path(_) | Input::Project(_) => None,
         }
     }
 }
@@ -150,6 +160,48 @@ pub struct DaggerTaskConfig {
     /// Overrides the global backend.options.image if set.
     #[serde(default)]
     pub image: Option<String>,
+
+    /// Use container from a previous task as base instead of an image.
+    /// The referenced task must have run first (use dependsOn to ensure ordering).
+    #[serde(default)]
+    pub from: Option<String>,
+
+    /// Secrets to mount or expose as environment variables.
+    /// Secrets are resolved using cuenv's secret resolvers and securely passed to Dagger.
+    #[serde(default)]
+    pub secrets: Option<Vec<DaggerSecret>>,
+
+    /// Cache volumes to mount for persistent build caching.
+    #[serde(default)]
+    pub cache: Option<Vec<DaggerCacheMount>>,
+}
+
+/// Secret configuration for Dagger containers
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct DaggerSecret {
+    /// Name identifier for the secret in Dagger
+    pub name: String,
+
+    /// Mount secret as a file at this path (e.g., "/root/.npmrc")
+    #[serde(default)]
+    pub path: Option<String>,
+
+    /// Expose secret as an environment variable with this name
+    #[serde(default, rename = "envVar")]
+    pub env_var: Option<String>,
+
+    /// Secret resolver configuration
+    pub resolver: crate::secrets::Secret,
+}
+
+/// Cache volume mount configuration for Dagger
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct DaggerCacheMount {
+    /// Path inside the container to mount the cache (e.g., "/root/.npm")
+    pub path: String,
+
+    /// Unique name for the cache volume
+    pub name: String,
 }
 
 impl Default for Task {
@@ -187,6 +239,11 @@ impl Task {
     /// Returns an iterator over project references.
     pub fn iter_project_refs(&self) -> impl Iterator<Item = &ProjectReference> {
         self.inputs.iter().filter_map(Input::as_project)
+    }
+
+    /// Returns an iterator over same-project task output references.
+    pub fn iter_task_outputs(&self) -> impl Iterator<Item = &TaskOutput> {
+        self.inputs.iter().filter_map(Input::as_task_output)
     }
 
     /// Collects path/glob inputs applying an optional prefix (for workspace roots).
@@ -474,6 +531,17 @@ mod tests {
                 assert_eq!(reference.map[0].to, "vendor/app.txt");
             }
             other => panic!("Expected project reference, got {:?}", other),
+        }
+
+        // Test TaskOutput variant (same-project task reference)
+        let task_json = r#"{"task": "build.deps"}"#;
+        let task_input: Input = serde_json::from_str(task_json).unwrap();
+        match task_input {
+            Input::Task(output) => {
+                assert_eq!(output.task, "build.deps");
+                assert!(output.map.is_none());
+            }
+            other => panic!("Expected task output reference, got {:?}", other),
         }
     }
 
