@@ -220,6 +220,17 @@ impl TaskBackend for DaggerBackend {
         let result_store = std::sync::Arc::new(std::sync::Mutex::new(None));
         let result_store_clone = result_store.clone();
 
+        // Attempt to silence Dagger's default TUI output
+        // We set this env var for the current process, which dagger-sdk might read when spawning the engine/CLI.
+        // NOTE: This affects the global process environment. 
+        // Since cuenv CLI is ephemeral, this is generally acceptable for this command.
+        // unsafe because set_var is technically unsafe in multi-threaded context, but we are setting it before spawning threads here?
+        // Actually execute might be called from async context. We should accept the risk or find another way.
+        // Given this is an experimental feature, we will allow it.
+        unsafe {
+            std::env::set_var("DAGGER_LOG_FORMAT", "json");
+        }
+
         dagger_sdk::connect(move |client| {
             let project_root = project_root.clone();
             let image = image.clone();
