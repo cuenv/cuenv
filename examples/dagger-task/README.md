@@ -7,19 +7,39 @@ This example demonstrates how to run tasks using the Dagger backend in `cuenv`.
 1.  **Dagger Engine**: Ensure the Dagger engine is installed and running.
 2.  **Feature Flag**: `cuenv` must be built with the `dagger-backend` feature (enabled by default in this branch).
 
+## Configuration
+
+The `env.cue` in this directory is configured to use `dagger` by default:
+
+```cue
+config: {
+	backend: {
+		type: "dagger"
+		options: {
+			image: "alpine:latest"
+		}
+	}
+}
+```
+
 ## Usage
 
-To run these tasks using the Dagger backend, use the `--backend dagger` flag.
+Run tasks as normal. They will execute in Dagger containers because of the config above.
 
 ### 1. Hello World (Alpine)
 
+Prints the OS release info to verify it's running in Alpine Linux (not your host).
+
 ```bash
-cuenv task hello --backend dagger
+cuenv task hello
 ```
 
 Output:
 ```text
-Hello from a Dagger container!
+Hello from Dagger!
+Container OS:
+NAME="Alpine Linux"
+ID=alpine
 ```
 
 ### 2. Python Environment
@@ -27,12 +47,7 @@ Hello from a Dagger container!
 Runs a Python snippet inside a `python:3.11-slim` container.
 
 ```bash
-cuenv task python-info --backend dagger
-```
-
-Output:
-```text
-Running Python 3.11.x ... in Dagger
+cuenv task python-info
 ```
 
 ### 3. Environment Variables
@@ -40,10 +55,14 @@ Running Python 3.11.x ... in Dagger
 Demonstrates passing environment variables into the container.
 
 ```bash
-cuenv task env-check --backend dagger
+cuenv task env-check
 ```
 
-Output:
-```text
-The secret is: visible-in-container
+### Overriding the Backend
+
+You can force execution back to the host using the CLI flag:
+
+```bash
+cuenv task hello --backend host
 ```
+(This might fail if the host doesn't have the tools or paths expected by the container task, but useful for debugging).
