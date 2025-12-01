@@ -8,8 +8,20 @@ use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
-    ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, TaskIndex, Tasks,
+    BackendFactory, ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, TaskIndex, Tasks,
 };
+
+/// Get the dagger backend factory if the feature is enabled
+#[cfg(feature = "dagger-backend")]
+#[allow(clippy::unnecessary_wraps)] // Both cfg variants need same return type
+fn get_dagger_factory() -> Option<BackendFactory> {
+    Some(cuenv_dagger::create_dagger_backend)
+}
+
+#[cfg(not(feature = "dagger-backend"))]
+fn get_dagger_factory() -> Option<BackendFactory> {
+    None
+}
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write;
@@ -170,10 +182,10 @@ pub async fn execute_task(
         show_cache_path,
         workspaces: manifest.workspaces.clone(),
         backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
-        cli_backend: backend.map(|s| s.to_string()),
+        cli_backend: backend.map(ToString::to_string),
     };
 
-    let executor = TaskExecutor::new(config);
+    let executor = TaskExecutor::with_dagger_factory(config, get_dagger_factory());
 
     // Build task graph for dependency-aware execution
     tracing::debug!("Building task graph for task: {}", task_name);
@@ -314,19 +326,22 @@ async fn run_task_hermetic(
 
     // Execute with project_root set to our prepared workspace so that the
     // executor resolves inputs from there (including external materials).
-    let exec = TaskExecutor::new(ExecutorConfig {
-        capture_output,
-        max_parallel: 0,
-        environment: env.clone(),
-        working_dir: None,
-        project_root: workspace.clone(),
-        materialize_outputs: None,
-        cache_dir: None,
-        show_cache_path: false,
-        workspaces: None,
-        backend_config: None,
-        cli_backend: None,
-    });
+    let exec = TaskExecutor::with_dagger_factory(
+        ExecutorConfig {
+            capture_output,
+            max_parallel: 0,
+            environment: env.clone(),
+            working_dir: None,
+            project_root: workspace.clone(),
+            materialize_outputs: None,
+            cache_dir: None,
+            show_cache_path: false,
+            workspaces: None,
+            backend_config: None,
+            cli_backend: None,
+        },
+        get_dagger_factory(),
+    );
 
     let result = exec.execute_task(name, task).await?;
 
@@ -785,19 +800,22 @@ async fn resolve_and_materialize_project_reference(
             reference.task,
             ext_key
         );
-        let exec = TaskExecutor::new(ExecutorConfig {
-            capture_output,
-            max_parallel: 0,
-            environment: env.clone(),
-            working_dir: None,
-            project_root: ext_dir.clone(),
-            materialize_outputs: None,
-            cache_dir: None,
-            show_cache_path: false,
-            workspaces: None,
-            backend_config: None,
-            cli_backend: None,
-        });
+        let exec = TaskExecutor::with_dagger_factory(
+            ExecutorConfig {
+                capture_output,
+                max_parallel: 0,
+                environment: env.clone(),
+                working_dir: None,
+                project_root: ext_dir.clone(),
+                materialize_outputs: None,
+                cache_dir: None,
+                show_cache_path: false,
+                workspaces: None,
+                backend_config: None,
+                cli_backend: None,
+            },
+            get_dagger_factory(),
+        );
         let res = exec.execute_task(&reference.task, task).await?;
         if !res.success {
             return Err(cuenv_core::Error::configuration(format!(
@@ -1212,11 +1230,14 @@ env: {
             .no_retry()
             .build()
             .unwrap();
-        let exec = TaskExecutor::new(ExecutorConfig {
-            capture_output: true,
-            workspaces: None,
-            ..Default::default()
-        });
+        let exec = TaskExecutor::with_dagger_factory(
+            ExecutorConfig {
+                capture_output: true,
+                workspaces: None,
+                ..Default::default()
+            },
+            get_dagger_factory(),
+        );
 
         let task = Task {
             command: "sh".into(),

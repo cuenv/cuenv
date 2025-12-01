@@ -5,7 +5,7 @@
 //! - Hermetic workdir populated from declared inputs (files/dirs/globs)
 //! - Persistent task result cache keyed by inputs + command + env + cuenv version + platform
 
-use super::backend::{TaskBackend, create_backend};
+use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
 use crate::cache::tasks as task_cache;
 use crate::config::BackendConfig;
@@ -92,15 +92,32 @@ impl Default for ExecutorConfig {
 /// Task executor
 pub struct TaskExecutor {
     config: ExecutorConfig,
-    backend: Box<dyn TaskBackend>,
+    backend: Arc<dyn TaskBackend>,
 }
 impl TaskExecutor {
+    /// Create a new executor with host backend only
     pub fn new(config: ExecutorConfig) -> Self {
-        let backend = create_backend(
+        Self::with_dagger_factory(config, None)
+    }
+
+    /// Create a new executor with optional dagger backend support.
+    ///
+    /// Pass `Some(cuenv_dagger::create_dagger_backend)` to enable dagger backend.
+    pub fn with_dagger_factory(
+        config: ExecutorConfig,
+        dagger_factory: Option<BackendFactory>,
+    ) -> Self {
+        let backend = create_backend_with_factory(
             config.backend_config.as_ref(),
             config.project_root.clone(),
             config.cli_backend.as_deref(),
+            dagger_factory,
         );
+        Self { config, backend }
+    }
+
+    /// Create a new executor with the given config but sharing the backend
+    fn with_shared_backend(config: ExecutorConfig, backend: Arc<dyn TaskBackend>) -> Self {
         Self { config, backend }
     }
 
@@ -111,17 +128,20 @@ impl TaskExecutor {
         // Hermetic execution logic is currently bypassed in favor of direct execution
         // as per the current codebase state (see original TODOs).
         // The backend implementation handles the specific execution details.
-        
+
         // If using Dagger backend, we skip the workspace resolution and hermetic setup for now
         // as it operates in a container.
         if self.backend.name() == "dagger" {
-             return self.backend.execute(
-                name,
-                task,
-                &self.config.environment,
-                &self.config.project_root,
-                self.config.capture_output,
-            ).await;
+            return self
+                .backend
+                .execute(
+                    name,
+                    task,
+                    &self.config.environment,
+                    &self.config.project_root,
+                    self.config.capture_output,
+                )
+                .await;
         }
 
         // All tasks run directly in workspace/project root (hermetic sandbox disabled)
@@ -1312,9 +1332,8 @@ impl TaskExecutor {
     }
 
     fn clone_with_config(&self) -> Self {
-        let mut new_executor = Self::new(self.config.clone());
-        // Note: backend is recreated from config, which is what we want
-        new_executor
+        // Share the backend across clones to preserve container cache for Dagger chaining
+        Self::with_shared_backend(self.config.clone(), self.backend.clone())
     }
 }
 

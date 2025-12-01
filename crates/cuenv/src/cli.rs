@@ -105,6 +105,34 @@ impl CliError {
     }
 }
 
+/// Convert `cuenv_core::Error` to appropriate `CliError` variant.
+///
+/// Maps error types to their appropriate CLI categories:
+/// - Configuration errors (task not found, invalid config) -> Config (exit code 2)
+/// - FFI/CUE evaluation errors -> Eval (exit code 3)
+/// - I/O and other errors -> Other (exit code 3)
+impl From<cuenv_core::Error> for CliError {
+    fn from(err: cuenv_core::Error) -> Self {
+        match err {
+            // Configuration errors are user-facing config issues (exit code 2)
+            // Extract just the message to avoid "Configuration error: Configuration error:"
+            cuenv_core::Error::Configuration { message, .. } => CliError::config(message),
+            // FFI, CUE parsing, validation, and execution errors are evaluation errors (exit code 3)
+            cuenv_core::Error::Ffi { .. }
+            | cuenv_core::Error::CueParse { .. }
+            | cuenv_core::Error::Validation { .. } => CliError::eval(err.to_string()),
+            // Execution errors - extract message to avoid redundant prefix
+            cuenv_core::Error::Execution { message, .. } => {
+                CliError::eval_with_help(message, "Check the task output above for details")
+            }
+            // I/O, encoding, and timeout errors are unexpected runtime errors
+            cuenv_core::Error::Io { .. }
+            | cuenv_core::Error::Utf8 { .. }
+            | cuenv_core::Error::Timeout { .. } => CliError::other(err.to_string()),
+        }
+    }
+}
+
 /// Map CLI error to appropriate exit code
 #[must_use]
 pub fn exit_code_for(err: &CliError) -> i32 {
@@ -1114,5 +1142,63 @@ mod tests {
         let display = format!("{eval_err}");
         assert!(display.contains("Evaluation/FFI error"));
         assert!(display.contains("test eval message"));
+    }
+
+    #[test]
+    fn test_cuenv_core_error_conversion() {
+        // Configuration errors should map to Config (exit code 2)
+        // and extract just the message (not the full "Configuration error: X")
+        let config_err = cuenv_core::Error::configuration("Task 'foo' not found");
+        let cli_err: CliError = config_err.into();
+        assert!(matches!(cli_err, CliError::Config { .. }));
+        assert_eq!(exit_code_for(&cli_err), EXIT_CLI);
+        // Verify we don't have redundant prefix
+        let display = format!("{cli_err}");
+        assert!(!display.contains("Configuration error: Configuration error"));
+        assert!(display.contains("Task 'foo' not found"));
+
+        // FFI errors should map to Eval (exit code 3)
+        let ffi_err = cuenv_core::Error::ffi("evaluate", "FFI bridge failed");
+        let cli_err: CliError = ffi_err.into();
+        assert!(matches!(cli_err, CliError::Eval { .. }));
+        assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+
+        // CUE parse errors should map to Eval (exit code 3)
+        let cue_err = cuenv_core::Error::cue_parse(std::path::Path::new("/test"), "parse failed");
+        let cli_err: CliError = cue_err.into();
+        assert!(matches!(cli_err, CliError::Eval { .. }));
+        assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+
+        // Validation errors should map to Eval (exit code 3)
+        let validation_err = cuenv_core::Error::validation("schema validation failed");
+        let cli_err: CliError = validation_err.into();
+        assert!(matches!(cli_err, CliError::Eval { .. }));
+        assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+
+        // I/O errors should map to Other (exit code 3)
+        let io_err = cuenv_core::Error::Io {
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
+            path: None,
+            operation: "read".to_string(),
+        };
+        let cli_err: CliError = io_err.into();
+        assert!(matches!(cli_err, CliError::Other { .. }));
+        assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+
+        // Timeout errors should map to Other (exit code 3)
+        let timeout_err = cuenv_core::Error::Timeout { seconds: 30 };
+        let cli_err: CliError = timeout_err.into();
+        assert!(matches!(cli_err, CliError::Other { .. }));
+        assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+
+        // Execution errors should map to Eval (exit code 3)
+        let exec_err = cuenv_core::Error::execution("Dagger execution failed");
+        let cli_err: CliError = exec_err.into();
+        assert!(matches!(cli_err, CliError::Eval { .. }));
+        assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+        // Verify message extraction
+        let display = format!("{cli_err}");
+        assert!(display.contains("Dagger execution failed"));
+        assert!(!display.contains("Task execution failed: Task execution failed"));
     }
 }

@@ -42,10 +42,16 @@ package schema
 	workspaces?: [...string]
 
 	description?: string
+
+	// Dagger-specific configuration for running this task in a container
+	dagger?: #DaggerConfig
 }
 
-// Accepted task inputs
-#Input: string | #ProjectReference
+// Accepted task inputs:
+// - string: File path, directory, or glob pattern
+// - #ProjectReference: Cross-project task outputs
+// - #TaskOutput: Same-project task outputs
+#Input: string | #ProjectReference | #TaskOutput
 
 // Reference to another project's task within the same Git root
 #ProjectReference: {
@@ -86,3 +92,48 @@ package schema
 // - Array of tasks: Sequential execution (order preserved)
 // - Object of named tasks: Parallel execution with dependencies
 #TaskGroup: [...#Tasks] | {[string]: #Tasks}
+
+// Dagger-specific task configuration for containerized execution
+#DaggerConfig: {
+	// Base container image (e.g., "node:20-alpine", "rust:1.75-slim")
+	// Required unless 'from' is specified
+	image?: string
+
+	// Use container from a previous task as base instead of an image.
+	// The referenced task must have run and produced a container.
+	// Example: from: "deps" continues from the "deps" task's container
+	from?: string
+
+	// Secrets to mount or expose as environment variables.
+	// Secrets are resolved using cuenv's secret resolvers (exec, 1Password, etc.)
+	// and securely passed to Dagger without exposing plaintext in logs.
+	secrets?: [...#DaggerSecret]
+
+	// Cache volumes to mount for persistent build caching.
+	// Cache volumes persist across task runs and speed up builds.
+	cache?: [...#DaggerCacheMount]
+}
+
+// Secret configuration for Dagger containers
+#DaggerSecret: {
+	// Name identifier for the secret in Dagger
+	name: string
+
+	// Mount secret as a file at this path (e.g., "/root/.npmrc")
+	path?: string
+
+	// Expose secret as an environment variable with this name
+	envVar?: string
+
+	// Secret resolver - uses existing cuenv secret types (#Secret, #OnePasswordRef, etc.)
+	resolver: #Secret
+}
+
+// Cache volume mount configuration
+#DaggerCacheMount: {
+	// Path inside the container to mount the cache (e.g., "/root/.npm", "/root/.cargo/registry")
+	path: string
+
+	// Unique name for the cache volume. Volumes with the same name share data.
+	name: string
+}

@@ -35,6 +35,7 @@ cuenv task hello
 ```
 
 Output:
+
 ```text
 Hello from Dagger!
 Container OS:
@@ -65,4 +66,5 @@ You can force execution back to the host using the CLI flag:
 ```bash
 cuenv task hello --backend host
 ```
+
 (This might fail if the host doesn't have the tools or paths expected by the container task, but useful for debugging).
