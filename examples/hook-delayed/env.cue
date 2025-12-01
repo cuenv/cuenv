@@ -15,20 +15,23 @@ env: {
 
 // Hooks to execute when entering this directory (with delay)
 hooks: {
-	onEnter: [
-		{
+	onEnter: {
+		start: {
+			order:   1
 			command: "echo"
 			args: ["Starting development services..."]
-		},
-		{
+		}
+		wait: {
+			order:   2
 			command: "sleep"
 			args: ["2"]  // Simulate docker-compose up or similar
-		},
-		{
+		}
+		ready: {
+			order:   3
 			command: "echo"
 			args: ["Services ready on ports 5432, 6379, 3000"]
-		},
-	]
+		}
+	}
 }
 
 // Task definitions for the environment
