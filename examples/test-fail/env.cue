@@ -9,8 +9,8 @@ env: {
 }
 
 hooks: {
-    onEnter: [{
+    onEnter: fail: {
         command: "sh"
         args: ["-c", "exit 1"]
-    }]
+    }
 }
