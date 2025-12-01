@@ -13,12 +13,7 @@ env: {
 }
 
 // Hooks to execute when entering this directory
-hooks: {
-	onEnter: [{
-		command: "echo"
-		args: ["Environment configured for development"]
-	}]
-}
+hooks: onEnter: notify: { command: "echo", args: ["Environment configured"] }
 
 // Task definitions for the environment
 tasks: {
