@@ -265,32 +265,31 @@ async fn run_task_hermetic(
 ) -> Result<cuenv_core::tasks::TaskResult> {
     // Discover git root
     let git_root = find_git_root(project_dir)?;
+    let project_ref_count = task.iter_project_refs().count();
     tracing::info!(
-        "Starting task '{}' with {} external mappings",
+        "Starting task '{}' with {} project references",
         name,
-        task.external_inputs.as_ref().map_or(0, Vec::len)
+        project_ref_count
     );
 
     // Prepare hermetic workspace
     let workspace = create_workspace_dir(name)?;
 
-    // Materialize external inputs first
-    if let Some(externals) = &task.external_inputs {
-        for ext in externals {
-            resolve_and_materialize_external(
-                &git_root,
-                project_dir,
-                evaluator,
-                ext,
-                &workspace,
-                capture_output,
-            )
-            .await?;
-        }
+    // Materialize project references first
+    for reference in task.iter_project_refs() {
+        resolve_and_materialize_project_reference(
+            &git_root,
+            project_dir,
+            evaluator,
+            reference,
+            &workspace,
+            capture_output,
+        )
+        .await?;
     }
 
     // Materialize local inputs
-    for input in &task.inputs {
+    for input in task.iter_path_inputs() {
         let src = project_dir.join(input);
         let dst = workspace.join(input);
         materialize_path(&src, &dst)?;
@@ -310,19 +309,6 @@ async fn run_task_hermetic(
         }
     }
 
-    // Augment inputs with mapped external destinations so they are included in
-    // the hermetic input set and cache key computed by the core executor.
-    let mut augmented_inputs = task.inputs.clone();
-    if let Some(exts) = &task.external_inputs {
-        for ext in exts {
-            for m in &ext.map {
-                if !augmented_inputs.contains(&m.to) {
-                    augmented_inputs.push(m.to.clone());
-                }
-            }
-        }
-    }
-
     // Execute with project_root set to our prepared workspace so that the
     // executor resolves inputs from there (including external materials).
     let exec = TaskExecutor::new(ExecutorConfig {
@@ -337,11 +323,7 @@ async fn run_task_hermetic(
         workspaces: None,
     });
 
-    // Clone the task with augmented inputs
-    let mut task_aug = task.clone();
-    task_aug.inputs = augmented_inputs;
-
-    let result = exec.execute_task(name, &task_aug).await?;
+    let result = exec.execute_task(name, task).await?;
 
     Ok(result)
 }
@@ -605,22 +587,20 @@ fn compute_task_cache_key(
         hasher.update(v.as_bytes());
     }
     // Hash all files in workspace that are inputs/materialized
-    // We use declared inputs plus any paths under workspace that were materialized by external mapping (placed by caller)
-    for input in &task.inputs {
+    // We use declared inputs plus any paths under workspace that were materialized by project references
+    for input in task.iter_path_inputs() {
         let path = workspace_inputs_root.join(input);
         hash_path_recursive(&mut hasher, &path)?;
     }
-    // Also include mapped external destinations if any
-    if let Some(exts) = &task.external_inputs {
-        let mut unique_dests: HashSet<PathBuf> = HashSet::new();
-        for ext in exts {
-            for m in &ext.map {
-                unique_dests.insert(workspace_inputs_root.join(&m.to));
-            }
+
+    let mut unique_dests: HashSet<PathBuf> = HashSet::new();
+    for reference in task.iter_project_refs() {
+        for mapping in &reference.map {
+            unique_dests.insert(workspace_inputs_root.join(&mapping.to));
         }
-        for dst in unique_dests {
-            hash_path_recursive(&mut hasher, &dst)?;
-        }
+    }
+    for dst in unique_dests {
+        hash_path_recursive(&mut hasher, &dst)?;
     }
 
     Ok(format!("{:x}", hasher.finalize()))
@@ -679,29 +659,29 @@ fn store_outputs_in_cache(workspace: &Path, outputs: &[String], outputs_dir: &Pa
 }
 
 #[allow(clippy::too_many_lines)]
-async fn resolve_and_materialize_external(
+async fn resolve_and_materialize_project_reference(
     git_root: &Path,
     current_project_dir: &Path,
     evaluator: &CueEvaluator,
-    ext: &cuenv_core::tasks::ExternalInput,
+    reference: &cuenv_core::tasks::ProjectReference,
     workspace: &Path,
     capture_output: bool,
 ) -> Result<()> {
     tracing::info!(
-        "Resolving external task: project='{}' task='{}' mappings={}",
-        ext.project,
-        ext.task,
-        ext.map.len()
+        "Resolving project reference: project='{}' task='{}' mappings={}",
+        reference.project,
+        reference.task,
+        reference.map.len()
     );
 
     // Resolve external project path
-    let ext_dir = if ext.project.starts_with('/') {
+    let ext_dir = if reference.project.starts_with('/') {
         canonicalize_within_root(
             git_root,
-            &git_root.join(ext.project.trim_start_matches('/')),
+            &git_root.join(reference.project.trim_start_matches('/')),
         )?
     } else {
-        canonicalize_within_root(git_root, &current_project_dir.join(&ext.project))?
+        canonicalize_within_root(git_root, &current_project_dir.join(&reference.project))?
     };
 
     // Detect package name and evaluate
@@ -710,10 +690,10 @@ async fn resolve_and_materialize_external(
         evaluate_manifest_with_fallback(evaluator, &ext_dir, &package)?.with_implicit_tasks();
 
     // Locate external task
-    let task_def = manifest.tasks.get(&ext.task).ok_or_else(|| {
+    let task_def = manifest.tasks.get(&reference.task).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "External task '{}' not found in project {}",
-            ext.task,
+            reference.task,
             ext_dir.display()
         ))
     })?;
@@ -728,7 +708,7 @@ async fn resolve_and_materialize_external(
 
     // Validate mapping 'from' against declared outputs
     let declared: HashSet<&String> = task.outputs.iter().collect();
-    for m in &ext.map {
+    for m in &reference.map {
         if !declared.contains(&m.from) {
             return Err(cuenv_core::Error::configuration(format!(
                 "Mapping refers to non-declared output '{}'; declared outputs: {:?}",
@@ -739,7 +719,7 @@ async fn resolve_and_materialize_external(
 
     // Ensure no destination collisions
     let mut dests: HashSet<&String> = HashSet::new();
-    for m in &ext.map {
+    for m in &reference.map {
         if !dests.insert(&m.to) {
             return Err(cuenv_core::Error::configuration(format!(
                 "Collision in mapping: destination '{}' specified multiple times",
@@ -761,7 +741,8 @@ async fn resolve_and_materialize_external(
 
         // Note: External tasks use build_for_task which doesn't resolve secrets/policies
         // This is intentional for hermetic execution
-        let vars = Environment::build_for_task(&ext.task, &manifest.env.as_ref().unwrap().base);
+        let vars =
+            Environment::build_for_task(&reference.task, &manifest.env.as_ref().unwrap().base);
         for (k, v) in vars {
             env.set(k, v);
         }
@@ -769,7 +750,8 @@ async fn resolve_and_materialize_external(
 
     // Compute cache key exactly as core executor does
     let input_resolver = cuenv_core::tasks::io::InputResolver::new(&ext_dir);
-    let resolved_inputs = input_resolver.resolve(&task.inputs)?;
+    let input_patterns = task.collect_path_inputs_with_prefix(None);
+    let resolved_inputs = input_resolver.resolve(&input_patterns)?;
     let inputs_summary = resolved_inputs.to_summary_map();
     let mut env_summary = BTreeMap::new();
     for (k, v) in env.iter() {
@@ -795,7 +777,7 @@ async fn resolve_and_materialize_external(
     if cuenv_core::cache::tasks::lookup(&ext_key, None).is_none() {
         tracing::info!(
             "Cache miss for external task '{}' (key {})",
-            ext.task,
+            reference.task,
             ext_key
         );
         let exec = TaskExecutor::new(ExecutorConfig {
@@ -809,15 +791,15 @@ async fn resolve_and_materialize_external(
             show_cache_path: false,
             workspaces: None,
         });
-        let res = exec.execute_task(&ext.task, task).await?;
+        let res = exec.execute_task(&reference.task, task).await?;
         if !res.success {
             return Err(cuenv_core::Error::configuration(format!(
                 "External task '{}' failed",
-                ext.task
+                reference.task
             )));
         }
     } else {
-        tracing::info!("Cache hit for external task '{}'", ext.task);
+        tracing::info!("Cache hit for external task '{}'", reference.task);
     }
 
     // Materialize selected outputs from cache into dependent workspace
@@ -825,7 +807,7 @@ async fn resolve_and_materialize_external(
     let _ = fs::remove_dir_all(&mat_dir);
     fs::create_dir_all(&mat_dir).ok();
     let _ = cuenv_core::cache::tasks::materialize_outputs(&ext_key, &mat_dir, None)?;
-    for m in &ext.map {
+    for m in &reference.map {
         let src = mat_dir.join(&m.from);
         let dst = workspace.join(&m.to);
         materialize_path(&src, &dst)?;
@@ -1005,6 +987,7 @@ fn print_tree_nodes(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::tasks::Input;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1127,7 +1110,7 @@ env: {
         let task = Task {
             command: "echo".into(),
             args: vec!["hi".into()],
-            inputs: vec!["inputs".into()],
+            inputs: vec![Input::Path("inputs".into())],
             ..Default::default()
         };
 
@@ -1192,7 +1175,7 @@ env: {
                 "-c".into(),
                 "mkdir -p out; cat inputs/in.txt > out/out.txt; echo done".into(),
             ],
-            inputs: vec!["inputs".into()],
+            inputs: vec![Input::Path("inputs".into())],
             outputs: vec!["out/out.txt".into()],
             ..Default::default()
         };
@@ -1229,7 +1212,7 @@ env: {
         let task = Task {
             command: "sh".into(),
             args: vec!["-c".into(), "cp inputs/in.txt out.txt".into()],
-            inputs: vec!["inputs".into()],
+            inputs: vec![Input::Path("inputs".into())],
             outputs: vec!["out.txt".into()],
             ..Default::default()
         };

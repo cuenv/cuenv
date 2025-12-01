@@ -144,16 +144,7 @@ impl TaskExecutor {
             let resolved_inputs = {
                 let _g = span_inputs.enter();
                 let resolver = InputResolver::new(&input_root);
-                let mut all_inputs: Vec<String> = Vec::new();
-
-                if let Some(prefix) = project_prefix.as_ref() {
-                    for input in &task.inputs {
-                        all_inputs.push(prefix.join(input).to_string_lossy().to_string());
-                    }
-                } else {
-                    all_inputs.extend(task.inputs.iter().cloned());
-                }
-
+                let mut all_inputs = task.collect_all_inputs_with_prefix(project_prefix.as_deref());
                 all_inputs.extend(workspace_input_patterns.iter().cloned());
                 resolver.resolve(&all_inputs)?
             };
@@ -1511,6 +1502,7 @@ pub async fn execute_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::Input;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1672,7 +1664,7 @@ mod tests {
                 "-c".to_string(),
                 "find ../.. -maxdepth 4 -type d | sort".to_string(),
             ],
-            inputs: vec!["package.json".to_string()],
+            inputs: vec![Input::Path("package.json".to_string())],
             workspaces: vec!["bun".to_string()],
             ..Default::default()
         };

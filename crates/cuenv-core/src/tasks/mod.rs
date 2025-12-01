@@ -15,6 +15,7 @@ pub use index::{IndexedTask, TaskIndex, TaskPath};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 
 fn default_hermetic() -> bool {
     true
@@ -38,9 +39,35 @@ pub struct Mapping {
     pub to: String,
 }
 
-/// Cross-project external input declaration
+/// A single task input definition
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct ExternalInput {
+#[serde(untagged)]
+pub enum Input {
+    /// Local path/glob input
+    Path(String),
+    /// Cross-project reference
+    Project(ProjectReference),
+}
+
+impl Input {
+    pub fn as_path(&self) -> Option<&String> {
+        match self {
+            Input::Path(path) => Some(path),
+            Input::Project(_) => None,
+        }
+    }
+
+    pub fn as_project(&self) -> Option<&ProjectReference> {
+        match self {
+            Input::Path(_) => None,
+            Input::Project(reference) => Some(reference),
+        }
+    }
+}
+
+/// Cross-project input declaration
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ProjectReference {
     /// Path to project root relative to env.cue or absolute-from-repo-root
     pub project: String,
     /// Name of the external task in that project
@@ -89,7 +116,7 @@ pub struct Task {
 
     /// Input files/resources
     #[serde(default)]
-    pub inputs: Vec<String>,
+    pub inputs: Vec<Input>,
 
     /// Output files/resources
     #[serde(default)]
@@ -98,10 +125,6 @@ pub struct Task {
     /// Consume cached outputs from other tasks in the same project
     #[serde(default, rename = "inputsFrom")]
     pub inputs_from: Option<Vec<TaskOutput>>,
-
-    /// Cross-project inputs
-    #[serde(default, rename = "externalInputs")]
-    pub external_inputs: Option<Vec<ExternalInput>>,
 
     /// Workspaces to mount/enable for this task
     #[serde(default)]
@@ -124,7 +147,6 @@ impl Default for Task {
             inputs: vec![],
             outputs: vec![],
             inputs_from: None,
-            external_inputs: None,
             workspaces: vec![],
             description: None,
         }
@@ -137,6 +159,45 @@ impl Task {
         self.description
             .as_deref()
             .unwrap_or("No description provided")
+    }
+
+    /// Returns an iterator over local path/glob inputs.
+    pub fn iter_path_inputs(&self) -> impl Iterator<Item = &String> {
+        self.inputs.iter().filter_map(Input::as_path)
+    }
+
+    /// Returns an iterator over project references.
+    pub fn iter_project_refs(&self) -> impl Iterator<Item = &ProjectReference> {
+        self.inputs.iter().filter_map(Input::as_project)
+    }
+
+    /// Collects path/glob inputs applying an optional prefix (for workspace roots).
+    pub fn collect_path_inputs_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
+        self.iter_path_inputs()
+            .map(|path| apply_prefix(prefix, path))
+            .collect()
+    }
+
+    /// Collects mapped destinations from project references, applying an optional prefix.
+    pub fn collect_project_destinations_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
+        self.iter_project_refs()
+            .flat_map(|reference| reference.map.iter().map(|m| apply_prefix(prefix, &m.to)))
+            .collect()
+    }
+
+    /// Collects all input patterns (local + project destinations) with an optional prefix.
+    pub fn collect_all_inputs_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
+        let mut inputs = self.collect_path_inputs_with_prefix(prefix);
+        inputs.extend(self.collect_project_destinations_with_prefix(prefix));
+        inputs
+    }
+}
+
+fn apply_prefix(prefix: Option<&Path>, value: &str) -> String {
+    if let Some(prefix) = prefix {
+        prefix.join(value).to_string_lossy().to_string()
+    } else {
+        value.to_string()
     }
 }
 
@@ -372,5 +433,69 @@ mod tests {
         assert!(group.is_group());
         assert!(group.as_single().is_none());
         assert!(group.as_group().is_some());
+    }
+
+    #[test]
+    fn test_input_deserialization_variants() {
+        let path_json = r#""src/**/*.rs""#;
+        let path_input: Input = serde_json::from_str(path_json).unwrap();
+        assert_eq!(path_input, Input::Path("src/**/*.rs".to_string()));
+
+        let project_json = r#"{
+            "project": "../projB",
+            "task": "build",
+            "map": [{"from": "dist/app.txt", "to": "vendor/app.txt"}]
+        }"#;
+        let project_input: Input = serde_json::from_str(project_json).unwrap();
+        match project_input {
+            Input::Project(reference) => {
+                assert_eq!(reference.project, "../projB");
+                assert_eq!(reference.task, "build");
+                assert_eq!(reference.map.len(), 1);
+                assert_eq!(reference.map[0].from, "dist/app.txt");
+                assert_eq!(reference.map[0].to, "vendor/app.txt");
+            }
+            other => panic!("Expected project reference, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_task_input_helpers_collect() {
+        use std::collections::HashSet;
+        use std::path::Path;
+
+        let task = Task {
+            inputs: vec![
+                Input::Path("src".into()),
+                Input::Project(ProjectReference {
+                    project: "../projB".into(),
+                    task: "build".into(),
+                    map: vec![Mapping {
+                        from: "dist/app.txt".into(),
+                        to: "vendor/app.txt".into(),
+                    }],
+                }),
+            ],
+            ..Default::default()
+        };
+
+        let path_inputs: Vec<String> = task.iter_path_inputs().cloned().collect();
+        assert_eq!(path_inputs, vec!["src".to_string()]);
+
+        let project_refs: Vec<&ProjectReference> = task.iter_project_refs().collect();
+        assert_eq!(project_refs.len(), 1);
+        assert_eq!(project_refs[0].project, "../projB");
+
+        let prefix = Path::new("prefix");
+        let collected = task.collect_all_inputs_with_prefix(Some(prefix));
+        let collected: HashSet<_> = collected
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect();
+        let expected: HashSet<_> = ["src", "vendor/app.txt"]
+            .into_iter()
+            .map(|p| prefix.join(p))
+            .collect();
+        assert_eq!(collected, expected);
     }
 }
