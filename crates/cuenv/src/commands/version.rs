@@ -62,7 +62,7 @@ mod tests {
         let version_info = get_version_info();
 
         // Test that all expected components are present
-        assert!(version_info.contains("cuenv-cli"));
+        assert!(version_info.contains("cuenv"));
         let expected_version = env!("CARGO_PKG_VERSION");
         assert!(version_info.contains(expected_version));
         assert!(version_info.contains("Authors:"));
