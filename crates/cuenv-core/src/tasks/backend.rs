@@ -280,6 +280,17 @@ impl TaskBackend for DaggerBackend {
         
         let (exit_code, stdout, stderr) = inner_result.map_err(|e: DaggerReport| Error::configuration(format!("Dagger execution failed: {e}")))?;
 
+        // If we are not capturing output for the caller (e.g. CLI wants to stream it),
+        // we must print it ourselves because we silenced the SDK's default logger.
+        if !capture_output {
+            if !stdout.is_empty() {
+                print!("{}", stdout);
+            }
+            if !stderr.is_empty() {
+                eprint!("{}", stderr);
+            }
+        }
+
         Ok(TaskResult {
             name: task_name,
             exit_code: Some(exit_code),
