@@ -15,6 +15,7 @@ exclude = [
 ]
 
 [features]
+default = ["dagger-backend"]
 dagger-backend = ["dep:dagger-sdk"]
 
 [dependencies]
