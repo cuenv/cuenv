@@ -16,6 +16,18 @@ use tokio::process::Command;
 #[cfg(feature = "dagger-backend")]
 use dagger_sdk;
 
+// Define a type alias for Dagger errors if feature enabled, otherwise dummy
+// dagger-sdk re-exports eyre as part of its public API in newer versions or we need to use Box<dyn Error>
+// Checking dagger-sdk source/docs: it uses eyre for error handling.
+// If dagger_sdk::eyre is not available, we can try to match the error type returned by connect.
+// Or just use Box<dyn std::error::Error + Send + Sync + 'static> which eyre::Report implements.
+
+#[cfg(feature = "dagger-backend")]
+type DaggerReport = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+#[cfg(not(feature = "dagger-backend"))]
+type DaggerReport = crate::Error; // Dummy
+
 /// Trait for task execution backends
 #[async_trait]
 pub trait TaskBackend: Send + Sync {
@@ -204,39 +216,66 @@ impl TaskBackend for DaggerBackend {
         let project_root = self.project_root.clone();
         let task_name = name.to_string();
 
-        let (exit_code, stdout, stderr) = dagger_sdk::connect(|client| async move {
-            let host_dir = client
-                .host()
-                .directory(project_root.to_string_lossy().to_string());
+        // Use Arc<Mutex<Option<...>>> to smuggle the result out of the async closure
+        let result_store = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let result_store_clone = result_store.clone();
 
-            let mut container = client
-                .container()
-                .from(image)
-                .with_mounted_directory("/workspace", host_dir)
-                .with_workdir("/workspace");
+        dagger_sdk::connect(move |client| {
+            let project_root = project_root.clone();
+            let image = image.clone();
+            let command = command.clone();
+            let env_map = env_map.clone();
+            let result_store = result_store_clone.clone();
 
-            for (k, v) in env_map {
-                container = container.with_env_variable(k, v);
-            }
+            async move {
+                let host_dir = client
+                    .host()
+                    .directory(project_root.to_string_lossy().to_string());
 
-            let exec = container.with_exec(command);
-            
-            // We need to handle stdout/stderr differently based on capture_output
-            // The SDK's with_exec is lazy, so we force execution by requesting output
-            
-            let stdout_res = exec.stdout().await;
-            let stderr_res = exec.stderr().await;
-            let exit_code_res = exec.exit_code().await;
+                let mut container = client
+                    .container()
+                    .from(image)
+                    .with_mounted_directory("/workspace", host_dir)
+                    .with_workdir("/workspace");
 
-            match (stdout_res, stderr_res, exit_code_res) {
-                (Ok(stdout), Ok(stderr), Ok(exit_code)) => Ok((exit_code as i32, stdout, stderr)),
-                (Err(e), _, _) => Err(e),
-                (_, Err(e), _) => Err(e),
-                (_, _, Err(e)) => Err(e),
+                for (k, v) in env_map {
+                    container = container.with_env_variable(k, v);
+                }
+
+                let exec = container.with_exec(command);
+                
+                let stdout_res = exec.stdout().await;
+                let stderr_res = exec.stderr().await;
+                let exit_code_res = exec.exit_code().await;
+
+                let res = match (stdout_res, stderr_res, exit_code_res) {
+                    (Ok(stdout), Ok(stderr), Ok(exit_code)) => Ok((exit_code as i32, stdout, stderr)),
+                    (Err(e), _, _) => Err(e.into()),
+                    (_, Err(e), _) => Err(e.into()),
+                    (_, _, Err(e)) => Err(e.into()),
+                };
+                
+                if let Ok(mut guard) = result_store.lock() {
+                    *guard = Some(res);
+                }
+                Ok(())
             }
         })
         .await
         .map_err(|err| Error::configuration(format!("Dagger backend failed: {err}")))?;
+        
+        // Extract result from the store
+        // If lock is poisoned or option is None, that's a fatal error (shouldn't happen if connect succeeded)
+        let mut guard = result_store.lock().map_err(|_| Error::configuration("Failed to acquire lock on task result".to_string()))?;
+        // We expect the Result stored in the Arc to be Ok((exit_code, stdout, stderr))
+        // But it might be an Err(DaggerError) which we mapped to cuenv Error earlier if we could...
+        // Actually, inside the closure we mapped to Err(e.into()) which is DaggerError -> Box<dyn Error>?
+        // Wait, the closure returns Result<(), Report>.
+        // The inner result `res` is Result<(i32, String, String), Report>.
+        
+        let inner_result = guard.take().ok_or_else(|| Error::configuration("Task completed but produced no result".to_string()))?;
+        
+        let (exit_code, stdout, stderr) = inner_result.map_err(|e: DaggerReport| Error::configuration(format!("Dagger execution failed: {e}")))?;
 
         Ok(TaskResult {
             name: task_name,
