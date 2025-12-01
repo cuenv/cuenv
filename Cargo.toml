@@ -4,7 +4,7 @@ members = [
     "crates/cuenv-events",
     "crates/cuenv-core",
     "crates/cuengine",
-    "crates/cuenv-cli",
+    "crates/cuenv",
     "crates/cuenv-workspaces",
     "crates/cuenv-ci",
     "crates/cuenv-release",
