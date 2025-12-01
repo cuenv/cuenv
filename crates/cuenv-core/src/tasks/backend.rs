@@ -2,31 +2,17 @@
 //!
 //! This module provides a pluggable backend system for task execution.
 //! The default backend is `Host`, which runs tasks directly on the host machine.
-//! The `Dagger` backend runs tasks inside containers using Dagger.
+//! For Dagger container execution, use the `cuenv-dagger` crate.
 
 use super::{Task, TaskResult};
-use crate::config::{BackendConfig, BackendOptions};
+use crate::config::BackendConfig;
 use crate::environment::Environment;
 use crate::{Error, Result};
 use async_trait::async_trait;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::process::Command;
-
-#[cfg(feature = "dagger-backend")]
-use dagger_sdk::{self, Config, connect_opts};
-
-// Define a type alias for Dagger errors if feature enabled, otherwise dummy
-// dagger-sdk re-exports eyre as part of its public API in newer versions or we need to use Box<dyn Error>
-// Checking dagger-sdk source/docs: it uses eyre for error handling.
-// If dagger_sdk::eyre is not available, we can try to match the error type returned by connect.
-// Or just use Box<dyn std::error::Error + Send + Sync + 'static> which eyre::Report implements.
-
-#[cfg(feature = "dagger-backend")]
-type DaggerReport = Box<dyn std::error::Error + Send + Sync + 'static>;
-
-#[cfg(not(feature = "dagger-backend"))]
-type DaggerReport = crate::Error; // Dummy
 
 /// Trait for task execution backends
 #[async_trait]
@@ -47,6 +33,12 @@ pub trait TaskBackend: Send + Sync {
 
 /// Host backend - executes tasks directly on the host machine
 pub struct HostBackend;
+
+impl Default for HostBackend {
+    fn default() -> Self {
+        Self
+    }
+}
 
 impl HostBackend {
     pub fn new() -> Self {
@@ -75,7 +67,7 @@ impl TaskBackend for HostBackend {
 
         // Build command
         let mut cmd = if let Some(shell) = &task.shell {
-            let mut c = Command::new(&shell.command.as_ref().unwrap_or(&"bash".to_string()));
+            let mut c = Command::new(shell.command.as_deref().unwrap_or("bash"));
             if let Some(flag) = &shell.flag {
                 c.arg(flag);
             } else {
@@ -163,175 +155,31 @@ impl TaskBackend for HostBackend {
     }
 }
 
-/// Dagger backend - executes tasks inside containers using Dagger
-pub struct DaggerBackend {
-    default_image: Option<String>,
-    #[allow(dead_code)]
-    project_root: std::path::PathBuf,
-}
+/// Type alias for a backend factory function
+pub type BackendFactory = fn(Option<&BackendConfig>, std::path::PathBuf) -> Arc<dyn TaskBackend>;
 
-impl DaggerBackend {
-    pub fn new(default_image: Option<String>, project_root: std::path::PathBuf) -> Self {
-        Self {
-            default_image,
-            project_root,
-        }
-    }
-}
-
-#[cfg(feature = "dagger-backend")]
-#[async_trait]
-impl TaskBackend for DaggerBackend {
-    async fn execute(
-        &self,
-        name: &str,
-        task: &Task,
-        env: &Environment,
-        _project_root: &Path,
-        capture_output: bool,
-    ) -> Result<TaskResult> {
-        let image = task
-            .dagger
-            .as_ref()
-            .and_then(|dagger| dagger.image.clone())
-            .or_else(|| self.default_image.clone())
-            .ok_or_else(|| {
-                Error::configuration(
-                    "Dagger backend requires an image. Set tasks.<name>.dagger.image or config.backend.options.image"
-                        .to_string(),
-                )
-            })?;
-
-        let command: Vec<String> = std::iter::once(task.command.clone())
-            .chain(task.args.clone())
-            .collect();
-
-        if command.is_empty() {
-            return Err(Error::configuration(
-                "Dagger task requires a command to execute".to_string(),
-            ));
-        }
-
-        let env_map = env.vars.clone();
-        let project_root = self.project_root.clone();
-        let task_name = name.to_string();
-
-        // Use Arc<Mutex<Option<...>>> to smuggle the result out of the async closure
-        let result_store = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let result_store_clone = result_store.clone();
-
-        // Configure connection to suppress logs by using default Config (logger is None)
-        let cfg = Config::default();
-
-        connect_opts(cfg, move |client| {
-            let project_root = project_root.clone();
-            let image = image.clone();
-            let command = command.clone();
-            let env_map = env_map.clone();
-            let result_store = result_store_clone.clone();
-
-            async move {
-                let host_dir = client
-                    .host()
-                    .directory(project_root.to_string_lossy().to_string());
-
-                let mut container = client
-                    .container()
-                    .from(image)
-                    .with_mounted_directory("/workspace", host_dir)
-                    .with_workdir("/workspace");
-
-                for (k, v) in env_map {
-                    container = container.with_env_variable(k, v);
-                }
-
-                let exec = container.with_exec(command);
-                
-                let stdout_res = exec.stdout().await;
-                let stderr_res = exec.stderr().await;
-                let exit_code_res = exec.exit_code().await;
-
-                let res = match (stdout_res, stderr_res, exit_code_res) {
-                    (Ok(stdout), Ok(stderr), Ok(exit_code)) => Ok((exit_code as i32, stdout, stderr)),
-                    (Err(e), _, _) => Err(e.into()),
-                    (_, Err(e), _) => Err(e.into()),
-                    (_, _, Err(e)) => Err(e.into()),
-                };
-                
-                if let Ok(mut guard) = result_store.lock() {
-                    *guard = Some(res);
-                }
-                Ok(())
-            }
-        })
-        .await
-        .map_err(|err| Error::configuration(format!("Dagger backend failed: {err}")))?;
-        
-        // Extract result from the store
-        // If lock is poisoned or option is None, that's a fatal error (shouldn't happen if connect succeeded)
-        let mut guard = result_store.lock().map_err(|_| Error::configuration("Failed to acquire lock on task result".to_string()))?;
-        // We expect the Result stored in the Arc to be Ok((exit_code, stdout, stderr))
-        // But it might be an Err(DaggerError) which we mapped to cuenv Error earlier if we could...
-        // Actually, inside the closure we mapped to Err(e.into()) which is DaggerError -> Box<dyn Error>?
-        // Wait, the closure returns Result<(), Report>.
-        // The inner result `res` is Result<(i32, String, String), Report>.
-        
-        let inner_result = guard.take().ok_or_else(|| Error::configuration("Task completed but produced no result".to_string()))?;
-        
-        let (exit_code, stdout, stderr) = inner_result.map_err(|e: DaggerReport| Error::configuration(format!("Dagger execution failed: {e}")))?;
-
-        // If we are not capturing output for the caller (e.g. CLI wants to stream it),
-        // we must print it ourselves because we silenced the SDK's default logger.
-        if !capture_output {
-            if !stdout.is_empty() {
-                print!("{}", stdout);
-            }
-            if !stderr.is_empty() {
-                eprint!("{}", stderr);
-            }
-        }
-
-        Ok(TaskResult {
-            name: task_name,
-            exit_code: Some(exit_code),
-            stdout: if capture_output { stdout } else { String::new() },
-            stderr: if capture_output { stderr } else { String::new() },
-            success: exit_code == 0,
-        })
-    }
-
-    fn name(&self) -> &'static str {
-        "dagger"
-    }
-}
-
-#[cfg(not(feature = "dagger-backend"))]
-#[async_trait]
-impl TaskBackend for DaggerBackend {
-    async fn execute(
-        &self,
-        _name: &str,
-        _task: &Task,
-        _environment: &Environment,
-        _project_root: &Path,
-        _capture_output: bool,
-    ) -> Result<TaskResult> {
-        Err(Error::configuration(
-            "Dagger backend not available; rebuild with the 'dagger-backend' feature to enable it"
-                .to_string(),
-        ))
-    }
-
-    fn name(&self) -> &'static str {
-        "dagger"
-    }
-}
-
+/// Create a backend based on configuration.
+///
+/// This function only handles the `host` backend. For `dagger` backend support,
+/// use `create_backend_with_factory` and provide a factory from `cuenv-dagger`.
 pub fn create_backend(
     config: Option<&BackendConfig>,
     project_root: std::path::PathBuf,
     cli_backend: Option<&str>,
-) -> Box<dyn TaskBackend> {
+) -> Arc<dyn TaskBackend> {
+    create_backend_with_factory(config, project_root, cli_backend, None)
+}
+
+/// Create a backend with an optional factory for non-host backends.
+///
+/// The `dagger_factory` parameter should be `Some(cuenv_dagger::create_dagger_backend)`
+/// when the dagger backend is available.
+pub fn create_backend_with_factory(
+    config: Option<&BackendConfig>,
+    project_root: std::path::PathBuf,
+    cli_backend: Option<&str>,
+    dagger_factory: Option<BackendFactory>,
+) -> Arc<dyn TaskBackend> {
     // CLI override takes precedence, then config, then default to host
     let backend_type = if let Some(b) = cli_backend {
         b.to_string()
@@ -343,17 +191,23 @@ pub fn create_backend(
 
     match backend_type.as_str() {
         "dagger" => {
-             let image = config.and_then(|c| c.options.as_ref()).and_then(|o| o.image.clone());
-             Box::new(DaggerBackend::new(image, project_root))
-        },
-        _ => Box::new(HostBackend::new()),
+            if let Some(factory) = dagger_factory {
+                factory(config, project_root)
+            } else {
+                tracing::error!(
+                    "Dagger backend requested but not available. \
+                     Add cuenv-dagger dependency to enable it. \
+                     Falling back to host backend."
+                );
+                Arc::new(HostBackend::new())
+            }
+        }
+        _ => Arc::new(HostBackend::new()),
     }
 }
 
-pub fn should_use_dagger(
-    config: Option<&BackendConfig>,
-    cli_backend: Option<&str>,
-) -> bool {
+/// Check if the dagger backend should be used based on configuration
+pub fn should_use_dagger(config: Option<&BackendConfig>, cli_backend: Option<&str>) -> bool {
     let backend_type = if let Some(b) = cli_backend {
         b
     } else if let Some(c) = config {
@@ -361,6 +215,6 @@ pub fn should_use_dagger(
     } else {
         "host"
     };
-    
+
     backend_type == "dagger"
 }

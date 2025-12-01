@@ -134,6 +134,14 @@ pub enum Error {
         #[related]
         related: Vec<Error>,
     },
+
+    #[error("Task execution failed: {message}")]
+    #[diagnostic(code(cuenv::task::execution))]
+    Execution {
+        message: String,
+        #[help]
+        help: Option<String>,
+    },
 }
 
 impl Error {
@@ -222,6 +230,20 @@ impl Error {
             span,
             message: msg.into(),
             related: Vec::new(),
+        }
+    }
+
+    pub fn execution(msg: impl Into<String>) -> Self {
+        Error::Execution {
+            message: msg.into(),
+            help: None,
+        }
+    }
+
+    pub fn execution_with_help(msg: impl Into<String>, help: impl Into<String>) -> Self {
+        Error::Execution {
+            message: msg.into(),
+            help: Some(help.into()),
         }
     }
 }

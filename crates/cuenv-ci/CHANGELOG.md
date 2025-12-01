@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(cli)* flush stderr on error and remove redundant error logging
+- _(cli)_ flush stderr on error and remove redundant error logging
 - work on docs
 - calculate affected jobs more consistently with prefixes
 - address PR review comments and failing CI tests
@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - release v0.6.1
-- *(cuenv-ci)* release v0.6.0
+- _(cuenv-ci)_ release v0.6.0
 - overhaul documentation website and guides
 - forcing rebuild with superficial change
 - treefmt all the things
@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(cli)* flush stderr on error and remove redundant error logging
+- _(cli)_ flush stderr on error and remove redundant error logging
 - work on docs
 - calculate affected jobs more consistently with prefixes
 - address PR review comments and failing CI tests
@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- *(cuenv-ci)* release v0.6.0
+- _(cuenv-ci)_ release v0.6.0
 - overhaul documentation website and guides
 - forcing rebuild with superficial change
 - treefmt all the things

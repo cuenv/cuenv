@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/cuenv-events",
     "crates/cuenv-core",
+    "crates/cuenv-dagger",
     "crates/cuengine",
     "crates/cuenv",
     "crates/cuenv-workspaces",
@@ -26,6 +27,7 @@ categories = ["config", "development-tools", "parsing"]
 [workspace.dependencies]
 cuenv-events = { path = "crates/cuenv-events", version = "0.7.1" }
 cuenv-core = { path = "crates/cuenv-core", version = "0.7.1" }
+cuenv-dagger = { path = "crates/cuenv-dagger", version = "0.7.1" }
 cuenv-workspaces = { path = "crates/cuenv-workspaces", version = "0.7.1" }
 cuenv-ci = { path = "crates/cuenv-ci", version = "0.7.1" }
 cuenv-release = { path = "crates/cuenv-release", version = "0.7.1" }

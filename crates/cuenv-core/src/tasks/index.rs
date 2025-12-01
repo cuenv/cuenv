@@ -95,13 +95,34 @@ impl TaskIndex {
     /// Resolve a raw task name (dot or colon separated) to an indexed task
     pub fn resolve(&self, raw: &str) -> Result<&IndexedTask> {
         let path = TaskPath::parse(raw)?;
-        self.entries.get(&path.canonical()).ok_or_else(|| {
+        let canonical = path.canonical();
+        self.entries.get(&canonical).ok_or_else(|| {
             let available: Vec<&str> = self.entries.keys().map(String::as_str).collect();
-            Error::configuration(format!(
-                "Task '{}' not found. Available tasks: {:?}",
-                path.canonical(),
-                available
-            ))
+
+            // Find similar task names for suggestions
+            let suggestions: Vec<&str> = available
+                .iter()
+                .filter(|t| is_similar(&canonical, t))
+                .copied()
+                .collect();
+
+            let mut msg = format!("Task '{}' not found.", canonical);
+
+            if !suggestions.is_empty() {
+                msg.push_str("\n\nDid you mean one of these?\n");
+                for s in &suggestions {
+                    msg.push_str(&format!("  - {s}\n"));
+                }
+            }
+
+            if !available.is_empty() {
+                msg.push_str("\nAvailable tasks:\n");
+                for t in &available {
+                    msg.push_str(&format!("  - {t}\n"));
+                }
+            }
+
+            Error::configuration(msg)
         })
     }
 
@@ -211,4 +232,67 @@ fn canonicalize_dep(dep: &str, current_path: &TaskPath) -> Result<String> {
 
     let rel = TaskPath { segments };
     Ok(rel.canonical())
+}
+
+/// Check if two task names are similar (for typo suggestions)
+fn is_similar(input: &str, candidate: &str) -> bool {
+    // Exact prefix match
+    if candidate.starts_with(input) || input.starts_with(candidate) {
+        return true;
+    }
+
+    // Simple edit distance check for short strings
+    let input_lower = input.to_lowercase();
+    let candidate_lower = candidate.to_lowercase();
+
+    // Check if they share a common prefix of at least 3 chars
+    let common_prefix = input_lower
+        .chars()
+        .zip(candidate_lower.chars())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common_prefix >= 3 {
+        return true;
+    }
+
+    // Check Levenshtein distance for short names
+    if input.len() <= 10 && candidate.len() <= 10 {
+        let distance = levenshtein(&input_lower, &candidate_lower);
+        return distance <= 2;
+    }
+
+    false
+}
+
+/// Simple Levenshtein distance implementation
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let m = a_chars.len();
+    let n = b_chars.len();
+
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0; n + 1];
+
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[n]
 }
