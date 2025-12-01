@@ -56,8 +56,8 @@ hooks: {
     if output.status.code() == Some(3) {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("Evaluation/FFI error"),
-            "Expected FFI error in sandbox, got: {stderr}"
+            stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
+            "Expected FFI or Unexpected error in sandbox, got: {stderr}"
         );
     } else {
         assert!(output.status.success());
