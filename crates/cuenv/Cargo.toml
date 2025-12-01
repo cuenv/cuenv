@@ -1,5 +1,5 @@
 [package]
-name = "cuenv-cli"
+name = "cuenv"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
