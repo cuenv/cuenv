@@ -45,6 +45,36 @@ package schema
 
 	// Dagger-specific configuration for running this task in a container
 	dagger?: #DaggerConfig
+
+	// Task parameter definitions for CLI arguments
+	// Allows tasks to accept positional and named arguments:
+	//   cuenv task import.youtube VIDEO_ID --quality 1080p
+	params?: #TaskParams
+}
+
+// Task parameter definitions
+#TaskParams: {
+	// Positional arguments (order matters, consumed left-to-right)
+	// Referenced in args as {{0}}, {{1}}, etc.
+	positional?: [...#Param]
+	// Named arguments are declared as direct fields (--flag style)
+	// Referenced in args as {{name}} where name matches the field name
+	// Example: thumbnailUrl: { description: "URL", required: false }
+	[!~"^positional$"]: #Param
+}
+
+// Parameter definition for task arguments
+#Param: {
+	// Human-readable description shown in --help
+	description?: string
+	// Whether the argument must be provided (default: false)
+	required?: bool | *false
+	// Default value if not provided
+	default?: string
+	// Type hint for validation (default: "string")
+	type?: "string" | "bool" | "int" | *"string"
+	// Short flag (single character, e.g., "t" for -t)
+	short?: =~"^[a-zA-Z]$"
 }
 
 // Accepted task inputs:

@@ -8,7 +8,8 @@ use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
-    BackendFactory, ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, TaskIndex, Tasks,
+    BackendFactory, ExecutorConfig, ResolvedArgs, Task, TaskDefinition, TaskExecutor, TaskGraph,
+    TaskIndex, TaskParams, Tasks,
 };
 
 /// Get the dagger backend factory if the feature is enabled
@@ -45,6 +46,7 @@ pub async fn execute_task(
     show_cache_path: bool,
     backend: Option<&str>,
     help: bool,
+    task_args: &[String],
 ) -> Result<String> {
     // Handle CLI help immediately if no task specified
     if task_name.is_none() && help {
@@ -131,12 +133,42 @@ pub async fn execute_task(
         requested_task,
         tasks.get(requested_task).is_some()
     );
-    let task_def = tasks.get(&canonical_task_name).ok_or_else(|| {
+    let original_task_def = tasks.get(&canonical_task_name).ok_or_else(|| {
         cuenv_core::Error::configuration(format!("Task '{canonical_task_name}' not found"))
     })?;
     let task_name = canonical_task_name.as_str();
 
-    tracing::debug!("Found task definition: {:?}", task_def);
+    tracing::debug!("Found task definition: {:?}", original_task_def);
+
+    // Process task arguments if provided
+    let (task_def, tasks) = if task_args.is_empty() {
+        (original_task_def.clone(), tasks)
+    } else if let TaskDefinition::Single(task) = original_task_def {
+        // Parse and validate arguments against task params
+        let resolved_args = resolve_task_args(task.params.as_ref(), task_args)?;
+        tracing::debug!("Resolved task args: {:?}", resolved_args);
+
+        // Apply argument interpolation to task
+        let modified_task = apply_args_to_task(task, &resolved_args);
+
+        // Create a new task definition with the modified task
+        let modified_def = TaskDefinition::Single(Box::new(modified_task));
+
+        // Create a new Tasks collection with the modified task
+        let mut modified_tasks = tasks.clone();
+        modified_tasks
+            .tasks
+            .insert(task_name.to_string(), modified_def.clone());
+
+        (modified_def, modified_tasks)
+    } else {
+        // For groups, we don't support arguments
+        return Err(cuenv_core::Error::configuration(
+            "Task arguments are not supported for task groups".to_string(),
+        ));
+    };
+
+    let task_def = &task_def;
 
     // Get environment with hook-generated vars merged in
     let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
@@ -881,6 +913,51 @@ fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
             if !t.outputs.is_empty() {
                 writeln!(output, "Outputs: {:?}", t.outputs).unwrap();
             }
+            // Show params if defined
+            if let Some(params) = &t.params {
+                if !params.positional.is_empty() {
+                    writeln!(output, "\nPositional Arguments:").unwrap();
+                    for (i, param) in params.positional.iter().enumerate() {
+                        let required = if param.required { " (required)" } else { "" };
+                        let default = param
+                            .default
+                            .as_ref()
+                            .map(|d| format!(" [default: {d}]"))
+                            .unwrap_or_default();
+                        let desc = param
+                            .description
+                            .as_ref()
+                            .map(|d| format!(" - {d}"))
+                            .unwrap_or_default();
+                        writeln!(output, "  {{{{{i}}}}}{required}{default}{desc}").unwrap();
+                    }
+                }
+                if !params.named.is_empty() {
+                    writeln!(output, "\nNamed Arguments:").unwrap();
+                    let mut names: Vec<_> = params.named.keys().collect();
+                    names.sort();
+                    for name in names {
+                        let param = &params.named[name];
+                        let short = param
+                            .short
+                            .as_ref()
+                            .map(|s| format!("-{s}, "))
+                            .unwrap_or_default();
+                        let required = if param.required { " (required)" } else { "" };
+                        let default = param
+                            .default
+                            .as_ref()
+                            .map(|d| format!(" [default: {d}]"))
+                            .unwrap_or_default();
+                        let desc = param
+                            .description
+                            .as_ref()
+                            .map(|d| format!(" - {d}"))
+                            .unwrap_or_default();
+                        writeln!(output, "  {short}--{name}{required}{default}{desc}").unwrap();
+                    }
+                }
+            }
         }
         TaskDefinition::Group(g) => {
             writeln!(output, "Type: Task Group").unwrap();
@@ -1010,6 +1087,123 @@ fn print_tree_nodes(
     }
 }
 
+/// Parse CLI arguments into positional and named values
+/// If params is provided, short flags (-x) are resolved to their long names
+fn parse_task_args(
+    args: &[String],
+    params: Option<&TaskParams>,
+) -> (Vec<String>, std::collections::HashMap<String, String>) {
+    let mut positional = Vec::new();
+    let mut named = std::collections::HashMap::new();
+
+    // Build short-to-long flag mapping
+    let short_to_long: std::collections::HashMap<String, String> = params
+        .map(|p| {
+            p.named
+                .iter()
+                .filter_map(|(name, def)| def.short.as_ref().map(|s| (s.clone(), name.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg.starts_with("--") {
+            let key = arg.trim_start_matches("--");
+            // Check if there's an '=' in the argument (e.g., --key=value)
+            if let Some(eq_pos) = key.find('=') {
+                let (k, v) = key.split_at(eq_pos);
+                named.insert(k.to_string(), v[1..].to_string());
+            } else if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                // Next argument is the value
+                named.insert(key.to_string(), args[i + 1].clone());
+                i += 1;
+            } else {
+                // Boolean flag (no value)
+                named.insert(key.to_string(), "true".to_string());
+            }
+        } else if arg.starts_with('-') && arg.len() == 2 {
+            // Short flag (-x)
+            let short_key = &arg[1..];
+            let long_key = short_to_long
+                .get(short_key)
+                .cloned()
+                .unwrap_or_else(|| short_key.to_string());
+
+            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                named.insert(long_key, args[i + 1].clone());
+                i += 1;
+            } else {
+                // Boolean flag
+                named.insert(long_key, "true".to_string());
+            }
+        } else {
+            positional.push(arg.clone());
+        }
+        i += 1;
+    }
+
+    (positional, named)
+}
+
+/// Validate and resolve arguments against task parameter definitions
+fn resolve_task_args(params: Option<&TaskParams>, cli_args: &[String]) -> Result<ResolvedArgs> {
+    let (positional_values, named_values) = parse_task_args(cli_args, params);
+    let mut resolved = ResolvedArgs::new();
+
+    if let Some(params) = params {
+        // Process positional arguments
+        for (i, param_def) in params.positional.iter().enumerate() {
+            if let Some(value) = positional_values.get(i) {
+                resolved.positional.push(value.clone());
+            } else if let Some(default) = &param_def.default {
+                resolved.positional.push(default.clone());
+            } else if param_def.required {
+                let default_desc = format!("positional argument {i}");
+                let desc = param_def.description.as_deref().unwrap_or(&default_desc);
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Missing required argument: {desc}"
+                )));
+            } else {
+                resolved.positional.push(String::new());
+            }
+        }
+
+        // Process named arguments
+        for (name, param_def) in &params.named {
+            if let Some(value) = named_values.get(name) {
+                resolved.named.insert(name.clone(), value.clone());
+            } else if let Some(default) = &param_def.default {
+                resolved.named.insert(name.clone(), default.clone());
+            } else if param_def.required {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Missing required argument: --{name}"
+                )));
+            }
+        }
+    } else {
+        // No params defined, just pass through positional args
+        resolved.positional = positional_values;
+        resolved.named = named_values;
+    }
+
+    Ok(resolved)
+}
+
+/// Apply resolved arguments to a task, interpolating placeholders in command and args
+fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
+    let mut new_task = task.clone();
+
+    // Interpolate command
+    new_task.command = resolved_args.interpolate(&task.command);
+
+    // Interpolate args
+    new_task.args = resolved_args.interpolate_args(&task.args);
+
+    new_task
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1036,6 +1230,7 @@ env: {
             false,
             None,
             false,
+            &[],
         )
         .await;
 
@@ -1321,5 +1516,179 @@ env: {
 
         assert!(lines[4].starts_with("   └─ fix"));
         assert!(lines[4].contains("Fix formatting"));
+    }
+
+    #[test]
+    fn test_parse_task_args_positional_only() {
+        let args = vec!["arg1".to_string(), "arg2".to_string()];
+        let (pos, named) = parse_task_args(&args, None);
+        assert_eq!(pos, vec!["arg1", "arg2"]);
+        assert!(named.is_empty());
+    }
+
+    #[test]
+    fn test_parse_task_args_long_flags_space() {
+        let args = vec!["--key".to_string(), "value".to_string()];
+        let (pos, named) = parse_task_args(&args, None);
+        assert!(pos.is_empty());
+        assert_eq!(named.get("key"), Some(&"value".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_long_flags_equals() {
+        let args = vec!["--key=value".to_string()];
+        let (pos, named) = parse_task_args(&args, None);
+        assert!(pos.is_empty());
+        assert_eq!(named.get("key"), Some(&"value".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_boolean_flag() {
+        let args = vec!["--verbose".to_string()];
+        let (pos, named) = parse_task_args(&args, None);
+        assert!(pos.is_empty());
+        assert_eq!(named.get("verbose"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_short_flags_with_params() {
+        use cuenv_core::tasks::{ParamDef, TaskParams};
+        use std::collections::HashMap;
+
+        let mut params_named = HashMap::new();
+        params_named.insert(
+            "quality".to_string(),
+            ParamDef {
+                short: Some("q".to_string()),
+                ..Default::default()
+            },
+        );
+        let params = TaskParams {
+            positional: vec![],
+            named: params_named,
+        };
+
+        let args = vec!["-q".to_string(), "1080p".to_string()];
+        let (pos, named) = parse_task_args(&args, Some(&params));
+        assert!(pos.is_empty());
+        // Short flag -q should resolve to long name "quality"
+        assert_eq!(named.get("quality"), Some(&"1080p".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_mixed() {
+        let args = vec![
+            "positional1".to_string(),
+            "--long".to_string(),
+            "longval".to_string(),
+            "positional2".to_string(),
+        ];
+        let (pos, named) = parse_task_args(&args, None);
+        assert_eq!(pos, vec!["positional1", "positional2"]);
+        assert_eq!(named.get("long"), Some(&"longval".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_task_args_no_params_passthrough() {
+        let args = vec!["arg1".to_string(), "--flag".to_string(), "val".to_string()];
+        let resolved = resolve_task_args(None, &args).unwrap();
+        assert_eq!(resolved.positional, vec!["arg1"]);
+        assert_eq!(resolved.named.get("flag"), Some(&"val".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_task_args_defaults_applied() {
+        use cuenv_core::tasks::{ParamDef, TaskParams};
+        use std::collections::HashMap;
+
+        let mut params_named = HashMap::new();
+        params_named.insert(
+            "quality".to_string(),
+            ParamDef {
+                default: Some("1080p".to_string()),
+                ..Default::default()
+            },
+        );
+        let params = TaskParams {
+            positional: vec![],
+            named: params_named,
+        };
+
+        let args: Vec<String> = vec![];
+        let resolved = resolve_task_args(Some(&params), &args).unwrap();
+        assert_eq!(resolved.named.get("quality"), Some(&"1080p".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_task_args_required_missing_error() {
+        use cuenv_core::tasks::{ParamDef, TaskParams};
+        use std::collections::HashMap;
+
+        let mut params_named = HashMap::new();
+        params_named.insert(
+            "required_arg".to_string(),
+            ParamDef {
+                required: true,
+                description: Some("A required argument".to_string()),
+                ..Default::default()
+            },
+        );
+        let params = TaskParams {
+            positional: vec![],
+            named: params_named,
+        };
+
+        let args: Vec<String> = vec![];
+        let result = resolve_task_args(Some(&params), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("--required_arg"));
+    }
+
+    #[test]
+    fn test_resolve_task_args_positional_required() {
+        use cuenv_core::tasks::{ParamDef, TaskParams};
+
+        let params = TaskParams {
+            positional: vec![ParamDef {
+                required: true,
+                description: Some("Video ID".to_string()),
+                ..Default::default()
+            }],
+            named: std::collections::HashMap::new(),
+        };
+
+        // Missing required positional arg
+        let args: Vec<String> = vec![];
+        let result = resolve_task_args(Some(&params), &args);
+        assert!(result.is_err());
+
+        // With required positional arg
+        let args = vec!["VIDEO123".to_string()];
+        let result = resolve_task_args(Some(&params), &args).unwrap();
+        assert_eq!(result.positional, vec!["VIDEO123"]);
+    }
+
+    #[test]
+    fn test_apply_args_to_task() {
+        use cuenv_core::tasks::ResolvedArgs;
+        use std::collections::HashMap;
+
+        let task = Task {
+            command: "echo".to_string(),
+            args: vec!["{{0}}".to_string(), "--url={{url}}".to_string()],
+            ..Default::default()
+        };
+
+        let mut named = HashMap::new();
+        named.insert("url".to_string(), "https://example.com".to_string());
+        let resolved = ResolvedArgs {
+            positional: vec!["hello".to_string()],
+            named,
+        };
+
+        let modified = apply_args_to_task(&task, &resolved);
+        assert_eq!(modified.command, "echo");
+        assert_eq!(modified.args, vec!["hello", "--url=https://example.com"]);
     }
 }

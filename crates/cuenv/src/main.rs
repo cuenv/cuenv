@@ -253,6 +253,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             show_cache_path,
             backend,
             help,
+            task_args,
         } => match execute_task_command_safe(
             path,
             package,
@@ -262,6 +263,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             show_cache_path,
             backend,
             help,
+            task_args,
         )
         .await
         {
@@ -752,6 +754,7 @@ async fn execute_task_command_safe(
     show_cache_path: bool,
     backend: Option<String>,
     help: bool,
+    task_args: Vec<String>,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
@@ -766,6 +769,7 @@ async fn execute_task_command_safe(
         show_cache_path,
         backend.as_deref(),
         help,
+        &task_args,
     )
     .await;
 
