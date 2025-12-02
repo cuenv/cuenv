@@ -147,13 +147,13 @@ cuenv task import.video dQw4w9WgXcQ --quality=1080p
 
 Parameters support several options:
 
-| Field | Description |
-|-------|-------------|
-| `description` | Help text shown in `--help` output |
-| `required` | If `true`, task fails when argument is missing |
-| `default` | Default value when argument is not provided |
-| `short` | Single-character shorthand (e.g., `"q"` enables `-q`) |
-| `type` | Type hint: `"string"` (default), `"bool"`, or `"int"` |
+| Field         | Description                                           |
+| ------------- | ----------------------------------------------------- |
+| `description` | Help text shown in `--help` output                    |
+| `required`    | If `true`, task fails when argument is missing        |
+| `default`     | Default value when argument is not provided           |
+| `short`       | Single-character shorthand (e.g., `"q"` enables `-q`) |
+| `type`        | Type hint: `"string"` (default), `"bool"`, or `"int"` |
 
 ### Interpolation
 
