@@ -247,7 +247,7 @@ pub struct ParamDef {
     #[serde(default)]
     pub default: Option<String>,
 
-    /// Type hint for validation (default: "string")
+    /// Type hint for documentation (default: "string", not enforced at runtime)
     #[serde(default, rename = "type")]
     pub param_type: ParamType,
 
