@@ -284,7 +284,8 @@ pub enum Commands {
     #[command(
         about = "Execute a task defined in CUE configuration",
         visible_alias = "t",
-        disable_help_flag = true
+        disable_help_flag = true,
+        trailing_var_arg = true
     )]
     Task {
         #[arg(help = "Name of the task to execute (list tasks if not provided)")]
@@ -328,6 +329,8 @@ pub enum Commands {
         backend: Option<String>,
         #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
         help: bool,
+        #[arg(help = "Arguments to pass to the task (positional and --named values)")]
+        task_args: Vec<String>,
     },
     #[command(
         about = "Execute a command with CUE environment variables",
@@ -693,6 +696,7 @@ impl From<Commands> for Command {
                 show_cache_path,
                 backend,
                 help,
+                task_args,
             } => Command::Task {
                 path,
                 package,
@@ -702,6 +706,7 @@ impl From<Commands> for Command {
                 show_cache_path,
                 backend,
                 help,
+                task_args,
             },
             Commands::Exec {
                 command,
