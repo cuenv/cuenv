@@ -1087,6 +1087,20 @@ fn print_tree_nodes(
     }
 }
 
+/// Check if an argument looks like a flag (starts with `-` but is not a negative number)
+fn looks_like_flag(arg: &str) -> bool {
+    if !arg.starts_with('-') {
+        return false;
+    }
+    // Not a flag if it's a negative number (e.g., -1, -3.14)
+    let rest = &arg[1..];
+    if rest.is_empty() {
+        return false;
+    }
+    // Check if it parses as a number
+    rest.parse::<f64>().is_err()
+}
+
 /// Parse CLI arguments into positional and named values
 /// If params is provided, short flags (-x) are resolved to their long names
 fn parse_task_args(
@@ -1115,7 +1129,7 @@ fn parse_task_args(
             if let Some(eq_pos) = key.find('=') {
                 let (k, v) = key.split_at(eq_pos);
                 named.insert(k.to_string(), v[1..].to_string());
-            } else if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+            } else if i + 1 < args.len() && !looks_like_flag(&args[i + 1]) {
                 // Next argument is the value
                 named.insert(key.to_string(), args[i + 1].clone());
                 i += 1;
@@ -1123,15 +1137,18 @@ fn parse_task_args(
                 // Boolean flag (no value)
                 named.insert(key.to_string(), "true".to_string());
             }
-        } else if arg.starts_with('-') && arg.len() == 2 {
-            // Short flag (-x)
+        } else if arg.starts_with('-')
+            && arg.len() == 2
+            && !arg[1..].chars().next().unwrap_or('0').is_ascii_digit()
+        {
+            // Short flag (-x) but not a negative single digit
             let short_key = &arg[1..];
             let long_key = short_to_long
                 .get(short_key)
                 .cloned()
                 .unwrap_or_else(|| short_key.to_string());
 
-            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+            if i + 1 < args.len() && !looks_like_flag(&args[i + 1]) {
                 named.insert(long_key, args[i + 1].clone());
                 i += 1;
             } else {
@@ -1586,6 +1603,29 @@ env: {
         let (pos, named) = parse_task_args(&args, None);
         assert_eq!(pos, vec!["positional1", "positional2"]);
         assert_eq!(named.get("long"), Some(&"longval".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_negative_numbers() {
+        // Negative numbers should be parsed as values, not flags
+        let args = vec![
+            "--port".to_string(),
+            "-1".to_string(),
+            "--offset".to_string(),
+            "-5".to_string(),
+        ];
+        let (pos, named) = parse_task_args(&args, None);
+        assert!(pos.is_empty());
+        assert_eq!(named.get("port"), Some(&"-1".to_string()));
+        assert_eq!(named.get("offset"), Some(&"-5".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_negative_float() {
+        let args = vec!["--threshold".to_string(), "-3.14".to_string()];
+        let (pos, named) = parse_task_args(&args, None);
+        assert!(pos.is_empty());
+        assert_eq!(named.get("threshold"), Some(&"-3.14".to_string()));
     }
 
     #[test]
