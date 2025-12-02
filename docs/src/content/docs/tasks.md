@@ -82,6 +82,104 @@ cuenv supports computation caching. By defining `inputs` and `outputs`, cuenv ca
 
 _(Note: Full caching implementation is currently in development. Check the project status for updates.)_
 
+## Task Parameters
+
+Tasks can accept arguments from the command line using the `params` field. This enables reusable, parameterized tasks.
+
+### Defining Parameters
+
+```cue
+tasks: {
+    "import.video": {
+        description: "Import a video from YouTube"
+        command: "yt-dlp"
+        args: [
+            "{{0}}",                    // First positional argument
+            "--format", "{{quality}}",   // Named argument
+            "-o", "{{output}}"
+        ]
+
+        params: {
+            // Positional arguments (order matters)
+            positional: [
+                {
+                    description: "YouTube video ID or URL"
+                    required: true
+                }
+            ]
+
+            // Named arguments (--flag style)
+            quality: {
+                description: "Video quality"
+                default: "best"
+                short: "q"              // Enables -q shorthand
+            }
+            output: {
+                description: "Output filename"
+                default: "%(title)s.%(ext)s"
+                short: "o"
+            }
+        }
+    }
+}
+```
+
+### Running Parameterized Tasks
+
+```bash
+# View task help and available parameters
+cuenv task import.video --help
+
+# Run with positional argument
+cuenv task import.video dQw4w9WgXcQ
+
+# Run with named arguments
+cuenv task import.video dQw4w9WgXcQ --quality 720p
+
+# Use short flags
+cuenv task import.video dQw4w9WgXcQ -q 720p -o "video.mp4"
+
+# Named arguments with = syntax
+cuenv task import.video dQw4w9WgXcQ --quality=1080p
+```
+
+### Parameter Types
+
+Parameters support several options:
+
+| Field | Description |
+|-------|-------------|
+| `description` | Help text shown in `--help` output |
+| `required` | If `true`, task fails when argument is missing |
+| `default` | Default value when argument is not provided |
+| `short` | Single-character shorthand (e.g., `"q"` enables `-q`) |
+| `type` | Type hint: `"string"` (default), `"bool"`, or `"int"` |
+
+### Interpolation
+
+Use `{{placeholder}}` syntax in `command` and `args`:
+
+- `{{0}}`, `{{1}}`, etc. - Positional arguments by index
+- `{{name}}` - Named arguments by their key
+
+```cue
+tasks: {
+    greet: {
+        command: "echo"
+        args: ["Hello, {{0}}! Your favorite color is {{color}}."]
+        params: {
+            positional: [{ description: "Name", required: true }]
+            color: { default: "blue" }
+        }
+    }
+}
+```
+
+```bash
+cuenv task greet Alice --color green
+# Output: Hello, Alice! Your favorite color is green.
+```
+
 ## Environment Injection
 
 Tasks inherit the environment variables defined in your `env` block. You can also define task-specific environment variables:
