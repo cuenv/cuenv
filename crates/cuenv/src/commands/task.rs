@@ -1103,12 +1103,14 @@ fn looks_like_flag(arg: &str) -> bool {
 
 /// Parse CLI arguments into positional and named values
 /// If params is provided, short flags (-x) are resolved to their long names
+/// Supports `--` separator to end flag parsing
 fn parse_task_args(
     args: &[String],
     params: Option<&TaskParams>,
 ) -> (Vec<String>, std::collections::HashMap<String, String>) {
     let mut positional = Vec::new();
     let mut named = std::collections::HashMap::new();
+    let mut flags_ended = false;
 
     // Build short-to-long flag mapping
     let short_to_long: std::collections::HashMap<String, String> = params
@@ -1123,12 +1125,21 @@ fn parse_task_args(
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
-        if arg.starts_with("--") {
-            let key = arg.trim_start_matches("--");
+
+        // Handle `--` separator: all subsequent args are positional
+        if arg == "--" {
+            flags_ended = true;
+            i += 1;
+            continue;
+        }
+
+        if flags_ended {
+            positional.push(arg.clone());
+        } else if arg.starts_with("--") {
+            let key = arg.strip_prefix("--").unwrap_or(arg);
             // Check if there's an '=' in the argument (e.g., --key=value)
-            if let Some(eq_pos) = key.find('=') {
-                let (k, v) = key.split_at(eq_pos);
-                named.insert(k.to_string(), v[1..].to_string());
+            if let Some((k, v)) = key.split_once('=') {
+                named.insert(k.to_string(), v.to_string());
             } else if i + 1 < args.len() && !looks_like_flag(&args[i + 1]) {
                 // Next argument is the value
                 named.insert(key.to_string(), args[i + 1].clone());
@@ -1137,23 +1148,24 @@ fn parse_task_args(
                 // Boolean flag (no value)
                 named.insert(key.to_string(), "true".to_string());
             }
-        } else if arg.starts_with('-')
-            && arg.len() == 2
-            && !arg[1..].chars().next().unwrap_or('0').is_ascii_digit()
-        {
-            // Short flag (-x) but not a negative single digit
-            let short_key = &arg[1..];
-            let long_key = short_to_long
-                .get(short_key)
-                .cloned()
-                .unwrap_or_else(|| short_key.to_string());
+        } else if let Some(short_key) = arg.strip_prefix('-') {
+            // Short flag handling: must be single char and not a digit
+            if short_key.len() == 1 && !short_key.chars().next().unwrap_or('0').is_ascii_digit() {
+                let long_key = short_to_long
+                    .get(short_key)
+                    .cloned()
+                    .unwrap_or_else(|| short_key.to_string());
 
-            if i + 1 < args.len() && !looks_like_flag(&args[i + 1]) {
-                named.insert(long_key, args[i + 1].clone());
-                i += 1;
+                if i + 1 < args.len() && !looks_like_flag(&args[i + 1]) {
+                    named.insert(long_key, args[i + 1].clone());
+                    i += 1;
+                } else {
+                    // Boolean flag
+                    named.insert(long_key, "true".to_string());
+                }
             } else {
-                // Boolean flag
-                named.insert(long_key, "true".to_string());
+                // Not a valid short flag (multi-char like -abc, or negative number)
+                positional.push(arg.clone());
             }
         } else {
             positional.push(arg.clone());
@@ -1170,6 +1182,29 @@ fn resolve_task_args(params: Option<&TaskParams>, cli_args: &[String]) -> Result
     let mut resolved = ResolvedArgs::new();
 
     if let Some(params) = params {
+        // Validate excess positional arguments
+        let max_positional = params.positional.len();
+        if positional_values.len() > max_positional {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Too many positional arguments: expected at most {}, got {}",
+                max_positional,
+                positional_values.len()
+            )));
+        }
+
+        // Validate unknown named arguments
+        let unknown_flags: Vec<String> = named_values
+            .keys()
+            .filter(|k| !params.named.contains_key(*k))
+            .map(|k| format!("--{k}"))
+            .collect();
+        if !unknown_flags.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Unknown argument(s): {}",
+                unknown_flags.join(", ")
+            )));
+        }
+
         // Process positional arguments
         for (i, param_def) in params.positional.iter().enumerate() {
             if let Some(value) = positional_values.get(i) {
@@ -1200,7 +1235,7 @@ fn resolve_task_args(params: Option<&TaskParams>, cli_args: &[String]) -> Result
             }
         }
     } else {
-        // No params defined, just pass through positional args
+        // No params defined, just pass through all args
         resolved.positional = positional_values;
         resolved.named = named_values;
     }
@@ -1730,5 +1765,83 @@ env: {
         let modified = apply_args_to_task(&task, &resolved);
         assert_eq!(modified.command, "echo");
         assert_eq!(modified.args, vec!["hello", "--url=https://example.com"]);
+    }
+
+    #[test]
+    fn test_parse_task_args_double_dash_separator() {
+        // `--` should end flag parsing, everything after is positional
+        let args = vec![
+            "--flag".to_string(),
+            "value".to_string(),
+            "--".to_string(),
+            "--not-a-flag".to_string(),
+            "-x".to_string(),
+        ];
+        let (pos, named) = parse_task_args(&args, None);
+        assert_eq!(pos, vec!["--not-a-flag", "-x"]);
+        assert_eq!(named.get("flag"), Some(&"value".to_string()));
+        assert!(!named.contains_key("not-a-flag"));
+    }
+
+    #[test]
+    fn test_parse_task_args_empty_value_with_equals() {
+        let args = vec!["--key=".to_string()];
+        let (pos, named) = parse_task_args(&args, None);
+        assert!(pos.is_empty());
+        assert_eq!(named.get("key"), Some(&String::new()));
+    }
+
+    #[test]
+    fn test_parse_task_args_multi_char_short_flag_as_positional() {
+        // Multi-character short flags like -abc are treated as positional
+        let args = vec!["-abc".to_string(), "--valid".to_string(), "val".to_string()];
+        let (pos, named) = parse_task_args(&args, None);
+        assert_eq!(pos, vec!["-abc"]);
+        assert_eq!(named.get("valid"), Some(&"val".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_single_dash_as_positional() {
+        // A single `-` is treated as positional (common for stdin)
+        let args = vec!["-".to_string(), "--flag".to_string()];
+        let (pos, named) = parse_task_args(&args, None);
+        assert_eq!(pos, vec!["-"]);
+        assert_eq!(named.get("flag"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_task_args_excess_positional_error() {
+        use cuenv_core::tasks::{ParamDef, TaskParams};
+
+        let params = TaskParams {
+            positional: vec![ParamDef::default()], // Only 1 positional allowed
+            named: std::collections::HashMap::new(),
+        };
+
+        let args = vec!["arg1".to_string(), "arg2".to_string(), "arg3".to_string()];
+        let result = resolve_task_args(Some(&params), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Too many positional arguments"));
+    }
+
+    #[test]
+    fn test_resolve_task_args_unknown_named_error() {
+        use cuenv_core::tasks::{ParamDef, TaskParams};
+        use std::collections::HashMap;
+
+        let mut params_named = HashMap::new();
+        params_named.insert("known".to_string(), ParamDef::default());
+        let params = TaskParams {
+            positional: vec![],
+            named: params_named,
+        };
+
+        let args = vec!["--unknown".to_string(), "value".to_string()];
+        let result = resolve_task_args(Some(&params), &args);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Unknown argument"));
+        assert!(err.contains("--unknown"));
     }
 }
