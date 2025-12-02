@@ -35,6 +35,7 @@ pub mod ci_cmd {
                 false, // show_cache_path
                 None,  // backend
                 false, // help
+                &[],   // task_args
             )
             .await
             .map(|_| ())
@@ -157,6 +158,7 @@ pub enum Command {
         show_cache_path: bool,
         backend: Option<String>,
         help: bool,
+        task_args: Vec<String>,
     },
     Exec {
         path: String,
@@ -240,6 +242,7 @@ impl CommandExecutor {
                 show_cache_path,
                 backend,
                 help,
+                task_args,
             } => {
                 self.execute_task(
                     path,
@@ -250,6 +253,7 @@ impl CommandExecutor {
                     show_cache_path,
                     backend,
                     help,
+                    task_args,
                 )
                 .await
             }
@@ -393,6 +397,7 @@ impl CommandExecutor {
         show_cache_path: bool,
         backend: Option<String>,
         help: bool,
+        task_args: Vec<String>,
     ) -> Result<()> {
         let command_name = "task";
 
@@ -411,6 +416,7 @@ impl CommandExecutor {
             show_cache_path,
             backend.as_deref(),
             help,
+            &task_args,
         )
         .await
         {

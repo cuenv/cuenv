@@ -151,6 +151,10 @@ pub struct Task {
     /// Description of the task
     #[serde(default)]
     pub description: Option<String>,
+
+    /// Task parameter definitions for CLI arguments
+    #[serde(default)]
+    pub params: Option<TaskParams>,
 }
 
 /// Dagger-specific task configuration
@@ -204,6 +208,95 @@ pub struct DaggerCacheMount {
     pub name: String,
 }
 
+/// Task parameter definitions for CLI arguments
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct TaskParams {
+    /// Positional arguments (order matters, consumed left-to-right)
+    /// Referenced in args as {{0}}, {{1}}, etc.
+    #[serde(default)]
+    pub positional: Vec<ParamDef>,
+
+    /// Named arguments (--flag style) as direct fields
+    /// Referenced in args as {{name}} where name matches the field name
+    #[serde(flatten, default)]
+    pub named: HashMap<String, ParamDef>,
+}
+
+/// Parameter type for validation
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ParamType {
+    #[default]
+    String,
+    Bool,
+    Int,
+}
+
+/// Parameter definition for task arguments
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct ParamDef {
+    /// Human-readable description shown in --help
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Whether the argument must be provided (default: false)
+    #[serde(default)]
+    pub required: bool,
+
+    /// Default value if not provided
+    #[serde(default)]
+    pub default: Option<String>,
+
+    /// Type hint for validation (default: "string")
+    #[serde(default, rename = "type")]
+    pub param_type: ParamType,
+
+    /// Short flag (single character, e.g., "t" for -t)
+    #[serde(default)]
+    pub short: Option<String>,
+}
+
+/// Resolved task arguments ready for interpolation
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedArgs {
+    /// Positional argument values by index
+    pub positional: Vec<String>,
+    /// Named argument values by name
+    pub named: HashMap<String, String>,
+}
+
+impl ResolvedArgs {
+    /// Create empty resolved args
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Interpolate placeholders in a string
+    /// Supports {{0}}, {{1}} for positional and {{name}} for named args
+    pub fn interpolate(&self, template: &str) -> String {
+        let mut result = template.to_string();
+
+        // Replace positional placeholders {{0}}, {{1}}, etc.
+        for (i, value) in self.positional.iter().enumerate() {
+            let placeholder = format!("{{{{{}}}}}", i);
+            result = result.replace(&placeholder, value);
+        }
+
+        // Replace named placeholders {{name}}
+        for (name, value) in &self.named {
+            let placeholder = format!("{{{{{}}}}}", name);
+            result = result.replace(&placeholder, value);
+        }
+
+        result
+    }
+
+    /// Interpolate all args in a list
+    pub fn interpolate_args(&self, args: &[String]) -> Vec<String> {
+        args.iter().map(|arg| self.interpolate(arg)).collect()
+    }
+}
+
 impl Default for Task {
     fn default() -> Self {
         Self {
@@ -219,6 +312,7 @@ impl Default for Task {
             inputs_from: None,
             workspaces: vec![],
             description: None,
+            params: None,
         }
     }
 }
@@ -583,5 +677,112 @@ mod tests {
             .map(|p| prefix.join(p))
             .collect();
         assert_eq!(collected, expected);
+    }
+
+    #[test]
+    fn test_resolved_args_interpolate_positional() {
+        let args = ResolvedArgs {
+            positional: vec!["video123".into(), "1080p".into()],
+            named: HashMap::new(),
+        };
+        assert_eq!(args.interpolate("{{0}}"), "video123");
+        assert_eq!(args.interpolate("{{1}}"), "1080p");
+        assert_eq!(args.interpolate("--id={{0}}"), "--id=video123");
+        assert_eq!(args.interpolate("{{0}}-{{1}}"), "video123-1080p");
+    }
+
+    #[test]
+    fn test_resolved_args_interpolate_named() {
+        let mut named = HashMap::new();
+        named.insert("url".into(), "https://example.com".into());
+        named.insert("quality".into(), "720p".into());
+        let args = ResolvedArgs {
+            positional: vec![],
+            named,
+        };
+        assert_eq!(args.interpolate("{{url}}"), "https://example.com");
+        assert_eq!(args.interpolate("--quality={{quality}}"), "--quality=720p");
+    }
+
+    #[test]
+    fn test_resolved_args_interpolate_mixed() {
+        let mut named = HashMap::new();
+        named.insert("format".into(), "mp4".into());
+        let args = ResolvedArgs {
+            positional: vec!["VIDEO_ID".into()],
+            named,
+        };
+        assert_eq!(
+            args.interpolate("download {{0}} --format={{format}}"),
+            "download VIDEO_ID --format=mp4"
+        );
+    }
+
+    #[test]
+    fn test_resolved_args_no_placeholder_unchanged() {
+        let args = ResolvedArgs::new();
+        assert_eq!(
+            args.interpolate("no placeholders here"),
+            "no placeholders here"
+        );
+        assert_eq!(args.interpolate(""), "");
+    }
+
+    #[test]
+    fn test_resolved_args_interpolate_args_list() {
+        let args = ResolvedArgs {
+            positional: vec!["id123".into()],
+            named: HashMap::new(),
+        };
+        let input = vec!["--id".into(), "{{0}}".into(), "--verbose".into()];
+        let result = args.interpolate_args(&input);
+        assert_eq!(result, vec!["--id", "id123", "--verbose"]);
+    }
+
+    #[test]
+    fn test_task_params_deserialization_with_flatten() {
+        // Test that named params are flattened (not nested under "named")
+        let json = r#"{
+            "positional": [{"description": "Video ID", "required": true}],
+            "quality": {"description": "Quality", "default": "1080p", "short": "q"},
+            "verbose": {"description": "Verbose output", "type": "bool"}
+        }"#;
+        let params: TaskParams = serde_json::from_str(json).unwrap();
+
+        assert_eq!(params.positional.len(), 1);
+        assert_eq!(
+            params.positional[0].description,
+            Some("Video ID".to_string())
+        );
+        assert!(params.positional[0].required);
+
+        assert_eq!(params.named.len(), 2);
+        assert!(params.named.contains_key("quality"));
+        assert!(params.named.contains_key("verbose"));
+
+        let quality = &params.named["quality"];
+        assert_eq!(quality.default, Some("1080p".to_string()));
+        assert_eq!(quality.short, Some("q".to_string()));
+
+        let verbose = &params.named["verbose"];
+        assert_eq!(verbose.param_type, ParamType::Bool);
+    }
+
+    #[test]
+    fn test_task_params_empty() {
+        let json = r#"{}"#;
+        let params: TaskParams = serde_json::from_str(json).unwrap();
+        assert!(params.positional.is_empty());
+        assert!(params.named.is_empty());
+    }
+
+    #[test]
+    fn test_param_def_defaults() {
+        let def = ParamDef::default();
+        assert!(def.description.is_none());
+        assert!(!def.required);
+        assert!(def.default.is_none());
+        assert_eq!(def.param_type, ParamType::String);
+        assert!(def.short.is_none());
     }
 }
