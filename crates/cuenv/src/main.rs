@@ -19,12 +19,16 @@ mod tui;
 use crate::cli::{CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, render_error};
 use crate::commands::Command;
 use crate::tracing::{Level, TracingConfig, TracingFormat};
+use crossterm::ExecutableCommand;
 use cuenv_core::hooks::execute_hooks;
 use cuenv_core::hooks::state::StateManager;
 use cuenv_core::hooks::{ExecutionStatus, Hook, HookExecutionConfig};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use std::path::PathBuf;
 use tracing::instrument;
+
+/// Exit code for SIGINT (128 + signal number 2)
+const EXIT_SIGINT: i32 = 130;
 
 #[tokio::main]
 #[instrument(name = "cuenv_main")]
@@ -43,16 +47,73 @@ async fn main() {
 /// Main CLI runner that handles errors properly and returns exit codes
 #[instrument(name = "cuenv_run")]
 async fn run() -> i32 {
-    match real_main().await {
-        Ok(()) => EXIT_OK,
-        Err(err) => {
-            // Try to determine if JSON mode was requested
-            let args: Vec<String> = std::env::args().collect();
-            let json_mode = args.iter().any(|arg| arg == "--json");
+    // Use biased select to prefer signal handling over normal completion
+    // This ensures cleanup runs even if the child process exits simultaneously
+    tokio::select! {
+        biased;
 
-            render_error(&err, json_mode);
-            exit_code_for(&err)
+        _ = tokio::signal::ctrl_c() => {
+            // Clean up terminal state to prevent escape sequence garbage
+            cleanup_terminal();
+            EXIT_SIGINT
         }
+        result = real_main() => {
+            match result {
+                Ok(()) => EXIT_OK,
+                Err(err) => {
+                    // Try to determine if JSON mode was requested
+                    let args: Vec<String> = std::env::args().collect();
+                    let json_mode = args.iter().any(|arg| arg == "--json");
+
+                    render_error(&err, json_mode);
+                    exit_code_for(&err)
+                }
+            }
+        }
+    }
+}
+
+/// Clean up terminal state on interrupt.
+/// This prevents escape sequence garbage from being printed when the user
+/// presses Ctrl-C while terminal queries are in-flight.
+fn cleanup_terminal() {
+    use std::io::Write;
+
+    let mut stdout = std::io::stdout();
+
+    // Disable raw mode if it was enabled (e.g., by TUI)
+    let _ = crossterm::terminal::disable_raw_mode();
+
+    // Pop keyboard enhancement flags (kitty protocol) if enabled
+    let _ = stdout.execute(crossterm::event::PopKeyboardEnhancementFlags);
+
+    // Show cursor if it was hidden
+    let _ = stdout.execute(crossterm::cursor::Show);
+
+    // Leave alternate screen if we were in it
+    let _ = stdout.execute(crossterm::terminal::LeaveAlternateScreen);
+
+    // Flush to ensure all escape sequences are sent
+    let _ = stdout.flush();
+
+    // Drain any pending input from stdin to consume terminal responses
+    // that might have been sent by child processes or terminal queries
+    drain_stdin();
+}
+
+/// Drain pending input from stdin without blocking.
+/// This consumes any terminal responses that are waiting in the input buffer.
+fn drain_stdin() {
+    use std::time::Duration;
+
+    // Wait briefly for any in-flight terminal responses to arrive
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Poll for events with short timeout to drain any pending input
+    // This uses crossterm's event system which handles the non-blocking read safely
+    while crossterm::event::poll(Duration::from_millis(10)).unwrap_or(false) {
+        // Read and discard the event
+        let _ = crossterm::event::read();
     }
 }
 
