@@ -149,9 +149,9 @@ env: {
 
     fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
 
-    // Test exec with 'e' shorthand
+    // Test exec with 'x' shorthand (changed from 'e' to avoid conflict with -e global flag)
     let (stdout, _, success) = run_cuenv(&[
-        "e",
+        "x",
         "-p",
         temp_dir.path().to_str().unwrap(),
         "--package",
@@ -495,9 +495,9 @@ mod test_examples {
             "Should propagate environment variable"
         );
 
-        // Test exec with example environment
+        // Test exec with example environment (using 'x' shorthand)
         let (stdout, _, success) = run_cuenv(&[
-            "e",
+            "x",
             "-p",
             example_path.to_str().unwrap(),
             "--package",

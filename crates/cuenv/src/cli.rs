@@ -1,5 +1,7 @@
 use crate::commands::Command;
-use clap::{Parser, Subcommand, ValueEnum};
+use crate::completions::task_completer;
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use miette::{Diagnostic, Report};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
@@ -262,6 +264,14 @@ pub struct Cli {
 
     #[arg(long, global = true, help = "Emit JSON envelope regardless of format")]
     pub json: bool,
+
+    #[arg(
+        long = "env",
+        short = 'e',
+        global = true,
+        help = "Apply environment-specific overrides (e.g., development, production)"
+    )]
+    pub environment: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -288,7 +298,7 @@ pub enum Commands {
         trailing_var_arg = true
     )]
     Task {
-        #[arg(help = "Name of the task to execute (list tasks if not provided)")]
+        #[arg(help = "Name of the task to execute (list tasks if not provided)", add = task_completer())]
         name: Option<String>,
         #[arg(
             long,
@@ -303,12 +313,6 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
-        #[arg(
-            long = "env",
-            short = 'e',
-            help = "Apply environment-specific overrides (e.g., development, production)"
-        )]
-        environment: Option<String>,
         #[arg(
             long = "materialize-outputs",
             help = "Materialize cached outputs to this directory on cache hit (off by default)",
@@ -334,7 +338,7 @@ pub enum Commands {
     },
     #[command(
         about = "Execute a command with CUE environment variables",
-        visible_alias = "e"
+        visible_alias = "x"
     )]
     Exec {
         #[arg(help = "Command to execute")]
@@ -354,12 +358,6 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
-        #[arg(
-            long = "env",
-            short = 'e',
-            help = "Apply environment-specific overrides (e.g., development, production)"
-        )]
-        environment: Option<String>,
     },
     #[command(about = "Shell integration commands")]
     Shell {
@@ -448,6 +446,11 @@ pub enum Commands {
     Release {
         #[command(subcommand)]
         subcommand: ReleaseCommands,
+    },
+    #[command(about = "Generate shell completions")]
+    Completions {
+        #[arg(help = "Shell type", value_enum)]
+        shell: Shell,
     },
 }
 
@@ -645,10 +648,13 @@ pub enum ReleaseCommands {
     },
 }
 
-impl From<Commands> for Command {
+impl Commands {
+    /// Convert CLI commands to internal Command representation
+    /// The environment parameter comes from the global CLI flag
     #[allow(clippy::too_many_lines)]
-    fn from(cmd: Commands) -> Self {
-        match cmd {
+    #[must_use]
+    pub fn into_command(self, environment: Option<String>) -> Command {
+        match self {
             Commands::Version { output_format } => Command::Version {
                 format: output_format.to_string(),
             },
@@ -661,6 +667,7 @@ impl From<Commands> for Command {
                     path,
                     package,
                     format: output_format.to_string(),
+                    environment,
                 },
                 EnvCommands::Load { path, package } => Command::EnvLoad { path, package },
                 EnvCommands::Status {
@@ -691,7 +698,6 @@ impl From<Commands> for Command {
                 name,
                 path,
                 package,
-                environment,
                 materialize_outputs,
                 show_cache_path,
                 backend,
@@ -713,7 +719,6 @@ impl From<Commands> for Command {
                 args,
                 path,
                 package,
-                environment,
             } => Command::Exec {
                 path,
                 package,
@@ -784,8 +789,67 @@ impl From<Commands> for Command {
                     Command::ReleasePublish { path, dry_run }
                 }
             },
+            Commands::Completions { shell } => Command::Completions { shell },
         }
     }
+}
+
+/// Generate shell completions using `clap_complete`'s dynamic completion system
+///
+/// The binary itself handles completion requests via environment variables.
+/// This function outputs instructions for the user to set up completions.
+pub fn generate_completions(shell: Shell) {
+    let shell_name = match shell {
+        Shell::Bash => "bash",
+        Shell::Fish => "fish",
+        Shell::Zsh => "zsh",
+        Shell::Elvish => "elvish",
+        Shell::PowerShell => "powershell",
+        _ => "unknown",
+    };
+
+    // Print instructions for the user
+    println!("# cuenv shell completions for {shell_name}");
+    println!("#");
+    println!("# Add the following to your shell config:");
+    println!();
+
+    match shell {
+        Shell::Bash => {
+            println!(r"source <(COMPLETE=bash cuenv)");
+        }
+        Shell::Zsh => {
+            println!(r"source <(COMPLETE=zsh cuenv)");
+        }
+        Shell::Fish => {
+            println!(r"COMPLETE=fish cuenv | source");
+        }
+        Shell::Elvish => {
+            println!(r"eval (E:COMPLETE=elvish cuenv | slurp)");
+        }
+        Shell::PowerShell => {
+            println!(
+                r#"$env:COMPLETE = "powershell"; cuenv | Out-String | Invoke-Expression; Remove-Item Env:\COMPLETE"#
+            );
+        }
+        _ => {
+            println!("# Shell not supported for dynamic completions");
+        }
+    }
+}
+
+/// Try to handle a completion request. Returns true if this was a completion request.
+///
+/// Call this early in `main()` - if it returns true, exit immediately.
+pub fn try_complete() -> bool {
+    use clap_complete::env::CompleteEnv;
+
+    // Check if COMPLETE env var is set - if so, handle completion and return true
+    if std::env::var("COMPLETE").is_ok() {
+        CompleteEnv::with_factory(Cli::command).complete();
+        return true;
+    }
+    false
 }
 
 pub fn parse() -> Cli {
@@ -883,7 +947,7 @@ mod tests {
         let version_cmd = Commands::Version {
             output_format: OutputFormat::Simple,
         };
-        let command: Command = version_cmd.into();
+        let command: Command = version_cmd.into_command(None);
         match command {
             Command::Version { format } => assert_eq!(format, "simple"),
             _ => panic!("Expected Command::Version"),
@@ -997,17 +1061,19 @@ mod tests {
                 output_format: OutputFormat::Json,
             },
         };
-        let command: Command = env_cmd.into();
+        let command: Command = env_cmd.into_command(Some("production".to_string()));
 
         if let Command::EnvPrint {
             path,
             package,
             format,
+            environment,
         } = command
         {
             assert_eq!(path, "test");
             assert_eq!(package, "pkg");
             assert_eq!(format, "json");
+            assert_eq!(environment, Some("production".to_string()));
         } else {
             panic!("Expected EnvPrint command");
         }
