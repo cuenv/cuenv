@@ -10,6 +10,7 @@
 
 mod cli;
 mod commands;
+mod completions;
 mod coordinator;
 mod events;
 mod performance;
@@ -120,6 +121,12 @@ fn drain_stdin() {
 /// Real main implementation that can return `CliError`
 #[instrument(name = "cuenv_real_main")]
 async fn real_main() -> Result<(), CliError> {
+    // Handle shell completion requests first (before any other processing)
+    // The shell calls us with special env vars to request completions
+    if crate::cli::try_complete() {
+        return Ok(());
+    }
+
     // Check if we're being called as a supervisor process
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "__hook-supervisor" {
@@ -142,8 +149,17 @@ async fn real_main() -> Result<(), CliError> {
         }
     };
 
-    // Convert CLI command to internal command
-    let command: Command = init_result.cli.command.into();
+    // Handle completions command specially (before converting to internal command)
+    if let crate::cli::Commands::Completions { shell } = &init_result.cli.command {
+        crate::cli::generate_completions(*shell);
+        return Ok(());
+    }
+
+    // Convert CLI command to internal command, passing global environment
+    let command: Command = init_result
+        .cli
+        .command
+        .into_command(init_result.cli.environment.clone());
 
     // Execute the command
     let result = execute_command_safe(command, init_result.cli.json).await;
@@ -240,7 +256,10 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             path,
             package,
             format,
-        } => match execute_env_print_command_safe(path, package, format, json_mode).await {
+            environment,
+        } => match execute_env_print_command_safe(path, package, format, environment, json_mode)
+            .await
+        {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -379,6 +398,11 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
                 Ok(()) => Ok(()),
                 Err(e) => Err(e),
             }
+        }
+        Command::Completions { shell } => {
+            // Completions are handled early in real_main, this is just for exhaustiveness
+            crate::cli::generate_completions(shell);
+            Ok(())
         }
     }
 }
@@ -710,6 +734,7 @@ async fn execute_env_print_command_safe(
     path: String,
     package: String,
     format: String,
+    environment: Option<String>,
     json_mode: bool,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("env_print_command");
@@ -718,7 +743,7 @@ async fn execute_env_print_command_safe(
     perf_guard.add_metadata("format", &format);
 
     let output = measure_perf!("env_print_execution", {
-        commands::env::execute_env_print(&path, &package, &format).await
+        commands::env::execute_env_print(&path, &package, &format, environment.as_deref()).await
     });
 
     match output {
@@ -1227,7 +1252,7 @@ mod tests {
         let cli_command = Commands::Version {
             output_format: OutputFormat::Simple,
         };
-        let command: Command = cli_command.into();
+        let command: Command = cli_command.into_command(None);
         match command {
             Command::Version { format } => assert_eq!(format, "simple"),
             _ => panic!("Expected Command::Version"),

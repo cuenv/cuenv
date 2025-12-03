@@ -115,6 +115,7 @@ jobs:
 
 use crate::cli::StatusFormat;
 use crate::events::{Event, EventSender};
+use clap_complete::Shell;
 use cuenv_core::Result;
 use tokio::time::{Duration, sleep};
 use tracing::{Level, event};
@@ -128,6 +129,7 @@ pub enum Command {
         path: String,
         package: String,
         format: String,
+        environment: Option<String>,
     },
     EnvLoad {
         path: String,
@@ -212,6 +214,9 @@ pub enum Command {
         path: String,
         dry_run: bool,
     },
+    Completions {
+        shell: Shell,
+    },
 }
 
 #[allow(dead_code)]
@@ -232,7 +237,11 @@ impl CommandExecutor {
                 path,
                 package,
                 format,
-            } => self.execute_env_print(path, package, format).await,
+                environment,
+            } => {
+                self.execute_env_print(path, package, format, environment)
+                    .await
+            }
             Command::Task {
                 path,
                 package,
@@ -301,9 +310,10 @@ impl CommandExecutor {
                 pipeline,
                 generate,
             } => self.execute_ci(dry_run, pipeline, generate).await,
-            // Tui, Web, and release commands are handled directly in main.rs
+            // Tui, Web, Completions, and release commands are handled directly in main.rs
             Command::Tui
             | Command::Web { .. }
+            | Command::Completions { .. }
             | Command::ChangesetAdd { .. }
             | Command::ChangesetStatus { .. }
             | Command::ReleaseVersion { .. }
@@ -357,7 +367,13 @@ impl CommandExecutor {
         Ok(())
     }
 
-    async fn execute_env_print(&self, path: String, package: String, format: String) -> Result<()> {
+    async fn execute_env_print(
+        &self,
+        path: String,
+        package: String,
+        format: String,
+        environment: Option<String>,
+    ) -> Result<()> {
         let command_name = "env print";
 
         // Send command start event
@@ -366,7 +382,7 @@ impl CommandExecutor {
         });
 
         // Execute the env print command
-        match env::execute_env_print(&path, &package, &format).await {
+        match env::execute_env_print(&path, &package, &format, environment.as_deref()).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -881,6 +897,7 @@ mod tests {
                     path,
                     package,
                     format,
+                    environment: None,
                 })
                 .await
         });
@@ -923,17 +940,20 @@ mod tests {
             path: "/test/path".to_string(),
             package: "test-pkg".to_string(),
             format: "yaml".to_string(),
+            environment: Some("production".to_string()),
         };
 
         if let Command::EnvPrint {
             path,
             package,
             format,
+            environment,
         } = env_cmd
         {
             assert_eq!(path, "/test/path");
             assert_eq!(package, "test-pkg");
             assert_eq!(format, "yaml");
+            assert_eq!(environment, Some("production".to_string()));
         } else {
             panic!("Expected EnvPrint variant");
         }
@@ -1019,6 +1039,7 @@ mod tests {
             path: "/path".to_string(),
             package: "pkg".to_string(),
             format: "json".to_string(),
+            environment: None,
         };
         let debug_str = format!("{cmd:?}");
         assert!(debug_str.contains("EnvPrint"));
@@ -1039,6 +1060,7 @@ mod tests {
             path: "/test".to_string(),
             package: "test".to_string(),
             format: "toml".to_string(),
+            environment: Some("dev".to_string()),
         };
         let cloned = original.clone();
 
@@ -1046,11 +1068,13 @@ mod tests {
             path,
             package,
             format,
+            environment,
         } = cloned
         {
             assert_eq!(path, "/test");
             assert_eq!(package, "test");
             assert_eq!(format, "toml");
+            assert_eq!(environment, Some("dev".to_string()));
         } else {
             panic!("Clone failed");
         }

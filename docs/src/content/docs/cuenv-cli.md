@@ -7,10 +7,11 @@ The `cuenv` CLI provides tools for managing environments, executing tasks, and i
 
 ## Global Options
 
-| Option        | Description                                         | Default |
-| ------------- | --------------------------------------------------- | ------- |
-| `--level, -l` | Set logging level (trace, debug, info, warn, error) | warn    |
-| `--json`      | Emit JSON envelope regardless of format             | false   |
+| Option              | Description                                         | Default |
+| ------------------- | --------------------------------------------------- | ------- |
+| `--level, -l`       | Set logging level (trace, debug, info, warn, error) | warn    |
+| `--json`            | Emit JSON envelope regardless of format             | false   |
+| `--environment, -e` | Apply environment-specific overrides                | none    |
 
 ## Commands
 
@@ -87,9 +88,12 @@ cuenv task [NAME] [OPTIONS]
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
-- `-e, --env <ENVIRONMENT>`: Apply environment-specific overrides (e.g., development, production).
 - `--materialize-outputs <DIR>`: Materialize cached outputs to this directory on cache hit.
 - `--show-cache-path`: Print the cache path for this task key.
+
+:::tip
+Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production task build`
+:::
 
 ### `cuenv exec`
 
@@ -103,7 +107,10 @@ cuenv exec [OPTIONS] -- <COMMAND> [ARGS]...
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
-- `-e, --env <ENVIRONMENT>`: Apply environment-specific overrides.
+
+:::tip
+Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production exec -- npm start`
+:::
 
 ### `cuenv shell`
 
@@ -207,3 +214,94 @@ cuenv deny [OPTIONS]
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--all`: Revoke all approvals for this directory.
+
+### `cuenv completions`
+
+Generate shell completion setup instructions.
+
+```bash
+cuenv completions <SHELL>
+```
+
+**Arguments:**
+
+- `<SHELL>`: Shell type (bash, zsh, fish, elvish, powershell).
+
+**Example:**
+
+```bash
+# Show setup instructions for fish
+cuenv completions fish
+```
+
+## Shell Completions
+
+cuenv provides dynamic shell completions that include task names with descriptions directly from your CUE configuration. The completions are always up-to-date because they query your project's configuration at completion time.
+
+### Setup
+
+Add one of the following lines to your shell configuration file:
+
+#### Bash
+
+Add to `~/.bashrc`:
+
+```bash
+source <(COMPLETE=bash cuenv)
+```
+
+#### Zsh
+
+Add to `~/.zshrc`:
+
+```zsh
+source <(COMPLETE=zsh cuenv)
+```
+
+#### Fish
+
+Add to `~/.config/fish/config.fish`:
+
+```fish
+COMPLETE=fish cuenv | source
+```
+
+#### Elvish
+
+Add to `~/.elvish/rc.elv`:
+
+```elvish
+eval (E:COMPLETE=elvish cuenv | slurp)
+```
+
+#### PowerShell
+
+Add to your `$PROFILE`:
+
+```powershell
+$env:COMPLETE = "powershell"; cuenv | Out-String | Invoke-Expression; Remove-Item Env:\COMPLETE
+```
+
+### Features
+
+Once completions are set up, you get:
+
+- **Command completion**: Tab-complete all cuenv commands and options
+- **Task name completion**: Tab-complete task names defined in your CUE configuration
+- **Task descriptions**: See task descriptions in completion suggestions (shell dependent)
+
+**Example:**
+
+```bash
+# Type 'cuenv task ' then press Tab to see available tasks
+cuenv task <TAB>
+# Shows: build  test  lint  deploy  ...
+
+# Type 'cuenv -e ' then press Tab to see environment options
+cuenv -e <TAB>
+# Shows: development  staging  production  ...
+```
+
+:::note
+We recommend re-sourcing completions on upgrade. The completion system calls the cuenv binary during completion, so the shell setup and binary should stay in sync.
+:::
