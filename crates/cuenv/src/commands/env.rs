@@ -4,7 +4,12 @@ use std::path::Path;
 use tracing::instrument;
 
 #[instrument(name = "env_print")]
-pub async fn execute_env_print(path: &str, package: &str, format: &str) -> Result<String> {
+pub async fn execute_env_print(
+    path: &str,
+    package: &str,
+    format: &str,
+    environment: Option<&str>,
+) -> Result<String> {
     tracing::info!("Starting env print command");
 
     // Create CUE evaluator
@@ -22,11 +27,19 @@ pub async fn execute_env_print(path: &str, package: &str, format: &str) -> Resul
         cuenv_core::Error::configuration("No 'env' field found in CUE package".to_string())
     })?;
 
+    // Get environment variables, applying environment-specific overrides if specified
+    let env_vars = if let Some(env_name) = environment {
+        tracing::debug!("Applying environment-specific overrides for '{}'", env_name);
+        env.for_environment(env_name)
+    } else {
+        env.base.clone()
+    };
+
     // Format and return the output
     let output = match format {
-        "json" => serde_json::to_string_pretty(&env)
+        "json" => serde_json::to_string_pretty(&env_vars)
             .map_err(|e| cuenv_core::Error::configuration(format!("Failed to format JSON: {e}")))?,
-        "env" | "simple" => format_as_env_vars(&env), // Simple format is same as env format for env variables
+        "env" | "simple" => format_as_env_vars_from_map(&env_vars),
         other => {
             return Err(cuenv_core::Error::configuration(format!(
                 "Unsupported format: '{other}'. Supported formats are 'json', 'env', and 'simple'."
@@ -38,15 +51,17 @@ pub async fn execute_env_print(path: &str, package: &str, format: &str) -> Resul
     Ok(output)
 }
 
-fn format_as_env_vars(env: &cuenv_core::environment::Env) -> String {
+fn format_as_env_vars_from_map(
+    env_map: &std::collections::HashMap<String, cuenv_core::environment::EnvValue>,
+) -> String {
     let mut lines = Vec::new();
 
     // Sort keys for consistent output
-    let mut keys: Vec<&String> = env.base.keys().collect();
+    let mut keys: Vec<&String> = env_map.keys().collect();
     keys.sort();
 
     for key in keys {
-        let value = &env.base[key];
+        let value = &env_map[key];
         // Use to_string_value for consistent handling
         let formatted_value = value.to_string_value();
         if formatted_value == "[SECRET]" {
@@ -62,7 +77,7 @@ fn format_as_env_vars(env: &cuenv_core::environment::Env) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::environment::{Env, EnvValue};
+    use cuenv_core::environment::EnvValue;
     use std::collections::HashMap;
 
     #[test]
@@ -75,12 +90,7 @@ mod tests {
         env_map.insert("DEBUG".to_string(), EnvValue::Bool(true));
         env_map.insert("PORT".to_string(), EnvValue::Int(3000));
 
-        let env = Env {
-            base: env_map,
-            environment: None,
-        };
-
-        let result = format_as_env_vars(&env);
+        let result = format_as_env_vars_from_map(&env_map);
         let lines: Vec<&str> = result.split('\n').collect();
 
         // Should be sorted alphabetically
@@ -92,11 +102,8 @@ mod tests {
 
     #[test]
     fn test_format_as_env_vars_empty() {
-        let env = Env {
-            base: HashMap::new(),
-            environment: None,
-        };
-        let result = format_as_env_vars(&env);
+        let env_map: HashMap<String, EnvValue> = HashMap::new();
+        let result = format_as_env_vars_from_map(&env_map);
         assert_eq!(result, "");
     }
 }

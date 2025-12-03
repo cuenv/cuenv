@@ -214,6 +214,9 @@ Add to `~/.bashrc`:
 ```bash
 # cuenv shell integration
 source <(cuenv shell init bash)
+
+# Enable shell completions
+source <(COMPLETE=bash cuenv)
 ```
 
 ### Zsh
@@ -223,6 +226,9 @@ Add to `~/.zshrc`:
 ```zsh
 # cuenv shell integration
 source <(cuenv shell init zsh)
+
+# Enable shell completions
+source <(COMPLETE=zsh cuenv)
 ```
 
 ### Fish
@@ -232,7 +238,14 @@ Add to `~/.config/fish/config.fish`:
 ```fish
 # cuenv shell integration
 cuenv shell init fish | source
+
+# Enable shell completions
+COMPLETE=fish cuenv | source
 ```
+
+:::tip
+Shell completions provide tab-completion for all cuenv commands, options, and task names from your CUE configuration. See the [CLI reference](/cuenv-cli/#shell-completions) for more details.
+:::
 
 ## IDE Integration
 
