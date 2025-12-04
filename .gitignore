@@ -14,6 +14,11 @@ Thumbs.db
 # Documentation build artifacts
 build/
 node_modules/
+dist/
+
+# VSCode Extension artifacts
+*.vsix
+.vscode-test/
 
 # Go vendor directory (deps fetched via Nix vendorHash)
 crates/cuengine/vendor/

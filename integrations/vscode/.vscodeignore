@@ -1,0 +1,16 @@
+# Source files
+src/**
+**/*.ts
+tsconfig.json
+
+# Development files
+.vscode-test/**
+.gitignore
+bun.lock
+*.map
+
+# Dependencies - vsce will bundle, not include node_modules
+node_modules/**
+
+# Parent directory patterns (workspace root)
+../**

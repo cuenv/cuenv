@@ -4,6 +4,12 @@
   "description": "VSCode integration for Cuenv",
   "version": "0.0.1",
   "publisher": "cuenv",
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cuenv/cuenv"
+  },
+  "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -29,6 +35,16 @@
       {
         "command": "cuenv.setEnvironment",
         "title": "Set Environment"
+      },
+      {
+        "command": "cuenv.showEnvironment",
+        "title": "Show Variables",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "cuenv.showGraph",
+        "title": "Show Dependency Graph",
+        "icon": "$(type-hierarchy)"
       }
     ],
     "viewsContainers": {
@@ -49,6 +65,10 @@
         {
           "id": "cuenv.environments",
           "name": "Environments"
+        },
+        {
+          "id": "cuenv.variables",
+          "name": "Variables"
         }
       ]
     },
@@ -56,6 +76,11 @@
       "view/title": [
         {
           "command": "cuenv.refresh",
+          "when": "view == cuenv.tasks",
+          "group": "navigation"
+        },
+        {
+          "command": "cuenv.showGraph",
           "when": "view == cuenv.tasks",
           "group": "navigation"
         }
@@ -85,10 +110,11 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "bun run package",
+    "vscode:prepublish": "bun run bundle",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "bundle": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "package": "vsce package --allow-missing-repository --no-dependencies",
     "test-compile": "tsc -p ./"
   },
   "devDependencies": {
