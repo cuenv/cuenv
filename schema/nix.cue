@@ -2,7 +2,7 @@ package schema
 
 #NixFlake: #ExecHook & {
 	order:     10
-	propagate: true
+	propagate: false
 	command:   "nix"
 	args: ["print-dev-env"]
 	source: true
