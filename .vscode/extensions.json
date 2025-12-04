@@ -1,0 +1,9 @@
+{
+  "recommendations": [
+    "rust-lang.rust-analyzer",
+    "tamasfe.even-better-toml",
+    "golang.go",
+    "jnoortheen.nix-ide",
+    "asvetliakov.vscode-cue"
+  ]
+}

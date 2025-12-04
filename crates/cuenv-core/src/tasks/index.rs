@@ -1,9 +1,10 @@
 use super::{Task, TaskDefinition, TaskGroup, Tasks};
 use crate::{Error, Result};
+use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
 /// Parsed task path that normalizes dotted/colon-separated identifiers
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct TaskPath {
     segments: Vec<String>,
 }
@@ -66,7 +67,7 @@ fn validate_segment(segment: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct IndexedTask {
     pub name: String,
     pub definition: TaskDefinition,
