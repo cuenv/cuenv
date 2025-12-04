@@ -28,6 +28,10 @@ let evaluator = CueEvaluator::builder()
     })
     .build()?;
 
+// Evaluate a CUE package
+let json = evaluator.evaluate(Path::new("./project"), "cuenv")?;
+
+// Or evaluate and deserialize to a typed struct
 let manifest: Cuenv = evaluator.evaluate_typed(Path::new("./project"), "cuenv")?;
 ```
 

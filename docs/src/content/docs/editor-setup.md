@@ -7,11 +7,25 @@ cuenv uses [CUE](https://cuelang.org/) for all configuration. Setting up your ed
 
 ## Visual Studio Code
 
-We recommend using VS Code with the CUE extension.
+We recommend using VS Code with the official Cuenv extension and CUE language support.
 
-### Recommended Extensions
+### Cuenv Extension
 
-- **[CUE (Official)](https://marketplace.visualstudio.com/items?itemName=cue-lang.vscode-cue)** or **[CUE (Community)](https://marketplace.visualstudio.com/items?itemName=asvetliakov.vscode-cue)**: Provides syntax highlighting, formatting, and validation.
+The official **[Cuenv Extension](https://marketplace.visualstudio.com/items?itemName=cuenv.cuenv-vscode)** provides:
+
+- Task Explorer with inline run buttons
+- Environment switcher
+- Variables view with secret masking
+- Task dependency graph visualization
+- CodeLens integration in `env.cue` files
+
+See the [VSCode Extension documentation](/vscode-extension/) for full details.
+
+### CUE Language Support
+
+For syntax highlighting, formatting, and validation of CUE files:
+
+- **[CUE (Official)](https://marketplace.visualstudio.com/items?itemName=cue-lang.vscode-cue)** or **[CUE (Community)](https://marketplace.visualstudio.com/items?itemName=asvetliakov.vscode-cue)**
 
 ### Configuration
 

@@ -144,7 +144,7 @@ The `#NixFlake` hook:
 ```cue
 #NixFlake: #ExecHook & {
     order:     10          // Run early in hook sequence
-    propagate: true        // Export to child processes
+    propagate: false       // Do not auto-export to child processes
     command:   "nix"
     args:      ["print-dev-env"]
     source:    true        // Source output as shell script
