@@ -65,10 +65,15 @@ cuenv/
 │   │   ├── bridge.go       # Go FFI bridge
 │   │   └── tests/
 │   ├── cuenv-core/         # Core types and utilities
-│   ├── cuenv-cli/          # CLI application
+│   ├── cuenv/              # CLI application
+│   ├── cuenv-dagger/       # Dagger backend integration
 │   ├── cuenv-workspaces/   # Workspace management
+│   ├── cuenv-events/       # Event system
+│   ├── cuenv-ci/           # CI pipeline support
+│   ├── cuenv-release/      # Release management
 │   └── schema-validator/   # Schema validation
 ├── schema/                 # CUE schema definitions
+├── integrations/           # Editor integrations (VSCode)
 ├── examples/               # Example configurations
 ├── docs/                   # Documentation (Astro/Starlight)
 ├── tests/                  # Integration tests

@@ -94,17 +94,19 @@ pub enum Error {
 }
 ```
 
-### cuenv-cli
+### cuenv (CLI)
 
 The command-line interface built with `clap`.
 
 **Commands:**
 
 - `cuenv task [name]` - Execute or list tasks
-- `cuenv env print|check|load` - Environment operations
+- `cuenv env print|check|load|list` - Environment operations
 - `cuenv exec -- <cmd>` - Run commands with environment
 - `cuenv shell init <shell>` - Generate shell integration
 - `cuenv allow|deny` - Security approval management
+- `cuenv tui` - Interactive event dashboard
+- `cuenv changeset|release` - Release management
 - `cuenv version` - Version information
 
 ### cuenv-workspaces

@@ -49,7 +49,7 @@ This method will be available once cuenv reaches stable release.
 :::
 
 ```bash
-cargo install cuenv-cli
+cargo install cuenv
 ```
 
 ### Method 4: From GitHub Releases
@@ -108,7 +108,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
 # Install cuenv
-cargo install cuenv-cli
+cargo install cuenv
 ```
 
 #### Fedora/RHEL
@@ -122,7 +122,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
 # Install cuenv
-cargo install cuenv-cli
+cargo install cuenv
 ```
 
 #### Arch Linux
@@ -136,7 +136,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
 # Install cuenv
-cargo install cuenv-cli
+cargo install cuenv
 ```
 
 ### macOS
@@ -158,7 +158,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
 # Install cuenv
-cargo install cuenv-cli
+cargo install cuenv
 ```
 
 ### Windows
@@ -182,7 +182,7 @@ wsl --install -d Ubuntu
 # Download from: https://rustup.rs/
 
 # Install cuenv
-cargo install cuenv-cli
+cargo install cuenv
 ```
 
 ## Verification
@@ -255,14 +255,17 @@ Official IDE extensions are planned for future releases. The instructions below 
 
 ### Visual Studio Code
 
-:::caution
-The cuenv VS Code extension is not yet available. For CUE syntax support, use the CUE language extension.
-:::
+Install the official Cuenv extension for full IDE integration:
 
 ```bash
-# For CUE syntax highlighting (available now)
-code --install-extension cuelang.cue
+# Install the Cuenv extension
+code --install-extension cuenv.cuenv-vscode
+
+# Also install CUE language support
+code --install-extension cue-lang.vscode-cue
 ```
+
+See the [VSCode Extension documentation](/vscode-extension/) for features and configuration.
 
 ### IntelliJ/CLion
 
