@@ -2,7 +2,7 @@ package schema
 
 #Devenv: #ExecHook & {
 	order:     10
-	propagate: true
+	propagate: false
 	command:   "devenv"
 	args: ["print-dev-env"]
 	source: true
