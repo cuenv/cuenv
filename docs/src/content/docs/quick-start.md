@@ -15,11 +15,13 @@ Before you begin, make sure you have:
 
 ## Installation
 
-:::note
-cuenv is currently in alpha development. Installation methods are being finalized.
-:::
+### Using Nix (Recommended)
 
-### From Source (Development)
+```bash
+nix profile install github:cuenv/cuenv
+```
+
+### From Source
 
 1. Clone the repository:
 
@@ -31,15 +33,15 @@ cd cuenv
 2. Install locally:
 
 ```bash
-cargo install --path crates/cuenv-cli
+cargo install --path crates/cuenv
 ```
 
-### Using Cargo (Future)
+### Using Cargo
 
 Once published to crates.io:
 
 ```bash
-cargo install cuenv-cli
+cargo install cuenv
 ```
 
 ## Your First CUE Environment

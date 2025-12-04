@@ -48,6 +48,10 @@ let evaluator = CueEvaluator::builder()
     .no_retry()
     .build()?;
 
+// Evaluate and get raw JSON
+let json = evaluator.evaluate(Path::new("./project"), "cuenv")?;
+
+// Or evaluate and deserialize to a typed struct
 let manifest: Cuenv = evaluator.evaluate_typed(Path::new("./project"), "cuenv")?;
 ```
 
@@ -130,10 +134,9 @@ The CUE Engine is optimized for:
 
 ```rust
 use cuengine::CueEvaluator;
-use cuenv_core::Result;
 use std::path::Path;
 
-fn main() -> Result<()> {
+fn main() -> cuenv_core::Result<()> {
     let evaluator = CueEvaluator::builder().build()?;
     let json = evaluator.evaluate(Path::new("./config"), "cuenv")?;
     println!("Manifest JSON: {json}");
@@ -153,7 +156,7 @@ fn validate_app_config(dir: &Path) -> Result<()> {
     let manifest: Cuenv = evaluator.evaluate_typed(dir, "cuenv")?;
 
     if manifest.env.is_none() {
-        return Err(Error::configuration("env block is required".to_string()));
+        return Err(Error::configuration("env block is required"));
     }
 
     Ok(())
@@ -173,7 +176,7 @@ fn process_config_directory(path: &Path) -> Result<Vec<String>> {
 
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
-        if entry.path().extension().map_or(false, |ext| ext == "cue") {
+        if entry.path().extension().is_some_and(|ext| ext == "cue") {
             if let Some(dir) = entry.path().parent() {
                 results.push(evaluator.evaluate(dir, "cuenv")?);
             }

@@ -77,19 +77,23 @@ cuenv env check [OPTIONS]
 Execute a task defined in CUE configuration.
 
 ```bash
-cuenv task [NAME] [OPTIONS]
+cuenv task [NAME] [OPTIONS] [-- TASK_ARGS...]
 ```
 
 **Arguments:**
 
 - `[NAME]`: Name of the task to execute. If not provided, lists available tasks.
+- `[TASK_ARGS]`: Arguments to pass to the task (positional and --named values).
 
 **Options:**
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `--output-format <FORMAT>`: Output format when listing tasks (simple, json). Default: `simple`
 - `--materialize-outputs <DIR>`: Materialize cached outputs to this directory on cache hit.
 - `--show-cache-path`: Print the cache path for this task key.
+- `--backend <BACKEND>`: Force specific execution backend (`host` or `dagger`).
+- `--help`: Print task-specific help (when task name is provided).
 
 :::tip
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production task build`
@@ -157,6 +161,20 @@ cuenv env inspect [OPTIONS]
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 
+### `cuenv env list`
+
+List available environments defined in your configuration.
+
+```bash
+cuenv env list [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `--output-format <FORMAT>`: Output format (simple, json). Default: `simple`
+
 ### `cuenv ci`
 
 Run CI pipelines defined in your CUE configuration.
@@ -183,6 +201,99 @@ cuenv ci --dry-run
 # Generate GitHub Actions workflow
 cuenv ci --generate github
 ```
+
+### `cuenv tui`
+
+Start an interactive TUI dashboard for monitoring cuenv events.
+
+```bash
+cuenv tui
+```
+
+The TUI connects to a running cuenv coordinator to display real-time events from other cuenv commands. To use:
+
+1. Run a cuenv command (e.g., `cuenv task build`) in another terminal
+2. Run `cuenv tui` to watch the events
+
+### `cuenv web`
+
+Start a web server for streaming cuenv events.
+
+```bash
+cuenv web [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --port <PORT>`: Port to listen on. Default: `3000`
+- `--host <HOST>`: Host to bind to. Default: `127.0.0.1`
+
+### `cuenv changeset`
+
+Manage changesets for release management.
+
+#### `cuenv changeset add`
+
+Add a new changeset.
+
+```bash
+cuenv changeset add [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to project root. Default: `.`
+- `-s, --summary <SUMMARY>`: Summary of the change (required).
+- `-d, --description <DESC>`: Detailed description of the change.
+- `-P, --packages <PKG:BUMP>`: Package and bump type (format: `package:bump`, e.g., `my-pkg:minor`). Can be specified multiple times.
+
+**Example:**
+
+```bash
+cuenv changeset add -s "Add new feature" -P my-pkg:minor -P other-pkg:patch
+```
+
+#### `cuenv changeset status`
+
+Show pending changesets.
+
+```bash
+cuenv changeset status [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to project root. Default: `.`
+
+### `cuenv release`
+
+Release management operations.
+
+#### `cuenv release version`
+
+Calculate and apply version bumps from changesets.
+
+```bash
+cuenv release version [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to project root. Default: `.`
+- `--dry-run`: Show what would change without making changes.
+
+#### `cuenv release publish`
+
+Publish packages in topological order.
+
+```bash
+cuenv release publish [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to project root. Default: `.`
+- `--dry-run`: Show what would be published without publishing.
 
 ### Security Commands
 

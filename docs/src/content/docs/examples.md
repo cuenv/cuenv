@@ -455,30 +455,30 @@ tasks: {
     // Run all services
     dev: {
         all: [
-            {command: "cuenv", args: ["task", "dev", "--path", "services/api"]},
-            {command: "cuenv", args: ["task", "dev", "--path", "services/web"]},
+            {command: "cuenv", args: ["task", "dev", "-p", "services/api"]},
+            {command: "cuenv", args: ["task", "dev", "-p", "services/web"]},
         ]
     }
 
     // Build all
     build: {
         all: [
-            {command: "cuenv", args: ["task", "build", "--path", "services/api"]},
-            {command: "cuenv", args: ["task", "build", "--path", "services/web"]},
+            {command: "cuenv", args: ["task", "build", "-p", "services/api"]},
+            {command: "cuenv", args: ["task", "build", "-p", "services/web"]},
         ]
     }
 
     // Test all
     test: {
         all: [
-            {command: "cuenv", args: ["task", "test", "--path", "services/api"]},
-            {command: "cuenv", args: ["task", "test", "--path", "services/web"]},
+            {command: "cuenv", args: ["task", "test", "-p", "services/api"]},
+            {command: "cuenv", args: ["task", "test", "-p", "services/web"]},
         ]
     }
 }
 ```
 
-Each helper entry shells out to the `cuenv` CLI with `--path` so that every service runs its own `env.cue` without relying on a non-existent `dir` field in task definitions.
+Each task shells out to the `cuenv` CLI with `-p` (path) so that every service runs its own `env.cue` configuration.
 
 **`services/api/env.cue`:**
 

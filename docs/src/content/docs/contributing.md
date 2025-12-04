@@ -176,7 +176,12 @@ cuenv/
 ├── crates/
 │   ├── cuengine/          # CUE evaluation engine
 │   ├── cuenv-core/        # Core library
-│   └── cuenv-cli/         # CLI application
+│   ├── cuenv/             # CLI application
+│   ├── cuenv-dagger/      # Dagger backend
+│   ├── cuenv-events/      # Event system
+│   ├── cuenv-ci/          # CI support
+│   └── cuenv-release/     # Release management
+├── integrations/          # Editor integrations (VSCode)
 ├── docs/                  # Documentation source
 ├── examples/              # Example configurations
 ├── schema/                # CUE schemas
