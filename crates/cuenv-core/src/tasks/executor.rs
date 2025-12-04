@@ -371,32 +371,58 @@ impl TaskExecutor {
             // Initial snapshot to detect undeclared writes
             let initial_hashes: BTreeMap<String, String> = inputs_summary.clone();
 
-            // Resolve command path using the environment's PATH.
-            // This is necessary because when spawning a process, the OS looks up
-            // the executable in the current process's PATH, not the environment
-            // that will be set on the child process.
-            let resolved_command = self.config.environment.resolve_command(&task.command);
+            // Build command - handle script mode vs command mode
+            let mut cmd = if let Some(script) = &task.script {
+                // Script mode: use shell to execute the script
+                let (shell_cmd, shell_flag) = if let Some(shell) = &task.shell {
+                    (
+                        shell.command.clone().unwrap_or_else(|| "bash".to_string()),
+                        shell.flag.clone().unwrap_or_else(|| "-c".to_string()),
+                    )
+                } else {
+                    // Default to bash for scripts
+                    ("bash".to_string(), "-c".to_string())
+                };
 
-            // Build command
-            let mut cmd = if let Some(shell) = &task.shell {
-                if shell.command.is_some() && shell.flag.is_some() {
-                    let shell_command = shell.command.as_ref().unwrap();
-                    let shell_flag = shell.flag.as_ref().unwrap();
-                    // Resolve shell command too
-                    let resolved_shell = self.config.environment.resolve_command(shell_command);
-                    let mut cmd = Command::new(&resolved_shell);
-                    cmd.arg(shell_flag);
-                    if task.args.is_empty() {
-                        cmd.arg(&resolved_command);
-                    } else {
-                        let full_command = if task.command.is_empty() {
-                            task.args.join(" ")
+                let resolved_shell = self.config.environment.resolve_command(&shell_cmd);
+                let mut cmd = Command::new(&resolved_shell);
+                cmd.arg(&shell_flag);
+                cmd.arg(script);
+                cmd
+            } else {
+                // Command mode: existing behavior
+                // Resolve command path using the environment's PATH.
+                // This is necessary because when spawning a process, the OS looks up
+                // the executable in the current process's PATH, not the environment
+                // that will be set on the child process.
+                let resolved_command = self.config.environment.resolve_command(&task.command);
+
+                if let Some(shell) = &task.shell {
+                    if shell.command.is_some() && shell.flag.is_some() {
+                        let shell_command = shell.command.as_ref().unwrap();
+                        let shell_flag = shell.flag.as_ref().unwrap();
+                        // Resolve shell command too
+                        let resolved_shell = self.config.environment.resolve_command(shell_command);
+                        let mut cmd = Command::new(&resolved_shell);
+                        cmd.arg(shell_flag);
+                        if task.args.is_empty() {
+                            cmd.arg(&resolved_command);
                         } else {
-                            format!("{} {}", resolved_command, task.args.join(" "))
-                        };
-                        cmd.arg(full_command);
+                            let full_command = if task.command.is_empty() {
+                                task.args.join(" ")
+                            } else {
+                                format!("{} {}", resolved_command, task.args.join(" "))
+                            };
+                            cmd.arg(full_command);
+                        }
+                        cmd
+                    } else {
+                        let mut cmd = Command::new(&resolved_command);
+                        for arg in &task.args {
+                            cmd.arg(arg);
+                        }
+                        cmd
                     }
-                    cmd
                 } else {
                     let mut cmd = Command::new(&resolved_command);
                     for arg in &task.args {
@@ -404,12 +430,6 @@ impl TaskExecutor {
                     }
                     cmd
                 }
-            } else {
-                let mut cmd = Command::new(&resolved_command);
-                for arg in &task.args {
-                    cmd.arg(arg);
-                }
-                cmd
             };
 
             let workdir = if let Some(dir) = &self.config.working_dir {
@@ -716,7 +736,9 @@ impl TaskExecutor {
         );
 
         // Emit command being run
-        let cmd_str = if task.command.is_empty() {
+        let cmd_str = if let Some(script) = &task.script {
+            format!("[script: {} bytes]", script.len())
+        } else if task.command.is_empty() {
             task.args.join(" ")
         } else {
             format!("{} {}", task.command, task.args.join(" "))
@@ -725,28 +747,53 @@ impl TaskExecutor {
             cuenv_events::emit_task_started!(name, cmd_str, false);
         }
 
-        // Resolve command path
-        let resolved_command = self.config.environment.resolve_command(&task.command);
+        // Build command - handle script mode vs command mode
+        let mut cmd = if let Some(script) = &task.script {
+            // Script mode: use shell to execute the script
+            let (shell_cmd, shell_flag) = if let Some(shell) = &task.shell {
+                (
+                    shell.command.clone().unwrap_or_else(|| "bash".to_string()),
+                    shell.flag.clone().unwrap_or_else(|| "-c".to_string()),
+                )
+            } else {
+                // Default to bash for scripts
+                ("bash".to_string(), "-c".to_string())
+            };
 
-        // Build command
-        let mut cmd = if let Some(shell) = &task.shell {
-            if shell.command.is_some() && shell.flag.is_some() {
-                let shell_command = shell.command.as_ref().unwrap();
-                let shell_flag = shell.flag.as_ref().unwrap();
-                let resolved_shell = self.config.environment.resolve_command(shell_command);
-                let mut cmd = Command::new(&resolved_shell);
-                cmd.arg(shell_flag);
-                if task.args.is_empty() {
-                    cmd.arg(&resolved_command);
-                } else {
-                    let full_command = if task.command.is_empty() {
-                        task.args.join(" ")
+            let resolved_shell = self.config.environment.resolve_command(&shell_cmd);
+            let mut cmd = Command::new(&resolved_shell);
+            cmd.arg(&shell_flag);
+            cmd.arg(script);
+            cmd
+        } else {
+            // Command mode: existing behavior
+            let resolved_command = self.config.environment.resolve_command(&task.command);
+
+            if let Some(shell) = &task.shell {
+                if shell.command.is_some() && shell.flag.is_some() {
+                    let shell_command = shell.command.as_ref().unwrap();
+                    let shell_flag = shell.flag.as_ref().unwrap();
+                    let resolved_shell = self.config.environment.resolve_command(shell_command);
+                    let mut cmd = Command::new(&resolved_shell);
+                    cmd.arg(shell_flag);
+                    if task.args.is_empty() {
+                        cmd.arg(&resolved_command);
                     } else {
-                        format!("{} {}", resolved_command, task.args.join(" "))
-                    };
-                    cmd.arg(full_command);
+                        let full_command = if task.command.is_empty() {
+                            task.args.join(" ")
+                        } else {
+                            format!("{} {}", resolved_command, task.args.join(" "))
+                        };
+                        cmd.arg(full_command);
+                    }
+                    cmd
+                } else {
+                    let mut cmd = Command::new(&resolved_command);
+                    for arg in &task.args {
+                        cmd.arg(arg);
+                    }
+                    cmd
                 }
-                cmd
             } else {
                 let mut cmd = Command::new(&resolved_command);
                 for arg in &task.args {
@@ -754,12 +801,6 @@ impl TaskExecutor {
                 }
                 cmd
             }
-        } else {
-            let mut cmd = Command::new(&resolved_command);
-            for arg in &task.args {
-                cmd.arg(arg);
-            }
-            cmd
         };
 
         // Set working directory and environment

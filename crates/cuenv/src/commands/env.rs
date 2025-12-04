@@ -19,11 +19,11 @@ pub async fn execute_env_list(path: &str, package: &str, format: &str) -> Result
 
     let mut environments: Vec<String> = Vec::new();
 
-    if let Some(env) = manifest.env {
-        if let Some(envs) = env.environment {
-            environments = envs.keys().cloned().collect();
-            environments.sort();
-        }
+    if let Some(env) = manifest.env
+        && let Some(envs) = env.environment
+    {
+        environments = envs.keys().cloned().collect();
+        environments.sort();
     }
 
     // Format and return the output
