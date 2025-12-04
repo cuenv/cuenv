@@ -28,6 +28,7 @@ export default defineConfig({
 						{ label: 'Overview', slug: 'index' },
 						{ label: 'Quick Start', slug: 'quick-start' },
 						{ label: 'Installation', slug: 'installation' },
+						{ label: 'Editor Setup', slug: 'editor-setup' },
 						{ label: 'Configuration', slug: 'configuration' },
 					],
 				},

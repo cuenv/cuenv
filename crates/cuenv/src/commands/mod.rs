@@ -30,6 +30,7 @@ pub mod ci_cmd {
                 "cuenv", // package
                 Some(task_name),
                 None,  // environment
+                "simple", // format
                 false, // capture_output
                 None,  // materialize_outputs
                 false, // show_cache_path
@@ -151,11 +152,17 @@ pub enum Command {
         package: String,
         shell: crate::cli::ShellType,
     },
+    EnvList {
+        path: String,
+        package: String,
+        format: String,
+    },
     Task {
         path: String,
         package: String,
         name: Option<String>,
         environment: Option<String>,
+        format: String,
         materialize_outputs: Option<String>,
         show_cache_path: bool,
         backend: Option<String>,
@@ -247,6 +254,7 @@ impl CommandExecutor {
                 package,
                 name,
                 environment,
+                format,
                 materialize_outputs,
                 show_cache_path,
                 backend,
@@ -258,6 +266,7 @@ impl CommandExecutor {
                     package,
                     name,
                     environment,
+                    format,
                     materialize_outputs,
                     show_cache_path,
                     backend,
@@ -293,6 +302,11 @@ impl CommandExecutor {
                 package,
                 shell,
             } => self.execute_env_check(path, package, shell).await,
+            Command::EnvList {
+                path,
+                package,
+                format,
+            } => self.execute_env_list(path, package, format).await,
             Command::ShellInit { shell } => {
                 self.execute_shell_init(shell);
                 Ok(())
@@ -409,6 +423,7 @@ impl CommandExecutor {
         package: String,
         name: Option<String>,
         environment: Option<String>,
+        format: String,
         materialize_outputs: Option<String>,
         show_cache_path: bool,
         backend: Option<String>,
@@ -427,6 +442,7 @@ impl CommandExecutor {
             &package,
             name.as_deref(),
             environment.as_deref(),
+            &format,
             false,
             materialize_outputs.as_deref(),
             show_cache_path,
@@ -571,6 +587,38 @@ impl CommandExecutor {
         });
 
         match hooks::execute_env_check(&path, &package, shell).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
+        }
+    }
+
+    async fn execute_env_list(
+        &self,
+        path: String,
+        package: String,
+        format: String,
+    ) -> Result<()> {
+        let command_name = "env list";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match env::execute_env_list(&path, &package, &format).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
