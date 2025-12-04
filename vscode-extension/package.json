@@ -1,0 +1,103 @@
+{
+  "name": "cuenv-vscode",
+  "displayName": "Cuenv",
+  "description": "VSCode integration for Cuenv",
+  "version": "0.0.1",
+  "publisher": "cuenv",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:cue",
+    "workspaceContains:env.cue"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cuenv.refresh",
+        "title": "Refresh Cuenv Data",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cuenv.runTask",
+        "title": "Run Task"
+      },
+      {
+        "command": "cuenv.setEnvironment",
+        "title": "Set Environment"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cuenv-explorer",
+          "title": "Cuenv",
+          "icon": "$(beaker)"
+        }
+      ]
+    },
+    "views": {
+      "cuenv-explorer": [
+        {
+          "id": "cuenv.tasks",
+          "name": "Tasks"
+        },
+        {
+          "id": "cuenv.environments",
+          "name": "Environments"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "cuenv.refresh",
+          "when": "view == cuenv.tasks",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "cuenv.runTask",
+          "when": "view == cuenv.tasks && viewItem == task",
+          "group": "inline"
+        },
+        {
+          "command": "cuenv.setEnvironment",
+          "when": "view == cuenv.environments && viewItem == environment",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Cuenv",
+      "properties": {
+        "cuenv.executablePath": {
+          "type": "string",
+          "default": "cuenv",
+          "description": "Path to the cuenv executable"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "test-compile": "tsc -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.x",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "esbuild": "^0.19.10",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3"
+  }
+}
