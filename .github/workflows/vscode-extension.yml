@@ -1,0 +1,29 @@
+name: VSCode Extension
+
+on:
+  push:
+    tags:
+      - 'vscode-v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+
+      - name: Install dependencies
+        run: bun install
+        working-directory: integrations/vscode
+
+      - name: Bundle extension
+        run: bun run bundle
+        working-directory: integrations/vscode
+
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish
+        working-directory: integrations/vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
