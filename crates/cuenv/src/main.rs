@@ -273,16 +273,19 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             backend,
             help,
             task_args,
+            format,
         } => match execute_task_command_safe(
             path,
             package,
             name,
             environment,
+            format,
             materialize_outputs,
             show_cache_path,
             backend,
             help,
             task_args,
+            json_mode,
         )
         .await
         {
@@ -328,6 +331,14 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             package,
             shell,
         } => match execute_env_check_command_safe(path, package, shell, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::EnvList {
+            path,
+            package,
+            format,
+        } => match execute_env_list_command_safe(path, package, format, json_mode).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -548,6 +559,44 @@ async fn execute_env_status_command_safe(
             format!("Env status failed: {e}"),
             "Check that your env.cue file exists and hook execution has been started",
         )),
+    }
+}
+
+/// Execute env list command safely
+#[instrument(name = "cuenv_execute_env_list_safe")]
+async fn execute_env_list_command_safe(
+    path: String,
+    package: String,
+    format: String,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    let mut perf_guard = performance::PerformanceGuard::new("env_list_command");
+    perf_guard.add_metadata("command_type", "env_list");
+    perf_guard.add_metadata("package", &package);
+    perf_guard.add_metadata("format", &format);
+
+    let output = measure_perf!("env_list_execution", {
+        commands::env::execute_env_list(&path, &package, &format).await
+    });
+
+    match output {
+        Ok(result) => {
+            println!("{result}");
+            perf_guard.finish(true);
+            Ok(())
+        }
+        Err(e) => {
+            perf_guard.finish(false);
+            let mut cli_err: CliError = e.into();
+            match &mut cli_err {
+                CliError::Config { help, .. }
+                | CliError::Eval { help, .. }
+                | CliError::Other { help, .. } => {
+                    *help = Some("Check your CUE files and package configuration".to_string());
+                }
+            }
+            Err(cli_err)
+        }
     }
 }
 
@@ -775,11 +824,13 @@ async fn execute_task_command_safe(
     package: String,
     name: Option<String>,
     environment: Option<String>,
+    format: String,
     materialize_outputs: Option<String>,
     show_cache_path: bool,
     backend: Option<String>,
     help: bool,
     task_args: Vec<String>,
+    json_mode: bool,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
@@ -789,6 +840,7 @@ async fn execute_task_command_safe(
         &package,
         name.as_deref(),
         environment.as_deref(),
+        &format,
         false,
         materialize_outputs.as_deref(),
         show_cache_path,

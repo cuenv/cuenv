@@ -314,6 +314,13 @@ pub enum Commands {
         )]
         package: String,
         #[arg(
+            long = "output-format",
+            help = "Output format (only used when listing tasks)",
+            value_enum,
+            default_value_t = OutputFormat::Simple
+        )]
+        output_format: OutputFormat,
+        #[arg(
             long = "materialize-outputs",
             help = "Materialize cached outputs to this directory on cache hit (off by default)",
             value_name = "DIR"
@@ -585,6 +592,29 @@ pub enum EnvCommands {
         )]
         shell: ShellType,
     },
+    #[command(about = "List available environments")]
+    List {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(
+            long = "output-format",
+            help = "Output format",
+            value_enum,
+            default_value_t = OutputFormat::Simple
+        )]
+        output_format: OutputFormat,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -693,11 +723,21 @@ impl Commands {
                     package,
                     shell,
                 },
+                EnvCommands::List {
+                    path,
+                    package,
+                    output_format,
+                } => Command::EnvList {
+                    path,
+                    package,
+                    format: output_format.to_string(),
+                },
             },
             Commands::Task {
                 name,
                 path,
                 package,
+                output_format,
                 materialize_outputs,
                 show_cache_path,
                 backend,
@@ -708,6 +748,7 @@ impl Commands {
                 package,
                 name,
                 environment,
+                format: output_format.to_string(),
                 materialize_outputs,
                 show_cache_path,
                 backend,

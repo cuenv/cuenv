@@ -41,6 +41,7 @@ pub async fn execute_task(
     package: &str,
     task_name: Option<&str>,
     environment: Option<&str>,
+    format: &str,
     capture_output: bool,
     materialize_outputs: Option<&str>,
     show_cache_path: bool,
@@ -79,6 +80,12 @@ pub async fn execute_task(
         tracing::debug!("Listing available tasks");
         let tasks = task_index.list();
         tracing::debug!("Found {} tasks to list", tasks.len());
+
+        if format == "json" {
+            return serde_json::to_string(&tasks).map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to serialize tasks: {e}"))
+            });
+        }
 
         if tasks.is_empty() {
             return Ok("No tasks defined in the configuration".to_string());
@@ -1277,6 +1284,7 @@ env: {
             "test",
             None,
             None,
+            "simple",
             false,
             None,
             false,

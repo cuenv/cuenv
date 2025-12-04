@@ -3,6 +3,45 @@ use cuenv_core::Result;
 use std::path::Path;
 use tracing::instrument;
 
+#[instrument(name = "env_list")]
+pub async fn execute_env_list(path: &str, package: &str, format: &str) -> Result<String> {
+    tracing::info!("Starting env list command");
+
+    // Create CUE evaluator
+    let evaluator = CueEvaluator::builder().build()?;
+
+    // Convert path string to Path
+    let dir_path = Path::new(path);
+
+    // Evaluate the CUE package
+    tracing::debug!("Evaluating CUE package '{}' at path '{}'", package, path);
+    let manifest: Cuenv = evaluator.evaluate_typed(dir_path, package)?;
+
+    let mut environments: Vec<String> = Vec::new();
+
+    if let Some(env) = manifest.env {
+        if let Some(envs) = env.environment {
+            environments = envs.keys().cloned().collect();
+            environments.sort();
+        }
+    }
+
+    // Format and return the output
+    let output = match format {
+        "json" => serde_json::to_string_pretty(&environments)
+            .map_err(|e| cuenv_core::Error::configuration(format!("Failed to format JSON: {e}")))?,
+        "simple" => environments.join("\n"),
+        other => {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Unsupported format: '{other}'. Supported formats are 'json' and 'simple'."
+            )));
+        }
+    };
+
+    tracing::info!("Env list command completed successfully");
+    Ok(output)
+}
+
 #[instrument(name = "env_print")]
 pub async fn execute_env_print(
     path: &str,
