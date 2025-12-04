@@ -23,7 +23,7 @@ jobs:
         working-directory: integrations/vscode
 
       - name: Publish to VS Code Marketplace
-        run: npx @vscode/vsce publish
+        run: npx @vscode/vsce publish --no-dependencies
         working-directory: integrations/vscode
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
