@@ -47,6 +47,7 @@ pub mod ci_cmd {
         dry_run: bool,
         pipeline: Option<String>,
         generate: Option<String>,
+        from: Option<String>,
     ) -> Result<()> {
         if let Some(provider) = generate {
             if provider != "github" {
@@ -110,7 +111,7 @@ jobs:
         }
 
         let runner = Arc::new(CliTaskRunner);
-        run_ci(dry_run, pipeline, runner).await
+        run_ci(dry_run, pipeline, from, runner).await
     }
 }
 
@@ -198,6 +199,7 @@ pub enum Command {
         dry_run: bool,
         pipeline: Option<String>,
         generate: Option<String>,
+        from: Option<String>,
     },
     Tui,
     Web {
@@ -323,7 +325,8 @@ impl CommandExecutor {
                 dry_run,
                 pipeline,
                 generate,
-            } => self.execute_ci(dry_run, pipeline, generate).await,
+                from,
+            } => self.execute_ci(dry_run, pipeline, generate, from).await,
             // Tui, Web, Completions, and release commands are handled directly in main.rs
             Command::Tui
             | Command::Web { .. }
@@ -773,13 +776,14 @@ impl CommandExecutor {
         dry_run: bool,
         pipeline: Option<String>,
         generate: Option<String>,
+        from: Option<String>,
     ) -> Result<()> {
         let command_name = "ci";
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
         });
 
-        match ci_cmd::execute_ci(dry_run, pipeline, generate).await {
+        match ci_cmd::execute_ci(dry_run, pipeline, generate, from).await {
             Ok(()) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
