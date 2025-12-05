@@ -17,14 +17,15 @@ pub async fn execute_env_list(path: &str, package: &str, format: &str) -> Result
     tracing::debug!("Evaluating CUE package '{}' at path '{}'", package, path);
     let manifest: Cuenv = evaluator.evaluate_typed(dir_path, package)?;
 
-    let mut environments: Vec<String> = Vec::new();
-
-    if let Some(env) = manifest.env {
-        if let Some(envs) = env.environment {
-            environments = envs.keys().cloned().collect();
-            environments.sort();
-        }
-    }
+    let environments: Vec<String> = manifest
+        .env
+        .and_then(|env| env.environment)
+        .map(|envs| {
+            let mut keys: Vec<String> = envs.keys().cloned().collect();
+            keys.sort();
+            keys
+        })
+        .unwrap_or_default();
 
     // Format and return the output
     let output = match format {

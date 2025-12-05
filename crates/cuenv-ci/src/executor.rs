@@ -29,11 +29,14 @@ pub trait TaskRunner: Send + Sync {
 pub async fn run_ci(
     dry_run: bool,
     specific_pipeline: Option<String>,
+    from_ref: Option<String>,
     runner: Arc<dyn TaskRunner>,
 ) -> Result<()> {
     // 1. Detect Provider
     let provider: Arc<dyn CIProvider> = if let Some(p) = GitHubProvider::detect() {
         Arc::new(p)
+    } else if let Some(base_ref) = from_ref {
+        Arc::new(LocalProvider::with_base_ref(base_ref))
     } else if let Some(p) = LocalProvider::detect() {
         Arc::new(p)
     } else {

@@ -434,6 +434,8 @@ pub enum Commands {
         pipeline: Option<String>,
         #[arg(long, help = "Generate CI workflow file (e.g., 'github')")]
         generate: Option<String>,
+        #[arg(long, help = "Base ref to compare against (branch name or commit SHA)")]
+        from: Option<String>,
     },
     #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
     Tui,
@@ -787,10 +789,12 @@ impl Commands {
                 dry_run,
                 pipeline,
                 generate,
+                from,
             } => Command::Ci {
                 dry_run,
                 pipeline,
                 generate,
+                from,
             },
             Commands::Tui => Command::Tui,
             Commands::Web { port, host } => Command::Web { port, host },

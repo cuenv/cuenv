@@ -2,10 +2,30 @@ use super::{CIContext, CIProvider};
 use crate::report::{CheckHandle, PipelineReport};
 use async_trait::async_trait;
 use cuenv_core::Result;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 pub struct LocalProvider {
     context: CIContext,
+    base_ref: Option<String>,
+}
+
+impl LocalProvider {
+    /// Create a `LocalProvider` that compares against a specific base reference.
+    /// This will detect changes between the base ref and HEAD, plus uncommitted changes.
+    #[must_use]
+    pub fn with_base_ref(base_ref: String) -> Self {
+        Self {
+            context: CIContext {
+                provider: "local".to_string(),
+                event: "manual".to_string(),
+                ref_name: "current".to_string(),
+                base_ref: Some(base_ref.clone()),
+                sha: "current".to_string(),
+            },
+            base_ref: Some(base_ref),
+        }
+    }
 }
 
 #[async_trait]
@@ -20,6 +40,7 @@ impl CIProvider for LocalProvider {
                 base_ref: None,
                 sha: "current".to_string(),
             },
+            base_ref: None,
         })
     }
 
@@ -28,13 +49,26 @@ impl CIProvider for LocalProvider {
     }
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        // In local mode, maybe we assume everything is "affected" or we check against master?
-        // For now, let's return empty which means "run nothing" unless we implement
-        // "run all" logic or "diff against main" logic for local.
-        // Issue spec says: "Always affected: Only run tasks whose inputs changed".
-        // So locally, maybe we want to see uncommitted changes?
-        // "git diff --name-only HEAD" (staged+unstaged)
+        let mut changed: HashSet<PathBuf> = HashSet::new();
 
+        // If we have a base_ref, get committed changes since that ref
+        if let Some(ref base_ref) = self.base_ref {
+            // Use three-dot syntax to get changes between base_ref and HEAD
+            // This shows what's in HEAD that isn't in base_ref
+            let output = std::process::Command::new("git")
+                .args(["diff", "--name-only", &format!("{base_ref}...HEAD")])
+                .output()
+                .ok();
+
+            if let Some(output) = output {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    changed.insert(PathBuf::from(line));
+                }
+            }
+        }
+
+        // Always include uncommitted changes (staged + unstaged)
         let output = std::process::Command::new("git")
             .args(["diff", "--name-only", "HEAD"])
             .output()
@@ -42,10 +76,12 @@ impl CIProvider for LocalProvider {
 
         if let Some(output) = output {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            Ok(stdout.lines().map(PathBuf::from).collect())
-        } else {
-            Ok(vec![])
+            for line in stdout.lines() {
+                changed.insert(PathBuf::from(line));
+            }
         }
+
+        Ok(changed.into_iter().collect())
     }
 
     async fn create_check(&self, _name: &str) -> Result<CheckHandle> {
