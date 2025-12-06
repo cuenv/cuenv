@@ -3,7 +3,6 @@ name: ci
 on:
   push:
     branches: [main]
-    tags: ["*.*.*"]
   pull_request:
     branches: [main]
 
@@ -14,18 +13,6 @@ concurrency:
 permissions:
   contents: read
   id-token: write
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: sccache
-  CARGO_INCREMENTAL: "0"
-  CARGO_PROFILE_DEV_DEBUG: line-tables-only
-  CARGO_PROFILE_TEST_DEBUG: line-tables-only
-  # Environment for cuenv hooks
-  CUENV_FOREGROUND_HOOKS: "1"
-  CUENV_CUE_BIN: "cue"
 
 jobs:
   ci:
@@ -50,26 +37,12 @@ jobs:
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v2
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.4
-
       - name: Build cuenv (Bootstrap)
         run: |
           nix build .#cuenv
-          mkdir -p bin
-          cp -L result/bin/cuenv bin/cuenv
-          chmod +x bin/cuenv
-          echo "$(pwd)/bin" >> $GITHUB_PATH
+          echo "$(pwd)/result/bin" >> $GITHUB_PATH
 
       - name: Run CI Pipeline
-        run: cuenv ci
+        run: cuenv ci --pipeline ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload CI reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: cuenv-ci-reports-${{ matrix.os }}
-          path: .cuenv/reports/
-          if-no-files-found: ignore
