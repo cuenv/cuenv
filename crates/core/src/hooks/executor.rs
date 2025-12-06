@@ -624,7 +624,7 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
         .collect();
 
     let filtered_script = filtered_lines.join("\n");
-    tracing::error!("Filtered shell script:\n{}", filtered_script);
+    tracing::trace!("Filtered shell script:\n{}", filtered_script);
 
     // Now execute the filtered script and capture the environment after
     let mut cmd = Command::new(shell);
