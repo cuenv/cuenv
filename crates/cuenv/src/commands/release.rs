@@ -297,9 +297,9 @@ pub fn execute_release_publish(
     let root = Path::new(path);
     let manifest = CargoManifest::new(root);
 
-    // Get package names and versions
-    let package_names = manifest.get_package_names().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to read package names: {e}"))
+    // Get package names, paths, and versions
+    let package_paths = manifest.get_package_paths().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
     })?;
 
     let package_versions = manifest.read_package_versions().map_err(|e| {
@@ -312,23 +312,20 @@ pub fn execute_release_publish(
     })?;
 
     // Build PublishPackage list
-    let publish_packages: Vec<PublishPackage> = package_names
-        .iter()
-        .map(|name| {
-            let version = package_versions
-                .get(name)
-                .cloned()
-                .unwrap_or_else(|| cuenv_release::Version::new(0, 0, 0));
-            let dependencies = package_deps.get(name).cloned().unwrap_or_default();
+    let mut publish_packages = Vec::new();
+    for (name, path) in &package_paths {
+        let version = package_versions.get(name).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!("No version found for package: {name}"))
+        })?;
+        let dependencies = package_deps.get(name).cloned().unwrap_or_default();
 
-            PublishPackage {
-                name: name.clone(),
-                path: root.join("crates").join(name),
-                version,
-                dependencies,
-            }
-        })
-        .collect();
+        publish_packages.push(PublishPackage {
+            name: name.clone(),
+            path: path.clone(),
+            version: version.clone(),
+            dependencies,
+        });
+    }
 
     // Create publish plan with topological ordering
     let plan = PublishPlan::from_packages(publish_packages).map_err(|e| {

@@ -119,6 +119,49 @@ impl CargoManifest {
         Ok(paths)
     }
 
+    /// Get all package names with their paths in the workspace.
+    ///
+    /// Returns a map of package names to their root directory paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if workspace members cannot be discovered or parsed.
+    pub fn get_package_paths(&self) -> Result<HashMap<String, PathBuf>> {
+        let members = self.discover_members()?;
+        let mut paths_map = HashMap::new();
+
+        for member_path in members {
+            let manifest_path = member_path.join("Cargo.toml");
+            if !manifest_path.exists() {
+                continue;
+            }
+
+            let content = fs::read_to_string(&manifest_path).map_err(|e| {
+                Error::manifest(
+                    format!("Failed to read {}: {e}", manifest_path.display()),
+                    Some(manifest_path.clone()),
+                )
+            })?;
+
+            let doc: toml::Value = content.parse().map_err(|e| {
+                Error::manifest(
+                    format!("Failed to parse {}: {e}", manifest_path.display()),
+                    Some(manifest_path.clone()),
+                )
+            })?;
+
+            if let Some(name) = doc
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+            {
+                paths_map.insert(name.to_string(), member_path);
+            }
+        }
+
+        Ok(paths_map)
+    }
+
     /// Get all package names in the workspace.
     ///
     /// # Errors
