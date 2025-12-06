@@ -28,7 +28,10 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 glob = { workspace = true }
 toml = { workspace = true }
+toml_edit = { workspace = true }
 petgraph = { workspace = true }
+git-conventional = { workspace = true }
+gix = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
