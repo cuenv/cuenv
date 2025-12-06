@@ -10,6 +10,7 @@ use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
+use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 
 /// Workspace configuration
@@ -51,6 +52,10 @@ pub struct Cuenv {
     /// Configuration settings
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<Config>,
+
+    /// Project name (unique identifier)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 
     /// Environment variables configuration
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -237,11 +242,134 @@ impl Cuenv {
             ..Default::default()
         })
     }
+
+    /// Expand shorthand cross-project references in inputs and implicit dependencies.
+    ///
+    /// Handles inputs in the format: "#project:task:path/to/file"
+    /// Converts them to explicit ProjectReference inputs.
+    /// Also adds implicit dependsOn entries for all project references.
+    pub fn expand_cross_project_references(&mut self) {
+        for (_, task_def) in self.tasks.iter_mut() {
+            Self::expand_task_definition(task_def);
+        }
+    }
+
+    fn expand_task_definition(task_def: &mut TaskDefinition) {
+        match task_def {
+            TaskDefinition::Single(task) => Self::expand_task(task),
+            TaskDefinition::Group(group) => match group {
+                TaskGroup::Sequential(tasks) => {
+                    for sub_task in tasks {
+                        Self::expand_task_definition(sub_task);
+                    }
+                }
+                TaskGroup::Parallel(tasks) => {
+                    for sub_task in tasks.values_mut() {
+                        Self::expand_task_definition(sub_task);
+                    }
+                }
+            },
+        }
+    }
+
+    fn expand_task(task: &mut Task) {
+        let mut new_inputs = Vec::new();
+        let mut implicit_deps = Vec::new();
+
+        // Process existing inputs
+        for input in &task.inputs {
+            match input {
+                Input::Path(path) if path.starts_with('#') => {
+                    // Parse "#project:task:path"
+                    // Remove leading #
+                    let parts: Vec<&str> = path[1..].split(':').collect();
+                    if parts.len() >= 3 {
+                        let project = parts[0].to_string();
+                        let task_name = parts[1].to_string();
+                        // Rejoin the rest as the path (it might contain colons)
+                        let file_path = parts[2..].join(":");
+
+                        new_inputs.push(Input::Project(ProjectReference {
+                            project: project.clone(),
+                            task: task_name.clone(),
+                            map: vec![Mapping {
+                                from: file_path.clone(),
+                                to: file_path,
+                            }],
+                        }));
+
+                        // Add implicit dependency
+                        implicit_deps.push(format!("#{}:{}", project, task_name));
+                    } else if parts.len() == 2 {
+                        // Handle "#project:task" as pure dependency?
+                        // The prompt says: `["#projectName:taskName"]` for dependsOn
+                        // For inputs, it likely expects a file mapping.
+                        // If user puts `["#p:t"]` in inputs, it's invalid as an input unless it maps something.
+                        // Assuming `#p:t:f` is the requirement for inputs.
+                        // Keeping original if not matching pattern (or maybe warning?)
+                        new_inputs.push(input.clone());
+                    } else {
+                        new_inputs.push(input.clone());
+                    }
+                }
+                Input::Project(proj_ref) => {
+                    // Add implicit dependency for explicit project references too
+                    implicit_deps.push(format!("#{}:{}", proj_ref.project, proj_ref.task));
+                    new_inputs.push(input.clone());
+                }
+                _ => new_inputs.push(input.clone()),
+            }
+        }
+
+        task.inputs = new_inputs;
+
+        // Add unique implicit dependencies
+        for dep in implicit_deps {
+            if !task.depends_on.contains(&dep) {
+                task.depends_on.push(dep);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_expand_cross_project_references() {
+        let task = Task {
+            inputs: vec![Input::Path("#myproj:build:dist/app.js".to_string())],
+            ..Default::default()
+        };
+
+        let mut cuenv = Cuenv::new();
+        cuenv
+            .tasks
+            .insert("deploy".into(), TaskDefinition::Single(Box::new(task)));
+
+        cuenv.expand_cross_project_references();
+
+        let task_def = cuenv.tasks.get("deploy").unwrap();
+        let task = task_def.as_single().unwrap();
+
+        // Check inputs expansion
+        assert_eq!(task.inputs.len(), 1);
+        match &task.inputs[0] {
+            Input::Project(proj_ref) => {
+                assert_eq!(proj_ref.project, "myproj");
+                assert_eq!(proj_ref.task, "build");
+                assert_eq!(proj_ref.map.len(), 1);
+                assert_eq!(proj_ref.map[0].from, "dist/app.js");
+                assert_eq!(proj_ref.map[0].to, "dist/app.js");
+            }
+            _ => panic!("Expected ProjectReference"),
+        }
+
+        // Check implicit dependency
+        assert_eq!(task.depends_on.len(), 1);
+        assert_eq!(task.depends_on[0], "#myproj:build");
+    }
 
     #[test]
     fn test_implicit_bun_install_task() {

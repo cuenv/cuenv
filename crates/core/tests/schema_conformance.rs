@@ -171,6 +171,7 @@ fn test_round_trip_serialization() {
         workspaces: None,
         ci: None,
         tasks: HashMap::new(),
+        name: None,
     };
 
     // Serialize to JSON

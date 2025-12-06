@@ -29,14 +29,14 @@ pub mod ci_cmd {
                 &path_str,
                 "cuenv", // package
                 Some(task_name),
-                None,  // environment
+                None,     // environment
                 "simple", // format
-                false, // capture_output
-                None,  // materialize_outputs
-                false, // show_cache_path
-                None,  // backend
-                false, // help
-                &[],   // task_args
+                false,    // capture_output
+                None,     // materialize_outputs
+                false,    // show_cache_path
+                None,     // backend
+                false,    // help
+                &[],      // task_args
             )
             .await
             .map(|_| ())
@@ -609,12 +609,7 @@ impl CommandExecutor {
         }
     }
 
-    async fn execute_env_list(
-        &self,
-        path: String,
-        package: String,
-        format: String,
-    ) -> Result<()> {
+    async fn execute_env_list(&self, path: String, package: String, format: String) -> Result<()> {
         let command_name = "env list";
 
         self.send_event(Event::CommandStart {

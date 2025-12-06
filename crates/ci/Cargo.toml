@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
-categories = ["development-tools", "continuous-integration"]
+categories = ["development-tools", "development-tools::build-utils"]
 readme = "../../readme.md"
 description = "Context-aware CI pipeline execution for cuenv"
 
