@@ -657,6 +657,8 @@ pub enum ChangesetCommands {
     Status {
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
+        #[arg(long, help = "Output in JSON format for CI consumption")]
+        json: bool,
     },
     #[command(about = "Generate changeset from conventional commits")]
     FromCommits {
@@ -831,7 +833,9 @@ impl Commands {
                         packages: parsed_packages,
                     }
                 }
-                ChangesetCommands::Status { path } => Command::ChangesetStatus { path },
+                ChangesetCommands::Status { path, json } => {
+                    Command::ChangesetStatus { path, json }
+                }
                 ChangesetCommands::FromCommits { path, since } => {
                     Command::ChangesetFromCommits { path, since }
                 }
