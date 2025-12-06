@@ -313,11 +313,18 @@ impl CargoManifest {
     /// Read package dependencies from member manifests.
     ///
     /// Returns a map of package names to their workspace-internal dependencies.
+    /// Only includes dependencies that are defined in `[workspace.dependencies]`
+    /// with a `path` key, indicating they are internal to the workspace.
     ///
     /// # Errors
     ///
     /// Returns an error if package manifests cannot be read or parsed.
     pub fn read_package_dependencies(&self) -> Result<HashMap<String, Vec<String>>> {
+        // Step 1: Read workspace.dependencies to find internal packages
+        // Internal packages are those defined with `path = ...` in workspace.dependencies
+        let internal_packages = self.get_internal_package_names()?;
+
+        // Step 2: For each member, collect only internal workspace dependencies
         let members = self.discover_members()?;
         let mut dependencies_map = HashMap::new();
 
@@ -355,12 +362,17 @@ impl CargoManifest {
             // Check [dependencies]
             if let Some(dependencies) = doc.get("dependencies").and_then(|d| d.as_table()) {
                 for (dep_name, dep_value) in dependencies {
-                    // Check if it's a path dependency (workspace-internal)
-                    if let Some(dep_table) = dep_value.as_table()
-                        && (dep_table.contains_key("path")
-                            || dep_table.get("workspace") == Some(&toml::Value::Boolean(true)))
-                    {
-                        deps.push(dep_name.clone());
+                    // Check if it's a workspace dependency that references an internal package
+                    if let Some(dep_table) = dep_value.as_table() {
+                        let is_workspace =
+                            dep_table.get("workspace") == Some(&toml::Value::Boolean(true));
+                        let has_path = dep_table.contains_key("path");
+                        let is_internal = internal_packages.contains(dep_name);
+
+                        // Include if: has explicit path OR (is workspace dep AND is internal package)
+                        if has_path || (is_workspace && is_internal) {
+                            deps.push(dep_name.clone());
+                        }
                     }
                 }
             }
@@ -369,6 +381,38 @@ impl CargoManifest {
         }
 
         Ok(dependencies_map)
+    }
+
+    /// Get the names of internal packages from `[workspace.dependencies]`.
+    ///
+    /// Internal packages are those defined with a `path` key.
+    fn get_internal_package_names(&self) -> Result<std::collections::HashSet<String>> {
+        use std::collections::HashSet;
+
+        let doc = self.read_root_manifest()?;
+        let mut internal_packages = HashSet::new();
+
+        if let Some(workspace) = doc.get("workspace")
+            && let Some(deps) = workspace.get("dependencies")
+            && let Some(deps_table) = deps.as_table()
+        {
+            for (name, value) in deps_table {
+                // Check for inline table: { path = "...", version = "..." }
+                if let Some(inline) = value.as_inline_table()
+                    && inline.contains_key("path")
+                {
+                    internal_packages.insert(name.to_string());
+                }
+                // Check for regular table (dotted keys)
+                if let Some(table) = value.as_table()
+                    && table.contains_key("path")
+                {
+                    internal_packages.insert(name.to_string());
+                }
+            }
+        }
+
+        Ok(internal_packages)
     }
 
     /// Update workspace dependency versions in the root Cargo.toml.
