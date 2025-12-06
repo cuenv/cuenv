@@ -833,9 +833,7 @@ impl Commands {
                         packages: parsed_packages,
                     }
                 }
-                ChangesetCommands::Status { path, json } => {
-                    Command::ChangesetStatus { path, json }
-                }
+                ChangesetCommands::Status { path, json } => Command::ChangesetStatus { path, json },
                 ChangesetCommands::FromCommits { path, since } => {
                     Command::ChangesetFromCommits { path, since }
                 }
