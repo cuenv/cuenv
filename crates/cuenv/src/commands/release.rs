@@ -112,6 +112,12 @@ pub fn execute_changeset_status(path: &str) -> cuenv_core::Result<String> {
 ///
 /// Parses conventional commits since the last tag and creates a changeset.
 ///
+/// This function applies a workspace-wide version bump strategy: it calculates the
+/// maximum bump type from all conventional commits and applies it to ALL packages
+/// in the workspace. This is intentional behavior for unified versioning across
+/// the workspace. For per-package versioning, use `changeset add` to manually
+/// specify version bumps for individual packages.
+///
 /// # Errors
 ///
 /// Returns an error if commits cannot be parsed or changeset cannot be created.
@@ -129,7 +135,7 @@ pub fn execute_changeset_from_commits(
         return Ok("No conventional commits found since last tag.".to_string());
     }
 
-    // Calculate aggregate bump type
+    // Calculate aggregate bump type (workspace-wide)
     let bump = CommitParser::aggregate_bump(&commits);
     if bump == BumpType::None {
         return Ok(
@@ -145,7 +151,7 @@ pub fn execute_changeset_from_commits(
         cuenv_core::Error::configuration(format!("Failed to read package names: {e}"))
     })?;
 
-    // Create package changes for all packages with the aggregate bump
+    // Apply the aggregate bump to all workspace packages
     let pkg_changes: Vec<PackageChange> = package_names
         .iter()
         .map(|name| PackageChange::new(name, bump))
@@ -234,7 +240,7 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
     for (pkg, new_version) in &new_versions {
         let current = current_versions
             .get(pkg)
-            .map_or("0.0.0".to_string(), |v| v.to_string());
+            .map_or("0.0.0".to_string(), std::string::ToString::to_string);
         let _ = writeln!(output, "  {pkg}: {current} -> {new_version}");
     }
 

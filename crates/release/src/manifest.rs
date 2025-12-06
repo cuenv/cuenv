@@ -416,13 +416,8 @@ impl CargoManifest {
                     }
                 }
             }
-        } else if !packages.is_empty() {
-            // Only warn if we actually have packages to update
-            eprintln!(
-                "Warning: [workspace.dependencies] table not found in {}, but packages need updating",
-                path.display()
-            );
         }
+        // Note: If [workspace.dependencies] doesn't exist, that's OK - not all workspaces use it
 
         fs::write(&path, doc.to_string()).map_err(|e| {
             Error::manifest(format!("Failed to write root Cargo.toml: {e}"), Some(path))
