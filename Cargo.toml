@@ -25,12 +25,12 @@ keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
-cuenv-events = { path = "crates/cuenv-events", version = "0.8.5" }
+cuenv-events = { path = "crates/cuenv-events", version = "0.8.6" }
 cuenv-core = { path = "crates/cuenv-core", version = "0.8.1" }
-cuenv-dagger = { path = "crates/cuenv-dagger", version = "0.8.5" }
+cuenv-dagger = { path = "crates/cuenv-dagger", version = "0.8.6" }
 cuenv-workspaces = { path = "crates/cuenv-workspaces", version = "0.8.1" }
-cuenv-ci = { path = "crates/cuenv-ci", version = "0.8.5" }
-cuenv-release = { path = "crates/cuenv-release", version = "0.8.5" }
+cuenv-ci = { path = "crates/cuenv-ci", version = "0.8.6" }
+cuenv-release = { path = "crates/cuenv-release", version = "0.8.6" }
 cuengine = { path = "crates/cuengine", version = "0.8.1" }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }

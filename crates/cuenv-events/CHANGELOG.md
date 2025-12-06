@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6](https://github.com/cuenv/cuenv/releases/tag/cuenv-events-v0.8.6) - 2025-12-06
+
+### Added
+
+- *(ci)* support local changes against references with --from
+- dagger backend support working
+- implement structured event system for multi-UI support
+
+### Fixed
+
+- correct event bus test to match actual behavior
+- address PR review comments and CI failures
+- *(cli)* flush stderr on error and remove redundant error logging
+- work on docs
+- preparinmg to publish
+- resolve circular dependency between cuenv-core and cuengine ([#33](https://github.com/cuenv/cuenv/pull/33))
+- ensure codecov will use token
+
+### Other
+
+- release v0.8.4
+- release v0.7.1
+- Address code review feedback: improve ID uniqueness, version defaults, and comments
+- Add cuenv-release crate with changeset, version, and changelog modules
+- release v0.6.1
+- release v0.6.0
+- overhaul documentation website and guides
+- forcing rebuild with superficial change
+- treefmt all the things
+
 ## [0.8.5](https://github.com/cuenv/cuenv/releases/tag/cuenv-events-v0.8.5) - 2025-12-06
 
 ### Added

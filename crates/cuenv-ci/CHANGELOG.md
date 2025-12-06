@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6](https://github.com/cuenv/cuenv/releases/tag/cuenv-ci-v0.8.6) - 2025-12-06
+
+### Added
+
+- *(ci)* support local changes against references with --from
+- dagger backend support working
+- implement structured event system for multi-UI support
+- implement cuenv ci command with native reporting
+
+### Fixed
+
+- *(cli)* flush stderr on error and remove redundant error logging
+- work on docs
+- calculate affected jobs more consistently with prefixes
+- address PR review comments and failing CI tests
+- lint/format
+- ci robustness and code quality improvements
+- filter modules with pipelines
+- preparinmg to publish
+- resolve circular dependency between cuenv-core and cuengine ([#33](https://github.com/cuenv/cuenv/pull/33))
+- ensure codecov will use token
+
+### Other
+
+- release v0.8.4
+- externalInputs merged into inputs for cleaner API
+- release v0.7.1
+- release v0.6.1
+- *(cuenv-ci)* release v0.6.0
+- overhaul documentation website and guides
+- forcing rebuild with superficial change
+- treefmt all the things
+
 ## [0.8.5](https://github.com/cuenv/cuenv/releases/tag/cuenv-ci-v0.8.5) - 2025-12-06
 
 ### Added
