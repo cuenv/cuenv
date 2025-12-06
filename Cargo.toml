@@ -52,6 +52,11 @@ sha2 = "0.10"
 
 # Workspace detection and parsing dependencies
 toml = "0.8"
+toml_edit = "0.22"
+
+# Git and conventional commits
+git-conventional = "0.12"
+gix = { version = "0.70", default-features = false, features = ["revision"] }
 serde_yaml = "0.9"
 glob = "0.3"
 

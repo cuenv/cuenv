@@ -399,6 +399,12 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
                 Err(e) => Err(e),
             }
         }
+        Command::ChangesetFromCommits { path, since } => {
+            match execute_changeset_from_commits_safe(path, since, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
         Command::ReleaseVersion { path, dry_run } => {
             match execute_release_version_safe(path, dry_run, json_mode).await {
                 Ok(()) => Ok(()),
@@ -1141,6 +1147,37 @@ async fn execute_changeset_status_safe(path: String, json_mode: bool) -> Result<
     }
 }
 
+/// Execute changeset from-commits command safely
+#[instrument(name = "cuenv_execute_changeset_from_commits_safe")]
+async fn execute_changeset_from_commits_safe(
+    path: String,
+    since: Option<String>,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::release::execute_changeset_from_commits(&path, since.as_deref()) {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "message": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Changeset from-commits failed: {e}"),
+            "Check that the path is a valid git repository",
+        )),
+    }
+}
+
 /// Execute release version command safely
 #[instrument(name = "cuenv_execute_release_version_safe")]
 async fn execute_release_version_safe(
@@ -1179,7 +1216,13 @@ async fn execute_release_publish_safe(
     dry_run: bool,
     json_mode: bool,
 ) -> Result<(), CliError> {
-    match commands::release::execute_release_publish(&path, dry_run) {
+    // Use Human format for CLI, JSON can be accessed via --json flag
+    let format = if json_mode {
+        commands::release::OutputFormat::Json
+    } else {
+        commands::release::OutputFormat::Human
+    };
+    match commands::release::execute_release_publish(&path, dry_run, format) {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({

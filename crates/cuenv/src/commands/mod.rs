@@ -215,6 +215,10 @@ pub enum Command {
     ChangesetStatus {
         path: String,
     },
+    ChangesetFromCommits {
+        path: String,
+        since: Option<String>,
+    },
     ReleaseVersion {
         path: String,
         dry_run: bool,
@@ -333,6 +337,7 @@ impl CommandExecutor {
             | Command::Completions { .. }
             | Command::ChangesetAdd { .. }
             | Command::ChangesetStatus { .. }
+            | Command::ChangesetFromCommits { .. }
             | Command::ReleaseVersion { .. }
             | Command::ReleasePublish { .. } => Ok(()),
         }

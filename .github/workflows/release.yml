@@ -55,41 +55,27 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
+      - name: Build cuenv
+        run: nix build .#cuenv
+
+      - name: Get Publish Order
+        id: order
+        run: |
+          # Get packages in topological order from cuenv
+          PACKAGES=$(./result/bin/cuenv release publish --dry-run --json | jq -r '.packages | join(" ")')
+          echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
+          echo "Publishing packages in order: $PACKAGES"
+
       - name: Publish Crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           nix develop --accept-flake-config --command bash -c "
-            echo 'Publishing cuenv-events...'
-            cargo publish -p cuenv-events
-            sleep 30
-            
-            echo 'Publishing cuenv-workspaces...'
-            cargo publish -p cuenv-workspaces
-            sleep 30
-            
-            echo 'Publishing cuenv-core...'
-            cargo publish -p cuenv-core
-            sleep 30
-            
-            echo 'Publishing cuengine...'
-            cargo publish -p cuengine
-            sleep 30
-            
-            echo 'Publishing cuenv-dagger...'
-            cargo publish -p cuenv-dagger
-            sleep 30
-            
-            echo 'Publishing cuenv-ci...'
-            cargo publish -p cuenv-ci
-            sleep 30
-            
-            echo 'Publishing cuenv-release...'
-            cargo publish -p cuenv-release
-            sleep 30
-            
-            echo 'Publishing cuenv...'
-            cargo publish -p cuenv
+            for pkg in ${{ steps.order.outputs.packages }}; do
+              echo \"Publishing \$pkg...\"
+              cargo publish -p \"\$pkg\" || echo \"Warning: \$pkg may already be published\"
+              sleep 30
+            done
           "
 
   build-release-artifacts:

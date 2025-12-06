@@ -285,19 +285,46 @@ cargo build
 
 ## Release Process
 
-Releases are managed by [release-plz](https://release-plz.ieni.dev/):
+Releases are managed by cuenv's native release tooling:
 
-1. Commits follow [Conventional Commits](https://www.conventionalcommits.org/)
-2. PRs trigger changelog generation
-3. Merging updates versions and publishes crates
+### Automated Workflow
+
+1. Write code with [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `feat!:`)
+2. Push to main - CI automatically creates a release PR with version bumps
+3. Review and merge the release PR
+4. Create a GitHub Release - CI publishes crates and builds artifacts
 
 ### Version Bumping
 
-Versions are automatically determined from commit messages:
+Versions are determined from commit messages:
 
-- `feat:` - Minor version bump
-- `fix:` - Patch version bump
-- `feat!:` or `BREAKING CHANGE:` - Major version bump
+- `feat:` - Minor version bump (e.g., 0.8.0 → 0.9.0)
+- `fix:` or `perf:` - Patch version bump (e.g., 0.8.0 → 0.8.1)
+- `feat!:` or `BREAKING CHANGE:` - Major version bump (e.g., 0.8.0 → 1.0.0)
+
+### Manual Workflow
+
+For more control, you can manage releases manually:
+
+```bash
+# Create a changeset for specific packages
+cuenv changeset add --packages cuenv-core:minor --summary "Add new feature"
+
+# Or generate from conventional commits
+cuenv changeset from-commits --since 0.9.0
+
+# Check pending changesets
+cuenv changeset status
+
+# Preview version changes
+cuenv release version --dry-run
+
+# Apply version changes (updates Cargo.toml, generates changelog)
+cuenv release version
+
+# See publish order
+cuenv release publish --dry-run
+```
 
 ## IDE Setup
 
