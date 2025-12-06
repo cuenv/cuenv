@@ -40,9 +40,11 @@
 
         rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
+          targets = [ "x86_64-unknown-linux-musl" ];
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        craneLibStatic = (crane.mkLib pkgs.pkgsStatic).overrideToolchain rustToolchain;
 
         # Platform-specific build inputs
         darwinFrameworks = with pkgs.darwin.apple_sdk.frameworks; [
@@ -91,6 +93,8 @@
 
         cue-bridge = mkCueBridge pkgs;
 
+        cue-bridge-static = mkCueBridge pkgs.pkgsStatic;
+
         # Source filtering for Rust builds
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
@@ -127,6 +131,20 @@
           chmod -R +w crates/cuenv-core/src/target
         '';
 
+        setupBridgeStatic = ''
+          mkdir -p crates/cuenv-core/src/target/debug crates/cuenv-core/src/target/release
+          
+          # Remove existing files to avoid permission issues with read-only nix store files
+          rm -f crates/cuenv-core/src/target/debug/libcue_bridge.*
+          rm -f crates/cuenv-core/src/target/release/libcue_bridge.*
+
+          cp -r ${cue-bridge-static}/debug/* crates/cuenv-core/src/target/debug/
+          cp -r ${cue-bridge-static}/release/* crates/cuenv-core/src/target/release/
+          
+          # Ensure the copied files are writable
+          chmod -R +w crates/cuenv-core/src/target
+        '';
+
 
         # Common build configuration
         commonArgs = {
@@ -140,14 +158,31 @@
           CUE_BRIDGE_PATH = cue-bridge;
         };
 
+        commonArgsStatic = commonArgs // {
+           CUE_BRIDGE_PATH = cue-bridge-static;
+           preBuild = setupBridgeStatic;
+           CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+           # Override buildInputs to use static libs if needed, or empty if none
+           buildInputs = []; 
+        };
+
         # Build artifacts for dependency caching
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           buildInputs = platformBuildInputs;
         });
 
+        cargoArtifactsStatic = craneLibStatic.buildDepsOnly commonArgsStatic;
+
         # Main package build
         cuenv = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
+          pname = "cuenv";
+          version = "0.1.1";
+        });
+
+        cuenv-static = craneLibStatic.buildPackage (commonArgsStatic // {
+          inherit cargoArtifactsStatic;
           pname = "cuenv";
           version = "0.1.1";
         });
@@ -187,7 +222,7 @@
       {
         packages = {
           default = cuenv;
-          inherit cuenv cue-bridge;
+          inherit cuenv cuenv-static cue-bridge;
           cuenv-cli = mkCrate {
             pname = "cuenv-cli";
             cargoExtraArgs = "-p cuenv-cli";
