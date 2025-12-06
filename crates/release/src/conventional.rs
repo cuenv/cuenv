@@ -4,6 +4,9 @@
 //! following the Conventional Commits specification, and `gix` for git
 //! repository access.
 
+#![allow(clippy::default_trait_access)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+
 use crate::changeset::BumpType;
 use crate::error::{Error, Result};
 use std::path::Path;
@@ -75,7 +78,7 @@ impl CommitParser {
 
         // If we have a since_tag, find it and use as boundary
         let boundary_oid = if let Some(tag) = since_tag {
-            match find_tag_oid(&repo, tag)? {
+            match find_tag_oid(&repo, tag) {
                 Some(oid) => Some(oid),
                 None => {
                     return Err(Error::git(format!("Tag '{tag}' not found in repository")));
@@ -92,10 +95,10 @@ impl CommitParser {
             let oid = info.id;
 
             // Stop if we hit the boundary tag
-            if let Some(ref boundary) = boundary_oid {
-                if oid == *boundary {
-                    break;
-                }
+            if let Some(boundary) = boundary_oid
+                && oid == boundary
+            {
+                break;
             }
 
             // Get the commit object
@@ -130,7 +133,7 @@ impl CommitParser {
         commits
             .iter()
             .map(ConventionalCommit::bump_type)
-            .fold(BumpType::None, |acc, bump| acc.max(bump))
+            .fold(BumpType::None, std::cmp::max)
     }
 
     /// Generate a summary of commits grouped by type.
@@ -165,7 +168,9 @@ impl CommitParser {
         if !breaking.is_empty() {
             summary.push_str("### Breaking Changes\n\n");
             for item in &breaking {
-                summary.push_str(&format!("- {item}\n"));
+                summary.push_str("- ");
+                summary.push_str(item);
+                summary.push('\n');
             }
             summary.push('\n');
         }
@@ -173,7 +178,9 @@ impl CommitParser {
         if !features.is_empty() {
             summary.push_str("### Features\n\n");
             for item in &features {
-                summary.push_str(&format!("- {item}\n"));
+                summary.push_str("- ");
+                summary.push_str(item);
+                summary.push('\n');
             }
             summary.push('\n');
         }
@@ -181,7 +188,9 @@ impl CommitParser {
         if !fixes.is_empty() {
             summary.push_str("### Bug Fixes\n\n");
             for item in &fixes {
-                summary.push_str(&format!("- {item}\n"));
+                summary.push_str("- ");
+                summary.push_str(item);
+                summary.push('\n');
             }
             summary.push('\n');
         }
@@ -191,7 +200,7 @@ impl CommitParser {
 }
 
 /// Find the OID for a given tag name.
-fn find_tag_oid(repo: &gix::Repository, tag_name: &str) -> Result<Option<gix::ObjectId>> {
+fn find_tag_oid(repo: &gix::Repository, tag_name: &str) -> Option<gix::ObjectId> {
     // Try various tag formats
     let tag_refs = [
         format!("refs/tags/{tag_name}"),
@@ -200,14 +209,14 @@ fn find_tag_oid(repo: &gix::Repository, tag_name: &str) -> Result<Option<gix::Ob
     ];
 
     for tag_ref in &tag_refs {
-        if let Ok(reference) = repo.find_reference(tag_ref.as_str()) {
-            if let Ok(id) = reference.into_fully_peeled_id() {
-                return Ok(Some(id.detach()));
-            }
+        if let Ok(reference) = repo.find_reference(tag_ref.as_str())
+            && let Ok(id) = reference.into_fully_peeled_id()
+        {
+            return Some(id.detach());
         }
     }
 
-    Ok(None)
+    None
 }
 
 #[cfg(test)]
