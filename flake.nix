@@ -101,24 +101,26 @@
         cue-bridge-static = mkCueBridge pkgsStatic;
 
         # Source filtering for Rust builds
+        # Uses Crane's filterCargoSources for proper cache invalidation
+        # See: https://crane.dev/faq/constant-rebuilds.html
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
           filter = path: type:
             let
-              isRustFile = pkgs.lib.hasSuffix "\.rs" path;
-              isTomlFile = pkgs.lib.hasSuffix "\.toml" path;
-              isLockFile = pkgs.lib.hasSuffix "\.lock" path;
-              isGoFile = pkgs.lib.hasSuffix "\.go" path ||
-                pkgs.lib.hasSuffix "\.mod" path ||
-                pkgs.lib.hasSuffix "\.sum" path;
-              isBridgeHeader = pkgs.lib.hasSuffix "bridge.h" path;
-              isCueFile = pkgs.lib.hasSuffix "\.cue" path;
-              isJsonFile = pkgs.lib.hasSuffix "\.json" path;
-              isYamlFile = pkgs.lib.hasSuffix "\.yaml" path || pkgs.lib.hasSuffix "\.yml" path;
-              isDirectory = type == "directory";
+              baseName = builtins.baseNameOf path;
+              # Use Crane's built-in filter for Rust/Cargo files (.rs, .toml, Cargo.lock)
+              isCargoSource = craneLib.filterCargoSources path type;
+              # Include all files in crates/ (Rust code, Go bridge, test fixtures)
+              isInCratesDir = builtins.match ".*/crates/.*" path != null || baseName == "crates";
+              # CUE files needed for tests (schema definitions, examples, module config)
+              isCueFile = pkgs.lib.hasSuffix ".cue" path;
+              isInSchemaDir = builtins.match ".*/schema/.*" path != null || baseName == "schema";
+              isInExamplesDir = builtins.match ".*/examples/.*" path != null || baseName == "examples";
+              isInCueModDir = builtins.match ".*/cue\\.mod/.*" path != null || baseName == "cue.mod";
             in
-            isRustFile || isTomlFile || isLockFile ||
-            isGoFile || isBridgeHeader || isCueFile || isJsonFile || isYamlFile || isDirectory;
+            isCargoSource ||
+            isInCratesDir ||
+            ((isInSchemaDir || isInExamplesDir || isInCueModDir) && isCueFile);
         };
 
         # Bridge setup helper
@@ -192,12 +194,6 @@
           version = "0.1.1";
         });
 
-        # Individual crate builder helper
-        mkCrate = { pname, cargoExtraArgs }: craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts pname cargoExtraArgs;
-          doCheck = false;
-        });
-
         # Development tools configuration
         devTools = with pkgs; [
           go_1_24
@@ -228,10 +224,6 @@
         packages = {
           default = cuenv;
           inherit cuenv cuenv-static cue-bridge;
-          cuenv-cli = mkCrate {
-            pname = "cuenv-cli";
-            cargoExtraArgs = "-p cuenv-cli";
-          };
         };
 
         checks = {
