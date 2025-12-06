@@ -61,7 +61,7 @@ For Neovim, we recommend using [nvim-lspconfig](https://github.com/neovim/nvim-l
 require'lspconfig'.dagger.setup{} -- Dagger's cuelsp is often used, or generic 'cuelsp'
 ```
 
-*Note: The official CUE LSP is evolving. Check the [CUE documentation](https://cuelang.org/docs/) for the latest setup instructions.*
+_Note: The official CUE LSP is evolving. Check the [CUE documentation](https://cuelang.org/docs/) for the latest setup instructions._
 
 ## IntelliJ / GoLand
 

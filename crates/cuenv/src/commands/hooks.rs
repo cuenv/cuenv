@@ -731,6 +731,7 @@ mod tests {
             workspaces: None,
             ci: None,
             tasks: std::collections::HashMap::new(),
+            name: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -770,6 +771,7 @@ mod tests {
             workspaces: None,
             ci: None,
             tasks: std::collections::HashMap::new(),
+            name: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -789,6 +791,7 @@ mod tests {
             workspaces: None,
             ci: None,
             tasks: std::collections::HashMap::new(),
+            name: None,
         };
 
         let hooks = extract_hooks_from_config(&config);

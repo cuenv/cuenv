@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(ci)* support local changes against references with --from
+- _(ci)_ support local changes against references with --from
 - dagger backend support working
 - implement structured event system for multi-UI support
 
@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - correct event bus test to match actual behavior
 - address PR review comments and CI failures
-- *(cli)* flush stderr on error and remove redundant error logging
+- _(cli)_ flush stderr on error and remove redundant error logging
 - work on docs
 - preparinmg to publish
 - resolve circular dependency between cuenv-core and cuengine ([#33](https://github.com/cuenv/cuenv/pull/33))

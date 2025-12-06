@@ -12,7 +12,7 @@ categories.workspace = true
 description = "Dagger backend for cuenv task execution"
 
 [dependencies]
-cuenv-core = { path = "../cuenv-core", default-features = false }
+cuenv-core = { workspace = true }
 dagger-sdk = "0.19.7"
 async-trait = "0.1"
 tokio = { workspace = true }

@@ -3,7 +3,7 @@ name: VSCode Extension
 on:
   push:
     tags:
-      - 'vscode-v*'
+      - "vscode-v*"
   workflow_dispatch:
 
 jobs:

@@ -1,6 +1,7 @@
 package schema
 
 #Cuenv: {
+	name?: string
 	config?: #Config
 	env?: #Env
 	hooks?: #Hooks
