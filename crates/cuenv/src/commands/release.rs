@@ -241,9 +241,13 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
     if !dry_run {
         // Update the workspace version
         if let Some(new_version) = max_new_version {
-            manifest.update_workspace_version(&new_version).map_err(|e| {
-                cuenv_core::Error::configuration(format!("Failed to update workspace version: {e}"))
-            })?;
+            manifest
+                .update_workspace_version(&new_version)
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to update workspace version: {e}"
+                    ))
+                })?;
 
             // Update workspace dependency versions
             manifest
@@ -288,18 +292,51 @@ pub fn execute_release_publish(
     dry_run: bool,
     format: OutputFormat,
 ) -> cuenv_core::Result<String> {
+    use cuenv_release::{PublishPlan, publish::PublishPackage};
+
     let root = Path::new(path);
     let manifest = CargoManifest::new(root);
 
-    // Get package names
-    let packages = manifest.get_package_names().map_err(|e| {
+    // Get package names and versions
+    let package_names = manifest.get_package_names().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to read package names: {e}"))
     })?;
 
-    // For now, return packages in alphabetical order
-    // TODO: Use PublishPlan for true topological ordering based on dependencies
-    let mut sorted_packages = packages;
-    sorted_packages.sort();
+    let package_versions = manifest.read_package_versions().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package versions: {e}"))
+    })?;
+
+    // Get package dependencies
+    let package_deps = manifest.read_package_dependencies().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package dependencies: {e}"))
+    })?;
+
+    // Build PublishPackage list
+    let publish_packages: Vec<PublishPackage> = package_names
+        .iter()
+        .map(|name| {
+            let version = package_versions
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| cuenv_release::Version::new(0, 0, 0));
+            let dependencies = package_deps.get(name).cloned().unwrap_or_default();
+
+            PublishPackage {
+                name: name.clone(),
+                path: root.join("crates").join(name),
+                version,
+                dependencies,
+            }
+        })
+        .collect();
+
+    // Create publish plan with topological ordering
+    let plan = PublishPlan::from_packages(publish_packages).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to create publish plan: {e}"))
+    })?;
+
+    // Extract package names in topological order
+    let sorted_packages: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
 
     match format {
         OutputFormat::Json => {
@@ -316,12 +353,14 @@ pub fn execute_release_publish(
                 output.push_str("Dry run - no packages will be published.\n\n");
             }
 
-            output.push_str("Publish order:\n\n");
+            output.push_str("Publish order (topologically sorted):\n\n");
             for (i, pkg) in sorted_packages.iter().enumerate() {
                 let _ = writeln!(output, "  {}. {pkg}", i + 1);
             }
 
-            output.push_str("\nTo publish, create a GitHub Release which triggers the release workflow.\n");
+            output.push_str(
+                "\nTo publish, create a GitHub Release which triggers the release workflow.\n",
+            );
 
             Ok(output)
         }
@@ -509,5 +548,106 @@ version.workspace = true
         assert!(output.contains("\"packages\""));
         assert!(output.contains("bar"));
         assert!(output.contains("foo"));
+    }
+
+    #[test]
+    fn test_changeset_from_commits_no_git_repo() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().to_str().unwrap();
+
+        // Should fail because there's no git repository
+        let result = execute_changeset_from_commits(path, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_changeset_from_commits_with_workspace() {
+        let temp = TempDir::new().unwrap();
+        let path = create_test_workspace(&temp);
+
+        // Initialize a git repository
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Configure git
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Add files and create a conventional commit
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "feat: add new feature"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Now test the function
+        let result = execute_changeset_from_commits(&path, None);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Created changeset"));
+        assert!(output.contains("conventional commit"));
+    }
+
+    #[test]
+    fn test_changeset_from_commits_no_version_bumps() {
+        let temp = TempDir::new().unwrap();
+        let path = create_test_workspace(&temp);
+
+        // Initialize a git repository
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Configure git
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Add files and create a non-version-bumping commit
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "chore: update deps"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Should return message about no version-bumping commits
+        let result = execute_changeset_from_commits(&path, None);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("No version-bumping commits"));
     }
 }
