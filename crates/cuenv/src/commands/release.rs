@@ -9,7 +9,7 @@
 
 use cuenv_release::{
     BumpType, CargoManifest, Changeset, ChangesetManager, CommitParser, PackageChange,
-    ReleasePackagesConfig, VersionCalculator,
+    PublishPackage, PublishPlan, ReleasePackagesConfig, VersionCalculator,
 };
 use std::fmt::Write;
 use std::path::Path;
@@ -292,8 +292,6 @@ pub fn execute_release_publish(
     dry_run: bool,
     format: OutputFormat,
 ) -> cuenv_core::Result<String> {
-    use cuenv_release::{PublishPlan, publish::PublishPackage};
-
     let root = Path::new(path);
     let manifest = CargoManifest::new(root);
 

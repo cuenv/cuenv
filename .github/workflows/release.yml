@@ -71,11 +71,12 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           nix develop --accept-flake-config --command bash -c "
-            set +e
             for pkg in ${{ steps.order.outputs.packages }}; do
               echo \"Publishing \$pkg...\"
+              set +e
               OUTPUT=\$(cargo publish -p \"\$pkg\" 2>&1)
               STATUS=\$?
+              set -e
               if [ \$STATUS -ne 0 ]; then
                 if echo \"\$OUTPUT\" | grep -q \"already uploaded\"; then
                   echo \"Warning: \$pkg is already published\"
@@ -87,7 +88,6 @@ jobs:
               fi
               sleep 30
             done
-            set -e
           "
 
   build-release-artifacts:

@@ -93,8 +93,8 @@ impl CargoManifest {
                     let pattern_str = full_pattern.to_str().ok_or_else(|| {
                         Error::manifest(
                             format!(
-                                "Workspace member glob pattern contains invalid UTF-8: {:?}",
-                                full_pattern
+                                "Workspace member glob pattern contains invalid UTF-8: {}",
+                                full_pattern.display()
                             ),
                             Some(full_pattern.clone()),
                         )
