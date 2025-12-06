@@ -35,7 +35,7 @@ jobs:
         id: check_existing
         run: |
           STATUS=$(./result/bin/cuenv changeset status 2>&1)
-          if echo "$STATUS" | grep -q "pending changeset"; then
+          if echo "$STATUS" | grep -q "^Found [0-9]* pending changeset"; then
             echo "has_pending=true" >> $GITHUB_OUTPUT
             echo "Pending changesets already exist, skipping generation"
           else
@@ -62,7 +62,7 @@ jobs:
         id: check
         run: |
           STATUS=$(./result/bin/cuenv changeset status 2>&1)
-          if echo "$STATUS" | grep -q "pending changeset"; then
+          if echo "$STATUS" | grep -q "^Found [0-9]* pending changeset"; then
             echo "has_changesets=true" >> $GITHUB_OUTPUT
           else
             echo "has_changesets=false" >> $GITHUB_OUTPUT
@@ -74,11 +74,11 @@ jobs:
         run: |
           ./result/bin/cuenv release version --dry-run > version_summary.txt 2>&1 || true
           cat version_summary.txt
-          # Set the summary as an output for the PR body
+          # Set the summary as an output for the PR body using unique delimiter
           {
-            echo "summary<<EOF"
+            echo "summary<<CUENV_VERSION_SUMMARY_END"
             cat version_summary.txt
-            echo "EOF"
+            echo "CUENV_VERSION_SUMMARY_END"
           } >> $GITHUB_OUTPUT
 
       - name: Apply version changes
