@@ -102,14 +102,26 @@ pub struct TaskOutput {
 }
 
 /// A single executable task
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+///
+/// Note: Custom deserialization is used to ensure that a Task can only be
+/// deserialized when it has a `command` or `script` field. This is necessary
+/// because TaskDefinition uses untagged enum, and we need to distinguish
+/// between a Task and a TaskGroup during deserialization.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
 pub struct Task {
     /// Shell configuration for command execution (optional)
     #[serde(default)]
     pub shell: Option<Shell>,
 
-    /// Command to execute
+    /// Command to execute. Required unless 'script' is provided.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
+
+    /// Inline script to execute (alternative to command).
+    /// When script is provided, shell defaults to bash if not specified.
+    /// Supports multiline strings and shebang lines for polyglot scripts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
 
     /// Arguments for the command
     #[serde(default)]
@@ -155,6 +167,77 @@ pub struct Task {
     /// Task parameter definitions for CLI arguments
     #[serde(default)]
     pub params: Option<TaskParams>,
+}
+
+// Custom deserialization for Task to ensure either command or script is present.
+// This is necessary for untagged enum deserialization in TaskDefinition to work correctly.
+impl<'de> serde::Deserialize<'de> for Task {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Helper struct that mirrors Task but with all optional fields
+        #[derive(serde::Deserialize)]
+        struct TaskHelper {
+            #[serde(default)]
+            shell: Option<Shell>,
+            #[serde(default)]
+            command: Option<String>,
+            #[serde(default)]
+            script: Option<String>,
+            #[serde(default)]
+            args: Vec<String>,
+            #[serde(default)]
+            env: HashMap<String, serde_json::Value>,
+            #[serde(default)]
+            dagger: Option<DaggerTaskConfig>,
+            #[serde(default = "default_hermetic")]
+            hermetic: bool,
+            #[serde(default, rename = "dependsOn")]
+            depends_on: Vec<String>,
+            #[serde(default)]
+            inputs: Vec<Input>,
+            #[serde(default)]
+            outputs: Vec<String>,
+            #[serde(default, rename = "inputsFrom")]
+            inputs_from: Option<Vec<TaskOutput>>,
+            #[serde(default)]
+            workspaces: Vec<String>,
+            #[serde(default)]
+            description: Option<String>,
+            #[serde(default)]
+            params: Option<TaskParams>,
+        }
+
+        let helper = TaskHelper::deserialize(deserializer)?;
+
+        // Validate: either command or script must be present
+        let has_command = helper.command.as_ref().is_some_and(|c| !c.is_empty());
+        let has_script = helper.script.is_some();
+
+        if !has_command && !has_script {
+            return Err(serde::de::Error::custom(
+                "Task must have either 'command' or 'script' field",
+            ));
+        }
+
+        Ok(Task {
+            shell: helper.shell,
+            command: helper.command.unwrap_or_default(),
+            script: helper.script,
+            args: helper.args,
+            env: helper.env,
+            dagger: helper.dagger,
+            hermetic: helper.hermetic,
+            depends_on: helper.depends_on,
+            inputs: helper.inputs,
+            outputs: helper.outputs,
+            inputs_from: helper.inputs_from,
+            workspaces: helper.workspaces,
+            description: helper.description,
+            params: helper.params,
+        })
+    }
 }
 
 /// Dagger-specific task configuration
@@ -302,6 +385,7 @@ impl Default for Task {
         Self {
             shell: None,
             command: String::new(),
+            script: None,
             args: vec![],
             env: HashMap::new(),
             dagger: None,

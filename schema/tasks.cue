@@ -11,7 +11,27 @@ package schema
 
 #Task: {
 	shell?: #Shell
-	command!: string
+
+	// Command to execute. Required unless 'script' is provided.
+	command?: string
+
+	// Inline script to execute (alternative to command).
+	// When script is provided, shell defaults to bash if not specified.
+	// Supports multiline strings and shebang lines for polyglot scripts.
+	// Example:
+	//   script: """
+	//       #!/bin/bash
+	//       set -euo pipefail
+	//       echo "Building..."
+	//       cargo build --release
+	//       """
+	script?: string
+
+	// Validation: exactly one of command or script must be provided
+	_hasCommand: command != _|_
+	_hasScript:  script != _|_
+	_validTask:  true & ((_hasCommand & !_hasScript) | (!_hasCommand & _hasScript))
+
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
 
