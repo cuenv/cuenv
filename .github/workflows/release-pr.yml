@@ -31,7 +31,19 @@ jobs:
           TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           echo "latest=$TAG" >> $GITHUB_OUTPUT
 
+      - name: Check for existing pending changesets
+        id: check_existing
+        run: |
+          STATUS=$(./result/bin/cuenv changeset status 2>&1)
+          if echo "$STATUS" | grep -q "pending changeset"; then
+            echo "has_pending=true" >> $GITHUB_OUTPUT
+            echo "Pending changesets already exist, skipping generation"
+          else
+            echo "has_pending=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Generate changeset from commits
+        if: steps.check_existing.outputs.has_pending == 'false'
         id: changeset
         run: |
           if [ -n "${{ steps.tag.outputs.latest }}" ]; then
