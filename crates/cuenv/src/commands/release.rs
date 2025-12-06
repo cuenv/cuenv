@@ -151,8 +151,9 @@ pub fn execute_changeset_status_with_format(path: &str, json: bool) -> cuenv_cor
                 .collect(),
         };
 
-        return serde_json::to_string_pretty(&output)
-            .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}")));
+        return serde_json::to_string_pretty(&output).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}"))
+        });
     }
 
     // Human-readable output
@@ -423,8 +424,9 @@ pub fn execute_release_publish(
                 "packages": sorted_packages,
                 "dry_run": dry_run
             });
-            serde_json::to_string_pretty(&json)
-                .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}")))
+            serde_json::to_string_pretty(&json).map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}"))
+            })
         }
         OutputFormat::Human => {
             let mut output = String::new();
