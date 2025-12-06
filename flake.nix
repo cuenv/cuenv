@@ -155,7 +155,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config pkgs-unstable.cue ];
+          nativeBuildInputs = with pkgs; [ go pkg-config pkgs-unstable.cue git ];
           buildInputs = platformBuildInputs;
           preBuild = ''
             ${setupBridge}
