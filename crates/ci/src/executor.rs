@@ -56,6 +56,11 @@ pub async fn run_ci(
     // 3. Discover projects
     // We need a way to load Cuenv configs.
     let projects = discover_projects()?;
+    if projects.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
+        ));
+    }
     println!("Found {} projects", projects.len());
 
     // Build project map for cross-project dependency resolution

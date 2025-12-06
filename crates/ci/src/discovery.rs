@@ -2,7 +2,7 @@ use cuengine::evaluate_cue_package_typed;
 use cuenv_core::Result;
 use cuenv_core::manifest::Cuenv;
 use glob::glob;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -10,14 +10,40 @@ pub struct Project {
     pub config: Cuenv,
 }
 
+/// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
+fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.canonicalize().ok()?;
+    loop {
+        if current.join("cue.mod").is_dir() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
 /// Discover all projects in the current repository
 ///
 /// # Errors
-/// Returns an error if glob pattern matching fails
+/// Returns an error if glob pattern matching fails or if not inside a CUE module
 ///
 /// # Panics
 /// Panics if the regex pattern is invalid (should not happen as it is hardcoded)
 pub fn discover_projects() -> Result<Vec<Project>> {
+    // Check if we're inside a CUE module first
+    let cwd = std::env::current_dir().map_err(|e| cuenv_core::Error::Io {
+        source: e,
+        path: None,
+        operation: "get current directory".to_string(),
+    })?;
+
+    if find_cue_module_root(&cwd).is_none() {
+        return Err(cuenv_core::Error::configuration(
+            "Not inside a CUE module. Run 'cue mod init' or navigate to a directory with cue.mod/",
+        ));
+    }
+
     let mut projects = Vec::new();
     let package_re = regex::Regex::new(r"(?m)^package\s+cuenv\s*$").expect("Invalid regex");
 
