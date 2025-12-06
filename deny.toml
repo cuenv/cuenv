@@ -26,10 +26,6 @@ exceptions = []
 # Focus on security advisories and license compliance instead
 
 [advisories]
-# The path where the advisory database is cloned/fetched into
-db-path = "~/.cargo/advisory-db"
-# The url(s) of the advisory databases to use
-db-urls = ["https://github.com/rustsec/advisory-db"]
 # The lint level for unmaintained crates  
 unmaintained = "all"
 # The lint level for crates that have been yanked from their source registry
@@ -40,7 +36,6 @@ ignore = [
     # Alternative would be to switch to a different TUI library
     "RUSTSEC-2024-0436",
 ]
-
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is
 # not in the allow list is encountered

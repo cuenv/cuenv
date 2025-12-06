@@ -1,6 +1,9 @@
 # Rust
 target/
 
+# Nix
+/result
+
 # OS files
 .DS_Store
 Thumbs.db
