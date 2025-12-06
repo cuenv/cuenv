@@ -234,7 +234,7 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
     for (pkg, new_version) in &new_versions {
         let current = current_versions
             .get(pkg)
-            .map_or_else(|| "0.0.0".to_string(), ToString::to_string);
+            .map_or("0.0.0".to_string(), |v| v.to_string());
         let _ = writeln!(output, "  {pkg}: {current} -> {new_version}");
     }
 
@@ -339,7 +339,8 @@ pub fn execute_release_publish(
                 "packages": sorted_packages,
                 "dry_run": dry_run
             });
-            Ok(serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_string()))
+            serde_json::to_string_pretty(&json)
+                .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}")))
         }
         OutputFormat::Human => {
             let mut output = String::new();

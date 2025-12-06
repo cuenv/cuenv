@@ -252,7 +252,8 @@ impl CargoManifest {
             {
                 workspace_version.clone()
             } else if package.get("version").and_then(|v| v.as_table()).is_some() {
-                // Shouldn't happen, but handle it
+                // Edge case: 'version' is a table, but not a workspace inheritance table (i.e., not { workspace = true }).
+                // This is not a valid Cargo manifest configuration; skip this package.
                 continue;
             } else if let Some(version_str) = package.get("version").and_then(|v| v.as_str()) {
                 version_str.parse::<Version>()?
@@ -295,6 +296,11 @@ impl CargoManifest {
             && let Item::Table(pkg_table) = package
         {
             pkg_table["version"] = toml_edit::value(new_version.to_string());
+        } else {
+            return Err(Error::manifest(
+                "Root manifest is missing [workspace.package] table".to_string(),
+                Some(path.clone()),
+            ));
         }
 
         fs::write(&path, doc.to_string()).map_err(|e| {
@@ -410,6 +416,12 @@ impl CargoManifest {
                     }
                 }
             }
+        } else if !packages.is_empty() {
+            // Only warn if we actually have packages to update
+            eprintln!(
+                "Warning: [workspace.dependencies] table not found in {}, but packages need updating",
+                path.display()
+            );
         }
 
         fs::write(&path, doc.to_string()).map_err(|e| {
