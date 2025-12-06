@@ -62,7 +62,7 @@ jobs:
         id: order
         run: |
           # Get packages in topological order from cuenv
-          PACKAGES=$(./result/bin/cuenv release publish --dry-run --json | jq -r '.packages | join(" ")')
+          PACKAGES=$(./result/bin/cuenv release publish --dry-run --json | jq -r '.packages | join(" ")') || { echo "Failed to get publish order"; exit 1; }
           echo "packages=$PACKAGES" >> $GITHUB_OUTPUT
           echo "Publishing packages in order: $PACKAGES"
 
@@ -71,11 +71,23 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           nix develop --accept-flake-config --command bash -c "
+            set +e
             for pkg in ${{ steps.order.outputs.packages }}; do
               echo \"Publishing \$pkg...\"
-              cargo publish -p \"\$pkg\" || echo \"Warning: \$pkg may already be published\"
+              OUTPUT=\$(cargo publish -p \"\$pkg\" 2>&1)
+              STATUS=\$?
+              if [ \$STATUS -ne 0 ]; then
+                if echo \"\$OUTPUT\" | grep -q \"already uploaded\"; then
+                  echo \"Warning: \$pkg is already published\"
+                else
+                  echo \"Error publishing \$pkg:\"
+                  echo \"\$OUTPUT\"
+                  exit \$STATUS
+                fi
+              fi
               sleep 30
             done
+            set -e
           "
 
   build-release-artifacts:

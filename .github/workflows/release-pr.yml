@@ -35,9 +35,15 @@ jobs:
         id: changeset
         run: |
           if [ -n "${{ steps.tag.outputs.latest }}" ]; then
-            ./result/bin/cuenv changeset from-commits --since "${{ steps.tag.outputs.latest }}" || true
+            OUTPUT=$(./result/bin/cuenv changeset from-commits --since "${{ steps.tag.outputs.latest }}" 2>&1)
+            STATUS=$?
           else
-            ./result/bin/cuenv changeset from-commits || true
+            OUTPUT=$(./result/bin/cuenv changeset from-commits 2>&1)
+            STATUS=$?
+          fi
+          if [ $STATUS -ne 0 ]; then
+            echo "::warning::cuenv changeset from-commits failed with exit code $STATUS"
+            echo "$OUTPUT"
           fi
 
       - name: Check for pending changesets
@@ -56,6 +62,12 @@ jobs:
         run: |
           ./result/bin/cuenv release version --dry-run > version_summary.txt 2>&1 || true
           cat version_summary.txt
+          # Set the summary as an output for the PR body
+          {
+            echo "summary<<EOF"
+            cat version_summary.txt
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Apply version changes
         if: steps.check.outputs.has_changesets == 'true'

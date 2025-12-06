@@ -52,8 +52,12 @@ impl CommitParser {
     /// # Errors
     ///
     /// Returns an error if the repository cannot be opened or commits cannot be read.
-    pub fn parse_since_tag(root: &Path, since_tag: Option<&str>) -> Result<Vec<ConventionalCommit>> {
-        let repo = gix::open(root).map_err(|e| Error::git(format!("Failed to open repository: {e}")))?;
+    pub fn parse_since_tag(
+        root: &Path,
+        since_tag: Option<&str>,
+    ) -> Result<Vec<ConventionalCommit>> {
+        let repo =
+            gix::open(root).map_err(|e| Error::git(format!("Failed to open repository: {e}")))?;
 
         // Get HEAD reference
         let head = repo
@@ -63,13 +67,20 @@ impl CommitParser {
         // Set up revision walk
         let mut walk = repo
             .rev_walk([head])
-            .sorting(gix::revision::walk::Sorting::ByCommitTime(Default::default()))
+            .sorting(gix::revision::walk::Sorting::ByCommitTime(
+                Default::default(),
+            ))
             .all()
             .map_err(|e| Error::git(format!("Failed to create rev walk: {e}")))?;
 
         // If we have a since_tag, find it and use as boundary
         let boundary_oid = if let Some(tag) = since_tag {
-            find_tag_oid(&repo, tag)?
+            match find_tag_oid(&repo, tag)? {
+                Some(oid) => Some(oid),
+                None => {
+                    return Err(Error::git(format!("Tag '{tag}' not found in repository")));
+                }
+            }
         } else {
             None
         };
