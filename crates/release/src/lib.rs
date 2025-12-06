@@ -47,7 +47,9 @@
 pub mod changelog;
 pub mod changeset;
 pub mod config;
+pub mod conventional;
 pub mod error;
+pub mod manifest;
 pub mod publish;
 pub mod version;
 
@@ -55,6 +57,8 @@ pub mod version;
 pub use changelog::{ChangelogEntry, ChangelogGenerator};
 pub use changeset::{BumpType, Changeset, ChangesetManager, PackageChange};
 pub use config::{ChangelogConfig, ReleaseConfig, ReleaseGitConfig, ReleasePackagesConfig};
+pub use conventional::{CommitParser, ConventionalCommit};
 pub use error::{Error, Result};
+pub use manifest::CargoManifest;
 pub use publish::PublishPlan;
 pub use version::{Version, VersionCalculator};

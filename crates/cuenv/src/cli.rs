@@ -658,6 +658,13 @@ pub enum ChangesetCommands {
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
     },
+    #[command(about = "Generate changeset from conventional commits")]
+    FromCommits {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+        #[arg(long, short = 's', help = "Tag to start from (default: latest)")]
+        since: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -825,6 +832,9 @@ impl Commands {
                     }
                 }
                 ChangesetCommands::Status { path } => Command::ChangesetStatus { path },
+                ChangesetCommands::FromCommits { path, since } => {
+                    Command::ChangesetFromCommits { path, since }
+                }
             },
             Commands::Release { subcommand } => match subcommand {
                 ReleaseCommands::Version { path, dry_run } => {
