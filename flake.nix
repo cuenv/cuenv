@@ -68,6 +68,7 @@
           src = ./crates/cuengine;
           vendorHash = "sha256-tHAcwRsNWNwPUkTlQT8mw3GNKsMFCMCKwdSq3KNad80=";
           go = pkgs.go_1_24;
+          nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin darwinFrameworks;
 
           buildPhase = ''
