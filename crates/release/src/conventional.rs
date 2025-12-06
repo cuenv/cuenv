@@ -4,11 +4,9 @@
 //! following the Conventional Commits specification, and `gix` for git
 //! repository access.
 
-#![allow(clippy::default_trait_access)]
-#![allow(clippy::redundant_closure_for_method_calls)]
-
 use crate::changeset::BumpType;
 use crate::error::{Error, Result};
+use gix::bstr::ByteSlice;
 use std::path::Path;
 
 /// A parsed conventional commit with version bump information.
@@ -55,6 +53,8 @@ impl CommitParser {
     /// # Errors
     ///
     /// Returns an error if the repository cannot be opened or commits cannot be read.
+    #[allow(clippy::default_trait_access)] // gix API requires Default::default() for sorting config
+    #[allow(clippy::redundant_closure_for_method_calls)] // closures needed for type conversion from git_conventional types
     pub fn parse_since_tag(
         root: &Path,
         since_tag: Option<&str>,
@@ -78,11 +78,49 @@ impl CommitParser {
 
         // If we have a since_tag, find it and use as boundary
         let boundary_oid = if let Some(tag) = since_tag {
-            match find_tag_oid(&repo, tag) {
-                Some(oid) => Some(oid),
-                None => {
-                    return Err(Error::git(format!("Tag '{tag}' not found in repository")));
-                }
+            if let Some(oid) = find_tag_oid(&repo, tag) {
+                Some(oid)
+            } else {
+                // Collect available tags for suggestions
+                let available_tags = list_tags(&repo);
+                let suggestion = if available_tags.is_empty() {
+                    String::new()
+                } else {
+                    // Find similar tags
+                    let similar: Vec<_> = available_tags
+                        .iter()
+                        .filter(|t| {
+                            t.contains(tag)
+                                || tag.contains(t.as_str())
+                                || levenshtein_distance(t, tag) <= 3
+                        })
+                        .take(3)
+                        .collect();
+
+                    if similar.is_empty() {
+                        format!(
+                            ". Available tags: {}",
+                            available_tags
+                                .iter()
+                                .take(5)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    } else {
+                        format!(
+                            ". Did you mean: {}?",
+                            similar
+                                .iter()
+                                .map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }
+                };
+                return Err(Error::git(format!(
+                    "Tag '{tag}' not found in repository{suggestion}"
+                )));
             }
         } else {
             None
@@ -219,6 +257,65 @@ fn find_tag_oid(repo: &gix::Repository, tag_name: &str) -> Option<gix::ObjectId>
     None
 }
 
+/// List all tags in the repository.
+fn list_tags(repo: &gix::Repository) -> Vec<String> {
+    let mut tags = Vec::new();
+
+    if let Ok(refs) = repo.references()
+        && let Ok(tag_refs) = refs.tags()
+    {
+        for tag_ref in tag_refs.flatten() {
+            if let Ok(name) = tag_ref.name().as_bstr().to_str() {
+                // Strip "refs/tags/" prefix
+                let tag_name = name.strip_prefix("refs/tags/").unwrap_or(name);
+                tags.push(tag_name.to_string());
+            }
+        }
+    }
+
+    // Sort by version (most recent first) - simple reverse sort works for semver
+    tags.sort();
+    tags.reverse();
+    tags
+}
+
+/// Calculate Levenshtein distance between two strings.
+/// Used for fuzzy matching tag suggestions.
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
+
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
+
+    let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
+
+    for (i, row) in matrix.iter_mut().enumerate().take(a_len + 1) {
+        row[0] = i;
+    }
+    for j in 0..=b_len {
+        matrix[0][j] = j;
+    }
+
+    for i in 1..=a_len {
+        for j in 1..=b_len {
+            let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
+            matrix[i][j] = std::cmp::min(
+                std::cmp::min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1),
+                matrix[i - 1][j - 1] + cost,
+            );
+        }
+    }
+
+    matrix[a_len][b_len]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +421,28 @@ mod tests {
         assert!(summary.contains("**api**: add endpoint"));
         assert!(summary.contains("### Bug Fixes"));
         assert!(summary.contains("fix crash"));
+    }
+
+    #[test]
+    fn test_levenshtein_distance_identical() {
+        assert_eq!(levenshtein_distance("hello", "hello"), 0);
+    }
+
+    #[test]
+    fn test_levenshtein_distance_single_edit() {
+        assert_eq!(levenshtein_distance("hello", "hallo"), 1);
+        assert_eq!(levenshtein_distance("v1.0.0", "v1.0.1"), 1);
+    }
+
+    #[test]
+    fn test_levenshtein_distance_prefix() {
+        assert_eq!(levenshtein_distance("v1.0.0", "1.0.0"), 1);
+    }
+
+    #[test]
+    fn test_levenshtein_distance_empty() {
+        assert_eq!(levenshtein_distance("", "hello"), 5);
+        assert_eq!(levenshtein_distance("hello", ""), 5);
+        assert_eq!(levenshtein_distance("", ""), 0);
     }
 }
