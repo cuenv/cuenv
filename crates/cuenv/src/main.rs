@@ -393,8 +393,10 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
                 Err(e) => Err(e),
             }
         }
-        Command::ChangesetStatus { path } => {
-            match execute_changeset_status_safe(path, json_mode).await {
+        Command::ChangesetStatus { path, json } => {
+            // Use the command-specific --json flag, or fall back to global --json
+            let use_json = json || json_mode;
+            match execute_changeset_status_safe(path, use_json).await {
                 Ok(()) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -1123,21 +1125,10 @@ async fn execute_changeset_add_safe(
 /// Execute changeset status command safely
 #[instrument(name = "cuenv_execute_changeset_status_safe")]
 async fn execute_changeset_status_safe(path: String, json_mode: bool) -> Result<(), CliError> {
-    match commands::release::execute_changeset_status(&path) {
+    // Use the format-aware function that returns proper JSON structure
+    match commands::release::execute_changeset_status_with_format(&path, json_mode) {
         Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "status": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                println!("{output}");
-            }
+            println!("{output}");
             Ok(())
         }
         Err(e) => Err(CliError::eval_with_help(

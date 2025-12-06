@@ -59,14 +59,61 @@ pub fn execute_changeset_add(
     ))
 }
 
+/// Status output for JSON mode
+#[derive(Debug, serde::Serialize)]
+pub struct ChangesetStatusOutput {
+    /// Number of pending changesets
+    pub count: usize,
+    /// Whether there are pending changesets
+    pub has_pending: bool,
+    /// List of changeset summaries
+    pub changesets: Vec<ChangesetSummary>,
+    /// Aggregated bumps per package
+    pub aggregated_bumps: std::collections::HashMap<String, String>,
+}
+
+/// Summary of a single changeset for JSON output
+#[derive(Debug, serde::Serialize)]
+pub struct ChangesetSummary {
+    /// Changeset ID
+    pub id: String,
+    /// Summary description
+    pub summary: String,
+    /// Packages affected
+    pub packages: Vec<PackageBumpSummary>,
+}
+
+/// Package bump info for JSON output
+#[derive(Debug, serde::Serialize)]
+pub struct PackageBumpSummary {
+    /// Package name
+    pub name: String,
+    /// Bump type
+    pub bump: String,
+}
+
 /// Execute the `changeset status` command.
 ///
 /// Lists all pending changesets and their accumulated bumps.
+/// This is a convenience wrapper that defaults to human-readable output.
 ///
 /// # Errors
 ///
 /// Returns an error if changesets cannot be read.
+#[cfg(test)]
 pub fn execute_changeset_status(path: &str) -> cuenv_core::Result<String> {
+    execute_changeset_status_with_format(path, false)
+}
+
+/// Execute the `changeset status` command with format option.
+///
+/// Lists all pending changesets and their accumulated bumps.
+/// When `json` is true, returns structured JSON output suitable for CI parsing.
+///
+/// # Errors
+///
+/// Returns an error if changesets cannot be read.
+pub fn execute_changeset_status_with_format(path: &str, json: bool) -> cuenv_core::Result<String> {
     let root = Path::new(path);
     let manager = ChangesetManager::new(root);
 
@@ -74,6 +121,41 @@ pub fn execute_changeset_status(path: &str) -> cuenv_core::Result<String> {
         .list()
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to read changesets: {e}")))?;
 
+    // Get aggregated bumps
+    let bumps = manager
+        .get_package_bumps()
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to aggregate bumps: {e}")))?;
+
+    if json {
+        let output = ChangesetStatusOutput {
+            count: changesets.len(),
+            has_pending: !changesets.is_empty(),
+            changesets: changesets
+                .iter()
+                .map(|cs| ChangesetSummary {
+                    id: cs.id.clone(),
+                    summary: cs.summary.clone(),
+                    packages: cs
+                        .packages
+                        .iter()
+                        .map(|pkg| PackageBumpSummary {
+                            name: pkg.name.clone(),
+                            bump: pkg.bump.to_string(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            aggregated_bumps: bumps
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_string()))
+                .collect(),
+        };
+
+        return serde_json::to_string_pretty(&output)
+            .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}")));
+    }
+
+    // Human-readable output
     if changesets.is_empty() {
         return Ok(
             "No pending changesets found.\n\nRun 'cuenv changeset add' to create one.".to_string(),
@@ -92,10 +174,6 @@ pub fn execute_changeset_status(path: &str) -> cuenv_core::Result<String> {
     }
 
     // Show aggregated bumps
-    let bumps = manager
-        .get_package_bumps()
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to aggregate bumps: {e}")))?;
-
     if !bumps.is_empty() {
         output.push_str("Aggregated version bumps:\n\n");
         let mut sorted_bumps: Vec<_> = bumps.iter().collect();

@@ -214,6 +214,7 @@ pub enum Command {
     },
     ChangesetStatus {
         path: String,
+        json: bool,
     },
     ChangesetFromCommits {
         path: String,
