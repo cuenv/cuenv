@@ -157,7 +157,7 @@ pub fn execute_changeset_from_commits(
     // Create changeset
     let manager = ChangesetManager::new(root);
     let changeset = Changeset::new(
-        &format!("Release from {} commits", commits.len()),
+        format!("Release from {} commits", commits.len()),
         pkg_changes,
         Some(summary),
     );

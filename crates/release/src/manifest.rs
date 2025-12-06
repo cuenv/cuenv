@@ -244,19 +244,21 @@ impl CargoManifest {
             };
 
             // Check if version uses workspace inheritance
-            let version =
-                if let Some(version_table) = package.get("version").and_then(|v| v.as_table()) {
-                    if version_table.get("workspace").and_then(|w| w.as_bool()) == Some(true) {
-                        workspace_version.clone()
-                    } else {
-                        // Shouldn't happen, but handle it
-                        continue;
-                    }
-                } else if let Some(version_str) = package.get("version").and_then(|v| v.as_str()) {
-                    version_str.parse::<Version>()?
-                } else {
-                    continue;
-                };
+            let version = if let Some(version_table) =
+                package.get("version").and_then(|v| v.as_table())
+                && version_table
+                    .get("workspace")
+                    .is_some_and(|w| w.as_bool() == Some(true))
+            {
+                workspace_version.clone()
+            } else if package.get("version").and_then(|v| v.as_table()).is_some() {
+                // Shouldn't happen, but handle it
+                continue;
+            } else if let Some(version_str) = package.get("version").and_then(|v| v.as_str()) {
+                version_str.parse::<Version>()?
+            } else {
+                continue;
+            };
 
             versions.insert(name.to_string(), version);
         }
@@ -288,12 +290,11 @@ impl CargoManifest {
         })?;
 
         // Update [workspace.package].version
-        if let Some(workspace) = doc.get_mut("workspace") {
-            if let Some(package) = workspace.get_mut("package") {
-                if let Item::Table(pkg_table) = package {
-                    pkg_table["version"] = toml_edit::value(new_version.to_string());
-                }
-            }
+        if let Some(workspace) = doc.get_mut("workspace")
+            && let Some(package) = workspace.get_mut("package")
+            && let Item::Table(pkg_table) = package
+        {
+            pkg_table["version"] = toml_edit::value(new_version.to_string());
         }
 
         fs::write(&path, doc.to_string()).map_err(|e| {
@@ -349,12 +350,11 @@ impl CargoManifest {
             if let Some(dependencies) = doc.get("dependencies").and_then(|d| d.as_table()) {
                 for (dep_name, dep_value) in dependencies {
                     // Check if it's a path dependency (workspace-internal)
-                    if let Some(dep_table) = dep_value.as_table() {
-                        if dep_table.contains_key("path")
-                            || dep_table.get("workspace") == Some(&toml::Value::Boolean(true))
-                        {
-                            deps.push(dep_name.clone());
-                        }
+                    if let Some(dep_table) = dep_value.as_table()
+                        && (dep_table.contains_key("path")
+                            || dep_table.get("workspace") == Some(&toml::Value::Boolean(true)))
+                    {
+                        deps.push(dep_name.clone());
                     }
                 }
             }
@@ -392,22 +392,21 @@ impl CargoManifest {
         })?;
 
         // Update [workspace.dependencies]
-        if let Some(workspace) = doc.get_mut("workspace") {
-            if let Some(deps) = workspace.get_mut("dependencies") {
-                if let Item::Table(deps_table) = deps {
-                    for (pkg_name, version) in packages {
-                        if let Some(dep) = deps_table.get_mut(pkg_name) {
-                            // Dependencies can be either inline tables or dotted keys
-                            match dep {
-                                Item::Value(Value::InlineTable(table)) => {
-                                    table.insert("version", new_version_value(version));
-                                }
-                                Item::Table(table) => {
-                                    table["version"] = toml_edit::value(version.to_string());
-                                }
-                                _ => {}
-                            }
+        if let Some(workspace) = doc.get_mut("workspace")
+            && let Some(deps) = workspace.get_mut("dependencies")
+            && let Item::Table(deps_table) = deps
+        {
+            for (pkg_name, version) in packages {
+                if let Some(dep) = deps_table.get_mut(pkg_name) {
+                    // Dependencies can be either inline tables or dotted keys
+                    match dep {
+                        Item::Value(Value::InlineTable(table)) => {
+                            table.insert("version", new_version_value(version));
                         }
+                        Item::Table(table) => {
+                            table["version"] = toml_edit::value(version.to_string());
+                        }
+                        _ => {}
                     }
                 }
             }
