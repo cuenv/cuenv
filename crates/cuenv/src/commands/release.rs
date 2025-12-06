@@ -652,4 +652,119 @@ version.workspace = true
         let output = result.unwrap();
         assert!(output.contains("No version-bumping commits"));
     }
+
+    #[test]
+    fn test_changeset_from_commits_with_since_tag() {
+        let temp = TempDir::new().unwrap();
+        let path = create_test_workspace(&temp);
+
+        // Initialize a git repository
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Configure git
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Create first commit (before tag)
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "fix: initial fix"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Create a tag
+        std::process::Command::new("git")
+            .args(["tag", "v0.1.0"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Create a second commit (after tag) - this should be picked up
+        let new_file = std::path::Path::new(&path).join("new-file.txt");
+        std::fs::write(new_file, "content").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "feat: new feature after tag"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Test with since_tag - should only process commits after the tag
+        let result = execute_changeset_from_commits(&path, Some("v0.1.0"));
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Created changeset"));
+        assert!(output.contains("conventional commit"));
+        // Should have created changeset from 1 commit (the one after the tag)
+        assert!(output.contains("1 conventional commit"));
+    }
+
+    #[test]
+    fn test_changeset_from_commits_with_nonexistent_tag() {
+        let temp = TempDir::new().unwrap();
+        let path = create_test_workspace(&temp);
+
+        // Initialize a git repository
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Configure git
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Create a commit
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", "feat: new feature"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+
+        // Test with non-existent tag - should return error
+        let result = execute_changeset_from_commits(&path, Some("v0.1.0"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Tag 'v0.1.0' not found"));
+    }
 }
