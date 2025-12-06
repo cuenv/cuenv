@@ -78,6 +78,7 @@ jobs:
             cat version_summary.txt
             echo "CUENV_VERSION_SUMMARY_END"
           } >> $GITHUB_OUTPUT
+          rm version_summary.txt
 
       - name: Apply version changes
         if: steps.check.outputs.has_changesets == 'true'
