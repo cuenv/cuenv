@@ -4,6 +4,7 @@ use cuenv_core::manifest::Cuenv;
 use glob::glob;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
 pub struct Project {
     pub path: PathBuf,
     pub config: Cuenv,
@@ -47,7 +48,10 @@ pub fn discover_projects() -> Result<Vec<Project>> {
 
         // Load the configuration
         // We assume the package name is "cuenv" based on convention
-        if let Ok(config) = evaluate_cue_package_typed::<Cuenv>(dir_path, "cuenv") {
+        if let Ok(mut config) = evaluate_cue_package_typed::<Cuenv>(dir_path, "cuenv") {
+            // Expand cross-project references and implicit dependencies
+            config.expand_cross_project_references();
+
             projects.push(Project {
                 path: entry,
                 config,

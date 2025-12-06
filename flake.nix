@@ -43,8 +43,13 @@
           targets = [ "x86_64-unknown-linux-musl" ];
         };
 
+        # Use pkgsCross.musl64 for static builds to ensure we target Linux Musl
+        # correctly even when building from macOS (cross-compilation).
+        # On Linux, this is effectively equivalent to pkgsStatic for Musl.
+        pkgsStatic = pkgs.pkgsCross.musl64;
+
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-        craneLibStatic = (crane.mkLib pkgs.pkgsStatic).overrideToolchain rustToolchain;
+        craneLibStatic = (crane.mkLib pkgsStatic).overrideToolchain rustToolchain;
 
         # Platform-specific build inputs
         darwinFrameworks = with pkgs.darwin.apple_sdk.frameworks; [
@@ -93,7 +98,7 @@
 
         cue-bridge = mkCueBridge pkgs;
 
-        cue-bridge-static = mkCueBridge pkgs.pkgsStatic;
+        cue-bridge-static = mkCueBridge pkgsStatic;
 
         # Source filtering for Rust builds
         src = pkgs.lib.cleanSourceWith {
@@ -118,31 +123,31 @@
 
         # Bridge setup helper
         setupBridge = ''
-          mkdir -p crates/cuenv-core/src/target/debug crates/cuenv-core/src/target/release
+          mkdir -p crates/core/src/target/debug crates/core/src/target/release
           
           # Remove existing files to avoid permission issues with read-only nix store files
-          rm -f crates/cuenv-core/src/target/debug/libcue_bridge.*
-          rm -f crates/cuenv-core/src/target/release/libcue_bridge.*
+          rm -f crates/core/src/target/debug/libcue_bridge.*
+          rm -f crates/core/src/target/release/libcue_bridge.*
 
-          cp -r ${cue-bridge}/debug/* crates/cuenv-core/src/target/debug/
-          cp -r ${cue-bridge}/release/* crates/cuenv-core/src/target/release/
+          cp -r ${cue-bridge}/debug/* crates/core/src/target/debug/
+          cp -r ${cue-bridge}/release/* crates/core/src/target/release/
           
           # Ensure the copied files are writable
-          chmod -R +w crates/cuenv-core/src/target
+          chmod -R +w crates/core/src/target
         '';
 
         setupBridgeStatic = ''
-          mkdir -p crates/cuenv-core/src/target/debug crates/cuenv-core/src/target/release
+          mkdir -p crates/core/src/target/debug crates/core/src/target/release
           
           # Remove existing files to avoid permission issues with read-only nix store files
-          rm -f crates/cuenv-core/src/target/debug/libcue_bridge.*
-          rm -f crates/cuenv-core/src/target/release/libcue_bridge.*
+          rm -f crates/core/src/target/debug/libcue_bridge.*
+          rm -f crates/core/src/target/release/libcue_bridge.*
 
-          cp -r ${cue-bridge-static}/debug/* crates/cuenv-core/src/target/debug/
-          cp -r ${cue-bridge-static}/release/* crates/cuenv-core/src/target/release/
+          cp -r ${cue-bridge-static}/debug/* crates/core/src/target/debug/
+          cp -r ${cue-bridge-static}/release/* crates/core/src/target/release/
           
           # Ensure the copied files are writable
-          chmod -R +w crates/cuenv-core/src/target
+          chmod -R +w crates/core/src/target
         '';
 
 
@@ -159,12 +164,12 @@
         };
 
         commonArgsStatic = commonArgs // {
-           CUE_BRIDGE_PATH = cue-bridge-static;
-           preBuild = setupBridgeStatic;
-           CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
-           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
-           # Override buildInputs to use static libs if needed, or empty if none
-           buildInputs = []; 
+          CUE_BRIDGE_PATH = cue-bridge-static;
+          preBuild = setupBridgeStatic;
+          CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
+          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+          # Override buildInputs to use static libs if needed, or empty if none
+          buildInputs = [ ];
         };
 
         # Build artifacts for dependency caching

@@ -57,6 +57,7 @@ Quickly switch between environments defined in your configuration:
 3. All subsequent task runs will use that environment's variables
 
 The currently selected environment affects:
+
 - Task execution context
 - Variables displayed in the Variables view
 - Environment variables passed to the terminal
@@ -106,13 +107,13 @@ Use the **Refresh** button in the Tasks view title bar to manually refresh.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `Cuenv: Refresh` | Refresh all data from cuenv CLI |
-| `Cuenv: Run Task` | Run a specific task |
-| `Cuenv: Set Environment` | Switch to a different environment |
+| Command                        | Description                            |
+| ------------------------------ | -------------------------------------- |
+| `Cuenv: Refresh`               | Refresh all data from cuenv CLI        |
+| `Cuenv: Run Task`              | Run a specific task                    |
+| `Cuenv: Set Environment`       | Switch to a different environment      |
 | `Cuenv: Show Dependency Graph` | Open the task dependency visualization |
-| `Cuenv: Copy Variable` | Copy a variable value to clipboard |
+| `Cuenv: Copy Variable`         | Copy a variable value to clipboard     |
 
 Access commands via the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`).
 
@@ -120,15 +121,15 @@ Access commands via the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`).
 
 Configure the extension in VS Code settings:
 
-| Setting | Default | Description |
-|---------|---------|-------------|
+| Setting                | Default | Description                  |
+| ---------------------- | ------- | ---------------------------- |
 | `cuenv.executablePath` | `cuenv` | Path to the cuenv executable |
 
 Example `settings.json`:
 
 ```json
 {
-    "cuenv.executablePath": "/usr/local/bin/cuenv"
+  "cuenv.executablePath": "/usr/local/bin/cuenv"
 }
 ```
 
@@ -137,6 +138,7 @@ Example `settings.json`:
 ### Extension not activating
 
 The extension activates when:
+
 - A CUE file is opened (`onLanguage:cue`)
 - The workspace contains an `env.cue` file
 

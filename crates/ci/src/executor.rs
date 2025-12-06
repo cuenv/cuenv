@@ -55,21 +55,19 @@ pub async fn run_ci(
 
     // 3. Discover projects
     // We need a way to load Cuenv configs.
-    // For now, we'll just find the files.
     let projects = discover_projects()?;
     println!("Found {} projects", projects.len());
 
+    // Build project map for cross-project dependency resolution
+    let mut project_map = std::collections::HashMap::new();
+    for project in &projects {
+        if let Some(name) = &project.config.name {
+            project_map.insert(name.clone(), project.clone());
+        }
+    }
+
     // 4. Process each project
-    for project in projects {
-        // TODO: Load Config properly using cuengine
-        // For now, we rely on the placeholder or need a real loader.
-        // Since we can't easily invoke cuengine here without more setup (runtime, etc),
-        // and we want to avoid huge complexity in this first pass,
-        // let's assume we can parse it or skip if we can't.
-
-        // In a real implementation, we would:
-        // let config = cuengine::load(project.path)?;
-
+    for project in &projects {
         // Let's skip the actual execution logic for now and just print what we would do
         // based on the placeholder config (which is empty).
         // The goal of this task is to set up the structure.
@@ -99,8 +97,13 @@ pub async fn run_ci(
                         }
                     },
                 );
-                let affected =
-                    compute_affected_tasks(&changed_files, &pipeline.tasks, config, project_root);
+                let affected = compute_affected_tasks(
+                    &changed_files,
+                    &pipeline.tasks,
+                    project_root,
+                    config,
+                    &project_map,
+                );
 
                 if affected.is_empty() {
                     println!("Project {}: No affected tasks", project.path.display());
