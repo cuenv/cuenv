@@ -60,5 +60,5 @@ pub use config::{ChangelogConfig, ReleaseConfig, ReleaseGitConfig, ReleasePackag
 pub use conventional::{CommitParser, ConventionalCommit};
 pub use error::{Error, Result};
 pub use manifest::CargoManifest;
-pub use publish::PublishPlan;
+pub use publish::{PublishPackage, PublishPlan};
 pub use version::{Version, VersionCalculator};

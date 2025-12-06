@@ -34,7 +34,10 @@ impl CargoManifest {
     fn read_root_manifest(&self) -> Result<DocumentMut> {
         let path = self.root_manifest_path();
         let content = fs::read_to_string(&path).map_err(|e| {
-            Error::manifest(format!("Failed to read root Cargo.toml: {e}"), Some(path.clone()))
+            Error::manifest(
+                format!("Failed to read root Cargo.toml: {e}"),
+                Some(path.clone()),
+            )
         })?;
         content.parse::<DocumentMut>().map_err(|e| {
             Error::manifest(format!("Failed to parse root Cargo.toml: {e}"), Some(path))
@@ -87,8 +90,21 @@ impl CargoManifest {
                 // Handle glob patterns
                 if pattern.contains('*') {
                     let full_pattern = self.root.join(pattern);
-                    let matches = glob::glob(full_pattern.to_str().unwrap_or(""))
-                        .map_err(|e| Error::manifest(format!("Invalid glob pattern: {e}"), None))?;
+                    let pattern_str = full_pattern.to_str().ok_or_else(|| {
+                        Error::manifest(
+                            format!(
+                                "Workspace member glob pattern contains invalid UTF-8: {:?}",
+                                full_pattern
+                            ),
+                            Some(full_pattern.clone()),
+                        )
+                    })?;
+                    let matches = glob::glob(pattern_str).map_err(|e| {
+                        Error::manifest(
+                            format!("Invalid glob pattern: {e}"),
+                            Some(full_pattern.clone()),
+                        )
+                    })?;
                     for entry in matches.flatten() {
                         if entry.is_dir() {
                             paths.push(entry);
@@ -132,7 +148,11 @@ impl CargoManifest {
                 )
             })?;
 
-            if let Some(name) = doc.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str()) {
+            if let Some(name) = doc
+                .get("package")
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+            {
                 names.push(name.to_string());
             }
         }
@@ -181,18 +201,19 @@ impl CargoManifest {
             };
 
             // Check if version uses workspace inheritance
-            let version = if let Some(version_table) = package.get("version").and_then(|v| v.as_table()) {
-                if version_table.get("workspace").and_then(|w| w.as_bool()) == Some(true) {
-                    workspace_version.clone()
+            let version =
+                if let Some(version_table) = package.get("version").and_then(|v| v.as_table()) {
+                    if version_table.get("workspace").and_then(|w| w.as_bool()) == Some(true) {
+                        workspace_version.clone()
+                    } else {
+                        // Shouldn't happen, but handle it
+                        continue;
+                    }
+                } else if let Some(version_str) = package.get("version").and_then(|v| v.as_str()) {
+                    version_str.parse::<Version>()?
                 } else {
-                    // Shouldn't happen, but handle it
                     continue;
-                }
-            } else if let Some(version_str) = package.get("version").and_then(|v| v.as_str()) {
-                version_str.parse::<Version>()?
-            } else {
-                continue;
-            };
+                };
 
             versions.insert(name.to_string(), version);
         }
@@ -210,11 +231,17 @@ impl CargoManifest {
     pub fn update_workspace_version(&self, new_version: &Version) -> Result<()> {
         let path = self.root_manifest_path();
         let content = fs::read_to_string(&path).map_err(|e| {
-            Error::manifest(format!("Failed to read root Cargo.toml: {e}"), Some(path.clone()))
+            Error::manifest(
+                format!("Failed to read root Cargo.toml: {e}"),
+                Some(path.clone()),
+            )
         })?;
 
         let mut doc = content.parse::<DocumentMut>().map_err(|e| {
-            Error::manifest(format!("Failed to parse root Cargo.toml: {e}"), Some(path.clone()))
+            Error::manifest(
+                format!("Failed to parse root Cargo.toml: {e}"),
+                Some(path.clone()),
+            )
         })?;
 
         // Update [workspace.package].version
@@ -233,6 +260,68 @@ impl CargoManifest {
         Ok(())
     }
 
+    /// Read package dependencies from member manifests.
+    ///
+    /// Returns a map of package names to their workspace-internal dependencies.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if package manifests cannot be read or parsed.
+    pub fn read_package_dependencies(&self) -> Result<HashMap<String, Vec<String>>> {
+        let members = self.discover_members()?;
+        let mut dependencies_map = HashMap::new();
+
+        for member_path in members {
+            let manifest_path = member_path.join("Cargo.toml");
+            if !manifest_path.exists() {
+                continue;
+            }
+
+            let content = fs::read_to_string(&manifest_path).map_err(|e| {
+                Error::manifest(
+                    format!("Failed to read {}: {e}", manifest_path.display()),
+                    Some(manifest_path.clone()),
+                )
+            })?;
+
+            let doc: toml::Value = content.parse().map_err(|e| {
+                Error::manifest(
+                    format!("Failed to parse {}: {e}", manifest_path.display()),
+                    Some(manifest_path.clone()),
+                )
+            })?;
+
+            let Some(package) = doc.get("package") else {
+                continue;
+            };
+
+            let Some(name) = package.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+
+            // Collect workspace-internal dependencies
+            let mut deps = Vec::new();
+
+            // Check [dependencies]
+            if let Some(dependencies) = doc.get("dependencies").and_then(|d| d.as_table()) {
+                for (dep_name, dep_value) in dependencies {
+                    // Check if it's a path dependency (workspace-internal)
+                    if let Some(dep_table) = dep_value.as_table() {
+                        if dep_table.contains_key("path")
+                            || dep_table.get("workspace") == Some(&toml::Value::Boolean(true))
+                        {
+                            deps.push(dep_name.clone());
+                        }
+                    }
+                }
+            }
+
+            dependencies_map.insert(name.to_string(), deps);
+        }
+
+        Ok(dependencies_map)
+    }
+
     /// Update workspace dependency versions in the root Cargo.toml.
     ///
     /// This updates versions in `[workspace.dependencies]` for internal crates.
@@ -246,11 +335,17 @@ impl CargoManifest {
     ) -> Result<()> {
         let path = self.root_manifest_path();
         let content = fs::read_to_string(&path).map_err(|e| {
-            Error::manifest(format!("Failed to read root Cargo.toml: {e}"), Some(path.clone()))
+            Error::manifest(
+                format!("Failed to read root Cargo.toml: {e}"),
+                Some(path.clone()),
+            )
         })?;
 
         let mut doc = content.parse::<DocumentMut>().map_err(|e| {
-            Error::manifest(format!("Failed to parse root Cargo.toml: {e}"), Some(path.clone()))
+            Error::manifest(
+                format!("Failed to parse root Cargo.toml: {e}"),
+                Some(path.clone()),
+            )
         })?;
 
         // Update [workspace.dependencies]
@@ -374,7 +469,9 @@ version.workspace = true
         let root = create_test_workspace(&temp);
 
         let manifest = CargoManifest::new(&root);
-        manifest.update_workspace_version(&Version::new(2, 0, 0)).unwrap();
+        manifest
+            .update_workspace_version(&Version::new(2, 0, 0))
+            .unwrap();
 
         // Read back and verify
         let new_version = manifest.read_workspace_version().unwrap();
@@ -391,7 +488,9 @@ version.workspace = true
             ("foo".to_string(), Version::new(2, 0, 0)),
             ("bar".to_string(), Version::new(2, 0, 0)),
         ]);
-        manifest.update_workspace_dependency_versions(&packages).unwrap();
+        manifest
+            .update_workspace_dependency_versions(&packages)
+            .unwrap();
 
         // Read back and verify the content was updated
         let content = fs::read_to_string(root.join("Cargo.toml")).unwrap();
