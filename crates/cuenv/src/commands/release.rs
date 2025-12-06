@@ -3,10 +3,14 @@
 //! This module provides CLI commands for:
 //! - `cuenv changeset add` - Create a new changeset
 //! - `cuenv changeset status` - View pending changesets
+//! - `cuenv changeset from-commits` - Generate changeset from conventional commits
 //! - `cuenv release version` - Calculate and apply version bumps
 //! - `cuenv release publish` - Publish packages in topological order
 
-use cuenv_release::{BumpType, Changeset, ChangesetManager, PackageChange, Version};
+use cuenv_release::{
+    BumpType, CargoManifest, Changeset, ChangesetManager, CommitParser, PackageChange,
+    ReleasePackagesConfig, VersionCalculator,
+};
 use std::fmt::Write;
 use std::path::Path;
 
@@ -104,6 +108,81 @@ pub fn execute_changeset_status(path: &str) -> cuenv_core::Result<String> {
     Ok(output)
 }
 
+/// Execute the `changeset from-commits` command.
+///
+/// Parses conventional commits since the last tag and creates a changeset.
+///
+/// # Errors
+///
+/// Returns an error if commits cannot be parsed or changeset cannot be created.
+pub fn execute_changeset_from_commits(
+    path: &str,
+    since_tag: Option<&str>,
+) -> cuenv_core::Result<String> {
+    let root = Path::new(path);
+
+    // Parse conventional commits
+    let commits = CommitParser::parse_since_tag(root, since_tag)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
+
+    if commits.is_empty() {
+        return Ok("No conventional commits found since last tag.".to_string());
+    }
+
+    // Calculate aggregate bump type
+    let bump = CommitParser::aggregate_bump(&commits);
+    if bump == BumpType::None {
+        return Ok(
+            "No version-bumping commits found (only chore, docs, etc.).\n\
+             Use 'feat:' for features (minor) or 'fix:' for fixes (patch)."
+                .to_string(),
+        );
+    }
+
+    // Get package names from manifest
+    let manifest = CargoManifest::new(root);
+    let package_names = manifest.get_package_names().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package names: {e}"))
+    })?;
+
+    // Create package changes for all packages with the aggregate bump
+    let pkg_changes: Vec<PackageChange> = package_names
+        .iter()
+        .map(|name| PackageChange::new(name, bump))
+        .collect();
+
+    // Generate summary from commits
+    let summary = CommitParser::summarize(&commits);
+
+    // Create changeset
+    let manager = ChangesetManager::new(root);
+    let changeset = Changeset::new(
+        &format!("Release from {} commits", commits.len()),
+        pkg_changes,
+        Some(summary),
+    );
+
+    let changeset_path = manager.add(&changeset).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to create changeset: {e}"))
+    })?;
+
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "Created changeset from {} conventional commit(s)",
+        commits.len()
+    );
+    let _ = writeln!(output, "  Path: {}", changeset_path.display());
+    let _ = writeln!(output, "  ID: {}", changeset.id);
+    let _ = writeln!(output, "  Bump type: {bump}");
+    let _ = writeln!(output, "\nPackages affected:");
+    for name in &package_names {
+        let _ = writeln!(output, "  • {name}");
+    }
+
+    Ok(output)
+}
+
 /// Execute the `release version` command.
 ///
 /// Calculates new versions based on changesets and optionally updates manifest files.
@@ -114,6 +193,7 @@ pub fn execute_changeset_status(path: &str) -> cuenv_core::Result<String> {
 pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<String> {
     let root = Path::new(path);
     let manager = ChangesetManager::new(root);
+    let manifest = CargoManifest::new(root);
 
     let changesets = manager
         .list()
@@ -125,9 +205,20 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
         ));
     }
 
+    // Read current versions from manifests
+    let current_versions = manifest.read_package_versions().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package versions: {e}"))
+    })?;
+
+    // Get bumps from changesets
     let bumps = manager
         .get_package_bumps()
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to aggregate bumps: {e}")))?;
+
+    // Calculate new versions - for a workspace with shared versions, all packages share the same version
+    let config = ReleasePackagesConfig::default();
+    let calculator = VersionCalculator::new(current_versions.clone(), config);
+    let new_versions = calculator.calculate(&bumps);
 
     let mut output = String::new();
 
@@ -135,55 +226,153 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
         output.push_str("Dry run - no changes will be made.\n\n");
     }
 
-    output.push_str("⚠️  Note: Manifest version reading not yet implemented.\n");
-    output.push_str("   Showing placeholder versions (0.0.0) - actual versions will differ.\n\n");
     output.push_str("Version changes:\n\n");
 
-    // TODO(#roadmap): Read current versions from Cargo.toml/package.json manifests
-    // For now, we use a placeholder version to demonstrate the version bump calculation.
-    // The actual version reading requires manifest parsing which is tracked separately.
-    for (pkg, bump) in &bumps {
-        let current = Version::new(0, 0, 0); // Placeholder - will read from manifests
-        let new_version = current.bump(*bump);
-        let _ = writeln!(output, "  {pkg}: 0.0.0 (placeholder) -> {new_version}");
+    // Find the max new version (for workspace version)
+    let max_new_version = new_versions.values().max().cloned();
+
+    for (pkg, new_version) in &new_versions {
+        let current = current_versions
+            .get(pkg)
+            .map_or_else(|| "0.0.0".to_string(), ToString::to_string);
+        let _ = writeln!(output, "  {pkg}: {current} -> {new_version}");
     }
 
     if !dry_run {
-        output.push_str("\nNote: Manifest updates not yet implemented.\n");
-        output.push_str("Run with --dry-run to preview changes.\n");
+        // Update the workspace version
+        if let Some(new_version) = max_new_version {
+            manifest.update_workspace_version(&new_version).map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to update workspace version: {e}"))
+            })?;
+
+            // Update workspace dependency versions
+            manifest
+                .update_workspace_dependency_versions(&new_versions)
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to update dependency versions: {e}"
+                    ))
+                })?;
+
+            // Clear consumed changesets
+            manager.clear().map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to clear changesets: {e}"))
+            })?;
+
+            output.push_str("\nManifest files updated successfully.\n");
+            output.push_str("Changesets have been consumed.\n");
+        }
     }
 
     Ok(output)
 }
 
+/// Output format for release publish command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputFormat {
+    /// Human-readable output
+    Human,
+    /// JSON output for CI consumption
+    Json,
+}
+
 /// Execute the `release publish` command.
 ///
-/// Publishes packages in topological dependency order.
+/// Returns the topological order for publishing packages.
 ///
 /// # Errors
 ///
-/// Returns an error if publishing fails.
-#[allow(clippy::unnecessary_wraps)]
-pub fn execute_release_publish(path: &str, dry_run: bool) -> cuenv_core::Result<String> {
-    let _root = Path::new(path);
+/// Returns an error if package order cannot be determined.
+pub fn execute_release_publish(
+    path: &str,
+    dry_run: bool,
+    format: OutputFormat,
+) -> cuenv_core::Result<String> {
+    let root = Path::new(path);
+    let manifest = CargoManifest::new(root);
 
-    let mut output = String::new();
+    // Get package names
+    let packages = manifest.get_package_names().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package names: {e}"))
+    })?;
 
-    if dry_run {
-        output.push_str("Dry run - no packages will be published.\n\n");
+    // For now, return packages in alphabetical order
+    // TODO: Use PublishPlan for true topological ordering based on dependencies
+    let mut sorted_packages = packages;
+    sorted_packages.sort();
+
+    match format {
+        OutputFormat::Json => {
+            let json = serde_json::json!({
+                "packages": sorted_packages,
+                "dry_run": dry_run
+            });
+            Ok(serde_json::to_string_pretty(&json).unwrap_or_else(|_| "{}".to_string()))
+        }
+        OutputFormat::Human => {
+            let mut output = String::new();
+
+            if dry_run {
+                output.push_str("Dry run - no packages will be published.\n\n");
+            }
+
+            output.push_str("Publish order:\n\n");
+            for (i, pkg) in sorted_packages.iter().enumerate() {
+                let _ = writeln!(output, "  {}. {pkg}", i + 1);
+            }
+
+            output.push_str("\nTo publish, create a GitHub Release which triggers the release workflow.\n");
+
+            Ok(output)
+        }
     }
-
-    output.push_str("Release publish:\n\n");
-    output.push_str("Note: Publish workflow not yet implemented.\n");
-    output.push_str("This will execute 'publish' tasks in topological order.\n");
-
-    Ok(output)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::TempDir;
+
+    fn create_test_workspace(temp: &TempDir) -> String {
+        let root = temp.path();
+
+        // Create root Cargo.toml
+        let root_manifest = r#"
+[workspace]
+resolver = "2"
+members = ["crates/foo", "crates/bar"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+
+[workspace.dependencies]
+foo = { path = "crates/foo", version = "1.0.0" }
+bar = { path = "crates/bar", version = "1.0.0" }
+"#;
+        fs::write(root.join("Cargo.toml"), root_manifest).unwrap();
+
+        // Create member crates
+        fs::create_dir_all(root.join("crates/foo")).unwrap();
+        fs::create_dir_all(root.join("crates/bar")).unwrap();
+
+        let foo_manifest = r#"
+[package]
+name = "foo"
+version.workspace = true
+"#;
+        fs::write(root.join("crates/foo/Cargo.toml"), foo_manifest).unwrap();
+
+        let bar_manifest = r#"
+[package]
+name = "bar"
+version.workspace = true
+"#;
+        fs::write(root.join("crates/bar/Cargo.toml"), bar_manifest).unwrap();
+
+        root.to_string_lossy().to_string()
+    }
 
     #[test]
     fn test_changeset_add() {
@@ -253,22 +442,22 @@ mod tests {
     #[test]
     fn test_release_version_no_changesets() {
         let temp = TempDir::new().unwrap();
-        let path = temp.path().to_str().unwrap();
+        let path = create_test_workspace(&temp);
 
-        let result = execute_release_version(path, true);
+        let result = execute_release_version(&path, true);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_release_version_dry_run() {
         let temp = TempDir::new().unwrap();
-        let path = temp.path().to_str().unwrap();
+        let path = create_test_workspace(&temp);
 
         // Add a changeset first
-        let packages = vec![("pkg-a".to_string(), "minor".to_string())];
-        execute_changeset_add(path, &packages, "Feature", None).unwrap();
+        let packages = vec![("foo".to_string(), "minor".to_string())];
+        execute_changeset_add(&path, &packages, "Feature", None).unwrap();
 
-        let result = execute_release_version(path, true);
+        let result = execute_release_version(&path, true);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("Dry run"));
@@ -276,12 +465,49 @@ mod tests {
     }
 
     #[test]
-    fn test_release_publish_dry_run() {
+    fn test_release_version_apply() {
         let temp = TempDir::new().unwrap();
-        let path = temp.path().to_str().unwrap();
+        let path = create_test_workspace(&temp);
 
-        let result = execute_release_publish(path, true);
+        // Add a changeset
+        let packages = vec![("foo".to_string(), "minor".to_string())];
+        execute_changeset_add(&path, &packages, "Feature", None).unwrap();
+
+        // Apply version changes
+        let result = execute_release_version(&path, false);
         assert!(result.is_ok());
-        assert!(result.unwrap().contains("Dry run"));
+        let output = result.unwrap();
+        assert!(output.contains("Manifest files updated"));
+        assert!(output.contains("Changesets have been consumed"));
+
+        // Verify version was updated
+        let manifest = CargoManifest::new(Path::new(&path));
+        let version = manifest.read_workspace_version().unwrap();
+        assert_eq!(version.to_string(), "1.1.0");
+    }
+
+    #[test]
+    fn test_release_publish_dry_run_human() {
+        let temp = TempDir::new().unwrap();
+        let path = create_test_workspace(&temp);
+
+        let result = execute_release_publish(&path, true, OutputFormat::Human);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Dry run"));
+        assert!(output.contains("Publish order"));
+    }
+
+    #[test]
+    fn test_release_publish_json() {
+        let temp = TempDir::new().unwrap();
+        let path = create_test_workspace(&temp);
+
+        let result = execute_release_publish(&path, false, OutputFormat::Json);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("\"packages\""));
+        assert!(output.contains("bar"));
+        assert!(output.contains("foo"));
     }
 }
