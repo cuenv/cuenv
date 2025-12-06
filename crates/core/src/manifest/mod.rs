@@ -224,12 +224,57 @@ impl Cuenv {
 
     /// Create an implicit install task for a known workspace type.
     fn create_implicit_install_task(workspace_name: &str) -> Option<Task> {
-        let (command, args, description) = match workspace_name {
-            "bun" => ("bun", vec!["install"], "Install bun dependencies"),
-            "npm" => ("npm", vec!["install"], "Install npm dependencies"),
-            "pnpm" => ("pnpm", vec!["install"], "Install pnpm dependencies"),
-            "yarn" => ("yarn", vec!["install"], "Install yarn dependencies"),
-            "cargo" => ("cargo", vec!["fetch"], "Fetch cargo dependencies"),
+        let (command, args, description, inputs, outputs) = match workspace_name {
+            "bun" => (
+                "bun",
+                vec!["install"],
+                "Install bun dependencies",
+                vec![
+                    Input::Path("package.json".to_string()),
+                    Input::Path("bun.lock".to_string()),
+                ],
+                vec!["node_modules".to_string()],
+            ),
+            "npm" => (
+                "npm",
+                vec!["install"],
+                "Install npm dependencies",
+                vec![
+                    Input::Path("package.json".to_string()),
+                    Input::Path("package-lock.json".to_string()),
+                ],
+                vec!["node_modules".to_string()],
+            ),
+            "pnpm" => (
+                "pnpm",
+                vec!["install"],
+                "Install pnpm dependencies",
+                vec![
+                    Input::Path("package.json".to_string()),
+                    Input::Path("pnpm-lock.yaml".to_string()),
+                ],
+                vec!["node_modules".to_string()],
+            ),
+            "yarn" => (
+                "yarn",
+                vec!["install"],
+                "Install yarn dependencies",
+                vec![
+                    Input::Path("package.json".to_string()),
+                    Input::Path("yarn.lock".to_string()),
+                ],
+                vec!["node_modules".to_string()],
+            ),
+            "cargo" => (
+                "cargo",
+                vec!["fetch"],
+                "Fetch cargo dependencies",
+                vec![
+                    Input::Path("Cargo.toml".to_string()),
+                    Input::Path("Cargo.lock".to_string()),
+                ],
+                vec![], // cargo fetch doesn't produce local outputs (uses shared cache)
+            ),
             _ => return None, // Unknown workspace type, don't create implicit task
         };
 
@@ -239,6 +284,8 @@ impl Cuenv {
             workspaces: vec![workspace_name.to_string()],
             hermetic: false, // Install tasks must run in real workspace root
             description: Some(description.to_string()),
+            inputs,
+            outputs,
             ..Default::default()
         })
     }
