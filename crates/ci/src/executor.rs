@@ -80,134 +80,142 @@ pub async fn run_ci(
         let config = &project.config;
 
         // Determine pipeline to run
-        let pipeline_name = specific_pipeline.clone().unwrap_or_else(|| {
-            // Match context to pipeline rules in config
-            // For now default to "default" or match event name
-            "default".to_string()
-        });
+        let pipeline_name = specific_pipeline.clone().unwrap_or_else(|| "default".to_string());
 
         // Find pipeline in config
-        if let Some(ci) = &config.ci {
-            let pipeline = ci.pipelines.iter().find(|p| p.name == pipeline_name);
-            if let Some(pipeline) = pipeline {
-                // Get the directory containing the env.cue file
-                // If parent is empty (file in current dir), use "." instead
-                let project_root = project.path.parent().map_or_else(
-                    || std::path::Path::new("."),
-                    |p| {
-                        if p.as_os_str().is_empty() {
-                            std::path::Path::new(".")
-                        } else {
-                            p
-                        }
-                    },
-                );
-                let affected = compute_affected_tasks(
-                    &changed_files,
-                    &pipeline.tasks,
-                    project_root,
-                    config,
-                    &project_map,
-                );
+        let Some(ci) = &config.ci else {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Project {} has no CI configuration",
+                project.path.display()
+            )));
+        };
 
-                if affected.is_empty() {
-                    println!("Project {}: No affected tasks", project.path.display());
-                    continue;
+        let available_pipelines: Vec<&str> = ci.pipelines.iter().map(|p| p.name.as_str()).collect();
+        let Some(pipeline) = ci.pipelines.iter().find(|p| p.name == pipeline_name) else {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Pipeline '{}' not found in project {}. Available pipelines: {}",
+                pipeline_name,
+                project.path.display(),
+                available_pipelines.join(", ")
+            )));
+        };
+
+        // Get the directory containing the env.cue file
+        // If parent is empty (file in current dir), use "." instead
+        let project_root = project.path.parent().map_or_else(
+            || std::path::Path::new("."),
+            |p| {
+                if p.as_os_str().is_empty() {
+                    std::path::Path::new(".")
+                } else {
+                    p
                 }
+            },
+        );
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline.tasks,
+            project_root,
+            config,
+            &project_map,
+        );
 
-                println!(
-                    "Project {}: Running tasks {:?}",
-                    project.path.display(),
-                    affected
-                );
+        if affected.is_empty() {
+            println!("Project {}: No affected tasks", project.path.display());
+            continue;
+        }
 
-                if !dry_run {
-                    let start_time = Utc::now();
-                    let mut tasks_reports = Vec::new();
-                    let mut pipeline_status = PipelineStatus::Success;
+        println!(
+            "Project {}: Running tasks {:?}",
+            project.path.display(),
+            affected
+        );
 
-                    for task_name in affected {
-                        println!("  -> Executing {task_name}");
-                        let task_start = std::time::Instant::now();
-                        let result = runner.run_task(project_root, &task_name).await;
-                        let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
+        if !dry_run {
+            let start_time = Utc::now();
+            let mut tasks_reports = Vec::new();
+            let mut pipeline_status = PipelineStatus::Success;
 
-                        let status = match result {
-                            Ok(()) => {
-                                println!("  -> {task_name} passed");
-                                TaskStatus::Success
-                            }
-                            Err(e) => {
-                                println!("  -> {task_name} failed: {e}");
-                                pipeline_status = PipelineStatus::Failed;
-                                TaskStatus::Failed
-                            }
-                        };
+            for task_name in affected {
+                println!("  -> Executing {task_name}");
+                let task_start = std::time::Instant::now();
+                let result = runner.run_task(project_root, &task_name).await;
+                let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
 
-                        tasks_reports.push(TaskReport {
-                            name: task_name,
-                            status,
-                            duration_ms: duration,
-                            exit_code: if status == TaskStatus::Success {
-                                Some(0)
-                            } else {
-                                Some(1)
-                            },
-                            inputs_matched: vec![], // TODO: track inputs matched
-                            cache_key: None,        // TODO: get cache key
-                            outputs: vec![],        // TODO: get outputs
-                        });
+                let status = match result {
+                    Ok(()) => {
+                        println!("  -> {task_name} passed");
+                        TaskStatus::Success
                     }
+                    Err(e) => {
+                        println!("  -> {task_name} failed: {e}");
+                        pipeline_status = PipelineStatus::Failed;
+                        TaskStatus::Failed
+                    }
+                };
 
-                    let completed_at = Utc::now();
-                    #[allow(clippy::cast_sign_loss)]
-                    let duration_ms = (completed_at - start_time).num_milliseconds() as u64;
-
-                    // Generate report
-                    let report = PipelineReport {
-                        version: cuenv_core::VERSION.to_string(),
-                        project: project.path.display().to_string(),
-                        pipeline: pipeline.name.clone(),
-                        context: ContextReport {
-                            provider: context.provider.clone(),
-                            event: context.event.clone(),
-                            ref_name: context.ref_name.clone(),
-                            base_ref: context.base_ref.clone(),
-                            sha: context.sha.clone(),
-                            changed_files: changed_files
-                                .iter()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .collect(),
-                        },
-                        started_at: start_time,
-                        completed_at: Some(completed_at),
-                        duration_ms: Some(duration_ms),
-                        status: pipeline_status,
-                        tasks: tasks_reports,
-                    };
-
-                    // Ensure report directory exists
-                    let report_dir = std::path::Path::new(".cuenv/reports");
-                    if let Err(e) = std::fs::create_dir_all(report_dir) {
-                        println!("Failed to create report directory: {e}");
+                tasks_reports.push(TaskReport {
+                    name: task_name,
+                    status,
+                    duration_ms: duration,
+                    exit_code: if status == TaskStatus::Success {
+                        Some(0)
                     } else {
-                        // Filename: safe project path + timestamp? or just project name?
-                        // Spec said: .cuenv/reports/{sha}/{project}.json
-                        // For local we use "current" SHA.
-                        let sha_dir = report_dir.join(&context.sha);
-                        let _ = std::fs::create_dir_all(&sha_dir);
+                        Some(1)
+                    },
+                    inputs_matched: vec![], // TODO: track inputs matched
+                    cache_key: None,        // TODO: get cache key
+                    outputs: vec![],        // TODO: get outputs
+                });
+            }
 
-                        // Sanitize project path for filename
-                        let project_filename =
-                            project.path.display().to_string().replace(['/', '\\'], "-") + ".json";
-                        let report_path = sha_dir.join(project_filename);
+            let completed_at = Utc::now();
+            #[allow(clippy::cast_sign_loss)]
+            let duration_ms = (completed_at - start_time).num_milliseconds() as u64;
 
-                        if let Err(e) = write_report(&report, &report_path) {
-                            println!("Failed to write report: {e}");
-                        } else {
-                            println!("Report written to: {}", report_path.display());
-                        }
-                    }
+            // Generate report
+            let report = PipelineReport {
+                version: cuenv_core::VERSION.to_string(),
+                project: project.path.display().to_string(),
+                pipeline: pipeline.name.clone(),
+                context: ContextReport {
+                    provider: context.provider.clone(),
+                    event: context.event.clone(),
+                    ref_name: context.ref_name.clone(),
+                    base_ref: context.base_ref.clone(),
+                    sha: context.sha.clone(),
+                    changed_files: changed_files
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect(),
+                },
+                started_at: start_time,
+                completed_at: Some(completed_at),
+                duration_ms: Some(duration_ms),
+                status: pipeline_status,
+                tasks: tasks_reports,
+            };
+
+            // Ensure report directory exists
+            let report_dir = std::path::Path::new(".cuenv/reports");
+            if let Err(e) = std::fs::create_dir_all(report_dir) {
+                println!("Failed to create report directory: {e}");
+            } else {
+                // Filename: safe project path + timestamp? or just project name?
+                // Spec said: .cuenv/reports/{sha}/{project}.json
+                // For local we use "current" SHA.
+                let sha_dir = report_dir.join(&context.sha);
+                let _ = std::fs::create_dir_all(&sha_dir);
+
+                // Sanitize project path for filename
+                let project_filename =
+                    project.path.display().to_string().replace(['/', '\\'], "-") + ".json";
+                let report_path = sha_dir.join(project_filename);
+
+                if let Err(e) = write_report(&report, &report_path) {
+                    println!("Failed to write report: {e}");
+                } else {
+                    println!("Report written to: {}", report_path.display());
                 }
             }
         }
