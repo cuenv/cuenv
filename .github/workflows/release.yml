@@ -52,7 +52,12 @@ jobs:
             accept-flake-config = true
             experimental-features = nix-command flakes
 
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
       - name: Publish Crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           nix develop --accept-flake-config --command bash -c "
             echo 'Publishing cuenv-events...'
