@@ -2,7 +2,24 @@
 
 **ALWAYS follow these instructions first and fallback to search or bash commands only when you encounter unexpected information that does not match the info here.**
 
-cuenv is a Rust + Go FFI application that provides type-safe environment management and task orchestration using CUE configuration language. It consists of a core CUE evaluation engine (cuengine), shared utilities (cuenv-core), and CLI interface (cuenv-cli).
+cuenv is a Rust + Go FFI application that provides type-safe environment management and task orchestration using CUE configuration language. It consists of a core CUE evaluation engine (cuengine), shared utilities (core), and CLI interface (cuenv).
+
+## Best Tasks for Copilot Agent
+
+The following types of tasks are well-suited for Copilot agent:
+
+- **Bug fixes**: Clear, well-defined bugs with reproduction steps
+- **Feature implementation**: Incremental features with clear acceptance criteria
+- **Test coverage**: Adding or improving unit and integration tests
+- **Documentation**: Updating or creating documentation for code changes
+- **Code refactoring**: Improving code quality while maintaining functionality
+- **Technical debt**: Addressing linting issues, upgrading dependencies, etc.
+
+When assigning tasks, ensure they:
+- Have clear acceptance criteria
+- Are well-scoped (not too broad)
+- Indicate which files or areas will be affected
+- Include any relevant context from previous discussions
 
 ## Working Effectively
 
@@ -41,6 +58,18 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 # Format Go code in cuengine directory
 cd crates/cuengine && gofmt -w .
 ```
+
+### Code Conventions
+
+**IMPORTANT coding practices:**
+
+- **Event System**: Use `cuenv_events` emit macros for all output instead of direct console output (print!, println!, eprintln!)
+- **Linting**: The workspace enforces `unsafe_code = "warn"` and `missing_docs = "warn"` 
+- **Clippy**: All clippy warnings are treated as errors, including pedantic checks
+- **Console Output**: Direct `print_stdout` and `print_stderr` are forbidden - use the event system instead
+- **Documentation**: All public APIs must have documentation
+- **Error Handling**: Use `thiserror` for error types and `miette` for rich error reporting
+- **Edition**: Project uses Rust 2024 edition with MSRV 1.85.0
 
 ### Development Workflow with Nix Flake
 
@@ -114,8 +143,14 @@ cuenv/
 │   │   ├── bridge.go      # Go bridge for CUE language integration
 │   │   ├── build.rs       # Rust build script for Go compilation
 │   │   └── src/           # Rust FFI wrapper and caching
-│   ├── cuenv-core/        # Shared types, errors, validation
-│   └── cuenv-cli/         # CLI interface with TUI support
+│   ├── core/              # Shared types, errors, validation (cuenv-core)
+│   ├── cuenv/             # CLI interface with TUI support (main binary)
+│   ├── events/            # Event system for tracing and diagnostics
+│   ├── workspaces/        # Workspace detection and parsing
+│   ├── dagger/            # Dagger integration
+│   ├── ci/                # CI/CD automation utilities
+│   ├── release/           # Release automation
+│   └── schema-validator/  # CUE schema validation
 ├── examples/
 │   └── env-basic/         # Example CUE configuration files
 ├── .github/workflows/     # CI/CD configuration
