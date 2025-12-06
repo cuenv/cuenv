@@ -12,39 +12,21 @@ env: WHO: "rawkode"
 
 ci: pipelines: [
 	{
-		name: "default"
-		when: {
-			branch: ["main", "master"]
-			defaultBranch: true
-		}
+		name: "ci"
+		tasks: ["check"]
+	},
+	{
+		name: "release"
 		tasks: [
-			"fmt.check",
-			"lint",
-			"test.unit",
-			"test.doc",
-			"test.bdd",
-			"security.audit",
-			"security.deny",
-			"sbom",
-			"build",
+			"release.publish-cue",
+			"release.publish-crates",
+			"release.build-artifacts",
+			"docs.deploy",
 		]
 	},
 	{
-		name: "pull-request"
-		when: {
-			pullRequest: true
-		}
-		tasks: [
-			"fmt.check",
-			"lint",
-			"test.unit",
-			"test.doc",
-			"test.bdd",
-			"security.audit",
-			"security.deny",
-			"sbom",
-			"build",
-		]
+		name: "release-pr"
+		tasks: ["release.generate-pr"]
 	},
 ]
 
@@ -61,6 +43,22 @@ tasks: {
 		"Cargo.lock",
 		"crates",
 	]
+
+	// CI check task - delegates to nix flake check for optimal caching
+	check: {
+		command: "nix"
+		args: ["flake", "check"]
+		inputs: [
+			"flake.nix",
+			"flake.lock",
+			"Cargo.toml",
+			"Cargo.lock",
+			"crates",
+			"schema",
+			"cue.mod",
+			"deny.toml",
+		]
+	}
 
 	lint: {
 		command: "cargo"
@@ -279,6 +277,38 @@ tasks: {
 				"--release",
 			]
 			inputs: list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
+		}
+
+		"publish-cue": {
+			command: "cue"
+			args: ["mod", "publish", "$TAG"]
+			inputs: ["cue.mod", "schema"]
+		}
+
+		"publish-crates": {
+			command: "bash"
+			args: ["-c", "./result/bin/cuenv release publish"]
+			dependsOn: ["release.publish-cue"]
+			inputs: #BaseInputs
+		}
+
+		"build-artifacts": {
+			command: "nix"
+			args: ["build", ".#cuenv-static"]
+			inputs: [
+				"flake.nix",
+				"flake.lock",
+				"Cargo.toml",
+				"Cargo.lock",
+				"crates",
+			]
+			outputs: ["result"]
+		}
+
+		"generate-pr": {
+			command: "bash"
+			args: ["-c", "./result/bin/cuenv changeset from-commits && ./result/bin/cuenv release version"]
+			inputs: [".changeset", "Cargo.toml", "crates"]
 		}
 	}
 }

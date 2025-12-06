@@ -18,12 +18,17 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: |
+            accept-flake-config = true
 
-      - name: Cache Nix store
-        uses: DeterminateSystems/magic-nix-cache-action@v9
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v2
 
-      - name: Build cuenv
-        run: nix build .#cuenv
+      - name: Build cuenv (Bootstrap)
+        run: |
+          nix build .#cuenv
+          echo "$(pwd)/result/bin" >> $GITHUB_PATH
 
       - name: Get latest tag
         id: tag
@@ -34,37 +39,27 @@ jobs:
       - name: Check for existing pending changesets
         id: check_existing
         run: |
-          # Use --json for reliable parsing
-          STATUS=$(./result/bin/cuenv changeset status --json 2>&1) || true
+          STATUS=$(cuenv changeset status --json 2>&1) || true
           HAS_PENDING=$(echo "$STATUS" | jq -r '.has_pending // false')
           if [ "$HAS_PENDING" = "true" ]; then
             echo "has_pending=true" >> $GITHUB_OUTPUT
-            echo "Pending changesets already exist, skipping generation"
           else
             echo "has_pending=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Generate changeset from commits
         if: steps.check_existing.outputs.has_pending == 'false'
-        id: changeset
         run: |
           if [ -n "${{ steps.tag.outputs.latest }}" ]; then
-            OUTPUT=$(./result/bin/cuenv changeset from-commits --since "${{ steps.tag.outputs.latest }}" 2>&1)
-            STATUS=$?
+            cuenv changeset from-commits --since "${{ steps.tag.outputs.latest }}" || true
           else
-            OUTPUT=$(./result/bin/cuenv changeset from-commits 2>&1)
-            STATUS=$?
-          fi
-          if [ $STATUS -ne 0 ]; then
-            echo "::warning::cuenv changeset from-commits failed with exit code $STATUS"
-            echo "$OUTPUT"
+            cuenv changeset from-commits || true
           fi
 
       - name: Check for pending changesets
         id: check
         run: |
-          # Use --json for reliable parsing
-          STATUS=$(./result/bin/cuenv changeset status --json 2>&1) || true
+          STATUS=$(cuenv changeset status --json 2>&1) || true
           HAS_PENDING=$(echo "$STATUS" | jq -r '.has_pending // false')
           if [ "$HAS_PENDING" = "true" ]; then
             echo "has_changesets=true" >> $GITHUB_OUTPUT
@@ -76,9 +71,8 @@ jobs:
         if: steps.check.outputs.has_changesets == 'true'
         id: version
         run: |
-          ./result/bin/cuenv release version --dry-run > version_summary.txt 2>&1 || true
+          cuenv release version --dry-run > version_summary.txt 2>&1 || true
           cat version_summary.txt
-          # Set the summary as an output for the PR body using unique delimiter
           {
             echo "summary<<CUENV_VERSION_SUMMARY_END"
             cat version_summary.txt
@@ -87,8 +81,7 @@ jobs:
 
       - name: Apply version changes
         if: steps.check.outputs.has_changesets == 'true'
-        run: |
-          ./result/bin/cuenv release version
+        run: cuenv release version
 
       - name: Create Release PR
         if: steps.check.outputs.has_changesets == 'true'

@@ -123,6 +123,19 @@
             ((isInSchemaDir || isInExamplesDir || isInCueModDir) && isCueFile);
         };
 
+        # Strict source filtering for dependencies (Cargo.toml/lock only)
+        # This ensures cargoArtifacts are cached even when source code changes
+        srcArtifacts = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            let
+              baseName = builtins.baseNameOf path;
+              isCargoMetadata = baseName == "Cargo.toml" || baseName == "Cargo.lock";
+              isCargoConfig = baseName == "config.toml" && builtins.match ".*/\\.cargo/.*" path != null;
+            in
+            isCargoMetadata || isCargoConfig;
+        };
+
         # Bridge setup helper
         setupBridge = ''
           mkdir -p crates/core/src/target/debug crates/core/src/target/release
@@ -176,10 +189,15 @@
 
         # Build artifacts for dependency caching
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+          src = srcArtifacts;
+          preBuild = ""; # No bridge needed for deps
           buildInputs = platformBuildInputs;
         });
 
-        cargoArtifactsStatic = craneLibStatic.buildDepsOnly commonArgsStatic;
+        cargoArtifactsStatic = craneLibStatic.buildDepsOnly (commonArgsStatic // {
+          src = srcArtifacts;
+          preBuild = "";
+        });
 
         # Main package build
         cuenv = craneLib.buildPackage (commonArgs // {
@@ -240,10 +258,18 @@
             inherit cargoArtifacts;
           });
 
-          # Tests are handled by CI matrix for better coverage (MSRV + multi-platform)
+          cuenv-test = craneLib.cargoNextest (commonArgs // {
+            inherit cargoArtifacts;
+            partitions = 1;
+            partitionType = "count";
+          });
 
           cuenv-audit = craneLib.cargoAudit {
             inherit src advisory-db;
+          };
+
+          cuenv-deny = craneLib.cargoDeny {
+            inherit src;
           };
         };
 
@@ -271,6 +297,9 @@
             ''}
             
             cd ..
+            
+            # Run cargo audit to check for vulnerabilities, ignoring specific advisory
+            cargo audit --ignore RUSTSEC-2024-0436
             
             echo "🦀 cuenv development environment ready!"
             echo "📦 Prebuilt CUE bridge available at: ${cue-bridge}"
