@@ -44,7 +44,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
           - os: macos-latest
             target: x86_64-apple-darwin
 
@@ -64,7 +64,7 @@ jobs:
       - name: Build development environment
         run: nix develop --accept-flake-config --command echo "Development environment ready"
 
-      - name: Build cuenv
+      - name: Build cuenv (Bootstrap)
         run: |
           nix build .#cuenv
           mkdir -p bin
@@ -76,7 +76,26 @@ jobs:
           echo "$(pwd)/bin" >> $GITHUB_PATH
 
       - name: Build release
-        run: cuenv task release.build
+        run: |
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+             echo "Building static binary for ${{ matrix.target }}"
+             nix build .#cuenv-static
+          else
+             echo "Building dynamic binary for ${{ matrix.target }}"
+             # We can use cuenv task here if we want, or just nix build
+             # cuenv task release.build might be preferred if it does extra stuff?
+             # But let's match the static path for consistency
+             nix build .#cuenv
+          fi
+          
+          # Prepare artifacts for the archive step
+          mkdir -p target/release
+          # Nix output might be in result/bin
+          cp -L result/bin/cuenv target/release/cuenv
+          # Check for other binaries if needed (e.g. cuengine?)
+          if [ -f result/bin/cuengine ]; then
+            cp -L result/bin/cuengine target/release/cuengine
+          fi
 
       - name: Create archive
         run: |
