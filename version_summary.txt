@@ -1,0 +1,14 @@
+Dry run - no changes will be made.
+
+Version changes:
+
+  cuenv-dagger: 0.9.1 -> 0.10.0
+  cuenv-release: 0.9.1 -> 0.10.0
+  cuenv-core: 0.9.1 -> 0.10.0
+  schema-validator: 0.9.1 -> 0.10.0
+  cuenv-ci: 0.9.1 -> 0.10.0
+  cuengine: 0.9.1 -> 0.10.0
+  cuenv-workspaces: 0.9.1 -> 0.10.0
+  cuenv-events: 0.9.1 -> 0.10.0
+  cuenv: 0.9.1 -> 0.10.0
+
