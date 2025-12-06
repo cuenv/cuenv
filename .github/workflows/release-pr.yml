@@ -34,8 +34,10 @@ jobs:
       - name: Check for existing pending changesets
         id: check_existing
         run: |
-          STATUS=$(./result/bin/cuenv changeset status 2>&1)
-          if echo "$STATUS" | grep -q "^Found [0-9]* pending changeset"; then
+          # Use --json for reliable parsing
+          STATUS=$(./result/bin/cuenv changeset status --json 2>&1) || true
+          HAS_PENDING=$(echo "$STATUS" | jq -r '.has_pending // false')
+          if [ "$HAS_PENDING" = "true" ]; then
             echo "has_pending=true" >> $GITHUB_OUTPUT
             echo "Pending changesets already exist, skipping generation"
           else
@@ -61,8 +63,10 @@ jobs:
       - name: Check for pending changesets
         id: check
         run: |
-          STATUS=$(./result/bin/cuenv changeset status 2>&1)
-          if echo "$STATUS" | grep -q "^Found [0-9]* pending changeset"; then
+          # Use --json for reliable parsing
+          STATUS=$(./result/bin/cuenv changeset status --json 2>&1) || true
+          HAS_PENDING=$(echo "$STATUS" | jq -r '.has_pending // false')
+          if [ "$HAS_PENDING" = "true" ]; then
             echo "has_changesets=true" >> $GITHUB_OUTPUT
           else
             echo "has_changesets=false" >> $GITHUB_OUTPUT
