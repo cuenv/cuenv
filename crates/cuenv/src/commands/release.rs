@@ -552,6 +552,42 @@ version.workspace = true
         assert!(output.contains("foo"));
     }
 
+    /// Helper function to initialize and configure a git repository for testing
+    fn init_git_repo(path: &str) {
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(path)
+            .output()
+            .unwrap();
+    }
+
+    /// Helper function to create a git commit
+    fn create_git_commit(path: &str, message: &str) {
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(path)
+            .output()
+            .unwrap();
+
+        std::process::Command::new("git")
+            .args(["commit", "-m", message])
+            .current_dir(path)
+            .output()
+            .unwrap();
+    }
+
     #[test]
     fn test_changeset_from_commits_no_git_repo() {
         let temp = TempDir::new().unwrap();
@@ -567,38 +603,8 @@ version.workspace = true
         let temp = TempDir::new().unwrap();
         let path = create_test_workspace(&temp);
 
-        // Initialize a git repository
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Configure git
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Add files and create a conventional commit
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["commit", "-m", "feat: add new feature"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
+        init_git_repo(&path);
+        create_git_commit(&path, "feat: add new feature");
 
         // Now test the function
         let result = execute_changeset_from_commits(&path, None);
@@ -613,38 +619,8 @@ version.workspace = true
         let temp = TempDir::new().unwrap();
         let path = create_test_workspace(&temp);
 
-        // Initialize a git repository
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Configure git
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Add files and create a non-version-bumping commit
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["commit", "-m", "chore: update deps"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
+        init_git_repo(&path);
+        create_git_commit(&path, "chore: update deps");
 
         // Should return message about no version-bumping commits
         let result = execute_changeset_from_commits(&path, None);
@@ -658,38 +634,8 @@ version.workspace = true
         let temp = TempDir::new().unwrap();
         let path = create_test_workspace(&temp);
 
-        // Initialize a git repository
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Configure git
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Create first commit (before tag)
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["commit", "-m", "fix: initial fix"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
+        init_git_repo(&path);
+        create_git_commit(&path, "fix: initial fix");
 
         // Create a tag
         std::process::Command::new("git")
@@ -701,17 +647,7 @@ version.workspace = true
         // Create a second commit (after tag) - this should be picked up
         let new_file = std::path::Path::new(&path).join("new-file.txt");
         std::fs::write(new_file, "content").unwrap();
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["commit", "-m", "feat: new feature after tag"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
+        create_git_commit(&path, "feat: new feature after tag");
 
         // Test with since_tag - should only process commits after the tag
         let result = execute_changeset_from_commits(&path, Some("v0.1.0"));
@@ -728,38 +664,8 @@ version.workspace = true
         let temp = TempDir::new().unwrap();
         let path = create_test_workspace(&temp);
 
-        // Initialize a git repository
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Configure git
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        // Create a commit
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&path)
-            .output()
-            .unwrap();
-
-        std::process::Command::new("git")
-            .args(["commit", "-m", "feat: new feature"])
-            .current_dir(&path)
-            .output()
-            .unwrap();
+        init_git_repo(&path);
+        create_git_commit(&path, "feat: new feature");
 
         // Test with non-existent tag - should return error
         let result = execute_changeset_from_commits(&path, Some("v0.1.0"));
