@@ -211,6 +211,7 @@
           inherit cargoArtifactsStatic;
           pname = "cuenv";
           version = "0.1.1";
+          doCheck = false; # Skip tests due to Go CGO + musl runtime incompatibility
         });
 
         # Development tools configuration
