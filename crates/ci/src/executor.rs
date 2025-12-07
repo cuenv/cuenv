@@ -80,7 +80,9 @@ pub async fn run_ci(
         let config = &project.config;
 
         // Determine pipeline to run
-        let pipeline_name = specific_pipeline.clone().unwrap_or_else(|| "default".to_string());
+        let pipeline_name = specific_pipeline
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
 
         // Find pipeline in config
         let Some(ci) = &config.ci else {

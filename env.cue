@@ -20,7 +20,6 @@ ci: pipelines: [
 		tasks: [
 			"release.publish-cue",
 			"release.publish-crates",
-			"release.build-artifacts",
 			"docs.deploy",
 		]
 	},
@@ -290,19 +289,6 @@ tasks: {
 			args: ["-c", "./result/bin/cuenv release publish"]
 			dependsOn: ["release.publish-cue"]
 			inputs: #BaseInputs
-		}
-
-		"build-artifacts": {
-			command: "nix"
-			args: ["build", ".#cuenv-static"]
-			inputs: [
-				"flake.nix",
-				"flake.lock",
-				"Cargo.toml",
-				"Cargo.lock",
-				"crates",
-			]
-			outputs: ["result"]
 		}
 
 		"generate-pr": {

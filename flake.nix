@@ -76,9 +76,25 @@
 
           buildPhase = ''
             runHook preBuild
-            
+
+            # Force cgo to use the target toolchain so the archive matches the Rust target
+            export CGO_ENABLED=1
+            export CC=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}cc
+            export CXX=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}c++
+            export PKG_CONFIG_ALLOW_CROSS=1
+            ${pkgs.lib.optionalString pkgs.stdenv.targetPlatform.isMusl ''export CGO_LDFLAGS="-static"''}
+            ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            export GOOS=linux
+            export GOARCH=${
+              let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+              in if cpu == "x86_64" then "amd64"
+              else if cpu == "aarch64" then "arm64"
+              else cpu
+            }
+            ''}
+
             mkdir -p $out/debug $out/release
-            
+
             go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/debug/
             
@@ -186,7 +202,11 @@
           CUE_BRIDGE_PATH = cue-bridge-static;
           preBuild = setupBridgeStatic;
           CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
-          CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+          # Ensure we link libc statically and don't leak nix-store rpaths
+          RUSTFLAGS = "-C target-feature=+crt-static";
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS = "-C target-feature=+crt-static";
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER =
+            "${pkgsStatic.stdenv.cc}/bin/${pkgsStatic.stdenv.cc.targetPrefix}cc";
           # Override buildInputs to use static libs if needed, or empty if none
           buildInputs = [ ];
         };
