@@ -165,6 +165,11 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
     let mut cmd = Command::new("go");
     cmd.current_dir(bridge_dir).arg("build");
 
+    // Determine target triple early for platform-specific behavior
+    let target_triple = env::var("TARGET")
+        .unwrap_or_else(|_| env::var("HOST").expect("Neither TARGET nor HOST set by cargo"));
+    let is_musl = target_triple.contains("musl");
+
     // Set macOS deployment target to match Rust's default (11.0)
     // This prevents version mismatch linker errors when building on newer macOS
     #[cfg(target_os = "macos")]
@@ -172,6 +177,14 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
         cmd.env("MACOSX_DEPLOYMENT_TARGET", "11.0");
         cmd.env("CGO_CFLAGS", "-mmacosx-version-min=11.0");
         cmd.env("CGO_LDFLAGS", "-mmacosx-version-min=11.0");
+    }
+
+    // For musl targets, set static CGO flags
+    // This fixes segfaults with c-archive buildmode on musl (see: https://github.com/golang/go/pull/69325)
+    if is_musl {
+        cmd.env("CGO_CFLAGS", "-static");
+        cmd.env("CGO_LDFLAGS", "-static");
+        println!("Configuring for musl static build");
     }
 
     // Use vendor directory if it exists (for Nix builds)
@@ -184,7 +197,25 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
         .to_str()
         .expect("Failed to convert output path to string");
 
-    cmd.args(["-buildmode=c-archive", "-o", output_str, "bridge.go"]);
+    // For musl targets, add -linkmode external and -extldflags '-static'
+    let ldflags = if is_musl {
+        "-linkmode external -extldflags '-static'"
+    } else {
+        ""
+    };
+
+    if ldflags.is_empty() {
+        cmd.args(["-buildmode=c-archive", "-o", output_str, "bridge.go"]);
+    } else {
+        cmd.args([
+            "-buildmode=c-archive",
+            "-ldflags",
+            ldflags,
+            "-o",
+            output_str,
+            "bridge.go",
+        ]);
+    }
 
     println!("Running Go command: {cmd:?}");
 

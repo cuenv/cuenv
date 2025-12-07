@@ -98,12 +98,13 @@
 
             mkdir -p $out/debug $out/release
 
-            # For musl targets, add -extldflags '-static' to ensure fully static linking
+            # For musl targets, add -linkmode external and -extldflags '-static' to ensure fully static linking
+            # This fixes segfaults with c-archive buildmode on musl (see: https://github.com/golang/go/pull/69325)
             ${pkgs.lib.optionalString pkgs.stdenv.targetPlatform.isMusl ''
-            go build -buildmode=c-archive -ldflags "-extldflags '-static'" -o $out/debug/libcue_bridge.a bridge.go
+            go build -buildmode=c-archive -ldflags "-linkmode external -extldflags '-static'" -o $out/debug/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/debug/
             
-            CGO_ENABLED=1 go build -ldflags="-s -w -extldflags '-static'" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go
+            CGO_ENABLED=1 go build -ldflags="-s -w -linkmode external -extldflags '-static'" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/release/
             ''}
             
