@@ -26,7 +26,7 @@ jobs:
         uses: cachix/cachix-action@v15
         with:
           name: cuenv
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
 
       - name: Build cuenv (Bootstrap)
