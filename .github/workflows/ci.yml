@@ -49,3 +49,33 @@ jobs:
         run: cuenv ci --pipeline ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  musl-build-test:
+    name: Test musl static build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
+
+      - name: Build musl static binary
+        run: |
+          nix build .#cuenv-static
+          mkdir -p target/release
+          cp -L result/bin/cuenv target/release/cuenv
+
+      - name: Smoke test musl binary
+        run: |
+          ./target/release/cuenv --version
