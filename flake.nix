@@ -98,11 +98,23 @@
 
             mkdir -p $out/debug $out/release
 
+            # For musl targets, add -extldflags '-static' to ensure fully static linking
+            ${pkgs.lib.optionalString pkgs.stdenv.targetPlatform.isMusl ''
+            go build -buildmode=c-archive -ldflags "-extldflags '-static'" -o $out/debug/libcue_bridge.a bridge.go
+            cp libcue_bridge.h $out/debug/
+            
+            CGO_ENABLED=1 go build -ldflags="-s -w -extldflags '-static'" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go
+            cp libcue_bridge.h $out/release/
+            ''}
+            
+            # For non-musl targets, build normally without static flags
+            ${pkgs.lib.optionalString (!pkgs.stdenv.targetPlatform.isMusl) ''
             go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/debug/
             
             CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/release/
+            ''}
             
             runHook postBuild
           '';
