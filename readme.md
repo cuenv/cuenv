@@ -387,7 +387,7 @@ Licensed under the [GNU Affero General Public License v3.0](LICENSE).
 
 ## Links
 
-- **Documentation**: [docs.cuenv.sh](https://docs.cuenv.sh) 🚧
+- **Documentation**: [cuenv.dev](https://cuenv.dev) 🚧
 - **CUE Language**: [cuelang.org](https://cuelang.org)
 - **Discussion**: [GitHub Discussions](https://github.com/cuenv/cuenv/discussions)
 
