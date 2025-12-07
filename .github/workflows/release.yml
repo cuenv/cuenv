@@ -11,7 +11,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   release:
@@ -27,8 +26,12 @@ jobs:
           extra-conf: |
             accept-flake-config = true
 
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v2
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
 
       - name: Build cuenv (Bootstrap)
         run: |
@@ -70,8 +73,12 @@ jobs:
           extra-conf: |
             accept-flake-config = true
 
-      - name: Magic Nix Cache
-        uses: DeterminateSystems/magic-nix-cache-action@v2
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
 
       - name: Build release
         run: |
