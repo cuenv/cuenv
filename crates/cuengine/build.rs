@@ -198,24 +198,11 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
         .expect("Failed to convert output path to string");
 
     // For musl targets, add -linkmode external and -extldflags '-static'
-    let ldflags = if is_musl {
-        "-linkmode external -extldflags '-static'"
-    } else {
-        ""
-    };
-
-    if ldflags.is_empty() {
-        cmd.args(["-buildmode=c-archive", "-o", output_str, "bridge.go"]);
-    } else {
-        cmd.args([
-            "-buildmode=c-archive",
-            "-ldflags",
-            ldflags,
-            "-o",
-            output_str,
-            "bridge.go",
-        ]);
+    cmd.arg("-buildmode=c-archive");
+    if is_musl {
+        cmd.args(["-ldflags", "-linkmode external -extldflags '-static'"]);
     }
+    cmd.args(["-o", output_str, "bridge.go"]);
 
     println!("Running Go command: {cmd:?}");
 
