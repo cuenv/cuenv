@@ -91,6 +91,10 @@ jobs:
           mkdir -p target/release
           cp -L result/bin/cuenv target/release/cuenv
 
+      - name: Smoke test built binary
+        run: |
+          ./target/release/cuenv --version
+
       - name: Create archive
         run: |
           mkdir -p release-artifacts

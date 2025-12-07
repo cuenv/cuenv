@@ -77,20 +77,23 @@
           buildPhase = ''
             runHook preBuild
 
-            # Force cgo to use the target toolchain so the archive matches the Rust target
+            # Force CGO to use the *target* toolchain so the archive matches the Rust target
             export CGO_ENABLED=1
-            export CC=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}cc
-            export CXX=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}c++
-            export PKG_CONFIG_ALLOW_CROSS=1
-            ${pkgs.lib.optionalString pkgs.stdenv.targetPlatform.isMusl ''export CGO_LDFLAGS="-static"''}
-            ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-            export GOOS=linux
+            export GOOS=${pkgs.stdenv.hostPlatform.parsed.kernel.name}
             export GOARCH=${
               let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
               in if cpu == "x86_64" then "amd64"
               else if cpu == "aarch64" then "arm64"
               else cpu
             }
+            export CC=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}cc
+            export CXX=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}c++
+            export AR=${pkgs.stdenv.cc.bintools.bintools_bin}/bin/${pkgs.stdenv.cc.targetPrefix}ar
+            export RANLIB=${pkgs.stdenv.cc.bintools.bintools_bin}/bin/${pkgs.stdenv.cc.targetPrefix}ranlib
+            export PKG_CONFIG_ALLOW_CROSS=1
+            ${pkgs.lib.optionalString pkgs.stdenv.targetPlatform.isMusl ''
+            export CGO_CFLAGS="-static"
+            export CGO_LDFLAGS="-static"
             ''}
 
             mkdir -p $out/debug $out/release
