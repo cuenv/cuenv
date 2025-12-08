@@ -27,8 +27,8 @@ permissions:
 
 jobs:
   ci:
-    name: CI
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    name: ci
+    runs-on: blacksmith-8vcpu-ubuntu-2404
 
     steps:
       # fetch-depth: 2 allows cuenv to detect changed files via HEAD^
