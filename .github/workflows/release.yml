@@ -108,14 +108,14 @@ jobs:
         working-directory: crates/cuengine
         run: |
           mkdir -p ../../target/release
-          
+
           export CGO_ENABLED=1
           export GOOS=linux
           export GOARCH=${{ matrix.goarch }}
           export CC="zig cc -target ${{ matrix.arch }}-linux-gnu"
           export CXX="zig c++ -target ${{ matrix.arch }}-linux-gnu"
           export AR="zig ar"
-          
+
           go build -buildmode=c-archive -o ../../target/release/libcue_bridge.a bridge.go
           cp libcue_bridge.h ../../target/release/
 
