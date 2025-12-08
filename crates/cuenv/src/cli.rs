@@ -250,7 +250,7 @@ impl<E> ErrorEnvelope<E> {
 #[command(version)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 
     #[arg(
         short = 'l',
@@ -272,6 +272,9 @@ pub struct Cli {
         help = "Apply environment-specific overrides (e.g., development, production)"
     )]
     pub environment: Option<String>,
+
+    #[arg(long, global = true, help = "Print LLM context information (llms.txt)")]
+    pub llms: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -925,7 +928,8 @@ mod tests {
 
         assert!(matches!(cli.level, LogLevel::Warn)); // Default log level
         assert!(!cli.json); // Default JSON is false
-        if let Commands::Version { output_format } = cli.command {
+        assert!(!cli.llms); // Default llms is false
+        if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Simple);
         } else {
             panic!("Expected Version command");
@@ -970,7 +974,7 @@ mod tests {
     #[test]
     fn test_cli_format_option() {
         let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "json"]).unwrap();
-        if let Commands::Version { output_format } = cli.command {
+        if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Json);
         } else {
             panic!("Expected Version command");
@@ -992,7 +996,7 @@ mod tests {
 
         assert!(matches!(cli.level, LogLevel::Debug));
         assert!(cli.json);
-        if let Commands::Version { output_format } = cli.command {
+        if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Env);
         } else {
             panic!("Expected Version command");
@@ -1019,8 +1023,21 @@ mod tests {
 
     #[test]
     fn test_missing_subcommand() {
-        let result = Cli::try_parse_from(["cuenv"]);
-        assert!(result.is_err());
+        // With Optional command, missing subcommand parses successfully
+        let cli = Cli::try_parse_from(["cuenv"]).unwrap();
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_llms_flag() {
+        let cli = Cli::try_parse_from(["cuenv", "--llms"]).unwrap();
+        assert!(cli.llms);
+        assert!(cli.command.is_none());
+
+        // --llms with a subcommand also works
+        let cli = Cli::try_parse_from(["cuenv", "--llms", "version"]).unwrap();
+        assert!(cli.llms);
+        assert!(cli.command.is_some());
     }
 
     #[test]
@@ -1036,7 +1053,7 @@ mod tests {
     fn test_env_print_command_default() {
         let cli = Cli::try_parse_from(["cuenv", "env", "print"]).unwrap();
 
-        if let Commands::Env { subcommand } = cli.command {
+        if let Some(Commands::Env { subcommand }) = cli.command {
             if let EnvCommands::Print {
                 path,
                 package,
@@ -1069,7 +1086,7 @@ mod tests {
         ])
         .unwrap();
 
-        if let Commands::Env { subcommand } = cli.command {
+        if let Some(Commands::Env { subcommand }) = cli.command {
             match subcommand {
                 EnvCommands::Print {
                     path,
@@ -1091,7 +1108,7 @@ mod tests {
     fn test_env_print_command_short_path() {
         let cli = Cli::try_parse_from(["cuenv", "env", "print", "-p", "test/path"]).unwrap();
 
-        if let Commands::Env { subcommand } = cli.command {
+        if let Some(Commands::Env { subcommand }) = cli.command {
             match subcommand {
                 EnvCommands::Print {
                     path,
@@ -1181,21 +1198,21 @@ mod tests {
     fn test_output_format_value_enum() {
         // Test that the formats work with clap
         let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "simple"]).unwrap();
-        if let Commands::Version { output_format } = cli.command {
+        if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Simple);
         } else {
             panic!("Expected Version command");
         }
 
         let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "env"]).unwrap();
-        if let Commands::Version { output_format } = cli.command {
+        if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Env);
         } else {
             panic!("Expected Version command");
         }
 
         let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "json"]).unwrap();
-        if let Commands::Version { output_format } = cli.command {
+        if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Json);
         } else {
             panic!("Expected Version command");
