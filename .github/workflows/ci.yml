@@ -43,6 +43,18 @@ jobs:
         with:
           fetch-depth: 2
 
+      - name: Install cuenv from latest release
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            TARGET="x86_64-unknown-linux-gnu"
+          else
+            TARGET="aarch64-apple-darwin"
+          fi
+          LATEST=$(curl -s https://api.github.com/repos/cuenv/cuenv/releases/latest | jq -r .tag_name)
+          curl -L "https://github.com/cuenv/cuenv/releases/download/${LATEST}/cuenv-${LATEST}-${TARGET}.tar.gz" | tar xz
+          sudo mv cuenv /usr/local/bin/
+          cuenv --version
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
         with:
@@ -55,14 +67,6 @@ jobs:
           name: cuenv
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
-
-      - name: Build cuenv (Bootstrap)
-        run: |
-          nix build .#cuenv
-          echo "$(pwd)/result/bin" >> $GITHUB_PATH
-
-      - name: Smoke test cuenv
-        run: cuenv --version
 
       - name: Run CI Pipeline
         run: cuenv ci --pipeline ci
