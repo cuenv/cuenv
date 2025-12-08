@@ -591,6 +591,45 @@ pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
+/// Compute a hash for hook execution that includes input file contents.
+/// This is separate from the approval hash - approval only cares about the hook
+/// definition, but execution cache needs to invalidate when input files change.
+pub fn compute_execution_hash(hooks: &[crate::hooks::types::Hook], base_dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+
+    // Hash the hook definitions
+    if let Ok(hooks_json) = serde_json::to_string(hooks) {
+        hasher.update(hooks_json.as_bytes());
+    }
+
+    // Hash the contents of input files from each hook
+    for hook in hooks {
+        // Determine the working directory for this hook
+        let hook_dir = hook
+            .dir
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| base_dir.to_path_buf());
+
+        for input in &hook.inputs {
+            let input_path = hook_dir.join(input);
+            if let Ok(content) = std::fs::read(&input_path) {
+                hasher.update(b"file:");
+                hasher.update(input.as_bytes());
+                hasher.update(b":");
+                hasher.update(&content);
+            }
+        }
+    }
+
+    // Include cuenv version
+    hasher.update(b":version:");
+    hasher.update(crate::VERSION.as_bytes());
+
+    format!("{:x}", hasher.finalize())[..16].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

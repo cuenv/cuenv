@@ -132,6 +132,34 @@ tasks: {
 		inputs: #BaseInputs
 	}
 
+	cross: {
+		linux: {
+			script: """
+				#!/bin/bash
+				set -euo pipefail
+				TARGET="x86_64-unknown-linux-gnu"
+
+				echo "Building Go bridge for Linux..."
+				cd crates/cuengine
+				mkdir -p ../../target/release
+				export CGO_ENABLED=1 GOOS=linux GOARCH=amd64
+				export CC="zig cc -target x86_64-linux-gnu"
+				export CXX="zig c++ -target x86_64-linux-gnu"
+				export AR="zig ar"
+				go build -buildmode=c-archive -o ../../target/release/libcue_bridge.a bridge.go
+				cp libcue_bridge.h ../../target/release/
+				cd ../..
+
+				echo "Building cuenv for Linux..."
+				cargo zigbuild --release --target $TARGET -p cuenv
+
+				echo "Binary at: target/$TARGET/release/cuenv"
+				file target/$TARGET/release/cuenv
+				"""
+			inputs: #BaseInputs
+		}
+	}
+
 	security: {
 		audit: {
 			command: "cargo"
