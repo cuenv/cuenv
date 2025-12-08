@@ -60,7 +60,7 @@ fn main() {
         &output_path,
         &header_path,
     ) {
-        build_go_bridge(&bridge_dir, &output_path);
+        build_go_bridge(&bridge_dir, &output_path, &target_triple);
 
         // Verify the library was actually created
         assert!(
@@ -159,11 +159,44 @@ fn try_use_prebuilt(
     false
 }
 
-fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
+fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
     // Build the Go static archive with CGO (fallback for non-Nix builds)
     println!("Building Go bridge from source");
     let mut cmd = Command::new("go");
     cmd.current_dir(bridge_dir).arg("build");
+    cmd.env("CGO_ENABLED", "1");
+
+    // Keep Go's target in sync with Rust target when cross-compiling
+    if let Some(go_os) = go_os_from_target(target_triple) {
+        cmd.env("GOOS", go_os);
+    }
+    if let Some(go_arch) = go_arch_from_target(target_triple) {
+        cmd.env("GOARCH", go_arch);
+    }
+
+    if target_triple.contains("musl") {
+        // Force the Go archive to be fully static when targeting musl
+        if let Ok(linker) = env::var("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER") {
+            cmd.env("CC", &linker);
+            let linker_path = Path::new(&linker);
+
+            if let (Some(parent), Some(file_name)) =
+                (linker_path.parent(), linker_path.file_name().and_then(|s| s.to_str()))
+            {
+                // Convert x86_64-unknown-linux-musl-{gcc,cc} -> x86_64-unknown-linux-musl-{ar,ranlib}
+                if let Some(prefix) = file_name.strip_suffix("gcc").or_else(|| file_name.strip_suffix("cc")) {
+                    let ar = parent.join(format!("{prefix}ar"));
+                    let ranlib = parent.join(format!("{prefix}ranlib"));
+                    cmd.env("AR", ar);
+                    cmd.env("RANLIB", ranlib);
+                }
+            }
+        }
+        cmd.env("CGO_CFLAGS", "-static");
+        cmd.env("CGO_LDFLAGS", "-static");
+        cmd.env("PKG_CONFIG_ALLOW_CROSS", "1");
+        cmd.args(["-ldflags", "-linkmode external -extldflags '-static'"]);
+    }
 
     // Set macOS deployment target to match Rust's default (11.0)
     // This prevents version mismatch linker errors when building on newer macOS
@@ -200,6 +233,28 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path) {
     }
 
     println!("Go build completed successfully");
+}
+
+fn go_os_from_target(target_triple: &str) -> Option<&'static str> {
+    if target_triple.contains("darwin") {
+        Some("darwin")
+    } else if target_triple.contains("linux") {
+        Some("linux")
+    } else if target_triple.contains("windows") {
+        Some("windows")
+    } else {
+        None
+    }
+}
+
+fn go_arch_from_target(target_triple: &str) -> Option<&'static str> {
+    if target_triple.starts_with("aarch64") {
+        Some("arm64")
+    } else if target_triple.starts_with("x86_64") {
+        Some("amd64")
+    } else {
+        None
+    }
 }
 
 fn configure_rustc_linking(target_triple: &str, out_dir: &Path) {

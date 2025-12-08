@@ -173,31 +173,31 @@
 
         # Bridge setup helper
         setupBridge = ''
-          mkdir -p crates/core/src/target/debug crates/core/src/target/release
-          
-          # Remove existing files to avoid permission issues with read-only nix store files
-          rm -f crates/core/src/target/debug/libcue_bridge.*
-          rm -f crates/core/src/target/release/libcue_bridge.*
+          mkdir -p target/debug target/release
 
-          cp -r ${cue-bridge}/debug/* crates/core/src/target/debug/
-          cp -r ${cue-bridge}/release/* crates/core/src/target/release/
-          
+          # Remove existing files to avoid permission issues with read-only nix store files
+          rm -f target/debug/libcue_bridge.*
+          rm -f target/release/libcue_bridge.*
+
+          cp -r ${cue-bridge}/debug/* target/debug/
+          cp -r ${cue-bridge}/release/* target/release/
+
           # Ensure the copied files are writable
-          chmod -R +w crates/core/src/target
+          chmod -R +w target
         '';
 
         setupBridgeStatic = ''
-          mkdir -p crates/core/src/target/debug crates/core/src/target/release
-          
-          # Remove existing files to avoid permission issues with read-only nix store files
-          rm -f crates/core/src/target/debug/libcue_bridge.*
-          rm -f crates/core/src/target/release/libcue_bridge.*
+          mkdir -p target/debug target/release
 
-          cp -r ${cue-bridge-static}/debug/* crates/core/src/target/debug/
-          cp -r ${cue-bridge-static}/release/* crates/core/src/target/release/
-          
+          # Remove existing files to avoid permission issues with read-only nix store files
+          rm -f target/debug/libcue_bridge.*
+          rm -f target/release/libcue_bridge.*
+
+          cp -r ${cue-bridge-static}/debug/* target/debug/
+          cp -r ${cue-bridge-static}/release/* target/release/
+
           # Ensure the copied files are writable
-          chmod -R +w crates/core/src/target
+          chmod -R +w target
         '';
 
 
