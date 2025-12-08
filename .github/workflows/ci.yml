@@ -28,15 +28,7 @@ permissions:
 jobs:
   ci:
     name: CI
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        # PRs: ubuntu only (fast feedback)
-        # main: ubuntu + macos (full coverage)
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
-
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
       # fetch-depth: 2 allows cuenv to detect changed files via HEAD^
