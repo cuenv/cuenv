@@ -181,7 +181,7 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
         // Only configure Zig if we're actually cross-compiling
         if host_triple != target_triple {
             // Check if zig is available
-            if let Ok(_) = Command::new("zig").arg("version").output() {
+            if Command::new("zig").arg("version").output().is_ok() {
                 // Map Rust target to Zig target format
                 let zig_arch = if target_triple.starts_with("x86_64") {
                     "x86_64"
@@ -191,7 +191,7 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
                     panic!("Unsupported cross-compilation architecture: {target_triple}");
                 };
 
-                let zig_target = format!("{}-linux-gnu", zig_arch);
+                let zig_target = format!("{zig_arch}-linux-gnu");
 
                 println!("cargo:warning=Configuring Zig cross-compilation toolchain for {zig_target}");
                 cmd.env("CC", format!("zig cc -target {zig_target}"));
