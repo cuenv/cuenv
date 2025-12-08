@@ -27,7 +27,7 @@ jobs:
             accept-flake-config = true
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v15
+        uses: cachix/cachix-action@v16
         with:
           name: cuenv
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
@@ -158,7 +158,7 @@ jobs:
             accept-flake-config = true
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@v15
+        uses: cachix/cachix-action@v16
         with:
           name: cuenv
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
