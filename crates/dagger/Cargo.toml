@@ -13,7 +13,7 @@ description = "Dagger backend for cuenv task execution"
 
 [dependencies]
 cuenv-core = { workspace = true }
-dagger-sdk = "0.19.7"
+dagger-sdk = "0.19.8"
 async-trait = "0.1"
 tokio = { workspace = true }
 tracing = { workspace = true }
