@@ -180,11 +180,15 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
             cmd.env("CC", &linker);
             let linker_path = Path::new(&linker);
 
-            if let (Some(parent), Some(file_name)) =
-                (linker_path.parent(), linker_path.file_name().and_then(|s| s.to_str()))
-            {
+            if let (Some(parent), Some(file_name)) = (
+                linker_path.parent(),
+                linker_path.file_name().and_then(|s| s.to_str()),
+            ) {
                 // Convert x86_64-unknown-linux-musl-{gcc,cc} -> x86_64-unknown-linux-musl-{ar,ranlib}
-                if let Some(prefix) = file_name.strip_suffix("gcc").or_else(|| file_name.strip_suffix("cc")) {
+                if let Some(prefix) = file_name
+                    .strip_suffix("gcc")
+                    .or_else(|| file_name.strip_suffix("cc"))
+                {
                     let ar = parent.join(format!("{prefix}ar"));
                     let ranlib = parent.join(format!("{prefix}ranlib"));
                     cmd.env("AR", ar);
