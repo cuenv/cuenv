@@ -193,7 +193,9 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
 
                 let zig_target = format!("{zig_arch}-linux-gnu");
 
-                println!("cargo:warning=Configuring Zig cross-compilation toolchain for {zig_target}");
+                println!(
+                    "cargo:warning=Configuring Zig cross-compilation toolchain for {zig_target}"
+                );
                 cmd.env("CC", format!("zig cc -target {zig_target}"));
                 cmd.env("CXX", format!("zig c++ -target {zig_target}"));
                 cmd.env("AR", "zig ar");
