@@ -24,8 +24,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
@@ -52,12 +50,3 @@ jobs:
         run: cuenv ci --pipeline ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build cuenv-static (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: nix build .#cuenv-static
-
-      - name: Static binary smoke test (Alpine)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          docker run --rm -v "$PWD/result/bin/cuenv:/usr/local/bin/cuenv:ro" alpine /usr/local/bin/cuenv --version

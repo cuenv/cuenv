@@ -45,11 +45,7 @@ jobs:
         run: |
           STATUS=$(cuenv changeset status --json 2>&1) || true
           HAS_PENDING=$(echo "$STATUS" | jq -r '.has_pending // false')
-          if [ "$HAS_PENDING" = "true" ]; then
-            echo "has_pending=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_pending=false" >> $GITHUB_OUTPUT
-          fi
+          echo "has_pending=$HAS_PENDING" >> $GITHUB_OUTPUT
 
       - name: Generate changeset from commits
         if: steps.check_existing.outputs.has_pending == 'false'
@@ -65,11 +61,7 @@ jobs:
         run: |
           STATUS=$(cuenv changeset status --json 2>&1) || true
           HAS_PENDING=$(echo "$STATUS" | jq -r '.has_pending // false')
-          if [ "$HAS_PENDING" = "true" ]; then
-            echo "has_changesets=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_changesets=false" >> $GITHUB_OUTPUT
-          fi
+          echo "has_changesets=$HAS_PENDING" >> $GITHUB_OUTPUT
 
       - name: Calculate version bump (dry run)
         if: steps.check.outputs.has_changesets == 'true'
@@ -82,7 +74,6 @@ jobs:
             cat version_summary.txt
             echo "CUENV_VERSION_SUMMARY_END"
           } >> $GITHUB_OUTPUT
-          rm version_summary.txt
 
       - name: Apply version changes
         if: steps.check.outputs.has_changesets == 'true'
