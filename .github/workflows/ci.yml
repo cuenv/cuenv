@@ -33,7 +33,7 @@ jobs:
     steps:
       # fetch-depth: 2 allows cuenv to detect changed files via HEAD^
       # cuenv gracefully handles shallow clones but this improves accuracy
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
