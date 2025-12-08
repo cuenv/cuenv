@@ -39,6 +39,9 @@ jobs:
           nix build .#cuenv
           echo "$(pwd)/result/bin" >> $GITHUB_PATH
 
+      - name: Smoke test bootstrap cuenv
+        run: cuenv --version
+
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
@@ -93,6 +96,7 @@ jobs:
 
       - name: Smoke test built binary
         run: |
+          result/bin/cuenv --version
           ./target/release/cuenv --version
 
       - name: Create archive

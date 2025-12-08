@@ -45,6 +45,9 @@ jobs:
           nix build .#cuenv
           echo "$(pwd)/result/bin" >> $GITHUB_PATH
 
+      - name: Smoke test cuenv
+        run: cuenv --version
+
       - name: Run CI Pipeline
         run: cuenv ci --pipeline ci
         env:
