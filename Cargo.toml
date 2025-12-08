@@ -43,7 +43,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 miette = { version = "7.0", features = ["fancy"] }
-uuid = { version = "1.18", features = ["v4", "serde"] }
+uuid = { version = "1.19", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.8.3"
 # New dependencies for hook execution system
