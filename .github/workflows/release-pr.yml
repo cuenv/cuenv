@@ -22,12 +22,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install cuenv from latest release
-        run: |
-          LATEST=$(curl -s https://api.github.com/repos/cuenv/cuenv/releases/latest | jq -r .tag_name)
-          curl -L "https://github.com/cuenv/cuenv/releases/download/${LATEST}/cuenv-${LATEST}-x86_64-unknown-linux-gnu.tar.gz" | tar xz
-          sudo mv cuenv /usr/local/bin/
-          cuenv --version
+      - name: Setup cuenv
+        uses: cuenv/setup-cuenv@v1
 
       - name: Get latest tag
         id: tag
