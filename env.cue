@@ -7,8 +7,7 @@ import (
 
 schema.#Cuenv
 
-env: NAME: "David 2"
-env: WHO: "rawkode"
+name: "cuenv"
 
 ci: pipelines: [
 	{
