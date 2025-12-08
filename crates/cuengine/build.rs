@@ -188,26 +188,19 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
                 } else if target_triple.starts_with("aarch64") {
                     "aarch64"
                 } else {
-                    panic!(
-                        "Unsupported cross-compilation architecture: {}",
-                        target_triple
-                    );
+                    panic!("Unsupported cross-compilation architecture: {target_triple}");
                 };
 
                 let zig_target = format!("{}-linux-gnu", zig_arch);
 
-                println!(
-                    "cargo:warning=Configuring Zig cross-compilation toolchain for {}",
-                    zig_target
-                );
-                cmd.env("CC", format!("zig cc -target {}", zig_target));
-                cmd.env("CXX", format!("zig c++ -target {}", zig_target));
+                println!("cargo:warning=Configuring Zig cross-compilation toolchain for {zig_target}");
+                cmd.env("CC", format!("zig cc -target {zig_target}"));
+                cmd.env("CXX", format!("zig c++ -target {zig_target}"));
                 cmd.env("AR", "zig ar");
             } else {
                 panic!(
-                    "Cross-compiling from {} to {} requires Zig.\n\
-                     Install Zig (https://ziglang.org/download/) or set CUE_BRIDGE_PATH.",
-                    host_triple, target_triple
+                    "Cross-compiling from {host_triple} to {target_triple} requires Zig.\n\
+                     Install Zig (https://ziglang.org/download/) or set CUE_BRIDGE_PATH."
                 );
             }
         }
