@@ -384,17 +384,10 @@ pub async fn get_environment_with_hooks(
         directory.display()
     );
 
-    // Compute config hash including all hooks
-    let config_value = serde_json::to_value(config).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
-    })?;
-    // Include hooks in hash to ensure cache invalidation when hooks change
-    let hooks_value = serde_json::to_value(&all_hooks).unwrap_or_default();
-    let combined_value = serde_json::json!({
-        "config": config_value,
-        "hooks": hooks_value,
-    });
-    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&combined_value);
+    // Compute execution hash including hook definitions AND input file contents
+    // This is separate from approval hash - approval only cares about hook definitions,
+    // but execution cache needs to invalidate when input files (e.g., flake.nix) change
+    let config_hash = cuenv_core::hooks::state::compute_execution_hash(&all_hooks, directory);
 
     // Check if foreground hook execution is requested (useful for CI environments
     // where detached supervisor processes may not work correctly).
