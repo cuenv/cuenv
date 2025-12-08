@@ -43,16 +43,9 @@
 
         rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
-          targets = [ "x86_64-unknown-linux-musl" ];
         };
 
-        # Use pkgsCross.musl64 for static builds to ensure we target Linux Musl
-        # correctly even when building from macOS (cross-compilation).
-        # On Linux, this is effectively equivalent to pkgsStatic for Musl.
-        pkgsStatic = pkgs.pkgsCross.musl64;
-
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
-        craneLibStatic = (crane.mkLib pkgsStatic).overrideToolchain rustToolchain;
 
         # Platform-specific build inputs
         darwinFrameworks = with pkgs.darwin.apple_sdk.frameworks; [
@@ -65,7 +58,7 @@
           [ libiconv ] ++ lib.optionals stdenv.isDarwin darwinFrameworks;
 
         # CUE bridge builder
-        mkCueBridge = pkgs: pkgs.buildGoModule {
+        cue-bridge = pkgs.buildGoModule {
           pname = "libcue-bridge";
           version = "0.1.1";
           src = ./crates/cuengine;
@@ -77,7 +70,6 @@
           buildPhase = ''
             runHook preBuild
 
-            # Force CGO to use the *target* toolchain so the archive matches the Rust target
             export CGO_ENABLED=1
             export GOOS=${pkgs.stdenv.hostPlatform.parsed.kernel.name}
             export GOARCH=${
@@ -90,31 +82,14 @@
             export CXX=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}c++
             export AR=${pkgs.stdenv.cc.bintools.bintools_bin}/bin/${pkgs.stdenv.cc.targetPrefix}ar
             export RANLIB=${pkgs.stdenv.cc.bintools.bintools_bin}/bin/${pkgs.stdenv.cc.targetPrefix}ranlib
-            export PKG_CONFIG_ALLOW_CROSS=1
-            ${pkgs.lib.optionalString pkgs.stdenv.targetPlatform.isMusl ''
-            export CGO_CFLAGS="-static"
-            export CGO_LDFLAGS="-static"
-            ''}
 
             mkdir -p $out/debug $out/release
 
-            # For musl targets, add -extldflags '-static' to ensure fully static linking
-            ${pkgs.lib.optionalString pkgs.stdenv.targetPlatform.isMusl ''
-            go build -buildmode=c-archive -ldflags "-extldflags '-static'" -o $out/debug/libcue_bridge.a bridge.go
-            cp libcue_bridge.h $out/debug/
-            
-            CGO_ENABLED=1 go build -ldflags="-s -w -extldflags '-static'" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go
-            cp libcue_bridge.h $out/release/
-            ''}
-            
-            # For non-musl targets, build normally without static flags
-            ${pkgs.lib.optionalString (!pkgs.stdenv.targetPlatform.isMusl) ''
             go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/debug/
             
             CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/release/
-            ''}
             
             runHook postBuild
           '';
@@ -130,10 +105,6 @@
             platforms = platforms.unix ++ platforms.windows;
           };
         };
-
-        cue-bridge = mkCueBridge pkgs;
-
-        cue-bridge-static = mkCueBridge pkgsStatic;
 
         # Source filtering for Rust builds
         # Uses Crane's filterCargoSources for proper cache invalidation
@@ -175,28 +146,12 @@
         setupBridge = ''
           mkdir -p target/debug target/release
 
-          # Remove existing files to avoid permission issues with read-only nix store files
           rm -f target/debug/libcue_bridge.*
           rm -f target/release/libcue_bridge.*
 
           cp -r ${cue-bridge}/debug/* target/debug/
           cp -r ${cue-bridge}/release/* target/release/
 
-          # Ensure the copied files are writable
-          chmod -R +w target
-        '';
-
-        setupBridgeStatic = ''
-          mkdir -p target/debug target/release
-
-          # Remove existing files to avoid permission issues with read-only nix store files
-          rm -f target/debug/libcue_bridge.*
-          rm -f target/release/libcue_bridge.*
-
-          cp -r ${cue-bridge-static}/debug/* target/debug/
-          cp -r ${cue-bridge-static}/release/* target/release/
-
-          # Ensure the copied files are writable
           chmod -R +w target
         '';
 
@@ -213,29 +168,11 @@
           CUE_BRIDGE_PATH = cue-bridge;
         };
 
-        commonArgsStatic = commonArgs // {
-          CUE_BRIDGE_PATH = cue-bridge-static;
-          preBuild = setupBridgeStatic;
-          CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
-          # Ensure we link libc statically and don't leak nix-store rpaths
-          RUSTFLAGS = "-C target-feature=+crt-static";
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS = "-C target-feature=+crt-static";
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER =
-            "${pkgsStatic.stdenv.cc}/bin/${pkgsStatic.stdenv.cc.targetPrefix}cc";
-          # Override buildInputs to use static libs if needed, or empty if none
-          buildInputs = [ ];
-        };
-
         # Build artifacts for dependency caching
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           src = srcArtifacts;
-          preBuild = ""; # No bridge needed for deps
-          buildInputs = platformBuildInputs;
-        });
-
-        cargoArtifactsStatic = craneLibStatic.buildDepsOnly (commonArgsStatic // {
-          src = srcArtifacts;
           preBuild = "";
+          buildInputs = platformBuildInputs;
         });
 
         # Main package build
@@ -243,13 +180,6 @@
           inherit cargoArtifacts;
           pname = "cuenv";
           version = "0.1.1";
-        });
-
-        cuenv-static = craneLibStatic.buildPackage (commonArgsStatic // {
-          inherit cargoArtifactsStatic;
-          pname = "cuenv";
-          version = "0.1.1";
-          doCheck = false; # Skip tests due to Go CGO + musl runtime incompatibility
         });
 
         # Development tools configuration
@@ -281,7 +211,7 @@
       {
         packages = {
           default = cuenv;
-          inherit cuenv cuenv-static cue-bridge;
+          inherit cuenv cue-bridge;
         };
 
         checks = {

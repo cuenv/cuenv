@@ -14,12 +14,11 @@ permissions:
   id-token: write
 
 jobs:
+  # Run release pipeline and build artifacts in parallel
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
@@ -56,17 +55,98 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-  # Matrix builds for release artifacts (cuenv doesn't support matrix yet)
-  build-release-artifacts:
-    runs-on: ${{ matrix.os }}
-    needs: [release]
+  build-linux:
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-          - os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            goarch: amd64
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo-zigbuild
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-zigbuild
+          key: cargo-zigbuild-0.19
+
+      - name: Install cargo-zigbuild
+        run: |
+          if [ ! -f ~/.cargo/bin/cargo-zigbuild ]; then
+            cargo install cargo-zigbuild
+          fi
+
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: crates/cuengine/go.sum
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-rust"
+          shared-key: ${{ matrix.target }}
+
+      - name: Build Go bridge for target
+        working-directory: crates/cuengine
+        run: |
+          mkdir -p ../../target/release
+          
+          export CGO_ENABLED=1
+          export GOOS=linux
+          export GOARCH=${{ matrix.goarch }}
+          export CC="zig cc -target ${{ matrix.arch }}-linux-gnu"
+          export CXX="zig c++ -target ${{ matrix.arch }}-linux-gnu"
+          export AR="zig ar"
+          
+          go build -buildmode=c-archive -o ../../target/release/libcue_bridge.a bridge.go
+          cp libcue_bridge.h ../../target/release/
+
+      - name: Build with cargo-zigbuild
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p cuenv
+
+      - name: Smoke test (native only)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: ./target/${{ matrix.target }}/release/cuenv --version
+
+      - name: Create archive
+        run: |
+          mkdir -p release-artifacts
+          tar czf "release-artifacts/cuenv-${{ github.event.release.tag_name || inputs.tag_name }}-${{ matrix.target }}.tar.gz" \
+            -C target/${{ matrix.target }}/release cuenv
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: release-artifacts/*
+
+  build-macos:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
             target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
@@ -86,28 +166,17 @@ jobs:
 
       - name: Build release
         run: |
-          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            nix build .#cuenv-static
-          else
-            nix build .#cuenv
-          fi
+          nix build .#cuenv
           mkdir -p target/release
           cp -L result/bin/cuenv target/release/cuenv
 
-      - name: Smoke test built binary
-        run: |
-          result/bin/cuenv --version
-          ./target/release/cuenv --version
-
-      - name: Static binary smoke test (musl via Alpine)
-        if: contains(matrix.target, 'musl')
-        run: |
-          docker run --rm -v "$PWD/target/release/cuenv:/usr/local/bin/cuenv:ro" alpine /usr/local/bin/cuenv --version
+      - name: Smoke test
+        run: ./target/release/cuenv --version
 
       - name: Create archive
         run: |
           mkdir -p release-artifacts
-          tar czf "release-artifacts/cuenv-${{ github.event.release.tag_name }}-${{ matrix.target }}.tar.gz" \
+          tar czf "release-artifacts/cuenv-${{ github.event.release.tag_name || inputs.tag_name }}-${{ matrix.target }}.tar.gz" \
             -C target/release cuenv
 
       - name: Upload release artifacts
@@ -118,7 +187,7 @@ jobs:
 
   upload-release-assets:
     runs-on: ubuntu-latest
-    needs: [build-release-artifacts]
+    needs: [release, build-linux, build-macos]
     steps:
       - uses: actions/checkout@v4
 
@@ -133,7 +202,7 @@ jobs:
             if [ -d "$artifact_dir" ]; then
               for file in "$artifact_dir"/*; do
                 if [ -f "$file" ]; then
-                  gh release upload "${{ github.event.release.tag_name }}" "$file"
+                  gh release upload "${{ github.event.release.tag_name || inputs.tag_name }}" "$file"
                 fi
               done
             fi
