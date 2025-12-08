@@ -71,7 +71,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
@@ -139,15 +139,9 @@ jobs:
           path: release-artifacts/*
 
   build-macos:
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - runner: macos-13
-            target: x86_64-apple-darwin
-          - runner: macos-14
-            target: aarch64-apple-darwin
-
+    runs-on: macos-26
+    env:
+      TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -176,13 +170,13 @@ jobs:
       - name: Create archive
         run: |
           mkdir -p release-artifacts
-          tar czf "release-artifacts/cuenv-${{ github.event.release.tag_name || inputs.tag_name }}-${{ matrix.target }}.tar.gz" \
+          tar czf "release-artifacts/cuenv-${{ github.event.release.tag_name || inputs.tag_name }}-${TARGET}.tar.gz" \
             -C target/release cuenv
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.target }}
+          name: release-${{ env.TARGET }}
           path: release-artifacts/*
 
   upload-release-assets:
