@@ -3,8 +3,20 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "examples/**"
+      - "*.md"
+      - "LICENSE"
+      - ".vscode/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "examples/**"
+      - "*.md"
+      - "LICENSE"
+      - ".vscode/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -20,10 +32,16 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # PRs: ubuntu only (fast feedback)
+        # main: ubuntu + macos (full coverage)
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
 
     steps:
+      # fetch-depth: 2 allows cuenv to detect changed files via HEAD^
+      # cuenv gracefully handles shallow clones but this improves accuracy
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16

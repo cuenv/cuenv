@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use cuenv_core::Result;
 use std::path::PathBuf;
 use std::process::Command;
+use tracing::{debug, warn};
 
 #[allow(dead_code)]
 pub struct GitHubProvider {
@@ -14,6 +15,8 @@ pub struct GitHubProvider {
     run_id: Option<u64>,
 }
 
+const NULL_SHA: &str = "0000000000000000000000000000000000000000";
+
 impl GitHubProvider {
     fn parse_repo(repo_str: &str) -> (String, String) {
         let parts: Vec<&str> = repo_str.split('/').collect();
@@ -22,6 +25,68 @@ impl GitHubProvider {
         } else {
             (String::new(), String::new())
         }
+    }
+
+    fn is_shallow_clone() -> bool {
+        Command::new("git")
+            .args(["rev-parse", "--is-shallow-repository"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
+            .unwrap_or(false)
+    }
+
+    fn fetch_ref(refspec: &str) -> bool {
+        debug!("Fetching ref: {refspec}");
+        Command::new("git")
+            .args(["fetch", "--depth=1", "origin", refspec])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn get_before_sha() -> Option<String> {
+        std::env::var("GITHUB_BEFORE")
+            .ok()
+            .filter(|sha| sha != NULL_SHA && !sha.is_empty())
+    }
+
+    fn try_git_diff(range: &str) -> Option<Vec<PathBuf>> {
+        debug!("Trying git diff: {range}");
+        let output = Command::new("git")
+            .args(["diff", "--name-only", range])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            debug!(
+                "git diff failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return None;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Some(
+            stdout
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| PathBuf::from(line.trim()))
+                .collect(),
+        )
+    }
+
+    fn get_all_tracked_files() -> Vec<PathBuf> {
+        Command::new("git")
+            .args(["ls-files"])
+            .output()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|line| PathBuf::from(line.trim()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -57,79 +122,94 @@ impl CIProvider for GitHubProvider {
     }
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        // Naive implementation using git CLI
-        // In a real implementation, we'd want to be more robust about fetching logic
-        let mut cmd = Command::new("git");
-        cmd.arg("diff").arg("--name-only");
+        let is_shallow = Self::is_shallow_clone();
+        debug!("Shallow clone detected: {is_shallow}");
 
-        if let Some(base) = &self.context.base_ref {
-            if !base.is_empty() {
-                // PR: origin/base...HEAD
-                // We assume origin is the remote. This might be brittle.
-                cmd.arg(format!("origin/{base}...HEAD"));
-            } else if let Ok(before_sha) = std::env::var("GITHUB_BEFORE") {
-                // Push event: use GITHUB_BEFORE which contains the SHA before the push
-                // This works even with shallow clones if the commit is fetched
-                cmd.arg(format!("{before_sha}..HEAD"));
-            } else {
-                // Fallback: compare against previous commit
-                // Note: This may fail on shallow clones without fetch-depth: 0
-                cmd.arg("HEAD^..HEAD");
+        // Strategy 1: Pull Request - use base_ref
+        if let Some(base) = &self.context.base_ref
+            && !base.is_empty()
+        {
+            debug!("PR detected, base_ref: {base}");
+
+            if is_shallow {
+                Self::fetch_ref(base);
             }
-        } else if let Ok(before_sha) = std::env::var("GITHUB_BEFORE") {
-            // Push event: use GITHUB_BEFORE which contains the SHA before the push
-            cmd.arg(format!("{before_sha}..HEAD"));
-        } else {
-            // Fallback: compare against previous commit
-            // Note: This may fail on shallow clones without fetch-depth: 0
-            cmd.arg("HEAD^..HEAD");
+
+            if let Some(files) = Self::try_git_diff(&format!("origin/{base}...HEAD")) {
+                return Ok(files);
+            }
         }
 
-        let output = cmd.output().map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: None,
-            operation: "git diff".to_string(),
-        })?;
+        // Strategy 2: Push event with valid GITHUB_BEFORE
+        if let Some(before_sha) = Self::get_before_sha() {
+            debug!("Push event detected, GITHUB_BEFORE: {before_sha}");
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(cuenv_core::Error::Configuration {
-                src: "git".to_string(),
-                span: None,
-                message: format!(
-                    "Failed to detect changed files via git diff. If running in GitHub Actions, ensure 'fetch-depth: 0' is set in your workflow.\nGit error: {stderr}"
-                ),
-            });
+            if is_shallow {
+                Self::fetch_ref(&before_sha);
+            }
+
+            if let Some(files) = Self::try_git_diff(&format!("{before_sha}..HEAD")) {
+                return Ok(files);
+            }
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let files = stdout
-            .lines()
-            .map(|line| PathBuf::from(line.trim()))
-            .collect();
+        // Strategy 3: Try comparing against parent commit
+        if let Some(files) = Self::try_git_diff("HEAD^..HEAD") {
+            debug!("Using HEAD^ comparison");
+            return Ok(files);
+        }
 
-        Ok(files)
+        // Strategy 4: Fall back to all tracked files
+        warn!(
+            "Could not determine changed files (shallow clone: {is_shallow}). \
+             Running all tasks. For better performance, consider: \
+             1) Set 'fetch-depth: 2' for push events, or \
+             2) This may be a new branch with no history to compare."
+        );
+
+        Ok(Self::get_all_tracked_files())
     }
 
     async fn create_check(&self, _name: &str) -> Result<CheckHandle> {
-        // TODO: Call GitHub API to create check run
         Ok(CheckHandle {
             id: "dummy-check-id".to_string(),
         })
     }
 
     async fn update_check(&self, _handle: &CheckHandle, _summary: &str) -> Result<()> {
-        // TODO: Call GitHub API
         Ok(())
     }
 
     async fn complete_check(&self, _handle: &CheckHandle, _report: &PipelineReport) -> Result<()> {
-        // TODO: Call GitHub API
         Ok(())
     }
 
     async fn upload_report(&self, _report: &PipelineReport) -> Result<Option<String>> {
-        // TODO: Upload artifact
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_repo() {
+        let (owner, repo) = GitHubProvider::parse_repo("cuenv/cuenv");
+        assert_eq!(owner, "cuenv");
+        assert_eq!(repo, "cuenv");
+    }
+
+    #[test]
+    fn test_parse_repo_invalid() {
+        let (owner, repo) = GitHubProvider::parse_repo("invalid");
+        assert_eq!(owner, "");
+        assert_eq!(repo, "");
+    }
+
+    #[test]
+    fn test_null_sha_constant() {
+        assert_eq!(NULL_SHA.len(), 40);
+        assert!(NULL_SHA.chars().all(|c| c == '0'));
     }
 }
