@@ -71,6 +71,9 @@ pub async fn run_ci(
         }
     }
 
+    // Track if any project failed
+    let mut any_failed = false;
+
     // 4. Process each project
     for project in &projects {
         // Let's skip the actual execution logic for now and just print what we would do
@@ -220,7 +223,18 @@ pub async fn run_ci(
                     println!("Report written to: {}", report_path.display());
                 }
             }
+
+            // Track if this project failed
+            if pipeline_status == PipelineStatus::Failed {
+                any_failed = true;
+            }
         }
+    }
+
+    if any_failed {
+        return Err(cuenv_core::Error::configuration(
+            "One or more CI tasks failed",
+        ));
     }
 
     Ok(())
