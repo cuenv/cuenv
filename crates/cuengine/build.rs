@@ -174,32 +174,40 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
         cmd.env("GOARCH", go_arch);
     }
 
-    if target_triple.contains("musl") {
-        // Force the Go archive to be fully static when targeting musl
-        if let Ok(linker) = env::var("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER") {
-            cmd.env("CC", &linker);
-            let linker_path = Path::new(&linker);
+    // Cross-compile to Linux using Zig - the one true way
+    if target_triple.contains("linux") {
+        let host_triple = env::var("HOST").unwrap_or_else(|_| target_triple.to_string());
 
-            if let (Some(parent), Some(file_name)) = (
-                linker_path.parent(),
-                linker_path.file_name().and_then(|s| s.to_str()),
-            ) {
-                // Convert x86_64-unknown-linux-musl-{gcc,cc} -> x86_64-unknown-linux-musl-{ar,ranlib}
-                if let Some(prefix) = file_name
-                    .strip_suffix("gcc")
-                    .or_else(|| file_name.strip_suffix("cc"))
-                {
-                    let ar = parent.join(format!("{prefix}ar"));
-                    let ranlib = parent.join(format!("{prefix}ranlib"));
-                    cmd.env("AR", ar);
-                    cmd.env("RANLIB", ranlib);
-                }
+        // Only configure Zig if we're actually cross-compiling
+        if host_triple != target_triple {
+            // Check if zig is available
+            if let Ok(_) = Command::new("zig").arg("version").output() {
+                // Map Rust target to Zig target format
+                let zig_arch = if target_triple.starts_with("x86_64") {
+                    "x86_64"
+                } else if target_triple.starts_with("aarch64") {
+                    "aarch64"
+                } else {
+                    panic!(
+                        "Unsupported cross-compilation architecture: {}",
+                        target_triple
+                    );
+                };
+
+                let zig_target = format!("{}-linux-gnu", zig_arch);
+
+                println!("cargo:warning=Configuring Zig cross-compilation toolchain for {}", zig_target);
+                cmd.env("CC", format!("zig cc -target {}", zig_target));
+                cmd.env("CXX", format!("zig c++ -target {}", zig_target));
+                cmd.env("AR", "zig ar");
+            } else {
+                panic!(
+                    "Cross-compiling from {} to {} requires Zig.\n\
+                     Install Zig (https://ziglang.org/download/) or set CUE_BRIDGE_PATH.",
+                    host_triple, target_triple
+                );
             }
         }
-        cmd.env("CGO_CFLAGS", "-static");
-        cmd.env("CGO_LDFLAGS", "-static");
-        cmd.env("PKG_CONFIG_ALLOW_CROSS", "1");
-        cmd.args(["-ldflags", "-linkmode external -extldflags '-static'"]);
     }
 
     // Set macOS deployment target to match Rust's default (11.0)

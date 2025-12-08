@@ -43,6 +43,7 @@
 
         rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
+          targets = [ "x86_64-unknown-linux-gnu" ];
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
@@ -191,6 +192,8 @@
           cargo-nextest
           cargo-deny
           cargo-cyclonedx
+          cargo-zigbuild
+          zig
           git
           gh
           jq
