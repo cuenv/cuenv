@@ -99,6 +99,11 @@ jobs:
           result/bin/cuenv --version
           ./target/release/cuenv --version
 
+      - name: Static binary smoke test (musl via Alpine)
+        if: contains(matrix.target, 'musl')
+        run: |
+          docker run --rm -v "$PWD/target/release/cuenv:/usr/local/bin/cuenv:ro" alpine /usr/local/bin/cuenv --version
+
       - name: Create archive
         run: |
           mkdir -p release-artifacts
