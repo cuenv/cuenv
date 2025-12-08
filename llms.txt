@@ -1,0 +1,117 @@
+# cuenv
+
+> A modern application build toolchain with typed environments and CUE-powered task orchestration.
+
+cuenv provides two core primitives for secure, validated development environments:
+
+## Core Primitives
+
+### `cuenv exec -- <command>`
+
+Run any command with a validated environment and runtime-resolved secrets:
+
+```bash
+cuenv exec -- npm start
+cuenv exec -e production -- ./deploy.sh
+```
+
+- Environment variables are validated against CUE constraints
+- Secrets are resolved at runtime from providers (1Password, AWS, GCP, Vault)
+- Secrets are never written to disk or exported to shell history
+
+### `cuenv task <name>`
+
+Execute orchestrated tasks with dependencies, parallelism, and caching:
+
+```bash
+cuenv task build
+cuenv task -e staging test
+```
+
+- Tasks can run in parallel (object syntax) or sequentially (array syntax)
+- Automatic dependency resolution via `dependsOn`
+- Content-aware caching based on declared `inputs` and `outputs`
+- Hermetic execution ensures reproducibility
+
+## Configuration
+
+cuenv uses CUE for type-safe configuration. Create an `env.cue` file:
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Cuenv
+
+env: {
+    NODE_ENV: "development" | "staging" | "production"
+    API_KEY:  schema.#Secret & { command: "op", args: ["read", "op://vault/api/key"] }
+}
+
+tasks: {
+    build: {
+        command: "npm"
+        args:    ["run", "build"]
+        inputs:  ["src/**/*", "package.json"]
+        outputs: ["dist/**/*"]
+    }
+    test: {
+        unit:        { command: "npm", args: ["test"] }
+        integration: { command: "npm", args: ["test:e2e"] }
+    }
+}
+```
+
+## Environment Variable Patterns
+
+### Simple constraints
+```cue
+env: {
+    PORT: int & >1024 & <65536           // Numeric range
+    LOG_LEVEL: "debug" | "info" | "error" // Enum values
+    NODE_ENV: "development" | "production" // Union type
+}
+```
+
+### Secrets (always use schema.#Secret)
+```cue
+env: {
+    DATABASE_URL: schema.#Secret & {
+        command: "op"
+        args: ["read", "op://vault/db/url"]
+    }
+    API_KEY: schema.#Secret & {
+        command: "aws"
+        args: ["secretsmanager", "get-secret-value", "--secret-id", "api-key"]
+    }
+}
+```
+
+Secrets are resolved at runtime by executing the specified command. The `schema.#Secret` type ensures proper handling: never written to disk, redacted from logs, and not exported to shell history.
+
+## Key Concepts
+
+- **Type Safety**: CUE constraints validate environment variables before execution
+- **Secret Management**: Use `schema.#Secret & { command: "...", args: [...] }` for all secrets
+- **Parallel Execution**: Object keys in task groups run concurrently
+- **Sequential Execution**: Array elements in task groups run in order
+- **Caching**: Tasks with declared inputs/outputs are cached by content hash
+- **Hermetic Builds**: Tasks run in isolated directories with only declared inputs
+
+## CLI Reference
+
+```
+cuenv exec -- <command>     Execute command with validated environment
+cuenv task <name>           Run a named task
+cuenv env print             Show environment variables (secrets redacted)
+cuenv env list              List available environments
+cuenv allow                 Approve configuration for hook execution
+cuenv shell init <shell>    Generate shell integration script
+```
+
+## Links
+
+- Repository: https://github.com/cuenv/cuenv
+- CUE Language: https://cuelang.org
+

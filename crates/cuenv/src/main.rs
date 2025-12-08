@@ -31,6 +31,9 @@ use tracing::instrument;
 /// Exit code for SIGINT (128 + signal number 2)
 const EXIT_SIGINT: i32 = 130;
 
+/// LLM context content (llms.txt + CUE schemas concatenated at build time)
+const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt"));
+
 #[tokio::main]
 #[instrument(name = "cuenv_main")]
 async fn main() {
@@ -149,17 +152,28 @@ async fn real_main() -> Result<(), CliError> {
         }
     };
 
+    // Handle --llms flag (print LLM context and exit)
+    if init_result.cli.llms {
+        print!("{LLMS_CONTENT}");
+        return Ok(());
+    }
+
+    // Ensure a subcommand was provided
+    let Some(cli_command) = init_result.cli.command else {
+        return Err(CliError::config_with_help(
+            "No subcommand provided",
+            "Run 'cuenv --help' for usage information",
+        ));
+    };
+
     // Handle completions command specially (before converting to internal command)
-    if let crate::cli::Commands::Completions { shell } = &init_result.cli.command {
+    if let crate::cli::Commands::Completions { shell } = &cli_command {
         crate::cli::generate_completions(*shell);
         return Ok(());
     }
 
     // Convert CLI command to internal command, passing global environment
-    let command: Command = init_result
-        .cli
-        .command
-        .into_command(init_result.cli.environment.clone());
+    let command: Command = cli_command.into_command(init_result.cli.environment.clone());
 
     // Execute the command
     let result = execute_command_safe(command, init_result.cli.json).await;

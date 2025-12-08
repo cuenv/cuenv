@@ -293,7 +293,17 @@ impl TaskGraph {
                     }
                     TaskDefinition::Group(_) => {
                         // Handle groups with build_from_definition
-                        self.build_from_definition(&current_name, definition, all_tasks)?;
+                        let added_nodes =
+                            self.build_from_definition(&current_name, definition, all_tasks)?;
+                        // Collect dependencies from newly added tasks
+                        for node_idx in added_nodes {
+                            let node = &self.graph[node_idx];
+                            for dep in &node.task.depends_on {
+                                if !processed.contains(dep) {
+                                    to_process.push(dep.clone());
+                                }
+                            }
+                        }
                     }
                 }
             } else {

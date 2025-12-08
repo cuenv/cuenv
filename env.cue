@@ -286,6 +286,29 @@ tasks: {
 		]
 	}
 
+	// LLM evaluation tasks using GitHub Models
+	eval: {
+		_inputs: ["llms.txt", "schema", "prompts"]
+
+		"task-gen": {
+			command: "gh"
+			args:    ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
+			inputs:  _inputs
+		}
+
+		"env-gen": {
+			command: "gh"
+			args:    ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
+			inputs:  _inputs
+		}
+
+		qa: {
+			command: "gh"
+			args:    ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
+			inputs:  _inputs
+		}
+	}
+
 	release: {
 		build: {
 			command: "cargo"
