@@ -117,15 +117,20 @@ pub async fn run_ci(
                 }
             },
         );
-        let affected = compute_affected_tasks(
-            &changed_files,
-            &pipeline.tasks,
-            project_root,
-            config,
-            &project_map,
-        );
+        // For release events, run all tasks unconditionally (no affected-file filtering)
+        let tasks_to_run = if context.event == "release" {
+            pipeline.tasks.clone()
+        } else {
+            compute_affected_tasks(
+                &changed_files,
+                &pipeline.tasks,
+                project_root,
+                config,
+                &project_map,
+            )
+        };
 
-        if affected.is_empty() {
+        if tasks_to_run.is_empty() {
             println!("Project {}: No affected tasks", project.path.display());
             continue;
         }
@@ -133,7 +138,7 @@ pub async fn run_ci(
         println!(
             "Project {}: Running tasks {:?}",
             project.path.display(),
-            affected
+            tasks_to_run
         );
 
         if !dry_run {
@@ -141,7 +146,7 @@ pub async fn run_ci(
             let mut tasks_reports = Vec::new();
             let mut pipeline_status = PipelineStatus::Success;
 
-            for task_name in affected {
+            for task_name in tasks_to_run {
                 println!("  -> Executing {task_name}");
                 let task_start = std::time::Instant::now();
                 let result = runner.run_task(project_root, &task_name).await;
