@@ -1,4 +1,4 @@
-use super::{Task, TaskDefinition, TaskGroup, Tasks};
+use super::{ParallelGroup, Task, TaskDefinition, TaskGroup, Tasks};
 use crate::{Error, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -164,16 +164,19 @@ fn canonicalize_definition(
             Ok(TaskDefinition::Single(Box::new(canon_task)))
         }
         TaskDefinition::Group(group) => match group {
-            TaskGroup::Parallel(children) => {
+            TaskGroup::Parallel(parallel) => {
                 let mut canon_children = HashMap::new();
-                for (child_name, child_def) in children {
+                for (child_name, child_def) in &parallel.tasks {
                     let child_path = path.join(child_name)?;
                     let canon_child = canonicalize_definition(child_def, &child_path, entries)?;
                     canon_children.insert(child_name.clone(), canon_child);
                 }
 
                 let name = path.canonical();
-                let definition = TaskDefinition::Group(TaskGroup::Parallel(canon_children));
+                let definition = TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
+                    tasks: canon_children,
+                    depends_on: parallel.depends_on.clone(),
+                }));
                 entries.insert(
                     name.clone(),
                     IndexedTask {

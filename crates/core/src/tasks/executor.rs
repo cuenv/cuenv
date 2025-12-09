@@ -6,7 +6,7 @@
 //! - Persistent task result cache keyed by inputs + command + env + cuenv version + platform
 
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
-use super::{Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
+use super::{ParallelGroup, Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
 use crate::cache::tasks as task_cache;
 use crate::config::BackendConfig;
 use crate::environment::Environment;
@@ -897,7 +897,7 @@ impl TaskExecutor {
     ) -> Result<Vec<TaskResult>> {
         match group {
             TaskGroup::Sequential(tasks) => self.execute_sequential(prefix, tasks, all_tasks).await,
-            TaskGroup::Parallel(tasks) => self.execute_parallel(prefix, tasks, all_tasks).await,
+            TaskGroup::Parallel(group) => self.execute_parallel(prefix, group, all_tasks).await,
         }
     }
 
@@ -933,11 +933,11 @@ impl TaskExecutor {
     async fn execute_parallel(
         &self,
         prefix: &str,
-        tasks: &HashMap<String, TaskDefinition>,
+        group: &ParallelGroup,
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         // Check for "default" task to override parallel execution
-        if let Some(default_task) = tasks.get("default") {
+        if let Some(default_task) = group.tasks.get("default") {
             if !self.config.capture_output {
                 cuenv_events::emit_task_group_started!(prefix, true, 1_usize);
             }
@@ -950,7 +950,7 @@ impl TaskExecutor {
         }
 
         if !self.config.capture_output {
-            cuenv_events::emit_task_group_started!(prefix, false, tasks.len());
+            cuenv_events::emit_task_group_started!(prefix, false, group.tasks.len());
         }
         let mut join_set = JoinSet::new();
         let all_tasks = Arc::new(all_tasks.clone());
@@ -966,7 +966,7 @@ impl TaskExecutor {
             all_results.extend(results);
             Ok(())
         };
-        for (name, task_def) in tasks {
+        for (name, task_def) in &group.tasks {
             let task_name = format!("{}.{}", prefix, name);
             let task_def = task_def.clone();
             let all_tasks = Arc::clone(&all_tasks);

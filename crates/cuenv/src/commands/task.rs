@@ -29,7 +29,6 @@ use std::fmt::Write;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use uuid::Uuid;
 
 use super::export::get_environment_with_hooks;
@@ -63,7 +62,7 @@ pub async fn execute_task(
 
     // Evaluate CUE to get tasks and environment
     let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv = evaluate_manifest_with_fallback(&evaluator, Path::new(path), package)?
+    let manifest: Cuenv = evaluate_manifest(&evaluator, Path::new(path), package)?
         .with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
 
@@ -502,55 +501,8 @@ fn detect_package_name(dir: &Path) -> Result<String> {
     )))
 }
 
-fn evaluate_manifest_with_fallback(
-    evaluator: &CueEvaluator,
-    dir: &Path,
-    package: &str,
-) -> Result<Cuenv> {
-    match evaluator.evaluate_typed(dir, package) {
-        Ok(m) => Ok(m),
-        Err(e) => {
-            tracing::warn!(
-                "FFI evaluation failed ({}); falling back to 'cue export'",
-                e
-            );
-            // Fallback: use the `cue` CLI to export JSON and parse it
-            // Allow overriding the cue binary via env for CI or non-standard setups
-            let cue_bin = std::env::var("CUENV_CUE_BIN")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "cue".to_string());
-            let output = Command::new(&cue_bin)
-                .arg("export")
-                .current_dir(dir)
-                .arg(".")
-                .output()
-                .map_err(|ioe| cuenv_core::Error::Io {
-                    source: ioe,
-                    path: Some(dir.to_path_buf().into_boxed_path()),
-                    operation: format!("{cue_bin} export"),
-                })?;
-
-            if !output.status.success() {
-                // Provide a clearer hint when the cue binary is missing or fails
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let hint = format!(
-                    "Fallback CUE CLI evaluation failed. Ensure the Go FFI bridge is available or install the 'cue' binary and set CUENV_CUE_BIN if needed. Tried binary: '{cue_bin}'."
-                );
-                return Err(cuenv_core::Error::configuration(format!(
-                    "'{cue_bin} export' failed: {stderr}\n{hint}"
-                )));
-            }
-
-            let json_str = String::from_utf8_lossy(&output.stdout).to_string();
-
-            serde_json::from_str::<Cuenv>(&json_str).map_err(|e| {
-                cuenv_core::Error::configuration(format!(
-                    "Failed to parse CUE JSON from fallback: {e}"
-                ))
-            })
-        }
-    }
+fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Result<Cuenv> {
+    evaluator.evaluate_typed(dir, package)
 }
 
 #[allow(dead_code)]
@@ -746,7 +698,7 @@ async fn resolve_and_materialize_project_reference(
     // Detect package name and evaluate
     let package = detect_package_name(&ext_dir)?;
     let manifest: Cuenv =
-        evaluate_manifest_with_fallback(evaluator, &ext_dir, &package)?.with_implicit_tasks();
+        evaluate_manifest(evaluator, &ext_dir, &package)?.with_implicit_tasks();
 
     // Locate external task
     let task_def = manifest.tasks.get(&reference.task).ok_or_else(|| {
