@@ -62,8 +62,8 @@ pub async fn execute_task(
 
     // Evaluate CUE to get tasks and environment
     let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv = evaluate_manifest(&evaluator, Path::new(path), package)?
-        .with_implicit_tasks();
+    let manifest: Cuenv =
+        evaluate_manifest(&evaluator, Path::new(path), package)?.with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
 
     tracing::debug!(
@@ -697,8 +697,7 @@ async fn resolve_and_materialize_project_reference(
 
     // Detect package name and evaluate
     let package = detect_package_name(&ext_dir)?;
-    let manifest: Cuenv =
-        evaluate_manifest(evaluator, &ext_dir, &package)?.with_implicit_tasks();
+    let manifest: Cuenv = evaluate_manifest(evaluator, &ext_dir, &package)?.with_implicit_tasks();
 
     // Locate external task
     let task_def = manifest.tasks.get(&reference.task).ok_or_else(|| {
