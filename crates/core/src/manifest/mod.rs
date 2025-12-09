@@ -208,8 +208,8 @@ impl Cuenv {
                         );
                     }
                 }
-                TaskGroup::Parallel(tasks) => {
-                    for (name, sub_task) in tasks.iter_mut() {
+                TaskGroup::Parallel(group) => {
+                    for (name, sub_task) in group.tasks.iter_mut() {
                         let sub_name = format!("{}.{}", task_name, name);
                         Self::add_dependencies_to_definition(
                             &sub_name,
@@ -310,8 +310,8 @@ impl Cuenv {
                         Self::expand_task_definition(sub_task);
                     }
                 }
-                TaskGroup::Parallel(tasks) => {
-                    for sub_task in tasks.values_mut() {
+                TaskGroup::Parallel(group) => {
+                    for sub_task in group.tasks.values_mut() {
                         Self::expand_task_definition(sub_task);
                     }
                 }
