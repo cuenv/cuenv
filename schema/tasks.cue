@@ -9,27 +9,9 @@ package schema
 //   - #TaskGroup: Complex workflows involving multiple tasks and dependencies.
 #Tasks: #Task | #TaskGroup
 
-#Task: {
+// Common fields shared between command-based and script-based tasks
+#_TaskCommon: {
 	shell?: #Shell
-
-	// Command to execute. Required unless 'script' is provided.
-	command?: string
-
-	// Inline script to execute (alternative to command).
-	// When script is provided, shell defaults to bash if not specified.
-	// Supports multiline strings and shebang lines for polyglot scripts.
-	// Example:
-	//   script: """
-	//       #!/bin/bash
-	//       set -euo pipefail
-	//       echo "Building..."
-	//       cargo build --release
-	//       """
-	script?: string
-
-	// Validation: command XOR script - use one, not both
-	// Note: CUE validates this at instantiation time, not definition time
-
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
 
@@ -68,6 +50,30 @@ package schema
 	// Allows tasks to accept positional and named arguments:
 	//   cuenv task import.youtube VIDEO_ID --quality 1080p
 	params?: #TaskParams
+}
+
+// #Task represents a single executable task.
+// A task MUST have either 'command' or 'script' (but not both).
+// This union structure allows CUE to distinguish tasks from task groups.
+#Task: {
+	#_TaskCommon
+
+	// Command to execute (required in this branch)
+	command: string
+} | {
+	#_TaskCommon
+
+	// Inline script to execute (required in this branch).
+	// When script is provided, shell defaults to bash if not specified.
+	// Supports multiline strings and shebang lines for polyglot scripts.
+	// Example:
+	//   script: """
+	//       #!/bin/bash
+	//       set -euo pipefail
+	//       echo "Building..."
+	//       cargo build --release
+	//       """
+	script: string
 }
 
 // Task parameter definitions
@@ -142,8 +148,10 @@ package schema
 #TaskGroup: [...#Tasks] | {
 	// Optional group-level dependencies applied to all tasks in the group
 	dependsOn?: [...string]
-	// Named tasks (any key except 'dependsOn')
-	[!~"^dependsOn$"]: #Tasks
+	// Allow hidden fields (prefixed with _) for internal definitions like _inputs
+	[=~"^_"]: _
+	// Named tasks (any key except 'dependsOn' and hidden fields)
+	[!~"^(dependsOn|_.*)$"]: #Tasks
 }
 
 // Dagger-specific task configuration for containerized execution
