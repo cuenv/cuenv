@@ -330,7 +330,7 @@ tasks: {
 
 		"publish-cue": {
 			command: "bash"
-			args: ["-c", "cue mod publish $TAG"]
+			args: ["-c", "cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish $TAG"]
 			inputs: ["cue.mod", "schema"]
 		}
 
