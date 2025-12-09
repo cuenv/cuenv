@@ -140,8 +140,13 @@ package schema
 
 // TaskGroup uses structure to determine execution mode:
 // - Array of tasks: Sequential execution (order preserved)
-// - Object of named tasks: Parallel execution with dependencies
-#TaskGroup: [...#Tasks] | {[string]: #Tasks}
+// - Object of named tasks: Parallel execution with optional group-level dependencies
+#TaskGroup: [...#Tasks] | {
+	// Optional group-level dependencies applied to all tasks in the group
+	dependsOn?: [...string]
+	// Named tasks (any key except 'dependsOn')
+	[!~"^dependsOn$"]: #Tasks
+}
 
 // Dagger-specific task configuration for containerized execution
 #DaggerConfig: {

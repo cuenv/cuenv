@@ -3,7 +3,7 @@
 //! This module builds directed acyclic graphs (DAGs) from task definitions
 //! to handle dependencies and determine execution order.
 
-use super::{Task, TaskDefinition, TaskGroup, Tasks};
+use super::{ParallelGroup, Task, TaskDefinition, TaskGroup, Tasks};
 use crate::Result;
 use petgraph::algo::{is_cyclic_directed, toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -62,7 +62,7 @@ impl TaskGraph {
     ) -> Result<Vec<NodeIndex>> {
         match group {
             TaskGroup::Sequential(tasks) => self.build_sequential_group(prefix, tasks, all_tasks),
-            TaskGroup::Parallel(tasks) => self.build_parallel_group(prefix, tasks, all_tasks),
+            TaskGroup::Parallel(group) => self.build_parallel_group(prefix, group, all_tasks),
         }
     }
 
@@ -101,14 +101,27 @@ impl TaskGraph {
     fn build_parallel_group(
         &mut self,
         prefix: &str,
-        tasks: &HashMap<String, TaskDefinition>,
+        group: &ParallelGroup,
         all_tasks: &Tasks,
     ) -> Result<Vec<NodeIndex>> {
         let mut nodes = Vec::new();
 
-        for (name, task_def) in tasks {
+        for (name, task_def) in &group.tasks {
             let task_name = format!("{}.{}", prefix, name);
             let task_nodes = self.build_from_definition(&task_name, task_def, all_tasks)?;
+
+            // Apply group-level dependencies to each subtask
+            if !group.depends_on.is_empty() {
+                for node_idx in &task_nodes {
+                    let node = &mut self.graph[*node_idx];
+                    for dep in &group.depends_on {
+                        if !node.task.depends_on.contains(dep) {
+                            node.task.depends_on.push(dep.clone());
+                        }
+                    }
+                }
+            }
+
             nodes.extend(task_nodes);
         }
 
@@ -485,7 +498,10 @@ mod tests {
             TaskDefinition::Single(Box::new(task2)),
         );
 
-        let group = TaskGroup::Parallel(parallel_tasks);
+        let group = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
 
         let nodes = graph.build_from_group("par", &group, &tasks).unwrap();
         assert_eq!(nodes.len(), 2);

@@ -454,6 +454,18 @@ fn apply_prefix(prefix: Option<&Path>, value: &str) -> String {
     }
 }
 
+/// A parallel task group with optional shared dependencies
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ParallelGroup {
+    /// Named tasks that can run concurrently
+    #[serde(flatten)]
+    pub tasks: HashMap<String, TaskDefinition>,
+
+    /// Optional group-level dependencies applied to all subtasks
+    #[serde(default, rename = "dependsOn")]
+    pub depends_on: Vec<String>,
+}
+
 /// Represents a group of tasks with execution mode
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(untagged)]
@@ -462,7 +474,7 @@ pub enum TaskGroup {
     Sequential(Vec<TaskDefinition>),
 
     /// Parallel execution: named tasks that can run concurrently
-    Parallel(HashMap<String, TaskDefinition>),
+    Parallel(ParallelGroup),
 }
 
 /// A task definition can be either a single task or a group of tasks
@@ -549,7 +561,7 @@ impl TaskGroup {
     pub fn len(&self) -> usize {
         match self {
             TaskGroup::Sequential(tasks) => tasks.len(),
-            TaskGroup::Parallel(tasks) => tasks.len(),
+            TaskGroup::Parallel(group) => group.tasks.len(),
         }
     }
 
@@ -636,7 +648,10 @@ mod tests {
         parallel_tasks.insert("task1".to_string(), TaskDefinition::Single(Box::new(task1)));
         parallel_tasks.insert("task2".to_string(), TaskDefinition::Single(Box::new(task2)));
 
-        let group = TaskGroup::Parallel(parallel_tasks);
+        let group = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
 
         assert!(!group.is_sequential());
         assert!(group.is_parallel());
