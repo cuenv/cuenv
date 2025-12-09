@@ -329,8 +329,8 @@ tasks: {
 		}
 
 		"publish-cue": {
-			command: "cue"
-			args: ["mod", "publish", "$TAG"]
+			command: "bash"
+			args: ["-c", "cue mod publish $TAG"]
 			inputs: ["cue.mod", "schema"]
 		}
 
