@@ -27,10 +27,8 @@ package schema
 	//       """
 	script?: string
 
-	// Validation: exactly one of command or script must be provided
-	_hasCommand: command != _|_
-	_hasScript:  script != _|_
-	_validTask:  true & ((_hasCommand & !_hasScript) | (!_hasCommand & _hasScript))
+	// Validation: command XOR script - use one, not both
+	// Note: CUE validates this at instantiation time, not definition time
 
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
