@@ -8,7 +8,7 @@ package schema
 	workspaces?: #Workspaces
 	ci?: #CI
 	release?: #Release
-	tasks: [string]: #Tasks | *{}
+	tasks?: [string]: #Tasks
 }
 
 #Workspaces: [string]: #WorkspaceConfig
