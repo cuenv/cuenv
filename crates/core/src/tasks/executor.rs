@@ -725,7 +725,7 @@ impl TaskExecutor {
                 task.task_ref.as_deref().unwrap_or("unknown"),
                 task.task_ref
                     .as_deref()
-                    .and_then(|r| r.split(':').last())
+                    .and_then(|r| r.split(':').next_back())
                     .unwrap_or("unknown")
             )));
         }

@@ -267,17 +267,17 @@ impl TaskDiscovery {
                 }
 
                 // Match by command
-                if let Some(required_command) = &matcher.command {
-                    if &task.command != required_command {
-                        continue;
-                    }
+                if let Some(required_command) = &matcher.command
+                    && &task.command != required_command
+                {
+                    continue;
                 }
 
                 // Match by args using pre-compiled matchers
-                if let Some(ref compiled) = compiled_arg_matchers {
-                    if !matches_args_compiled(&task.args, compiled) {
-                        continue;
-                    }
+                if let Some(ref compiled) = compiled_arg_matchers
+                    && !matches_args_compiled(&task.args, compiled)
+                {
+                    continue;
                 }
 
                 matches.push(MatchedTask {
@@ -338,15 +338,15 @@ impl CompiledArgMatcher {
         }
 
         args.iter().any(|arg| {
-            if let Some(substring) = &self.contains {
-                if arg.contains(substring) {
-                    return true;
-                }
+            if let Some(substring) = &self.contains
+                && arg.contains(substring)
+            {
+                return true;
             }
-            if let Some(regex) = &self.regex {
-                if regex.is_match(arg) {
-                    return true;
-                }
+            if let Some(regex) = &self.regex
+                && regex.is_match(arg)
+            {
+                return true;
             }
             false
         })

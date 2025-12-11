@@ -1,18 +1,19 @@
 use super::{CIContext, CIProvider};
-use crate::report::{CheckHandle, PipelineReport};
+use crate::report::{markdown::generate_summary, CheckHandle, PipelineReport, PipelineStatus};
 use async_trait::async_trait;
 use cuenv_core::Result;
+use octocrab::Octocrab;
 use std::path::PathBuf;
 use std::process::Command;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
-#[allow(dead_code)]
 pub struct GitHubProvider {
     context: CIContext,
     token: String,
     owner: String,
     repo: String,
     run_id: Option<u64>,
+    pr_number: Option<u64>,
 }
 
 const NULL_SHA: &str = "0000000000000000000000000000000000000000";
@@ -24,6 +25,20 @@ impl GitHubProvider {
             (parts[0].to_string(), parts[1].to_string())
         } else {
             (String::new(), String::new())
+        }
+    }
+
+    /// Extract PR number from GITHUB_REF (e.g., "refs/pull/123/merge" -> 123)
+    fn parse_pr_number(github_ref: &str) -> Option<u64> {
+        if github_ref.starts_with("refs/pull/") {
+            github_ref
+                .strip_prefix("refs/pull/")?
+                .split('/')
+                .next()?
+                .parse()
+                .ok()
+        } else {
+            None
         }
     }
 
@@ -88,6 +103,19 @@ impl GitHubProvider {
             })
             .unwrap_or_default()
     }
+
+    /// Create an octocrab instance authenticated with the GitHub token.
+    fn octocrab(&self) -> Result<Octocrab> {
+        if self.token.is_empty() {
+            return Err(cuenv_core::Error::configuration(
+                "GITHUB_TOKEN is not set or empty",
+            ));
+        }
+        Octocrab::builder()
+            .personal_token(self.token.clone())
+            .build()
+            .map_err(|e| cuenv_core::Error::configuration(format!("Failed to create GitHub client: {e}")))
+    }
 }
 
 #[async_trait]
@@ -99,6 +127,9 @@ impl CIProvider for GitHubProvider {
 
         let repo_str = std::env::var("GITHUB_REPOSITORY").ok()?;
         let (owner, repo) = Self::parse_repo(&repo_str);
+
+        let github_ref = std::env::var("GITHUB_REF").unwrap_or_default();
+        let pr_number = Self::parse_pr_number(&github_ref);
 
         Some(Self {
             context: CIContext {
@@ -114,6 +145,7 @@ impl CIProvider for GitHubProvider {
             run_id: std::env::var("GITHUB_RUN_ID")
                 .ok()
                 .and_then(|s| s.parse().ok()),
+            pr_number,
         })
     }
 
@@ -170,22 +202,112 @@ impl CIProvider for GitHubProvider {
         Ok(Self::get_all_tracked_files())
     }
 
-    async fn create_check(&self, _name: &str) -> Result<CheckHandle> {
+    async fn create_check(&self, name: &str) -> Result<CheckHandle> {
+        let octocrab = self.octocrab()?;
+
+        let check_run = octocrab
+            .checks(&self.owner, &self.repo)
+            .create_check_run(name, &self.context.sha)
+            .status(octocrab::params::checks::CheckRunStatus::InProgress)
+            .send()
+            .await
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to create check run: {e}"))
+            })?;
+
+        info!("Created check run: {} (id: {})", name, check_run.id);
+
         Ok(CheckHandle {
-            id: "dummy-check-id".to_string(),
+            id: check_run.id.to_string(),
         })
     }
 
-    async fn update_check(&self, _handle: &CheckHandle, _summary: &str) -> Result<()> {
+    async fn update_check(&self, handle: &CheckHandle, summary: &str) -> Result<()> {
+        let octocrab = self.octocrab()?;
+        let check_run_id: u64 = handle
+            .id
+            .parse()
+            .map_err(|_| cuenv_core::Error::configuration("Invalid check run ID"))?;
+
+        octocrab
+            .checks(&self.owner, &self.repo)
+            .update_check_run(check_run_id.into())
+            .output(octocrab::params::checks::CheckRunOutput {
+                title: "cuenv CI".to_string(),
+                summary: summary.to_string(),
+                text: None,
+                annotations: vec![],
+                images: vec![],
+            })
+            .send()
+            .await
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to update check run: {e}"))
+            })?;
+
         Ok(())
     }
 
-    async fn complete_check(&self, _handle: &CheckHandle, _report: &PipelineReport) -> Result<()> {
+    async fn complete_check(&self, handle: &CheckHandle, report: &PipelineReport) -> Result<()> {
+        let octocrab = self.octocrab()?;
+        let check_run_id: u64 = handle
+            .id
+            .parse()
+            .map_err(|_| cuenv_core::Error::configuration("Invalid check run ID"))?;
+
+        let conclusion = match report.status {
+            PipelineStatus::Success => octocrab::params::checks::CheckRunConclusion::Success,
+            PipelineStatus::Failed => octocrab::params::checks::CheckRunConclusion::Failure,
+            PipelineStatus::Partial => octocrab::params::checks::CheckRunConclusion::Neutral,
+            PipelineStatus::Pending => octocrab::params::checks::CheckRunConclusion::Neutral,
+        };
+
+        let summary = generate_summary(report);
+
+        octocrab
+            .checks(&self.owner, &self.repo)
+            .update_check_run(check_run_id.into())
+            .status(octocrab::params::checks::CheckRunStatus::Completed)
+            .conclusion(conclusion)
+            .output(octocrab::params::checks::CheckRunOutput {
+                title: format!("cuenv: {}", report.project),
+                summary,
+                text: None,
+                annotations: vec![],
+                images: vec![],
+            })
+            .send()
+            .await
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to complete check run: {e}"))
+            })?;
+
+        info!("Completed check run: {}", handle.id);
+
         Ok(())
     }
 
-    async fn upload_report(&self, _report: &PipelineReport) -> Result<Option<String>> {
-        Ok(None)
+    async fn upload_report(&self, report: &PipelineReport) -> Result<Option<String>> {
+        // Only post PR comments for pull_request events
+        let Some(pr_number) = self.pr_number else {
+            debug!("Not a PR event, skipping PR comment");
+            return Ok(None);
+        };
+
+        let octocrab = self.octocrab()?;
+        let summary = generate_summary(report);
+
+        let comment = octocrab
+            .issues(&self.owner, &self.repo)
+            .create_comment(pr_number, &summary)
+            .await
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to post PR comment: {e}"))
+            })?;
+
+        info!("Posted PR comment: {}", comment.html_url);
+
+        Ok(Some(comment.html_url.to_string()))
     }
 }
 
@@ -211,5 +333,19 @@ mod tests {
     fn test_null_sha_constant() {
         assert_eq!(NULL_SHA.len(), 40);
         assert!(NULL_SHA.chars().all(|c| c == '0'));
+    }
+
+    #[test]
+    fn test_parse_pr_number() {
+        assert_eq!(
+            GitHubProvider::parse_pr_number("refs/pull/123/merge"),
+            Some(123)
+        );
+        assert_eq!(
+            GitHubProvider::parse_pr_number("refs/pull/456/head"),
+            Some(456)
+        );
+        assert_eq!(GitHubProvider::parse_pr_number("refs/heads/main"), None);
+        assert_eq!(GitHubProvider::parse_pr_number("main"), None);
     }
 }

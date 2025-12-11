@@ -97,8 +97,8 @@ impl TaskIndex {
 
         for (name, definition) in tasks {
             // Strip _ prefix for display/execution name
-            let (display_name, original_name) = if name.starts_with('_') {
-                (name[1..].to_string(), name.clone())
+            let (display_name, original_name) = if let Some(stripped) = name.strip_prefix('_') {
+                (stripped.to_string(), name.clone())
             } else {
                 (name.clone(), name.clone())
             };

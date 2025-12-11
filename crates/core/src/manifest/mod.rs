@@ -255,26 +255,26 @@ impl Cuenv {
             let mut hook_task_names: Vec<String> = Vec::new();
 
             // Process beforeInstall hooks
-            if let Some(hooks) = &config.hooks {
-                if let Some(before_install) = &hooks.before_install {
-                    for (i, hook_item) in before_install.iter().enumerate() {
-                        let hook_task_name = format!("{}.hooks.beforeInstall[{}]", name, i);
+            if let Some(hooks) = &config.hooks
+                && let Some(before_install) = &hooks.before_install
+            {
+                for (i, hook_item) in before_install.iter().enumerate() {
+                    let hook_task_name = format!("{}.hooks.beforeInstall[{}]", name, i);
 
-                        let hook_task = match hook_item {
-                            HookItem::Task(task) => task.clone(),
-                            HookItem::TaskRef(task_ref) => {
-                                // Create a placeholder task that will be resolved at runtime
-                                Task::from_task_ref(&task_ref.ref_)
-                            }
-                        };
+                    let hook_task = match hook_item {
+                        HookItem::Task(task) => task.clone(),
+                        HookItem::TaskRef(task_ref) => {
+                            // Create a placeholder task that will be resolved at runtime
+                            Task::from_task_ref(&task_ref.ref_)
+                        }
+                    };
 
-                        // Add the hook task
-                        self.tasks.insert(
-                            hook_task_name.clone(),
-                            TaskDefinition::Single(Box::new(hook_task)),
-                        );
-                        hook_task_names.push(hook_task_name);
-                    }
+                    // Add the hook task
+                    self.tasks.insert(
+                        hook_task_name.clone(),
+                        TaskDefinition::Single(Box::new(hook_task)),
+                    );
+                    hook_task_names.push(hook_task_name);
                 }
             }
 
@@ -283,14 +283,13 @@ impl Cuenv {
             // Don't override user-defined install tasks
             if self.tasks.contains_key(&install_task_name) {
                 // But still add hook dependencies to existing install task
-                if !hook_task_names.is_empty() {
-                    if let Some(TaskDefinition::Single(task)) =
+                if !hook_task_names.is_empty()
+                    && let Some(TaskDefinition::Single(task)) =
                         self.tasks.get_mut(&install_task_name)
-                    {
-                        for hook_name in &hook_task_names {
-                            if !task.depends_on.contains(hook_name) {
-                                task.depends_on.push(hook_name.clone());
-                            }
+                {
+                    for hook_name in &hook_task_names {
+                        if !task.depends_on.contains(hook_name) {
+                            task.depends_on.push(hook_name.clone());
                         }
                     }
                 }

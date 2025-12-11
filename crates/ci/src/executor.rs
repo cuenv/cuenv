@@ -229,6 +229,25 @@ pub async fn run_ci(
                 }
             }
 
+            // Always post results to CI provider before checking for failures
+            // This ensures PR comments and check runs are created even when tasks fail
+            let check_name = format!("cuenv: {}", pipeline.name);
+            match provider.create_check(&check_name).await {
+                Ok(handle) => {
+                    if let Err(e) = provider.complete_check(&handle, &report).await {
+                        eprintln!("Warning: Failed to complete check run: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to create check run: {e}");
+                }
+            }
+
+            // Post PR comment with report summary
+            if let Err(e) = provider.upload_report(&report).await {
+                eprintln!("Warning: Failed to post PR comment: {e}");
+            }
+
             // Track if this project failed
             if pipeline_status == PipelineStatus::Failed {
                 any_failed = true;
