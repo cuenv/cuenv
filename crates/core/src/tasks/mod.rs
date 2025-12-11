@@ -3,6 +3,7 @@
 //! This module provides the core types for task execution, matching the CUE schema.
 
 pub mod backend;
+pub mod discovery;
 pub mod executor;
 pub mod graph;
 pub mod index;
@@ -167,6 +168,22 @@ pub struct Task {
     /// Task parameter definitions for CLI arguments
     #[serde(default)]
     pub params: Option<TaskParams>,
+
+    /// Labels for task discovery via TaskMatcher
+    /// Example: labels: ["projen", "codegen"]
+    #[serde(default)]
+    pub labels: Vec<String>,
+
+    /// If set, this task is a reference to another project's task
+    /// that should be resolved at runtime using TaskDiscovery.
+    /// Format: "#project-name:task-name"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_ref: Option<String>,
+
+    /// If set, specifies the project root where this task should execute.
+    /// Used for TaskRef resolution to run tasks in their original project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<std::path::PathBuf>,
 }
 
 // Custom deserialization for Task to ensure either command or script is present.
@@ -207,17 +224,24 @@ impl<'de> serde::Deserialize<'de> for Task {
             description: Option<String>,
             #[serde(default)]
             params: Option<TaskParams>,
+            #[serde(default)]
+            labels: Vec<String>,
+            #[serde(default)]
+            task_ref: Option<String>,
+            #[serde(default)]
+            project_root: Option<std::path::PathBuf>,
         }
 
         let helper = TaskHelper::deserialize(deserializer)?;
 
-        // Validate: either command or script must be present
+        // Validate: either command, script, or task_ref must be present
         let has_command = helper.command.as_ref().is_some_and(|c| !c.is_empty());
         let has_script = helper.script.is_some();
+        let has_task_ref = helper.task_ref.is_some();
 
-        if !has_command && !has_script {
+        if !has_command && !has_script && !has_task_ref {
             return Err(serde::de::Error::custom(
-                "Task must have either 'command' or 'script' field",
+                "Task must have either 'command', 'script', or 'task_ref' field",
             ));
         }
 
@@ -236,6 +260,9 @@ impl<'de> serde::Deserialize<'de> for Task {
             workspaces: helper.workspaces,
             description: helper.description,
             params: helper.params,
+            labels: helper.labels,
+            task_ref: helper.task_ref,
+            project_root: helper.project_root,
         })
     }
 }
@@ -397,11 +424,29 @@ impl Default for Task {
             workspaces: vec![],
             description: None,
             params: None,
+            labels: vec![],
+            task_ref: None,
+            project_root: None,
         }
     }
 }
 
 impl Task {
+    /// Creates a new TaskRef placeholder task.
+    /// This task will be resolved at runtime using TaskDiscovery.
+    pub fn from_task_ref(ref_str: &str) -> Self {
+        Self {
+            task_ref: Some(ref_str.to_string()),
+            description: Some(format!("Reference to {}", ref_str)),
+            ..Default::default()
+        }
+    }
+
+    /// Returns true if this task is a TaskRef placeholder that needs resolution.
+    pub fn is_task_ref(&self) -> bool {
+        self.task_ref.is_some()
+    }
+
     /// Returns the description, or a default if not set.
     pub fn description(&self) -> &str {
         self.description
@@ -542,6 +587,25 @@ impl TaskDefinition {
         match self {
             TaskDefinition::Group(group) => Some(group),
             _ => None,
+        }
+    }
+
+    /// Check if this task definition uses a specific workspace
+    ///
+    /// Returns true if any task within this definition (including nested tasks
+    /// in groups) has the specified workspace in its `workspaces` field.
+    pub fn uses_workspace(&self, workspace_name: &str) -> bool {
+        match self {
+            TaskDefinition::Single(task) => task.workspaces.contains(&workspace_name.to_string()),
+            TaskDefinition::Group(group) => match group {
+                TaskGroup::Sequential(tasks) => {
+                    tasks.iter().any(|t| t.uses_workspace(workspace_name))
+                }
+                TaskGroup::Parallel(parallel) => parallel
+                    .tasks
+                    .values()
+                    .any(|t| t.uses_workspace(workspace_name)),
+            },
         }
     }
 }

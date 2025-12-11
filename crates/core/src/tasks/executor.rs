@@ -709,10 +709,24 @@ impl TaskExecutor {
     ///
     /// Used for tasks like `bun install` that need to write to the real filesystem.
     async fn execute_task_non_hermetic(&self, name: &str, task: &Task) -> Result<TaskResult> {
+        // Check if this is an unresolved TaskRef (should have been resolved before execution)
+        if task.is_task_ref() && task.project_root.is_none() {
+            return Err(Error::configuration(format!(
+                "Task '{}' is a TaskRef ({}) that has not been resolved. \
+                 Use TaskDiscovery to resolve TaskRefs before execution.",
+                name,
+                task.task_ref.as_deref().unwrap_or("unknown")
+            )));
+        }
+
         // Determine working directory:
+        // - If project_root is set (e.g., from TaskRef resolution), use that
         // - Install tasks (hermetic: false with workspaces) run from workspace root
         // - All other tasks run from project root
-        let workdir = if !task.hermetic && !task.workspaces.is_empty() {
+        let workdir = if let Some(ref project_root) = task.project_root {
+            // TaskRef tasks run in their original project directory
+            project_root.clone()
+        } else if !task.hermetic && !task.workspaces.is_empty() {
             // Find workspace root for install tasks
             let workspace_name = &task.workspaces[0];
             let manager = match workspace_name.as_str() {
@@ -1739,6 +1753,8 @@ mod tests {
                 enabled: true,
                 package_manager: Some("bun".to_string()),
                 root: None,
+                hooks: None,
+                generators: None,
             },
         );
 

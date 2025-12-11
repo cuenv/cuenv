@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"unsafe"
 
+	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
@@ -93,6 +94,34 @@ func createSuccessResponse(data string) *C.char {
 		return createErrorResponse(ErrorCodeJSONMarshal, msg, nil)
 	}
 	return C.CString(string(responseBytes))
+}
+
+// buildJSONWithHidden builds a JSON representation of a CUE value including hidden fields.
+// This is necessary because CUE's MarshalJSON() excludes hidden fields (prefixed with _).
+// Hidden fields like _ci are package-scoped and don't unify across packages, making them
+// useful for location-specific configuration that shouldn't be inherited.
+func buildJSONWithHidden(v cue.Value) ([]byte, error) {
+	result := make(map[string]interface{})
+
+	iter, err := v.Fields(cue.Hidden(true))
+	if err != nil {
+		return nil, err
+	}
+
+	for iter.Next() {
+		sel := iter.Selector()
+		fieldName := sel.String()
+		fieldValue := iter.Value()
+
+		// Decode each field value to interface{}
+		var val interface{}
+		if err := fieldValue.Decode(&val); err != nil {
+			return nil, fmt.Errorf("failed to decode field %s: %w", fieldName, err)
+		}
+		result[fieldName] = val
+	}
+
+	return json.Marshal(result)
 }
 
 //export cue_eval_package
@@ -178,8 +207,9 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 		return result
 	}
 
-	// Use CUE's built-in JSON marshaling which correctly handles non-concrete values
-	jsonBytes, err := v.MarshalJSON()
+	// Build JSON including hidden fields (like _ci) which are package-scoped
+	// and don't participate in cross-package unification
+	jsonBytes, err := buildJSONWithHidden(v)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to marshal JSON: %v", err)
 		result = createErrorResponse(ErrorCodeOrderedJSON, msg, nil)

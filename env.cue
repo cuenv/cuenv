@@ -9,7 +9,7 @@ schema.#Cuenv
 
 name: "cuenv"
 
-ci: pipelines: [
+_ci: pipelines: [
 	{
 		name: "ci"
 		tasks: ["check"]

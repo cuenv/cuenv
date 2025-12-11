@@ -38,6 +38,7 @@ chrono = { workspace = true }
 sysinfo = "0.30"
 # For input resolution, snapshots, and hashing
 globset = "0.4"
+regex = "1.10"
 walkdir = "2.5"
 tar = "0.4"
 zstd = { version = "0.13", features = ["zstdmt"] }

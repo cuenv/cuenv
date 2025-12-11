@@ -4,7 +4,7 @@ import "github.com/cuenv/cuenv/schema"
 
 schema.#Cuenv
 
-ci: pipelines: [
+_ci: pipelines: [
     {
         name: "default"
         tasks: ["test"]

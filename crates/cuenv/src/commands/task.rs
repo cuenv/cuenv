@@ -6,6 +6,8 @@
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
+use cuenv_core::manifest::TaskRef;
+use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
     BackendFactory, ExecutorConfig, ResolvedArgs, Task, TaskDefinition, TaskExecutor, TaskGraph,
@@ -62,7 +64,7 @@ pub async fn execute_task(
 
     // Evaluate CUE to get tasks and environment
     let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv =
+    let mut manifest: Cuenv =
         evaluate_manifest(&evaluator, Path::new(path), package)?.with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
 
@@ -70,6 +72,14 @@ pub async fn execute_task(
         "Successfully parsed CUE evaluation, found {} tasks",
         manifest.tasks.len()
     );
+
+    // Resolve any TaskRef placeholders in workspace hooks
+    let project_path = Path::new(path);
+    if let Ok(git_root) = find_git_root(project_path) {
+        resolve_task_refs(&mut manifest, &evaluator, package, &git_root)?;
+    } else {
+        tracing::debug!("Not in a git repository, skipping TaskRef resolution");
+    }
 
     // Build a canonical index to support nested task paths
     let task_index = TaskIndex::build(&manifest.tasks)?;
@@ -1212,6 +1222,211 @@ fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
     new_task.args = resolved_args.interpolate_args(&task.args);
 
     new_task
+}
+
+/// Resolve TaskRef placeholders and expand generators in a manifest using TaskDiscovery.
+///
+/// This function:
+/// 1. Resolves TaskRef placeholders (created by `with_implicit_tasks()` for workspace hooks)
+/// 2. Expands generators (TaskMatchers) to discover and create tasks for matching projects
+///
+/// The resolved tasks have their `command`, `args`, etc. filled in from the referenced
+/// project's task, and `project_root` set so the executor knows where to run them.
+fn resolve_task_refs(
+    manifest: &mut Cuenv,
+    _evaluator: &CueEvaluator,
+    package: &str,
+    git_root: &Path,
+) -> Result<()> {
+    // Create an evaluation function that can be used by TaskDiscovery
+    // We create a fresh evaluator to avoid lifetime issues with closures
+    let eval_fn: EvalFn = {
+        let package = package.to_string();
+        Box::new(move |project_path: &Path| {
+            // Create a fresh evaluator for each project evaluation
+            let evaluator = CueEvaluator::builder()
+                .build()
+                .map_err(|e| e.to_string())?;
+            evaluate_manifest(&evaluator, project_path, &package)
+                .map_err(|e| e.to_string())
+        })
+    };
+
+    // Build task discovery for the workspace
+    let mut discovery = TaskDiscovery::new(git_root.to_path_buf());
+    discovery = discovery.with_eval_fn(eval_fn);
+
+    // Discover all projects in the workspace
+    if let Err(e) = discovery.discover() {
+        tracing::warn!("Failed to discover workspace projects: {}", e);
+        // Continue without resolution - tasks with unresolved refs will fail at execution
+        return Ok(());
+    }
+
+    // Resolve each TaskRef in the manifest
+    for (task_name, task_def) in manifest.tasks.iter_mut() {
+        resolve_task_ref_in_definition(task_name, task_def, &discovery)?;
+    }
+
+    // Expand generators (TaskMatchers) from workspace configurations
+    expand_generators(manifest, &discovery)?;
+
+    Ok(())
+}
+
+/// Expand generators (TaskMatchers) from workspace configurations.
+///
+/// For each workspace with generators defined, this finds all matching tasks
+/// across the workspace and creates synthetic tasks that depend on the
+/// beforeInstall hooks and are dependencies of the install task.
+fn expand_generators(manifest: &mut Cuenv, discovery: &TaskDiscovery) -> Result<()> {
+    let Some(workspaces) = &manifest.workspaces else {
+        return Ok(());
+    };
+
+    // Clone to avoid borrow issues
+    let workspaces = workspaces.clone();
+
+    for (ws_name, config) in &workspaces {
+        if !config.enabled {
+            continue;
+        }
+
+        let Some(generators) = &config.generators else {
+            continue;
+        };
+
+        let install_task_name = format!("{}.install", ws_name);
+
+        // Collect all generator task names so we can add them as dependencies to install
+        let mut generator_task_names: Vec<String> = Vec::new();
+
+        for (gen_name, matcher) in generators {
+            let matched_tasks = discovery.match_tasks(matcher);
+
+            tracing::debug!(
+                "Generator '{}' matched {} tasks with labels {:?}",
+                gen_name,
+                matched_tasks.len(),
+                matcher.labels
+            );
+
+            for (i, matched) in matched_tasks.iter().enumerate() {
+                // Create a unique task name for this generator result
+                let task_name = format!(
+                    "{}.generators.{}[{}]",
+                    ws_name, gen_name, i
+                );
+
+                // Create the task with project_root set
+                let mut task = matched.task.clone();
+                task.project_root = Some(matched.project_root.clone());
+
+                // Find what this task should depend on (beforeInstall hooks)
+                // The hooks are named like: bun.hooks.beforeInstall[0], bun.hooks.beforeInstall[1], etc.
+                let hook_prefix = format!("{}.hooks.beforeInstall", ws_name);
+                for existing_task_name in manifest.tasks.keys() {
+                    if existing_task_name.starts_with(&hook_prefix) {
+                        task.depends_on.push(existing_task_name.clone());
+                    }
+                }
+
+                tracing::debug!(
+                    "Created generator task '{}' for {}:{} in {}",
+                    task_name,
+                    matched.project_name.as_deref().unwrap_or("?"),
+                    matched.task_name,
+                    matched.project_root.display()
+                );
+
+                manifest.tasks.insert(
+                    task_name.clone(),
+                    TaskDefinition::Single(Box::new(task)),
+                );
+                generator_task_names.push(task_name);
+            }
+        }
+
+        // Add generator tasks as dependencies to the install task
+        if !generator_task_names.is_empty() {
+            if let Some(TaskDefinition::Single(install_task)) =
+                manifest.tasks.get_mut(&install_task_name)
+            {
+                for gen_task in generator_task_names {
+                    if !install_task.depends_on.contains(&gen_task) {
+                        install_task.depends_on.push(gen_task);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively resolve TaskRefs in a task definition
+fn resolve_task_ref_in_definition(
+    task_name: &str,
+    task_def: &mut TaskDefinition,
+    discovery: &TaskDiscovery,
+) -> Result<()> {
+    use cuenv_core::tasks::TaskGroup;
+
+    match task_def {
+        TaskDefinition::Single(task) => {
+            if let Some(ref task_ref_str) = task.task_ref {
+                // Parse the task ref
+                let task_ref = TaskRef {
+                    ref_: task_ref_str.clone(),
+                };
+
+                match discovery.resolve_ref(&task_ref) {
+                    Ok(matched) => {
+                        tracing::debug!(
+                            "Resolved TaskRef {} -> {}:{} in {}",
+                            task_ref_str,
+                            matched.project_name.as_deref().unwrap_or("?"),
+                            matched.task_name,
+                            matched.project_root.display()
+                        );
+
+                        // Copy resolved task properties but keep dependencies from placeholder
+                        let depends_on = task.depends_on.clone();
+                        **task = matched.task;
+                        task.depends_on = depends_on;
+                        task.project_root = Some(matched.project_root);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to resolve TaskRef {} for task {}: {}",
+                            task_ref_str,
+                            task_name,
+                            e
+                        );
+                        // Leave the task as-is; it will fail at execution time
+                    }
+                }
+            }
+        }
+        TaskDefinition::Group(group) => {
+            match group {
+                TaskGroup::Sequential(tasks) => {
+                    for (i, sub_task) in tasks.iter_mut().enumerate() {
+                        let sub_name = format!("{}[{}]", task_name, i);
+                        resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
+                    }
+                }
+                TaskGroup::Parallel(parallel) => {
+                    for (name, sub_task) in parallel.tasks.iter_mut() {
+                        let sub_name = format!("{}.{}", task_name, name);
+                        resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
