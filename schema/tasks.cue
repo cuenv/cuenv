@@ -22,6 +22,10 @@ package schema
 	hermetic?: bool | *true
 
 	dependsOn?: [...string]
+
+	// Labels for task discovery via #TaskMatcher
+	// Example: labels: ["projen", "codegen"]
+	labels?: [...string]
 	// Inputs accepted:
 	// - File paths relative to the env.cue root, e.g. "src/index.ts"
 	// - Directories (recursively included), e.g. "src" or "src/lib"
