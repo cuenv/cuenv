@@ -715,10 +715,15 @@ impl TaskExecutor {
         // Check if this is an unresolved TaskRef (should have been resolved before execution)
         if task.is_task_ref() && task.project_root.is_none() {
             return Err(Error::configuration(format!(
-                "Task '{}' is a TaskRef ({}) that has not been resolved. \
-                 Use TaskDiscovery to resolve TaskRefs before execution.",
+                "Task '{}' references another project's task ({}) but the reference could not be resolved.\n\
+                 This usually means:\n\
+                 - The referenced project doesn't exist or has no 'name' field in env.cue\n\
+                 - The referenced task '{}' doesn't exist in that project\n\
+                 - There was an error loading the referenced project's env.cue\n\
+                 Run with RUST_LOG=debug for more details.",
                 name,
-                task.task_ref.as_deref().unwrap_or("unknown")
+                task.task_ref.as_deref().unwrap_or("unknown"),
+                task.task_ref.as_deref().and_then(|r| r.split(':').last()).unwrap_or("unknown")
             )));
         }
 

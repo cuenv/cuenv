@@ -1420,7 +1420,13 @@ fn expand_generators(manifest: &mut Cuenv, discovery: &TaskDiscovery) -> Result<
         let mut generator_task_names: Vec<String> = Vec::new();
 
         for (gen_name, matcher) in generators {
-            let matched_tasks = discovery.match_tasks(matcher);
+            let matched_tasks = discovery.match_tasks(matcher).map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Generator '{}' has invalid configuration: {}",
+                    gen_name,
+                    e
+                ))
+            })?;
 
             tracing::debug!(
                 "Generator '{}' matched {} tasks with labels {:?}",

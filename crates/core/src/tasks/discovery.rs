@@ -73,6 +73,9 @@ impl TaskDiscovery {
     /// This scans for env.cue files using the ignore crate to respect .gitignore
     /// and builds the name -> project index.
     /// Requires an eval function to be set via `with_eval_fn`.
+    ///
+    /// Projects that fail to load are logged as warnings but don't stop discovery.
+    /// A summary of failures is logged at the end if any occurred.
     pub fn discover(&mut self) -> Result<(), DiscoveryError> {
         self.projects.clear();
         self.name_index.clear();
@@ -89,6 +92,9 @@ impl TaskDiscovery {
             .standard_filters(true) // Enable .gitignore, .ignore, hidden file filtering
             .build();
 
+        // Track failures for summary
+        let mut load_failures: Vec<(PathBuf, String)> = Vec::new();
+
         for result in walker {
             match result {
                 Ok(entry) => {
@@ -103,21 +109,42 @@ impl TaskDiscovery {
                                 self.projects.push(project);
                             }
                             Err(e) => {
-                                // Log warning but continue discovery
+                                let error_msg = e.to_string();
                                 tracing::warn!(
-                                    "Failed to load project at {}: {}",
-                                    path.display(),
-                                    e
+                                    path = %path.display(),
+                                    error = %error_msg,
+                                    "Failed to load project - tasks from this project will not be available"
                                 );
+                                load_failures.push((path.to_path_buf(), error_msg));
                             }
                         }
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("Error during workspace scan: {}", err);
+                    tracing::warn!(
+                        error = %err,
+                        "Error during workspace scan - some projects may not be discovered"
+                    );
                 }
             }
         }
+
+        // Log summary of failures
+        if !load_failures.is_empty() {
+            tracing::warn!(
+                count = load_failures.len(),
+                "Some projects failed to load during discovery. \
+                 Fix CUE errors in these projects or add them to .gitignore to exclude. \
+                 Run with RUST_LOG=debug for details."
+            );
+        }
+
+        tracing::debug!(
+            discovered = self.projects.len(),
+            named = self.name_index.len(),
+            failures = load_failures.len(),
+            "Workspace discovery complete"
+        );
 
         Ok(())
     }
@@ -198,7 +225,15 @@ impl TaskDiscovery {
     }
 
     /// Find all tasks matching a TaskMatcher
-    pub fn match_tasks(&self, matcher: &TaskMatcher) -> Vec<MatchedTask> {
+    ///
+    /// Returns an error if any regex pattern in the matcher is invalid.
+    pub fn match_tasks(&self, matcher: &TaskMatcher) -> Result<Vec<MatchedTask>, DiscoveryError> {
+        // Pre-compile arg matchers to catch regex errors early and avoid recompilation
+        let compiled_arg_matchers = match &matcher.args {
+            Some(arg_matchers) => Some(compile_arg_matchers(arg_matchers)?),
+            None => None,
+        };
+
         let mut matches = Vec::new();
 
         for project in &self.projects {
@@ -241,9 +276,9 @@ impl TaskDiscovery {
                     }
                 }
 
-                // Match by args
-                if let Some(arg_matchers) = &matcher.args {
-                    if !matches_args(&task.args, arg_matchers) {
+                // Match by args using pre-compiled matchers
+                if let Some(ref compiled) = compiled_arg_matchers {
+                    if !matches_args_compiled(&task.args, compiled) {
                         continue;
                     }
                 }
@@ -257,7 +292,7 @@ impl TaskDiscovery {
             }
         }
 
-        matches
+        Ok(matches)
     }
 
     /// Get all discovered projects
@@ -271,31 +306,64 @@ impl TaskDiscovery {
     }
 }
 
-/// Check if task args match all arg matchers
-fn matches_args(args: &[String], matchers: &[ArgMatcher]) -> bool {
-    for matcher in matchers {
-        let matched = args.iter().any(|arg| {
-            // Check contains
-            if let Some(substring) = &matcher.contains {
+/// Compiled version of ArgMatcher for efficient matching
+#[derive(Debug)]
+struct CompiledArgMatcher {
+    contains: Option<String>,
+    regex: Option<Regex>,
+}
+
+impl CompiledArgMatcher {
+    /// Compile an ArgMatcher, validating regex patterns
+    fn compile(matcher: &ArgMatcher) -> Result<Self, DiscoveryError> {
+        let regex = match &matcher.matches {
+            Some(pattern) => {
+                // Use regex with size limits to prevent ReDoS
+                let regex = regex::RegexBuilder::new(pattern)
+                    .size_limit(1024 * 1024) // 1MB compiled size limit
+                    .build()
+                    .map_err(|e| DiscoveryError::InvalidRegex(pattern.clone(), e.to_string()))?;
+                Some(regex)
+            }
+            None => None,
+        };
+        Ok(Self {
+            contains: matcher.contains.clone(),
+            regex,
+        })
+    }
+
+    /// Check if any argument matches this matcher
+    fn matches(&self, args: &[String]) -> bool {
+        // If both are None, this matcher matches nothing (conservative behavior)
+        if self.contains.is_none() && self.regex.is_none() {
+            return false;
+        }
+
+        args.iter().any(|arg| {
+            if let Some(substring) = &self.contains {
                 if arg.contains(substring) {
                     return true;
                 }
             }
-            // Check regex matches
-            if let Some(pattern) = &matcher.matches {
-                if let Ok(regex) = Regex::new(pattern) {
-                    if regex.is_match(arg) {
-                        return true;
-                    }
+            if let Some(regex) = &self.regex {
+                if regex.is_match(arg) {
+                    return true;
                 }
             }
             false
-        });
-        if !matched {
-            return false;
-        }
+        })
     }
-    true
+}
+
+/// Pre-compile all arg matchers, returning errors for invalid patterns
+fn compile_arg_matchers(matchers: &[ArgMatcher]) -> Result<Vec<CompiledArgMatcher>, DiscoveryError> {
+    matchers.iter().map(CompiledArgMatcher::compile).collect()
+}
+
+/// Check if task args match all arg matchers (using pre-compiled matchers)
+fn matches_args_compiled(args: &[String], matchers: &[CompiledArgMatcher]) -> bool {
+    matchers.iter().all(|matcher| matcher.matches(args))
 }
 
 /// Errors that can occur during task discovery
@@ -321,6 +389,9 @@ pub enum DiscoveryError {
 
     #[error("No evaluation function provided - use with_eval_fn()")]
     NoEvalFunction,
+
+    #[error("Invalid regex pattern '{0}': {1}")]
+    InvalidRegex(String, String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -353,6 +424,12 @@ mod tests {
         assert!(task_ref.parse().is_none());
     }
 
+    /// Helper to compile and match for tests
+    fn matches_args(args: &[String], matchers: &[ArgMatcher]) -> bool {
+        let compiled = compile_arg_matchers(matchers).expect("test matchers should be valid");
+        matches_args_compiled(args, &compiled)
+    }
+
     #[test]
     fn test_matches_args_contains() {
         let args = vec!["run".to_string(), ".projenrc.ts".to_string()];
@@ -380,6 +457,29 @@ mod tests {
             contains: Some("test".to_string()),
             matches: None,
         }];
+        assert!(!matches_args(&args, &matchers));
+    }
+
+    #[test]
+    fn test_invalid_regex_returns_error() {
+        let matchers = vec![ArgMatcher {
+            contains: None,
+            matches: Some(r"[invalid".to_string()), // Unclosed bracket
+        }];
+        let result = compile_arg_matchers(&matchers);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, DiscoveryError::InvalidRegex(_, _)));
+    }
+
+    #[test]
+    fn test_empty_matcher_matches_nothing() {
+        let args = vec!["anything".to_string()];
+        let matchers = vec![ArgMatcher {
+            contains: None,
+            matches: None,
+        }];
+        // Empty matcher should not match anything
         assert!(!matches_args(&args, &matchers));
     }
 }

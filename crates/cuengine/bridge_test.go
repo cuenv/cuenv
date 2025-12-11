@@ -163,8 +163,9 @@ func TestCueEvalPackage_NonexistentDirectory(t *testing.T) {
 		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
 	}
 
-	if !strings.Contains(errorResponse["error"], "Failed to change directory") {
-		t.Errorf("Expected directory change error, got: %s", errorResponse["error"])
+	// When loading from a nonexistent directory, CUE fails to load the instance
+	if !strings.Contains(errorResponse["error"], "Failed to load CUE instance") {
+		t.Errorf("Expected CUE load error for nonexistent directory, got: %s", errorResponse["error"])
 	}
 }
 
