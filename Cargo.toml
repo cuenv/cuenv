@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.11.8"
+version = "0.12.0"
 edition = "2024"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
@@ -25,13 +25,13 @@ keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
-cuenv-events = { path = "crates/events", version = "0.11.0" }
-cuenv-core = { path = "crates/core", version = "0.11.0" }
-cuenv-dagger = { path = "crates/dagger", version = "0.11.0" }
-cuenv-workspaces = { path = "crates/workspaces", version = "0.11.0" }
-cuenv-ci = { path = "crates/ci", version = "0.11.0" }
-cuenv-release = { path = "crates/release", version = "0.11.0" }
-cuengine = { path = "crates/cuengine", version = "0.11.0" }
+cuenv-events = { path = "crates/events", version = "0.12.0" }
+cuenv-core = { path = "crates/core", version = "0.12.0" }
+cuenv-dagger = { path = "crates/dagger", version = "0.12.0" }
+cuenv-workspaces = { path = "crates/workspaces", version = "0.12.0" }
+cuenv-ci = { path = "crates/ci", version = "0.12.0" }
+cuenv-release = { path = "crates/release", version = "0.12.0" }
+cuengine = { path = "crates/cuengine", version = "0.12.0" }
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
