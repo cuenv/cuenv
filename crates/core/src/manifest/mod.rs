@@ -56,7 +56,7 @@ pub enum HookItem {
     /// Reference to a task in another project
     TaskRef(TaskRef),
     /// Inline task definition
-    Task(Task),
+    Task(Box<Task>),
 }
 
 /// Reference to a task in another env.cue project by its name property
@@ -262,7 +262,7 @@ impl Cuenv {
                     let hook_task_name = format!("{}.hooks.beforeInstall[{}]", name, i);
 
                     let hook_task = match hook_item {
-                        HookItem::Task(task) => task.clone(),
+                        HookItem::Task(task) => task.as_ref().clone(),
                         HookItem::TaskRef(task_ref) => {
                             // Create a placeholder task that will be resolved at runtime
                             Task::from_task_ref(&task_ref.ref_)
