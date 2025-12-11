@@ -24,6 +24,8 @@ concurrency:
 
 permissions:
   contents: read
+  checks: write
+  pull-requests: write
 
 jobs:
   ci:
@@ -59,3 +61,11 @@ jobs:
         run: cuenv ci --pipeline ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload CI Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cuenv-reports
+          path: .cuenv/reports/
+          if-no-files-found: ignore

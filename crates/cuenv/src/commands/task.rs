@@ -6,11 +6,15 @@
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
+use cuenv_core::manifest::TaskRef;
+use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
     BackendFactory, ExecutorConfig, ResolvedArgs, Task, TaskDefinition, TaskExecutor, TaskGraph,
     TaskIndex, TaskParams, Tasks,
 };
+
+use super::env_file::find_cue_module_root;
 
 /// Get the dagger backend factory if the feature is enabled
 #[cfg(feature = "dagger-backend")]
@@ -29,6 +33,7 @@ use std::fmt::Write;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use super::export::get_environment_with_hooks;
@@ -61,8 +66,8 @@ pub async fn execute_task(
     );
 
     // Evaluate CUE to get tasks and environment
-    let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv =
+    let evaluator = Arc::new(CueEvaluator::builder().build()?);
+    let mut manifest: Cuenv =
         evaluate_manifest(&evaluator, Path::new(path), package)?.with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
 
@@ -70,6 +75,14 @@ pub async fn execute_task(
         "Successfully parsed CUE evaluation, found {} tasks",
         manifest.tasks.len()
     );
+
+    // Resolve any TaskRef placeholders in workspace hooks
+    let project_path = Path::new(path);
+    if let Ok(git_root) = find_git_root(project_path) {
+        resolve_task_refs(&mut manifest, evaluator.clone(), package, &git_root)?;
+    } else {
+        tracing::debug!("Not in a git repository, skipping TaskRef resolution");
+    }
 
     // Build a canonical index to support nested task paths
     let task_index = TaskIndex::build(&manifest.tasks)?;
@@ -90,7 +103,18 @@ pub async fn execute_task(
             return Ok("No tasks defined in the configuration".to_string());
         }
 
-        return Ok(render_task_tree(tasks));
+        // Calculate current working directory relative to cue.mod root
+        let project_root =
+            std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+        let cue_module_root = find_cue_module_root(&project_root);
+        let cwd_relative = cue_module_root.as_ref().and_then(|root| {
+            project_root
+                .strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        });
+
+        return Ok(render_task_tree(tasks, cwd_relative.as_deref()));
     }
 
     let requested_task = task_name.unwrap();
@@ -118,7 +142,8 @@ pub async fn execute_task(
         }
 
         // It's a group or task with subtasks
-        return Ok(render_task_tree(subtasks));
+        // Note: For help on specific groups, we don't need cwd-relative sorting
+        return Ok(render_task_tree(subtasks, None));
     }
 
     // Resolve task via canonical index (supports nested paths and ':' alias)
@@ -209,12 +234,15 @@ pub async fn execute_task(
     }
 
     // Create executor with environment
+    let project_root =
+        std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
     let config = ExecutorConfig {
         capture_output,
         max_parallel: 0,
         environment: runtime_env.clone(),
         working_dir: None,
-        project_root: std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf()),
+        cue_module_root: find_cue_module_root(&project_root),
+        project_root,
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
         cache_dir: None,
         show_cache_path,
@@ -371,6 +399,7 @@ async fn run_task_hermetic(
             environment: env.clone(),
             working_dir: None,
             project_root: workspace.clone(),
+            cue_module_root: find_cue_module_root(&workspace),
             materialize_outputs: None,
             cache_dir: None,
             show_cache_path: false,
@@ -797,6 +826,7 @@ async fn resolve_and_materialize_project_reference(
                 environment: env.clone(),
                 working_dir: None,
                 project_root: ext_dir.clone(),
+                cue_module_root: find_cue_module_root(&ext_dir),
                 materialize_outputs: None,
                 cache_dir: None,
                 show_cache_path: false,
@@ -939,7 +969,122 @@ struct TaskTreeNode {
     is_task: bool,
 }
 
-fn render_task_tree(tasks: Vec<&cuenv_core::tasks::IndexedTask>) -> String {
+/// Render tasks grouped by source file, ordered by proximity to current directory
+///
+/// `cwd_relative`: Current working directory relative to cue.mod root (e.g., "projects/foo")
+/// Tasks from the current directory are shown first, then progressively further parent dirs
+fn render_task_tree(
+    tasks: Vec<&cuenv_core::tasks::IndexedTask>,
+    cwd_relative: Option<&str>,
+) -> String {
+    // Group tasks by source file
+    // Normalize root-level sources: both "" and "env.cue" are treated as root
+    let mut by_source: BTreeMap<String, Vec<&cuenv_core::tasks::IndexedTask>> = BTreeMap::new();
+    for task in tasks {
+        let source = task.source_file.clone().unwrap_or_default();
+        // Normalize root sources to empty string so they group together
+        let normalized = if source == "env.cue" {
+            String::new()
+        } else {
+            source
+        };
+        by_source.entry(normalized).or_default().push(task);
+    }
+
+    // Sort source files by proximity to current directory
+    // - Tasks from cwd come first
+    // - Then tasks from parent directories (closest parent first)
+    // - Root tasks come last (unless cwd is root)
+    let mut sources: Vec<_> = by_source.keys().cloned().collect();
+    sources.sort_by(|a, b| {
+        let proximity_a = source_proximity(a, cwd_relative);
+        let proximity_b = source_proximity(b, cwd_relative);
+        // Lower proximity = closer to cwd = should come first
+        proximity_a.cmp(&proximity_b).then(a.cmp(b))
+    });
+
+    let mut output = String::new();
+    for (i, source) in sources.iter().enumerate() {
+        if i > 0 {
+            output.push('\n');
+        }
+
+        // Format header
+        let header = if source.is_empty() || source == "env.cue" {
+            "Tasks:".to_string()
+        } else {
+            format!("Tasks from {source}:")
+        };
+        writeln!(output, "{header}").unwrap();
+
+        // Build and render tree for this source's tasks
+        let source_tasks = &by_source[source];
+        render_source_tasks(source_tasks, &mut output);
+    }
+
+    if output.is_empty() {
+        output = "No tasks defined in the configuration".to_string();
+    }
+
+    output
+}
+
+/// Calculate proximity of a source file to the current directory
+/// Lower value = closer to cwd = should be shown first
+///
+/// Returns:
+/// - 0 if source is in the same directory as cwd
+/// - 1+ for parent directories (1 = immediate parent, 2 = grandparent, etc.)
+/// - `usize::MAX` / 2 for unrelated paths (children of cwd)
+fn source_proximity(source: &str, cwd_relative: Option<&str>) -> usize {
+    // Get the source directory (remove the filename like env.cue)
+    let source_dir = if source.is_empty() {
+        ""
+    } else {
+        std::path::Path::new(source)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("")
+    };
+
+    let cwd = cwd_relative.unwrap_or("");
+
+    // If both are root level
+    if source_dir.is_empty() && cwd.is_empty() {
+        return 0;
+    }
+
+    // If source is in the same directory as cwd
+    if source_dir == cwd {
+        return 0;
+    }
+
+    // Check if source is an ancestor of cwd (parent directory)
+    if cwd.starts_with(source_dir)
+        && (source_dir.is_empty() || cwd[source_dir.len()..].starts_with('/'))
+    {
+        // Count how many levels up the source is
+        let source_depth = if source_dir.is_empty() {
+            0
+        } else {
+            source_dir.matches('/').count() + 1
+        };
+        let cwd_depth = if cwd.is_empty() {
+            0
+        } else {
+            cwd.matches('/').count() + 1
+        };
+        // Distance = how many levels up from cwd to reach source
+        return cwd_depth - source_depth;
+    }
+
+    // Source is not an ancestor of cwd (could be a sibling or child)
+    // Show these after all ancestors
+    usize::MAX / 2
+}
+
+/// Render tasks from a single source file as a tree
+fn render_source_tasks(tasks: &[&cuenv_core::tasks::IndexedTask], output: &mut String) {
     let mut roots: BTreeMap<String, TaskTreeNode> = BTreeMap::new();
 
     // Build the tree
@@ -963,14 +1108,7 @@ fn render_task_tree(tasks: Vec<&cuenv_core::tasks::IndexedTask>) -> String {
                                 TaskDefinition::Group(_) => None,
                             })
                         }
-                        cuenv_core::tasks::TaskGroup::Parallel(_) => {
-                            // For parallel groups, maybe no shared description easily available unless explicitly added to group?
-                            // The current Task definition puts description on Task struct.
-                            // If it's a group, the definition is TaskDefinition::Group which contains TaskGroup.
-                            // TaskGroup doesn't have a description field itself in the struct definition I read earlier.
-                            // Wait, let me check TaskDefinition again.
-                            None
-                        }
+                        cuenv_core::tasks::TaskGroup::Parallel(_) => None,
                     },
                 };
                 node.description = desc;
@@ -980,16 +1118,10 @@ fn render_task_tree(tasks: Vec<&cuenv_core::tasks::IndexedTask>) -> String {
         }
     }
 
-    let mut output = String::from("Available tasks:\n");
-
     // Calculate max width for alignment
-    // We need to traverse the tree to find the printed length of the name column
-    // width = indentation + name_len + 2 (for space and padding)
     let max_width = calculate_tree_width(&roots, 0);
 
-    print_tree_nodes(&roots, &mut output, max_width, "");
-
-    output
+    print_tree_nodes(&roots, output, max_width, "");
 }
 
 fn calculate_tree_width(nodes: &BTreeMap<String, TaskTreeNode>, depth: usize) -> usize {
@@ -1214,6 +1346,211 @@ fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
     new_task
 }
 
+/// Resolve `TaskRef` placeholders and expand generators in a manifest using `TaskDiscovery`.
+///
+/// This function:
+/// 1. Resolves `TaskRef` placeholders (created by `with_implicit_tasks()` for workspace hooks)
+/// 2. Expands generators (`TaskMatchers`) to discover and create tasks for matching projects
+///
+/// The resolved tasks have their `command`, `args`, etc. filled in from the referenced
+/// project's task, and `project_root` set so the executor knows where to run them.
+fn resolve_task_refs(
+    manifest: &mut Cuenv,
+    evaluator: Arc<CueEvaluator>,
+    package: &str,
+    git_root: &Path,
+) -> Result<()> {
+    // Create an evaluation function that can be used by TaskDiscovery
+    // We create a fresh evaluator to avoid lifetime issues with closures
+    let eval_fn: EvalFn = {
+        let package = package.to_string();
+        Box::new(move |project_path: &Path| {
+            // Use the shared evaluator which includes caching
+            evaluate_manifest(&evaluator, project_path, &package).map_err(|e| e.to_string())
+        })
+    };
+
+    // Build task discovery for the workspace
+    let mut discovery = TaskDiscovery::new(git_root.to_path_buf());
+    discovery = discovery.with_eval_fn(eval_fn);
+
+    // Discover all projects in the workspace
+    if let Err(e) = discovery.discover() {
+        tracing::warn!("Failed to discover workspace projects: {}", e);
+        // Continue without resolution - tasks with unresolved refs will fail at execution
+        return Ok(());
+    }
+
+    // Resolve each TaskRef in the manifest
+    for (task_name, task_def) in &mut manifest.tasks {
+        resolve_task_ref_in_definition(task_name, task_def, &discovery)?;
+    }
+
+    // Expand generators (TaskMatchers) from workspace configurations
+    expand_generators(manifest, &discovery)?;
+
+    Ok(())
+}
+
+/// Expand generators (`TaskMatchers`) from workspace configurations.
+///
+/// For each workspace with generators defined, this finds all matching tasks
+/// across the workspace and creates synthetic tasks that depend on the
+/// beforeInstall hooks and are dependencies of the install task.
+fn expand_generators(manifest: &mut Cuenv, discovery: &TaskDiscovery) -> Result<()> {
+    let Some(workspaces) = &manifest.workspaces else {
+        return Ok(());
+    };
+
+    // Clone to avoid borrow issues
+    let workspaces = workspaces.clone();
+
+    for (ws_name, config) in &workspaces {
+        if !config.enabled {
+            continue;
+        }
+
+        let Some(generators) = &config.generators else {
+            continue;
+        };
+
+        let install_task_name = format!("{ws_name}.install");
+
+        // Collect all generator task names so we can add them as dependencies to install
+        let mut generator_task_names: Vec<String> = Vec::new();
+
+        for (gen_name, matcher) in generators {
+            let matched_tasks = discovery.match_tasks(matcher).map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Generator '{gen_name}' has invalid configuration: {e}"
+                ))
+            })?;
+
+            tracing::debug!(
+                "Generator '{}' matched {} tasks with labels {:?}",
+                gen_name,
+                matched_tasks.len(),
+                matcher.labels
+            );
+
+            for (i, matched) in matched_tasks.iter().enumerate() {
+                // Create a unique task name for this generator result
+                let task_name = format!("{ws_name}.generators.{gen_name}[{i}]");
+
+                // Create the task with project_root set
+                let mut task = matched.task.clone();
+                task.project_root = Some(matched.project_root.clone());
+
+                // Find what this task should depend on (beforeInstall hooks)
+                // The hooks are named like: bun.hooks.beforeInstall[0], bun.hooks.beforeInstall[1], etc.
+                let hook_prefix = format!("{ws_name}.hooks.beforeInstall");
+                for existing_task_name in manifest.tasks.keys() {
+                    if existing_task_name.starts_with(&hook_prefix) {
+                        task.depends_on.push(existing_task_name.clone());
+                    }
+                }
+
+                tracing::debug!(
+                    "Created generator task '{}' for {}:{} in {}",
+                    task_name,
+                    matched.project_name.as_deref().unwrap_or("?"),
+                    matched.task_name,
+                    matched.project_root.display()
+                );
+
+                manifest
+                    .tasks
+                    .insert(task_name.clone(), TaskDefinition::Single(Box::new(task)));
+                generator_task_names.push(task_name);
+            }
+        }
+
+        // Add generator tasks as dependencies to the install task
+        if !generator_task_names.is_empty()
+            && let Some(TaskDefinition::Single(install_task)) =
+                manifest.tasks.get_mut(&install_task_name)
+        {
+            for gen_task in generator_task_names {
+                if !install_task.depends_on.contains(&gen_task) {
+                    install_task.depends_on.push(gen_task);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively resolve `TaskRefs` in a task definition
+fn resolve_task_ref_in_definition(
+    task_name: &str,
+    task_def: &mut TaskDefinition,
+    discovery: &TaskDiscovery,
+) -> Result<()> {
+    use cuenv_core::tasks::TaskGroup;
+
+    match task_def {
+        TaskDefinition::Single(task) => {
+            if let Some(ref task_ref_str) = task.task_ref {
+                // Parse the task ref
+                let parsed_ref = TaskRef {
+                    ref_: task_ref_str.clone(),
+                };
+
+                match discovery.resolve_ref(&parsed_ref) {
+                    Ok(matched) => {
+                        tracing::debug!(
+                            "Resolved TaskRef {} -> {}:{} in {}",
+                            task_ref_str,
+                            matched.project_name.as_deref().unwrap_or("?"),
+                            matched.task_name,
+                            matched.project_root.display()
+                        );
+
+                        // Copy resolved task properties and merge dependencies from the placeholder
+                        let placeholder_depends_on = task.depends_on.clone();
+                        let mut resolved_task = matched.task;
+
+                        for dep in placeholder_depends_on {
+                            if !resolved_task.depends_on.contains(&dep) {
+                                resolved_task.depends_on.push(dep);
+                            }
+                        }
+
+                        resolved_task.project_root = Some(matched.project_root);
+                        **task = resolved_task;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to resolve TaskRef {} for task {}: {}",
+                            task_ref_str,
+                            task_name,
+                            e
+                        );
+                        // Leave the task as-is; it will fail at execution time
+                    }
+                }
+            }
+        }
+        TaskDefinition::Group(group) => match group {
+            TaskGroup::Sequential(tasks) => {
+                for (i, sub_task) in tasks.iter_mut().enumerate() {
+                    let sub_name = format!("{task_name}[{i}]");
+                    resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
+                }
+            }
+            TaskGroup::Parallel(parallel) => {
+                for (name, sub_task) in &mut parallel.tasks {
+                    let sub_name = format!("{task_name}.{name}");
+                    resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
+                }
+            }
+        },
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1355,6 +1692,57 @@ env: {
     }
 
     #[test]
+    fn test_resolve_task_ref_merges_dependencies() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("env.cue"), "package test").unwrap();
+
+        let mut manifest = Cuenv {
+            name: Some("proj".to_string()),
+            ..Default::default()
+        };
+
+        let referenced_task = Task {
+            command: "echo".into(),
+            depends_on: vec!["dep-a".into(), "dep-b".into()],
+            ..Default::default()
+        };
+        manifest.tasks.insert(
+            "run".into(),
+            TaskDefinition::Single(Box::new(referenced_task.clone())),
+        );
+
+        let manifest_for_eval = manifest.clone();
+        let mut discovery = TaskDiscovery::new(tmp.path().to_path_buf())
+            .with_eval_fn(Box::new(move |_| Ok(manifest_for_eval.clone())));
+        discovery.discover().expect("discovery should succeed");
+
+        let placeholder_task = Task {
+            task_ref: Some("#proj:run".into()),
+            depends_on: vec!["placeholder".into()],
+            ..Default::default()
+        };
+        let mut task_def = TaskDefinition::Single(Box::new(placeholder_task));
+
+        resolve_task_ref_in_definition("hook", &mut task_def, &discovery)
+            .expect("resolution should succeed");
+
+        let TaskDefinition::Single(resolved) = task_def else {
+            panic!("expected single task");
+        };
+
+        assert_eq!(resolved.command, "echo");
+        assert_eq!(
+            resolved.depends_on,
+            vec![
+                "dep-a".to_string(),
+                "dep-b".to_string(),
+                "placeholder".to_string()
+            ]
+        );
+        assert_eq!(resolved.project_root, Some(tmp.path().to_path_buf()));
+    }
+
+    #[test]
     fn test_format_task_results_variants() {
         let r_ok = cuenv_core::tasks::TaskResult {
             name: "t".into(),
@@ -1489,29 +1877,35 @@ env: {
 
         let t_build = IndexedTask {
             name: "build".into(),
+            original_name: "build".into(),
             definition: TaskDefinition::Single(Box::new(make_task(Some("Build the project")))),
             is_group: false,
+            source_file: None, // Root env.cue
         };
         let t_fmt_check = IndexedTask {
             name: "fmt.check".into(),
+            original_name: "fmt.check".into(),
             definition: TaskDefinition::Single(Box::new(make_task(Some("Check formatting")))),
             is_group: false,
+            source_file: None,
         };
         let t_fmt_fix = IndexedTask {
             name: "fmt.fix".into(),
+            original_name: "fmt.fix".into(),
             definition: TaskDefinition::Single(Box::new(make_task(Some("Fix formatting")))),
             is_group: false,
+            source_file: None,
         };
 
         // Provide them in mixed order to verify sorting
         let tasks = vec![&t_fmt_fix, &t_build, &t_fmt_check];
-        let output = render_task_tree(tasks);
+        let output = render_task_tree(tasks, None);
 
         // We can't match exact lines easily because of dot padding calculation,
         // but we can check structure and presence of content.
 
         let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines[0], "Available tasks:");
+        assert_eq!(lines[0], "Tasks:");
 
         // build is first alphabetically
         assert!(lines[1].starts_with("├─ build"));

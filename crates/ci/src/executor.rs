@@ -1,5 +1,5 @@
-// CI executor outputs to stdout as part of its normal operation
-#![allow(clippy::print_stdout)]
+// CI executor outputs to stdout/stderr as part of its normal operation
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use crate::affected::compute_affected_tasks;
 use crate::discovery::discover_projects;
@@ -227,6 +227,30 @@ pub async fn run_ci(
                 } else {
                     println!("Report written to: {}", report_path.display());
                 }
+            }
+
+            // Write GitHub Job Summary (appears in workflow run summary)
+            if let Err(e) = crate::report::markdown::write_job_summary(&report) {
+                eprintln!("Warning: Failed to write job summary: {e}");
+            }
+
+            // Always post results to CI provider before checking for failures
+            // This ensures PR comments and check runs are created even when tasks fail
+            let check_name = format!("cuenv: {}", pipeline.name);
+            match provider.create_check(&check_name).await {
+                Ok(handle) => {
+                    if let Err(e) = provider.complete_check(&handle, &report).await {
+                        eprintln!("Warning: Failed to complete check run: {e}");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to create check run: {e}");
+                }
+            }
+
+            // Post PR comment with report summary
+            if let Err(e) = provider.upload_report(&report).await {
+                eprintln!("Warning: Failed to post PR comment: {e}");
             }
 
             // Track if this project failed
