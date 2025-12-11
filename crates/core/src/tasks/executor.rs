@@ -723,7 +723,10 @@ impl TaskExecutor {
                  Run with RUST_LOG=debug for more details.",
                 name,
                 task.task_ref.as_deref().unwrap_or("unknown"),
-                task.task_ref.as_deref().and_then(|r| r.split(':').last()).unwrap_or("unknown")
+                task.task_ref
+                    .as_deref()
+                    .and_then(|r| r.split(':').last())
+                    .unwrap_or("unknown")
             )));
         }
 

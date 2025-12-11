@@ -1060,7 +1060,8 @@ fn source_proximity(source: &str, cwd_relative: Option<&str>) -> usize {
     }
 
     // Check if source is an ancestor of cwd (parent directory)
-    if cwd.starts_with(source_dir) && (source_dir.is_empty() || cwd[source_dir.len()..].starts_with('/'))
+    if cwd.starts_with(source_dir)
+        && (source_dir.is_empty() || cwd[source_dir.len()..].starts_with('/'))
     {
         // Count how many levels up the source is
         let source_depth = if source_dir.is_empty() {
@@ -1365,8 +1366,7 @@ fn resolve_task_refs(
         let package = package.to_string();
         Box::new(move |project_path: &Path| {
             // Use the shared evaluator which includes caching
-            evaluate_manifest(&evaluator, project_path, &package)
-                .map_err(|e| e.to_string())
+            evaluate_manifest(&evaluator, project_path, &package).map_err(|e| e.to_string())
         })
     };
 
@@ -1423,8 +1423,7 @@ fn expand_generators(manifest: &mut Cuenv, discovery: &TaskDiscovery) -> Result<
             let matched_tasks = discovery.match_tasks(matcher).map_err(|e| {
                 cuenv_core::Error::configuration(format!(
                     "Generator '{}' has invalid configuration: {}",
-                    gen_name,
-                    e
+                    gen_name, e
                 ))
             })?;
 
@@ -1437,10 +1436,7 @@ fn expand_generators(manifest: &mut Cuenv, discovery: &TaskDiscovery) -> Result<
 
             for (i, matched) in matched_tasks.iter().enumerate() {
                 // Create a unique task name for this generator result
-                let task_name = format!(
-                    "{}.generators.{}[{}]",
-                    ws_name, gen_name, i
-                );
+                let task_name = format!("{}.generators.{}[{}]", ws_name, gen_name, i);
 
                 // Create the task with project_root set
                 let mut task = matched.task.clone();
@@ -1463,10 +1459,9 @@ fn expand_generators(manifest: &mut Cuenv, discovery: &TaskDiscovery) -> Result<
                     matched.project_root.display()
                 );
 
-                manifest.tasks.insert(
-                    task_name.clone(),
-                    TaskDefinition::Single(Box::new(task)),
-                );
+                manifest
+                    .tasks
+                    .insert(task_name.clone(), TaskDefinition::Single(Box::new(task)));
                 generator_task_names.push(task_name);
             }
         }
@@ -1539,22 +1534,20 @@ fn resolve_task_ref_in_definition(
                 }
             }
         }
-        TaskDefinition::Group(group) => {
-            match group {
-                TaskGroup::Sequential(tasks) => {
-                    for (i, sub_task) in tasks.iter_mut().enumerate() {
-                        let sub_name = format!("{}[{}]", task_name, i);
-                        resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
-                    }
-                }
-                TaskGroup::Parallel(parallel) => {
-                    for (name, sub_task) in parallel.tasks.iter_mut() {
-                        let sub_name = format!("{}.{}", task_name, name);
-                        resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
-                    }
+        TaskDefinition::Group(group) => match group {
+            TaskGroup::Sequential(tasks) => {
+                for (i, sub_task) in tasks.iter_mut().enumerate() {
+                    let sub_name = format!("{}[{}]", task_name, i);
+                    resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
                 }
             }
-        }
+            TaskGroup::Parallel(parallel) => {
+                for (name, sub_task) in parallel.tasks.iter_mut() {
+                    let sub_name = format!("{}.{}", task_name, name);
+                    resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
+                }
+            }
+        },
     }
 
     Ok(())

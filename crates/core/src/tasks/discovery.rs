@@ -202,18 +202,15 @@ impl TaskDiscovery {
             .get(&project_name)
             .ok_or_else(|| DiscoveryError::ProjectNotFound(project_name.clone()))?;
 
-        let task_def = project
-            .manifest
-            .tasks
-            .get(&task_name)
-            .ok_or_else(|| DiscoveryError::TaskNotFound(project_name.clone(), task_name.clone()))?;
+        let task_def =
+            project.manifest.tasks.get(&task_name).ok_or_else(|| {
+                DiscoveryError::TaskNotFound(project_name.clone(), task_name.clone())
+            })?;
 
         // We only support single tasks, not task groups, for TaskRef
         let task = task_def
             .as_single()
-            .ok_or_else(|| {
-                DiscoveryError::TaskIsGroup(project_name.clone(), task_name.clone())
-            })?
+            .ok_or_else(|| DiscoveryError::TaskIsGroup(project_name.clone(), task_name.clone()))?
             .clone();
 
         Ok(MatchedTask {
@@ -357,7 +354,9 @@ impl CompiledArgMatcher {
 }
 
 /// Pre-compile all arg matchers, returning errors for invalid patterns
-fn compile_arg_matchers(matchers: &[ArgMatcher]) -> Result<Vec<CompiledArgMatcher>, DiscoveryError> {
+fn compile_arg_matchers(
+    matchers: &[ArgMatcher],
+) -> Result<Vec<CompiledArgMatcher>, DiscoveryError> {
     matchers.iter().map(CompiledArgMatcher::compile).collect()
 }
 

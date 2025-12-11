@@ -240,12 +240,12 @@ impl Cuenv {
             }
 
             // Only process workspace if at least one task explicitly uses it
-            let workspace_used = self.tasks.values().any(|task_def| task_def.uses_workspace(name));
+            let workspace_used = self
+                .tasks
+                .values()
+                .any(|task_def| task_def.uses_workspace(name));
             if !workspace_used {
-                tracing::debug!(
-                    "Skipping workspace '{}' - no tasks declare usage",
-                    name
-                );
+                tracing::debug!("Skipping workspace '{}' - no tasks declare usage", name);
                 continue;
             }
 
@@ -258,8 +258,7 @@ impl Cuenv {
             if let Some(hooks) = &config.hooks {
                 if let Some(before_install) = &hooks.before_install {
                     for (i, hook_item) in before_install.iter().enumerate() {
-                        let hook_task_name =
-                            format!("{}.hooks.beforeInstall[{}]", name, i);
+                        let hook_task_name = format!("{}.hooks.beforeInstall[{}]", name, i);
 
                         let hook_task = match hook_item {
                             HookItem::Task(task) => task.clone(),
