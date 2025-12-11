@@ -43,7 +43,10 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    // Create cue.mod to ensure module root detection works for source path normalization
+    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
+    fs::write(temp_dir.path().join("cue.mod/module.cue"), "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}").unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test listing tasks with 't' shorthand
     let (stdout, stderr, success) = run_cuenv(&[
