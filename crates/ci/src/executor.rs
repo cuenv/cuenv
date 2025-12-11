@@ -229,6 +229,11 @@ pub async fn run_ci(
                 }
             }
 
+            // Write GitHub Job Summary (appears in workflow run summary)
+            if let Err(e) = crate::report::markdown::write_job_summary(&report) {
+                eprintln!("Warning: Failed to write job summary: {e}");
+            }
+
             // Always post results to CI provider before checking for failures
             // This ensures PR comments and check runs are created even when tasks fail
             let check_name = format!("cuenv: {}", pipeline.name);
