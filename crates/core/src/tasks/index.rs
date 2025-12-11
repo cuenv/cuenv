@@ -69,9 +69,14 @@ fn validate_segment(segment: &str) -> Result<()> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct IndexedTask {
+    /// Display name (with _ prefix stripped if present)
     pub name: String,
+    /// Original name from CUE (may have _ prefix)
+    pub original_name: String,
     pub definition: TaskDefinition,
     pub is_group: bool,
+    /// Source file where this task was defined (relative to cue.mod root)
+    pub source_file: Option<String>,
 }
 
 /// Flattened index of all addressable tasks with canonical names
@@ -82,12 +87,33 @@ pub struct TaskIndex {
 
 impl TaskIndex {
     /// Build a canonical index from the hierarchical task map
+    ///
+    /// Handles:
+    /// - Stripping `_` prefix from task names (CUE hidden fields for local-only tasks)
+    /// - Extracting source file from task metadata
+    /// - Canonicalizing nested task paths
     pub fn build(tasks: &HashMap<String, TaskDefinition>) -> Result<Self> {
         let mut entries = BTreeMap::new();
 
         for (name, definition) in tasks {
-            let path = TaskPath::parse(name)?;
-            let _ = canonicalize_definition(definition, &path, &mut entries)?;
+            // Strip _ prefix for display/execution name
+            let (display_name, original_name) = if name.starts_with('_') {
+                (name[1..].to_string(), name.clone())
+            } else {
+                (name.clone(), name.clone())
+            };
+
+            // Extract source file from task definition
+            let source_file = extract_source_file(definition);
+
+            let path = TaskPath::parse(&display_name)?;
+            let _ = canonicalize_definition(
+                definition,
+                &path,
+                &mut entries,
+                original_name,
+                source_file,
+            )?;
         }
 
         Ok(Self { entries })
@@ -144,10 +170,28 @@ impl TaskIndex {
     }
 }
 
+/// Extract source file from a task definition
+fn extract_source_file(definition: &TaskDefinition) -> Option<String> {
+    match definition {
+        TaskDefinition::Single(task) => task.source.as_ref().map(|s| s.file.clone()),
+        TaskDefinition::Group(group) => {
+            // For groups, use source from first child task
+            match group {
+                TaskGroup::Sequential(tasks) => tasks.first().and_then(extract_source_file),
+                TaskGroup::Parallel(parallel) => {
+                    parallel.tasks.values().next().and_then(extract_source_file)
+                }
+            }
+        }
+    }
+}
+
 fn canonicalize_definition(
     definition: &TaskDefinition,
     path: &TaskPath,
     entries: &mut BTreeMap<String, IndexedTask>,
+    original_name: String,
+    source_file: Option<String>,
 ) -> Result<TaskDefinition> {
     match definition {
         TaskDefinition::Single(task) => {
@@ -157,8 +201,10 @@ fn canonicalize_definition(
                 name.clone(),
                 IndexedTask {
                     name,
+                    original_name,
                     definition: TaskDefinition::Single(Box::new(canon_task.clone())),
                     is_group: false,
+                    source_file,
                 },
             );
             Ok(TaskDefinition::Single(Box::new(canon_task)))
@@ -168,7 +214,16 @@ fn canonicalize_definition(
                 let mut canon_children = HashMap::new();
                 for (child_name, child_def) in &parallel.tasks {
                     let child_path = path.join(child_name)?;
-                    let canon_child = canonicalize_definition(child_def, &child_path, entries)?;
+                    // For children, extract their own source file and use display name
+                    let child_source = extract_source_file(child_def);
+                    let child_original = child_name.clone();
+                    let canon_child = canonicalize_definition(
+                        child_def,
+                        &child_path,
+                        entries,
+                        child_original,
+                        child_source,
+                    )?;
                     canon_children.insert(child_name.clone(), canon_child);
                 }
 
@@ -181,8 +236,10 @@ fn canonicalize_definition(
                     name.clone(),
                     IndexedTask {
                         name,
+                        original_name,
                         definition: definition.clone(),
                         is_group: true,
+                        source_file,
                     },
                 );
 
@@ -194,7 +251,15 @@ fn canonicalize_definition(
                 for child in children {
                     // We still recurse so nested parallel groups are indexed, but we do not
                     // rewrite names with numeric indices to avoid changing existing graph semantics.
-                    let canon_child = canonicalize_definition(child, path, entries)?;
+                    // For sequential children, extract their source file
+                    let child_source = extract_source_file(child);
+                    let canon_child = canonicalize_definition(
+                        child,
+                        path,
+                        entries,
+                        original_name.clone(),
+                        child_source,
+                    )?;
                     canon_children.push(canon_child);
                 }
 
@@ -204,8 +269,10 @@ fn canonicalize_definition(
                     name.clone(),
                     IndexedTask {
                         name,
+                        original_name,
                         definition: definition.clone(),
                         is_group: true,
+                        source_file,
                     },
                 );
 

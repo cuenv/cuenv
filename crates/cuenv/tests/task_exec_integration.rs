@@ -46,7 +46,7 @@ tasks: {
     fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
 
     // Test listing tasks with 't' shorthand
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, stderr, success) = run_cuenv(&[
         "t",
         "-p",
         temp_dir.path().to_str().unwrap(),
@@ -56,8 +56,8 @@ tasks: {
 
     assert!(success, "Command should succeed");
     assert!(
-        stdout.contains("Available tasks:"),
-        "Should show available tasks header"
+        stdout.contains("Tasks:"),
+        "Should show tasks header"
     );
     assert!(stdout.contains("test_task"), "Should list test_task");
     assert!(stdout.contains("another_task"), "Should list another_task");

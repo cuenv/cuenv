@@ -102,6 +102,27 @@ pub struct TaskOutput {
     pub map: Option<Vec<Mapping>>,
 }
 
+/// Source location metadata from CUE evaluation
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct SourceLocation {
+    /// Path to source file, relative to cue.mod root
+    pub file: String,
+    /// Line number where the task was defined
+    pub line: u32,
+    /// Column number where the task was defined
+    pub column: u32,
+}
+
+impl SourceLocation {
+    /// Get the directory containing this source file
+    pub fn directory(&self) -> Option<&str> {
+        std::path::Path::new(&self.file)
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|s| !s.is_empty())
+    }
+}
+
 /// A single executable task
 ///
 /// Note: Custom deserialization is used to ensure that a Task can only be
@@ -184,6 +205,16 @@ pub struct Task {
     /// Used for TaskRef resolution to run tasks in their original project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_root: Option<std::path::PathBuf>,
+
+    /// Source file location where this task was defined (from CUE metadata).
+    /// Used to determine default execution directory and for task listing grouping.
+    #[serde(default, rename = "_source", skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceLocation>,
+
+    /// Working directory override (relative to cue.mod root).
+    /// Defaults to the directory of the source file if not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 // Custom deserialization for Task to ensure either command or script is present.
@@ -230,6 +261,10 @@ impl<'de> serde::Deserialize<'de> for Task {
             task_ref: Option<String>,
             #[serde(default)]
             project_root: Option<std::path::PathBuf>,
+            #[serde(default, rename = "_source")]
+            source: Option<SourceLocation>,
+            #[serde(default)]
+            directory: Option<String>,
         }
 
         let helper = TaskHelper::deserialize(deserializer)?;
@@ -263,6 +298,8 @@ impl<'de> serde::Deserialize<'de> for Task {
             labels: helper.labels,
             task_ref: helper.task_ref,
             project_root: helper.project_root,
+            source: helper.source,
+            directory: helper.directory,
         })
     }
 }
@@ -427,6 +464,8 @@ impl Default for Task {
             labels: vec![],
             task_ref: None,
             project_root: None,
+            source: None,
+            directory: None,
         }
     }
 }

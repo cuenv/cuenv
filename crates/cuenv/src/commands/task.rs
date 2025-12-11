@@ -14,6 +14,8 @@ use cuenv_core::tasks::{
     TaskIndex, TaskParams, Tasks,
 };
 
+use super::env_file::find_cue_module_root;
+
 /// Get the dagger backend factory if the feature is enabled
 #[cfg(feature = "dagger-backend")]
 #[allow(clippy::unnecessary_wraps)] // Both cfg variants need same return type
@@ -100,7 +102,18 @@ pub async fn execute_task(
             return Ok("No tasks defined in the configuration".to_string());
         }
 
-        return Ok(render_task_tree(tasks));
+        // Calculate current working directory relative to cue.mod root
+        let project_root =
+            std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+        let cue_module_root = find_cue_module_root(&project_root);
+        let cwd_relative = cue_module_root.as_ref().and_then(|root| {
+            project_root
+                .strip_prefix(root)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        });
+
+        return Ok(render_task_tree(tasks, cwd_relative.as_deref()));
     }
 
     let requested_task = task_name.unwrap();
@@ -128,7 +141,8 @@ pub async fn execute_task(
         }
 
         // It's a group or task with subtasks
-        return Ok(render_task_tree(subtasks));
+        // Note: For help on specific groups, we don't need cwd-relative sorting
+        return Ok(render_task_tree(subtasks, None));
     }
 
     // Resolve task via canonical index (supports nested paths and ':' alias)
@@ -219,12 +233,15 @@ pub async fn execute_task(
     }
 
     // Create executor with environment
+    let project_root =
+        std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
     let config = ExecutorConfig {
         capture_output,
         max_parallel: 0,
         environment: runtime_env.clone(),
         working_dir: None,
-        project_root: std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf()),
+        cue_module_root: find_cue_module_root(&project_root),
+        project_root,
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
         cache_dir: None,
         show_cache_path,
@@ -381,6 +398,7 @@ async fn run_task_hermetic(
             environment: env.clone(),
             working_dir: None,
             project_root: workspace.clone(),
+            cue_module_root: find_cue_module_root(&workspace),
             materialize_outputs: None,
             cache_dir: None,
             show_cache_path: false,
@@ -807,6 +825,7 @@ async fn resolve_and_materialize_project_reference(
                 environment: env.clone(),
                 working_dir: None,
                 project_root: ext_dir.clone(),
+                cue_module_root: find_cue_module_root(&ext_dir),
                 materialize_outputs: None,
                 cache_dir: None,
                 show_cache_path: false,
@@ -949,7 +968,121 @@ struct TaskTreeNode {
     is_task: bool,
 }
 
-fn render_task_tree(tasks: Vec<&cuenv_core::tasks::IndexedTask>) -> String {
+/// Render tasks grouped by source file, ordered by proximity to current directory
+///
+/// `cwd_relative`: Current working directory relative to cue.mod root (e.g., "projects/foo")
+/// Tasks from the current directory are shown first, then progressively further parent dirs
+fn render_task_tree(
+    tasks: Vec<&cuenv_core::tasks::IndexedTask>,
+    cwd_relative: Option<&str>,
+) -> String {
+    // Group tasks by source file
+    // Normalize root-level sources: both "" and "env.cue" are treated as root
+    let mut by_source: BTreeMap<String, Vec<&cuenv_core::tasks::IndexedTask>> = BTreeMap::new();
+    for task in tasks {
+        let source = task.source_file.clone().unwrap_or_default();
+        // Normalize root sources to empty string so they group together
+        let normalized = if source == "env.cue" {
+            String::new()
+        } else {
+            source
+        };
+        by_source.entry(normalized).or_default().push(task);
+    }
+
+    // Sort source files by proximity to current directory
+    // - Tasks from cwd come first
+    // - Then tasks from parent directories (closest parent first)
+    // - Root tasks come last (unless cwd is root)
+    let mut sources: Vec<_> = by_source.keys().cloned().collect();
+    sources.sort_by(|a, b| {
+        let proximity_a = source_proximity(a, cwd_relative);
+        let proximity_b = source_proximity(b, cwd_relative);
+        // Lower proximity = closer to cwd = should come first
+        proximity_a.cmp(&proximity_b).then(a.cmp(b))
+    });
+
+    let mut output = String::new();
+    for (i, source) in sources.iter().enumerate() {
+        if i > 0 {
+            output.push('\n');
+        }
+
+        // Format header
+        let header = if source.is_empty() || source == "env.cue" {
+            "Tasks:".to_string()
+        } else {
+            format!("Tasks from {}:", source)
+        };
+        writeln!(output, "{}", header).unwrap();
+
+        // Build and render tree for this source's tasks
+        let source_tasks = &by_source[source];
+        render_source_tasks(source_tasks, &mut output);
+    }
+
+    if output.is_empty() {
+        output = "No tasks defined in the configuration".to_string();
+    }
+
+    output
+}
+
+/// Calculate proximity of a source file to the current directory
+/// Lower value = closer to cwd = should be shown first
+///
+/// Returns:
+/// - 0 if source is in the same directory as cwd
+/// - 1+ for parent directories (1 = immediate parent, 2 = grandparent, etc.)
+/// - usize::MAX / 2 for unrelated paths (children of cwd)
+fn source_proximity(source: &str, cwd_relative: Option<&str>) -> usize {
+    // Get the source directory (remove the filename like env.cue)
+    let source_dir = if source.is_empty() {
+        ""
+    } else {
+        std::path::Path::new(source)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("")
+    };
+
+    let cwd = cwd_relative.unwrap_or("");
+
+    // If both are root level
+    if source_dir.is_empty() && cwd.is_empty() {
+        return 0;
+    }
+
+    // If source is in the same directory as cwd
+    if source_dir == cwd {
+        return 0;
+    }
+
+    // Check if source is an ancestor of cwd (parent directory)
+    if cwd.starts_with(source_dir) && (source_dir.is_empty() || cwd[source_dir.len()..].starts_with('/'))
+    {
+        // Count how many levels up the source is
+        let source_depth = if source_dir.is_empty() {
+            0
+        } else {
+            source_dir.matches('/').count() + 1
+        };
+        let cwd_depth = if cwd.is_empty() {
+            0
+        } else {
+            cwd.matches('/').count() + 1
+        };
+        // Distance = how many levels up from cwd to reach source
+        return cwd_depth - source_depth;
+    }
+
+    // Source is not an ancestor of cwd (could be a sibling or child)
+    // Show these after all ancestors
+    usize::MAX / 2
+}
+
+/// Render tasks from a single source file as a tree
+fn render_source_tasks(tasks: &[&cuenv_core::tasks::IndexedTask], output: &mut String) {
     let mut roots: BTreeMap<String, TaskTreeNode> = BTreeMap::new();
 
     // Build the tree
@@ -973,14 +1106,7 @@ fn render_task_tree(tasks: Vec<&cuenv_core::tasks::IndexedTask>) -> String {
                                 TaskDefinition::Group(_) => None,
                             })
                         }
-                        cuenv_core::tasks::TaskGroup::Parallel(_) => {
-                            // For parallel groups, maybe no shared description easily available unless explicitly added to group?
-                            // The current Task definition puts description on Task struct.
-                            // If it's a group, the definition is TaskDefinition::Group which contains TaskGroup.
-                            // TaskGroup doesn't have a description field itself in the struct definition I read earlier.
-                            // Wait, let me check TaskDefinition again.
-                            None
-                        }
+                        cuenv_core::tasks::TaskGroup::Parallel(_) => None,
                     },
                 };
                 node.description = desc;
@@ -990,16 +1116,10 @@ fn render_task_tree(tasks: Vec<&cuenv_core::tasks::IndexedTask>) -> String {
         }
     }
 
-    let mut output = String::from("Available tasks:\n");
-
     // Calculate max width for alignment
-    // We need to traverse the tree to find the printed length of the name column
-    // width = indentation + name_len + 2 (for space and padding)
     let max_width = calculate_tree_width(&roots, 0);
 
-    print_tree_nodes(&roots, &mut output, max_width, "");
-
-    output
+    print_tree_nodes(&roots, output, max_width, "");
 }
 
 fn calculate_tree_width(nodes: &BTreeMap<String, TaskTreeNode>, depth: usize) -> usize {
@@ -1704,29 +1824,35 @@ env: {
 
         let t_build = IndexedTask {
             name: "build".into(),
+            original_name: "build".into(),
             definition: TaskDefinition::Single(Box::new(make_task(Some("Build the project")))),
             is_group: false,
+            source_file: None, // Root env.cue
         };
         let t_fmt_check = IndexedTask {
             name: "fmt.check".into(),
+            original_name: "fmt.check".into(),
             definition: TaskDefinition::Single(Box::new(make_task(Some("Check formatting")))),
             is_group: false,
+            source_file: None,
         };
         let t_fmt_fix = IndexedTask {
             name: "fmt.fix".into(),
+            original_name: "fmt.fix".into(),
             definition: TaskDefinition::Single(Box::new(make_task(Some("Fix formatting")))),
             is_group: false,
+            source_file: None,
         };
 
         // Provide them in mixed order to verify sorting
         let tasks = vec![&t_fmt_fix, &t_build, &t_fmt_check];
-        let output = render_task_tree(tasks);
+        let output = render_task_tree(tasks, None);
 
         // We can't match exact lines easily because of dot padding calculation,
         // but we can check structure and presence of content.
 
         let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines[0], "Available tasks:");
+        assert_eq!(lines[0], "Tasks:");
 
         // build is first alphabetically
         assert!(lines[1].starts_with("├─ build"));

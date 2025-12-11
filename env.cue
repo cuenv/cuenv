@@ -42,6 +42,8 @@ tasks: {
 		"crates",
 	]
 
+        pwd: command: "pwd"
+
 	// CI check task - delegates to nix flake check for optimal caching
 	check: {
 		command: "nix"

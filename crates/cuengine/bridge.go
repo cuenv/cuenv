@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"unsafe"
 
 	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/ast"
 	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
@@ -96,11 +98,96 @@ func createSuccessResponse(data string) *C.char {
 	return C.CString(string(responseBytes))
 }
 
+// TaskSourcePos holds the source position of a task definition
+type TaskSourcePos struct {
+	File   string
+	Line   int
+	Column int
+}
+
+// extractTaskPositions walks the AST files to find where each task is defined.
+// CUE's evaluated Pos() returns schema positions, but AST gives actual definition locations.
+func extractTaskPositions(inst *build.Instance, moduleRoot string) map[string]TaskSourcePos {
+	positions := make(map[string]TaskSourcePos)
+
+	for _, f := range inst.Files {
+		for _, decl := range f.Decls {
+			field, ok := decl.(*ast.Field)
+			if !ok {
+				continue
+			}
+
+			label, _, _ := ast.LabelName(field.Label)
+			if label != "tasks" {
+				continue
+			}
+
+			// Found tasks field, extract nested task positions
+			st, ok := field.Value.(*ast.StructLit)
+			if !ok {
+				continue
+			}
+
+			extractTaskPositionsFromStruct(st, "", f.Filename, moduleRoot, positions)
+		}
+	}
+
+	return positions
+}
+
+// extractTaskPositionsFromStruct recursively extracts task positions from a struct literal
+func extractTaskPositionsFromStruct(st *ast.StructLit, prefix, filename, moduleRoot string, positions map[string]TaskSourcePos) {
+	for _, elem := range st.Elts {
+		taskField, ok := elem.(*ast.Field)
+		if !ok {
+			continue
+		}
+
+		taskLabel, _, _ := ast.LabelName(taskField.Label)
+		fullName := taskLabel
+		if prefix != "" {
+			fullName = prefix + "." + taskLabel
+		}
+
+		// Make path relative to moduleRoot
+		relPath := filename
+		if moduleRoot != "" && strings.HasPrefix(filename, moduleRoot) {
+			relPath = strings.TrimPrefix(filename, moduleRoot)
+			relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
+		}
+		if relPath == "" {
+			relPath = "env.cue"
+		}
+
+		pos := taskField.Pos()
+		positions[fullName] = TaskSourcePos{
+			File:   relPath,
+			Line:   pos.Line(),
+			Column: pos.Column(),
+		}
+
+		// Check for nested tasks (parallel groups have a "tasks" field)
+		if nestedSt, ok := taskField.Value.(*ast.StructLit); ok {
+			for _, nestedElem := range nestedSt.Elts {
+				if nestedField, ok := nestedElem.(*ast.Field); ok {
+					nestedLabel, _, _ := ast.LabelName(nestedField.Label)
+					if nestedLabel == "tasks" {
+						// This is a parallel group, recurse into its tasks
+						if nestedTasksSt, ok := nestedField.Value.(*ast.StructLit); ok {
+							extractTaskPositionsFromStruct(nestedTasksSt, fullName, filename, moduleRoot, positions)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // buildJSONWithHidden builds a JSON representation of a CUE value including hidden fields.
 // This is necessary because CUE's MarshalJSON() excludes hidden fields (prefixed with _).
 // Hidden fields like _ci are package-scoped and don't unify across packages, making them
 // useful for location-specific configuration that shouldn't be inherited.
-func buildJSONWithHidden(v cue.Value) ([]byte, error) {
+func buildJSONWithHidden(v cue.Value, moduleRoot string, taskPositions map[string]TaskSourcePos) ([]byte, error) {
 	result := make(map[string]interface{})
 
 	iter, err := v.Fields(cue.Hidden(true))
@@ -118,10 +205,77 @@ func buildJSONWithHidden(v cue.Value) ([]byte, error) {
 		if err := fieldValue.Decode(&val); err != nil {
 			return nil, fmt.Errorf("failed to decode field %s: %w", fieldName, err)
 		}
+
+		// For tasks field, enrich with source position metadata from AST
+		if fieldName == "tasks" {
+			val = enrichTasksWithSource(val, "", taskPositions)
+		}
+
 		result[fieldName] = val
 	}
 
 	return json.Marshal(result)
+}
+
+// enrichTasksWithSource adds _source metadata to each task in the tasks map using AST positions
+func enrichTasksWithSource(decoded interface{}, prefix string, positions map[string]TaskSourcePos) interface{} {
+	tasksMap, ok := decoded.(map[string]interface{})
+	if !ok {
+		return decoded
+	}
+
+	for taskName, taskDef := range tasksMap {
+		fullName := taskName
+		if prefix != "" {
+			fullName = prefix + "." + taskName
+		}
+		enrichTaskWithSource(taskDef, fullName, positions)
+	}
+	return tasksMap
+}
+
+// enrichTaskWithSource adds _source metadata to a single task definition using AST positions
+// Only adds to leaf tasks (those with command/script), not to group definitions
+func enrichTaskWithSource(taskDef interface{}, fullName string, positions map[string]TaskSourcePos) {
+	taskObj, ok := taskDef.(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	// Check if this is a task group (has "tasks" field) - if so, only recurse, don't add _source
+	if nested, ok := taskObj["tasks"].(map[string]interface{}); ok {
+		// This is a parallel group - recurse into children
+		for childName, childDef := range nested {
+			childFullName := fullName + "." + childName
+			enrichTaskWithSource(childDef, childFullName, positions)
+		}
+		return
+	}
+
+	// Check if this is a sequential group (is an array)
+	if _, isArray := taskDef.([]interface{}); isArray {
+		// Sequential groups are arrays, skip adding _source
+		return
+	}
+
+	// This is a leaf task (has command or script) - add _source metadata
+	_, hasCommand := taskObj["command"]
+	_, hasScript := taskObj["script"]
+	_, hasTaskRef := taskObj["task_ref"]
+
+	if !hasCommand && !hasScript && !hasTaskRef {
+		// Not a valid leaf task, skip
+		return
+	}
+
+	// Look up position from AST-extracted map
+	if pos, ok := positions[fullName]; ok {
+		taskObj["_source"] = map[string]interface{}{
+			"file":   pos.File,
+			"line":   pos.Line,
+			"column": pos.Column,
+		}
+	}
 }
 
 //export cue_eval_package
@@ -207,9 +361,13 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 		return result
 	}
 
+	// Extract task positions from AST (CUE's Pos() returns schema positions after unification)
+	taskPositions := extractTaskPositions(inst, moduleRoot)
+
 	// Build JSON including hidden fields (like _ci) which are package-scoped
 	// and don't participate in cross-package unification
-	jsonBytes, err := buildJSONWithHidden(v)
+	// Pass taskPositions so source metadata uses actual definition locations
+	jsonBytes, err := buildJSONWithHidden(v, moduleRoot, taskPositions)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to marshal JSON: %v", err)
 		result = createErrorResponse(ErrorCodeOrderedJSON, msg, nil)
