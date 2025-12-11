@@ -53,7 +53,7 @@ tasks: {
     fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test listing tasks with 't' shorthand
-    let (stdout, stderr, success) = run_cuenv(&[
+    let (stdout, _stderr, success) = run_cuenv(&[
         "t",
         "-p",
         temp_dir.path().to_str().unwrap(),
