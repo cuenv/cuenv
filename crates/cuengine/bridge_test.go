@@ -163,8 +163,9 @@ func TestCueEvalPackage_NonexistentDirectory(t *testing.T) {
 		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
 	}
 
-	if !strings.Contains(errorResponse["error"], "Failed to change directory") {
-		t.Errorf("Expected directory change error, got: %s", errorResponse["error"])
+	// When loading from a nonexistent directory, CUE fails to load the instance
+	if !strings.Contains(errorResponse["error"], "Failed to load CUE instance") {
+		t.Errorf("Expected CUE load error for nonexistent directory, got: %s", errorResponse["error"])
 	}
 }
 
@@ -481,5 +482,110 @@ tasks: {
 
 	if !t.Failed() {
 		t.Logf("✓ Consistency test passed across %d iterations", len(allResults))
+	}
+}
+
+func TestTaskSourceMetadata(t *testing.T) {
+	// Create a CUE file with tasks to verify _source metadata is injected
+	cueContent := `
+tasks: {
+	build: {
+		command: "cargo"
+		args: ["build"]
+	}
+	test: {
+		command: "cargo"
+		args: ["test"]
+	}
+	nested: {
+		tasks: {
+			child1: {
+				command: "echo"
+				args: ["child1"]
+			}
+			child2: {
+				command: "echo"
+				args: ["child2"]
+			}
+		}
+	}
+}`
+
+	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
+	defer cleanup()
+
+	result := callCueEvalPackage(tempDir, "cuenv")
+
+	// Parse the JSON to check for _source fields
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(result), &data); err != nil {
+		if strings.Contains(result, "error") {
+			t.Fatalf("CUE evaluation failed: %s", result)
+		}
+		t.Fatalf("Failed to parse JSON result: %v", err)
+	}
+
+	tasks, ok := data["tasks"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected tasks to be a map, got: %T", data["tasks"])
+	}
+
+	// Check that each task has _source metadata
+	for taskName, taskDef := range tasks {
+		taskMap, ok := taskDef.(map[string]interface{})
+		if !ok {
+			t.Errorf("Task %s is not a map: %T", taskName, taskDef)
+			continue
+		}
+
+		source, hasSource := taskMap["_source"]
+		if !hasSource {
+			t.Errorf("Task %s is missing _source metadata", taskName)
+			continue
+		}
+
+		sourceMap, ok := source.(map[string]interface{})
+		if !ok {
+			t.Errorf("Task %s _source is not a map: %T", taskName, source)
+			continue
+		}
+
+		// Verify _source has expected fields
+		file, hasFile := sourceMap["file"]
+		if !hasFile {
+			t.Errorf("Task %s _source is missing 'file' field", taskName)
+		} else {
+			t.Logf("Task %s: file=%v", taskName, file)
+		}
+
+		line, hasLine := sourceMap["line"]
+		if !hasLine {
+			t.Errorf("Task %s _source is missing 'line' field", taskName)
+		} else {
+			t.Logf("Task %s: line=%v", taskName, line)
+		}
+
+		column, hasColumn := sourceMap["column"]
+		if !hasColumn {
+			t.Errorf("Task %s _source is missing 'column' field", taskName)
+		} else {
+			t.Logf("Task %s: column=%v", taskName, column)
+		}
+
+		// For nested tasks, check that children also have _source
+		if nestedTasks, hasNested := taskMap["tasks"].(map[string]interface{}); hasNested {
+			for childName, childDef := range nestedTasks {
+				childMap, ok := childDef.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				childSource, hasChildSource := childMap["_source"]
+				if !hasChildSource {
+					t.Errorf("Nested task %s.%s is missing _source metadata", taskName, childName)
+				} else {
+					t.Logf("Nested task %s.%s has _source: %v", taskName, childName, childSource)
+				}
+			}
+		}
 	}
 }

@@ -9,7 +9,7 @@ schema.#Cuenv
 
 name: "cuenv"
 
-ci: pipelines: [
+_ci: pipelines: [
 	{
 		name: "ci"
 		tasks: ["check"]
@@ -41,6 +41,8 @@ tasks: {
 		"Cargo.lock",
 		"crates",
 	]
+
+        pwd: command: "pwd"
 
 	// CI check task - delegates to nix flake check for optimal caching
 	check: {

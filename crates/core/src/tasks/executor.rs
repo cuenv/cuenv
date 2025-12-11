@@ -57,6 +57,8 @@ pub struct ExecutorConfig {
     pub working_dir: Option<PathBuf>,
     /// Project root for resolving inputs/outputs (env.cue root)
     pub project_root: PathBuf,
+    /// Path to cue.mod root for resolving relative source paths
+    pub cue_module_root: Option<PathBuf>,
     /// Optional: materialize cached outputs on cache hit
     pub materialize_outputs: Option<PathBuf>,
     /// Optional: cache directory override
@@ -79,6 +81,7 @@ impl Default for ExecutorConfig {
             environment: Environment::new(),
             working_dir: None,
             project_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            cue_module_root: None,
             materialize_outputs: None,
             cache_dir: None,
             show_cache_path: false,
@@ -709,10 +712,58 @@ impl TaskExecutor {
     ///
     /// Used for tasks like `bun install` that need to write to the real filesystem.
     async fn execute_task_non_hermetic(&self, name: &str, task: &Task) -> Result<TaskResult> {
-        // Determine working directory:
-        // - Install tasks (hermetic: false with workspaces) run from workspace root
-        // - All other tasks run from project root
-        let workdir = if !task.hermetic && !task.workspaces.is_empty() {
+        // Check if this is an unresolved TaskRef (should have been resolved before execution)
+        if task.is_task_ref() && task.project_root.is_none() {
+            return Err(Error::configuration(format!(
+                "Task '{}' references another project's task ({}) but the reference could not be resolved.\n\
+                 This usually means:\n\
+                 - The referenced project doesn't exist or has no 'name' field in env.cue\n\
+                 - The referenced task '{}' doesn't exist in that project\n\
+                 - There was an error loading the referenced project's env.cue\n\
+                 Run with RUST_LOG=debug for more details.",
+                name,
+                task.task_ref.as_deref().unwrap_or("unknown"),
+                task.task_ref
+                    .as_deref()
+                    .and_then(|r| r.split(':').next_back())
+                    .unwrap_or("unknown")
+            )));
+        }
+
+        // Determine working directory (in priority order):
+        // 1. Explicit directory field on task (relative to cue.mod root)
+        // 2. TaskRef project_root (from resolution)
+        // 3. Source file directory (from _source metadata)
+        // 4. Install tasks (hermetic: false with workspaces) run from workspace root
+        // 5. Default to project root
+        let workdir = if let Some(ref dir) = task.directory {
+            // Explicit directory override: resolve relative to cue.mod root or project root
+            self.config
+                .cue_module_root
+                .as_ref()
+                .unwrap_or(&self.config.project_root)
+                .join(dir)
+        } else if let Some(ref project_root) = task.project_root {
+            // TaskRef tasks run in their original project directory
+            project_root.clone()
+        } else if let Some(ref source) = task.source {
+            // Default: run in the directory of the source file
+            if let Some(dir) = source.directory() {
+                self.config
+                    .cue_module_root
+                    .as_ref()
+                    .unwrap_or(&self.config.project_root)
+                    .join(dir)
+            } else {
+                // Source is at root (e.g., "env.cue"), use cue_module_root if available
+                // This ensures tasks defined in root env.cue run from module root,
+                // even when invoked from a subdirectory
+                self.config
+                    .cue_module_root
+                    .clone()
+                    .unwrap_or_else(|| self.config.project_root.clone())
+            }
+        } else if !task.hermetic && !task.workspaces.is_empty() {
             // Find workspace root for install tasks
             let workspace_name = &task.workspaces[0];
             let manager = match workspace_name.as_str() {
@@ -1739,6 +1790,8 @@ mod tests {
                 enabled: true,
                 package_manager: Some("bun".to_string()),
                 root: None,
+                hooks: None,
+                generators: None,
             },
         );
 

@@ -43,10 +43,17 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    // Create cue.mod to ensure module root detection works for source path normalization
+    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
+    fs::write(
+        temp_dir.path().join("cue.mod/module.cue"),
+        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
+    )
+    .unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test listing tasks with 't' shorthand
-    let (stdout, _, success) = run_cuenv(&[
+    let (stdout, _stderr, success) = run_cuenv(&[
         "t",
         "-p",
         temp_dir.path().to_str().unwrap(),
@@ -55,10 +62,7 @@ tasks: {
     ]);
 
     assert!(success, "Command should succeed");
-    assert!(
-        stdout.contains("Available tasks:"),
-        "Should show available tasks header"
-    );
+    assert!(stdout.contains("Tasks:"), "Should show tasks header");
     assert!(stdout.contains("test_task"), "Should list test_task");
     assert!(stdout.contains("another_task"), "Should list another_task");
 }
