@@ -3,6 +3,7 @@
 use crate::cache::EvaluationCache;
 use crate::retry::RetryConfig;
 use cuenv_core::{Limits, Result};
+use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
