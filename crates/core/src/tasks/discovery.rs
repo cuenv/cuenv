@@ -4,6 +4,7 @@
 //! supporting TaskRef resolution and TaskMatcher-based task discovery.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use ignore::WalkBuilder;

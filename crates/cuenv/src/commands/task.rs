@@ -78,10 +78,11 @@ pub async fn execute_task(
 
     // Resolve any TaskRef placeholders in workspace hooks
     let project_path = Path::new(path);
-    if let Ok(git_root) = find_git_root(project_path) {
-        resolve_task_refs(&mut manifest, evaluator.clone(), package, &git_root)?;
+    let project_path_abs = std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+    if let Some(cue_module_root) = find_cue_module_root(&project_path_abs) {
+        resolve_task_refs(&mut manifest, evaluator.clone(), package, &cue_module_root)?;
     } else {
-        tracing::debug!("Not in a git repository, skipping TaskRef resolution");
+        tracing::debug!("No CUE module root found, skipping TaskRef resolution");
     }
 
     // Build a canonical index to support nested task paths
@@ -1358,7 +1359,7 @@ fn resolve_task_refs(
     manifest: &mut Cuenv,
     evaluator: Arc<CueEvaluator>,
     package: &str,
-    git_root: &Path,
+    module_root: &Path,
 ) -> Result<()> {
     // Create an evaluation function that can be used by TaskDiscovery
     // We create a fresh evaluator to avoid lifetime issues with closures
@@ -1370,8 +1371,8 @@ fn resolve_task_refs(
         })
     };
 
-    // Build task discovery for the workspace
-    let mut discovery = TaskDiscovery::new(git_root.to_path_buf());
+    // Build task discovery for the CUE module
+    let mut discovery = TaskDiscovery::new(module_root.to_path_buf());
     discovery = discovery.with_eval_fn(eval_fn);
 
     // Discover all projects in the workspace
@@ -1507,10 +1508,16 @@ fn resolve_task_ref_in_definition(
                             matched.project_root.display()
                         );
 
-                        // Copy resolved task properties and merge dependencies from the placeholder
+                        // Copy resolved task properties, but CLEAR the original depends_on
+                        // because those dependencies refer to the source project's tasks,
+                        // not the target project where this hook will run.
                         let placeholder_depends_on = task.depends_on.clone();
                         let mut resolved_task = matched.task;
 
+                        // Clear the source project's dependencies - they don't apply in the target context
+                        resolved_task.depends_on.clear();
+
+                        // Only keep dependencies from the placeholder (if any were set by the target project)
                         for dep in placeholder_depends_on {
                             if !resolved_task.depends_on.contains(&dep) {
                                 resolved_task.depends_on.push(dep);
