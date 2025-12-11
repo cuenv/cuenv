@@ -33,6 +33,7 @@ use std::fmt::Write;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use super::export::get_environment_with_hooks;
@@ -65,7 +66,7 @@ pub async fn execute_task(
     );
 
     // Evaluate CUE to get tasks and environment
-    let evaluator = CueEvaluator::builder().build()?;
+    let evaluator = Arc::new(CueEvaluator::builder().build()?);
     let mut manifest: Cuenv =
         evaluate_manifest(&evaluator, Path::new(path), package)?.with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
@@ -78,7 +79,7 @@ pub async fn execute_task(
     // Resolve any TaskRef placeholders in workspace hooks
     let project_path = Path::new(path);
     if let Ok(git_root) = find_git_root(project_path) {
-        resolve_task_refs(&mut manifest, &evaluator, package, &git_root)?;
+        resolve_task_refs(&mut manifest, evaluator.clone(), package, &git_root)?;
     } else {
         tracing::debug!("Not in a git repository, skipping TaskRef resolution");
     }
@@ -1354,7 +1355,7 @@ fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
 /// project's task, and `project_root` set so the executor knows where to run them.
 fn resolve_task_refs(
     manifest: &mut Cuenv,
-    _evaluator: &CueEvaluator,
+    evaluator: Arc<CueEvaluator>,
     package: &str,
     git_root: &Path,
 ) -> Result<()> {
@@ -1363,10 +1364,7 @@ fn resolve_task_refs(
     let eval_fn: EvalFn = {
         let package = package.to_string();
         Box::new(move |project_path: &Path| {
-            // Create a fresh evaluator for each project evaluation
-            let evaluator = CueEvaluator::builder()
-                .build()
-                .map_err(|e| e.to_string())?;
+            // Use the shared evaluator which includes caching
             evaluate_manifest(&evaluator, project_path, &package)
                 .map_err(|e| e.to_string())
         })
@@ -1510,11 +1508,18 @@ fn resolve_task_ref_in_definition(
                             matched.project_root.display()
                         );
 
-                        // Copy resolved task properties but keep dependencies from placeholder
-                        let depends_on = task.depends_on.clone();
-                        **task = matched.task;
-                        task.depends_on = depends_on;
-                        task.project_root = Some(matched.project_root);
+                        // Copy resolved task properties and merge dependencies from the placeholder
+                        let placeholder_depends_on = task.depends_on.clone();
+                        let mut resolved_task = matched.task;
+
+                        for dep in placeholder_depends_on {
+                            if !resolved_task.depends_on.contains(&dep) {
+                                resolved_task.depends_on.push(dep);
+                            }
+                        }
+
+                        resolved_task.project_root = Some(matched.project_root);
+                        **task = resolved_task;
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -1687,6 +1692,55 @@ env: {
         fs::write(ws.join("inputs/a.txt"), "B").unwrap();
         let k2 = compute_task_cache_key(&task, &env, &ws).expect("key2");
         assert_ne!(k1, k2, "key should change when input changes");
+    }
+
+    #[test]
+    fn test_resolve_task_ref_merges_dependencies() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("env.cue"), "package test").unwrap();
+
+        let mut manifest = Cuenv::default();
+        manifest.name = Some("proj".to_string());
+
+        let referenced_task = Task {
+            command: "echo".into(),
+            depends_on: vec!["dep-a".into(), "dep-b".into()],
+            ..Default::default()
+        };
+        manifest.tasks.insert(
+            "run".into(),
+            TaskDefinition::Single(Box::new(referenced_task.clone())),
+        );
+
+        let manifest_for_eval = manifest.clone();
+        let mut discovery = TaskDiscovery::new(tmp.path().to_path_buf())
+            .with_eval_fn(Box::new(move |_| Ok(manifest_for_eval.clone())));
+        discovery.discover().expect("discovery should succeed");
+
+        let placeholder_task = Task {
+            task_ref: Some("#proj:run".into()),
+            depends_on: vec!["placeholder".into()],
+            ..Default::default()
+        };
+        let mut task_def = TaskDefinition::Single(Box::new(placeholder_task));
+
+        resolve_task_ref_in_definition("hook", &mut task_def, &discovery)
+            .expect("resolution should succeed");
+
+        let TaskDefinition::Single(resolved) = task_def else {
+            panic!("expected single task");
+        };
+
+        assert_eq!(resolved.command, "echo");
+        assert_eq!(
+            resolved.depends_on,
+            vec![
+                "dep-a".to_string(),
+                "dep-b".to_string(),
+                "placeholder".to_string()
+            ]
+        );
+        assert_eq!(resolved.project_root, Some(tmp.path().to_path_buf()));
     }
 
     #[test]
