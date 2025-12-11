@@ -1,4 +1,5 @@
 use super::{PipelineReport, PipelineStatus, TaskStatus};
+use std::fmt::Write;
 
 /// Generate a markdown summary of the pipeline report.
 ///
@@ -15,10 +16,7 @@ pub fn generate_summary(report: &PipelineReport) -> String {
         PipelineStatus::Pending => ("\u{23F3}", "Pending"), // ⏳
     };
 
-    md.push_str(&format!(
-        "## {} cuenv CI Report - {}\n\n",
-        status_emoji, status_text
-    ));
+    let _ = writeln!(md, "## {status_emoji} cuenv CI Report - {status_text}\n");
 
     // Summary table
     let duration = report
@@ -27,10 +25,11 @@ pub fn generate_summary(report: &PipelineReport) -> String {
 
     md.push_str("| Project | Pipeline | Status | Duration |\n");
     md.push_str("|:--------|:---------|:------:|:--------:|\n");
-    md.push_str(&format!(
-        "| `{}` | `{}` | {} {} | {} |\n\n",
-        report.project, report.pipeline, status_emoji, status_text, duration
-    ));
+    let _ = writeln!(
+        md,
+        "| `{}` | `{}` | {status_emoji} {status_text} | {duration} |\n",
+        report.project, report.pipeline
+    );
 
     // Tasks table (if any)
     if !report.tasks.is_empty() {
@@ -46,43 +45,50 @@ pub fn generate_summary(report: &PipelineReport) -> String {
                 TaskStatus::Skipped => ("\u{23ED}\u{FE0F}", "Skipped"), // ⏭️
             };
             let task_duration = format_duration(task.duration_ms);
-            md.push_str(&format!(
-                "| `{}` | {} {} | {} |\n",
-                task.name, task_emoji, task_status, task_duration
-            ));
+            let _ = writeln!(
+                md,
+                "| `{}` | {task_emoji} {task_status} | {task_duration} |",
+                task.name
+            );
         }
         md.push('\n');
     }
 
     // Context details
     md.push_str("### Details\n\n");
-    md.push_str(&format!("| Property | Value |\n|:---------|:------|\n"));
-    md.push_str(&format!(
-        "| Commit | `{}` |\n",
+    md.push_str("| Property | Value |\n|:---------|:------|\n");
+    let _ = writeln!(
+        md,
+        "| Commit | `{}` |",
         &report.context.sha[..8.min(report.context.sha.len())]
-    ));
-    md.push_str(&format!("| Ref | `{}` |\n", report.context.ref_name));
+    );
+    let _ = writeln!(md, "| Ref | `{}` |", report.context.ref_name);
     if let Some(base_ref) = &report.context.base_ref {
-        md.push_str(&format!("| Base | `{}` |\n", base_ref));
+        let _ = writeln!(md, "| Base | `{base_ref}` |");
     }
-    md.push_str(&format!(
-        "| Changed files | {} |\n",
+    let _ = writeln!(
+        md,
+        "| Changed files | {} |",
         report.context.changed_files.len()
-    ));
-    md.push_str(&format!("| Provider | {} |\n", report.context.provider));
+    );
+    let _ = writeln!(md, "| Provider | {} |", report.context.provider);
 
     // Footer
-    md.push_str(&format!("\n---\n*cuenv v{}*\n", report.version));
+    let _ = write!(md, "\n---\n*cuenv v{}*\n", report.version);
 
     md
 }
 
-/// Write the summary to GitHub's Job Summary ($GITHUB_STEP_SUMMARY).
+/// Write the summary to GitHub's Job Summary (`GITHUB_STEP_SUMMARY`).
 ///
 /// This makes the report appear in the workflow run summary page.
 /// Appends to the file to support multiple projects in a single run.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened or written to.
 pub fn write_job_summary(report: &PipelineReport) -> std::io::Result<()> {
-    use std::io::Write;
+    use std::io::Write as IoWrite;
 
     let summary_path = std::env::var("GITHUB_STEP_SUMMARY").ok();
 
@@ -92,23 +98,24 @@ pub fn write_job_summary(report: &PipelineReport) -> std::io::Result<()> {
             .create(true)
             .append(true)
             .open(&path)?;
-        writeln!(file, "{}", summary)?;
-        tracing::info!("Wrote job summary to {}", path);
+        writeln!(file, "{summary}")?;
+        tracing::info!("Wrote job summary to {path}");
     }
 
     Ok(())
 }
 
 /// Format duration in milliseconds to a human-readable string.
+#[allow(clippy::cast_precision_loss)]
 fn format_duration(ms: u64) -> String {
     if ms < 1000 {
-        format!("{}ms", ms)
+        format!("{ms}ms")
     } else if ms < 60_000 {
         format!("{:.1}s", ms as f64 / 1000.0)
     } else {
         let minutes = ms / 60_000;
         let seconds = (ms % 60_000) / 1000;
-        format!("{}m {}s", minutes, seconds)
+        format!("{minutes}m {seconds}s")
     }
 }
 

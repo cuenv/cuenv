@@ -12,7 +12,6 @@ pub struct GitHubProvider {
     token: String,
     owner: String,
     repo: String,
-    run_id: Option<u64>,
     pr_number: Option<u64>,
 }
 
@@ -28,7 +27,7 @@ impl GitHubProvider {
         }
     }
 
-    /// Extract PR number from GITHUB_REF (e.g., "refs/pull/123/merge" -> 123)
+    /// Extract PR number from `GITHUB_REF` (e.g., "refs/pull/123/merge" -> 123)
     fn parse_pr_number(github_ref: &str) -> Option<u64> {
         if github_ref.starts_with("refs/pull/") {
             github_ref
@@ -144,9 +143,6 @@ impl CIProvider for GitHubProvider {
             token: std::env::var("GITHUB_TOKEN").unwrap_or_default(),
             owner,
             repo,
-            run_id: std::env::var("GITHUB_RUN_ID")
-                .ok()
-                .and_then(|s| s.parse().ok()),
             pr_number,
         })
     }
@@ -260,8 +256,9 @@ impl CIProvider for GitHubProvider {
         let conclusion = match report.status {
             PipelineStatus::Success => octocrab::params::checks::CheckRunConclusion::Success,
             PipelineStatus::Failed => octocrab::params::checks::CheckRunConclusion::Failure,
-            PipelineStatus::Partial => octocrab::params::checks::CheckRunConclusion::Neutral,
-            PipelineStatus::Pending => octocrab::params::checks::CheckRunConclusion::Neutral,
+            PipelineStatus::Partial | PipelineStatus::Pending => {
+                octocrab::params::checks::CheckRunConclusion::Neutral
+            }
         };
 
         let summary = generate_summary(report);

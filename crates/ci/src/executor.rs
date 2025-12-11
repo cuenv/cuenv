@@ -1,5 +1,5 @@
-// CI executor outputs to stdout as part of its normal operation
-#![allow(clippy::print_stdout)]
+// CI executor outputs to stdout/stderr as part of its normal operation
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use crate::affected::compute_affected_tasks;
 use crate::discovery::discover_projects;
