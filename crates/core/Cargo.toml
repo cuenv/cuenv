@@ -40,6 +40,7 @@ sysinfo = "0.30"
 globset = "0.4"
 regex = "1.10"
 walkdir = "2.5"
+ignore = "0.4"
 tar = "0.4"
 zstd = { version = "0.13", features = ["zstdmt"] }
 hex = "0.4"

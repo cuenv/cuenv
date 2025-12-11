@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use ignore::WalkBuilder;
 use regex::Regex;
-use walkdir::WalkDir;
 
 use crate::manifest::{ArgMatcher, Cuenv, TaskMatcher, TaskRef};
 use crate::tasks::Task;
@@ -70,7 +70,8 @@ impl TaskDiscovery {
 
     /// Discover all projects in the workspace
     ///
-    /// This scans for env.cue files and builds the name -> project index.
+    /// This scans for env.cue files using the ignore crate to respect .gitignore
+    /// and builds the name -> project index.
     /// Requires an eval function to be set via `with_eval_fn`.
     pub fn discover(&mut self) -> Result<(), DiscoveryError> {
         self.projects.clear();
@@ -81,21 +82,39 @@ impl TaskDiscovery {
             .as_ref()
             .ok_or(DiscoveryError::NoEvalFunction)?;
 
-        // Walk the directory tree looking for env.cue files
-        for entry in WalkDir::new(&self.workspace_root)
+        // Build a walker that respects gitignore
+        // We start from workspace_root
+        let walker = WalkBuilder::new(&self.workspace_root)
             .follow_links(true)
-            .into_iter()
-            .filter_entry(|e| !is_hidden(e) && !is_excluded(e))
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            if path.file_name() == Some("env.cue".as_ref()) {
-                if let Ok(project) = self.load_project(path, eval_fn) {
-                    // Build name index
-                    if let Some(name) = &project.manifest.name {
-                        self.name_index.insert(name.clone(), project.clone());
+            .standard_filters(true) // Enable .gitignore, .ignore, hidden file filtering
+            .build();
+
+        for result in walker {
+            match result {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if path.file_name() == Some("env.cue".as_ref()) {
+                        match self.load_project(path, eval_fn) {
+                            Ok(project) => {
+                                // Build name index
+                                if let Some(name) = &project.manifest.name {
+                                    self.name_index.insert(name.clone(), project.clone());
+                                }
+                                self.projects.push(project);
+                            }
+                            Err(e) => {
+                                // Log warning but continue discovery
+                                tracing::warn!(
+                                    "Failed to load project at {}: {}",
+                                    path.display(),
+                                    e
+                                );
+                            }
+                        }
                     }
-                    self.projects.push(project);
+                }
+                Err(err) => {
+                    tracing::warn!("Error during workspace scan: {}", err);
                 }
             }
         }
@@ -277,24 +296,6 @@ fn matches_args(args: &[String], matchers: &[ArgMatcher]) -> bool {
         }
     }
     true
-}
-
-/// Check if a directory entry is hidden (starts with .)
-fn is_hidden(entry: &walkdir::DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|s| s.starts_with('.'))
-        .unwrap_or(false)
-}
-
-/// Check if a directory should be excluded from discovery
-fn is_excluded(entry: &walkdir::DirEntry) -> bool {
-    let name = entry.file_name().to_str().unwrap_or("");
-    matches!(
-        name,
-        "node_modules" | "target" | "dist" | "build" | ".git" | "vendor"
-    )
 }
 
 /// Errors that can occur during task discovery
