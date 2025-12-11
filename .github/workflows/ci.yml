@@ -37,9 +37,6 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Setup cuenv
-        uses: cuenv/setup-cuenv@v1
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
         with:
@@ -52,6 +49,11 @@ jobs:
           name: cuenv
           authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
           pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
+
+      - name: Build cuenv
+        run: |
+          nix build .#cuenv
+          echo "$(pwd)/result/bin" >> $GITHUB_PATH
 
       - name: Run CI Pipeline
         run: cuenv ci --pipeline ci
