@@ -800,6 +800,7 @@ dependencies = [
  "futures",
  "globset",
  "hex",
+ "ignore",
  "libc",
  "miette",
  "petgraph",
