@@ -1,5 +1,5 @@
 use super::{CIContext, CIProvider};
-use crate::report::{markdown::generate_summary, CheckHandle, PipelineReport, PipelineStatus};
+use crate::report::{CheckHandle, PipelineReport, PipelineStatus, markdown::generate_summary};
 use async_trait::async_trait;
 use cuenv_core::Result;
 use octocrab::Octocrab;
@@ -114,7 +114,9 @@ impl GitHubProvider {
         Octocrab::builder()
             .personal_token(self.token.clone())
             .build()
-            .map_err(|e| cuenv_core::Error::configuration(format!("Failed to create GitHub client: {e}")))
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to create GitHub client: {e}"))
+            })
     }
 }
 

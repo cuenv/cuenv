@@ -53,7 +53,10 @@ pub fn generate_summary(report: &PipelineReport) -> String {
 
     // Context details
     md.push_str("### Details\n\n");
-    md.push_str(&format!("- **Commit:** `{}`\n", &report.context.sha[..8.min(report.context.sha.len())]));
+    md.push_str(&format!(
+        "- **Commit:** `{}`\n",
+        &report.context.sha[..8.min(report.context.sha.len())]
+    ));
     md.push_str(&format!("- **Ref:** `{}`\n", report.context.ref_name));
     if let Some(base_ref) = &report.context.base_ref {
         md.push_str(&format!("- **Base:** `{}`\n", base_ref));
