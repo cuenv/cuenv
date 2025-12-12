@@ -1,0 +1,379 @@
+//! Integration tests for DAG building from example environments
+//!
+//! This module tests that all examples in the `examples/` directory can be
+//! loaded and produce valid task DAGs.
+
+use cuengine::evaluate_cue_package_typed;
+use cuenv_core::manifest::Cuenv;
+use cuenv_core::tasks::{TaskGraph, Tasks};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Expected properties for each example directory
+struct ExampleExpectations {
+    /// Directory name under examples/
+    name: &'static str,
+    /// Minimum number of top-level tasks expected
+    min_task_count: usize,
+    /// Whether the example defines hooks
+    has_hooks: bool,
+    /// Whether the example defines environment variables
+    has_env: bool,
+    /// Whether this example is expected to fail CUE evaluation
+    /// (e.g., uses non-concrete values that can't be marshaled to JSON)
+    expect_eval_failure: bool,
+}
+
+/// Get the path to the examples directory
+fn get_examples_dir() -> PathBuf {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    Path::new(manifest_dir)
+        .parent() // crates
+        .and_then(|p| p.parent()) // project root
+        .expect("Failed to find project root")
+        .join("examples")
+}
+
+/// Load a Cuenv manifest from an example directory
+fn load_example_manifest(example_path: &Path) -> Result<Cuenv, String> {
+    evaluate_cue_package_typed::<Cuenv>(example_path, "examples")
+        .map_err(|e| format!("Failed to load manifest: {e}"))
+}
+
+/// Build a TaskGraph from a Cuenv manifest and validate it
+fn build_and_validate_graph(manifest: &Cuenv) -> Result<TaskGraph, String> {
+    // Convert the manifest tasks to a Tasks struct
+    let tasks = Tasks {
+        tasks: manifest.tasks.clone(),
+    };
+
+    let mut graph = TaskGraph::new();
+
+    // Build the complete graph from all tasks
+    graph
+        .build_complete_graph(&tasks)
+        .map_err(|e| format!("Failed to build graph: {e}"))?;
+
+    Ok(graph)
+}
+
+/// Define expected properties for all examples
+fn get_example_expectations() -> Vec<ExampleExpectations> {
+    vec![
+        ExampleExpectations {
+            name: "env-basic",
+            min_task_count: 0, // No tasks, only env vars
+            has_hooks: false,
+            has_env: true,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
+            name: "task-basic",
+            min_task_count: 5, // interpolate, propagate, greetAll, greetIndividual, shellExample
+            has_hooks: false,
+            has_env: true,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
+            name: "hook",
+            min_task_count: 2, // verify_env, show_env
+            has_hooks: true,
+            has_env: true,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
+            name: "hook-delayed",
+            min_task_count: 2, // status, verify_all
+            has_hooks: true,
+            has_env: true,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
+            name: "ci-pipeline",
+            min_task_count: 1, // test
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
+            name: "dagger-task",
+            min_task_count: 5, // hello, python-info, stage1, stage2, cached-install, etc.
+            has_hooks: false,
+            has_env: false,
+            // This example uses non-concrete CUE values in `inputs` field
+            // (shorthand task references) that can't be marshaled to JSON.
+            // The schema allows this but the evaluator can't serialize it.
+            expect_eval_failure: true,
+        },
+        ExampleExpectations {
+            name: "test-fail",
+            min_task_count: 0, // No tasks, just a failing hook
+            has_hooks: true,
+            has_env: true,
+            expect_eval_failure: false,
+        },
+    ]
+}
+
+#[test]
+fn test_all_examples_load_successfully() {
+    let examples_dir = get_examples_dir();
+    let expectations = get_example_expectations();
+
+    for expectation in &expectations {
+        let example_path = examples_dir.join(expectation.name);
+        assert!(
+            example_path.exists(),
+            "Example directory '{}' does not exist at {:?}",
+            expectation.name,
+            example_path
+        );
+
+        let result = load_example_manifest(&example_path);
+
+        if expectation.expect_eval_failure {
+            // This example is expected to fail CUE evaluation
+            assert!(
+                result.is_err(),
+                "Example '{}' was expected to fail evaluation but succeeded",
+                expectation.name
+            );
+        } else {
+            assert!(
+                result.is_ok(),
+                "Failed to load example '{}': {}",
+                expectation.name,
+                result.unwrap_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn test_all_examples_build_valid_dag() {
+    let examples_dir = get_examples_dir();
+    let expectations = get_example_expectations();
+
+    for expectation in &expectations {
+        // Skip examples that are expected to fail evaluation
+        if expectation.expect_eval_failure {
+            continue;
+        }
+
+        let example_path = examples_dir.join(expectation.name);
+        let manifest = load_example_manifest(&example_path)
+            .unwrap_or_else(|e| panic!("Failed to load '{}': {}", expectation.name, e));
+
+        // Validate task count
+        let task_count = manifest.tasks.len();
+        assert!(
+            task_count >= expectation.min_task_count,
+            "Example '{}' has {} tasks, expected at least {}",
+            expectation.name,
+            task_count,
+            expectation.min_task_count
+        );
+
+        // Build and validate the graph
+        let graph = build_and_validate_graph(&manifest)
+            .unwrap_or_else(|e| panic!("Failed to build graph for '{}': {}", expectation.name, e));
+
+        // Validate no cycles
+        assert!(
+            !graph.has_cycles(),
+            "Example '{}' has cyclic dependencies",
+            expectation.name
+        );
+
+        // Validate topological sort succeeds
+        let sorted = graph.topological_sort();
+        assert!(
+            sorted.is_ok(),
+            "Topological sort failed for '{}': {:?}",
+            expectation.name,
+            sorted.err()
+        );
+
+        // Validate parallel groups can be computed
+        let parallel_groups = graph.get_parallel_groups();
+        assert!(
+            parallel_groups.is_ok(),
+            "Failed to compute parallel groups for '{}': {:?}",
+            expectation.name,
+            parallel_groups.err()
+        );
+    }
+}
+
+#[test]
+fn test_all_examples_have_expected_hooks() {
+    let examples_dir = get_examples_dir();
+    let expectations = get_example_expectations();
+
+    for expectation in &expectations {
+        // Skip examples that are expected to fail evaluation
+        if expectation.expect_eval_failure {
+            continue;
+        }
+
+        let example_path = examples_dir.join(expectation.name);
+        let manifest = load_example_manifest(&example_path)
+            .unwrap_or_else(|e| panic!("Failed to load '{}': {}", expectation.name, e));
+
+        let has_hooks = manifest.hooks.is_some()
+            && (manifest.hooks.as_ref().unwrap().on_enter.is_some()
+                || manifest.hooks.as_ref().unwrap().on_exit.is_some());
+
+        assert_eq!(
+            has_hooks, expectation.has_hooks,
+            "Example '{}' hooks expectation mismatch: expected has_hooks={}, got={}",
+            expectation.name, expectation.has_hooks, has_hooks
+        );
+    }
+}
+
+#[test]
+fn test_all_examples_have_expected_env() {
+    let examples_dir = get_examples_dir();
+    let expectations = get_example_expectations();
+
+    for expectation in &expectations {
+        // Skip examples that are expected to fail evaluation
+        if expectation.expect_eval_failure {
+            continue;
+        }
+
+        let example_path = examples_dir.join(expectation.name);
+        let manifest = load_example_manifest(&example_path)
+            .unwrap_or_else(|e| panic!("Failed to load '{}': {}", expectation.name, e));
+
+        let has_env = manifest.env.is_some();
+
+        assert_eq!(
+            has_env, expectation.has_env,
+            "Example '{}' env expectation mismatch: expected has_env={}, got={}",
+            expectation.name, expectation.has_env, has_env
+        );
+    }
+}
+
+#[test]
+fn test_no_unexpected_example_directories() {
+    let examples_dir = get_examples_dir();
+    let expectations = get_example_expectations();
+    let expected_names: Vec<&str> = expectations.iter().map(|e| e.name).collect();
+
+    let entries = fs::read_dir(&examples_dir).expect("Failed to read examples directory");
+
+    for entry in entries {
+        let entry = entry.expect("Failed to read directory entry");
+        let path = entry.path();
+
+        if path.is_dir() {
+            let dir_name = path.file_name().unwrap().to_str().unwrap();
+
+            // Skip hidden directories
+            if dir_name.starts_with('.') {
+                continue;
+            }
+
+            assert!(
+                expected_names.contains(&dir_name),
+                "Found unexpected example directory '{}'. Add it to get_example_expectations() or remove it.",
+                dir_name
+            );
+        }
+    }
+}
+
+#[test]
+fn test_task_basic_specific_tasks() {
+    let examples_dir = get_examples_dir();
+    let example_path = examples_dir.join("task-basic");
+    let manifest = load_example_manifest(&example_path).expect("Failed to load task-basic");
+
+    // Check for specific expected tasks
+    let expected_tasks = [
+        "interpolate",
+        "propagate",
+        "greetAll",
+        "greetIndividual",
+        "shellExample",
+    ];
+
+    for task_name in &expected_tasks {
+        assert!(
+            manifest.tasks.contains_key(*task_name),
+            "task-basic example missing expected task '{}'",
+            task_name
+        );
+    }
+}
+
+#[test]
+fn test_dagger_task_fails_with_non_concrete_values() {
+    // The dagger-task example uses shorthand task references in the `inputs` field
+    // (e.g., `{task: "build.deps"}`) which CUE cannot serialize to JSON because
+    // it's a non-concrete value (the schema union type isn't fully resolved).
+    // This test documents this known limitation.
+    let examples_dir = get_examples_dir();
+    let example_path = examples_dir.join("dagger-task");
+    let result = load_example_manifest(&example_path);
+
+    assert!(
+        result.is_err(),
+        "dagger-task example should fail to load due to non-concrete CUE values"
+    );
+
+    let error_msg = result.unwrap_err();
+    assert!(
+        error_msg.contains("non-concrete") || error_msg.contains("marshal"),
+        "Error should mention non-concrete values or marshal failure, got: {}",
+        error_msg
+    );
+}
+
+#[test]
+fn test_ci_pipeline_has_pipeline_config() {
+    let examples_dir = get_examples_dir();
+    let example_path = examples_dir.join("ci-pipeline");
+    let manifest = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
+
+    // CI pipeline should have _ci configuration
+    assert!(
+        manifest.ci.is_some(),
+        "ci-pipeline example should have _ci configuration"
+    );
+
+    let ci = manifest.ci.as_ref().unwrap();
+    assert!(
+        !ci.pipelines.is_empty(),
+        "ci-pipeline should have at least one pipeline defined"
+    );
+}
+
+#[test]
+fn test_hook_delayed_has_ordered_hooks() {
+    let examples_dir = get_examples_dir();
+    let example_path = examples_dir.join("hook-delayed");
+    let manifest = load_example_manifest(&example_path).expect("Failed to load hook-delayed");
+
+    let hooks = manifest.on_enter_hooks();
+
+    // Should have at least 3 hooks with different orders
+    assert!(
+        hooks.len() >= 3,
+        "hook-delayed should have at least 3 onEnter hooks, found {}",
+        hooks.len()
+    );
+
+    // Verify hooks are sorted by order
+    let orders: Vec<i32> = hooks.iter().map(|h| h.order).collect();
+    let mut sorted_orders = orders.clone();
+    sorted_orders.sort();
+
+    assert_eq!(
+        orders, sorted_orders,
+        "Hooks should be returned in sorted order"
+    );
+}
