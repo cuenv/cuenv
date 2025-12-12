@@ -885,7 +885,7 @@ mod tests {
             workspaces: None,
             ci: None,
             tasks: HashMap::new(),
-            name: None,
+            name: "test".to_string(),
         };
 
         let vars = extract_static_env_vars(&cfg);
@@ -915,7 +915,7 @@ mod tests {
             workspaces: None,
             ci: None,
             tasks: HashMap::new(),
-            name: None,
+            name: "test".to_string(),
         };
 
         let hook_env = HashMap::from([

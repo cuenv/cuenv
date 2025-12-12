@@ -28,6 +28,8 @@ fn test_task_list_with_shorthand() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
 
+name: "test"
+
 env: {
     TEST_VAR: "test_value"
 }
@@ -72,6 +74,8 @@ fn test_task_execution() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
 
+name: "test"
+
 env: {
     GREETING: "Hello"
     NAME: "World"
@@ -112,6 +116,8 @@ fn test_task_with_environment_propagation() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
 
+name: "test"
+
 env: {
     TEST_ENV_VAR: "propagated_value"
 }
@@ -147,6 +153,8 @@ fn test_exec_command_with_shorthand() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
 
+name: "test"
+
 env: {
     EXEC_TEST: "exec_value"
 }"#;
@@ -175,6 +183,8 @@ env: {
 fn test_exec_with_arguments() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
+
+name: "test"
 
 env: {
     PREFIX: "Test"
@@ -206,6 +216,8 @@ env: {
 fn test_task_sequential_list() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
+
+name: "test"
 
 env: {
     COUNTER: "0"
@@ -259,6 +271,8 @@ fn test_task_nested_groups() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
 
+name: "test"
+
 env: {}
 
 tasks: {
@@ -297,6 +311,8 @@ tasks: {
 fn test_nested_task_paths_and_aliases() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
+
+name: "test"
 
 env: {}
 
@@ -382,6 +398,8 @@ tasks: {
 fn test_nonexistent_task_error() {
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
+
+name: "test"
 
 env: {}
 
@@ -522,6 +540,8 @@ mod test_examples {
         let temp_dir = TempDir::new().unwrap();
         let cue_content = r#"package test
 
+name: "test"
+
 env: {
     COUNTER: "0"
 }
@@ -531,19 +551,19 @@ tasks: {
         command: "echo"
         args: ["Initializing..."]
     }
-    
+
     build: {
         command: "echo"
         args: ["Building after init"]
         dependsOn: ["init"]
     }
-    
+
     test: {
         command: "echo"
         args: ["Testing after build"]
         dependsOn: ["build"]
     }
-    
+
     deploy: {
         command: "echo"
         args: ["Deploying after test"]
@@ -585,6 +605,8 @@ tasks: {
         let temp_dir = TempDir::new().unwrap();
         let cue_content = r#"package test
 
+name: "test"
+
 env: {}
 
 tasks: {
@@ -618,6 +640,8 @@ tasks: {
         let temp_dir = TempDir::new().unwrap();
         let cue_content = r#"package test
 
+name: "test"
+
 env: {
     PREFIX: "MIX"
 }
@@ -627,7 +651,7 @@ tasks: {
         command: "echo"
         args: [env.PREFIX, "single"]
     }
-    
+
     sequential_tasks: [
         {
             command: "echo"
@@ -638,7 +662,7 @@ tasks: {
             args: [env.PREFIX, "seq2"]
         }
     ]
-    
+
     parallel_tasks: {
         par1: {
             command: "echo"
@@ -697,6 +721,8 @@ tasks: {
         let temp_dir = TempDir::new().unwrap();
         let cue_content = r#"package test
 
+name: "test"
+
 env: {
     SPECIAL_CHARS: "Hello $USER & $(whoami) | `date` > /dev/null"
     QUOTES: "He said \"Hello world\" and 'goodbye'"
@@ -708,12 +734,12 @@ tasks: {
         command: "printenv"
         args: ["SPECIAL_CHARS"]
     }
-    
+
     test_quotes: {
         command: "printenv"
         args: ["QUOTES"]
     }
-    
+
     test_spaces: {
         command: "printenv"
         args: ["SPACES"]
@@ -763,6 +789,8 @@ tasks: {
     fn test_exec_with_complex_args() {
         let temp_dir = TempDir::new().unwrap();
         let cue_content = r#"package test
+
+name: "test"
 
 env: {
     TEST_VAR: "test_value"

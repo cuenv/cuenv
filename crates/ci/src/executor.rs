@@ -66,8 +66,9 @@ pub async fn run_ci(
     // Build project map for cross-project dependency resolution
     let mut project_map = std::collections::HashMap::new();
     for project in &projects {
-        if let Some(name) = &project.config.name {
-            project_map.insert(name.clone(), project.clone());
+        let name = project.config.name.trim();
+        if !name.is_empty() {
+            project_map.insert(name.to_string(), project.clone());
         }
     }
 
