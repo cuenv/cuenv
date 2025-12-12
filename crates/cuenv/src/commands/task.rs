@@ -77,7 +77,8 @@ pub async fn execute_task(
     );
 
     // We may need the cue.mod root later for global task discovery / cross-project deps.
-    let project_root = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let project_root =
+        std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
     let cue_module_root = find_cue_module_root(&project_root);
 
     // Build a canonical index to support nested task paths
@@ -154,7 +155,10 @@ pub async fn execute_task(
             .collect::<Vec<_>>()
     );
     let local_tasks = task_index.to_tasks();
-    tracing::debug!("Indexed tasks for execution: {:?}", local_tasks.list_tasks());
+    tracing::debug!(
+        "Indexed tasks for execution: {:?}",
+        local_tasks.list_tasks()
+    );
     tracing::debug!(
         "Requested task '{}' present: {}",
         requested_task,
@@ -200,12 +204,8 @@ pub async fn execute_task(
     // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
     // This enables cross-project dependency graphs and proper cycle detection.
     let (all_tasks, task_graph_root_name) = if let Some(module_root) = &cue_module_root {
-        let (mut global, current_project_id) = build_global_tasks(
-            evaluator.clone(),
-            module_root,
-            &project_root,
-            &manifest,
-        )?;
+        let (mut global, current_project_id) =
+            build_global_tasks(evaluator.clone(), module_root, &project_root, &manifest)?;
 
         // If we interpolated args for the invoked task, patch that task node in the
         // global registry so execution matches the CLI-resolved definition.
@@ -247,11 +247,9 @@ pub async fn execute_task(
         };
 
         // Then apply task-specific overrides with policies and secret resolution
-        let task_env_vars = cuenv_core::environment::Environment::resolve_for_task(
-            display_task_name,
-            &env_vars,
-        )
-        .await?;
+        let task_env_vars =
+            cuenv_core::environment::Environment::resolve_for_task(display_task_name, &env_vars)
+                .await?;
         for (key, value) in task_env_vars {
             runtime_env.set(key, value);
         }
@@ -286,9 +284,9 @@ pub async fn execute_task(
     task_graph
         .build_for_task(&task_graph_root_name, &all_tasks)
         .map_err(|e| {
-        tracing::error!("Failed to build task graph: {}", e);
-        e
-    })?;
+            tracing::error!("Failed to build task graph: {}", e);
+            e
+        })?;
     tracing::debug!(
         "Successfully built task graph with {} tasks",
         task_graph.task_count()
@@ -1459,7 +1457,9 @@ fn normalize_dep(
     }
 
     if dep.starts_with('#') {
-        let parsed = TaskRef { ref_: dep.to_string() };
+        let parsed = TaskRef {
+            ref_: dep.to_string(),
+        };
         if let Some((proj, task)) = parsed.parse() {
             let proj_id = project_id_by_name.get(&proj).cloned().unwrap_or(proj);
             return task_fqdn(&proj_id, &task);
@@ -1571,11 +1571,7 @@ fn resolve_task_refs_in_definition(
                     **task = resolved;
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to resolve TaskRef {}: {}",
-                        parsed_ref.ref_,
-                        e
-                    );
+                    tracing::warn!("Failed to resolve TaskRef {}: {}", parsed_ref.ref_, e);
                     // Restore placeholder deps so later normalization still has them.
                     task.depends_on = placeholder_deps;
                 }
@@ -1753,10 +1749,11 @@ fn inject_workspace_setup_tasks(
             for (step_idx, hook_item) in before_install.iter().enumerate() {
                 match hook_item {
                     HookItem::Task(task) => {
-                        let hook_task_name =
-                            format!("{ws_name}.hooks.beforeInstall[{step_idx}]");
+                        let hook_task_name = format!("{ws_name}.hooks.beforeInstall[{step_idx}]");
                         let mut hook_task = task.as_ref().clone();
-                        hook_task.depends_on.extend(previous_step_task_names.clone());
+                        hook_task
+                            .depends_on
+                            .extend(previous_step_task_names.clone());
                         manifest.tasks.insert(
                             hook_task_name.clone(),
                             TaskDefinition::Single(Box::new(hook_task)),
@@ -1765,10 +1762,11 @@ fn inject_workspace_setup_tasks(
                         previous_step_task_names = vec![hook_task_name];
                     }
                     HookItem::TaskRef(task_ref) => {
-                        let hook_task_name =
-                            format!("{ws_name}.hooks.beforeInstall[{step_idx}]");
+                        let hook_task_name = format!("{ws_name}.hooks.beforeInstall[{step_idx}]");
                         let mut hook_task = cuenv_core::tasks::Task::from_task_ref(&task_ref.ref_);
-                        hook_task.depends_on.extend(previous_step_task_names.clone());
+                        hook_task
+                            .depends_on
+                            .extend(previous_step_task_names.clone());
                         manifest.tasks.insert(
                             hook_task_name.clone(),
                             TaskDefinition::Single(Box::new(hook_task)),
@@ -1821,8 +1819,7 @@ fn inject_workspace_setup_tasks(
                             // Ensure this step runs after previous hook step(s). These deps live in the
                             // current project even though this task executes in a matched project_root.
                             for dep in &previous_step_task_names {
-                                task.depends_on
-                                    .push(task_fqdn(manifest_project_id, dep));
+                                task.depends_on.push(task_fqdn(manifest_project_id, dep));
                             }
 
                             // Respect matcher.parallel: chain within this step if parallel == false
@@ -1851,7 +1848,8 @@ fn inject_workspace_setup_tasks(
 
         // Wire: hooks -> install
         if !all_hook_task_names.is_empty() {
-            if let Some(install_task) = get_task_mut_by_name_or_path(&mut manifest.tasks, &install_task_name)
+            if let Some(install_task) =
+                get_task_mut_by_name_or_path(&mut manifest.tasks, &install_task_name)
             {
                 for hook_name in &all_hook_task_names {
                     if !install_task.depends_on.contains(hook_name) {

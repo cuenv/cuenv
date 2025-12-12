@@ -1061,46 +1061,59 @@ impl TaskExecutor {
     pub async fn execute_graph(&self, graph: &TaskGraph) -> Result<Vec<TaskResult>> {
         let parallel_groups = graph.get_parallel_groups()?;
         let mut all_results = Vec::new();
-        let mut join_set = JoinSet::new();
-        let mut group_iter = parallel_groups.into_iter();
-        let mut current_group = group_iter.next();
-        while current_group.is_some() || !join_set.is_empty() {
-            if let Some(group) = current_group.as_mut() {
+
+        // IMPORTANT:
+        // Each parallel group represents a dependency "level". We must not start tasks from the
+        // next group until *all* tasks from the current group have completed successfully.
+        //
+        // The previous implementation pipelined groups (starting the next group as soon as all
+        // tasks from the current group were spawned), which allowed dependent tasks to run before
+        // their dependencies finished (especially visible with long-running tasks like dev servers).
+        for mut group in parallel_groups {
+            let mut join_set = JoinSet::new();
+
+            while !group.is_empty() || !join_set.is_empty() {
+                // Fill the concurrency window for this group
                 while let Some(node) = group.pop() {
                     let task = node.task.clone();
                     let name = node.name.clone();
                     let executor = self.clone_with_config();
                     join_set.spawn(async move { executor.execute_task(&name, &task).await });
+
                     if self.config.max_parallel > 0 && join_set.len() >= self.config.max_parallel {
                         break;
                     }
                 }
-                if group.is_empty() {
-                    current_group = group_iter.next();
-                }
-            }
-            if let Some(result) = join_set.join_next().await {
-                match result {
-                    Ok(Ok(task_result)) => {
-                        if !task_result.success {
-                            let message = format!(
-                                "Task graph execution halted.\n\n{}",
-                                summarize_task_failure(&task_result, TASK_FAILURE_SNIPPET_LINES)
-                            );
-                            return Err(Error::configuration(message));
+
+                if let Some(result) = join_set.join_next().await {
+                    match result {
+                        Ok(Ok(task_result)) => {
+                            if !task_result.success {
+                                join_set.abort_all();
+                                let message = format!(
+                                    "Task graph execution halted.\n\n{}",
+                                    summarize_task_failure(&task_result, TASK_FAILURE_SNIPPET_LINES)
+                                );
+                                return Err(Error::configuration(message));
+                            }
+                            all_results.push(task_result);
                         }
-                        all_results.push(task_result);
-                    }
-                    Ok(Err(e)) => return Err(e),
-                    Err(e) => {
-                        return Err(Error::configuration(format!(
-                            "Task execution panicked: {}",
-                            e
-                        )));
+                        Ok(Err(e)) => {
+                            join_set.abort_all();
+                            return Err(e);
+                        }
+                        Err(e) => {
+                            join_set.abort_all();
+                            return Err(Error::configuration(format!(
+                                "Task execution panicked: {}",
+                                e
+                            )));
+                        }
                     }
                 }
             }
         }
+
         Ok(all_results)
     }
 
@@ -1980,5 +1993,48 @@ mod tests {
         assert_eq!(results.len(), 2);
         let joined = results.iter().map(|r| r.stdout.clone()).collect::<String>();
         assert!(joined.contains("A") && joined.contains("B"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_graph_respects_dependency_levels() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let config = ExecutorConfig {
+            capture_output: true,
+            max_parallel: 2,
+            project_root: root.to_path_buf(),
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+
+        let mut tasks = Tasks::new();
+        tasks.tasks.insert(
+            "dep".into(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "sh".into(),
+                args: vec!["-c".into(), "sleep 0.2 && echo ok > marker.txt".into()],
+                ..Default::default()
+            })),
+        );
+        tasks.tasks.insert(
+            "consumer".into(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "sh".into(),
+                args: vec!["-c".into(), "cat marker.txt".into()],
+                depends_on: vec!["dep".into()],
+                ..Default::default()
+            })),
+        );
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task("consumer", &tasks).unwrap();
+
+        let results = executor.execute_graph(&graph).await.unwrap();
+        assert_eq!(results.len(), 2);
+
+        let consumer = results.iter().find(|r| r.name == "consumer").unwrap();
+        assert!(consumer.success);
+        assert!(consumer.stdout.contains("ok"));
     }
 }

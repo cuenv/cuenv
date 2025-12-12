@@ -164,31 +164,36 @@ tasks: {
     assert!(
         success,
         "Expected success.\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        stdout,
-        stderr
+        stdout, stderr
     );
 
     // Ensure the transitive chain executed in order:
     // B-install -> B-types -> GEN -> A-bun-install -> A-dev
-    let p_install = stdout.find("B-install").unwrap_or_else(|| {
-        panic!("expected B-install output\n--- stdout ---\n{}", stdout)
-    });
+    let p_install = stdout
+        .find("B-install")
+        .unwrap_or_else(|| panic!("expected B-install output\n--- stdout ---\n{}", stdout));
     let p_types = stdout
         .find("B-types")
         .unwrap_or_else(|| panic!("expected B-types output\n--- stdout ---\n{}", stdout));
     let p_gen = stdout
         .find("GEN")
         .unwrap_or_else(|| panic!("expected GEN output\n--- stdout ---\n{}", stdout));
-    let p_a_install = stdout.find("A-bun-install").unwrap_or_else(|| {
-        panic!("expected A-bun-install output\n--- stdout ---\n{}", stdout)
-    });
+    let p_a_install = stdout
+        .find("A-bun-install")
+        .unwrap_or_else(|| panic!("expected A-bun-install output\n--- stdout ---\n{}", stdout));
     let p_dev = stdout
         .find("A-dev")
         .unwrap_or_else(|| panic!("expected A-dev output\n--- stdout ---\n{}", stdout));
 
     assert!(p_install < p_types, "install should run before types");
-    assert!(p_types < p_gen, "types should run before matcher hook tasks");
-    assert!(p_gen < p_a_install, "matcher hook tasks should run before bun.install");
+    assert!(
+        p_types < p_gen,
+        "types should run before matcher hook tasks"
+    );
+    assert!(
+        p_gen < p_a_install,
+        "matcher hook tasks should run before bun.install"
+    );
     assert!(p_a_install < p_dev, "bun.install should run before dev");
 }
 
@@ -319,30 +324,35 @@ tasks: {
     assert!(
         success,
         "Expected success.\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        stdout,
-        stderr
+        stdout, stderr
     );
 
     // Ensure ordering includes the generator before bun.install.
     // B-install -> B-types -> GEN -> A-bun-install -> A-dev
-    let p_install = stdout.find("B-install").unwrap_or_else(|| {
-        panic!("expected B-install output\n--- stdout ---\n{}", stdout)
-    });
+    let p_install = stdout
+        .find("B-install")
+        .unwrap_or_else(|| panic!("expected B-install output\n--- stdout ---\n{}", stdout));
     let p_types = stdout
         .find("B-types")
         .unwrap_or_else(|| panic!("expected B-types output\n--- stdout ---\n{}", stdout));
     let p_gen = stdout
         .find("GEN")
         .unwrap_or_else(|| panic!("expected GEN output\n--- stdout ---\n{}", stdout));
-    let p_a_install = stdout.find("A-bun-install").unwrap_or_else(|| {
-        panic!("expected A-bun-install output\n--- stdout ---\n{}", stdout)
-    });
+    let p_a_install = stdout
+        .find("A-bun-install")
+        .unwrap_or_else(|| panic!("expected A-bun-install output\n--- stdout ---\n{}", stdout));
     let p_dev = stdout
         .find("A-dev")
         .unwrap_or_else(|| panic!("expected A-dev output\n--- stdout ---\n{}", stdout));
 
     assert!(p_install < p_types, "install should run before types");
-    assert!(p_types < p_gen, "types should run before matcher hook tasks");
-    assert!(p_gen < p_a_install, "matcher hook tasks should run before bun.install");
+    assert!(
+        p_types < p_gen,
+        "types should run before matcher hook tasks"
+    );
+    assert!(
+        p_gen < p_a_install,
+        "matcher hook tasks should run before bun.install"
+    );
     assert!(p_a_install < p_dev, "bun.install should run before dev");
 }
