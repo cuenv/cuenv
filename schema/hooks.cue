@@ -1,22 +1,18 @@
 package schema
 
-#Hooks: {
+#Hooks: close({
 	onEnter?: [string]: #Hook
-	onExit?:  [string]: #Hook
-}
+	onExit?: [string]:  #Hook
+})
 
 #Hook: #ExecHook
 
-#ExecHook: {
+#ExecHook: close({
 	order?:     int | *100
 	propagate?: bool | *false
 	command!:   string
 	args?: [...string]
-	dir?:    string | *"."
+	dir?: string | *"."
 	inputs?: [...string]
 	source?: bool
-
-	// To be extended
-	...
-}
-
+})

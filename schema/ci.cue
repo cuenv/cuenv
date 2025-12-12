@@ -1,20 +1,20 @@
 package schema
 
-#PipelineCondition: {
-	pullRequest?:   bool
-	branch?:        string | [...string]
-	tag?:           string | [...string]
+#PipelineCondition: close({
+	pullRequest?: bool
+	branch?: string | [...string]
+	tag?: string | [...string]
 	defaultBranch?: bool
 	scheduled?:     bool
 	manual?:        bool
-}
+})
 
-#Pipeline: {
-	name: string
+#Pipeline: close({
+	name:  string
 	when?: #PipelineCondition
 	tasks: [...string]
-}
+})
 
-#CI: {
+#CI: close({
 	pipelines: [...#Pipeline]
-}
+})

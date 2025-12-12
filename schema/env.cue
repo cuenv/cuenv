@@ -3,7 +3,7 @@ package schema
 // Environment variable value with optional policies
 // Closed to avoid ambiguity with direct #Secret usage in #EnvironmentVariable
 #EnvironmentVariableWithPolicies: close({
-	value:     string | int | bool | #Secret
+	value: string | int | bool | #Secret
 	policies?: [...#Policy]
 })
 
@@ -13,12 +13,13 @@ package schema
 // We support non-string types for constraints
 // but when exported to the actual environment,
 // these will always be strings.
-#Environment: {
+#Environment: close({
 	[=~"^[A-Z][A-Z0-9_]*$"]: #EnvironmentVariable
-}
+})
 
 // #Env defines the structure for environment variable configuration
-#Env: #Environment & {
+#Env: close({
+	#Environment
 	// Environment-specific overrides
 	environment?: [string]: #Environment
-}
+})

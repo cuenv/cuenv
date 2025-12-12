@@ -10,10 +10,16 @@ package schema
 #Tasks: #Task | #TaskGroup
 
 // Common fields shared between command-based and script-based tasks
-#_TaskCommon: close({
+#Task: close({
 	shell?: #Shell
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
+
+	command?: string
+	script?:  string
+	// if command == _|_ && script == _|_ {
+	// 	error("A task must have either 'command' or 'script' defined.")
+	// }
 
 	// When true (default), task runs in an isolated hermetic directory with only
 	// declared inputs available. When false, task runs directly in the workspace
@@ -55,30 +61,6 @@ package schema
 	//   cuenv task import.youtube VIDEO_ID --quality 1080p
 	params?: #TaskParams
 })
-
-// #Task represents a single executable task.
-// A task MUST have either 'command' or 'script' (but not both).
-// This union structure allows CUE to distinguish tasks from task groups.
-#Task: {
-	#_TaskCommon
-
-	// Command to execute (required in this branch)
-	command: string
-} | {
-	#_TaskCommon
-
-	// Inline script to execute (required in this branch).
-	// When script is provided, shell defaults to bash if not specified.
-	// Supports multiline strings and shebang lines for polyglot scripts.
-	// Example:
-	//   script: """
-	//       #!/bin/bash
-	//       set -euo pipefail
-	//       echo "Building..."
-	//       cargo build --release
-	//       """
-	script: string
-}
 
 // Task parameter definitions
 #TaskParams: {

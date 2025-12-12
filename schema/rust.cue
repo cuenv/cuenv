@@ -58,14 +58,14 @@ package schema
 		args: ["doc", ...string]
 		inputs: #BaseInputs
 	}
-    
-    // Default tasks exposed by this module
-    // Note: fmt and test are not exposed to avoid conflicts with common
-    // monorepo setups (treefmt, test groups).
-    build: #Build
-    check: #Check
-    clippy: #Clippy
-    doc: #Doc
 
-    ...
+	// Default tasks exposed by this module
+	// Note: fmt and test are not exposed to avoid conflicts with common
+	// monorepo setups (treefmt, test groups).
+	build:  #Build
+	check:  #Check
+	clippy: #Clippy
+	doc:    #Doc
+
+	...
 }
