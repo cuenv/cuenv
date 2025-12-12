@@ -101,9 +101,9 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 
 ## Related Artifacts
 
-| Artifact                                                                                                                                           | Purpose                                                            |
-| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69)                                                                | Primary implementation of lifecycle logic.                         |
+| Artifact                                                                                                                                | Purpose                                                            |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69)                                                     | Primary implementation of lifecycle logic.                         |
 | [adr-0001-hook-approval-gate-for-environment-loading](/decisions/adrs/adr-0001-hook-approval-gate-for-environment-loading/)             | Ratified decision covering approval guarantees.                    |
 | [adr-0002-background-hook-execution-with-shell-self-unload](/decisions/adrs/adr-0002-background-hook-execution-with-shell-self-unload/) | Ratified decision covering self-unload and background semantics.   |
-| [readme.md](readme.md:214)                                                                                                                         | Shell integration section that must stay consistent with this RFC. |
+| [readme.md](readme.md:214)                                                                                                              | Shell integration section that must stay consistent with this RFC. |

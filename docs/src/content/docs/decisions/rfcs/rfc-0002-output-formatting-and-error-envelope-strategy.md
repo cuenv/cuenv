@@ -66,10 +66,10 @@ Documenting the strategy provides a single source of truth that feature files an
 
 ## Alternatives Considered
 
-| Option                                                       | Outcome                  | Reason Rejected                                                                                                                                               |
-| ------------------------------------------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Output dedicated JSON payloads per command without envelopes | Command-specific schemas | Lacked uniformity across commands, harder for automation                                                                                                      |
-| Default to JSON for all operations                           | Machine-friendly         | Degraded human ergonomics and contradicted CLI norms                                                                                                          |
+| Option                                                       | Outcome                  | Reason Rejected                                                                                                                                    |
+| ------------------------------------------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Output dedicated JSON payloads per command without envelopes | Command-specific schemas | Lacked uniformity across commands, harder for automation                                                                                           |
+| Default to JSON for all operations                           | Machine-friendly         | Degraded human ergonomics and contradicted CLI norms                                                                                               |
 | Inline secrets in env output                                 | Convenience              | Violates security posture defined in [adr-0004-environment-export-filtering-policy](/decisions/adrs/adr-0004-environment-export-filtering-policy/) |
 
 ## Impact on Users
@@ -99,8 +99,8 @@ Documenting the strategy provides a single source of truth that feature files an
 
 ## Related Artifacts
 
-| Artifact                                                                                                             | Purpose                                                    |
-| -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140)                                                       | Source of `OutputFormat`, envelopes, and error mappings.   |
+| Artifact                                                                                                  | Purpose                                                    |
+| --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140)                                            | Source of `OutputFormat`, envelopes, and error mappings.   |
 | [adr-0005-cli-error-taxonomy-and-exit-codes](/decisions/adrs/adr-0005-cli-error-taxonomy-and-exit-codes/) | Ratified decision capturing the taxonomy defined here.     |
-| [readme.md](readme.md:368)                                                                                           | Public documentation that will mirror the output contract. |
+| [readme.md](readme.md:368)                                                                                | Public documentation that will mirror the output contract. |

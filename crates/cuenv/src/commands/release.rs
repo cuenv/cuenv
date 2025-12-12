@@ -5,14 +5,19 @@
 //! - `cuenv changeset status` - View pending changesets
 //! - `cuenv changeset from-commits` - Generate changeset from conventional commits
 //! - `cuenv release version` - Calculate and apply version bumps
-//! - `cuenv release publish` - Publish packages in topological order
+//! - `cuenv release publish` - Publish workspace packages to crates.io in dependency order
 
 use cuenv_release::{
     BumpType, CargoManifest, Changeset, ChangesetManager, CommitParser, PackageChange,
     PublishPackage, PublishPlan, ReleasePackagesConfig, VersionCalculator,
 };
+use std::collections::HashSet;
 use std::fmt::Write;
+use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
+
+use toml::Value as TomlValue;
 
 /// Execute the `changeset add` command.
 ///
@@ -365,22 +370,42 @@ pub enum OutputFormat {
     Json,
 }
 
-/// Execute the `release publish` command.
-///
-/// Returns the topological order for publishing packages.
-///
-/// # Errors
-///
-/// Returns an error if package order cannot be determined.
-pub fn execute_release_publish(
-    path: &str,
-    dry_run: bool,
-    format: OutputFormat,
-) -> cuenv_core::Result<String> {
-    let root = Path::new(path);
+fn publish_to_crates_io(crate_dir: &Path) -> cuenv_core::Result<bool> {
+    let manifest_path = crate_dir.join("Cargo.toml");
+    let content = fs::read_to_string(&manifest_path).map_err(|e| {
+        cuenv_core::Error::configuration(format!(
+            "Failed to read crate manifest {}: {e}",
+            manifest_path.display()
+        ))
+    })?;
+
+    let doc: TomlValue = content.parse().map_err(|e| {
+        cuenv_core::Error::configuration(format!(
+            "Failed to parse crate manifest {}: {e}",
+            manifest_path.display()
+        ))
+    })?;
+
+    let publish = doc.get("package").and_then(|p| p.get("publish"));
+
+    match publish {
+        Some(TomlValue::Boolean(false)) => Ok(false),
+        Some(TomlValue::Array(arr)) => {
+            if arr.is_empty() {
+                return Ok(false);
+            }
+            Ok(arr
+                .iter()
+                .filter_map(TomlValue::as_str)
+                .any(|v| v == "crates-io"))
+        }
+        _ => Ok(true),
+    }
+}
+
+fn build_publish_plan(root: &Path) -> cuenv_core::Result<PublishPlan> {
     let manifest = CargoManifest::new(root);
 
-    // Get package names, paths, and versions
     let package_paths = manifest.get_package_paths().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
     })?;
@@ -389,12 +414,10 @@ pub fn execute_release_publish(
         cuenv_core::Error::configuration(format!("Failed to read package versions: {e}"))
     })?;
 
-    // Get package dependencies
     let package_deps = manifest.read_package_dependencies().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to read package dependencies: {e}"))
     })?;
 
-    // Build PublishPackage list
     let mut publish_packages = Vec::new();
     for (name, path) in &package_paths {
         let version = package_versions.get(name).ok_or_else(|| {
@@ -410,18 +433,118 @@ pub fn execute_release_publish(
         });
     }
 
-    // Create publish plan with topological ordering
-    let plan = PublishPlan::from_packages(publish_packages).map_err(|e| {
+    PublishPlan::from_packages(publish_packages).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to create publish plan: {e}"))
-    })?;
+    })
+}
+
+fn publish_packages_to_crates_io(
+    root: &Path,
+    plan: &PublishPlan,
+    publishable: &HashSet<String>,
+) -> cuenv_core::Result<()> {
+    for pkg in plan.iter() {
+        if !publishable.contains(&pkg.name) {
+            continue;
+        }
+
+        let status = Command::new("cargo")
+            .current_dir(root)
+            .arg("publish")
+            .arg("-p")
+            .arg(&pkg.name)
+            .arg("--locked")
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to run 'cargo publish' for '{}': {e}", pkg.name),
+                    "Ensure Rust/Cargo is available and CARGO_REGISTRY_TOKEN is set for crates.io publishing",
+                )
+            })?;
+
+        if !status.success() {
+            return Err(cuenv_core::Error::execution_with_help(
+                format!("'cargo publish' failed for '{}'", pkg.name),
+                "Check the command output above (authentication, crate metadata, or version already published)",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute the `release publish` command.
+///
+/// Returns the topological order for publishing packages.
+///
+/// # Errors
+///
+/// Returns an error if package order cannot be determined.
+pub fn execute_release_publish(
+    path: &str,
+    dry_run: bool,
+    format: OutputFormat,
+) -> cuenv_core::Result<String> {
+    let root = Path::new(path);
+    let plan = build_publish_plan(root)?;
 
     // Extract package names in topological order
     let sorted_packages: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
 
+    // Determine which packages are configured to publish.
+    let mut publishable: HashSet<String> = HashSet::new();
+    let mut skipped: HashSet<String> = HashSet::new();
+    for pkg in plan.iter() {
+        let should_publish = publish_to_crates_io(&pkg.path)?;
+        if should_publish {
+            publishable.insert(pkg.name.clone());
+        } else {
+            skipped.insert(pkg.name.clone());
+        }
+    }
+
+    // Safety: don't allow publishing a crate that depends on an internal crate marked publish=false.
+    for pkg in plan.iter() {
+        if !publishable.contains(&pkg.name) {
+            continue;
+        }
+        for dep in &pkg.dependencies {
+            if skipped.contains(dep) {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Cannot publish '{}' because it depends on '{}' which is marked publish = false",
+                    pkg.name, dep
+                )));
+            }
+        }
+    }
+
+    if !dry_run {
+        publish_packages_to_crates_io(root, &plan, &publishable)?;
+    }
+
     match format {
         OutputFormat::Json => {
+            let results = plan
+                .iter()
+                .map(|p| {
+                    let status = if publishable.contains(&p.name) {
+                        if dry_run { "planned" } else { "published" }
+                    } else {
+                        "skipped"
+                    };
+
+                    serde_json::json!({
+                        "name": p.name,
+                        "status": status,
+                    })
+                })
+                .collect::<Vec<_>>();
+
             let json = serde_json::json!({
                 "packages": sorted_packages,
+                "results": results,
                 "dry_run": dry_run
             });
             serde_json::to_string_pretty(&json).map_err(|e| {
@@ -435,14 +558,23 @@ pub fn execute_release_publish(
                 output.push_str("Dry run - no packages will be published.\n\n");
             }
 
-            output.push_str("Publish order (topologically sorted):\n\n");
-            for (i, pkg) in sorted_packages.iter().enumerate() {
-                let _ = writeln!(output, "  {}. {pkg}", i + 1);
+            if dry_run {
+                output.push_str("Publish plan (topologically sorted):\n\n");
+            } else {
+                output.push_str("Publish order (topologically sorted):\n\n");
             }
 
-            output.push_str(
-                "\nTo publish, create a GitHub Release which triggers the release workflow.\n",
-            );
+            for (i, pkg) in sorted_packages.iter().enumerate() {
+                if publishable.contains(pkg) {
+                    let _ = writeln!(output, "  {}. {pkg}", i + 1);
+                } else {
+                    let _ = writeln!(output, "  {}. {pkg} (skipped: publish disabled)", i + 1);
+                }
+            }
+
+            if dry_run {
+                output.push_str("\nDry run complete.\n");
+            }
 
             Ok(output)
         }
@@ -617,7 +749,7 @@ version.workspace = true
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("Dry run"));
-        assert!(output.contains("Publish order"));
+        assert!(output.contains("Publish plan"));
     }
 
     #[test]
@@ -625,7 +757,7 @@ version.workspace = true
         let temp = TempDir::new().unwrap();
         let path = create_test_workspace(&temp);
 
-        let result = execute_release_publish(&path, false, OutputFormat::Json);
+        let result = execute_release_publish(&path, true, OutputFormat::Json);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("\"packages\""));
