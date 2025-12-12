@@ -23,7 +23,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     MY_SECRET: schema.#Secret & {
@@ -47,7 +49,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     // Reference a 1Password item
@@ -84,7 +88,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     // GCP secret with default "latest" version

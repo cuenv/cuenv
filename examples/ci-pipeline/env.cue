@@ -2,9 +2,11 @@ package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project
 
-_ci: pipelines: [
+name: "ci-pipeline"
+
+ci: pipelines: [
     {
         name: "default"
         tasks: ["test"]

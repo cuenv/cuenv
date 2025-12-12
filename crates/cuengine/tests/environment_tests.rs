@@ -85,6 +85,7 @@ fn test_parse_custom_cue() {
     // Create a temporary directory with a CUE file
     let temp_dir = TempDir::new().unwrap();
     let cue_content = r#"package test
+name: "test"
 env: {
     DATABASE_URL: "postgres://localhost/mydb"
     PORT: 3000

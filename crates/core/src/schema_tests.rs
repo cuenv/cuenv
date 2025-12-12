@@ -3,7 +3,7 @@ mod tests {
     use crate::config::{CacheMode, Config, OutputFormat};
     use crate::environment::{Env, EnvValue};
     use crate::hooks::types::Hook;
-    use crate::manifest::Cuenv;
+    use crate::manifest::{Base, Cuenv, Project};
     use crate::secrets::Secret;
     use schemars::schema_for;
     use std::collections::HashMap;
@@ -33,14 +33,33 @@ mod tests {
     }
 
     #[test]
-    fn test_cuenv_schema_generation() {
+    fn test_project_schema_generation() {
         let schema = schema_for!(Cuenv);
         let json = serde_json::to_string_pretty(&schema).unwrap();
-        assert!(json.contains("\"title\": \"Cuenv\""));
+        // Cuenv is a type alias to Project
+        assert!(json.contains("\"title\": \"Project\""));
         assert!(json.contains("config"));
         assert!(json.contains("env"));
         assert!(json.contains("hooks"));
         assert!(json.contains("tasks"));
+    }
+
+    #[test]
+    fn test_base_schema_generation() {
+        let schema = schema_for!(Base);
+        let json = serde_json::to_string_pretty(&schema).unwrap();
+        assert!(json.contains("\"title\": \"Base\""));
+        assert!(json.contains("config"));
+        assert!(json.contains("env"));
+        assert!(json.contains("workspaces"));
+    }
+
+    #[test]
+    fn test_cuenv_type_alias_compiles_as_project() {
+        fn takes_project(_: Project) {}
+
+        let cuenv: Cuenv = Project::new("alias-test");
+        takes_project(cuenv);
     }
 
     #[test]

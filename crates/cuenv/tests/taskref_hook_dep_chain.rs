@@ -1,4 +1,9 @@
-#![allow(missing_docs, unused_variables, clippy::uninlined_format_args)]
+#![allow(
+    missing_docs,
+    unused_variables,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args
+)]
 
 use std::fs;
 use std::path::Path;
@@ -52,6 +57,7 @@ fn write_cue_module(root: &Path) {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn test_before_install_taskref_executes_transitive_dep_chain() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
@@ -199,6 +205,7 @@ tasks: {
 
 #[test]
 #[cfg(unix)]
+#[allow(clippy::too_many_lines)]
 fn test_match_hooks_run_before_injected_bun_install() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();

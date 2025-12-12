@@ -7,14 +7,16 @@ This page documents the CUE schema definitions used in cuenv configurations. Imp
 
 ## Root Schema
 
-### #Cuenv
+### #Project
 
 The root configuration type that validates your entire `env.cue` file.
 
 ```cue
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 // Your configuration here
 env: {...}
@@ -23,13 +25,27 @@ tasks: {...}
 
 **Fields:**
 
-| Field        | Type                 | Required | Description                      |
-| ------------ | -------------------- | -------- | -------------------------------- |
-| `config`     | `#Config`            | No       | Global configuration options     |
-| `env`        | `#Env`               | No       | Environment variable definitions |
-| `hooks`      | `#Hooks`             | No       | Shell hooks for onEnter/onExit   |
-| `tasks`      | `{[string]: #Tasks}` | Yes      | Task definitions                 |
-| `workspaces` | `#Workspaces`        | No       | Workspace configuration          |
+| Field        | Type                 | Required | Description                       |
+| ------------ | -------------------- | -------- | --------------------------------- |
+| `config`     | `#Config`            | No       | Global configuration options      |
+| `env`        | `#Env`               | No       | Environment variable definitions  |
+| `hooks`      | `#Hooks`             | No       | Shell hooks for onEnter/onExit    |
+| `name`       | `string`             | Yes      | Project name (used by `#TaskRef`) |
+| `tasks`      | `{[string]: #Tasks}` | No       | Task definitions                  |
+| `workspaces` | `#Workspaces`        | No       | Workspace configuration           |
+
+### #Base
+
+Composable “base” configuration (no project-specific fields). This is useful for shared config in parent directories.
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Base & {
+  env: {...}
+  workspaces: {...}
+}
+```
 
 ## Configuration
 

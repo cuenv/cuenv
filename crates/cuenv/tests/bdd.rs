@@ -298,7 +298,9 @@ async fn cuenv_allowed_in_dir(world: &mut TestWorld, dir: String) {
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project
+
+name: "hook-test"
 
 // Environment variables to be loaded after hooks complete
 env: {
@@ -635,7 +637,9 @@ async fn cuenv_allowed_with_failing_hooks(world: &mut TestWorld, dir: String) {
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project
+
+name: "failing-hook-test"
 
 env: {
     SHOULD_NOT_LOAD: "this_should_not_be_set"

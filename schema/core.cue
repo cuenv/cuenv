@@ -1,12 +1,17 @@
 package schema
 
-#Cuenv: {
-	name?: string
+#Base: {
 	config?: #Config
 	env?: #Env
-	hooks?: #Hooks
 	workspaces?: #Workspaces
-	_ci?: #CI
+}
+
+#ProjectName: string & =~"^[a-zA-Z0-9._-]+$"
+
+#Project: #Base & {
+	name!: #ProjectName
+	hooks?: #Hooks
+	ci?: #CI
 	release?: #Release
 	tasks?: [string]: #Tasks
 }

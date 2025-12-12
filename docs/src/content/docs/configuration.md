@@ -15,7 +15,7 @@ cuenv evaluates the CUE package you point it at (by default the `cuenv` package 
 
 Common organization patterns include:
 
-- Keeping an `env.cue` entry point that imports `schema.#Cuenv`
+- Keeping an `env.cue` entry point that imports `schema.#Project`
 - Splitting large sections into files such as `tasks.cue` or directories like `.cuenv/`
 - Importing shared packages from elsewhere in your CUE module (for example `import "github.com/myorg/common"`)
 
@@ -26,7 +26,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 // Environment variables
 env: {
@@ -269,7 +271,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     // 1Password secret reference

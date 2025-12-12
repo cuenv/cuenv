@@ -3,7 +3,8 @@ package cuenv
 import "github.com/cuenv/cuenv/schema"
 
 // Invalid: hook missing required 'command' field
-schema.#Cuenv & {
+schema.#Project & {
+	name: "test-invalid"
 	hooks: {
 		onEnter: {
 			// command is required but missing

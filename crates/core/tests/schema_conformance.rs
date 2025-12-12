@@ -15,8 +15,8 @@ fn test_rust_schema_generation() {
     let schema = schema_for!(Cuenv);
     let json = serde_json::to_string_pretty(&schema).unwrap();
 
-    // Schema should contain expected top-level properties
-    assert!(json.contains("\"title\": \"Cuenv\""));
+    // Schema should contain expected top-level properties (Cuenv is an alias to Project)
+    assert!(json.contains("\"title\": \"Project\""));
     assert!(json.contains("\"properties\""));
     assert!(json.contains("config"));
     assert!(json.contains("env"));
@@ -171,7 +171,7 @@ fn test_round_trip_serialization() {
         workspaces: None,
         ci: None,
         tasks: HashMap::new(),
-        name: None,
+        name: "round-trip".to_string(),
     };
 
     // Serialize to JSON

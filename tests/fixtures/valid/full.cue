@@ -3,7 +3,8 @@ package cuenv
 import "github.com/cuenv/cuenv/schema"
 
 // Full configuration with all features
-schema.#Cuenv & {
+schema.#Project & {
+	name: "full-test"
 	config: {
 		outputFormat: "json"
 	}

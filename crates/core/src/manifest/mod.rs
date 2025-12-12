@@ -1,6 +1,6 @@
-//! Root Cuenv configuration type
+//! Root Project configuration type
 //!
-//! Based on schema/cuenv.cue
+//! Based on schema/core.cue
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -147,16 +147,31 @@ pub struct Hooks {
     pub on_exit: Option<HashMap<String, Hook>>,
 }
 
-/// Root Cuenv configuration structure
+/// Base configuration structure (composable across directories)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
-pub struct Cuenv {
+pub struct Base {
     /// Configuration settings
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<Config>,
 
-    /// Project name (unique identifier)
+    /// Environment variables configuration
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub env: Option<Env>,
+
+    /// Workspaces configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
+}
+
+/// Root Project configuration structure (leaf node - cannot unify with other projects)
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct Project {
+    /// Configuration settings
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<Config>,
+
+    /// Project name (unique identifier, required by the CUE schema)
+    pub name: String,
 
     /// Environment variables configuration
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -170,8 +185,8 @@ pub struct Cuenv {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
 
-    /// CI configuration (uses hidden field _ci in CUE to prevent inheritance)
-    #[serde(rename = "_ci", skip_serializing_if = "Option::is_none")]
+    /// CI configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CI>,
 
     /// Tasks configuration
@@ -179,10 +194,16 @@ pub struct Cuenv {
     pub tasks: HashMap<String, TaskDefinition>,
 }
 
-impl Cuenv {
-    /// Create a new empty Cuenv configuration
-    pub fn new() -> Self {
-        Self::default()
+/// Type alias for backward compatibility
+pub type Cuenv = Project;
+
+impl Project {
+    /// Create a new Project configuration with a required name.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Self::default()
+        }
     }
 
     /// Get hooks to execute when entering environment as a map (name -> hook)
@@ -471,7 +492,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv
             .tasks
             .insert("deploy".into(), TaskDefinition::Single(Box::new(task)));
@@ -501,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_implicit_bun_install_task() {
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -535,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_implicit_npm_install_task() {
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "npm".into(),
             WorkspaceConfig {
@@ -563,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_implicit_cargo_fetch_task() {
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "cargo".into(),
             WorkspaceConfig {
@@ -596,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_no_override_user_defined_task() {
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -628,7 +649,7 @@ mod tests {
 
     #[test]
     fn test_no_override_user_defined_nested_install_task() {
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -682,7 +703,7 @@ mod tests {
 
     #[test]
     fn test_disabled_workspace_no_implicit_task() {
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -699,7 +720,7 @@ mod tests {
 
     #[test]
     fn test_unknown_workspace_no_implicit_task() {
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "unknown-package-manager".into(),
             WorkspaceConfig {
@@ -716,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_no_workspaces_unchanged() {
-        let cuenv = Cuenv::new();
+        let cuenv = Cuenv::new("test");
         let cuenv = cuenv.with_implicit_tasks();
         assert!(cuenv.tasks.is_empty());
     }
@@ -724,7 +745,7 @@ mod tests {
     #[test]
     fn test_no_workspace_tasks_when_unused() {
         // When no task uses a workspace, the implicit install tasks should not be created
-        let mut cuenv = Cuenv::new();
+        let mut cuenv = Cuenv::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {

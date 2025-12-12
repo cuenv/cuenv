@@ -94,7 +94,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     NODE_ENV: "development"
@@ -163,7 +165,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 // Environment variables (typed by CUE)
 env: {
@@ -240,7 +244,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 // Don't load Nix via cuenv if direnv handles it
 env: {

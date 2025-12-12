@@ -624,7 +624,7 @@ source (cuenv export --shell fish 2>/dev/null | psub)"
         .to_string()
 }
 
-/// Generate Bash shell integration script  
+/// Generate Bash shell integration script
 fn generate_bash_integration() -> String {
     r#"# cuenv Bash shell integration
 # Add this to your ~/.bashrc
@@ -657,7 +657,7 @@ __cuenv_hook"#
 
 /// Generate Zsh shell integration script
 fn generate_zsh_integration() -> String {
-    r#"# cuenv Zsh shell integration  
+    r#"# cuenv Zsh shell integration
 # Add this to your ~/.zshrc
 
 # Mark that shell integration is active
@@ -731,7 +731,7 @@ mod tests {
             workspaces: None,
             ci: None,
             tasks: std::collections::HashMap::new(),
-            name: None,
+            name: "test".to_string(),
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -771,7 +771,7 @@ mod tests {
             workspaces: None,
             ci: None,
             tasks: std::collections::HashMap::new(),
-            name: None,
+            name: "test".to_string(),
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -791,7 +791,7 @@ mod tests {
             workspaces: None,
             ci: None,
             tasks: std::collections::HashMap::new(),
-            name: None,
+            name: "test".to_string(),
         };
 
         let hooks = extract_hooks_from_config(&config);
