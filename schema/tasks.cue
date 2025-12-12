@@ -7,19 +7,13 @@ package schema
 // Choose the structure based on your workflow requirements:
 //   - Single #Task: Simple, standalone execution.
 //   - #TaskGroup: Complex workflows involving multiple tasks and dependencies.
-#Tasks: #Task | #TaskGroup
+#Tasks: #Command | #Script | #TaskGroup
 
 // Common fields shared between command-based and script-based tasks
-#Task: close({
+#Task: {
 	shell?: #Shell
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
-
-	command?: string
-	script?:  string
-	// if command == _|_ && script == _|_ {
-	// 	error("A task must have either 'command' or 'script' defined.")
-	// }
 
 	// When true (default), task runs in an isolated hermetic directory with only
 	// declared inputs available. When false, task runs directly in the workspace
@@ -60,7 +54,19 @@ package schema
 	// Allows tasks to accept positional and named arguments:
 	//   cuenv task import.youtube VIDEO_ID --quality 1080p
 	params?: #TaskParams
-})
+}
+
+// #Command is a task that executes a command
+#Command: {
+	#Task
+	command: string
+}
+
+// #Script is a task that executes an inline script
+#Script: {
+	#Task
+	script: string
+}
 
 // Task parameter definitions
 #TaskParams: {

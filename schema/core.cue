@@ -32,9 +32,9 @@ package schema
 // Workspace lifecycle hooks for pre/post install
 #WorkspaceHooks: close({
 	// Tasks or references to run before workspace install
-	beforeInstall?: [...(#Task | #TaskRef | #MatchHook)]
+	beforeInstall?: [...(#Command | #Script | #TaskRef | #MatchHook)]
 	// Tasks or references to run after workspace install
-	afterInstall?: [...(#Task | #TaskRef | #MatchHook)]
+	afterInstall?: [...(#Command | #Script | #TaskRef | #MatchHook)]
 })
 
 // Reference a task from another env.cue project by its name property
