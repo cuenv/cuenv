@@ -34,6 +34,7 @@ cuenv-ci = { workspace = true }
 cuenv-events = { workspace = true }
 cuenv-release = { workspace = true }
 cuengine = { workspace = true }
+toml = { workspace = true }
 tokio = { workspace = true }
 tokio-util = "0.7"
 async-trait = "0.1"
