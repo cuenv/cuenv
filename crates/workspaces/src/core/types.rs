@@ -173,6 +173,8 @@ pub enum PackageManager {
     YarnModern,
     /// Cargo (Rust)
     Cargo,
+    /// Deno
+    Deno,
 }
 
 impl PackageManager {
@@ -195,6 +197,7 @@ impl PackageManager {
             Self::Pnpm => "pnpm-lock.yaml",
             Self::YarnClassic | Self::YarnModern => "yarn.lock",
             Self::Cargo => "Cargo.lock",
+            Self::Deno => "deno.lock",
         }
     }
 
@@ -215,6 +218,7 @@ impl PackageManager {
                 "package.json"
             }
             Self::Cargo => "Cargo.toml",
+            Self::Deno => "deno.json",
         }
     }
 
@@ -235,6 +239,7 @@ impl PackageManager {
             Self::Npm | Self::Bun | Self::YarnClassic | Self::YarnModern => "package.json",
             Self::Pnpm => "pnpm-workspace.yaml",
             Self::Cargo => "Cargo.toml",
+            Self::Deno => "deno.json",
         }
     }
 }
@@ -248,6 +253,7 @@ impl fmt::Display for PackageManager {
             Self::YarnClassic => write!(f, "yarn-classic"),
             Self::YarnModern => write!(f, "yarn-modern"),
             Self::Cargo => write!(f, "cargo"),
+            Self::Deno => write!(f, "deno"),
         }
     }
 }
@@ -446,6 +452,7 @@ mod tests {
         assert_eq!(PackageManager::YarnClassic.lockfile_name(), "yarn.lock");
         assert_eq!(PackageManager::YarnModern.lockfile_name(), "yarn.lock");
         assert_eq!(PackageManager::Cargo.lockfile_name(), "Cargo.lock");
+        assert_eq!(PackageManager::Deno.lockfile_name(), "deno.lock");
     }
 
     #[test]
@@ -456,6 +463,7 @@ mod tests {
         assert_eq!(PackageManager::YarnClassic.manifest_name(), "package.json");
         assert_eq!(PackageManager::YarnModern.manifest_name(), "package.json");
         assert_eq!(PackageManager::Cargo.manifest_name(), "Cargo.toml");
+        assert_eq!(PackageManager::Deno.manifest_name(), "deno.json");
     }
 
     #[test]
@@ -475,6 +483,7 @@ mod tests {
             "package.json"
         );
         assert_eq!(PackageManager::Cargo.workspace_config_name(), "Cargo.toml");
+        assert_eq!(PackageManager::Deno.workspace_config_name(), "deno.json");
     }
 
     #[test]
@@ -485,6 +494,7 @@ mod tests {
         assert_eq!(PackageManager::YarnClassic.to_string(), "yarn-classic");
         assert_eq!(PackageManager::YarnModern.to_string(), "yarn-modern");
         assert_eq!(PackageManager::Cargo.to_string(), "cargo");
+        assert_eq!(PackageManager::Deno.to_string(), "deno");
     }
 
     #[test]
@@ -496,6 +506,7 @@ mod tests {
             PackageManager::YarnClassic,
             PackageManager::YarnModern,
             PackageManager::Cargo,
+            PackageManager::Deno,
         ];
 
         for manager in managers {

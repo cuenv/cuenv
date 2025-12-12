@@ -87,7 +87,8 @@ impl DependencyResolver for GenericDependencyResolver {
                 | PackageManager::Bun
                 | PackageManager::Pnpm
                 | PackageManager::YarnClassic
-                | PackageManager::YarnModern => self.parse_js_deps(&member.manifest_path)?,
+                | PackageManager::YarnModern
+                | PackageManager::Deno => self.parse_js_deps(&member.manifest_path)?,
                 PackageManager::Cargo => Self::parse_rust_deps(&member.manifest_path)?,
             };
 
