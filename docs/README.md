@@ -1,49 +1,39 @@
-# Starlight Starter Kit: Basics
+# cuenv documentation site
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+This directory contains the cuenv documentation site built with [Astro](https://astro.build/) + [Starlight](https://starlight.astro.build/).
 
-```
-bun create astro@latest -- --template starlight
-```
+## Local development
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+From this directory:
 
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
-
-```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+```bash
+bun install
+bun run dev
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+Build and preview:
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+```bash
+bun run build
+bun run preview
+```
 
-Static assets, like favicons, can be placed in the `public/` directory.
+## Where docs live
 
-## 🧞 Commands
+Starlight content is under:
 
-All commands are run from the root of the project, from a terminal:
+- `docs/src/content/docs/`
 
-| Command               | Action                                           |
-| :-------------------- | :----------------------------------------------- |
-| `bun install`         | Installs dependencies                            |
-| `bun dev`             | Starts local dev server at `localhost:4321`      |
-| `bun build`           | Build your production site to `./dist/`          |
-| `bun preview`         | Preview your build locally, before deploying     |
-| `bun astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `bun astro -- --help` | Get help using the Astro CLI                     |
+The site is organized using the [Diátaxis framework](https://diataxis.fr/):
 
-## 👀 Want to learn more?
+- `docs/src/content/docs/tutorials/`
+- `docs/src/content/docs/how-to/`
+- `docs/src/content/docs/reference/`
+- `docs/src/content/docs/explanation/`
+- `docs/src/content/docs/decisions/` (ADRs + RFCs)
 
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+## Writing guidelines
+
+- **One page, one purpose**: don’t mix tutorial steps, reference tables, and architectural rationale in the same page.
+- **Prefer links over duplication**: if a how-to needs command/flag details, link to Reference.
+- **Keep examples runnable**: snippets should work as written (or clearly mark placeholders).

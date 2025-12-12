@@ -338,21 +338,18 @@ We welcome contributions! cuenv is licensed under AGPL-3.0, ensuring it remains 
 
 ```bash
 # Clone the repository
-git clone https://github.com/cuenv/cuenv
+jj git clone https://github.com/cuenv/cuenv
 cd cuenv
-
-# Install Nix (recommended)
-curl -L https://nixos.org/nix/install | sh
 
 # Enter development environment
 nix develop
 # or with direnv: direnv allow
 
-# Run tests
-cargo test
-
-# Check code quality
-treefmt && cargo clippy
+# Project automation (this repo)
+cuenv task fmt.check
+cuenv task lint
+cuenv task test.unit
+cuenv task build
 ```
 
 ### Architecture Overview
@@ -364,18 +361,17 @@ cuenv/
 │   │   ├── src/
 │   │   ├── bridge.go       # Go FFI bridge
 │   │   └── tests/
-│   ├── cuenv-core/         # Shared types and utilities
-│   └── cuenv-cli/          # CLI interface (upcoming)
+│   ├── core/               # Shared types and domain logic
+│   └── cuenv/              # CLI
 ├── examples/               # CUE configuration examples
 └── docs/                   # Documentation
 ```
 
 ### Testing
 
-- Unit tests: `cargo test`
-- Integration tests: `cargo test --test integration_tests`
-- Example validation: `cargo test --test examples`
-- Coverage: `cargo llvm-cov`
+- Unit tests: `cuenv task test.unit`
+- BDD tests: `cuenv task test.bdd`
+- Coverage: `cuenv task coverage`
 
 ---
 
