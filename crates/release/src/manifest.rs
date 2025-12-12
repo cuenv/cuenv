@@ -267,6 +267,39 @@ impl CargoManifest {
         Ok(versions)
     }
 
+    /// Sync Cargo.lock by running `cargo update --workspace`.
+    ///
+    /// This ensures the lock file reflects any changes made to Cargo.toml files.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cargo update command fails.
+    fn sync_cargo_lock(&self) -> Result<()> {
+        use std::process::Command;
+
+        let output = Command::new("cargo")
+            .arg("update")
+            .arg("--workspace")
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| {
+                Error::manifest(
+                    format!("Failed to execute cargo update: {e}"),
+                    Some(self.root_manifest_path()),
+                )
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(Error::manifest(
+                format!("cargo update failed: {stderr}"),
+                Some(self.root_manifest_path()),
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Update the workspace version in the root Cargo.toml.
     ///
     /// This updates `[workspace.package].version`.
@@ -306,6 +339,9 @@ impl CargoManifest {
         fs::write(&path, doc.to_string()).map_err(|e| {
             Error::manifest(format!("Failed to write root Cargo.toml: {e}"), Some(path))
         })?;
+
+        // Update Cargo.lock to reflect the version changes
+        self.sync_cargo_lock()?;
 
         Ok(())
     }
@@ -466,6 +502,9 @@ impl CargoManifest {
         fs::write(&path, doc.to_string()).map_err(|e| {
             Error::manifest(format!("Failed to write root Cargo.toml: {e}"), Some(path))
         })?;
+
+        // Update Cargo.lock to reflect the dependency version changes
+        self.sync_cargo_lock()?;
 
         Ok(())
     }
