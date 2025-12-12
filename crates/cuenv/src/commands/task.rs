@@ -28,7 +28,7 @@ fn get_dagger_factory() -> Option<BackendFactory> {
     None
 }
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
 use std::fs;
 use std::io::Read as _;
@@ -67,7 +67,7 @@ pub async fn execute_task(
 
     // Evaluate CUE to get tasks and environment
     let evaluator = Arc::new(CueEvaluator::builder().build()?);
-    let mut manifest: Cuenv =
+    let manifest: Cuenv =
         evaluate_manifest(&evaluator, Path::new(path), package)?.with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
 
@@ -76,14 +76,9 @@ pub async fn execute_task(
         manifest.tasks.len()
     );
 
-    // Resolve any TaskRef placeholders in workspace hooks
-    let project_path = Path::new(path);
-    let project_path_abs = std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
-    if let Some(cue_module_root) = find_cue_module_root(&project_path_abs) {
-        resolve_task_refs(&mut manifest, evaluator.clone(), package, &cue_module_root)?;
-    } else {
-        tracing::debug!("No CUE module root found, skipping TaskRef resolution");
-    }
+    // We may need the cue.mod root later for global task discovery / cross-project deps.
+    let project_root = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let cue_module_root = find_cue_module_root(&project_root);
 
     // Build a canonical index to support nested task paths
     let task_index = TaskIndex::build(&manifest.tasks)?;
@@ -158,23 +153,23 @@ pub async fn execute_task(
             .map(|t| t.name.as_str())
             .collect::<Vec<_>>()
     );
-    let tasks = task_index.to_tasks();
-    tracing::debug!("Indexed tasks for execution: {:?}", tasks.list_tasks());
+    let local_tasks = task_index.to_tasks();
+    tracing::debug!("Indexed tasks for execution: {:?}", local_tasks.list_tasks());
     tracing::debug!(
         "Requested task '{}' present: {}",
         requested_task,
-        tasks.get(requested_task).is_some()
+        local_tasks.get(requested_task).is_some()
     );
-    let original_task_def = tasks.get(&canonical_task_name).ok_or_else(|| {
+    let original_task_def = local_tasks.get(&canonical_task_name).ok_or_else(|| {
         cuenv_core::Error::configuration(format!("Task '{canonical_task_name}' not found"))
     })?;
-    let task_name = canonical_task_name.as_str();
+    let display_task_name = canonical_task_name.as_str();
 
     tracing::debug!("Found task definition: {:?}", original_task_def);
 
     // Process task arguments if provided
     let (task_def, tasks) = if task_args.is_empty() {
-        (original_task_def.clone(), tasks)
+        (original_task_def.clone(), local_tasks)
     } else if let TaskDefinition::Single(task) = original_task_def {
         // Parse and validate arguments against task params
         let resolved_args = resolve_task_args(task.params.as_ref(), task_args)?;
@@ -187,10 +182,10 @@ pub async fn execute_task(
         let modified_def = TaskDefinition::Single(Box::new(modified_task));
 
         // Create a new Tasks collection with the modified task
-        let mut modified_tasks = tasks.clone();
+        let mut modified_tasks = local_tasks.clone();
         modified_tasks
             .tasks
-            .insert(task_name.to_string(), modified_def.clone());
+            .insert(display_task_name.to_string(), modified_def.clone());
 
         (modified_def, modified_tasks)
     } else {
@@ -202,8 +197,38 @@ pub async fn execute_task(
 
     let task_def = &task_def;
 
+    // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
+    // This enables cross-project dependency graphs and proper cycle detection.
+    let (all_tasks, task_graph_root_name) = if let Some(module_root) = &cue_module_root {
+        let (mut global, current_project_id) = build_global_tasks(
+            evaluator.clone(),
+            module_root,
+            &project_root,
+            &manifest,
+        )?;
+
+        // If we interpolated args for the invoked task, patch that task node in the
+        // global registry so execution matches the CLI-resolved definition.
+        // (We avoid patching otherwise, because the global registry has normalized
+        // dependsOn entries to FQDNs.)
+        if !task_args.is_empty() {
+            if let TaskDefinition::Single(t) = task_def {
+                let fqdn = task_fqdn(&current_project_id, display_task_name);
+                if let Some(TaskDefinition::Single(existing)) = global.tasks.get_mut(&fqdn) {
+                    existing.command = t.command.clone();
+                    existing.args = t.args.clone();
+                }
+            }
+        }
+
+        let root = task_fqdn(&current_project_id, display_task_name);
+        (global, root)
+    } else {
+        (tasks.clone(), display_task_name.to_string())
+    };
+
     // Get environment with hook-generated vars merged in
-    let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let directory = project_root.clone();
     let base_env_vars = get_environment_with_hooks(&directory, &manifest, package).await?;
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
@@ -222,8 +247,11 @@ pub async fn execute_task(
         };
 
         // Then apply task-specific overrides with policies and secret resolution
-        let task_env_vars =
-            cuenv_core::environment::Environment::resolve_for_task(task_name, &env_vars).await?;
+        let task_env_vars = cuenv_core::environment::Environment::resolve_for_task(
+            display_task_name,
+            &env_vars,
+        )
+        .await?;
         for (key, value) in task_env_vars {
             runtime_env.set(key, value);
         }
@@ -235,15 +263,13 @@ pub async fn execute_task(
     }
 
     // Create executor with environment
-    let project_root =
-        std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
     let config = ExecutorConfig {
         capture_output,
         max_parallel: 0,
         environment: runtime_env.clone(),
         working_dir: None,
-        cue_module_root: find_cue_module_root(&project_root),
-        project_root,
+        cue_module_root,
+        project_root: project_root.clone(),
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
         cache_dir: None,
         show_cache_path,
@@ -255,9 +281,11 @@ pub async fn execute_task(
     let executor = TaskExecutor::with_dagger_factory(config, get_dagger_factory());
 
     // Build task graph for dependency-aware execution
-    tracing::debug!("Building task graph for task: {}", task_name);
+    tracing::debug!("Building task graph for task: {}", task_graph_root_name);
     let mut task_graph = TaskGraph::new();
-    task_graph.build_for_task(task_name, &tasks).map_err(|e| {
+    task_graph
+        .build_for_task(&task_graph_root_name, &all_tasks)
+        .map_err(|e| {
         tracing::error!("Failed to build task graph: {}", e);
         e
     })?;
@@ -271,10 +299,10 @@ pub async fn execute_task(
         path,
         &evaluator,
         &executor,
-        task_name,
+        display_task_name,
         task_def,
         &task_graph,
-        &tasks,
+        &all_tasks,
         manifest.env.as_ref(),
         &runtime_env,
         capture_output,
@@ -290,7 +318,7 @@ pub async fn execute_task(
     }
 
     // Format results
-    let output = format_task_results(results, capture_output, task_name);
+    let output = format_task_results(results, capture_output, display_task_name);
     Ok(output)
 }
 
@@ -323,8 +351,16 @@ async fn execute_task_with_strategy_hermetic(
             //
             // TODO: Re-enable hermetic execution when sandbox properly preserves
             // monorepo structure and handles all edge cases.
-            let _ = (project_dir, evaluator, env_base, capture_output); // Suppress unused warnings
-            if t.depends_on.is_empty() {
+            let _ = (project_dir, evaluator, env_base, capture_output, t); // Suppress unused warnings
+
+            // IMPORTANT:
+            // The TaskDefinition passed here may be sourced from the *local* manifest
+            // (pre-global-normalization / pre-injection). In global mode, additional
+            // dependencies can be injected (e.g., workspace setup chains, TaskRef
+            // expansion) that won't be reflected in `t.depends_on`.
+            //
+            // The task graph is built from `all_tasks` and is the authoritative view.
+            if task_graph.task_count() <= 1 {
                 executor
                     .execute_definition(task_name, task_def, all_tasks)
                     .await
@@ -1347,58 +1383,297 @@ fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
     new_task
 }
 
-/// Resolve `TaskRef` placeholders and expand generators in a manifest using `TaskDiscovery`.
-///
-/// This function:
-/// 1. Resolves `TaskRef` placeholders (created by `with_implicit_tasks()` for workspace hooks)
-/// 2. Expands generators (`TaskMatchers`) to discover and create tasks for matching projects
-///
-/// The resolved tasks have their `command`, `args`, etc. filled in from the referenced
-/// project's task, and `project_root` set so the executor knows where to run them.
-fn resolve_task_refs(
-    manifest: &mut Cuenv,
-    evaluator: Arc<CueEvaluator>,
-    package: &str,
-    module_root: &Path,
-) -> Result<()> {
-    // Create an evaluation function that can be used by TaskDiscovery
-    // We create a fresh evaluator to avoid lifetime issues with closures
-    let eval_fn: EvalFn = {
-        let package = package.to_string();
-        Box::new(move |project_path: &Path| {
-            // Use the shared evaluator which includes caching
-            evaluate_manifest(&evaluator, project_path, &package).map_err(|e| e.to_string())
-        })
-    };
-
-    // Build task discovery for the CUE module
-    let mut discovery = TaskDiscovery::new(module_root.to_path_buf());
-    discovery = discovery.with_eval_fn(eval_fn);
-
-    // Discover all projects in the workspace
-    if let Err(e) = discovery.discover() {
-        tracing::warn!("Failed to discover workspace projects: {}", e);
-        // Continue without resolution - tasks with unresolved refs will fail at execution
-        return Ok(());
-    }
-
-    // Resolve each TaskRef in the manifest
-    for (task_name, task_def) in &mut manifest.tasks {
-        resolve_task_ref_in_definition(task_name, task_def, &discovery)?;
-    }
-
-    // Expand generators (TaskMatchers) from workspace configurations
-    expand_generators(manifest, &discovery)?;
-
-    Ok(())
+fn normalize_task_name(raw: &str) -> String {
+    raw.replace(':', ".")
 }
 
-/// Expand generators (`TaskMatchers`) from workspace configurations.
-///
-/// For each workspace with generators defined, this finds all matching tasks
-/// across the workspace and creates synthetic tasks that depend on the
-/// beforeInstall hooks and are dependencies of the install task.
-fn expand_generators(manifest: &mut Cuenv, discovery: &TaskDiscovery) -> Result<()> {
+fn task_fqdn(project_id: &str, task_name: &str) -> String {
+    format!("task:{project_id}:{}", normalize_task_name(task_name))
+}
+
+fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> String {
+    // Match TaskIndex semantics: treat dotted/colon deps as absolute, otherwise
+    // resolve relative to the parent namespace of `task_name`.
+    if dep.contains('.') || dep.contains(':') {
+        return normalize_task_name(dep);
+    }
+
+    let task_name_norm = normalize_task_name(task_name);
+    let mut segments = task_name_norm
+        .split('.')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    segments.pop();
+    segments.push(dep);
+    segments.join(".")
+}
+
+fn compute_project_id(manifest: &Cuenv, project_root: &Path, module_root: &Path) -> String {
+    if let Some(name) = &manifest.name {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    // Fallback: stable id derived from path relative to cue.mod root.
+    // Replace separators with '.' to keep the id colon-free (':' is our delimiter).
+    let rel = project_root
+        .strip_prefix(module_root)
+        .unwrap_or(project_root)
+        .to_string_lossy()
+        .replace(['/', '\\'], ".");
+    format!("path.{rel}")
+}
+
+fn set_default_project_root(def: &mut TaskDefinition, project_root: &PathBuf) {
+    match def {
+        TaskDefinition::Single(task) => {
+            if task.project_root.is_none() {
+                task.project_root = Some(project_root.clone());
+            }
+        }
+        TaskDefinition::Group(group) => match group {
+            cuenv_core::tasks::TaskGroup::Sequential(tasks) => {
+                for t in tasks {
+                    set_default_project_root(t, project_root);
+                }
+            }
+            cuenv_core::tasks::TaskGroup::Parallel(parallel) => {
+                for t in parallel.tasks.values_mut() {
+                    set_default_project_root(t, project_root);
+                }
+            }
+        },
+    }
+}
+
+fn normalize_dep(
+    dep: &str,
+    default_project_id: &str,
+    project_id_by_name: &HashMap<String, String>,
+) -> String {
+    let dep = dep.trim();
+    if dep.starts_with("task:") {
+        return dep.to_string();
+    }
+
+    if dep.starts_with('#') {
+        let parsed = TaskRef { ref_: dep.to_string() };
+        if let Some((proj, task)) = parsed.parse() {
+            let proj_id = project_id_by_name.get(&proj).cloned().unwrap_or(proj);
+            return task_fqdn(&proj_id, &task);
+        }
+    }
+
+    task_fqdn(default_project_id, dep)
+}
+
+fn normalize_definition_deps(
+    def: &mut TaskDefinition,
+    project_id_by_root: &HashMap<PathBuf, String>,
+    project_id_by_name: &HashMap<String, String>,
+    default_project_id: &str,
+) {
+    fn scope_project_id_for_task(
+        task: &Task,
+        project_id_by_root: &HashMap<PathBuf, String>,
+        fallback: &str,
+    ) -> String {
+        if let Some(root) = &task.project_root {
+            if let Some(id) = project_id_by_root.get(root) {
+                return id.clone();
+            }
+        }
+        fallback.to_string()
+    }
+
+    match def {
+        TaskDefinition::Single(task) => {
+            let scope_id = scope_project_id_for_task(task, project_id_by_root, default_project_id);
+            let deps = std::mem::take(&mut task.depends_on);
+            task.depends_on = deps
+                .into_iter()
+                .map(|d| normalize_dep(&d, &scope_id, project_id_by_name))
+                .collect();
+        }
+        TaskDefinition::Group(group) => match group {
+            cuenv_core::tasks::TaskGroup::Sequential(tasks) => {
+                for t in tasks {
+                    normalize_definition_deps(
+                        t,
+                        project_id_by_root,
+                        project_id_by_name,
+                        default_project_id,
+                    );
+                }
+            }
+            cuenv_core::tasks::TaskGroup::Parallel(parallel) => {
+                // Normalize group-level depends_on too
+                let group_deps = std::mem::take(&mut parallel.depends_on);
+                parallel.depends_on = group_deps
+                    .into_iter()
+                    .map(|d| normalize_dep(&d, default_project_id, project_id_by_name))
+                    .collect();
+                for t in parallel.tasks.values_mut() {
+                    normalize_definition_deps(
+                        t,
+                        project_id_by_root,
+                        project_id_by_name,
+                        default_project_id,
+                    );
+                }
+            }
+        },
+    }
+}
+
+fn resolve_task_refs_in_definition(
+    def: &mut TaskDefinition,
+    discovery: &TaskDiscovery,
+    manifest_project_id: &str,
+    project_id_by_name: &HashMap<String, String>,
+) {
+    match def {
+        TaskDefinition::Single(task) => {
+            let Some(task_ref_str) = task.task_ref.clone() else {
+                return;
+            };
+            let parsed_ref = TaskRef { ref_: task_ref_str };
+
+            let placeholder_deps = std::mem::take(&mut task.depends_on)
+                .into_iter()
+                .map(|d| normalize_dep(&d, manifest_project_id, project_id_by_name))
+                .collect::<Vec<_>>();
+
+            match discovery.resolve_ref(&parsed_ref) {
+                Ok(matched) => {
+                    let mut resolved = matched.task;
+                    let resolved_root = fs::canonicalize(&matched.project_root)
+                        .unwrap_or_else(|_| matched.project_root);
+                    resolved.project_root = Some(resolved_root);
+                    resolved.task_ref = None;
+
+                    // Canonicalize the referenced task's dependencies relative to the
+                    // referenced task name (NOT the placeholder task name), so later indexing
+                    // doesn't reinterpret them under the hook task namespace.
+                    let deps = std::mem::take(&mut resolved.depends_on);
+                    resolved.depends_on = deps
+                        .into_iter()
+                        .map(|d| canonicalize_dep_for_task_name(&d, &matched.task_name))
+                        .collect();
+
+                    for dep in placeholder_deps {
+                        if !resolved.depends_on.contains(&dep) {
+                            resolved.depends_on.push(dep);
+                        }
+                    }
+                    **task = resolved;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to resolve TaskRef {}: {}",
+                        parsed_ref.ref_,
+                        e
+                    );
+                    // Restore placeholder deps so later normalization still has them.
+                    task.depends_on = placeholder_deps;
+                }
+            }
+        }
+        TaskDefinition::Group(group) => match group {
+            cuenv_core::tasks::TaskGroup::Sequential(tasks) => {
+                for t in tasks {
+                    resolve_task_refs_in_definition(
+                        t,
+                        discovery,
+                        manifest_project_id,
+                        project_id_by_name,
+                    );
+                }
+            }
+            cuenv_core::tasks::TaskGroup::Parallel(parallel) => {
+                for t in parallel.tasks.values_mut() {
+                    resolve_task_refs_in_definition(
+                        t,
+                        discovery,
+                        manifest_project_id,
+                        project_id_by_name,
+                    );
+                }
+            }
+        },
+    }
+}
+
+fn resolve_task_refs_in_manifest(
+    manifest: &mut Cuenv,
+    discovery: &TaskDiscovery,
+    manifest_project_id: &str,
+    project_id_by_name: &HashMap<String, String>,
+) {
+    for def in manifest.tasks.values_mut() {
+        resolve_task_refs_in_definition(def, discovery, manifest_project_id, project_id_by_name);
+    }
+}
+
+fn get_task_mut_by_path<'a>(
+    tasks: &'a mut HashMap<String, TaskDefinition>,
+    raw_path: &str,
+) -> Option<&'a mut Task> {
+    let normalized = raw_path.replace(':', ".");
+    let mut segments = normalized
+        .split('.')
+        .filter(|s| !s.is_empty())
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if segments.is_empty() {
+        return None;
+    }
+
+    let first = segments.remove(0);
+    let mut current = tasks.get_mut(first)?;
+    for seg in segments {
+        match current {
+            TaskDefinition::Group(cuenv_core::tasks::TaskGroup::Parallel(group)) => {
+                current = group.tasks.get_mut(seg)?;
+            }
+            _ => return None,
+        }
+    }
+
+    match current {
+        TaskDefinition::Single(task) => Some(task.as_mut()),
+        _ => None,
+    }
+}
+
+fn get_task_mut_by_name_or_path<'a>(
+    tasks: &'a mut HashMap<String, TaskDefinition>,
+    raw_path: &str,
+) -> Option<&'a mut Task> {
+    let normalized = raw_path.replace(':', ".");
+
+    // Prefer direct lookup for top-level keys (covers injected implicit tasks like "bun.install")
+    if tasks.contains_key(&normalized) {
+        return match tasks.get_mut(&normalized) {
+            Some(TaskDefinition::Single(task)) => Some(task.as_mut()),
+            _ => None,
+        };
+    }
+
+    // Fallback: nested lookup (covers `tasks: bun: install: {}`)
+    get_task_mut_by_path(tasks, &normalized)
+}
+
+fn inject_workspace_setup_tasks(
+    manifest: &mut Cuenv,
+    discovery: &TaskDiscovery,
+    manifest_project_id: &str,
+) -> Result<()> {
+    use cuenv_core::manifest::HookItem;
+    use cuenv_core::tasks::TaskGroup;
+
     let Some(workspaces) = &manifest.workspaces else {
         return Ok(());
     };
@@ -1406,156 +1681,328 @@ fn expand_generators(manifest: &mut Cuenv, discovery: &TaskDiscovery) -> Result<
     // Clone to avoid borrow issues
     let workspaces = workspaces.clone();
 
+    fn add_setup_dep_to_definition(
+        task_name: &str,
+        task_def: &mut TaskDefinition,
+        ws_name: &str,
+        setup_task_name: &str,
+    ) {
+        // Avoid cycles: never make install/setup/hooks depend on setup.
+        let install_name = format!("{ws_name}.install");
+        let setup_name = format!("{ws_name}.setup");
+        let hooks_prefix = format!("{ws_name}.hooks.");
+
+        match task_def {
+            TaskDefinition::Single(task) => {
+                if !task.workspaces.iter().any(|w| w == ws_name) {
+                    return;
+                }
+
+                if task_name == install_name
+                    || task_name == setup_name
+                    || task_name.starts_with(&hooks_prefix)
+                {
+                    return;
+                }
+
+                if !task.depends_on.contains(&setup_task_name.to_string()) {
+                    task.depends_on.push(setup_task_name.to_string());
+                }
+            }
+            TaskDefinition::Group(group) => match group {
+                TaskGroup::Sequential(tasks) => {
+                    for (i, sub_task) in tasks.iter_mut().enumerate() {
+                        let sub_name = format!("{}[{}]", task_name, i);
+                        add_setup_dep_to_definition(&sub_name, sub_task, ws_name, setup_task_name);
+                    }
+                }
+                TaskGroup::Parallel(group) => {
+                    for (name, sub_task) in group.tasks.iter_mut() {
+                        let sub_name = format!("{}.{}", task_name, name);
+                        add_setup_dep_to_definition(&sub_name, sub_task, ws_name, setup_task_name);
+                    }
+                }
+            },
+        }
+    }
+
     for (ws_name, config) in &workspaces {
         if !config.enabled {
             continue;
         }
 
-        let Some(generators) = &config.generators else {
+        // Only inject if this workspace is actually referenced by tasks.
+        let workspace_used = manifest
+            .tasks
+            .values()
+            .any(|task_def| task_def.uses_workspace(ws_name));
+        if !workspace_used {
             continue;
-        };
+        }
 
         let install_task_name = format!("{ws_name}.install");
+        let setup_task_name = format!("{ws_name}.setup");
 
-        // Collect all generator task names so we can add them as dependencies to install
-        let mut generator_task_names: Vec<String> = Vec::new();
+        // Expand beforeInstall hook steps into concrete tasks.
+        let mut all_hook_task_names: Vec<String> = Vec::new();
+        let mut previous_step_task_names: Vec<String> = Vec::new();
 
-        for (gen_name, matcher) in generators {
-            let matched_tasks = discovery.match_tasks(matcher).map_err(|e| {
-                cuenv_core::Error::configuration(format!(
-                    "Generator '{gen_name}' has invalid configuration: {e}"
-                ))
-            })?;
+        if let Some(hooks) = &config.hooks
+            && let Some(before_install) = &hooks.before_install
+        {
+            for (step_idx, hook_item) in before_install.iter().enumerate() {
+                match hook_item {
+                    HookItem::Task(task) => {
+                        let hook_task_name =
+                            format!("{ws_name}.hooks.beforeInstall[{step_idx}]");
+                        let mut hook_task = task.as_ref().clone();
+                        hook_task.depends_on.extend(previous_step_task_names.clone());
+                        manifest.tasks.insert(
+                            hook_task_name.clone(),
+                            TaskDefinition::Single(Box::new(hook_task)),
+                        );
+                        all_hook_task_names.push(hook_task_name.clone());
+                        previous_step_task_names = vec![hook_task_name];
+                    }
+                    HookItem::TaskRef(task_ref) => {
+                        let hook_task_name =
+                            format!("{ws_name}.hooks.beforeInstall[{step_idx}]");
+                        let mut hook_task = cuenv_core::tasks::Task::from_task_ref(&task_ref.ref_);
+                        hook_task.depends_on.extend(previous_step_task_names.clone());
+                        manifest.tasks.insert(
+                            hook_task_name.clone(),
+                            TaskDefinition::Single(Box::new(hook_task)),
+                        );
+                        all_hook_task_names.push(hook_task_name.clone());
+                        previous_step_task_names = vec![hook_task_name];
+                    }
+                    HookItem::Match(match_hook) => {
+                        let matched_tasks = discovery.match_tasks(&match_hook.matcher).map_err(|e| {
+                            cuenv_core::Error::configuration(format!(
+                                "Workspace '{ws_name}' beforeInstall matcher has invalid configuration: {e}"
+                            ))
+                        })?;
 
-            tracing::debug!(
-                "Generator '{}' matched {} tasks with labels {:?}",
-                gen_name,
-                matched_tasks.len(),
-                matcher.labels
-            );
+                        let step_name = match_hook
+                            .name
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("match[{step_idx}]"));
 
-            for (i, matched) in matched_tasks.iter().enumerate() {
-                // Create a unique task name for this generator result
-                let task_name = format!("{ws_name}.generators.{gen_name}[{i}]");
+                        tracing::debug!(
+                            "Workspace '{}' beforeInstall matcher '{}' matched {} tasks",
+                            ws_name,
+                            step_name,
+                            matched_tasks.len()
+                        );
 
-                // Create the task with project_root set
-                let mut task = matched.task.clone();
-                task.project_root = Some(matched.project_root.clone());
+                        let mut step_task_names: Vec<String> = Vec::new();
+                        let mut prev_in_step: Option<String> = None;
 
-                // Find what this task should depend on (beforeInstall hooks)
-                // The hooks are named like: bun.hooks.beforeInstall[0], bun.hooks.beforeInstall[1], etc.
-                let hook_prefix = format!("{ws_name}.hooks.beforeInstall");
-                for existing_task_name in manifest.tasks.keys() {
-                    if existing_task_name.starts_with(&hook_prefix) {
-                        task.depends_on.push(existing_task_name.clone());
+                        for (i, matched) in matched_tasks.iter().enumerate() {
+                            let hook_task_name =
+                                format!("{ws_name}.hooks.beforeInstall.{step_name}[{i}]");
+
+                            let mut task = matched.task.clone();
+                            task.project_root = Some(
+                                fs::canonicalize(&matched.project_root)
+                                    .unwrap_or_else(|_| matched.project_root.clone()),
+                            );
+
+                            // Canonicalize deps relative to the matched task name (not the synthetic hook name)
+                            task.depends_on = task
+                                .depends_on
+                                .iter()
+                                .map(|d| canonicalize_dep_for_task_name(d, &matched.task_name))
+                                .collect();
+
+                            // Ensure this step runs after previous hook step(s). These deps live in the
+                            // current project even though this task executes in a matched project_root.
+                            for dep in &previous_step_task_names {
+                                task.depends_on
+                                    .push(task_fqdn(manifest_project_id, dep));
+                            }
+
+                            // Respect matcher.parallel: chain within this step if parallel == false
+                            if !match_hook.matcher.parallel {
+                                if let Some(prev_name) = &prev_in_step {
+                                    task.depends_on
+                                        .push(task_fqdn(manifest_project_id, prev_name));
+                                }
+                                prev_in_step = Some(hook_task_name.clone());
+                            }
+
+                            manifest.tasks.insert(
+                                hook_task_name.clone(),
+                                TaskDefinition::Single(Box::new(task)),
+                            );
+                            all_hook_task_names.push(hook_task_name.clone());
+                            step_task_names.push(hook_task_name);
+                        }
+
+                        // Next step depends on all tasks from this step
+                        previous_step_task_names = step_task_names;
                     }
                 }
-
-                tracing::debug!(
-                    "Created generator task '{}' for {}:{} in {}",
-                    task_name,
-                    matched.project_name.as_deref().unwrap_or("?"),
-                    matched.task_name,
-                    matched.project_root.display()
-                );
-
-                manifest
-                    .tasks
-                    .insert(task_name.clone(), TaskDefinition::Single(Box::new(task)));
-                generator_task_names.push(task_name);
             }
         }
 
-        // Add generator tasks as dependencies to the install task
-        if !generator_task_names.is_empty()
-            && let Some(TaskDefinition::Single(install_task)) =
-                manifest.tasks.get_mut(&install_task_name)
-        {
-            for gen_task in generator_task_names {
-                if !install_task.depends_on.contains(&gen_task) {
-                    install_task.depends_on.push(gen_task);
+        // Wire: hooks -> install
+        if !all_hook_task_names.is_empty() {
+            if let Some(install_task) = get_task_mut_by_name_or_path(&mut manifest.tasks, &install_task_name)
+            {
+                for hook_name in &all_hook_task_names {
+                    if !install_task.depends_on.contains(hook_name) {
+                        install_task.depends_on.push(hook_name.clone());
+                    }
                 }
             }
+        }
+
+        // Ensure <ws>.setup exists
+        if !manifest.tasks.contains_key(&setup_task_name) {
+            let setup_task = cuenv_core::tasks::Task {
+                command: "".to_string(),
+                script: Some("true".to_string()),
+                hermetic: false,
+                depends_on: vec![install_task_name.clone()],
+                ..Default::default()
+            };
+            manifest.tasks.insert(
+                setup_task_name.clone(),
+                TaskDefinition::Single(Box::new(setup_task)),
+            );
+        }
+
+        // Wire: any task that uses this workspace -> <ws>.setup
+        for (task_name, task_def) in manifest.tasks.iter_mut() {
+            add_setup_dep_to_definition(task_name, task_def, ws_name, &setup_task_name);
         }
     }
 
     Ok(())
 }
 
-/// Recursively resolve `TaskRefs` in a task definition
-fn resolve_task_ref_in_definition(
-    task_name: &str,
-    task_def: &mut TaskDefinition,
-    discovery: &TaskDiscovery,
-) -> Result<()> {
-    use cuenv_core::tasks::TaskGroup;
+fn build_global_tasks(
+    evaluator: Arc<CueEvaluator>,
+    module_root: &Path,
+    current_project_root: &Path,
+    current_manifest: &Cuenv,
+) -> Result<(Tasks, String)> {
+    // Evaluation function for discovery.
+    // Each project can have a different CUE package name, so detect it per-project.
+    let eval_fn: EvalFn = Box::new(move |project_path: &Path| {
+        let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
+        evaluate_manifest(&evaluator, project_path, &pkg).map_err(|e| e.to_string())
+    });
 
-    match task_def {
-        TaskDefinition::Single(task) => {
-            if let Some(ref task_ref_str) = task.task_ref {
-                // Parse the task ref
-                let parsed_ref = TaskRef {
-                    ref_: task_ref_str.clone(),
-                };
+    let mut discovery = TaskDiscovery::new(module_root.to_path_buf()).with_eval_fn(eval_fn);
+    discovery.discover().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
+    })?;
 
-                match discovery.resolve_ref(&parsed_ref) {
-                    Ok(matched) => {
-                        tracing::debug!(
-                            "Resolved TaskRef {} -> {}:{} in {}",
-                            task_ref_str,
-                            matched.project_name.as_deref().unwrap_or("?"),
-                            matched.task_name,
-                            matched.project_root.display()
-                        );
-
-                        // Copy resolved task properties, but CLEAR the original depends_on
-                        // because those dependencies refer to the source project's tasks,
-                        // not the target project where this hook will run.
-                        let placeholder_depends_on = task.depends_on.clone();
-                        let mut resolved_task = matched.task;
-
-                        // Clear the source project's dependencies - they don't apply in the target context
-                        resolved_task.depends_on.clear();
-
-                        // Only keep dependencies from the placeholder (if any were set by the target project)
-                        for dep in placeholder_depends_on {
-                            if !resolved_task.depends_on.contains(&dep) {
-                                resolved_task.depends_on.push(dep);
-                            }
-                        }
-
-                        resolved_task.project_root = Some(matched.project_root);
-                        **task = resolved_task;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to resolve TaskRef {} for task {}: {}",
-                            task_ref_str,
-                            task_name,
-                            e
-                        );
-                        // Leave the task as-is; it will fail at execution time
-                    }
-                }
-            }
-        }
-        TaskDefinition::Group(group) => match group {
-            TaskGroup::Sequential(tasks) => {
-                for (i, sub_task) in tasks.iter_mut().enumerate() {
-                    let sub_name = format!("{task_name}[{i}]");
-                    resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
-                }
-            }
-            TaskGroup::Parallel(parallel) => {
-                for (name, sub_task) in &mut parallel.tasks {
-                    let sub_name = format!("{task_name}.{name}");
-                    resolve_task_ref_in_definition(&sub_name, sub_task, discovery)?;
-                }
-            }
-        },
+    #[derive(Clone)]
+    struct ProjectCtx {
+        root: PathBuf,
+        id: String,
+        manifest: Cuenv,
+        is_current: bool,
     }
 
-    Ok(())
+    let current_root = fs::canonicalize(current_project_root)
+        .unwrap_or_else(|_| current_project_root.to_path_buf());
+
+    // Build project contexts
+    let mut project_id_by_name: HashMap<String, String> = HashMap::new();
+    let mut used_project_ids: HashSet<String> = HashSet::new();
+    let mut projects: Vec<ProjectCtx> = Vec::new();
+    for p in discovery.projects() {
+        let root = fs::canonicalize(&p.project_root).unwrap_or_else(|_| p.project_root.clone());
+        let is_current = root == current_root;
+        let mut manifest = if is_current {
+            current_manifest.clone()
+        } else {
+            p.manifest.clone()
+        };
+        manifest = manifest.with_implicit_tasks();
+
+        // Prefer the explicit `name` field for stable cross-project refs, but ensure uniqueness.
+        let base_id = compute_project_id(&manifest, &root, module_root);
+        let mut id = base_id.clone();
+        if used_project_ids.contains(&id) {
+            // Disambiguate collisions (common in repos that layer multiple env.cue files for the same package)
+            // by suffixing with a path-derived identifier.
+            let rel = root
+                .strip_prefix(module_root)
+                .unwrap_or(&root)
+                .to_string_lossy()
+                .replace(['/', '\\'], ".");
+            let mut candidate = format!("{base_id}.{rel}");
+            let mut i = 2;
+            while used_project_ids.contains(&candidate) {
+                candidate = format!("{base_id}.{rel}.{i}");
+                i += 1;
+            }
+            id = candidate;
+        }
+        used_project_ids.insert(id.clone());
+
+        // Map manifest `name` (used by TaskRef: "#name:task") to this unique project id.
+        if let Some(name) = &manifest.name {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                project_id_by_name
+                    .entry(trimmed.to_string())
+                    .or_insert_with(|| id.clone());
+            }
+        }
+        projects.push(ProjectCtx {
+            root,
+            id,
+            manifest,
+            is_current,
+        });
+    }
+
+    // Index roots -> ids (used to scope relative dependencies by task.project_root)
+    let mut id_by_root: HashMap<PathBuf, String> = HashMap::new();
+    for p in &projects {
+        id_by_root.insert(p.root.clone(), p.id.clone());
+    }
+
+    let current_project_id = projects
+        .iter()
+        .find(|p| p.is_current)
+        .map(|p| p.id.clone())
+        .unwrap_or_else(|| compute_project_id(current_manifest, &current_root, module_root));
+
+    // Inject workspace setup tasks and resolve TaskRefs (hooks)
+    for p in &mut projects {
+        inject_workspace_setup_tasks(&mut p.manifest, &discovery, &p.id)?;
+        resolve_task_refs_in_manifest(&mut p.manifest, &discovery, &p.id, &project_id_by_name);
+    }
+
+    // Build global tasks keyed by FQDN
+    let mut global: HashMap<String, TaskDefinition> = HashMap::new();
+    for p in &projects {
+        let idx = TaskIndex::build(&p.manifest.tasks)?;
+        for entry in idx.list() {
+            let mut def = entry.definition.clone();
+            set_default_project_root(&mut def, &p.root);
+            normalize_definition_deps(&mut def, &id_by_root, &project_id_by_name, &p.id);
+            let fqdn = task_fqdn(&p.id, &entry.name);
+            if global.contains_key(&fqdn) {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Duplicate task FQDN detected: '{fqdn}'",
+                )));
+            }
+            global.insert(fqdn, def);
+        }
+    }
+
+    Ok((Tasks { tasks: global }, current_project_id))
 }
 
 #[cfg(test)]
@@ -1730,8 +2177,8 @@ env: {
         };
         let mut task_def = TaskDefinition::Single(Box::new(placeholder_task));
 
-        resolve_task_ref_in_definition("hook", &mut task_def, &discovery)
-            .expect("resolution should succeed");
+        let project_id_by_name: HashMap<String, String> = HashMap::new();
+        resolve_task_refs_in_definition(&mut task_def, &discovery, "proj", &project_id_by_name);
 
         let TaskDefinition::Single(resolved) = task_def else {
             panic!("expected single task");
@@ -1743,10 +2190,13 @@ env: {
             vec![
                 "dep-a".to_string(),
                 "dep-b".to_string(),
-                "placeholder".to_string()
+                "task:proj:placeholder".to_string()
             ]
         );
-        assert_eq!(resolved.project_root, Some(tmp.path().to_path_buf()));
+        assert_eq!(
+            resolved.project_root,
+            Some(fs::canonicalize(tmp.path()).unwrap())
+        );
     }
 
     #[test]

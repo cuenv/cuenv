@@ -1791,7 +1791,6 @@ mod tests {
                 package_manager: Some("bun".to_string()),
                 root: None,
                 hooks: None,
-                generators: None,
             },
         );
 
