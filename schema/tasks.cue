@@ -10,7 +10,7 @@ package schema
 #Tasks: #Task | #TaskGroup
 
 // Common fields shared between command-based and script-based tasks
-#_TaskCommon: {
+#_TaskCommon: close({
 	shell?: #Shell
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
@@ -54,7 +54,7 @@ package schema
 	// Allows tasks to accept positional and named arguments:
 	//   cuenv task import.youtube VIDEO_ID --quality 1080p
 	params?: #TaskParams
-}
+})
 
 // #Task represents a single executable task.
 // A task MUST have either 'command' or 'script' (but not both).
