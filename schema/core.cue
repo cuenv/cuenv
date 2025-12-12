@@ -36,14 +36,14 @@ package schema
 }
 
 // Reference a task from another env.cue project by its name property
-#TaskRef: {
+#TaskRef: close({
 	// Format: "#project-name:task-name" where project-name is the `name` field in env.cue
 	// Example: "#projen-generator:bun.install"
 	ref: =~"^#[a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+$"
-}
+})
 
 // Match tasks across workspace by metadata for discovery-based execution
-#TaskMatcher: {
+#TaskMatcher: close({
 	// Limit to specific workspaces (by name)
 	workspaces?: [...string]
 
@@ -58,20 +58,20 @@ package schema
 
 	// Run matched tasks in parallel (default: true)
 	parallel: bool | *true
-}
+})
 
 // Discovery-based hook step that expands a #TaskMatcher into tasks.
-#MatchHook: {
+#MatchHook: close({
 	// Optional stable name used for task naming/logging
 	name?: string
 	// Task matcher to select tasks across the workspace
 	match: #TaskMatcher
-}
+})
 
 // Pattern matcher for task arguments
-#ArgMatcher: {
+#ArgMatcher: close({
 	// Match if any arg contains this substring
 	contains?: string
 	// Match if any arg matches this regex pattern
 	matches?: string
-}
+})
