@@ -41,7 +41,7 @@ package schema
 #TaskRef: close({
 	// Format: "#project-name:task-name" where project-name is the `name` field in env.cue
 	// Example: "#projen-generator:bun.install"
-	ref: =~"^#[a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+$"
+	ref!: =~"^#[a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+$"
 })
 
 // Match tasks across workspace by metadata for discovery-based execution
@@ -67,7 +67,7 @@ package schema
 	// Optional stable name used for task naming/logging
 	name?: string
 	// Task matcher to select tasks across the workspace
-	match: #TaskMatcher
+	match!: #TaskMatcher
 })
 
 // Pattern matcher for task arguments
