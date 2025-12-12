@@ -18,42 +18,42 @@ package schema
 	#BaseInputs: [...string] | *["Cargo.toml", "Cargo.lock", "src"]
 
 	// #Build runs 'cargo build'
-	#Build: #Task & {
+	#Build: #Command & {
 		command: "cargo"
 		args: ["build", ...string]
 		inputs: #BaseInputs
 	}
 
 	// #Test runs 'cargo test'
-	#Test: #Task & {
+	#Test: #Command & {
 		command: "cargo"
 		args: ["test", ...string]
 		inputs: #BaseInputs
 	}
 
 	// #Clippy runs 'cargo clippy'
-	#Clippy: #Task & {
+	#Clippy: #Command & {
 		command: "cargo"
 		args: ["clippy", ...string]
 		inputs: #BaseInputs
 	}
 
 	// #Fmt runs 'cargo fmt'
-	#Fmt: #Task & {
+	#Fmt: #Command & {
 		command: "cargo"
 		args: ["fmt", ...string]
 		inputs: #BaseInputs
 	}
 
 	// #Check runs 'cargo check' (faster than build)
-	#Check: #Task & {
+	#Check: #Command & {
 		command: "cargo"
 		args: ["check", ...string]
 		inputs: #BaseInputs
 	}
 
 	// #Doc runs 'cargo doc'
-	#Doc: #Task & {
+	#Doc: #Command & {
 		command: "cargo"
 		args: ["doc", ...string]
 		inputs: #BaseInputs
