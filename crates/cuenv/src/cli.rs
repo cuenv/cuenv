@@ -683,7 +683,7 @@ pub enum ReleaseCommands {
         #[arg(long, help = "Show what would change without making changes")]
         dry_run: bool,
     },
-    #[command(about = "Publish packages in topological order (not yet implemented)")]
+    #[command(about = "Publish workspace packages to crates.io in dependency order")]
     Publish {
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
