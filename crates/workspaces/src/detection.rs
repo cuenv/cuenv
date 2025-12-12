@@ -161,6 +161,7 @@ pub fn detect_from_command(command: &str) -> Option<PackageManager> {
         "npm" | "npx" | "node" => Some(PackageManager::Npm),
         "bun" | "bunx" => Some(PackageManager::Bun),
         "pnpm" => Some(PackageManager::Pnpm),
+        "deno" => Some(PackageManager::Deno),
         "yarn" => {
             tracing::warn!(
                 "'yarn' command detected; defaulting to YarnClassic. For accurate version detection, use lockfile analysis via detect_yarn_version()."
@@ -229,6 +230,7 @@ fn find_lockfiles(root: &Path) -> Vec<(PackageManager, PathBuf)> {
         PackageManager::Pnpm,
         PackageManager::YarnClassic,
         PackageManager::Cargo,
+        PackageManager::Deno,
     ];
 
     for manager in candidates {
@@ -349,6 +351,7 @@ fn has_js_manager(detected_managers: &HashSet<PackageManager>) -> bool {
         || detected_managers.contains(&PackageManager::Pnpm)
         || detected_managers.contains(&PackageManager::YarnClassic)
         || detected_managers.contains(&PackageManager::YarnModern)
+        || detected_managers.contains(&PackageManager::Deno)
 }
 
 /// Validates that a workspace configuration file exists and is parseable.
@@ -375,8 +378,9 @@ fn validate_workspace_config(root: &Path, manager: PackageManager) -> Result<boo
         PackageManager::Npm
         | PackageManager::Bun
         | PackageManager::YarnClassic
-        | PackageManager::YarnModern => {
-            // Parse as JSON (package.json)
+        | PackageManager::YarnModern
+        | PackageManager::Deno => {
+            // Parse as JSON (package.json or deno.json)
             serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
                 Error::InvalidWorkspaceConfig {
                     path: config_path,
@@ -480,11 +484,12 @@ fn prioritize_managers(detections: Vec<(PackageManager, u8)>) -> Vec<PackageMana
 fn manager_priority(manager: PackageManager) -> u8 {
     match manager {
         PackageManager::Cargo => 0,
-        PackageManager::Bun => 1,
-        PackageManager::Pnpm => 2,
-        PackageManager::YarnModern => 3,
-        PackageManager::YarnClassic => 4,
-        PackageManager::Npm => 5,
+        PackageManager::Deno => 1,
+        PackageManager::Bun => 2,
+        PackageManager::Pnpm => 3,
+        PackageManager::YarnModern => 4,
+        PackageManager::YarnClassic => 5,
+        PackageManager::Npm => 6,
     }
 }
 
@@ -509,6 +514,7 @@ mod tests {
             PackageManager::YarnClassic => "# yarn lockfile v1\n",
             PackageManager::YarnModern => "__metadata:\n  version: 6\n",
             PackageManager::Cargo => "[root]\n",
+            PackageManager::Deno => r#"{"version": "3"}"#,
         };
         fs::write(&lockfile_path, content).expect("Failed to write lockfile");
         lockfile_path
@@ -526,6 +532,7 @@ mod tests {
             }
             PackageManager::Pnpm => "packages:\n  - 'packages/*'\n",
             PackageManager::Cargo => "[workspace]\nmembers = [\"crates/*\"]\n",
+            PackageManager::Deno => r#"{"name": "test", "workspace": ["packages/*"]}"#,
         };
         fs::write(&config_path, content).expect("Failed to write config");
         config_path
@@ -578,6 +585,7 @@ mod tests {
         assert_eq!(detect_from_command("bun"), Some(PackageManager::Bun));
         assert_eq!(detect_from_command("bunx"), Some(PackageManager::Bun));
         assert_eq!(detect_from_command("pnpm"), Some(PackageManager::Pnpm));
+        assert_eq!(detect_from_command("deno"), Some(PackageManager::Deno));
         assert_eq!(
             detect_from_command("yarn"),
             Some(PackageManager::YarnClassic)
@@ -998,7 +1006,8 @@ package@^1.0.0:
 
     #[test]
     fn test_manager_priority() {
-        assert!(manager_priority(PackageManager::Cargo) < manager_priority(PackageManager::Bun));
+        assert!(manager_priority(PackageManager::Cargo) < manager_priority(PackageManager::Deno));
+        assert!(manager_priority(PackageManager::Deno) < manager_priority(PackageManager::Bun));
         assert!(manager_priority(PackageManager::Bun) < manager_priority(PackageManager::Pnpm));
         assert!(
             manager_priority(PackageManager::Pnpm) < manager_priority(PackageManager::YarnModern)
