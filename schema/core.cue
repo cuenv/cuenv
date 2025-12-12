@@ -22,7 +22,7 @@ package schema
 
 #WorkspaceConfig: close({
 	enabled:          bool | *true
-	package_manager?: "npm" | "pnpm" | "yarn" | "yarn-classic" | "bun" | "cargo"
+	package_manager?: "npm" | "pnpm" | "yarn" | "yarn-classic" | "bun" | "cargo" | "deno"
 	root?:            string
 
 	// Workspace lifecycle hooks

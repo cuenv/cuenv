@@ -1271,7 +1271,8 @@ impl TaskExecutor {
                 PackageManager::Npm
                 | PackageManager::Bun
                 | PackageManager::YarnClassic
-                | PackageManager::YarnModern => Box::new(PackageJsonDiscovery),
+                | PackageManager::YarnModern
+                | PackageManager::Deno => Box::new(PackageJsonDiscovery),
                 PackageManager::Pnpm => Box::new(PnpmWorkspaceDiscovery),
                 PackageManager::Cargo => Box::new(CargoTomlDiscovery),
             };
@@ -1302,6 +1303,7 @@ impl TaskExecutor {
                 PackageManager::YarnClassic => Box::new(YarnClassicLockfileParser),
                 PackageManager::YarnModern => Box::new(YarnModernLockfileParser),
                 PackageManager::Cargo => Box::new(CargoLockfileParser),
+                PackageManager::Deno => Box::new(NpmLockfileParser), // Deno uses a similar JSON lockfile format
             };
 
             let entries = parser
@@ -1430,7 +1432,8 @@ impl TaskExecutor {
             | PackageManager::Bun
             | PackageManager::Pnpm
             | PackageManager::YarnClassic
-            | PackageManager::YarnModern => Box::new(NodeModulesMaterializer),
+            | PackageManager::YarnModern
+            | PackageManager::Deno => Box::new(NodeModulesMaterializer),
             PackageManager::Cargo => Box::new(CargoMaterializer),
         };
 
@@ -1456,6 +1459,7 @@ fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
             | PackageManager::YarnModern => package_json_has_workspaces(&current),
             PackageManager::Pnpm => current.join("pnpm-workspace.yaml").exists(),
             PackageManager::Cargo => cargo_toml_has_workspace(&current),
+            PackageManager::Deno => deno_json_has_workspace(&current),
         };
 
         if is_root {
@@ -1498,6 +1502,24 @@ fn cargo_toml_has_workspace(dir: &Path) -> bool {
     };
 
     content.contains("[workspace]")
+}
+
+fn deno_json_has_workspace(dir: &Path) -> bool {
+    let path = dir.join("deno.json");
+    let content = std::fs::read_to_string(&path);
+    let Ok(json) = content.and_then(|s| {
+        serde_json::from_str::<serde_json::Value>(&s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }) else {
+        return false;
+    };
+
+    // Deno uses "workspace" (not "workspaces") for workspace configuration
+    match json.get("workspace") {
+        Some(serde_json::Value::Array(arr)) => !arr.is_empty(),
+        Some(serde_json::Value::Object(_)) => true,
+        _ => false,
+    }
 }
 
 fn task_trace_enabled() -> bool {
