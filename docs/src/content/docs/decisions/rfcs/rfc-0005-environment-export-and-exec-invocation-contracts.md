@@ -104,9 +104,9 @@ Without a canonical contract:
 
 ## Related Artifacts
 
-| Artifact                                                                                                                 | Purpose                                                       |
-| ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| [crates/cuenv-cli/src/commands/env.rs](crates/cuenv-cli/src/commands/env.rs:6)                                           | Environment extraction and formatting logic.                  |
-| [crates/cuenv-cli/src/commands/exec.rs](crates/cuenv-cli/src/commands/exec.rs:10)                                        | Exec command environment application.                         |
-| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:238)                                     | Export integration post-hook execution.                       |
+| Artifact                                                                                                      | Purpose                                                       |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| [crates/cuenv-cli/src/commands/env.rs](crates/cuenv-cli/src/commands/env.rs:6)                                | Environment extraction and formatting logic.                  |
+| [crates/cuenv-cli/src/commands/exec.rs](crates/cuenv-cli/src/commands/exec.rs:10)                             | Exec command environment application.                         |
+| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:238)                          | Export integration post-hook execution.                       |
 | [adr-0004-environment-export-filtering-policy](/decisions/adrs/adr-0004-environment-export-filtering-policy/) | Ratified decision that enforces filtering rules defined here. |

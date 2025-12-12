@@ -99,9 +99,9 @@ Left undocumented, future changes risk fragmenting the user experience and break
 
 ## Related Artifacts
 
-| Artifact                                                                                                             | Purpose                                                                           |
-| -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:211)                                                       | Canonical definition of Clap command hierarchy.                                   |
-| [readme.md](readme.md:242)                                                                                           | Public CLI reference that must mirror the agreed structure.                       |
+| Artifact                                                                                                  | Purpose                                                                           |
+| --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:211)                                            | Canonical definition of Clap command hierarchy.                                   |
+| [readme.md](readme.md:242)                                                                                | Public CLI reference that must mirror the agreed structure.                       |
 | [adr-0003-task-graph-execution-strategy](/decisions/adrs/adr-0003-task-graph-execution-strategy/)         | Downstream ADR addressing execution semantics that depend on this command layout. |
 | [adr-0005-cli-error-taxonomy-and-exit-codes](/decisions/adrs/adr-0005-cli-error-taxonomy-and-exit-codes/) | Documents error handling expectations for commands defined here.                  |
