@@ -130,7 +130,7 @@ tasks: {
     )
     .unwrap();
 
-    // Another project with a generator task (matched by labels: ["projen"]).
+    // Another project with a task matched by labels: ["projen"].
     let gen_proj = root.join("gen-proj");
     fs::create_dir_all(&gen_proj).unwrap();
     fs::write(
@@ -199,7 +199,7 @@ tasks: {
 
 #[test]
 #[cfg(unix)]
-fn test_generators_run_before_injected_bun_install() {
+fn test_match_hooks_run_before_injected_bun_install() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
 
@@ -246,7 +246,7 @@ tasks: {
     )
     .unwrap();
 
-    // Another project with a generator task (matched by labels: ["projen"]).
+    // Another project with a task matched by labels: ["projen"].
     let gen_proj = root.join("gen-proj");
     fs::create_dir_all(&gen_proj).unwrap();
     fs::write(
@@ -327,7 +327,7 @@ tasks: {
         stdout, stderr
     );
 
-    // Ensure ordering includes the generator before bun.install.
+    // Ensure ordering includes the matched tasks before bun.install.
     // B-install -> B-types -> GEN -> A-bun-install -> A-dev
     let p_install = stdout
         .find("B-install")

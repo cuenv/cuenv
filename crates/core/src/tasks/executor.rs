@@ -1092,7 +1092,10 @@ impl TaskExecutor {
                                 join_set.abort_all();
                                 let message = format!(
                                     "Task graph execution halted.\n\n{}",
-                                    summarize_task_failure(&task_result, TASK_FAILURE_SNIPPET_LINES)
+                                    summarize_task_failure(
+                                        &task_result,
+                                        TASK_FAILURE_SNIPPET_LINES,
+                                    )
                                 );
                                 return Err(Error::configuration(message));
                             }
