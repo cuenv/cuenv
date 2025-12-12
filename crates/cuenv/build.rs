@@ -34,8 +34,7 @@ fn main() {
 
     // If files exist, generate full llms-full.txt
     if let (Some(llms_path), Some(schema_dir)) = (llms_path, schema_dir) {
-        let mut output =
-            fs::read_to_string(&llms_path).expect("Failed to read llms.txt");
+        let mut output = fs::read_to_string(&llms_path).expect("Failed to read llms.txt");
 
         output.push_str("\n## CUE Schema Reference\n");
 
