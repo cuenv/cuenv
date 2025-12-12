@@ -2,7 +2,9 @@ package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project
+
+name: "task-basic"
 
 env: {
 	NAME: "Jack O'Neill"

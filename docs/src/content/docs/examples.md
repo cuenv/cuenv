@@ -14,7 +14,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     // Basic string values
@@ -50,7 +52,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     NAME: "Developer"
@@ -97,7 +101,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     PROJECT: "my-app"
@@ -131,7 +137,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 tasks: {
     // Nested tasks - run with cuenv task database.migrate
@@ -180,7 +188,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     CUENV_TEST:   "loaded_successfully"
@@ -222,7 +232,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     NODE_ENV: "development" | "production" | *"development"
@@ -310,7 +322,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     RUST_LOG:       "info"
@@ -378,7 +392,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 // Reusable policies
 _databasePolicy: schema.#Policy & {
@@ -442,7 +458,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 // Shared environment for all services
 env: {
@@ -487,7 +505,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     SERVICE_NAME: "api"
@@ -540,7 +560,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     CI: "true"

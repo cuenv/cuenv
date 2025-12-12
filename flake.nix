@@ -126,7 +126,7 @@
               isInCueModDir = builtins.match ".*/cue\\.mod/.*" path != null || baseName == "cue.mod";
               isLlmsTxt = baseName == "llms.txt";
               isEnvCue = baseName == "env.cue";
-              
+
               # We must include the directories themselves so the filter recurses into them
               isDir = type == "directory";
               isAllowedDir = (isInSchemaDir || isInExamplesDir || isInCueModDir) && isDir;

@@ -11,6 +11,11 @@ Thumbs.db
 # direnv
 .direnv
 
+# Local caches (never commit)
+.cache/
+.cargo/.package-cache
+.cargo/registry/
+
 # pre-commit
 .pre-commit-config.yaml
 

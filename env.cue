@@ -5,11 +5,11 @@ import (
 	"github.com/cuenv/cuenv/schema"
 )
 
-schema.#Cuenv
+schema.#Project
 
 name: "cuenv"
 
-_ci: pipelines: [
+ci: pipelines: [
 	{
 		name: "ci"
 		tasks: ["check"]
