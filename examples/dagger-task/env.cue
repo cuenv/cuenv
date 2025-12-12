@@ -2,7 +2,9 @@ package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project
+
+name: "dagger-task"
 
 config: {
 	// Default Dagger backend for all tasks

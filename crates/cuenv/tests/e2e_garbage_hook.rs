@@ -14,6 +14,8 @@ fn test_hook_with_syntax_error_output() {
     let cue_content = r#"
 package cuenv
 
+name: "test"
+
 hooks: {
     onEnter: {
         bad_hook: {

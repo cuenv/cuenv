@@ -211,13 +211,13 @@ pub async fn execute_task(
         // global registry so execution matches the CLI-resolved definition.
         // (We avoid patching otherwise, because the global registry has normalized
         // dependsOn entries to FQDNs.)
-        if !task_args.is_empty() {
-            if let TaskDefinition::Single(t) = task_def {
-                let fqdn = task_fqdn(&current_project_id, display_task_name);
-                if let Some(TaskDefinition::Single(existing)) = global.tasks.get_mut(&fqdn) {
-                    existing.command = t.command.clone();
-                    existing.args = t.args.clone();
-                }
+        if !task_args.is_empty()
+            && let TaskDefinition::Single(t) = task_def
+        {
+            let fqdn = task_fqdn(&current_project_id, display_task_name);
+            if let Some(TaskDefinition::Single(existing)) = global.tasks.get_mut(&fqdn) {
+                existing.command.clone_from(&t.command);
+                existing.args.clone_from(&t.args);
             }
         }
 
@@ -1407,11 +1407,9 @@ fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> String {
 }
 
 fn compute_project_id(manifest: &Cuenv, project_root: &Path, module_root: &Path) -> String {
-    if let Some(name) = &manifest.name {
-        let trimmed = name.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
+    let trimmed = manifest.name.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
     }
 
     // Fallback: stable id derived from path relative to cue.mod root.
@@ -1480,10 +1478,10 @@ fn normalize_definition_deps(
         project_id_by_root: &HashMap<PathBuf, String>,
         fallback: &str,
     ) -> String {
-        if let Some(root) = &task.project_root {
-            if let Some(id) = project_id_by_root.get(root) {
-                return id.clone();
-            }
+        if let Some(root) = &task.project_root
+            && let Some(id) = project_id_by_root.get(root)
+        {
+            return id.clone();
         }
         fallback.to_string()
     }
@@ -1549,8 +1547,8 @@ fn resolve_task_refs_in_definition(
             match discovery.resolve_ref(&parsed_ref) {
                 Ok(matched) => {
                     let mut resolved = matched.task;
-                    let resolved_root = fs::canonicalize(&matched.project_root)
-                        .unwrap_or_else(|_| matched.project_root);
+                    let resolved_root =
+                        fs::canonicalize(&matched.project_root).unwrap_or(matched.project_root);
                     resolved.project_root = Some(resolved_root);
                     resolved.task_ref = None;
 
@@ -1640,7 +1638,7 @@ fn get_task_mut_by_path<'a>(
 
     match current {
         TaskDefinition::Single(task) => Some(task.as_mut()),
-        _ => None,
+        TaskDefinition::Group(_) => None,
     }
 }
 
@@ -1662,6 +1660,7 @@ fn get_task_mut_by_name_or_path<'a>(
     get_task_mut_by_path(tasks, &normalized)
 }
 
+#[allow(clippy::too_many_lines)]
 fn inject_workspace_setup_tasks(
     manifest: &mut Cuenv,
     discovery: &TaskDiscovery,
@@ -1670,13 +1669,9 @@ fn inject_workspace_setup_tasks(
     use cuenv_core::manifest::HookItem;
     use cuenv_core::tasks::TaskGroup;
 
-    let Some(workspaces) = &manifest.workspaces else {
-        return Ok(());
-    };
-
-    // Clone to avoid borrow issues
-    let workspaces = workspaces.clone();
-
+    // NOTE: This is long because it needs to translate workspace config + hook steps into
+    // concrete tasks while carefully avoiding dependency cycles.
+    #[allow(clippy::too_many_lines)]
     fn add_setup_dep_to_definition(
         task_name: &str,
         task_def: &mut TaskDefinition,
@@ -1708,19 +1703,26 @@ fn inject_workspace_setup_tasks(
             TaskDefinition::Group(group) => match group {
                 TaskGroup::Sequential(tasks) => {
                     for (i, sub_task) in tasks.iter_mut().enumerate() {
-                        let sub_name = format!("{}[{}]", task_name, i);
+                        let sub_name = format!("{task_name}[{i}]");
                         add_setup_dep_to_definition(&sub_name, sub_task, ws_name, setup_task_name);
                     }
                 }
                 TaskGroup::Parallel(group) => {
-                    for (name, sub_task) in group.tasks.iter_mut() {
-                        let sub_name = format!("{}.{}", task_name, name);
+                    for (name, sub_task) in &mut group.tasks {
+                        let sub_name = format!("{task_name}.{name}");
                         add_setup_dep_to_definition(&sub_name, sub_task, ws_name, setup_task_name);
                     }
                 }
             },
         }
     }
+
+    let Some(workspaces) = &manifest.workspaces else {
+        return Ok(());
+    };
+
+    // Clone to avoid borrow issues
+    let workspaces = workspaces.clone();
 
     for (ws_name, config) in &workspaces {
         if !config.enabled {
@@ -1786,8 +1788,7 @@ fn inject_workspace_setup_tasks(
                             .as_deref()
                             .map(str::trim)
                             .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| format!("match[{step_idx}]"));
+                            .map_or_else(|| format!("match[{step_idx}]"), ToString::to_string);
 
                         if matched_tasks.is_empty() {
                             tracing::info!(
@@ -1867,14 +1868,13 @@ fn inject_workspace_setup_tasks(
         }
 
         // Wire: hooks -> install
-        if !all_hook_task_names.is_empty() {
-            if let Some(install_task) =
+        if !all_hook_task_names.is_empty()
+            && let Some(install_task) =
                 get_task_mut_by_name_or_path(&mut manifest.tasks, &install_task_name)
-            {
-                for hook_name in &all_hook_task_names {
-                    if !install_task.depends_on.contains(hook_name) {
-                        install_task.depends_on.push(hook_name.clone());
-                    }
+        {
+            for hook_name in &all_hook_task_names {
+                if !install_task.depends_on.contains(hook_name) {
+                    install_task.depends_on.push(hook_name.clone());
                 }
             }
         }
@@ -1882,7 +1882,7 @@ fn inject_workspace_setup_tasks(
         // Ensure <ws>.setup exists
         if !manifest.tasks.contains_key(&setup_task_name) {
             let setup_task = cuenv_core::tasks::Task {
-                command: "".to_string(),
+                command: String::new(),
                 script: Some("true".to_string()),
                 hermetic: false,
                 depends_on: vec![install_task_name.clone()],
@@ -1895,12 +1895,20 @@ fn inject_workspace_setup_tasks(
         }
 
         // Wire: any task that uses this workspace -> <ws>.setup
-        for (task_name, task_def) in manifest.tasks.iter_mut() {
+        for (task_name, task_def) in &mut manifest.tasks {
             add_setup_dep_to_definition(task_name, task_def, ws_name, &setup_task_name);
         }
     }
 
     Ok(())
+}
+
+#[derive(Clone)]
+struct ProjectCtx {
+    root: PathBuf,
+    id: String,
+    manifest: Cuenv,
+    is_current: bool,
 }
 
 fn build_global_tasks(
@@ -1920,14 +1928,6 @@ fn build_global_tasks(
     discovery.discover().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
     })?;
-
-    #[derive(Clone)]
-    struct ProjectCtx {
-        root: PathBuf,
-        id: String,
-        manifest: Cuenv,
-        is_current: bool,
-    }
 
     let current_root = fs::canonicalize(current_project_root)
         .unwrap_or_else(|_| current_project_root.to_path_buf());
@@ -1968,13 +1968,11 @@ fn build_global_tasks(
         used_project_ids.insert(id.clone());
 
         // Map manifest `name` (used by TaskRef: "#name:task") to this unique project id.
-        if let Some(name) = &manifest.name {
-            let trimmed = name.trim();
-            if !trimmed.is_empty() {
-                project_id_by_name
-                    .entry(trimmed.to_string())
-                    .or_insert_with(|| id.clone());
-            }
+        let trimmed = manifest.name.trim();
+        if !trimmed.is_empty() {
+            project_id_by_name
+                .entry(trimmed.to_string())
+                .or_insert_with(|| id.clone());
         }
         projects.push(ProjectCtx {
             root,
@@ -1990,11 +1988,10 @@ fn build_global_tasks(
         id_by_root.insert(p.root.clone(), p.id.clone());
     }
 
-    let current_project_id = projects
-        .iter()
-        .find(|p| p.is_current)
-        .map(|p| p.id.clone())
-        .unwrap_or_else(|| compute_project_id(current_manifest, &current_root, module_root));
+    let current_project_id = projects.iter().find(|p| p.is_current).map_or_else(
+        || compute_project_id(current_manifest, &current_root, module_root),
+        |p| p.id.clone(),
+    );
 
     // Inject workspace setup tasks and resolve TaskRefs (hooks)
     for p in &mut projects {
@@ -2169,7 +2166,7 @@ env: {
         fs::write(tmp.path().join("env.cue"), "package test").unwrap();
 
         let mut manifest = Cuenv {
-            name: Some("proj".to_string()),
+            name: "proj".to_string(),
             ..Default::default()
         };
 

@@ -453,6 +453,7 @@ pub fn execute_release_publish(
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn create_test_workspace(temp: &TempDir) -> String {
@@ -634,38 +635,63 @@ version.workspace = true
 
     /// Helper function to initialize and configure a git repository for testing
     fn init_git_repo(path: &str) {
-        std::process::Command::new("git")
-            .args(["init"])
+        let out = Command::new("git")
+            .args(["init", "--ref-format=files"])
             .current_dir(path)
             .output()
             .unwrap();
+        assert!(
+            out.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
-        std::process::Command::new("git")
+        let out = Command::new("git")
             .args(["config", "user.name", "Test User"])
             .current_dir(path)
             .output()
             .unwrap();
+        assert!(
+            out.status.success(),
+            "git config user.name failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
-        std::process::Command::new("git")
+        let out = Command::new("git")
             .args(["config", "user.email", "test@example.com"])
             .current_dir(path)
             .output()
             .unwrap();
+        assert!(
+            out.status.success(),
+            "git config user.email failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     /// Helper function to create a git commit
     fn create_git_commit(path: &str, message: &str) {
-        std::process::Command::new("git")
+        let out = Command::new("git")
             .args(["add", "."])
             .current_dir(path)
             .output()
             .unwrap();
+        assert!(
+            out.status.success(),
+            "git add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
-        std::process::Command::new("git")
-            .args(["commit", "-m", message])
+        let out = Command::new("git")
+            .args(["commit", "--no-gpg-sign", "-m", message])
             .current_dir(path)
             .output()
             .unwrap();
+        assert!(
+            out.status.success(),
+            "git commit failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]

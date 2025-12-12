@@ -30,7 +30,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 config: {
     backend: {
@@ -228,7 +230,9 @@ package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project & {
+  name: "my-project"
+}
 
 env: {
     APP_NAME: "myapp"

@@ -2,7 +2,9 @@ package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project
+
+name: "test-fail"
 
 env: {
     SHOULD_NOT_LOAD: "this_should_not_be_set"

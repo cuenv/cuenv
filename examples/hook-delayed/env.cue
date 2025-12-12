@@ -2,7 +2,9 @@ package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Cuenv
+schema.#Project
+
+name: "hook-delayed"
 
 // Environment variables to be loaded after hooks complete
 env: {

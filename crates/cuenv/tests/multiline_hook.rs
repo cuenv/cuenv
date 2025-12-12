@@ -14,6 +14,8 @@ fn test_hook_multiline_export() {
     let cue_content = r#"
 package cuenv
 
+name: "test"
+
 hooks: {
     onEnter: {
         multiline_hook: {

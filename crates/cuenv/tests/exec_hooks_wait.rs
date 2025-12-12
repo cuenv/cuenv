@@ -13,6 +13,8 @@ fn test_exec_waits_for_hooks() {
     let cue_content = r#"
 package cuenv
 
+name: "test"
+
 hooks: {
     onEnter: {
         slow_hook: {

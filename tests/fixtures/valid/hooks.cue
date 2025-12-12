@@ -3,7 +3,8 @@ package cuenv
 import "github.com/cuenv/cuenv/schema"
 
 // Test various hook configurations
-schema.#Cuenv & {
+schema.#Project & {
+	name: "hooks-test"
 	hooks: {
 		// Hooks are maps with string keys
 		onEnter: {

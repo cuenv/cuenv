@@ -103,8 +103,9 @@ impl TaskDiscovery {
                         match self.load_project(path, eval_fn) {
                             Ok(project) => {
                                 // Build name index
-                                if let Some(name) = &project.manifest.name {
-                                    self.name_index.insert(name.clone(), project.clone());
+                                let name = project.manifest.name.trim();
+                                if !name.is_empty() {
+                                    self.name_index.insert(name.to_string(), project.clone());
                                 }
                                 self.projects.push(project);
                             }
@@ -161,8 +162,9 @@ impl TaskDiscovery {
         };
 
         // Build name index
-        if let Some(name) = &manifest.name {
-            self.name_index.insert(name.clone(), project.clone());
+        let name = manifest.name.trim();
+        if !name.is_empty() {
+            self.name_index.insert(name.to_string(), project.clone());
         }
         self.projects.push(project);
     }
@@ -217,7 +219,7 @@ impl TaskDiscovery {
             project_root: project.project_root.clone(),
             task_name,
             task,
-            project_name: project.manifest.name.clone(),
+            project_name: Some(project.manifest.name.clone()).filter(|s| !s.trim().is_empty()),
         })
     }
 
@@ -288,7 +290,8 @@ impl TaskDiscovery {
                     project_root: project.project_root.clone(),
                     task_name: entry.name.clone(),
                     task: task.clone(),
-                    project_name: project.manifest.name.clone(),
+                    project_name: Some(project.manifest.name.clone())
+                        .filter(|s| !s.trim().is_empty()),
                 });
             }
         }
@@ -512,7 +515,7 @@ mod tests {
             TaskDefinition::Single(Box::new(make_task())),
         );
 
-        let mut manifest = Cuenv::new();
+        let mut manifest = Cuenv::new("test");
         manifest.tasks.insert(
             "projen".into(),
             TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {

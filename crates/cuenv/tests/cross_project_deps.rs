@@ -24,6 +24,8 @@ fn write_proj_b(dir: &Path, version: &str) {
     // package detection relies on first package line
     let cue_b = r#"package projB
 
+name: "projB"
+
 env: {}
 
 tasks: {
@@ -44,6 +46,8 @@ fn write_proj_a(dir: &Path, mapping_from: &str, mapping_to: &str, external_proje
     fs::create_dir_all(&proja).unwrap();
     let cue_a = format!(
         r#"package projA
+
+name: "projA"
 
 env: {{}}
 
@@ -200,6 +204,8 @@ fn test_collision_duplicate_dest() {
     let proja = root.join("projA");
     fs::create_dir_all(&proja).unwrap();
     let cue_a = r#"package projA
+
+name: "projA"
 
 env: {}
 
