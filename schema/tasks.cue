@@ -57,16 +57,16 @@ package schema
 }
 
 // #Command is a task that executes a command
-#Command: {
+#Command: close({
 	#Task
 	command: string
-}
+})
 
 // #Script is a task that executes an inline script
-#Script: {
+#Script: close({
 	#Task
 	script: string
-}
+})
 
 // Task parameter definitions
 #TaskParams: {
