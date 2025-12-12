@@ -2,7 +2,7 @@ package schema
 
 // #Release defines the release management configuration for cuenv.
 // This enables native release workflows including versioning, changelogs, and publishing.
-#Release: {
+#Release: close({
 	// Git configuration for release management
 	git?: #ReleaseGit
 
@@ -11,10 +11,10 @@ package schema
 
 	// CHANGELOG generation configuration
 	changelog?: #ChangelogConfig
-}
+})
 
 // #ReleaseGit defines git-related release settings
-#ReleaseGit: {
+#ReleaseGit: close({
 	// Default branch for releases (e.g., "main", "master")
 	defaultBranch?: string | *"main"
 
@@ -29,10 +29,10 @@ package schema
 
 	// Whether to push tags to remote
 	pushTags?: bool | *true
-}
+})
 
 // #ReleasePackages defines package grouping for version management
-#ReleasePackages: {
+#ReleasePackages: close({
 	// Fixed groups: packages that share the same version (lockstep versioning)
 	// All packages in a group are bumped together with the highest bump level.
 	// Example: [["crates/cuenv-core", "crates/cuenv-cli"]]
@@ -45,10 +45,10 @@ package schema
 
 	// Independent packages: not part of any group, versioned independently
 	// This is implicit - packages not in fixed or linked are independent
-}
+})
 
 // #ChangelogConfig defines CHANGELOG generation settings
-#ChangelogConfig: {
+#ChangelogConfig: close({
 	// Path to the CHANGELOG file relative to project/package root
 	path?: string | *"CHANGELOG.md"
 
@@ -60,22 +60,22 @@ package schema
 
 	// Categories for organizing changelog entries
 	categories?: [...#ChangelogCategory]
-}
+})
 
 // #ChangelogCategory defines a category for changelog entries
-#ChangelogCategory: {
+#ChangelogCategory: close({
 	// Title for the category in the changelog
 	title: string
 
 	// Changeset types that belong to this category
 	types: [...#ChangesetType]
-}
+})
 
 // #ChangesetType defines the type of change in a changeset
 #ChangesetType: "major" | "minor" | "patch" | "none"
 
 // #Changeset represents a single changeset entry
-#Changeset: {
+#Changeset: close({
 	// Unique identifier for the changeset
 	id: string
 
@@ -87,13 +87,13 @@ package schema
 
 	// Optional longer description
 	description?: string
-}
+})
 
 // #PackageChange represents a version bump for a specific package
-#PackageChange: {
+#PackageChange: close({
 	// Package name or path
 	name: string
 
 	// Type of version bump
 	bump: #ChangesetType
-}
+})

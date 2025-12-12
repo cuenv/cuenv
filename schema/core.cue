@@ -1,39 +1,41 @@
 package schema
 
-#Base: {
-	config?: #Config
-	env?: #Env
+
+#Base: close({
+	config?:     #Config
+	env?:        #Env
 	workspaces?: #Workspaces
-}
+})
 
 #ProjectName: string & =~"^[a-zA-Z0-9._-]+$"
 
-#Project: #Base & {
-	name!: #ProjectName
-	hooks?: #Hooks
-	ci?: #CI
+#Project: close({
+	#Base
+	name!:    #ProjectName
+	hooks?:   #Hooks
+	ci?:      #CI
 	release?: #Release
 	tasks?: [string]: #Tasks
-}
+})
 
 #Workspaces: [string]: #WorkspaceConfig
 
-#WorkspaceConfig: {
-	enabled: bool | *true
+#WorkspaceConfig: close({
+	enabled:          bool | *true
 	package_manager?: "npm" | "pnpm" | "yarn" | "yarn-classic" | "bun" | "cargo"
-	root?: string
+	root?:            string
 
 	// Workspace lifecycle hooks
 	hooks?: #WorkspaceHooks
-}
+})
 
 // Workspace lifecycle hooks for pre/post install
-#WorkspaceHooks: {
+#WorkspaceHooks: close({
 	// Tasks or references to run before workspace install
 	beforeInstall?: [...(#Task | #TaskRef | #MatchHook)]
 	// Tasks or references to run after workspace install
 	afterInstall?: [...(#Task | #TaskRef | #MatchHook)]
-}
+})
 
 // Reference a task from another env.cue project by its name property
 #TaskRef: close({
