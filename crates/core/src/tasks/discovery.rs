@@ -10,7 +10,7 @@ use ignore::WalkBuilder;
 use regex::Regex;
 
 use crate::manifest::{ArgMatcher, Cuenv, TaskMatcher, TaskRef};
-use crate::tasks::Task;
+use crate::tasks::{Task, TaskIndex};
 
 /// A discovered project in the workspace
 #[derive(Debug, Clone)]
@@ -249,10 +249,14 @@ impl TaskDiscovery {
                 }
             }
 
-            // Check each task in the project
-            for (task_name, task_def) in &project.manifest.tasks {
-                // Only match single tasks, not groups
-                let Some(task) = task_def.as_single() else {
+            // Use the canonical TaskIndex to include tasks nested in parallel groups.
+            let index = TaskIndex::build(&project.manifest.tasks).map_err(|e| {
+                DiscoveryError::TaskIndexError(project.env_cue_path.clone(), e.to_string())
+            })?;
+
+            // Check each addressable single task in the project
+            for entry in index.list() {
+                let Some(task) = entry.definition.as_single() else {
                     continue;
                 };
 
@@ -282,7 +286,7 @@ impl TaskDiscovery {
 
                 matches.push(MatchedTask {
                     project_root: project.project_root.clone(),
-                    task_name: task_name.clone(),
+                    task_name: entry.name.clone(),
                     task: task.clone(),
                     project_name: project.manifest.name.clone(),
                 });
@@ -392,6 +396,9 @@ pub enum DiscoveryError {
     #[error("Invalid regex pattern '{0}': {1}")]
     InvalidRegex(String, String),
 
+    #[error("Failed to index tasks in {0}: {1}")]
+    TaskIndexError(PathBuf, String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -399,6 +406,9 @@ pub enum DiscoveryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::{ParallelGroup, TaskDefinition, TaskGroup};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
 
     #[test]
     fn test_task_ref_parse() {
@@ -480,5 +490,51 @@ mod tests {
         }];
         // Empty matcher should not match anything
         assert!(!matches_args(&args, &matchers));
+    }
+
+    #[test]
+    fn test_match_tasks_includes_parallel_group_children() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let make_task = || Task {
+            command: "echo".into(),
+            labels: vec!["projen".into()],
+            ..Default::default()
+        };
+
+        let mut parallel_tasks = HashMap::new();
+        parallel_tasks.insert(
+            "generate".into(),
+            TaskDefinition::Single(Box::new(make_task())),
+        );
+        parallel_tasks.insert(
+            "types".into(),
+            TaskDefinition::Single(Box::new(make_task())),
+        );
+
+        let mut manifest = Cuenv::new();
+        manifest.tasks.insert(
+            "projen".into(),
+            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
+                tasks: parallel_tasks,
+                depends_on: Vec::new(),
+            })),
+        );
+
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        let matcher = TaskMatcher {
+            workspaces: None,
+            labels: Some(vec!["projen".into()]),
+            command: None,
+            args: None,
+            parallel: true,
+        };
+
+        let matches = discovery.match_tasks(&matcher).unwrap();
+        let names: Vec<String> = matches.into_iter().map(|m| m.task_name).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"projen.generate".to_string()));
+        assert!(names.contains(&"projen.types".to_string()));
     }
 }

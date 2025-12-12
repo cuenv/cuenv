@@ -20,17 +20,14 @@ package schema
 
 	// Workspace lifecycle hooks
 	hooks?: #WorkspaceHooks
-
-	// Task matchers for discovery-based generators (e.g., projen)
-	generators?: [string]: #TaskMatcher
 }
 
 // Workspace lifecycle hooks for pre/post install
 #WorkspaceHooks: {
 	// Tasks or references to run before workspace install
-	beforeInstall?: [...(#Task | #TaskRef)]
+	beforeInstall?: [...(#Task | #TaskRef | #MatchHook)]
 	// Tasks or references to run after workspace install
-	afterInstall?: [...(#Task | #TaskRef)]
+	afterInstall?: [...(#Task | #TaskRef | #MatchHook)]
 }
 
 // Reference a task from another env.cue project by its name property
@@ -56,6 +53,14 @@ package schema
 
 	// Run matched tasks in parallel (default: true)
 	parallel: bool | *true
+}
+
+// Discovery-based hook step that expands a #TaskMatcher into tasks.
+#MatchHook: {
+	// Optional stable name used for task naming/logging
+	name?: string
+	// Task matcher to select tasks across the workspace
+	match: #TaskMatcher
 }
 
 // Pattern matcher for task arguments

@@ -1789,12 +1789,32 @@ fn inject_workspace_setup_tasks(
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| format!("match[{step_idx}]"));
 
-                        tracing::debug!(
-                            "Workspace '{}' beforeInstall matcher '{}' matched {} tasks",
-                            ws_name,
-                            step_name,
-                            matched_tasks.len()
-                        );
+                        if matched_tasks.is_empty() {
+                            tracing::info!(
+                                "Workspace '{}' beforeInstall matcher '{}' matched no tasks",
+                                ws_name,
+                                step_name
+                            );
+                        } else {
+                            let matched_display: Vec<String> = matched_tasks
+                                .iter()
+                                .map(|m| {
+                                    if let Some(project_name) = &m.project_name {
+                                        format!("{project_name}:{}", m.task_name)
+                                    } else {
+                                        format!("{}:{}", m.project_root.display(), m.task_name)
+                                    }
+                                })
+                                .collect();
+
+                            tracing::info!(
+                                "Workspace '{}' beforeInstall matcher '{}' matched {} task(s): {}",
+                                ws_name,
+                                step_name,
+                                matched_display.len(),
+                                matched_display.join(", ")
+                            );
+                        }
 
                         let mut step_task_names: Vec<String> = Vec::new();
                         let mut prev_in_step: Option<String> = None;
