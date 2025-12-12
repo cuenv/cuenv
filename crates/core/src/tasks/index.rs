@@ -283,6 +283,13 @@ fn canonicalize_definition(
 }
 
 fn canonicalize_task(task: &Task, path: &TaskPath) -> Result<Task> {
+    // Tasks resolved from TaskRef placeholders have their own dependency context (their
+    // deps are relative to the referenced task name, not the placeholder name). Avoid
+    // re-canonicalizing dependencies under the placeholder namespace.
+    if task.project_root.is_some() && task.task_ref.is_none() {
+        return Ok(task.clone());
+    }
+
     let mut clone = task.clone();
     let mut canonical_deps = Vec::new();
     for dep in &task.depends_on {

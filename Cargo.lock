@@ -719,7 +719,7 @@ dependencies = [
 
 [[package]]
 name = "cuengine"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "cc",
  "criterion",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -777,7 +777,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-ci"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-core"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-dagger"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -844,7 +844,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-events"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "chrono",
  "serde",
@@ -857,7 +857,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-release"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "chrono",
  "cuenv-core",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-workspaces"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "cargo-lock",
  "cargo_toml",
@@ -3940,7 +3940,7 @@ dependencies = [
 
 [[package]]
 name = "schema-validator"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "clap",
