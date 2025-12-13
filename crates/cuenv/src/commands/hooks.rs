@@ -733,6 +733,7 @@ mod tests {
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
             ignore: None,
+            owners: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -774,6 +775,7 @@ mod tests {
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
             ignore: None,
+            owners: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -795,6 +797,7 @@ mod tests {
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
             ignore: None,
+            owners: None,
         };
 
         let hooks = extract_hooks_from_config(&config);

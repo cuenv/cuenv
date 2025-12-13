@@ -10,6 +10,7 @@ use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
+use crate::owners::Owners;
 use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 
@@ -241,6 +242,10 @@ pub struct Project {
     /// CI configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CI>,
+
+    /// Code ownership configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owners: Option<Owners>,
 
     /// Tasks configuration
     #[serde(default)]
