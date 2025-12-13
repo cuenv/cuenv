@@ -33,7 +33,7 @@ fn generate_ignore_content(patterns: &[String]) -> String {
         String::new(),
     ];
     lines.extend(patterns.iter().cloned());
-    lines.join("\n")
+    format!("{}\n", lines.join("\n"))
 }
 
 /// Execute the sync command.
@@ -58,7 +58,9 @@ pub async fn execute_sync(path: &str, package: &str, dry_run: bool) -> Result<St
         Some(ignore) if !ignore.is_empty() => ignore,
         _ => {
             tracing::info!("No ignore patterns configured");
-            return Ok("No ignore patterns configured. Add an `ignore` field to your env.cue.".to_string());
+            return Ok(
+                "No ignore patterns configured. Add an `ignore` field to your env.cue.".to_string(),
+            );
         }
     };
 
@@ -92,7 +94,10 @@ pub async fn execute_sync(path: &str, package: &str, dry_run: bool) -> Result<St
                 operation: "write ignore file".to_string(),
             })?;
 
-            output_lines.push(format!("Generated {filename} ({} patterns)", patterns.len()));
+            output_lines.push(format!(
+                "Generated {filename} ({} patterns)",
+                patterns.len()
+            ));
         }
     }
 
@@ -151,6 +156,6 @@ mod tests {
         assert!(content.contains("# Source: env.cue"));
         // Should just have the header lines
         let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 2); // Header + source line (empty line is trimmed)
+        assert_eq!(lines.len(), 3); // Header + source line + empty line; content ends with trailing newline
     }
 }

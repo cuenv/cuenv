@@ -250,6 +250,7 @@ impl CommandExecutor {
         Self { event_sender }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn execute(&self, command: Command) -> Result<()> {
         match command {
             Command::Version { format } => self.execute_version(format).await,

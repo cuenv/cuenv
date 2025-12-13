@@ -202,6 +202,46 @@ cuenv ci --dry-run
 cuenv ci --generate github
 ```
 
+### `cuenv sync`
+
+Generate files from CUE configuration. Currently supports generating ignore files (.gitignore, .dockerignore, etc.) from the `ignore` field in your configuration.
+
+```bash
+cuenv sync [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `--dry-run`: Show what would be generated without creating files.
+
+**Example:**
+
+```bash
+# Generate ignore files
+cuenv sync
+
+# Preview what would be generated
+cuenv sync --dry-run
+
+# Sync from a specific directory
+cuenv sync --path ./project
+```
+
+**Configuration:**
+
+Add an `ignore` field to your `env.cue`:
+
+```cue
+ignore: {
+    git: ["node_modules/", ".env", "*.log"]
+    docker: ["node_modules/", ".git/", "target/"]
+}
+```
+
+This generates `.gitignore` and `.dockerignore` files with the specified patterns. Supported tools include: git, docker, npm, prettier, eslint, stylelint, vercel, nowignore. Custom tool names generate `.<tool>ignore` files.
+
 ### `cuenv tui`
 
 Start an interactive TUI dashboard for monitoring cuenv events.
