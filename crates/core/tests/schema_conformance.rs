@@ -173,6 +173,7 @@ fn test_round_trip_serialization() {
         tasks: HashMap::new(),
         name: "round-trip".to_string(),
         ignore: None,
+        owners: None,
     };
 
     // Serialize to JSON
