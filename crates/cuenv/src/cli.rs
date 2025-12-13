@@ -253,7 +253,7 @@ pub struct Cli {
     pub command: Option<Commands>,
 
     #[arg(
-        short = 'l',
+        short = 'L',
         long,
         global = true,
         help = "Set logging level",
@@ -316,6 +316,14 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
+        #[arg(
+            long = "label",
+            short = 'l',
+            action = clap::ArgAction::Append,
+            help = "Execute all tasks matching the given label (repeatable)",
+            value_name = "LABEL"
+        )]
+        labels: Vec<String>,
         #[arg(
             long = "output-format",
             help = "Output format (only used when listing tasks)",
@@ -751,6 +759,7 @@ impl Commands {
                 name,
                 path,
                 package,
+                labels,
                 output_format,
                 materialize_outputs,
                 show_cache_path,
@@ -761,6 +770,7 @@ impl Commands {
                 path,
                 package,
                 name,
+                labels,
                 environment,
                 format: output_format.to_string(),
                 materialize_outputs,
@@ -955,10 +965,10 @@ mod tests {
         assert!(matches!(cli.level, LogLevel::Error));
 
         // Test short form for a few cases
-        let cli_short = Cli::try_parse_from(["cuenv", "-l", "debug", "version"]).unwrap();
+        let cli_short = Cli::try_parse_from(["cuenv", "-L", "debug", "version"]).unwrap();
         assert!(matches!(cli_short.level, LogLevel::Debug));
 
-        let cli_short = Cli::try_parse_from(["cuenv", "-l", "error", "version"]).unwrap();
+        let cli_short = Cli::try_parse_from(["cuenv", "-L", "error", "version"]).unwrap();
         assert!(matches!(cli_short.level, LogLevel::Error));
     }
 
