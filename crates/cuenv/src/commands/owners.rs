@@ -30,6 +30,17 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
         ));
     }
 
+    // Validate rules have at least one owner
+    for (i, rule) in owners.rules.iter().enumerate() {
+        if rule.owners.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Rule {} (pattern '{}') has no owners defined. Each rule must have at least one owner.",
+                i + 1,
+                rule.pattern
+            )));
+        }
+    }
+
     // Generate CODEOWNERS content
     let content = owners.generate();
 
@@ -84,6 +95,17 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
         );
     }
 
+    // Validate rules have at least one owner
+    for (i, rule) in owners.rules.iter().enumerate() {
+        if rule.owners.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Rule {} (pattern '{}') has no owners defined. Each rule must have at least one owner.",
+                i + 1,
+                rule.pattern
+            )));
+        }
+    }
+
     // Generate expected CODEOWNERS content
     let expected_content = owners.generate();
 
@@ -105,11 +127,16 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
         operation: "read CODEOWNERS file".to_string(),
     })?;
 
-    // Compare (normalize line endings for cross-platform compatibility)
-    let normalized_current = current_content.replace("\r\n", "\n");
-    let normalized_expected = expected_content.replace("\r\n", "\n");
+    // Compare (normalize line endings and trailing whitespace for robust comparison)
+    let normalize = |s: &str| -> String {
+        s.replace("\r\n", "\n")
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
 
-    if normalized_current == normalized_expected {
+    if normalize(&current_content) == normalize(&expected_content) {
         Ok(format!(
             "CODEOWNERS file is in sync: {}",
             output_path.display()

@@ -135,46 +135,56 @@ impl Owners {
             output.push('\n');
         }
 
-        // Group rules by section
-        let mut current_section: Option<&str> = None;
-
+        // Group rules by section to ensure contiguous output even if input rules aren't sorted
+        use std::collections::BTreeMap;
+        let mut rules_by_section: BTreeMap<Option<&str>, Vec<&OwnerRule>> = BTreeMap::new();
         for rule in &self.rules {
-            // Handle section headers
-            if rule.section.as_deref() != current_section {
-                if current_section.is_some() {
-                    output.push('\n');
-                }
-                if let Some(ref section) = rule.section {
-                    // GitLab uses [Section] syntax for CODEOWNERS sections
-                    // GitHub and Bitbucket use # Section as comments
-                    match platform {
-                        Platform::Gitlab => {
-                            output.push('[');
-                            output.push_str(section);
-                            output.push_str("]\n");
-                        }
-                        Platform::Github | Platform::Bitbucket => {
-                            output.push_str("# ");
-                            output.push_str(section);
-                            output.push('\n');
-                        }
-                    }
-                }
-                current_section = rule.section.as_deref();
-            }
+            rules_by_section
+                .entry(rule.section.as_deref())
+                .or_default()
+                .push(rule);
+        }
 
-            // Add description as comment if provided
-            if let Some(ref description) = rule.description {
-                output.push_str("# ");
-                output.push_str(description);
+        let mut first_section = true;
+        for (section, rules) in rules_by_section {
+            if !first_section {
                 output.push('\n');
             }
+            first_section = false;
 
-            // Add the rule
-            output.push_str(&rule.pattern);
-            output.push(' ');
-            output.push_str(&rule.owners.join(" "));
-            output.push('\n');
+            // Write section header if present
+            if let Some(section_name) = section {
+                // GitLab uses [Section] syntax for CODEOWNERS sections
+                // GitHub and Bitbucket use # Section as comments
+                match platform {
+                    Platform::Gitlab => {
+                        output.push('[');
+                        output.push_str(section_name);
+                        output.push_str("]\n");
+                    }
+                    Platform::Github | Platform::Bitbucket => {
+                        output.push_str("# ");
+                        output.push_str(section_name);
+                        output.push('\n');
+                    }
+                }
+            }
+
+            // Write all rules in this section
+            for rule in rules {
+                // Add description as comment if provided
+                if let Some(ref description) = rule.description {
+                    output.push_str("# ");
+                    output.push_str(description);
+                    output.push('\n');
+                }
+
+                // Add the rule
+                output.push_str(&rule.pattern);
+                output.push(' ');
+                output.push_str(&rule.owners.join(" "));
+                output.push('\n');
+            }
         }
 
         output
@@ -326,5 +336,101 @@ mod tests {
         let content = owners.generate();
         assert!(content.contains("# Custom Header"));
         assert!(content.contains("# Line 2"));
+    }
+
+    #[test]
+    fn test_generate_gitlab_sections() {
+        let owners = Owners {
+            output: Some(OwnersOutput {
+                platform: Some(Platform::Gitlab),
+                path: None,
+                header: None,
+            }),
+            rules: vec![
+                OwnerRule {
+                    pattern: "*.rs".to_string(),
+                    owners: vec!["@backend".to_string()],
+                    section: Some("Backend".to_string()),
+                    description: None,
+                },
+                OwnerRule {
+                    pattern: "*.ts".to_string(),
+                    owners: vec!["@frontend".to_string()],
+                    section: Some("Frontend".to_string()),
+                    description: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let content = owners.generate();
+        // GitLab uses [Section] syntax
+        assert!(
+            content.contains("[Backend]"),
+            "GitLab should use [Section] syntax, got: {content}"
+        );
+        assert!(
+            content.contains("[Frontend]"),
+            "GitLab should use [Section] syntax, got: {content}"
+        );
+        // Should NOT use comment-style sections
+        assert!(
+            !content.contains("# Backend"),
+            "GitLab should NOT use # Section"
+        );
+        assert!(
+            !content.contains("# Frontend"),
+            "GitLab should NOT use # Section"
+        );
+    }
+
+    #[test]
+    fn test_generate_groups_rules_by_section() {
+        // Test that rules with same section are grouped together even if not contiguous in input
+        let owners = Owners {
+            rules: vec![
+                OwnerRule {
+                    pattern: "*.rs".to_string(),
+                    owners: vec!["@backend".to_string()],
+                    section: Some("Backend".to_string()),
+                    description: None,
+                },
+                OwnerRule {
+                    pattern: "*.ts".to_string(),
+                    owners: vec!["@frontend".to_string()],
+                    section: Some("Frontend".to_string()),
+                    description: None,
+                },
+                OwnerRule {
+                    pattern: "*.go".to_string(),
+                    owners: vec!["@backend".to_string()],
+                    section: Some("Backend".to_string()),
+                    description: None,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let content = owners.generate();
+        // Backend section should only appear once
+        let backend_count = content.matches("# Backend").count();
+        assert_eq!(
+            backend_count, 1,
+            "Backend section should appear exactly once, found {backend_count} times"
+        );
+        // Both backend rules should be together
+        let backend_idx = content.find("# Backend").unwrap();
+        let rs_idx = content.find("*.rs").unwrap();
+        let go_idx = content.find("*.go").unwrap();
+        let frontend_idx = content.find("# Frontend").unwrap();
+        // Both .rs and .go should come after Backend header and before Frontend header
+        assert!(
+            rs_idx > backend_idx && rs_idx < frontend_idx,
+            "*.rs should be in Backend section"
+        );
+        assert!(
+            go_idx > backend_idx && go_idx < frontend_idx,
+            "*.go should be in Backend section"
+        );
     }
 }
