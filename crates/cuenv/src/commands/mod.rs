@@ -29,6 +29,7 @@ pub mod ci_cmd {
                 &path_str,
                 "cuenv", // package
                 Some(task_name),
+                &[],      // labels
                 None,     // environment
                 "simple", // format
                 false,    // capture_output
@@ -162,6 +163,7 @@ pub enum Command {
         path: String,
         package: String,
         name: Option<String>,
+        labels: Vec<String>,
         environment: Option<String>,
         format: String,
         materialize_outputs: Option<String>,
@@ -260,6 +262,7 @@ impl CommandExecutor {
                 path,
                 package,
                 name,
+                labels,
                 environment,
                 format,
                 materialize_outputs,
@@ -272,6 +275,7 @@ impl CommandExecutor {
                     path,
                     package,
                     name,
+                    labels,
                     environment,
                     format,
                     materialize_outputs,
@@ -431,6 +435,7 @@ impl CommandExecutor {
         path: String,
         package: String,
         name: Option<String>,
+        labels: Vec<String>,
         environment: Option<String>,
         format: String,
         materialize_outputs: Option<String>,
@@ -450,6 +455,7 @@ impl CommandExecutor {
             &path,
             &package,
             name.as_deref(),
+            &labels,
             environment.as_deref(),
             &format,
             false,
