@@ -105,6 +105,7 @@ The command-line interface built with `clap`.
 - `cuenv exec -- <cmd>` - Run commands with environment
 - `cuenv shell init <shell>` - Generate shell integration
 - `cuenv allow|deny` - Security approval management
+- `cuenv sync` - Generate files from CUE configuration (e.g., ignore files)
 - `cuenv tui` - Interactive event dashboard
 - `cuenv changeset|release` - Release management
 - `cuenv version` - Version information

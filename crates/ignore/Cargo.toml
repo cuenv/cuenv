@@ -1,0 +1,23 @@
+[package]
+name = "cuenv-ignore"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "command-line-utilities"]
+readme = "../../readme.md"
+description = "Ignore file generation for cuenv - gitignore, dockerignore, and more"
+
+[lints]
+workspace = true
+
+[dependencies]
+gix = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
