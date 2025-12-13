@@ -18,7 +18,6 @@ ci: pipelines: [
 		name: "release"
 		tasks: [
 			"release.publish-cue",
-			"release.publish-crates",
 			"docs.deploy",
 		]
 	},
