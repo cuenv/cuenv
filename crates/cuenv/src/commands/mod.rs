@@ -401,7 +401,14 @@ impl CommandExecutor {
         }
 
         if run_codeowners {
-            match sync::execute_sync_codeowners(&path, &package, dry_run, check).await {
+            // Use optional version when running aggregate sync (no specific subcommand)
+            let is_aggregate_sync = subcommand.is_none();
+            let codeowners_result = if is_aggregate_sync {
+                sync::execute_sync_codeowners_optional(&path, &package, dry_run, check).await
+            } else {
+                sync::execute_sync_codeowners(&path, &package, dry_run, check).await
+            };
+            match codeowners_result {
                 Ok(output) => outputs.push(output),
                 Err(e) => {
                     outputs.push(format!("Codeowners sync error: {e}"));

@@ -148,6 +148,7 @@ pub async fn execute_sync_ignore(
 /// Execute the sync codeowners command.
 ///
 /// Reads the CUE configuration and generates CODEOWNERS file based on the `owners` field.
+/// When `allow_missing_config` is true, missing owners config will return a message instead of error.
 #[instrument(name = "sync_codeowners")]
 pub async fn execute_sync_codeowners(
     path: &str,
@@ -155,12 +156,50 @@ pub async fn execute_sync_codeowners(
     dry_run: bool,
     check: bool,
 ) -> Result<String> {
+    execute_sync_codeowners_inner(path, package, dry_run, check, false).await
+}
+
+/// Execute the sync codeowners command with option to allow missing config.
+pub async fn execute_sync_codeowners_optional(
+    path: &str,
+    package: &str,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    execute_sync_codeowners_inner(path, package, dry_run, check, true).await
+}
+
+/// Inner implementation that handles the allow_missing_config flag.
+async fn execute_sync_codeowners_inner(
+    path: &str,
+    package: &str,
+    dry_run: bool,
+    check: bool,
+    allow_missing_config: bool,
+) -> Result<String> {
     tracing::info!("Starting sync codeowners command");
 
-    if check {
+    let result = if check {
         owners::execute_owners_check(path, package).await
     } else {
         owners::execute_owners_sync(path, package, dry_run).await
+    };
+
+    // When called from aggregate sync (allow_missing_config=true), treat missing config as no-op
+    match result {
+        Ok(output) => Ok(output),
+        Err(cuenv_core::Error::Configuration { message, .. })
+            if allow_missing_config && message.contains("No 'owners' configuration") =>
+        {
+            Ok("No owners configuration found. Add an 'owners' section to your env.cue to enable CODEOWNERS sync.".to_string())
+        }
+        Err(cuenv_core::Error::Configuration { message, .. })
+            if allow_missing_config
+                && message.contains("No code ownership rules defined") =>
+        {
+            Ok("No code ownership rules defined.".to_string())
+        }
+        Err(e) => Err(e),
     }
 }
 

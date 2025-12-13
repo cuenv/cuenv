@@ -521,38 +521,6 @@ async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Execute sync command safely
-#[instrument(name = "cuenv_execute_sync_safe")]
-async fn execute_sync_command_safe(
-    path: String,
-    package: String,
-    dry_run: bool,
-    json_mode: bool,
-) -> Result<(), CliError> {
-    match commands::sync::execute_sync(&path, &package, dry_run).await {
-        Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "message": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                println!("{output}");
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Sync failed: {e}"),
-            "Check that your env.cue file is valid and contains an 'ignore' field",
-        )),
-    }
-}
-
 /// Execute version command safely
 #[instrument(name = "cuenv_execute_version_safe")]
 async fn execute_version_command_safe() -> Result<(), String> {
@@ -1331,7 +1299,14 @@ async fn execute_sync_command_safe(
     }
 
     if run_codeowners {
-        match commands::sync::execute_sync_codeowners(&path, &package, dry_run, check).await {
+        // Use optional version when running aggregate sync (no specific subcommand)
+        let is_aggregate_sync = subcommand.is_none();
+        let codeowners_result = if is_aggregate_sync {
+            commands::sync::execute_sync_codeowners_optional(&path, &package, dry_run, check).await
+        } else {
+            commands::sync::execute_sync_codeowners(&path, &package, dry_run, check).await
+        };
+        match codeowners_result {
             Ok(output) => outputs.push(output),
             Err(e) => {
                 outputs.push(format!("Codeowners sync error: {e}"));

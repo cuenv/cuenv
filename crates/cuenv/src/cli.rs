@@ -767,8 +767,6 @@ pub enum ReleaseCommands {
     },
 }
 
-
-
 impl Commands {
     /// Convert CLI commands to internal Command representation
     /// The environment parameter comes from the global CLI flag
