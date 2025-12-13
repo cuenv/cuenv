@@ -831,6 +831,74 @@ mod tests {
     }
 
     #[test]
+    fn test_task_ref_parse_empty_project() {
+        let task_ref = TaskRef {
+            ref_: "#:task".to_string(),
+        };
+
+        // Empty project name - should still parse but with empty string
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "");
+        assert_eq!(task, "task");
+    }
+
+    #[test]
+    fn test_task_ref_parse_empty_task() {
+        let task_ref = TaskRef {
+            ref_: "#project:".to_string(),
+        };
+
+        // Empty task name - should still parse but with empty string
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "project");
+        assert_eq!(task, "");
+    }
+
+    #[test]
+    fn test_task_ref_parse_multiple_colons() {
+        let task_ref = TaskRef {
+            ref_: "#project:task:extra".to_string(),
+        };
+
+        // Multiple colons - first split wins
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "project");
+        assert_eq!(task, "task:extra");
+    }
+
+    #[test]
+    fn test_task_ref_parse_unicode() {
+        let task_ref = TaskRef {
+            ref_: "#项目名:任务名".to_string(),
+        };
+
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "项目名");
+        assert_eq!(task, "任务名");
+    }
+
+    #[test]
+    fn test_task_ref_parse_special_characters() {
+        let task_ref = TaskRef {
+            ref_: "#my-project_v2:build.ci-test".to_string(),
+        };
+
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "my-project_v2");
+        assert_eq!(task, "build.ci-test");
+    }
+
+    #[test]
     fn test_hook_item_task_ref_deserialization() {
         let json = "{\"ref\": \"#other-project:build\"}";
         let hook_item: HookItem = serde_json::from_str(json).unwrap();
@@ -1000,10 +1068,7 @@ mod tests {
         }"#;
         let matcher: TaskMatcher = serde_json::from_str(json).unwrap();
 
-        assert_eq!(
-            matcher.workspaces,
-            Some(vec!["packages/lib".to_string()])
-        );
+        assert_eq!(matcher.workspaces, Some(vec!["packages/lib".to_string()]));
         assert_eq!(
             matcher.labels,
             Some(vec!["projen".to_string(), "codegen".to_string()])
