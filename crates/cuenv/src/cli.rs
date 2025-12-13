@@ -490,7 +490,23 @@ pub enum Commands {
 #[derive(Subcommand, Debug, Clone)]
 pub enum SyncCommands {
     #[command(about = "Generate ignore files (.gitignore, .dockerignore, etc.)")]
-    Ignore,
+    Ignore {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(long, help = "Show what would be generated without writing files")]
+        dry_run: bool,
+    },
 }
 
 /// Output format for status command
@@ -882,12 +898,33 @@ impl Commands {
                 path,
                 package,
                 dry_run,
-            } => Command::Sync {
-                subcommand,
-                path,
-                package,
-                dry_run,
-            },
+            } => {
+                // If subcommand has its own arguments, use them; otherwise use parent args
+                let (effective_subcommand, effective_path, effective_package, effective_dry_run) =
+                    match subcommand {
+                        Some(SyncCommands::Ignore {
+                            path: sub_path,
+                            package: sub_package,
+                            dry_run: sub_dry_run,
+                        }) => (
+                            Some(SyncCommands::Ignore {
+                                path: sub_path.clone(),
+                                package: sub_package.clone(),
+                                dry_run: sub_dry_run,
+                            }),
+                            sub_path,
+                            sub_package,
+                            sub_dry_run,
+                        ),
+                        None => (None, path, package, dry_run),
+                    };
+                Command::Sync {
+                    subcommand: effective_subcommand,
+                    path: effective_path,
+                    package: effective_package,
+                    dry_run: effective_dry_run,
+                }
+            }
         }
     }
 }

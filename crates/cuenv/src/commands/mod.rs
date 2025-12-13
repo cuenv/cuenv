@@ -373,7 +373,7 @@ impl CommandExecutor {
 
         // If no subcommand, run all sync operations (currently just ignore)
         // If specific subcommand, run only that operation
-        let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore));
+        let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
 
         let mut outputs = Vec::new();
 
