@@ -127,53 +127,21 @@ pub async fn execute_task(
         ));
     }
 
+    // Validate that labels are non-empty after normalization
+    let normalized_labels = normalize_labels(labels);
+    if !labels.is_empty() && normalized_labels.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "Labels cannot be empty or whitespace-only",
+        ));
+    }
+
     let display_task_name: String;
     let task_def: TaskDefinition;
     let all_tasks: Tasks;
     let task_graph_root_name: String;
 
-    if !labels.is_empty() {
-        let (mut tasks_in_scope, _current_project_id) = if let Some(module_root) = &cue_module_root
-        {
-            build_global_tasks(evaluator.clone(), module_root, &project_root, &manifest)?
-        } else {
-            (local_tasks.clone(), String::new())
-        };
-
-        let matching_tasks = find_tasks_with_labels(&tasks_in_scope, labels);
-
-        if matching_tasks.is_empty() {
-            return Err(cuenv_core::Error::configuration(format!(
-                "No tasks with labels {:?} were found in this scope",
-                labels
-            )));
-        }
-
-        display_task_name = format_label_root(labels);
-        let synthetic = Task {
-            script: Some("true".to_string()),
-            hermetic: false,
-            depends_on: matching_tasks,
-            project_root: Some(project_root.clone()),
-            description: Some(format!(
-                "Run all tasks matching labels: {}",
-                labels.join(", ")
-            )),
-            ..Default::default()
-        };
-
-        tasks_in_scope.tasks.insert(
-            display_task_name.clone(),
-            TaskDefinition::Single(Box::new(synthetic)),
-        );
-
-        task_def = tasks_in_scope
-            .get(&display_task_name)
-            .cloned()
-            .expect("synthetic task missing after insertion");
-        task_graph_root_name = display_task_name.clone();
-        all_tasks = tasks_in_scope;
-    } else {
+    if normalized_labels.is_empty() {
+        // Execute a named task
         let requested_task = task_name.unwrap();
         tracing::debug!("Looking for specific task: {}", requested_task);
 
@@ -288,6 +256,52 @@ pub async fn execute_task(
 
         all_tasks = global_tasks;
         task_graph_root_name = task_root_name;
+    } else {
+        // Execute tasks by label
+        let (mut tasks_in_scope, _current_project_id) =
+            if let Some(module_root) = &cue_module_root {
+                build_global_tasks(evaluator.clone(), module_root, &project_root, &manifest)
+                    .map_err(|e| {
+                        cuenv_core::Error::configuration(format!(
+                            "Failed to discover tasks for label execution: {e}"
+                        ))
+                    })?
+            } else {
+                (local_tasks.clone(), String::new())
+            };
+
+        let matching_tasks = find_tasks_with_labels(&tasks_in_scope, &normalized_labels);
+
+        if matching_tasks.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "No tasks with labels {normalized_labels:?} were found in this scope"
+            )));
+        }
+
+        display_task_name = format_label_root(&normalized_labels);
+        let synthetic = Task {
+            script: Some("true".to_string()),
+            hermetic: false,
+            depends_on: matching_tasks,
+            project_root: Some(project_root.clone()),
+            description: Some(format!(
+                "Run all tasks matching labels: {}",
+                normalized_labels.join(", ")
+            )),
+            ..Default::default()
+        };
+
+        tasks_in_scope.tasks.insert(
+            display_task_name.clone(),
+            TaskDefinition::Single(Box::new(synthetic)),
+        );
+
+        task_def = tasks_in_scope
+            .get(&display_task_name)
+            .cloned()
+            .expect("synthetic task missing after insertion");
+        task_graph_root_name = display_task_name.clone();
+        all_tasks = tasks_in_scope;
     }
 
     // Get environment with hook-generated vars merged in
@@ -561,10 +575,26 @@ fn format_task_results(
     output
 }
 
+/// Normalize a list of labels by sorting, deduplicating, and filtering empty strings.
+///
+/// This ensures consistent behavior across label matching and naming operations.
+fn normalize_labels(labels: &[String]) -> Vec<String> {
+    let mut normalized: Vec<String> = labels
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+/// Find all tasks that match ALL of the given labels (AND semantics).
+///
+/// Returns a sorted list of task FQDNs (or names) that have all required labels.
+/// Tasks must be `Single` tasks with labels that include every label in the input.
 fn find_tasks_with_labels(tasks: &Tasks, labels: &[String]) -> Vec<String> {
-    let mut required_labels: Vec<String> = labels.to_vec();
-    required_labels.sort();
-    required_labels.dedup();
+    let required_labels = normalize_labels(labels);
 
     let mut matching: Vec<String> = tasks
         .tasks
@@ -585,11 +615,13 @@ fn find_tasks_with_labels(tasks: &Tasks, labels: &[String]) -> Vec<String> {
     matching
 }
 
+/// Generate a deterministic synthetic task name for label-based execution.
+///
+/// The name uses a reserved prefix (`__cuenv_labels__`) to avoid collisions with
+/// user-defined task names. The labels are sorted and joined with `+` for stability.
 fn format_label_root(labels: &[String]) -> String {
-    let mut sorted = labels.to_vec();
-    sorted.sort();
-    sorted.dedup();
-    format!("__labels__{}", sorted.join("+"))
+    let sorted = normalize_labels(labels);
+    format!("__cuenv_labels__{}", sorted.join("+"))
 }
 
 fn find_git_root(start: &Path) -> Result<PathBuf> {
@@ -2765,5 +2797,157 @@ env: {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Unknown argument"));
         assert!(err.contains("--unknown"));
+    }
+
+    // ==================== Label-based execution tests ====================
+
+    #[test]
+    fn test_normalize_labels_basic() {
+        let labels = vec!["b".to_string(), "a".to_string(), "c".to_string()];
+        let normalized = normalize_labels(&labels);
+        assert_eq!(normalized, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_normalize_labels_deduplicates() {
+        let labels = vec!["test".to_string(), "build".to_string(), "test".to_string()];
+        let normalized = normalize_labels(&labels);
+        assert_eq!(normalized, vec!["build", "test"]);
+    }
+
+    #[test]
+    fn test_normalize_labels_filters_empty() {
+        let labels = vec![
+            "".to_string(),
+            "valid".to_string(),
+            "   ".to_string(),
+            "another".to_string(),
+        ];
+        let normalized = normalize_labels(&labels);
+        assert_eq!(normalized, vec!["another", "valid"]);
+    }
+
+    #[test]
+    fn test_normalize_labels_trims_whitespace() {
+        let labels = vec!["  test  ".to_string(), " build".to_string()];
+        let normalized = normalize_labels(&labels);
+        assert_eq!(normalized, vec!["build", "test"]);
+    }
+
+    #[test]
+    fn test_normalize_labels_all_empty_returns_empty() {
+        let labels = vec!["".to_string(), "   ".to_string()];
+        let normalized = normalize_labels(&labels);
+        assert!(normalized.is_empty());
+    }
+
+    #[test]
+    fn test_find_tasks_with_labels_single_label() {
+        let mut tasks = Tasks::new();
+
+        // Task with matching label
+        let task_with_label = Task {
+            command: "echo".to_string(),
+            labels: vec!["test".to_string()],
+            ..Default::default()
+        };
+        tasks.tasks.insert(
+            "task1".to_string(),
+            TaskDefinition::Single(Box::new(task_with_label)),
+        );
+
+        // Task without the label
+        let task_without_label = Task {
+            command: "echo".to_string(),
+            labels: vec!["build".to_string()],
+            ..Default::default()
+        };
+        tasks.tasks.insert(
+            "task2".to_string(),
+            TaskDefinition::Single(Box::new(task_without_label)),
+        );
+
+        let labels = vec!["test".to_string()];
+        let matching = find_tasks_with_labels(&tasks, &labels);
+        assert_eq!(matching, vec!["task1"]);
+    }
+
+    #[test]
+    fn test_find_tasks_with_labels_multiple_labels_and_behavior() {
+        let mut tasks = Tasks::new();
+
+        // Task with both labels
+        let task_both = Task {
+            command: "echo".to_string(),
+            labels: vec!["test".to_string(), "unit".to_string()],
+            ..Default::default()
+        };
+        tasks.tasks.insert(
+            "unit_tests".to_string(),
+            TaskDefinition::Single(Box::new(task_both)),
+        );
+
+        // Task with only one label
+        let task_one = Task {
+            command: "echo".to_string(),
+            labels: vec!["test".to_string()],
+            ..Default::default()
+        };
+        tasks.tasks.insert(
+            "e2e_tests".to_string(),
+            TaskDefinition::Single(Box::new(task_one)),
+        );
+
+        // Both labels required (AND semantics) - only task with both should match
+        let labels = vec!["test".to_string(), "unit".to_string()];
+        let matching = find_tasks_with_labels(&tasks, &labels);
+        assert_eq!(matching, vec!["unit_tests"]);
+    }
+
+    #[test]
+    fn test_find_tasks_with_labels_no_matches() {
+        let mut tasks = Tasks::new();
+
+        let task = Task {
+            command: "echo".to_string(),
+            labels: vec!["build".to_string()],
+            ..Default::default()
+        };
+        tasks
+            .tasks
+            .insert("task1".to_string(), TaskDefinition::Single(Box::new(task)));
+
+        let labels = vec!["nonexistent".to_string()];
+        let matching = find_tasks_with_labels(&tasks, &labels);
+        assert!(matching.is_empty());
+    }
+
+    #[test]
+    fn test_format_label_root_single_label() {
+        let labels = vec!["test".to_string()];
+        let name = format_label_root(&labels);
+        assert_eq!(name, "__cuenv_labels__test");
+    }
+
+    #[test]
+    fn test_format_label_root_multiple_labels_sorted() {
+        // Labels should be sorted in the output for determinism
+        let labels = vec!["zebra".to_string(), "alpha".to_string()];
+        let name = format_label_root(&labels);
+        assert_eq!(name, "__cuenv_labels__alpha+zebra");
+    }
+
+    #[test]
+    fn test_format_label_root_deduplicates() {
+        let labels = vec!["test".to_string(), "test".to_string()];
+        let name = format_label_root(&labels);
+        assert_eq!(name, "__cuenv_labels__test");
+    }
+
+    #[test]
+    fn test_format_label_root_filters_empty() {
+        let labels = vec!["".to_string(), "test".to_string(), "   ".to_string()];
+        let name = format_label_root(&labels);
+        assert_eq!(name, "__cuenv_labels__test");
     }
 }

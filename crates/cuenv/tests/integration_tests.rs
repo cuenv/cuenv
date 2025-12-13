@@ -121,7 +121,8 @@ fn test_version_command_with_json_flag() {
 
 #[test]
 fn test_version_command_short_level_flag() {
-    let result = run_cuenv_command(&["-l", "warn", "version"]);
+    // Note: -l was changed to -L to accommodate the new --label/-l flag for tasks
+    let result = run_cuenv_command(&["-L", "warn", "version"]);
 
     match result {
         Ok((stdout, _stderr, success)) => {
@@ -141,7 +142,8 @@ fn test_help_flag() {
         Ok((stdout, _stderr, _success)) => {
             // Help output should contain key information
             assert!(stdout.contains("cuenv") || stdout.contains("Usage"));
-            assert!(stdout.contains("--level") || stdout.contains("-l"));
+            // Note: Short flag changed from -l to -L for log level
+            assert!(stdout.contains("--level") || stdout.contains("-L"));
             assert!(stdout.contains("--json"));
             assert!(stdout.contains("version"));
         }
