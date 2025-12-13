@@ -4,8 +4,9 @@
 //! - `cuenv sync codeowners` - Sync CODEOWNERS file from CUE configuration
 //! - `cuenv sync codeowners --check` - Check CODEOWNERS file is in sync with CUE configuration
 
-use cuengine::{CueEvaluator, Cuenv};
+use cuengine::CueEvaluator;
 use cuenv_core::Result;
+use cuenv_core::manifest::Cuenv;
 use cuenv_core::owners::Owners;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -151,8 +152,12 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
 
 /// Load code ownership configuration from CUE.
 fn load_owners_config(root: &Path, package: &str) -> Result<Owners> {
-    let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv = evaluator.evaluate_typed(root, package)?;
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+    let manifest: Cuenv = evaluator
+        .evaluate_typed(root, package)
+        .map_err(super::convert_engine_error)?;
 
     manifest.owners.ok_or_else(|| {
         cuenv_core::Error::configuration(

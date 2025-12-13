@@ -1,58 +1,86 @@
-//! Code ownership configuration types
+//! Code ownership configuration types for cuenv manifests.
+//!
+//! This module provides serde-compatible types for deserializing CODEOWNERS
+//! configuration from CUE manifests. It wraps the `cuenv_codeowners` library
+//! which provides the actual generation logic.
 //!
 //! Based on schema/owners.cue
 
+use cuenv_codeowners::{Codeowners, CodeownersBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
 
-/// Platform for CODEOWNERS file generation
+// Re-export the library's Platform type for convenience, but also define our own
+// for serde/schemars compatibility in manifests.
+pub use cuenv_codeowners::Platform as LibPlatform;
+
+/// Platform for CODEOWNERS file generation.
+///
+/// This is the manifest-compatible version with serde/schemars derives.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
+    /// GitHub - uses `.github/CODEOWNERS`
     #[default]
     Github,
+    /// GitLab - uses `CODEOWNERS` with `[Section]` syntax
     Gitlab,
+    /// Bitbucket - uses `CODEOWNERS`
     Bitbucket,
 }
 
 impl Platform {
-    /// Get the default path for CODEOWNERS file on this platform
+    /// Get the default path for CODEOWNERS file on this platform.
+    #[must_use]
     pub fn default_path(&self) -> &'static str {
+        self.to_lib().default_path()
+    }
+
+    /// Convert to the library's Platform type.
+    #[must_use]
+    pub fn to_lib(self) -> LibPlatform {
         match self {
-            Platform::Github => ".github/CODEOWNERS",
-            Platform::Gitlab => "CODEOWNERS",
-            Platform::Bitbucket => "CODEOWNERS",
+            Self::Github => LibPlatform::Github,
+            Self::Gitlab => LibPlatform::Gitlab,
+            Self::Bitbucket => LibPlatform::Bitbucket,
+        }
+    }
+
+    /// Convert from the library's Platform type.
+    #[must_use]
+    pub fn from_lib(platform: LibPlatform) -> Self {
+        match platform {
+            LibPlatform::Github => Self::Github,
+            LibPlatform::Gitlab => Self::Gitlab,
+            LibPlatform::Bitbucket => Self::Bitbucket,
         }
     }
 }
 
 impl fmt::Display for Platform {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Platform::Github => write!(f, "github"),
-            Platform::Gitlab => write!(f, "gitlab"),
-            Platform::Bitbucket => write!(f, "bitbucket"),
-        }
+        write!(f, "{}", self.to_lib())
     }
 }
 
-/// Output configuration for CODEOWNERS file generation
+/// Output configuration for CODEOWNERS file generation.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 pub struct OwnersOutput {
-    /// Platform to generate CODEOWNERS for
+    /// Platform to generate CODEOWNERS for.
     pub platform: Option<Platform>,
 
-    /// Custom path for CODEOWNERS file (overrides platform default)
+    /// Custom path for CODEOWNERS file (overrides platform default).
     pub path: Option<String>,
 
-    /// Header comment to include at the top of the generated file
+    /// Header comment to include at the top of the generated file.
     pub header: Option<String>,
 }
 
 impl OwnersOutput {
-    /// Get the output path for the CODEOWNERS file
+    /// Get the output path for the CODEOWNERS file.
+    #[must_use]
     pub fn output_path(&self) -> &str {
         if let Some(ref path) = self.path {
             path
@@ -62,135 +90,110 @@ impl OwnersOutput {
     }
 }
 
-/// A single code ownership rule
+/// A single code ownership rule.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct OwnerRule {
-    /// File pattern (glob syntax) - same as CODEOWNERS format
+    /// File pattern (glob syntax) - same as CODEOWNERS format.
     pub pattern: String,
 
-    /// Owners for this pattern
+    /// Owners for this pattern.
     pub owners: Vec<String>,
 
-    /// Optional description for this rule (added as comment above the rule)
+    /// Optional description for this rule (added as comment above the rule).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 
-    /// Section name for grouping rules in the output file
+    /// Section name for grouping rules in the output file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
 }
 
-/// Code ownership configuration for a project
+/// Code ownership configuration for a project.
+///
+/// This type is designed for deserializing from CUE manifests. Use
+/// [`to_codeowners()`](Self::to_codeowners) to convert to the library type
+/// for generation.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Owners {
-    /// Output configuration for CODEOWNERS file generation
+    /// Output configuration for CODEOWNERS file generation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<OwnersOutput>,
 
-    /// Global default owners applied to all patterns without explicit owners
+    /// Global default owners applied to all patterns without explicit owners.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_owners: Option<Vec<String>>,
 
-    /// Code ownership rules - maps patterns to owners
+    /// Code ownership rules - maps patterns to owners.
     #[serde(default)]
     pub rules: Vec<OwnerRule>,
 }
 
 impl Owners {
-    /// Generate the CODEOWNERS file content
-    pub fn generate(&self) -> String {
-        let mut output = String::new();
-        let platform = self
-            .output
-            .as_ref()
-            .and_then(|o| o.platform)
-            .unwrap_or_default();
+    /// Convert to the library's [`Codeowners`] type for generation.
+    ///
+    /// This method converts the manifest configuration to the library type,
+    /// adding a default cuenv header if none is specified.
+    #[must_use]
+    pub fn to_codeowners(&self) -> Codeowners {
+        let mut builder = CodeownersBuilder::default();
 
-        // Add header if provided
-        if let Some(header) = self.output.as_ref().and_then(|o| o.header.as_ref()) {
-            for line in header.lines() {
-                output.push_str("# ");
-                output.push_str(line);
-                output.push('\n');
+        // Set platform and path from output config
+        if let Some(ref output) = self.output {
+            if let Some(platform) = output.platform {
+                builder = builder.platform(platform.to_lib());
             }
-            output.push('\n');
+            if let Some(ref path) = output.path {
+                builder = builder.path(path.clone());
+            }
+            if let Some(ref header) = output.header {
+                builder = builder.header(header.clone());
+            } else {
+                // Default cuenv header
+                builder = builder.header(
+                    "CODEOWNERS file - Generated by cuenv\n\
+                     Do not edit manually. Configure in env.cue and run `cuenv owners sync`",
+                );
+            }
         } else {
-            // Default header
-            output.push_str("# CODEOWNERS file - Generated by cuenv\n");
-            output.push_str(
-                "# Do not edit manually. Configure in env.cue and run `cuenv owners sync`\n",
+            // Default cuenv header when no output config
+            builder = builder.header(
+                "CODEOWNERS file - Generated by cuenv\n\
+                 Do not edit manually. Configure in env.cue and run `cuenv owners sync`",
             );
-            output.push('\n');
         }
 
-        // Add default owners if any
-        if let Some(ref default_owners) = self.default_owners
-            && !default_owners.is_empty()
-        {
-            output.push_str("# Default owners for all files\n");
-            output.push_str("* ");
-            output.push_str(&default_owners.join(" "));
-            output.push('\n');
-            output.push('\n');
+        // Set default owners
+        if let Some(ref default_owners) = self.default_owners {
+            builder = builder.default_owners(default_owners.clone());
         }
 
-        // Group rules by section to ensure contiguous output even if input rules aren't sorted
-        use std::collections::BTreeMap;
-        let mut rules_by_section: BTreeMap<Option<&str>, Vec<&OwnerRule>> = BTreeMap::new();
+        // Add rules
         for rule in &self.rules {
-            rules_by_section
-                .entry(rule.section.as_deref())
-                .or_default()
-                .push(rule);
+            let mut lib_rule = cuenv_codeowners::Rule::new(&rule.pattern, rule.owners.clone());
+            if let Some(ref description) = rule.description {
+                lib_rule = lib_rule.description(description.clone());
+            }
+            if let Some(ref section) = rule.section {
+                lib_rule = lib_rule.section(section.clone());
+            }
+            builder = builder.rule(lib_rule);
         }
 
-        let mut first_section = true;
-        for (section, rules) in rules_by_section {
-            if !first_section {
-                output.push('\n');
-            }
-            first_section = false;
-
-            // Write section header if present
-            if let Some(section_name) = section {
-                // GitLab uses [Section] syntax for CODEOWNERS sections
-                // GitHub and Bitbucket use # Section as comments
-                match platform {
-                    Platform::Gitlab => {
-                        output.push('[');
-                        output.push_str(section_name);
-                        output.push_str("]\n");
-                    }
-                    Platform::Github | Platform::Bitbucket => {
-                        output.push_str("# ");
-                        output.push_str(section_name);
-                        output.push('\n');
-                    }
-                }
-            }
-
-            // Write all rules in this section
-            for rule in rules {
-                // Add description as comment if provided
-                if let Some(ref description) = rule.description {
-                    output.push_str("# ");
-                    output.push_str(description);
-                    output.push('\n');
-                }
-
-                // Add the rule
-                output.push_str(&rule.pattern);
-                output.push(' ');
-                output.push_str(&rule.owners.join(" "));
-                output.push('\n');
-            }
-        }
-
-        output
+        builder.build()
     }
 
-    /// Get the output path for the CODEOWNERS file
+    /// Generate the CODEOWNERS file content.
+    ///
+    /// This is a convenience method that converts to [`Codeowners`] and
+    /// calls `generate()`.
+    #[must_use]
+    pub fn generate(&self) -> String {
+        self.to_codeowners().generate()
+    }
+
+    /// Get the output path for the CODEOWNERS file.
+    #[must_use]
     pub fn output_path(&self) -> &str {
         self.output
             .as_ref()
@@ -198,17 +201,12 @@ impl Owners {
             .unwrap_or_else(|| Platform::default().default_path())
     }
 
-    /// Detect platform from repository structure
+    /// Detect platform from repository structure.
+    ///
+    /// Delegates to the library's detection logic.
+    #[must_use]
     pub fn detect_platform(repo_root: &Path) -> Platform {
-        if repo_root.join(".github").is_dir() {
-            Platform::Github
-        } else if repo_root.join(".gitlab-ci.yml").exists() {
-            Platform::Gitlab
-        } else if repo_root.join("bitbucket-pipelines.yml").exists() {
-            Platform::Bitbucket
-        } else {
-            Platform::Github // Default to GitHub
-        }
+        Platform::from_lib(Codeowners::detect_platform(repo_root))
     }
 }
 

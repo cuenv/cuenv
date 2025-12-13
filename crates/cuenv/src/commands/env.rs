@@ -1,5 +1,6 @@
-use cuengine::{CueEvaluator, Cuenv};
+use cuengine::CueEvaluator;
 use cuenv_core::Result;
+use cuenv_core::manifest::Cuenv;
 use std::path::Path;
 use tracing::instrument;
 
@@ -8,14 +9,18 @@ pub async fn execute_env_list(path: &str, package: &str, format: &str) -> Result
     tracing::info!("Starting env list command");
 
     // Create CUE evaluator
-    let evaluator = CueEvaluator::builder().build()?;
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
 
     // Convert path string to Path
     let dir_path = Path::new(path);
 
     // Evaluate the CUE package
     tracing::debug!("Evaluating CUE package '{}' at path '{}'", package, path);
-    let manifest: Cuenv = evaluator.evaluate_typed(dir_path, package)?;
+    let manifest: Cuenv = evaluator
+        .evaluate_typed(dir_path, package)
+        .map_err(super::convert_engine_error)?;
 
     let environments: Vec<String> = manifest
         .env
@@ -53,14 +58,18 @@ pub async fn execute_env_print(
     tracing::info!("Starting env print command");
 
     // Create CUE evaluator
-    let evaluator = CueEvaluator::builder().build()?;
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
 
     // Convert path string to Path
     let dir_path = Path::new(path);
 
     // Evaluate the CUE package
     tracing::debug!("Evaluating CUE package '{}' at path '{}'", package, path);
-    let manifest: Cuenv = evaluator.evaluate_typed(dir_path, package)?;
+    let manifest: Cuenv = evaluator
+        .evaluate_typed(dir_path, package)
+        .map_err(super::convert_engine_error)?;
 
     // Extract the env field
     let env = manifest.env.ok_or_else(|| {

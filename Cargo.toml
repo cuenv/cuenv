@@ -11,6 +11,7 @@ members = [
     "crates/release",
     "crates/schema-validator",
     "crates/ignore",
+    "crates/codeowners",
 ]
 
 [workspace.package]
@@ -33,7 +34,9 @@ cuenv-workspaces = { path = "crates/workspaces", version = "0.14.0" }
 cuenv-ci = { path = "crates/ci", version = "0.14.0" }
 cuenv-release = { path = "crates/release", version = "0.14.0" }
 cuenv-ignore = { path = "crates/ignore", version = "0.14.0" }
+cuenv-codeowners = { path = "crates/codeowners", version = "0.14.0" }
 cuengine = { path = "crates/cuengine", version = "0.14.0" }
+schemars = "1.0.4"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
