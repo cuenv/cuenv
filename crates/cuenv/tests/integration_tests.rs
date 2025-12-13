@@ -506,7 +506,9 @@ fn test_sync_command_dry_run() {
             assert!(success, "Command should succeed");
             // Should show what would be created/updated
             assert!(
-                stdout.contains("Would create") || stdout.contains("Would update") || stdout.contains(".gitignore"),
+                stdout.contains("Would create")
+                    || stdout.contains("Would update")
+                    || stdout.contains(".gitignore"),
                 "Dry run should show what would be generated"
             );
         }
@@ -617,7 +619,9 @@ fn test_sync_ignore_subcommand_dry_run() {
             assert!(success, "Command should succeed");
             // Should show what would be created
             assert!(
-                stdout.contains("Would create") || stdout.contains("Would update") || stdout.contains(".gitignore"),
+                stdout.contains("Would create")
+                    || stdout.contains("Would update")
+                    || stdout.contains(".gitignore"),
                 "Dry run should show what would be generated"
             );
         }

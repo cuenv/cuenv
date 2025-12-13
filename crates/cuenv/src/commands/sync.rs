@@ -59,8 +59,8 @@ pub async fn execute_sync(path: &str, package: &str, dry_run: bool) -> Result<St
     }
 
     // Generate ignore files using the cuenv-ignore crate
-    let result = cuenv_ignore::generate_ignore_files(dir_path, configs, dry_run).map_err(|e| {
-        match e {
+    let result =
+        cuenv_ignore::generate_ignore_files(dir_path, configs, dry_run).map_err(|e| match e {
             cuenv_ignore::Error::NotInGitRepo => {
                 cuenv_core::Error::configuration("cuenv sync must be run within a Git repository")
             }
@@ -78,19 +78,30 @@ pub async fn execute_sync(path: &str, package: &str, dry_run: bool) -> Result<St
                 path: Some(dir_path.to_path_buf().into_boxed_path()),
                 operation: "sync ignore files".to_string(),
             },
-        }
-    })?;
+        })?;
 
     // Format output
     let mut output_lines = Vec::new();
 
     for file in &result.files {
         let status_str = match file.status {
-            FileStatus::Created => format!("Created {} ({} patterns)", file.filename, file.pattern_count),
-            FileStatus::Updated => format!("Updated {} ({} patterns)", file.filename, file.pattern_count),
+            FileStatus::Created => format!(
+                "Created {} ({} patterns)",
+                file.filename, file.pattern_count
+            ),
+            FileStatus::Updated => format!(
+                "Updated {} ({} patterns)",
+                file.filename, file.pattern_count
+            ),
             FileStatus::Unchanged => format!("Unchanged {}", file.filename),
-            FileStatus::WouldCreate => format!("Would create {} ({} patterns)", file.filename, file.pattern_count),
-            FileStatus::WouldUpdate => format!("Would update {} ({} patterns)", file.filename, file.pattern_count),
+            FileStatus::WouldCreate => format!(
+                "Would create {} ({} patterns)",
+                file.filename, file.pattern_count
+            ),
+            FileStatus::WouldUpdate => format!(
+                "Would update {} ({} patterns)",
+                file.filename, file.pattern_count
+            ),
         };
         output_lines.push(status_str);
     }

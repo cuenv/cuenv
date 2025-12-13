@@ -336,10 +336,7 @@ mod tests {
             get_ignore_filename("git", Some(".my-gitignore")),
             ".my-gitignore"
         );
-        assert_eq!(
-            get_ignore_filename("custom", Some(".special")),
-            ".special"
-        );
+        assert_eq!(get_ignore_filename("custom", Some(".special")), ".special");
     }
 
     #[test]
