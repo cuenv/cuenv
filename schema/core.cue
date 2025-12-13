@@ -38,6 +38,7 @@ package schema
 	hooks?:   #Hooks
 	ci?:      #CI
 	release?: #Release
+	owners?:  #Owners
 	tasks?: [string]: #Tasks
 	ignore?: #Ignore
 })

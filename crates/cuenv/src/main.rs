@@ -441,14 +441,19 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(())
         }
         Command::Sync {
-            subcommand: _,
+            subcommand,
             path,
             package,
             dry_run,
-        } => match execute_sync_command_safe(path, package, dry_run, json_mode).await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
+            check,
+        } => {
+            match execute_sync_command_safe(subcommand, path, package, dry_run, check, json_mode)
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -514,38 +519,6 @@ async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
 
     cuenv_events::emit_command_completed!("web", true, 0_u64);
     Ok(())
-}
-
-/// Execute sync command safely
-#[instrument(name = "cuenv_execute_sync_safe")]
-async fn execute_sync_command_safe(
-    path: String,
-    package: String,
-    dry_run: bool,
-    json_mode: bool,
-) -> Result<(), CliError> {
-    match commands::sync::execute_sync(&path, &package, dry_run).await {
-        Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "message": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                println!("{output}");
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Sync failed: {e}"),
-            "Check that your env.cue file is valid and contains an 'ignore' field",
-        )),
-    }
 }
 
 /// Execute version command safely
@@ -1294,6 +1267,77 @@ async fn execute_release_publish_safe(
             "Check that packages are ready for publishing",
         )),
     }
+}
+
+/// Execute sync command safely
+#[instrument(name = "cuenv_execute_sync_command_safe")]
+async fn execute_sync_command_safe(
+    subcommand: Option<crate::cli::SyncCommands>,
+    path: String,
+    package: String,
+    dry_run: bool,
+    check: bool,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    use crate::cli::SyncCommands;
+
+    // Determine which sync operations to run
+    let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
+    let run_codeowners = matches!(subcommand, None | Some(SyncCommands::Codeowners { .. }));
+
+    let mut outputs = Vec::new();
+    let mut had_error = false;
+
+    if run_ignore {
+        match commands::sync::execute_sync_ignore(&path, &package, dry_run, check).await {
+            Ok(output) => outputs.push(output),
+            Err(e) => {
+                outputs.push(format!("Ignore sync error: {e}"));
+                had_error = true;
+            }
+        }
+    }
+
+    if run_codeowners {
+        // Use optional version when running aggregate sync (no specific subcommand)
+        let is_aggregate_sync = subcommand.is_none();
+        let codeowners_result = if is_aggregate_sync {
+            commands::sync::execute_sync_codeowners_optional(&path, &package, dry_run, check).await
+        } else {
+            commands::sync::execute_sync_codeowners(&path, &package, dry_run, check).await
+        };
+        match codeowners_result {
+            Ok(output) => outputs.push(output),
+            Err(e) => {
+                outputs.push(format!("Codeowners sync error: {e}"));
+                had_error = true;
+            }
+        }
+    }
+
+    let combined_output = outputs.join("\n");
+
+    if had_error {
+        return Err(CliError::eval_with_help(
+            format!("Sync failed: {combined_output}"),
+            "Check that your env.cue file is valid and contains the appropriate configuration",
+        ));
+    }
+
+    if json_mode {
+        let envelope = OkEnvelope::new(serde_json::json!({
+            "message": combined_output
+        }));
+        match serde_json::to_string(&envelope) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                return Err(CliError::other(format!("JSON serialization failed: {e}")));
+            }
+        }
+    } else {
+        println!("{combined_output}");
+    }
+    Ok(())
 }
 
 // Note: These functions are currently unused but reserved for future async main implementation
