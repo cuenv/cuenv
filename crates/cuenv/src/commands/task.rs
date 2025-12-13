@@ -38,7 +38,15 @@ use uuid::Uuid;
 
 use super::export::get_environment_with_hooks;
 
-/// Execute a named task from the CUE configuration
+/// Execute a named task from the CUE configuration.
+///
+/// Tasks can be selected in two mutually exclusive ways:
+/// - By name: Provide `task_name` to execute a specific task
+/// - By labels: Provide `labels` to execute all tasks matching ALL given labels (AND semantics)
+///
+/// When using labels, the function discovers all projects in the CUE module scope,
+/// finds tasks matching the labels, creates a synthetic root task that depends on them,
+/// and executes via the DAG.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub async fn execute_task(
     path: &str,
@@ -279,6 +287,9 @@ pub async fn execute_task(
         }
 
         display_task_name = format_label_root(&normalized_labels);
+        // Create a synthetic aggregator task that depends on all label-matched tasks.
+        // The script is "true" (a shell no-op that always succeeds) because actual work
+        // is performed by the dependsOn tasks; this task just serves as the DAG root.
         let synthetic = Task {
             script: Some("true".to_string()),
             hermetic: false,
@@ -296,6 +307,7 @@ pub async fn execute_task(
             TaskDefinition::Single(Box::new(synthetic)),
         );
 
+        // Safety: We just inserted the synthetic task above, so it will always exist.
         task_def = tasks_in_scope
             .get(&display_task_name)
             .cloned()
