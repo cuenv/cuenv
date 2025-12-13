@@ -17,3 +17,9 @@ env: {
 	API_ENDPOINT: "\(BASE_URL)/v1"
 }
 
+// Ignore patterns for generated ignore files (cuenv sync)
+ignore: {
+	git:    ["node_modules/", ".env", "*.log", "target/"]
+	docker: ["node_modules/", ".git/", "target/", "*.md"]
+}
+

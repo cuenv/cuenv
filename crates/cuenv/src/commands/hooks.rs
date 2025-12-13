@@ -732,6 +732,7 @@ mod tests {
             ci: None,
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
+            ignore: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -772,6 +773,7 @@ mod tests {
             ci: None,
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
+            ignore: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -792,6 +794,7 @@ mod tests {
             ci: None,
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
+            ignore: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
