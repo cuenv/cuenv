@@ -169,7 +169,7 @@ pub async fn execute_sync_codeowners_optional(
     execute_sync_codeowners_inner(path, package, dry_run, check, true).await
 }
 
-/// Inner implementation that handles the allow_missing_config flag.
+/// Inner implementation that handles the `allow_missing_config` flag.
 async fn execute_sync_codeowners_inner(
     path: &str,
     package: &str,
