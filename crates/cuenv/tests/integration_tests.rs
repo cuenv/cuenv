@@ -5,6 +5,7 @@
 
 #![allow(clippy::print_stdout)]
 
+use std::fs;
 use std::process::Command;
 use std::str;
 
@@ -41,6 +42,68 @@ fn get_test_examples_path() -> String {
         .join("examples/env-basic")
         .to_string_lossy()
         .to_string()
+}
+
+/// Create a temporary directory with git initialized and CUE files for sync testing.
+/// This is needed because `cuenv sync` requires being inside a git repository.
+/// Returns a TempDir that will be cleaned up when dropped, and the path as a String.
+fn create_git_test_env() -> (tempfile::TempDir, String) {
+    let temp_dir = tempfile::tempdir().expect("Failed to create temp directory");
+    let temp_path = temp_dir.path();
+
+    // Initialize git repository
+    Command::new("git")
+        .args(["init"])
+        .current_dir(temp_path)
+        .output()
+        .expect("Failed to init git repo");
+
+    // Configure git user for the repo (required for some git operations)
+    Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(temp_path)
+        .output()
+        .expect("Failed to configure git email");
+
+    Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(temp_path)
+        .output()
+        .expect("Failed to configure git name");
+
+    // Create cue.mod directory and module.cue
+    let cue_mod_dir = temp_path.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).expect("Failed to create cue.mod directory");
+
+    fs::write(
+        cue_mod_dir.join("module.cue"),
+        r#"module: "test.example/sync"
+language: version: "v0.9.0"
+"#,
+    )
+    .expect("Failed to write module.cue");
+
+    // Create env.cue with ignore patterns (simplified, no imports)
+    fs::write(
+        temp_path.join("env.cue"),
+        r#"package cuenv
+
+name: "sync-test"
+
+env: {
+    TEST_VAR: "test_value"
+}
+
+ignore: {
+    git:    ["node_modules/", ".env", "*.log", "target/"]
+    docker: ["node_modules/", ".git/", "target/", "*.md"]
+}
+"#,
+    )
+    .expect("Failed to write env.cue");
+
+    let path_str = temp_path.to_string_lossy().to_string();
+    (temp_dir, path_str)
 }
 
 #[test]
@@ -424,13 +487,13 @@ fn test_env_print_command_unsupported_format() {
 
 #[test]
 fn test_sync_command_dry_run() {
-    let test_path = get_test_examples_path();
+    let (_temp_dir, test_path) = create_git_test_env();
     let result = run_cuenv_command(&[
         "sync",
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "cuenv",
         "--dry-run",
     ]);
 
@@ -453,13 +516,13 @@ fn test_sync_command_dry_run() {
 
 #[test]
 fn test_sync_command_dry_run_shows_pattern_count() {
-    let test_path = get_test_examples_path();
+    let (_temp_dir, test_path) = create_git_test_env();
     let result = run_cuenv_command(&[
         "sync",
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "cuenv",
         "--dry-run",
     ]);
 
@@ -494,7 +557,7 @@ fn test_sync_command_invalid_path() {
 
 #[test]
 fn test_sync_command_invalid_package() {
-    let test_path = get_test_examples_path();
+    let (_temp_dir, test_path) = create_git_test_env();
     let result = run_cuenv_command(&[
         "sync",
         "--path",
@@ -534,14 +597,14 @@ fn test_sync_command_help() {
 
 #[test]
 fn test_sync_ignore_subcommand_dry_run() {
-    let test_path = get_test_examples_path();
+    let (_temp_dir, test_path) = create_git_test_env();
     let result = run_cuenv_command(&[
         "sync",
         "ignore",
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "cuenv",
         "--dry-run",
     ]);
 
