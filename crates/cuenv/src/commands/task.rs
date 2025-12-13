@@ -2818,7 +2818,7 @@ env: {
     #[test]
     fn test_normalize_labels_filters_empty() {
         let labels = vec![
-            "".to_string(),
+            String::new(),
             "valid".to_string(),
             "   ".to_string(),
             "another".to_string(),
@@ -2836,7 +2836,7 @@ env: {
 
     #[test]
     fn test_normalize_labels_all_empty_returns_empty() {
-        let labels = vec!["".to_string(), "   ".to_string()];
+        let labels = vec![String::new(), "   ".to_string()];
         let normalized = normalize_labels(&labels);
         assert!(normalized.is_empty());
     }
@@ -2946,7 +2946,7 @@ env: {
 
     #[test]
     fn test_format_label_root_filters_empty() {
-        let labels = vec!["".to_string(), "test".to_string(), "   ".to_string()];
+        let labels = vec![String::new(), "test".to_string(), "   ".to_string()];
         let name = format_label_root(&labels);
         assert_eq!(name, "__cuenv_labels__test");
     }
