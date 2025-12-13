@@ -46,7 +46,7 @@ fn get_test_examples_path() -> String {
 
 /// Create a temporary directory with git initialized and CUE files for sync testing.
 /// This is needed because `cuenv sync` requires being inside a git repository.
-/// Returns a TempDir that will be cleaned up when dropped, and the path as a String.
+/// Returns a `TempDir` that will be cleaned up when dropped, and the path as a String.
 fn create_git_test_env() -> (tempfile::TempDir, String) {
     let temp_dir = tempfile::tempdir().expect("Failed to create temp directory");
     let temp_path = temp_dir.path();

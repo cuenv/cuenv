@@ -9,7 +9,7 @@ use cuenv_ignore::{FileStatus, IgnoreConfig};
 use std::path::Path;
 use tracing::instrument;
 
-/// Convert manifest ignore configuration to cuenv_ignore configs.
+/// Convert manifest ignore configuration to `cuenv_ignore` configs.
 fn convert_to_ignore_configs(manifest: &Cuenv) -> Vec<IgnoreConfig> {
     let Some(ignore) = &manifest.ignore else {
         return Vec::new();
