@@ -81,12 +81,18 @@ pub struct TaskRef {
 
 impl TaskRef {
     /// Parse the TaskRef into project name and task name
-    /// Returns None if the format is invalid
+    /// Returns None if the format is invalid or if project/task names are empty
     pub fn parse(&self) -> Option<(String, String)> {
         let ref_str = self.ref_.strip_prefix('#')?;
         let parts: Vec<&str> = ref_str.splitn(2, ':').collect();
         if parts.len() == 2 {
-            Some((parts[0].to_string(), parts[1].to_string()))
+            let project = parts[0];
+            let task = parts[1];
+            if !project.is_empty() && !task.is_empty() {
+                Some((project.to_string(), task.to_string()))
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -484,6 +490,7 @@ impl Project {
 mod tests {
     use super::*;
     use crate::tasks::{ParallelGroup, TaskIndex};
+    use crate::test_utils::create_test_hook;
 
     #[test]
     fn test_expand_cross_project_references() {
@@ -774,5 +781,625 @@ mod tests {
             !cuenv.tasks.contains_key("bun.install"),
             "Should not create bun.install when no task uses bun workspace"
         );
+    }
+
+    // ============================================================================
+    // HookItem and TaskRef Tests
+    // ============================================================================
+
+    #[test]
+    fn test_task_ref_parse_valid() {
+        let task_ref = TaskRef {
+            ref_: "#projen-generator:types".to_string(),
+        };
+
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "projen-generator");
+        assert_eq!(task, "types");
+    }
+
+    #[test]
+    fn test_task_ref_parse_with_dots() {
+        let task_ref = TaskRef {
+            ref_: "#my-project:bun.install".to_string(),
+        };
+
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "my-project");
+        assert_eq!(task, "bun.install");
+    }
+
+    #[test]
+    fn test_task_ref_parse_no_hash() {
+        let task_ref = TaskRef {
+            ref_: "project:task".to_string(),
+        };
+
+        // Without leading #, parse should fail
+        let parsed = task_ref.parse();
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn test_task_ref_parse_no_colon() {
+        let task_ref = TaskRef {
+            ref_: "#project-only".to_string(),
+        };
+
+        // Without colon separator, parse should fail
+        let parsed = task_ref.parse();
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn test_task_ref_parse_empty_project() {
+        let task_ref = TaskRef {
+            ref_: "#:task".to_string(),
+        };
+
+        // Empty project name should be rejected
+        assert!(task_ref.parse().is_none());
+    }
+
+    #[test]
+    fn test_task_ref_parse_empty_task() {
+        let task_ref = TaskRef {
+            ref_: "#project:".to_string(),
+        };
+
+        // Empty task name should be rejected
+        assert!(task_ref.parse().is_none());
+    }
+
+    #[test]
+    fn test_task_ref_parse_both_empty() {
+        let task_ref = TaskRef {
+            ref_: "#:".to_string(),
+        };
+
+        // Both empty should be rejected
+        assert!(task_ref.parse().is_none());
+    }
+
+    #[test]
+    fn test_task_ref_parse_multiple_colons() {
+        let task_ref = TaskRef {
+            ref_: "#project:task:extra".to_string(),
+        };
+
+        // Multiple colons - first split wins
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "project");
+        assert_eq!(task, "task:extra");
+    }
+
+    #[test]
+    fn test_task_ref_parse_unicode() {
+        let task_ref = TaskRef {
+            ref_: "#项目名:任务名".to_string(),
+        };
+
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "项目名");
+        assert_eq!(task, "任务名");
+    }
+
+    #[test]
+    fn test_task_ref_parse_special_characters() {
+        let task_ref = TaskRef {
+            ref_: "#my-project_v2:build.ci-test".to_string(),
+        };
+
+        let parsed = task_ref.parse();
+        assert!(parsed.is_some());
+        let (project, task) = parsed.unwrap();
+        assert_eq!(project, "my-project_v2");
+        assert_eq!(task, "build.ci-test");
+    }
+
+    #[test]
+    fn test_hook_item_task_ref_deserialization() {
+        let json = "{\"ref\": \"#other-project:build\"}";
+        let hook_item: HookItem = serde_json::from_str(json).unwrap();
+
+        match hook_item {
+            HookItem::TaskRef(task_ref) => {
+                assert_eq!(task_ref.ref_, "#other-project:build");
+                let (project, task) = task_ref.parse().unwrap();
+                assert_eq!(project, "other-project");
+                assert_eq!(task, "build");
+            }
+            _ => panic!("Expected HookItem::TaskRef"),
+        }
+    }
+
+    #[test]
+    fn test_hook_item_match_deserialization() {
+        let json = r#"{
+            "name": "projen",
+            "match": {
+                "labels": ["codegen", "projen"]
+            }
+        }"#;
+        let hook_item: HookItem = serde_json::from_str(json).unwrap();
+
+        match hook_item {
+            HookItem::Match(match_hook) => {
+                assert_eq!(match_hook.name, Some("projen".to_string()));
+                assert_eq!(
+                    match_hook.matcher.labels,
+                    Some(vec!["codegen".to_string(), "projen".to_string()])
+                );
+            }
+            _ => panic!("Expected HookItem::Match"),
+        }
+    }
+
+    #[test]
+    fn test_hook_item_match_with_parallel_false() {
+        let json = r#"{
+            "match": {
+                "labels": ["build"],
+                "parallel": false
+            }
+        }"#;
+        let hook_item: HookItem = serde_json::from_str(json).unwrap();
+
+        match hook_item {
+            HookItem::Match(match_hook) => {
+                assert!(match_hook.name.is_none());
+                assert!(!match_hook.matcher.parallel);
+            }
+            _ => panic!("Expected HookItem::Match"),
+        }
+    }
+
+    #[test]
+    fn test_hook_item_inline_task_deserialization() {
+        let json = r#"{
+            "command": "echo",
+            "args": ["hello"]
+        }"#;
+        let hook_item: HookItem = serde_json::from_str(json).unwrap();
+
+        match hook_item {
+            HookItem::Task(task) => {
+                assert_eq!(task.command, "echo");
+                assert_eq!(task.args, vec!["hello"]);
+            }
+            _ => panic!("Expected HookItem::Task"),
+        }
+    }
+
+    #[test]
+    fn test_workspace_hooks_before_install() {
+        let json = format!(
+            r#"{{
+            "beforeInstall": [
+                {{"ref": "{}"}},
+                {{"name": "codegen", "match": {{"labels": ["codegen"]}}}},
+                {{"command": "echo", "args": ["ready"]}}
+            ]
+        }}"#,
+            "#projen:types"
+        );
+        let hooks: WorkspaceHooks = serde_json::from_str(&json).unwrap();
+
+        let before_install = hooks.before_install.unwrap();
+        assert_eq!(before_install.len(), 3);
+
+        // First item: TaskRef
+        match &before_install[0] {
+            HookItem::TaskRef(task_ref) => {
+                assert_eq!(task_ref.ref_, "#projen:types");
+            }
+            _ => panic!("Expected TaskRef"),
+        }
+
+        // Second item: Match
+        match &before_install[1] {
+            HookItem::Match(match_hook) => {
+                assert_eq!(match_hook.name, Some("codegen".to_string()));
+            }
+            _ => panic!("Expected Match"),
+        }
+
+        // Third item: Inline Task
+        match &before_install[2] {
+            HookItem::Task(task) => {
+                assert_eq!(task.command, "echo");
+            }
+            _ => panic!("Expected Task"),
+        }
+    }
+
+    #[test]
+    fn test_workspace_hooks_after_install() {
+        let json = r#"{
+            "afterInstall": [
+                {"command": "prisma", "args": ["generate"]}
+            ]
+        }"#;
+        let hooks: WorkspaceHooks = serde_json::from_str(json).unwrap();
+
+        assert!(hooks.before_install.is_none());
+        let after_install = hooks.after_install.unwrap();
+        assert_eq!(after_install.len(), 1);
+
+        match &after_install[0] {
+            HookItem::Task(task) => {
+                assert_eq!(task.command, "prisma");
+                assert_eq!(task.args, vec!["generate"]);
+            }
+            _ => panic!("Expected Task"),
+        }
+    }
+
+    #[test]
+    fn test_workspace_config_with_hooks() {
+        let json = format!(
+            r#"{{
+            "enabled": true,
+            "hooks": {{
+                "beforeInstall": [
+                    {{"ref": "{}"}}
+                ]
+            }}
+        }}"#,
+            "#generator:types"
+        );
+        let config: WorkspaceConfig = serde_json::from_str(&json).unwrap();
+
+        assert!(config.enabled);
+        assert!(config.hooks.is_some());
+
+        let hooks = config.hooks.unwrap();
+        let before_install = hooks.before_install.unwrap();
+        assert_eq!(before_install.len(), 1);
+    }
+
+    #[test]
+    fn test_task_matcher_deserialization() {
+        let json = r#"{
+            "workspaces": ["packages/lib"],
+            "labels": ["projen", "codegen"],
+            "parallel": true
+        }"#;
+        let matcher: TaskMatcher = serde_json::from_str(json).unwrap();
+
+        assert_eq!(matcher.workspaces, Some(vec!["packages/lib".to_string()]));
+        assert_eq!(
+            matcher.labels,
+            Some(vec!["projen".to_string(), "codegen".to_string()])
+        );
+        assert!(matcher.parallel);
+    }
+
+    #[test]
+    fn test_task_matcher_defaults() {
+        let json = r#"{}"#;
+        let matcher: TaskMatcher = serde_json::from_str(json).unwrap();
+
+        assert!(matcher.workspaces.is_none());
+        assert!(matcher.labels.is_none());
+        assert!(matcher.command.is_none());
+        assert!(matcher.args.is_none());
+        assert!(matcher.parallel); // default true
+    }
+
+    #[test]
+    fn test_task_matcher_with_command() {
+        let json = r#"{
+            "command": "prisma",
+            "args": [{"contains": "generate"}]
+        }"#;
+        let matcher: TaskMatcher = serde_json::from_str(json).unwrap();
+
+        assert_eq!(matcher.command, Some("prisma".to_string()));
+        let args = matcher.args.unwrap();
+        assert_eq!(args.len(), 1);
+        assert_eq!(args[0].contains, Some("generate".to_string()));
+    }
+
+    // ============================================================================
+    // WorkspaceHooks with Cuenv Integration Tests
+    // ============================================================================
+
+    #[test]
+    fn test_cuenv_workspace_with_before_install_hooks() {
+        let json = format!(
+            r#"{{
+            "name": "test-project",
+            "workspaces": {{
+                "bun": {{
+                    "enabled": true,
+                    "hooks": {{
+                        "beforeInstall": [
+                            {{"ref": "{}"}},
+                            {{"command": "sh", "args": ["-c", "echo setup"]}}
+                        ]
+                    }}
+                }}
+            }},
+            "tasks": {{
+                "dev": {{
+                    "command": "bun",
+                    "args": ["run", "dev"],
+                    "workspaces": ["bun"]
+                }}
+            }}
+        }}"#,
+            "#generator:types"
+        );
+        let cuenv: Cuenv = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(cuenv.name, "test-project");
+        let workspaces = cuenv.workspaces.unwrap();
+        let bun_config = workspaces.get("bun").unwrap();
+
+        assert!(bun_config.enabled);
+        let hooks = bun_config.hooks.as_ref().unwrap();
+        let before_install = hooks.before_install.as_ref().unwrap();
+        assert_eq!(before_install.len(), 2);
+    }
+
+    #[test]
+    fn test_cuenv_multiple_workspaces_with_hooks() {
+        let json = format!(
+            r#"{{
+            "name": "multi-workspace",
+            "workspaces": {{
+                "bun": {{
+                    "enabled": true,
+                    "hooks": {{
+                        "beforeInstall": [{{"ref": "{}"}}]
+                    }}
+                }},
+                "cargo": {{
+                    "enabled": true,
+                    "hooks": {{
+                        "beforeInstall": [{{"command": "cargo", "args": ["generate"]}}]
+                    }}
+                }}
+            }},
+            "tasks": {{}}
+        }}"#,
+            "#projen:types"
+        );
+        let cuenv: Cuenv = serde_json::from_str(&json).unwrap();
+
+        let workspaces = cuenv.workspaces.unwrap();
+        assert!(workspaces.contains_key("bun"));
+        assert!(workspaces.contains_key("cargo"));
+
+        // Verify bun hooks
+        let bun_hooks = workspaces["bun"].hooks.as_ref().unwrap();
+        assert!(bun_hooks.before_install.is_some());
+
+        // Verify cargo hooks
+        let cargo_hooks = workspaces["cargo"].hooks.as_ref().unwrap();
+        assert!(cargo_hooks.before_install.is_some());
+    }
+
+    // ============================================================================
+    // Cross-Project Reference Expansion Tests
+    // ============================================================================
+
+    #[test]
+    fn test_expand_multiple_cross_project_references() {
+        let task = Task {
+            inputs: vec![
+                Input::Path("#projA:build:dist/lib.js".to_string()),
+                Input::Path("#projB:compile:out/types.d.ts".to_string()),
+                Input::Path("src/**/*.ts".to_string()), // Local path
+            ],
+            ..Default::default()
+        };
+
+        let mut cuenv = Cuenv::new("test");
+        cuenv
+            .tasks
+            .insert("bundle".into(), TaskDefinition::Single(Box::new(task)));
+
+        cuenv.expand_cross_project_references();
+
+        let task_def = cuenv.tasks.get("bundle").unwrap();
+        let task = task_def.as_single().unwrap();
+
+        // Should have 3 inputs (2 project refs + 1 local)
+        assert_eq!(task.inputs.len(), 3);
+
+        // Should have 2 implicit dependencies
+        assert_eq!(task.depends_on.len(), 2);
+        assert!(task.depends_on.contains(&"#projA:build".to_string()));
+        assert!(task.depends_on.contains(&"#projB:compile".to_string()));
+    }
+
+    #[test]
+    fn test_expand_cross_project_in_task_group() {
+        let task1 = Task {
+            command: "step1".to_string(),
+            inputs: vec![Input::Path("#projA:build:dist/lib.js".to_string())],
+            ..Default::default()
+        };
+
+        let task2 = Task {
+            command: "step2".to_string(),
+            inputs: vec![Input::Path("#projB:compile:out/types.d.ts".to_string())],
+            ..Default::default()
+        };
+
+        let mut cuenv = Cuenv::new("test");
+        cuenv.tasks.insert(
+            "pipeline".into(),
+            TaskDefinition::Group(TaskGroup::Sequential(vec![
+                TaskDefinition::Single(Box::new(task1)),
+                TaskDefinition::Single(Box::new(task2)),
+            ])),
+        );
+
+        cuenv.expand_cross_project_references();
+
+        // Verify expansion happened in both tasks
+        match cuenv.tasks.get("pipeline").unwrap() {
+            TaskDefinition::Group(TaskGroup::Sequential(tasks)) => {
+                match &tasks[0] {
+                    TaskDefinition::Single(task) => {
+                        assert!(task.depends_on.contains(&"#projA:build".to_string()));
+                    }
+                    _ => panic!("Expected single task"),
+                }
+                match &tasks[1] {
+                    TaskDefinition::Single(task) => {
+                        assert!(task.depends_on.contains(&"#projB:compile".to_string()));
+                    }
+                    _ => panic!("Expected single task"),
+                }
+            }
+            _ => panic!("Expected sequential group"),
+        }
+    }
+
+    #[test]
+    fn test_expand_cross_project_in_parallel_group() {
+        let task1 = Task {
+            command: "taskA".to_string(),
+            inputs: vec![Input::Path("#projA:build:lib.js".to_string())],
+            ..Default::default()
+        };
+
+        let task2 = Task {
+            command: "taskB".to_string(),
+            inputs: vec![Input::Path("#projB:build:types.d.ts".to_string())],
+            ..Default::default()
+        };
+
+        let mut parallel_tasks = HashMap::new();
+        parallel_tasks.insert("a".to_string(), TaskDefinition::Single(Box::new(task1)));
+        parallel_tasks.insert("b".to_string(), TaskDefinition::Single(Box::new(task2)));
+
+        let mut cuenv = Cuenv::new("test");
+        cuenv.tasks.insert(
+            "parallel".into(),
+            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
+                tasks: parallel_tasks,
+                depends_on: vec![],
+            })),
+        );
+
+        cuenv.expand_cross_project_references();
+
+        // Verify expansion happened in both parallel tasks
+        match cuenv.tasks.get("parallel").unwrap() {
+            TaskDefinition::Group(TaskGroup::Parallel(group)) => {
+                match group.tasks.get("a").unwrap() {
+                    TaskDefinition::Single(task) => {
+                        assert!(task.depends_on.contains(&"#projA:build".to_string()));
+                    }
+                    _ => panic!("Expected single task"),
+                }
+                match group.tasks.get("b").unwrap() {
+                    TaskDefinition::Single(task) => {
+                        assert!(task.depends_on.contains(&"#projB:build".to_string()));
+                    }
+                    _ => panic!("Expected single task"),
+                }
+            }
+            _ => panic!("Expected parallel group"),
+        }
+    }
+
+    #[test]
+    fn test_no_duplicate_implicit_dependencies() {
+        // Task already has the dependency explicitly
+        let task = Task {
+            depends_on: vec!["#myproj:build".to_string()],
+            inputs: vec![Input::Path("#myproj:build:dist/app.js".to_string())],
+            ..Default::default()
+        };
+
+        let mut cuenv = Cuenv::new("test");
+        cuenv
+            .tasks
+            .insert("deploy".into(), TaskDefinition::Single(Box::new(task)));
+
+        cuenv.expand_cross_project_references();
+
+        let task_def = cuenv.tasks.get("deploy").unwrap();
+        let task = task_def.as_single().unwrap();
+
+        // Should not duplicate the dependency
+        assert_eq!(task.depends_on.len(), 1);
+        assert_eq!(task.depends_on[0], "#myproj:build");
+    }
+
+    // ============================================================================
+    // Project Hooks (onEnter, onExit) Tests
+    // ============================================================================
+
+    #[test]
+    fn test_on_enter_hooks_ordering() {
+        let mut on_enter = HashMap::new();
+        on_enter.insert("hook_c".to_string(), create_test_hook(300, "echo c"));
+        on_enter.insert("hook_a".to_string(), create_test_hook(100, "echo a"));
+        on_enter.insert("hook_b".to_string(), create_test_hook(200, "echo b"));
+
+        let mut cuenv = Cuenv::new("test");
+        cuenv.hooks = Some(Hooks {
+            on_enter: Some(on_enter),
+            on_exit: None,
+        });
+
+        let hooks = cuenv.on_enter_hooks();
+        assert_eq!(hooks.len(), 3);
+
+        // Should be sorted by order
+        assert_eq!(hooks[0].order, 100);
+        assert_eq!(hooks[1].order, 200);
+        assert_eq!(hooks[2].order, 300);
+    }
+
+    #[test]
+    fn test_on_enter_hooks_same_order_sort_by_name() {
+        let mut on_enter = HashMap::new();
+        on_enter.insert("z_hook".to_string(), create_test_hook(100, "echo z"));
+        on_enter.insert("a_hook".to_string(), create_test_hook(100, "echo a"));
+
+        let cuenv = Cuenv {
+            name: "test".to_string(),
+            hooks: Some(Hooks {
+                on_enter: Some(on_enter),
+                on_exit: None,
+            }),
+            ..Default::default()
+        };
+
+        let hooks = cuenv.on_enter_hooks();
+        assert_eq!(hooks.len(), 2);
+
+        // Same order, should be sorted by name
+        assert_eq!(hooks[0].command, "echo a");
+        assert_eq!(hooks[1].command, "echo z");
+    }
+
+    #[test]
+    fn test_empty_hooks() {
+        let cuenv = Cuenv::new("test");
+
+        let on_enter = cuenv.on_enter_hooks();
+        let on_exit = cuenv.on_exit_hooks();
+
+        assert!(on_enter.is_empty());
+        assert!(on_exit.is_empty());
     }
 }
