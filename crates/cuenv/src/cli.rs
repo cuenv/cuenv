@@ -965,10 +965,10 @@ mod tests {
         assert!(matches!(cli.level, LogLevel::Error));
 
         // Test short form for a few cases
-        let cli_short = Cli::try_parse_from(["cuenv", "-l", "debug", "version"]).unwrap();
+        let cli_short = Cli::try_parse_from(["cuenv", "-L", "debug", "version"]).unwrap();
         assert!(matches!(cli_short.level, LogLevel::Debug));
 
-        let cli_short = Cli::try_parse_from(["cuenv", "-l", "error", "version"]).unwrap();
+        let cli_short = Cli::try_parse_from(["cuenv", "-L", "error", "version"]).unwrap();
         assert!(matches!(cli_short.level, LogLevel::Error));
     }
 
