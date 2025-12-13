@@ -4,6 +4,7 @@ pub mod exec;
 pub mod export;
 pub mod hooks;
 pub mod release;
+pub mod sync;
 pub mod task;
 pub mod version;
 
@@ -231,6 +232,11 @@ pub enum Command {
     Completions {
         shell: Shell,
     },
+    Sync {
+        path: String,
+        package: String,
+        dry_run: bool,
+    },
 }
 
 #[allow(dead_code)]
@@ -332,6 +338,11 @@ impl CommandExecutor {
                 generate,
                 from,
             } => self.execute_ci(dry_run, pipeline, generate, from).await,
+            Command::Sync {
+                path,
+                package,
+                dry_run,
+            } => self.execute_sync(path, package, dry_run).await,
             // Tui, Web, Completions, and release commands are handled directly in main.rs
             Command::Tui
             | Command::Web { .. }
@@ -341,6 +352,33 @@ impl CommandExecutor {
             | Command::ChangesetFromCommits { .. }
             | Command::ReleaseVersion { .. }
             | Command::ReleasePublish { .. } => Ok(()),
+        }
+    }
+
+    async fn execute_sync(&self, path: String, package: String, dry_run: bool) -> Result<()> {
+        let command_name = "sync";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        match sync::execute_sync(&path, &package, dry_run).await {
+            Ok(output) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: true,
+                    output,
+                });
+                Ok(())
+            }
+            Err(e) => {
+                self.send_event(Event::CommandComplete {
+                    command: command_name.to_string(),
+                    success: false,
+                    output: format!("Error: {e}"),
+                });
+                Err(e)
+            }
         }
     }
 

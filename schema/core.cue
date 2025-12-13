@@ -1,5 +1,13 @@
 package schema
 
+// Ignore patterns for tool-specific ignore files.
+// Keys are tool names (e.g., "git", "docker", "prettier"), values are lists of patterns.
+// Standard tools map to their conventional filenames:
+//   git -> .gitignore, docker -> .dockerignore, npm -> .npmignore, etc.
+// Custom keys generate .<key>ignore files.
+#Ignore: {
+	[string]: [...string]
+}
 
 #Base: close({
 	config?:     #Config
@@ -16,6 +24,7 @@ package schema
 	ci?:      #CI
 	release?: #Release
 	tasks?: [string]: #Tasks
+	ignore?: #Ignore
 })
 
 #Workspaces: [string]: #WorkspaceConfig

@@ -464,6 +464,24 @@ pub enum Commands {
         #[arg(help = "Shell type", value_enum)]
         shell: Shell,
     },
+    #[command(about = "Sync generated files from CUE configuration (e.g., ignore files)")]
+    Sync {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(long, help = "Show what would be generated without writing files")]
+        dry_run: bool,
+    },
 }
 
 /// Output format for status command
@@ -850,6 +868,15 @@ impl Commands {
                 }
             },
             Commands::Completions { shell } => Command::Completions { shell },
+            Commands::Sync {
+                path,
+                package,
+                dry_run,
+            } => Command::Sync {
+                path,
+                package,
+                dry_run,
+            },
         }
     }
 }

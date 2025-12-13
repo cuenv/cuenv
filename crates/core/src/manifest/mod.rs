@@ -163,6 +163,10 @@ pub struct Base {
     pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
 }
 
+/// Ignore patterns for tool-specific ignore files.
+/// Keys are tool names (e.g., "git", "docker", "prettier"), values are lists of patterns.
+pub type Ignore = HashMap<String, Vec<String>>;
+
 /// Root Project configuration structure (leaf node - cannot unify with other projects)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 pub struct Project {
@@ -192,6 +196,10 @@ pub struct Project {
     /// Tasks configuration
     #[serde(default)]
     pub tasks: HashMap<String, TaskDefinition>,
+
+    /// Ignore patterns for tool-specific ignore files
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Ignore>,
 }
 
 /// Type alias for backward compatibility
