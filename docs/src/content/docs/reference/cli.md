@@ -204,10 +204,10 @@ cuenv ci --generate github
 
 ### `cuenv sync`
 
-Generate files from CUE configuration. Currently supports generating ignore files (.gitignore, .dockerignore, etc.) from the `ignore` field in your configuration.
+Sync generated files from CUE configuration. When run without a subcommand, executes all sync operations.
 
 ```bash
-cuenv sync [OPTIONS]
+cuenv sync [OPTIONS] [SUBCOMMAND]
 ```
 
 **Options:**
@@ -216,11 +216,18 @@ cuenv sync [OPTIONS]
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--dry-run`: Show what would be generated without creating files.
 
+**Subcommands:**
+
+- `ignore`: Generate ignore files only (.gitignore, .dockerignore, etc.)
+
 **Example:**
 
 ```bash
-# Generate ignore files
+# Run all sync operations (currently just ignore files)
 cuenv sync
+
+# Generate only ignore files
+cuenv sync ignore
 
 # Preview what would be generated
 cuenv sync --dry-run
@@ -229,18 +236,39 @@ cuenv sync --dry-run
 cuenv sync --path ./project
 ```
 
+**Output Status:**
+
+- `Created` - New file was created
+- `Updated` - Existing file was updated
+- `Unchanged` - File content unchanged, no write needed
+
+**Security:**
+
+- Must be run within a Git repository
+- Tool names cannot contain path separators or `..`
+- Files are only written within the Git repository
+
 **Configuration:**
 
 Add an `ignore` field to your `env.cue`:
 
 ```cue
 ignore: {
+    // Simple format: list of patterns
     git: ["node_modules/", ".env", "*.log"]
     docker: ["node_modules/", ".git/", "target/"]
+
+    // Extended format: custom filename
+    custom: {
+        patterns: ["*.tmp", "cache/"]
+        filename: ".myignore"
+    }
 }
 ```
 
-This generates `.gitignore` and `.dockerignore` files with the specified patterns. Supported tools include: git, docker, npm, prettier, eslint, stylelint, vercel, nowignore. Custom tool names generate `.<tool>ignore` files.
+Tool names map to ignore files as `.{tool}ignore` (e.g., `git` creates `.gitignore`, `docker` creates `.dockerignore`). Use the extended format with `filename` to override this default.
+
+See the [Ignore Files guide](/how-to/ignore-files/) for more details.
 
 ### `cuenv tui`
 

@@ -464,8 +464,10 @@ pub enum Commands {
         #[arg(help = "Shell type", value_enum)]
         shell: Shell,
     },
-    #[command(about = "Sync generated files from CUE configuration (e.g., ignore files)")]
+    #[command(about = "Sync generated files from CUE configuration")]
     Sync {
+        #[command(subcommand)]
+        subcommand: Option<SyncCommands>,
         #[arg(
             long,
             short = 'p',
@@ -482,6 +484,13 @@ pub enum Commands {
         #[arg(long, help = "Show what would be generated without writing files")]
         dry_run: bool,
     },
+}
+
+/// Sync subcommands for generating different types of files
+#[derive(Subcommand, Debug, Clone)]
+pub enum SyncCommands {
+    #[command(about = "Generate ignore files (.gitignore, .dockerignore, etc.)")]
+    Ignore,
 }
 
 /// Output format for status command
@@ -869,10 +878,12 @@ impl Commands {
             },
             Commands::Completions { shell } => Command::Completions { shell },
             Commands::Sync {
+                subcommand,
                 path,
                 package,
                 dry_run,
             } => Command::Sync {
+                subcommand,
                 path,
                 package,
                 dry_run,

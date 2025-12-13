@@ -439,6 +439,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(())
         }
         Command::Sync {
+            subcommand: _,
             path,
             package,
             dry_run,
