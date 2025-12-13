@@ -886,6 +886,7 @@ mod tests {
             ci: None,
             tasks: HashMap::new(),
             name: "test".to_string(),
+            ignore: None,
         };
 
         let vars = extract_static_env_vars(&cfg);
@@ -916,6 +917,7 @@ mod tests {
             ci: None,
             tasks: HashMap::new(),
             name: "test".to_string(),
+            ignore: None,
         };
 
         let hook_env = HashMap::from([

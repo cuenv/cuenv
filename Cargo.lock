@@ -753,6 +753,7 @@ dependencies = [
  "cuenv-core",
  "cuenv-dagger",
  "cuenv-events",
+ "cuenv-ignore",
  "cuenv-release",
  "dirs",
  "futures",
@@ -854,6 +855,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "cuenv-ignore"
+version = "0.13.3"
+dependencies = [
+ "gix",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tracing",
 ]
 
 [[package]]

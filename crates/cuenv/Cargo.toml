@@ -32,6 +32,7 @@ cuenv-core = { workspace = true }
 cuenv-dagger = { workspace = true, optional = true }
 cuenv-ci = { workspace = true }
 cuenv-events = { workspace = true }
+cuenv-ignore = { workspace = true }
 cuenv-release = { workspace = true }
 cuengine = { workspace = true }
 toml = { workspace = true }
