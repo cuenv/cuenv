@@ -3,6 +3,7 @@ pub(crate) mod env_file;
 pub mod exec;
 pub mod export;
 pub mod hooks;
+pub mod owners;
 pub mod release;
 pub mod task;
 pub mod version;
@@ -231,6 +232,15 @@ pub enum Command {
     Completions {
         shell: Shell,
     },
+    OwnersSync {
+        path: String,
+        package: String,
+        dry_run: bool,
+    },
+    OwnersCheck {
+        path: String,
+        package: String,
+    },
 }
 
 #[allow(dead_code)]
@@ -332,7 +342,7 @@ impl CommandExecutor {
                 generate,
                 from,
             } => self.execute_ci(dry_run, pipeline, generate, from).await,
-            // Tui, Web, Completions, and release commands are handled directly in main.rs
+            // Tui, Web, Completions, release, and owners commands are handled directly in main.rs
             Command::Tui
             | Command::Web { .. }
             | Command::Completions { .. }
@@ -340,7 +350,9 @@ impl CommandExecutor {
             | Command::ChangesetStatus { .. }
             | Command::ChangesetFromCommits { .. }
             | Command::ReleaseVersion { .. }
-            | Command::ReleasePublish { .. } => Ok(()),
+            | Command::ReleasePublish { .. }
+            | Command::OwnersSync { .. }
+            | Command::OwnersCheck { .. } => Ok(()),
         }
     }
 

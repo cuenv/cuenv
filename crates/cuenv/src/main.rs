@@ -433,6 +433,20 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
                 Err(e) => Err(e),
             }
         }
+        Command::OwnersSync {
+            path,
+            package,
+            dry_run,
+        } => match execute_owners_sync_safe(path, package, dry_run, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
+        Command::OwnersCheck { path, package } => {
+            match execute_owners_check_safe(path, package, json_mode).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
         Command::Completions { shell } => {
             // Completions are handled early in real_main, this is just for exhaustiveness
             crate::cli::generate_completions(shell);
@@ -1247,6 +1261,69 @@ async fn execute_release_publish_safe(
         Err(e) => Err(CliError::eval_with_help(
             format!("Release publish failed: {e}"),
             "Check that packages are ready for publishing",
+        )),
+    }
+}
+
+/// Execute owners sync command safely
+#[instrument(name = "cuenv_execute_owners_sync_safe")]
+async fn execute_owners_sync_safe(
+    path: String,
+    package: String,
+    dry_run: bool,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::owners::execute_owners_sync(&path, &package, dry_run).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "message": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Owners sync failed: {e}"),
+            "Add 'owners' configuration to your env.cue file with code ownership rules",
+        )),
+    }
+}
+
+/// Execute owners check command safely
+#[instrument(name = "cuenv_execute_owners_check_safe")]
+async fn execute_owners_check_safe(
+    path: String,
+    package: String,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::owners::execute_owners_check(&path, &package).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "message": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Owners check failed: {e}"),
+            "Run 'cuenv owners sync' to generate or update the CODEOWNERS file",
         )),
     }
 }

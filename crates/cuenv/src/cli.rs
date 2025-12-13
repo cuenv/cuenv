@@ -464,6 +464,11 @@ pub enum Commands {
         #[arg(help = "Shell type", value_enum)]
         shell: Shell,
     },
+    #[command(about = "Code ownership management")]
+    Owners {
+        #[command(subcommand)]
+        subcommand: OwnersCommands,
+    },
 }
 
 /// Output format for status command
@@ -692,6 +697,34 @@ pub enum ReleaseCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum OwnersCommands {
+    #[command(about = "Sync CODEOWNERS file from CUE configuration")]
+    Sync {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(long, help = "Show what would be written without making changes")]
+        dry_run: bool,
+    },
+    #[command(about = "Check CODEOWNERS file is in sync with CUE configuration")]
+    Check {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+}
+
 impl Commands {
     /// Convert CLI commands to internal Command representation
     /// The environment parameter comes from the global CLI flag
@@ -850,6 +883,18 @@ impl Commands {
                 }
             },
             Commands::Completions { shell } => Command::Completions { shell },
+            Commands::Owners { subcommand } => match subcommand {
+                OwnersCommands::Sync {
+                    path,
+                    package,
+                    dry_run,
+                } => Command::OwnersSync {
+                    path,
+                    package,
+                    dry_run,
+                },
+                OwnersCommands::Check { path, package } => Command::OwnersCheck { path, package },
+            },
         }
     }
 }
