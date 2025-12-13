@@ -38,12 +38,21 @@ use uuid::Uuid;
 
 use super::export::get_environment_with_hooks;
 
-/// Execute a named task from the CUE configuration
+/// Execute a named task from the CUE configuration.
+///
+/// Tasks can be selected in two mutually exclusive ways:
+/// - By name: Provide `task_name` to execute a specific task
+/// - By labels: Provide `labels` to execute all tasks matching ALL given labels (AND semantics)
+///
+/// When using labels, the function discovers all projects in the CUE module scope,
+/// finds tasks matching the labels, creates a synthetic root task that depends on them,
+/// and executes via the DAG.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub async fn execute_task(
     path: &str,
     package: &str,
     task_name: Option<&str>,
+    labels: &[String],
     environment: Option<&str>,
     format: &str,
     capture_output: bool,
@@ -83,9 +92,10 @@ pub async fn execute_task(
 
     // Build a canonical index to support nested task paths
     let task_index = TaskIndex::build(&manifest.tasks)?;
+    let local_tasks = task_index.to_tasks();
 
     // If no task specified, list available tasks
-    if task_name.is_none() {
+    if task_name.is_none() && labels.is_empty() {
         tracing::debug!("Listing available tasks");
         let tasks = task_index.list();
         tracing::debug!("Found {} tasks to list", tasks.len());
@@ -114,118 +124,197 @@ pub async fn execute_task(
         return Ok(render_task_tree(tasks, cwd_relative.as_deref()));
     }
 
-    let requested_task = task_name.unwrap();
-    tracing::debug!("Looking for specific task: {}", requested_task);
+    if !labels.is_empty() && task_name.is_some() {
+        return Err(cuenv_core::Error::configuration(
+            "Cannot specify both a task name and --label",
+        ));
+    }
+    if !labels.is_empty() && !task_args.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "Task arguments are not supported when selecting tasks by label",
+        ));
+    }
 
-    // If help requested for specific task/group
-    if help {
-        let tasks = task_index.list();
-        let prefix = format!("{requested_task}.");
-        let subtasks: Vec<&cuenv_core::tasks::IndexedTask> = tasks
-            .iter()
-            .filter(|t| t.name == requested_task || t.name.starts_with(&prefix))
-            .copied()
-            .collect();
+    // Validate that labels are non-empty after normalization
+    let normalized_labels = normalize_labels(labels);
+    if !labels.is_empty() && normalized_labels.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "Labels cannot be empty or whitespace-only",
+        ));
+    }
 
-        if subtasks.is_empty() {
+    let display_task_name: String;
+    let task_def: TaskDefinition;
+    let all_tasks: Tasks;
+    let task_graph_root_name: String;
+
+    if normalized_labels.is_empty() {
+        // Execute a named task
+        let requested_task = task_name.unwrap();
+        tracing::debug!("Looking for specific task: {}", requested_task);
+
+        // If help requested for specific task/group
+        if help {
+            let tasks = task_index.list();
+            let prefix = format!("{requested_task}.");
+            let subtasks: Vec<&cuenv_core::tasks::IndexedTask> = tasks
+                .iter()
+                .filter(|t| t.name == requested_task || t.name.starts_with(&prefix))
+                .copied()
+                .collect();
+
+            if subtasks.is_empty() {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Task '{requested_task}' not found",
+                )));
+            }
+
+            // If it's a single task without subtasks
+            if subtasks.len() == 1 && subtasks[0].name == requested_task {
+                return Ok(format_task_detail(subtasks[0]));
+            }
+
+            // It's a group or task with subtasks
+            // Note: For help on specific groups, we don't need cwd-relative sorting
+            return Ok(render_task_tree(subtasks, None));
+        }
+
+        // Resolve task via canonical index (supports nested paths and ':' alias)
+        let task_entry = task_index.resolve(requested_task)?;
+        let canonical_task_name = task_entry.name.clone();
+        tracing::debug!(
+            "Task index entries: {:?}",
+            task_index
+                .list()
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>()
+        );
+        tracing::debug!(
+            "Indexed tasks for execution: {:?}",
+            local_tasks.list_tasks()
+        );
+        tracing::debug!(
+            "Requested task '{}' present: {}",
+            requested_task,
+            local_tasks.get(requested_task).is_some()
+        );
+        let original_task_def = local_tasks.get(&canonical_task_name).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!("Task '{canonical_task_name}' not found"))
+        })?;
+        display_task_name = canonical_task_name;
+
+        tracing::debug!("Found task definition: {:?}", original_task_def);
+
+        // Process task arguments if provided
+        let (selected_task_def, tasks) = if task_args.is_empty() {
+            (original_task_def.clone(), local_tasks.clone())
+        } else if let TaskDefinition::Single(task) = original_task_def {
+            // Parse and validate arguments against task params
+            let resolved_args = resolve_task_args(task.params.as_ref(), task_args)?;
+            tracing::debug!("Resolved task args: {:?}", resolved_args);
+
+            // Apply argument interpolation to task
+            let modified_task = apply_args_to_task(task, &resolved_args);
+
+            // Create a new task definition with the modified task
+            let modified_def = TaskDefinition::Single(Box::new(modified_task));
+
+            // Create a new Tasks collection with the modified task
+            let mut modified_tasks = local_tasks.clone();
+            modified_tasks
+                .tasks
+                .insert(display_task_name.to_string(), modified_def.clone());
+
+            (modified_def, modified_tasks)
+        } else {
+            // For groups, we don't support arguments
+            return Err(cuenv_core::Error::configuration(
+                "Task arguments are not supported for task groups".to_string(),
+            ));
+        };
+
+        task_def = selected_task_def;
+
+        // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
+        // This enables cross-project dependency graphs and proper cycle detection.
+        let (global_tasks, task_root_name) = if let Some(module_root) = &cue_module_root {
+            let (mut global, current_project_id) =
+                build_global_tasks(evaluator.clone(), module_root, &project_root, &manifest)?;
+
+            // If we interpolated args for the invoked task, patch that task node in the
+            // global registry so execution matches the CLI-resolved definition.
+            // (We avoid patching otherwise, because the global registry has normalized
+            // dependsOn entries to FQDNs.)
+            if !task_args.is_empty()
+                && let TaskDefinition::Single(ref t) = task_def
+            {
+                let fqdn = task_fqdn(&current_project_id, &display_task_name);
+                if let Some(TaskDefinition::Single(existing)) = global.tasks.get_mut(&fqdn) {
+                    existing.command.clone_from(&t.command);
+                    existing.args.clone_from(&t.args);
+                }
+            }
+
+            let root = task_fqdn(&current_project_id, &display_task_name);
+            (global, root)
+        } else {
+            (tasks.clone(), display_task_name.clone())
+        };
+
+        all_tasks = global_tasks;
+        task_graph_root_name = task_root_name;
+    } else {
+        // Execute tasks by label
+        let (mut tasks_in_scope, _current_project_id) =
+            if let Some(module_root) = &cue_module_root {
+                build_global_tasks(evaluator.clone(), module_root, &project_root, &manifest)
+                    .map_err(|e| {
+                        cuenv_core::Error::configuration(format!(
+                            "Failed to discover tasks for label execution: {e}"
+                        ))
+                    })?
+            } else {
+                (local_tasks.clone(), String::new())
+            };
+
+        let matching_tasks = find_tasks_with_labels(&tasks_in_scope, &normalized_labels);
+
+        if matching_tasks.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
-                "Task '{requested_task}' not found",
+                "No tasks with labels {normalized_labels:?} were found in this scope"
             )));
         }
 
-        // If it's a single task without subtasks
-        if subtasks.len() == 1 && subtasks[0].name == requested_task {
-            return Ok(format_task_detail(subtasks[0]));
-        }
+        display_task_name = format_label_root(&normalized_labels);
+        // Create a synthetic aggregator task that depends on all label-matched tasks.
+        // The script is "true" (a shell no-op that always succeeds) because actual work
+        // is performed by the dependsOn tasks; this task just serves as the DAG root.
+        let synthetic = Task {
+            script: Some("true".to_string()),
+            hermetic: false,
+            depends_on: matching_tasks,
+            project_root: Some(project_root.clone()),
+            description: Some(format!(
+                "Run all tasks matching labels: {}",
+                normalized_labels.join(", ")
+            )),
+            ..Default::default()
+        };
 
-        // It's a group or task with subtasks
-        // Note: For help on specific groups, we don't need cwd-relative sorting
-        return Ok(render_task_tree(subtasks, None));
+        tasks_in_scope.tasks.insert(
+            display_task_name.clone(),
+            TaskDefinition::Single(Box::new(synthetic)),
+        );
+
+        // Safety: We just inserted the synthetic task above, so it will always exist.
+        task_def = tasks_in_scope
+            .get(&display_task_name)
+            .cloned()
+            .expect("synthetic task missing after insertion");
+        task_graph_root_name = display_task_name.clone();
+        all_tasks = tasks_in_scope;
     }
-
-    // Resolve task via canonical index (supports nested paths and ':' alias)
-    let task_entry = task_index.resolve(requested_task)?;
-    let canonical_task_name = task_entry.name.clone();
-    tracing::debug!(
-        "Task index entries: {:?}",
-        task_index
-            .list()
-            .iter()
-            .map(|t| t.name.as_str())
-            .collect::<Vec<_>>()
-    );
-    let local_tasks = task_index.to_tasks();
-    tracing::debug!(
-        "Indexed tasks for execution: {:?}",
-        local_tasks.list_tasks()
-    );
-    tracing::debug!(
-        "Requested task '{}' present: {}",
-        requested_task,
-        local_tasks.get(requested_task).is_some()
-    );
-    let original_task_def = local_tasks.get(&canonical_task_name).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!("Task '{canonical_task_name}' not found"))
-    })?;
-    let display_task_name = canonical_task_name.as_str();
-
-    tracing::debug!("Found task definition: {:?}", original_task_def);
-
-    // Process task arguments if provided
-    let (task_def, tasks) = if task_args.is_empty() {
-        (original_task_def.clone(), local_tasks)
-    } else if let TaskDefinition::Single(task) = original_task_def {
-        // Parse and validate arguments against task params
-        let resolved_args = resolve_task_args(task.params.as_ref(), task_args)?;
-        tracing::debug!("Resolved task args: {:?}", resolved_args);
-
-        // Apply argument interpolation to task
-        let modified_task = apply_args_to_task(task, &resolved_args);
-
-        // Create a new task definition with the modified task
-        let modified_def = TaskDefinition::Single(Box::new(modified_task));
-
-        // Create a new Tasks collection with the modified task
-        let mut modified_tasks = local_tasks.clone();
-        modified_tasks
-            .tasks
-            .insert(display_task_name.to_string(), modified_def.clone());
-
-        (modified_def, modified_tasks)
-    } else {
-        // For groups, we don't support arguments
-        return Err(cuenv_core::Error::configuration(
-            "Task arguments are not supported for task groups".to_string(),
-        ));
-    };
-
-    let task_def = &task_def;
-
-    // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
-    // This enables cross-project dependency graphs and proper cycle detection.
-    let (all_tasks, task_graph_root_name) = if let Some(module_root) = &cue_module_root {
-        let (mut global, current_project_id) =
-            build_global_tasks(evaluator.clone(), module_root, &project_root, &manifest)?;
-
-        // If we interpolated args for the invoked task, patch that task node in the
-        // global registry so execution matches the CLI-resolved definition.
-        // (We avoid patching otherwise, because the global registry has normalized
-        // dependsOn entries to FQDNs.)
-        if !task_args.is_empty()
-            && let TaskDefinition::Single(t) = task_def
-        {
-            let fqdn = task_fqdn(&current_project_id, display_task_name);
-            if let Some(TaskDefinition::Single(existing)) = global.tasks.get_mut(&fqdn) {
-                existing.command.clone_from(&t.command);
-                existing.args.clone_from(&t.args);
-            }
-        }
-
-        let root = task_fqdn(&current_project_id, display_task_name);
-        (global, root)
-    } else {
-        (tasks.clone(), display_task_name.to_string())
-    };
 
     // Get environment with hook-generated vars merged in
     let directory = project_root.clone();
@@ -247,9 +336,11 @@ pub async fn execute_task(
         };
 
         // Then apply task-specific overrides with policies and secret resolution
-        let task_env_vars =
-            cuenv_core::environment::Environment::resolve_for_task(display_task_name, &env_vars)
-                .await?;
+        let task_env_vars = cuenv_core::environment::Environment::resolve_for_task(
+            display_task_name.as_str(),
+            &env_vars,
+        )
+        .await?;
         for (key, value) in task_env_vars {
             runtime_env.set(key, value);
         }
@@ -297,8 +388,8 @@ pub async fn execute_task(
         path,
         &evaluator,
         &executor,
-        display_task_name,
-        task_def,
+        display_task_name.as_str(),
+        &task_def,
         &task_graph,
         &all_tasks,
         manifest.env.as_ref(),
@@ -316,7 +407,7 @@ pub async fn execute_task(
     }
 
     // Format results
-    let output = format_task_results(results, capture_output, display_task_name);
+    let output = format_task_results(results, capture_output, display_task_name.as_str());
     Ok(output)
 }
 
@@ -494,6 +585,55 @@ fn format_task_results(
     }
 
     output
+}
+
+/// Normalize a list of labels by sorting, deduplicating, and filtering empty strings.
+///
+/// This ensures consistent behavior across label matching and naming operations.
+fn normalize_labels(labels: &[String]) -> Vec<String> {
+    let mut normalized: Vec<String> = labels
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+/// Find all tasks that match ALL of the given labels (AND semantics).
+///
+/// Returns a sorted list of task FQDNs (or names) that have all required labels.
+/// Tasks must be `Single` tasks with labels that include every label in the input.
+fn find_tasks_with_labels(tasks: &Tasks, labels: &[String]) -> Vec<String> {
+    let required_labels = normalize_labels(labels);
+
+    let mut matching: Vec<String> = tasks
+        .tasks
+        .iter()
+        .filter_map(|(name, definition)| match definition {
+            TaskDefinition::Single(task)
+                if required_labels
+                    .iter()
+                    .all(|label| task.labels.contains(label)) =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+
+    matching.sort();
+    matching
+}
+
+/// Generate a deterministic synthetic task name for label-based execution.
+///
+/// The name uses a reserved prefix (`__cuenv_labels__`) to avoid collisions with
+/// user-defined task names. The labels are sorted and joined with `+` for stability.
+fn format_label_root(labels: &[String]) -> String {
+    let sorted = normalize_labels(labels);
+    format!("__cuenv_labels__{}", sorted.join("+"))
 }
 
 fn find_git_root(start: &Path) -> Result<PathBuf> {
@@ -2040,6 +2180,7 @@ env: {
             temp_dir.path().to_str().unwrap(),
             "test",
             None,
+            &[],
             None,
             "simple",
             false,
@@ -2668,5 +2809,157 @@ env: {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Unknown argument"));
         assert!(err.contains("--unknown"));
+    }
+
+    // ==================== Label-based execution tests ====================
+
+    #[test]
+    fn test_normalize_labels_basic() {
+        let labels = vec!["b".to_string(), "a".to_string(), "c".to_string()];
+        let normalized = normalize_labels(&labels);
+        assert_eq!(normalized, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_normalize_labels_deduplicates() {
+        let labels = vec!["test".to_string(), "build".to_string(), "test".to_string()];
+        let normalized = normalize_labels(&labels);
+        assert_eq!(normalized, vec!["build", "test"]);
+    }
+
+    #[test]
+    fn test_normalize_labels_filters_empty() {
+        let labels = vec![
+            String::new(),
+            "valid".to_string(),
+            "   ".to_string(),
+            "another".to_string(),
+        ];
+        let normalized = normalize_labels(&labels);
+        assert_eq!(normalized, vec!["another", "valid"]);
+    }
+
+    #[test]
+    fn test_normalize_labels_trims_whitespace() {
+        let labels = vec!["  test  ".to_string(), " build".to_string()];
+        let normalized = normalize_labels(&labels);
+        assert_eq!(normalized, vec!["build", "test"]);
+    }
+
+    #[test]
+    fn test_normalize_labels_all_empty_returns_empty() {
+        let labels = vec![String::new(), "   ".to_string()];
+        let normalized = normalize_labels(&labels);
+        assert!(normalized.is_empty());
+    }
+
+    #[test]
+    fn test_find_tasks_with_labels_single_label() {
+        let mut tasks = Tasks::new();
+
+        // Task with matching label
+        let task_with_label = Task {
+            command: "echo".to_string(),
+            labels: vec!["test".to_string()],
+            ..Default::default()
+        };
+        tasks.tasks.insert(
+            "task1".to_string(),
+            TaskDefinition::Single(Box::new(task_with_label)),
+        );
+
+        // Task without the label
+        let task_without_label = Task {
+            command: "echo".to_string(),
+            labels: vec!["build".to_string()],
+            ..Default::default()
+        };
+        tasks.tasks.insert(
+            "task2".to_string(),
+            TaskDefinition::Single(Box::new(task_without_label)),
+        );
+
+        let labels = vec!["test".to_string()];
+        let matching = find_tasks_with_labels(&tasks, &labels);
+        assert_eq!(matching, vec!["task1"]);
+    }
+
+    #[test]
+    fn test_find_tasks_with_labels_multiple_labels_and_behavior() {
+        let mut tasks = Tasks::new();
+
+        // Task with both labels
+        let task_both = Task {
+            command: "echo".to_string(),
+            labels: vec!["test".to_string(), "unit".to_string()],
+            ..Default::default()
+        };
+        tasks.tasks.insert(
+            "unit_tests".to_string(),
+            TaskDefinition::Single(Box::new(task_both)),
+        );
+
+        // Task with only one label
+        let task_one = Task {
+            command: "echo".to_string(),
+            labels: vec!["test".to_string()],
+            ..Default::default()
+        };
+        tasks.tasks.insert(
+            "e2e_tests".to_string(),
+            TaskDefinition::Single(Box::new(task_one)),
+        );
+
+        // Both labels required (AND semantics) - only task with both should match
+        let labels = vec!["test".to_string(), "unit".to_string()];
+        let matching = find_tasks_with_labels(&tasks, &labels);
+        assert_eq!(matching, vec!["unit_tests"]);
+    }
+
+    #[test]
+    fn test_find_tasks_with_labels_no_matches() {
+        let mut tasks = Tasks::new();
+
+        let task = Task {
+            command: "echo".to_string(),
+            labels: vec!["build".to_string()],
+            ..Default::default()
+        };
+        tasks
+            .tasks
+            .insert("task1".to_string(), TaskDefinition::Single(Box::new(task)));
+
+        let labels = vec!["nonexistent".to_string()];
+        let matching = find_tasks_with_labels(&tasks, &labels);
+        assert!(matching.is_empty());
+    }
+
+    #[test]
+    fn test_format_label_root_single_label() {
+        let labels = vec!["test".to_string()];
+        let name = format_label_root(&labels);
+        assert_eq!(name, "__cuenv_labels__test");
+    }
+
+    #[test]
+    fn test_format_label_root_multiple_labels_sorted() {
+        // Labels should be sorted in the output for determinism
+        let labels = vec!["zebra".to_string(), "alpha".to_string()];
+        let name = format_label_root(&labels);
+        assert_eq!(name, "__cuenv_labels__alpha+zebra");
+    }
+
+    #[test]
+    fn test_format_label_root_deduplicates() {
+        let labels = vec!["test".to_string(), "test".to_string()];
+        let name = format_label_root(&labels);
+        assert_eq!(name, "__cuenv_labels__test");
+    }
+
+    #[test]
+    fn test_format_label_root_filters_empty() {
+        let labels = vec![String::new(), "test".to_string(), "   ".to_string()];
+        let name = format_label_root(&labels);
+        assert_eq!(name, "__cuenv_labels__test");
     }
 }
