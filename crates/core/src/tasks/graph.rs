@@ -338,6 +338,10 @@ impl Default for TaskGraph {
 }
 
 #[cfg(test)]
+#[path = "graph_advanced_tests.rs"]
+mod graph_advanced_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
