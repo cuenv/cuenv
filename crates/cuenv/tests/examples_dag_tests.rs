@@ -109,6 +109,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: true,
             expect_eval_failure: false,
         },
+        ExampleExpectations {
+            name: "owners-basic",
+            min_task_count: 0, // No tasks, only owners config
+            has_hooks: false,
+            has_env: true,
+            expect_eval_failure: false,
+        },
     ]
 }
 
