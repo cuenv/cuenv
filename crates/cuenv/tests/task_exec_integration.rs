@@ -822,3 +822,74 @@ env: {
         assert!(stdout.contains("$(echo 'command substitution')"));
     }
 }
+
+#[test]
+fn test_task_label_execution_discovers_projects() {
+    let temp_dir = TempDir::new().unwrap();
+    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
+    fs::write(
+        temp_dir.path().join("cue.mod/module.cue"),
+        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
+    )
+    .unwrap();
+
+    let project_a = temp_dir.path().join("project-a");
+    fs::create_dir_all(&project_a).unwrap();
+    fs::write(
+        project_a.join("env.cue"),
+        r#"package project_a
+
+name: "project-a"
+
+env: {}
+
+tasks: {
+  projen: {
+    command: "sh"
+    args: ["-c", "echo A-PROJEN"]
+    labels: ["projen"]
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let project_b = temp_dir.path().join("project-b");
+    fs::create_dir_all(&project_b).unwrap();
+    fs::write(
+        project_b.join("env.cue"),
+        r#"package project_b
+
+name: "project-b"
+
+env: {}
+
+tasks: {
+  generate: {
+    command: "sh"
+    args: ["-c", "echo B-PROJEN"]
+    labels: ["projen"]
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let (stdout, stderr, success) = run_cuenv(&[
+        "task",
+        "-p",
+        project_a.to_str().unwrap(),
+        "--package",
+        "project_a",
+        "-l",
+        "projen",
+    ]);
+
+    assert!(
+        success,
+        "Expected success.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        stdout, stderr
+    );
+    assert!(stdout.contains("A-PROJEN"));
+    assert!(stdout.contains("B-PROJEN"));
+}

@@ -253,7 +253,7 @@ pub struct Cli {
     pub command: Option<Commands>,
 
     #[arg(
-        short = 'l',
+        short = 'L',
         long,
         global = true,
         help = "Set logging level",
@@ -316,6 +316,14 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
+        #[arg(
+            long = "label",
+            short = 'l',
+            action = clap::ArgAction::Append,
+            help = "Execute all tasks matching the given label (repeatable)",
+            value_name = "LABEL"
+        )]
+        labels: Vec<String>,
         #[arg(
             long = "output-format",
             help = "Output format (only used when listing tasks)",
@@ -751,6 +759,7 @@ impl Commands {
                 name,
                 path,
                 package,
+                labels,
                 output_format,
                 materialize_outputs,
                 show_cache_path,
@@ -761,6 +770,7 @@ impl Commands {
                 path,
                 package,
                 name,
+                labels,
                 environment,
                 format: output_format.to_string(),
                 materialize_outputs,
