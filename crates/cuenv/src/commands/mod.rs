@@ -4,6 +4,7 @@ pub mod exec;
 pub mod export;
 pub mod hooks;
 pub mod release;
+pub mod sync;
 pub mod task;
 pub mod version;
 
@@ -116,7 +117,7 @@ jobs:
     }
 }
 
-use crate::cli::StatusFormat;
+use crate::cli::{StatusFormat, SyncCommands};
 use crate::events::{Event, EventSender};
 use clap_complete::Shell;
 use cuenv_core::Result;
@@ -233,6 +234,12 @@ pub enum Command {
     Completions {
         shell: Shell,
     },
+    Sync {
+        subcommand: Option<SyncCommands>,
+        path: String,
+        package: String,
+        dry_run: bool,
+    },
 }
 
 #[allow(dead_code)]
@@ -246,6 +253,7 @@ impl CommandExecutor {
         Self { event_sender }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn execute(&self, command: Command) -> Result<()> {
         match command {
             Command::Version { format } => self.execute_version(format).await,
@@ -336,6 +344,12 @@ impl CommandExecutor {
                 generate,
                 from,
             } => self.execute_ci(dry_run, pipeline, generate, from).await,
+            Command::Sync {
+                subcommand,
+                path,
+                package,
+                dry_run,
+            } => self.execute_sync(subcommand, path, package, dry_run).await,
             // Tui, Web, Completions, and release commands are handled directly in main.rs
             Command::Tui
             | Command::Web { .. }
@@ -346,6 +360,47 @@ impl CommandExecutor {
             | Command::ReleaseVersion { .. }
             | Command::ReleasePublish { .. } => Ok(()),
         }
+    }
+
+    async fn execute_sync(
+        &self,
+        subcommand: Option<SyncCommands>,
+        path: String,
+        package: String,
+        dry_run: bool,
+    ) -> Result<()> {
+        let command_name = "sync";
+
+        self.send_event(Event::CommandStart {
+            command: command_name.to_string(),
+        });
+
+        // If no subcommand, run all sync operations (currently just ignore)
+        // If specific subcommand, run only that operation
+        let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
+
+        let mut outputs = Vec::new();
+
+        if run_ignore {
+            match sync::execute_sync(&path, &package, dry_run).await {
+                Ok(output) => outputs.push(output),
+                Err(e) => {
+                    self.send_event(Event::CommandComplete {
+                        command: command_name.to_string(),
+                        success: false,
+                        output: format!("Error: {e}"),
+                    });
+                    return Err(e);
+                }
+            }
+        }
+
+        self.send_event(Event::CommandComplete {
+            command: command_name.to_string(),
+            success: true,
+            output: outputs.join("\n"),
+        });
+        Ok(())
     }
 
     async fn execute_version(&self, _format: String) -> Result<()> {

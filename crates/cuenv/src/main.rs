@@ -440,6 +440,15 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             crate::cli::generate_completions(shell);
             Ok(())
         }
+        Command::Sync {
+            subcommand: _,
+            path,
+            package,
+            dry_run,
+        } => match execute_sync_command_safe(path, package, dry_run, json_mode).await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        },
     }
 }
 
@@ -505,6 +514,38 @@ async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
 
     cuenv_events::emit_command_completed!("web", true, 0_u64);
     Ok(())
+}
+
+/// Execute sync command safely
+#[instrument(name = "cuenv_execute_sync_safe")]
+async fn execute_sync_command_safe(
+    path: String,
+    package: String,
+    dry_run: bool,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::sync::execute_sync(&path, &package, dry_run).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "message": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Sync failed: {e}"),
+            "Check that your env.cue file is valid and contains an 'ignore' field",
+        )),
+    }
 }
 
 /// Execute version command safely

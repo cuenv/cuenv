@@ -169,6 +169,53 @@ pub struct Base {
     pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
 }
 
+/// Ignore patterns for tool-specific ignore files.
+/// Keys are tool names (e.g., "git", "docker", "prettier").
+/// Values can be either:
+/// - A list of patterns: `["node_modules/", ".env"]`
+/// - An object with patterns and optional filename override
+pub type Ignore = HashMap<String, IgnoreValue>;
+
+/// Value for an ignore entry - either a simple list of patterns or an extended config.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
+pub enum IgnoreValue {
+    /// Simple list of patterns
+    Patterns(Vec<String>),
+    /// Extended config with patterns and optional filename override
+    Extended(IgnoreEntry),
+}
+
+/// Extended ignore configuration with patterns and optional filename override.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct IgnoreEntry {
+    /// List of patterns to include in the ignore file
+    pub patterns: Vec<String>,
+    /// Optional filename override (defaults to `.{tool}ignore`)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+}
+
+impl IgnoreValue {
+    /// Get the patterns from this ignore value.
+    #[must_use]
+    pub fn patterns(&self) -> &[String] {
+        match self {
+            Self::Patterns(patterns) => patterns,
+            Self::Extended(entry) => &entry.patterns,
+        }
+    }
+
+    /// Get the optional filename override.
+    #[must_use]
+    pub fn filename(&self) -> Option<&str> {
+        match self {
+            Self::Patterns(_) => None,
+            Self::Extended(entry) => entry.filename.as_deref(),
+        }
+    }
+}
+
 /// Root Project configuration structure (leaf node - cannot unify with other projects)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
 pub struct Project {
@@ -198,6 +245,10 @@ pub struct Project {
     /// Tasks configuration
     #[serde(default)]
     pub tasks: HashMap<String, TaskDefinition>,
+
+    /// Ignore patterns for tool-specific ignore files
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Ignore>,
 }
 
 /// Type alias for backward compatibility
