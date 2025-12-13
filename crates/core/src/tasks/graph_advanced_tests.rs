@@ -1093,7 +1093,7 @@ fn test_project_separator_variations() {
     let mut graph = TaskGraph::new();
 
     // Different project::task formats
-    let formats = vec![
+    let formats = [
         "project::task",
         "project::nested.task",
         "project::deeply.nested.task",
