@@ -41,9 +41,6 @@ jobs:
       - name: Smoke test bootstrap cuenv
         run: cuenv --version
 
-      - uses: rust-lang/crates-io-auth-action@v1
-        id: auth
-
       - name: Run Release Pipeline
         run: cuenv ci --pipeline release
         env:
@@ -51,7 +48,6 @@ jobs:
           TAG: v${{ inputs.tag_name || github.event.release.tag_name }}
           CUE_REGISTRY: registry.cue.works
           CUE_REGISTRY_TOKEN: ${{ secrets.CUE_REGISTRY_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
@@ -236,3 +232,34 @@ jobs:
             git commit -m "bump: cuenv ${TAG_NAME}"
             git push origin main
           fi
+
+  publish-crates:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: upload-release-assets
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: |
+            accept-flake-config = true
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          pushFilter: '(-source$|nixpkgs\.tar\.gz$)'
+
+      - name: Build cuenv
+        run: nix build .#cuenv
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish to crates.io
+        run: ./result/bin/cuenv release publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
