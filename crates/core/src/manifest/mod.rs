@@ -81,12 +81,18 @@ pub struct TaskRef {
 
 impl TaskRef {
     /// Parse the TaskRef into project name and task name
-    /// Returns None if the format is invalid
+    /// Returns None if the format is invalid or if project/task names are empty
     pub fn parse(&self) -> Option<(String, String)> {
         let ref_str = self.ref_.strip_prefix('#')?;
         let parts: Vec<&str> = ref_str.splitn(2, ':').collect();
         if parts.len() == 2 {
-            Some((parts[0].to_string(), parts[1].to_string()))
+            let project = parts[0];
+            let task = parts[1];
+            if !project.is_empty() && !task.is_empty() {
+                Some((project.to_string(), task.to_string()))
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -484,6 +490,7 @@ impl Project {
 mod tests {
     use super::*;
     use crate::tasks::{ParallelGroup, TaskIndex};
+    use crate::test_utils::create_test_hook;
 
     #[test]
     fn test_expand_cross_project_references() {
@@ -836,12 +843,8 @@ mod tests {
             ref_: "#:task".to_string(),
         };
 
-        // Empty project name - should still parse but with empty string
-        let parsed = task_ref.parse();
-        assert!(parsed.is_some());
-        let (project, task) = parsed.unwrap();
-        assert_eq!(project, "");
-        assert_eq!(task, "task");
+        // Empty project name should be rejected
+        assert!(task_ref.parse().is_none());
     }
 
     #[test]
@@ -850,12 +853,18 @@ mod tests {
             ref_: "#project:".to_string(),
         };
 
-        // Empty task name - should still parse but with empty string
-        let parsed = task_ref.parse();
-        assert!(parsed.is_some());
-        let (project, task) = parsed.unwrap();
-        assert_eq!(project, "project");
-        assert_eq!(task, "");
+        // Empty task name should be rejected
+        assert!(task_ref.parse().is_none());
+    }
+
+    #[test]
+    fn test_task_ref_parse_both_empty() {
+        let task_ref = TaskRef {
+            ref_: "#:".to_string(),
+        };
+
+        // Both empty should be rejected
+        assert!(task_ref.parse().is_none());
     }
 
     #[test]
@@ -1337,18 +1346,6 @@ mod tests {
     // ============================================================================
     // Project Hooks (onEnter, onExit) Tests
     // ============================================================================
-
-    fn create_test_hook(order: i32, command: &str) -> crate::hooks::Hook {
-        crate::hooks::Hook {
-            order,
-            propagate: false,
-            command: command.to_string(),
-            args: vec![],
-            dir: None,
-            inputs: vec![],
-            source: None,
-        }
-    }
 
     #[test]
     fn test_on_enter_hooks_ordering() {

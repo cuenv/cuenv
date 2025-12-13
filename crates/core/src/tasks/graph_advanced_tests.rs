@@ -8,63 +8,9 @@
 //! - Task discovery and matcher integration
 
 use super::*;
-
-/// Create a test task with dependencies and optional labels
-fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
-    Task {
-        command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(String::from).collect(),
-        description: Some(format!("Test task {}", name)),
-        labels: labels.into_iter().map(String::from).collect(),
-        ..Default::default()
-    }
-}
-
-/// Create a task that references another project's task (TaskRef placeholder)
-fn create_task_ref(ref_str: &str, deps: Vec<&str>) -> Task {
-    let mut task = Task::from_task_ref(ref_str);
-    task.depends_on = deps.into_iter().map(String::from).collect();
-    task
-}
-
-/// Create a task with project reference input
-fn create_task_with_project_ref(
-    name: &str,
-    deps: Vec<&str>,
-    project: &str,
-    task: &str,
-    mappings: Vec<(&str, &str)>,
-) -> Task {
-    Task {
-        command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(String::from).collect(),
-        description: Some(format!("Test task {}", name)),
-        inputs: vec![super::super::Input::Project(
-            super::super::ProjectReference {
-                project: project.to_string(),
-                task: task.to_string(),
-                map: mappings
-                    .into_iter()
-                    .map(|(from, to)| super::super::Mapping {
-                        from: from.to_string(),
-                        to: to.to_string(),
-                    })
-                    .collect(),
-            },
-        )],
-        ..Default::default()
-    }
-}
-
-/// Create a task with workspace dependency
-fn create_workspace_task(name: &str, deps: Vec<&str>, workspaces: Vec<&str>) -> Task {
-    Task {
-        command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(String::from).collect(),
-        workspaces: workspaces.into_iter().map(String::from).collect(),
-        ..Default::default()
-    }
-}
+use crate::test_utils::{
+    create_task, create_task_ref, create_task_with_project_ref, create_workspace_task,
+};
 
 // ============================================================================
 // Basic Cross-Project Reference Tests
@@ -1133,7 +1079,7 @@ fn test_multiple_tasks_same_project() {
     ];
 
     for (name, deps) in &tasks {
-        let task = create_task(name, deps.iter().map(|s| *s).collect(), vec![]);
+        let task = create_task(name, deps.to_vec(), vec![]);
         graph.add_task(name, task).unwrap();
     }
 

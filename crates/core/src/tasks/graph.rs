@@ -344,15 +344,7 @@ mod graph_advanced_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn create_test_task(name: &str, deps: Vec<String>) -> Task {
-        Task {
-            command: format!("echo {}", name),
-            depends_on: deps,
-            description: Some(format!("Test task {}", name)),
-            ..Default::default()
-        }
-    }
+    use crate::test_utils::create_task;
 
     #[test]
     fn test_task_graph_new() {
@@ -363,14 +355,14 @@ mod tests {
     #[test]
     fn test_add_single_task() {
         let mut graph = TaskGraph::new();
-        let task = create_test_task("test", vec![]);
+        let task = create_task("test", vec![], vec![]);
 
         let node = graph.add_task("test", task).unwrap();
         assert!(graph.contains_task("test"));
         assert_eq!(graph.task_count(), 1);
 
         // Adding same task again should return same node
-        let task2 = create_test_task("test", vec![]);
+        let task2 = create_task("test", vec![], vec![]);
         let node2 = graph.add_task("test", task2).unwrap();
         assert_eq!(node, node2);
         assert_eq!(graph.task_count(), 1);
@@ -381,9 +373,9 @@ mod tests {
         let mut graph = TaskGraph::new();
 
         // Add tasks with dependencies
-        let task1 = create_test_task("task1", vec![]);
-        let task2 = create_test_task("task2", vec!["task1".to_string()]);
-        let task3 = create_test_task("task3", vec!["task1".to_string(), "task2".to_string()]);
+        let task1 = create_task("task1", vec![], vec![]);
+        let task2 = create_task("task2", vec!["task1"], vec![]);
+        let task3 = create_task("task3", vec!["task1", "task2"], vec![]);
 
         graph.add_task("task1", task1).unwrap();
         graph.add_task("task2", task2).unwrap();
@@ -413,9 +405,9 @@ mod tests {
         let mut graph = TaskGraph::new();
 
         // Create a cycle: task1 -> task2 -> task3 -> task1
-        let task1 = create_test_task("task1", vec!["task3".to_string()]);
-        let task2 = create_test_task("task2", vec!["task1".to_string()]);
-        let task3 = create_test_task("task3", vec!["task2".to_string()]);
+        let task1 = create_task("task1", vec!["task3"], vec![]);
+        let task2 = create_task("task2", vec!["task1"], vec![]);
+        let task3 = create_task("task3", vec!["task2"], vec![]);
 
         graph.add_task("task1", task1).unwrap();
         graph.add_task("task2", task2).unwrap();
@@ -435,11 +427,11 @@ mod tests {
         // Level 1: task3 (depends on task1), task4 (depends on task2)
         // Level 2: task5 (depends on task3 and task4)
 
-        let task1 = create_test_task("task1", vec![]);
-        let task2 = create_test_task("task2", vec![]);
-        let task3 = create_test_task("task3", vec!["task1".to_string()]);
-        let task4 = create_test_task("task4", vec!["task2".to_string()]);
-        let task5 = create_test_task("task5", vec!["task3".to_string(), "task4".to_string()]);
+        let task1 = create_task("task1", vec![], vec![]);
+        let task2 = create_task("task2", vec![], vec![]);
+        let task3 = create_task("task3", vec!["task1"], vec![]);
+        let task4 = create_task("task4", vec!["task2"], vec![]);
+        let task5 = create_task("task5", vec!["task3", "task4"], vec![]);
 
         graph.add_task("task1", task1).unwrap();
         graph.add_task("task2", task2).unwrap();
@@ -469,8 +461,8 @@ mod tests {
         let mut graph = TaskGraph::new();
         let tasks = Tasks::new();
 
-        let task1 = create_test_task("t1", vec![]);
-        let task2 = create_test_task("t2", vec![]);
+        let task1 = create_task("t1", vec![], vec![]);
+        let task2 = create_task("t2", vec![], vec![]);
 
         let group = TaskGroup::Sequential(vec![
             TaskDefinition::Single(Box::new(task1)),
@@ -492,8 +484,8 @@ mod tests {
         let mut graph = TaskGraph::new();
         let tasks = Tasks::new();
 
-        let task1 = create_test_task("t1", vec![]);
-        let task2 = create_test_task("t2", vec![]);
+        let task1 = create_task("t1", vec![], vec![]);
+        let task2 = create_task("t2", vec![], vec![]);
 
         let mut parallel_tasks = HashMap::new();
         parallel_tasks.insert("first".to_string(), TaskDefinition::Single(Box::new(task1)));
@@ -523,9 +515,9 @@ mod tests {
         let mut graph = TaskGraph::new();
 
         // Create cyclic dependencies: A -> B -> C -> A
-        let task_a = create_test_task("task_a", vec!["task_c".to_string()]);
-        let task_b = create_test_task("task_b", vec!["task_a".to_string()]);
-        let task_c = create_test_task("task_c", vec!["task_b".to_string()]);
+        let task_a = create_task("task_a", vec!["task_c"], vec![]);
+        let task_b = create_task("task_b", vec!["task_a"], vec![]);
+        let task_c = create_task("task_c", vec!["task_b"], vec![]);
 
         graph.add_task("task_a", task_a).unwrap();
         graph.add_task("task_b", task_b).unwrap();
@@ -544,7 +536,7 @@ mod tests {
         let mut graph = TaskGraph::new();
 
         // Create self-referencing task
-        let task = create_test_task("self_ref", vec!["self_ref".to_string()]);
+        let task = create_task("self_ref", vec!["self_ref"], vec![]);
         graph.add_task("self_ref", task).unwrap();
         graph.add_dependency_edges().unwrap(); // Add dependency edges after adding all tasks
 
@@ -562,10 +554,10 @@ mod tests {
         //   B   C
         //    \ /
         //     D
-        let task_a = create_test_task("a", vec![]);
-        let task_b = create_test_task("b", vec!["a".to_string()]);
-        let task_c = create_test_task("c", vec!["a".to_string()]);
-        let task_d = create_test_task("d", vec!["b".to_string(), "c".to_string()]);
+        let task_a = create_task("a", vec![], vec![]);
+        let task_b = create_task("b", vec!["a"], vec![]);
+        let task_c = create_task("c", vec!["a"], vec![]);
+        let task_d = create_task("d", vec!["b", "c"], vec![]);
 
         graph.add_task("a", task_a).unwrap();
         graph.add_task("b", task_b).unwrap();
@@ -590,7 +582,7 @@ mod tests {
         let mut graph = TaskGraph::new();
 
         // Create task with dependency that doesn't exist
-        let task = create_test_task("dependent", vec!["missing".to_string()]);
+        let task = create_task("dependent", vec!["missing"], vec![]);
         graph.add_task("dependent", task).unwrap();
 
         // Should fail to get parallel groups due to missing dependency
@@ -612,7 +604,7 @@ mod tests {
     fn test_single_task_no_deps() {
         let mut graph = TaskGraph::new();
 
-        let task = create_test_task("solo", vec![]);
+        let task = create_task("solo", vec![], vec![]);
         graph.add_task("solo", task).unwrap();
 
         assert_eq!(graph.task_count(), 1);
@@ -628,10 +620,10 @@ mod tests {
         let mut graph = TaskGraph::new();
 
         // Create linear chain: A -> B -> C -> D
-        let task_a = create_test_task("a", vec![]);
-        let task_b = create_test_task("b", vec!["a".to_string()]);
-        let task_c = create_test_task("c", vec!["b".to_string()]);
-        let task_d = create_test_task("d", vec!["c".to_string()]);
+        let task_a = create_task("a", vec![], vec![]);
+        let task_b = create_task("b", vec!["a"], vec![]);
+        let task_c = create_task("c", vec!["b"], vec![]);
+        let task_d = create_task("d", vec!["c"], vec![]);
 
         graph.add_task("a", task_a).unwrap();
         graph.add_task("b", task_b).unwrap();
