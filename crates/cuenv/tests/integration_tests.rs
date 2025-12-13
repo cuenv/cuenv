@@ -702,7 +702,10 @@ fn test_sync_codeowners_dry_run() {
                 stdout.contains("@core-team"),
                 "Should contain default owners"
             );
-            assert!(stdout.contains("*.rs @rust-team"), "Should contain Rust rule");
+            assert!(
+                stdout.contains("*.rs @rust-team"),
+                "Should contain Rust rule"
+            );
             assert!(
                 stdout.contains("*.ts @frontend-team"),
                 "Should contain TypeScript rule"
@@ -767,7 +770,10 @@ fn test_sync_codeowners_check_no_file() {
     match result {
         Ok((stdout, stderr, success)) => {
             // Should fail because CODEOWNERS file doesn't exist
-            assert!(!success, "Command should fail when CODEOWNERS doesn't exist");
+            assert!(
+                !success,
+                "Command should fail when CODEOWNERS doesn't exist"
+            );
             let combined = format!("{stdout}{stderr}");
             assert!(
                 combined.contains("not found") || combined.contains("Run 'cuenv sync codeowners'"),
