@@ -81,6 +81,7 @@ ignore: {
 ```
 
 Tool names map to ignore files as follows:
+
 - `git` creates `.gitignore`
 - `docker` creates `.dockerignore`
 - `npm` creates `.npmignore`

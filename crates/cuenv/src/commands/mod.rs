@@ -3,6 +3,7 @@ pub(crate) mod env_file;
 pub mod exec;
 pub mod export;
 pub mod hooks;
+pub mod owners;
 pub mod release;
 pub mod sync;
 pub mod task;
@@ -239,6 +240,7 @@ pub enum Command {
         path: String,
         package: String,
         dry_run: bool,
+        check: bool,
     },
 }
 
@@ -349,7 +351,11 @@ impl CommandExecutor {
                 path,
                 package,
                 dry_run,
-            } => self.execute_sync(subcommand, path, package, dry_run).await,
+                check,
+            } => {
+                self.execute_sync(subcommand, path, package, dry_run, check)
+                    .await
+            }
             // Tui, Web, Completions, and release commands are handled directly in main.rs
             Command::Tui
             | Command::Web { .. }
@@ -368,6 +374,7 @@ impl CommandExecutor {
         path: String,
         package: String,
         dry_run: bool,
+        check: bool,
     ) -> Result<()> {
         let command_name = "sync";
 
@@ -375,24 +382,48 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        // If no subcommand, run all sync operations (currently just ignore)
+        // If no subcommand, run all sync operations (ignore + codeowners)
         // If specific subcommand, run only that operation
         let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
+        let run_codeowners = matches!(subcommand, None | Some(SyncCommands::Codeowners { .. }));
 
         let mut outputs = Vec::new();
+        let mut had_error = false;
 
         if run_ignore {
-            match sync::execute_sync(&path, &package, dry_run).await {
+            match sync::execute_sync_ignore(&path, &package, dry_run, check).await {
                 Ok(output) => outputs.push(output),
                 Err(e) => {
-                    self.send_event(Event::CommandComplete {
-                        command: command_name.to_string(),
-                        success: false,
-                        output: format!("Error: {e}"),
-                    });
-                    return Err(e);
+                    outputs.push(format!("Ignore sync error: {e}"));
+                    had_error = true;
                 }
             }
+        }
+
+        if run_codeowners {
+            // Use optional version when running aggregate sync (no specific subcommand)
+            let is_aggregate_sync = subcommand.is_none();
+            let codeowners_result = if is_aggregate_sync {
+                sync::execute_sync_codeowners_optional(&path, &package, dry_run, check).await
+            } else {
+                sync::execute_sync_codeowners(&path, &package, dry_run, check).await
+            };
+            match codeowners_result {
+                Ok(output) => outputs.push(output),
+                Err(e) => {
+                    outputs.push(format!("Codeowners sync error: {e}"));
+                    had_error = true;
+                }
+            }
+        }
+
+        if had_error {
+            self.send_event(Event::CommandComplete {
+                command: command_name.to_string(),
+                success: false,
+                output: outputs.join("\n"),
+            });
+            return Err(cuenv_core::Error::configuration(outputs.join("\n")));
         }
 
         self.send_event(Event::CommandComplete {
