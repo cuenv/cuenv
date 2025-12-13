@@ -97,7 +97,8 @@ package schema
 // - string: File path, directory, or glob pattern
 // - #ProjectReference: Cross-project task outputs
 // - #TaskOutput: Same-project task outputs
-#Input: string | #ProjectReference | #TaskOutput
+// Note: #TaskOutput is preferred when only 'task' field is present
+#Input: string | #ProjectReference | *#TaskOutput
 
 // Reference to another project's task within the same Git root
 #ProjectReference: close({
