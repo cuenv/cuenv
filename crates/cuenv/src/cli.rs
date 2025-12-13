@@ -491,6 +491,8 @@ pub enum Commands {
         package: String,
         #[arg(long, help = "Show what would be generated without writing files")]
         dry_run: bool,
+        #[arg(long, help = "Check if files are in sync without making changes")]
+        check: bool,
     },
 }
 
@@ -514,6 +516,28 @@ pub enum SyncCommands {
         package: String,
         #[arg(long, help = "Show what would be generated without writing files")]
         dry_run: bool,
+        #[arg(long, help = "Check if files are in sync without making changes")]
+        check: bool,
+    },
+    #[command(about = "Sync CODEOWNERS file from CUE configuration")]
+    Codeowners {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(long, help = "Show what would be generated without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Check if CODEOWNERS is in sync without making changes")]
+        check: bool,
     },
 }
 
@@ -743,6 +767,8 @@ pub enum ReleaseCommands {
     },
 }
 
+
+
 impl Commands {
     /// Convert CLI commands to internal Command representation
     /// The environment parameter comes from the global CLI flag
@@ -908,31 +934,58 @@ impl Commands {
                 path,
                 package,
                 dry_run,
+                check,
             } => {
                 // If subcommand has its own arguments, use them; otherwise use parent args
-                let (effective_subcommand, effective_path, effective_package, effective_dry_run) =
-                    match subcommand {
+                let (
+                    effective_subcommand,
+                    effective_path,
+                    effective_package,
+                    effective_dry_run,
+                    effective_check,
+                ) = match subcommand {
+                    Some(SyncCommands::Ignore {
+                        path: sub_path,
+                        package: sub_package,
+                        dry_run: sub_dry_run,
+                        check: sub_check,
+                    }) => (
                         Some(SyncCommands::Ignore {
-                            path: sub_path,
-                            package: sub_package,
+                            path: sub_path.clone(),
+                            package: sub_package.clone(),
                             dry_run: sub_dry_run,
-                        }) => (
-                            Some(SyncCommands::Ignore {
-                                path: sub_path.clone(),
-                                package: sub_package.clone(),
-                                dry_run: sub_dry_run,
-                            }),
-                            sub_path,
-                            sub_package,
-                            sub_dry_run,
-                        ),
-                        None => (None, path, package, dry_run),
-                    };
+                            check: sub_check,
+                        }),
+                        sub_path,
+                        sub_package,
+                        sub_dry_run,
+                        sub_check,
+                    ),
+                    Some(SyncCommands::Codeowners {
+                        path: sub_path,
+                        package: sub_package,
+                        dry_run: sub_dry_run,
+                        check: sub_check,
+                    }) => (
+                        Some(SyncCommands::Codeowners {
+                            path: sub_path.clone(),
+                            package: sub_package.clone(),
+                            dry_run: sub_dry_run,
+                            check: sub_check,
+                        }),
+                        sub_path,
+                        sub_package,
+                        sub_dry_run,
+                        sub_check,
+                    ),
+                    None => (None, path, package, dry_run, check),
+                };
                 Command::Sync {
                     subcommand: effective_subcommand,
                     path: effective_path,
                     package: effective_package,
                     dry_run: effective_dry_run,
+                    check: effective_check,
                 }
             }
         }

@@ -1,8 +1,10 @@
 //! Sync command implementation for generating files from CUE configuration.
 //!
-//! Currently supports generating ignore files (.gitignore, .dockerignore, etc.)
-//! from the `ignore` field in the CUE configuration.
+//! Supports generating:
+//! - Ignore files (.gitignore, .dockerignore, etc.) from the `ignore` field
+//! - CODEOWNERS file from the `owners` field
 
+use super::owners;
 use cuengine::{CueEvaluator, Cuenv};
 use cuenv_core::Result;
 use cuenv_ignore::{FileStatus, IgnoreConfig};
@@ -25,12 +27,17 @@ fn convert_to_ignore_configs(manifest: &Cuenv) -> Vec<IgnoreConfig> {
         .collect()
 }
 
-/// Execute the sync command.
+/// Execute the sync ignore command.
 ///
 /// Reads the CUE configuration and generates ignore files based on the `ignore` field.
-#[instrument(name = "sync")]
-pub async fn execute_sync(path: &str, package: &str, dry_run: bool) -> Result<String> {
-    tracing::info!("Starting sync command");
+#[instrument(name = "sync_ignore")]
+pub async fn execute_sync_ignore(
+    path: &str,
+    package: &str,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    tracing::info!("Starting sync ignore command");
 
     // Create CUE evaluator
     let evaluator = CueEvaluator::builder().build()?;
@@ -58,9 +65,12 @@ pub async fn execute_sync(path: &str, package: &str, dry_run: bool) -> Result<St
         return Ok("No ignore files to generate (all pattern lists are empty).".to_string());
     }
 
+    // In check mode, use dry_run and verify files match
+    let effective_dry_run = dry_run || check;
+
     // Generate ignore files using the cuenv-ignore crate
-    let result =
-        cuenv_ignore::generate_ignore_files(dir_path, configs, dry_run).map_err(|e| match e {
+    let result = cuenv_ignore::generate_ignore_files(dir_path, configs, effective_dry_run)
+        .map_err(|e| match e {
             cuenv_ignore::Error::NotInGitRepo => {
                 cuenv_core::Error::configuration("cuenv sync must be run within a Git repository")
             }
@@ -79,6 +89,26 @@ pub async fn execute_sync(path: &str, package: &str, dry_run: bool) -> Result<St
                 operation: "sync ignore files".to_string(),
             },
         })?;
+
+    // In check mode, verify all files are unchanged
+    if check {
+        let mut out_of_sync = Vec::new();
+        for file in &result.files {
+            match file.status {
+                FileStatus::WouldCreate | FileStatus::WouldUpdate => {
+                    out_of_sync.push(file.filename.clone());
+                }
+                FileStatus::Unchanged | FileStatus::Created | FileStatus::Updated => {}
+            }
+        }
+        if !out_of_sync.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Ignore files out of sync: {}. Run 'cuenv sync ignore' to update.",
+                out_of_sync.join(", ")
+            )));
+        }
+        return Ok("Ignore files are in sync.".to_string());
+    }
 
     // Format output
     let mut output_lines = Vec::new();
@@ -111,8 +141,27 @@ pub async fn execute_sync(path: &str, package: &str, dry_run: bool) -> Result<St
     }
 
     let output = output_lines.join("\n");
-    tracing::info!("Sync command completed successfully");
+    tracing::info!("Sync ignore command completed successfully");
     Ok(output)
+}
+
+/// Execute the sync codeowners command.
+///
+/// Reads the CUE configuration and generates CODEOWNERS file based on the `owners` field.
+#[instrument(name = "sync_codeowners")]
+pub async fn execute_sync_codeowners(
+    path: &str,
+    package: &str,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    tracing::info!("Starting sync codeowners command");
+
+    if check {
+        owners::execute_owners_check(path, package).await
+    } else {
+        owners::execute_owners_sync(path, package, dry_run).await
+    }
 }
 
 #[cfg(test)]
