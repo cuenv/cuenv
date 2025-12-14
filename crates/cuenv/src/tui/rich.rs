@@ -199,6 +199,10 @@ impl RichTui {
 
     /// Render the TUI
     fn render(&mut self) -> io::Result<()> {
+        // Extract references to avoid borrow checker issues in the closure
+        let state = &self.state;
+        let quit_requested = self.quit_requested;
+
         self.terminal.draw(|f| {
             let size = f.area();
 
@@ -214,32 +218,32 @@ impl RichTui {
                 .split(size);
 
             // Render header
-            self.render_header(f, chunks[0]);
+            Self::render_header_static(state, f, chunks[0]);
 
             // Render DAG widget
-            let dag_widget = DagWidget::new(&self.state);
+            let dag_widget = DagWidget::new(state);
             f.render_widget(dag_widget, chunks[1]);
 
             // Render task panes widget
-            let panes_widget = TaskPanesWidget::new(&self.state);
+            let panes_widget = TaskPanesWidget::new(state);
             f.render_widget(panes_widget, chunks[2]);
 
             // Render status bar
-            self.render_status_bar(f, chunks[3]);
+            Self::render_status_bar_static(state, quit_requested, f, chunks[3]);
         })?;
 
         Ok(())
     }
 
-    /// Render header with elapsed time
-    fn render_header(&self, f: &mut ratatui::Frame, area: Rect) {
-        let elapsed_ms = self.state.elapsed_ms();
+    /// Render header with elapsed time (static version for use in closures)
+    fn render_header_static(state: &TuiState, f: &mut ratatui::Frame, area: Rect) {
+        let elapsed_ms = state.elapsed_ms();
         let elapsed_secs = elapsed_ms / 1000;
         let mins = elapsed_secs / 60;
         let secs = elapsed_secs % 60;
 
-        let title = if self.state.is_complete {
-            if self.state.success {
+        let title = if state.is_complete {
+            if state.success {
                 format!(" Task Execution Complete ({mins}:{secs:02}) ")
             } else {
                 format!(" Task Execution Failed ({mins}:{secs:02}) ")
@@ -248,8 +252,8 @@ impl RichTui {
             format!(" Task Execution ({mins}:{secs:02}) ")
         };
 
-        let color = if self.state.is_complete {
-            if self.state.success {
+        let color = if state.is_complete {
+            if state.success {
                 Color::Green
             } else {
                 Color::Red
@@ -267,20 +271,18 @@ impl RichTui {
         f.render_widget(block, area);
 
         // Show task counts
-        let total = self.state.tasks.len();
-        let completed = self
-            .state
+        let total = state.tasks.len();
+        let completed = state
             .tasks
             .values()
             .filter(|t| matches!(t.status, TaskStatus::Completed | TaskStatus::Cached))
             .count();
-        let failed = self
-            .state
+        let failed = state
             .tasks
             .values()
             .filter(|t| t.status == TaskStatus::Failed)
             .count();
-        let running = self.state.running_tasks.len();
+        let running = state.running_tasks.len();
 
         let info = format!(
             "Total: {} | Running: {} | Completed: {} | Failed: {}",
@@ -291,11 +293,11 @@ impl RichTui {
         f.render_widget(paragraph, inner);
     }
 
-    /// Render status bar
-    fn render_status_bar(&self, f: &mut ratatui::Frame, area: Rect) {
-        let help_text = if self.state.is_complete {
+    /// Render status bar (static version for use in closures)
+    fn render_status_bar_static(state: &TuiState, quit_requested: bool, f: &mut ratatui::Frame, area: Rect) {
+        let help_text = if state.is_complete {
             "Press 'q' or Esc to quit"
-        } else if self.quit_requested {
+        } else if quit_requested {
             "Waiting for tasks to complete... (Ctrl+C to force quit)"
         } else {
             "Press 'q' or Esc to quit when done | Ctrl+C to abort"
