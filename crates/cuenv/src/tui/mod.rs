@@ -1,3 +1,8 @@
+// Module declarations
+pub mod widgets;
+pub mod state;
+pub mod rich;
+
 use crate::coordinator::client::CoordinatorClient;
 use crate::events::Event;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyModifiers};
@@ -21,6 +26,9 @@ use ratatui::{
 use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 use tracing::{Level, event};
+
+// Re-export rich TUI
+pub use rich::run_rich_tui;
 
 #[allow(dead_code)]
 pub struct InlineTui {
