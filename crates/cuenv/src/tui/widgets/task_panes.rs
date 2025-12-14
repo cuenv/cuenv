@@ -40,32 +40,23 @@ impl<'a> TaskPanesWidget<'a> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Combine stdout and stderr with prefixes
+        // Use combined output which preserves chronological order
         let mut lines = Vec::new();
 
         // Show last N lines that fit in the pane
         let max_lines = inner.height.saturating_sub(1) as usize;
 
-        // Interleave stdout and stderr in order, but keep recent output visible
-        let total_lines = output.stdout.len() + output.stderr.len();
-        let skip = total_lines.saturating_sub(max_lines);
+        // Skip older lines if we have more than max_lines
+        let skip = output.combined.len().saturating_sub(max_lines);
 
-        let mut all_lines: Vec<(String, bool)> = Vec::new();
-        for line in &output.stdout {
-            all_lines.push((line.clone(), false)); // false = stdout
-        }
-        for line in &output.stderr {
-            all_lines.push((line.clone(), true)); // true = stderr
-        }
-
-        for (line, is_stderr) in all_lines.into_iter().skip(skip) {
-            if is_stderr {
+        for output_line in output.combined.iter().skip(skip) {
+            if output_line.is_stderr {
                 lines.push(Line::from(vec![
                     Span::styled("! ", Style::default().fg(Color::Red)),
-                    Span::raw(line),
+                    Span::raw(&output_line.content),
                 ]));
             } else {
-                lines.push(Line::from(vec![Span::raw(line)]));
+                lines.push(Line::from(vec![Span::raw(&output_line.content)]));
             }
         }
 

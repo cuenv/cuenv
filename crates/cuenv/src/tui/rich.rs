@@ -38,6 +38,7 @@ pub struct RichTui {
     event_rx: mpsc::UnboundedReceiver<CuenvEvent>,
     quit_requested: bool,
     can_quit: bool,
+    received_completion_event: bool,
 }
 
 impl RichTui {
@@ -57,6 +58,7 @@ impl RichTui {
             event_rx,
             quit_requested: false,
             can_quit: false,
+            received_completion_event: false,
         })
     }
 
@@ -118,9 +120,14 @@ impl RichTui {
                 // No events available, continue
             }
             Err(mpsc::error::TryRecvError::Disconnected) => {
-                // Event channel closed, mark as complete
+                // Event channel closed - only mark success if we received a completion event
                 if !self.state.is_complete {
-                    self.state.complete(true, None);
+                    if self.received_completion_event {
+                        self.state.complete(true, None);
+                    } else {
+                        // Channel closed unexpectedly without completion event
+                        self.state.complete(false, Some("Event channel closed unexpectedly".to_string()));
+                    }
                 }
                 self.can_quit = true;
             }
@@ -137,6 +144,7 @@ impl RichTui {
                 use cuenv_events::CommandEvent;
                 match cmd_event {
                     CommandEvent::Completed { success, .. } => {
+                        self.received_completion_event = true;
                         self.state.complete(success, None);
                         self.can_quit = true;
                     }

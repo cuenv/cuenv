@@ -1,7 +1,6 @@
 //! Centralized state management for the rich TUI
 
-use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 /// Status of a task in the execution graph
@@ -92,19 +91,37 @@ impl TaskInfo {
     }
 }
 
+/// Maximum number of output lines to keep per stream (stdout/stderr)
+const MAX_OUTPUT_LINES: usize = 1000;
+
+/// Output line with timestamp for chronological ordering
+#[derive(Debug, Clone)]
+pub struct OutputLine {
+    /// The line content
+    pub content: String,
+    /// Whether this is stderr (false = stdout)
+    pub is_stderr: bool,
+    /// Sequence number for ordering
+    pub sequence: usize,
+}
+
 /// Output buffer for a running task
 #[derive(Debug, Clone)]
 pub struct TaskOutput {
     /// Task name
     pub name: String,
-    /// Stdout lines
-    pub stdout: Vec<String>,
-    /// Stderr lines
-    pub stderr: Vec<String>,
+    /// Stdout lines (bounded ring buffer)
+    pub stdout: VecDeque<String>,
+    /// Stderr lines (bounded ring buffer)
+    pub stderr: VecDeque<String>,
+    /// Combined output with ordering preserved
+    pub combined: VecDeque<OutputLine>,
     /// Whether stdout has new content since last render
     pub stdout_dirty: bool,
     /// Whether stderr has new content since last render
     pub stderr_dirty: bool,
+    /// Sequence counter for ordering
+    sequence: usize,
 }
 
 impl TaskOutput {
@@ -113,22 +130,56 @@ impl TaskOutput {
     pub fn new(name: String) -> Self {
         Self {
             name,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
+            stdout: VecDeque::new(),
+            stderr: VecDeque::new(),
+            combined: VecDeque::new(),
             stdout_dirty: false,
             stderr_dirty: false,
+            sequence: 0,
         }
     }
 
-    /// Add a stdout line
+    /// Add a stdout line (with bounded buffer)
     pub fn add_stdout(&mut self, line: String) {
-        self.stdout.push(line);
+        // Add to stdout buffer with size limit
+        if self.stdout.len() >= MAX_OUTPUT_LINES {
+            self.stdout.pop_front();
+        }
+        self.stdout.push_back(line.clone());
+
+        // Add to combined output with ordering
+        if self.combined.len() >= MAX_OUTPUT_LINES {
+            self.combined.pop_front();
+        }
+        self.combined.push_back(OutputLine {
+            content: line,
+            is_stderr: false,
+            sequence: self.sequence,
+        });
+        self.sequence = self.sequence.wrapping_add(1);
+
         self.stdout_dirty = true;
     }
 
-    /// Add a stderr line
+    /// Add a stderr line (with bounded buffer)
     pub fn add_stderr(&mut self, line: String) {
-        self.stderr.push(line);
+        // Add to stderr buffer with size limit
+        if self.stderr.len() >= MAX_OUTPUT_LINES {
+            self.stderr.pop_front();
+        }
+        self.stderr.push_back(line.clone());
+
+        // Add to combined output with ordering
+        if self.combined.len() >= MAX_OUTPUT_LINES {
+            self.combined.pop_front();
+        }
+        self.combined.push_back(OutputLine {
+            content: line,
+            is_stderr: true,
+            sequence: self.sequence,
+        });
+        self.sequence = self.sequence.wrapping_add(1);
+
         self.stderr_dirty = true;
     }
 
@@ -375,5 +426,47 @@ mod tests {
         assert!(state2.is_complete);
         assert!(!state2.success);
         assert_eq!(state2.error_message, Some("error".to_string()));
+    }
+
+    #[test]
+    fn test_task_output_bounded_buffer() {
+        let mut output = TaskOutput::new("test".to_string());
+
+        // Add more lines than MAX_OUTPUT_LINES
+        for i in 0..MAX_OUTPUT_LINES + 100 {
+            output.add_stdout(format!("stdout line {}", i));
+            output.add_stderr(format!("stderr line {}", i));
+        }
+
+        // Buffers should be capped at MAX_OUTPUT_LINES
+        assert_eq!(output.stdout.len(), MAX_OUTPUT_LINES);
+        assert_eq!(output.stderr.len(), MAX_OUTPUT_LINES);
+        assert_eq!(output.combined.len(), MAX_OUTPUT_LINES);
+
+        // Oldest lines should be dropped, newest should remain
+        assert_eq!(output.stdout.back().unwrap(), &format!("stdout line {}", MAX_OUTPUT_LINES + 99));
+        assert_eq!(output.stderr.back().unwrap(), &format!("stderr line {}", MAX_OUTPUT_LINES + 99));
+    }
+
+    #[test]
+    fn test_task_output_chronological_order() {
+        let mut output = TaskOutput::new("test".to_string());
+
+        // Add lines in a specific order
+        output.add_stdout("first stdout".to_string());
+        output.add_stderr("first stderr".to_string());
+        output.add_stdout("second stdout".to_string());
+        output.add_stderr("second stderr".to_string());
+
+        // Combined output should preserve insertion order
+        assert_eq!(output.combined.len(), 4);
+        assert_eq!(output.combined[0].content, "first stdout");
+        assert!(!output.combined[0].is_stderr);
+        assert_eq!(output.combined[1].content, "first stderr");
+        assert!(output.combined[1].is_stderr);
+        assert_eq!(output.combined[2].content, "second stdout");
+        assert!(!output.combined[2].is_stderr);
+        assert_eq!(output.combined[3].content, "second stderr");
+        assert!(output.combined[3].is_stderr);
     }
 }

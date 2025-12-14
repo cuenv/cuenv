@@ -483,7 +483,8 @@ async fn execute_with_rich_tui(
             .filter_map(|dep| levels.get(&dep.task).copied())
             .max()
             .unwrap_or(0);
-        levels.insert(node.name.clone(), max_dep_level + (if node.task.depends_on.is_empty() { 0 } else { 1 }));
+        let increment = if node.task.depends_on.is_empty() { 0 } else { 1 };
+        levels.insert(node.name.clone(), max_dep_level.saturating_add(increment));
     }
 
     for node in sorted_tasks {
