@@ -1,0 +1,38 @@
+[package]
+name = "cuenv-codegen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Literate project scaffolding and management using CUE templates"
+
+[features]
+default = []
+
+[dependencies]
+cuenv-core = { workspace = true }
+cuenv-events = { workspace = true }
+cuengine = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+miette = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+
+# File system operations
+walkdir = "2.5"
+glob = { workspace = true }
+
+# JSON formatting
+serde_json_fmt = "0.4"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
