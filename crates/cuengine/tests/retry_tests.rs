@@ -1,7 +1,7 @@
 //! Tests for retry logic with exponential backoff
 
+use cuengine::CueEngineError;
 use cuengine::retry::{RetryConfig, with_retry};
-use cuenv_core::Error;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ fn test_retry_success_first_attempt() {
 
     let result = with_retry(&config, || {
         attempt_count += 1;
-        Ok::<String, Error>("success".to_string())
+        Ok::<String, CueEngineError>("success".to_string())
     });
 
     assert!(result.is_ok());
@@ -37,7 +37,7 @@ fn test_retry_eventual_success() {
         *count += 1;
 
         if *count < 3 {
-            Err(Error::configuration("temporary failure"))
+            Err(CueEngineError::configuration("temporary failure"))
         } else {
             Ok("success after retries".to_string())
         }
@@ -63,7 +63,7 @@ fn test_retry_max_attempts_exceeded() {
     let result = with_retry(&config, || {
         let mut count = attempt_count_clone.lock().unwrap();
         *count += 1;
-        Err::<String, Error>(Error::configuration("persistent failure"))
+        Err::<String, CueEngineError>(CueEngineError::configuration("persistent failure"))
     });
 
     assert!(result.is_err());
@@ -87,7 +87,7 @@ fn test_retry_exponential_backoff() {
     let _ = with_retry(&config, || {
         let mut times = attempt_times_clone.lock().unwrap();
         times.push(start.elapsed());
-        Err::<String, Error>(Error::configuration("failure"))
+        Err::<String, CueEngineError>(CueEngineError::configuration("failure"))
     });
 
     let times = attempt_times.lock().unwrap();
@@ -127,7 +127,7 @@ fn test_retry_max_delay_capping() {
     let _ = with_retry(&config, || {
         let mut times = attempt_times_clone.lock().unwrap();
         times.push(start.elapsed());
-        Err::<String, Error>(Error::configuration("failure"))
+        Err::<String, CueEngineError>(CueEngineError::configuration("failure"))
     });
 
     let times = attempt_times.lock().unwrap();
@@ -170,13 +170,13 @@ fn test_retry_with_different_error_types() {
 
     // Test with Validation error
     let result = with_retry(&config, || {
-        Err::<String, Error>(Error::validation("validation error"))
+        Err::<String, CueEngineError>(CueEngineError::validation("validation error"))
     });
     assert!(result.is_err());
 
-    // Test with Timeout error
+    // Test with Ffi error
     let result = with_retry(&config, || {
-        Err::<String, Error>(Error::Timeout { seconds: 5 })
+        Err::<String, CueEngineError>(CueEngineError::ffi("test_fn", "ffi error"))
     });
     assert!(result.is_err());
 }
@@ -193,7 +193,7 @@ fn test_retry_immediate_success_no_delay() {
     let start = Instant::now();
 
     let result = with_retry(&config, || {
-        Ok::<String, Error>("immediate success".to_string())
+        Ok::<String, CueEngineError>("immediate success".to_string())
     });
 
     let elapsed = start.elapsed();

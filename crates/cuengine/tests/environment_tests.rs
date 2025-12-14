@@ -2,8 +2,9 @@
 
 #![allow(clippy::print_stdout)]
 
-use cuengine::{CueEvaluator, Cuenv};
+use cuengine::CueEvaluator;
 use cuenv_core::environment::{EnvValue, Environment};
+use cuenv_core::manifest::Cuenv;
 use std::path::Path;
 
 #[test]

@@ -9,6 +9,23 @@ pub mod sync;
 pub mod task;
 pub mod version;
 
+/// Convert cuengine error to `cuenv_core` error
+pub(crate) fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error {
+    match err {
+        cuengine::CueEngineError::Configuration { message } => {
+            cuenv_core::Error::configuration(message)
+        }
+        cuengine::CueEngineError::Ffi { function, message } => {
+            cuenv_core::Error::ffi(function, message)
+        }
+        cuengine::CueEngineError::CueParse { path, message } => {
+            cuenv_core::Error::cue_parse(&path, message)
+        }
+        cuengine::CueEngineError::Validation { message } => cuenv_core::Error::validation(message),
+        cuengine::CueEngineError::Cache { message } => cuenv_core::Error::configuration(message),
+    }
+}
+
 pub mod ci_cmd {
     use crate::commands::task;
     use async_trait::async_trait;
