@@ -1,3 +1,7 @@
+pub mod rich;
+pub mod state;
+pub mod widgets;
+
 use crate::coordinator::client::CoordinatorClient;
 use crate::events::Event;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyModifiers};

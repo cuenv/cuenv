@@ -16,6 +16,10 @@ use cuenv_core::tasks::{
 };
 
 use super::env_file::find_cue_module_root;
+use crate::tui::rich::RichTui;
+use crate::tui::state::TaskInfo;
+use cuenv_events::{EventBus, CuenvEventLayer};
+use tracing_subscriber::layer::SubscriberExt;
 
 /// Get the dagger backend factory if the feature is enabled
 #[cfg(feature = "dagger-backend")]
@@ -60,6 +64,7 @@ pub async fn execute_task(
     materialize_outputs: Option<&str>,
     show_cache_path: bool,
     backend: Option<&str>,
+    tui: bool,
     help: bool,
     task_args: &[String],
 ) -> Result<String> {
@@ -388,6 +393,23 @@ pub async fn execute_task(
         task_graph.task_count()
     );
 
+    // If TUI is requested and we have a task graph, launch the rich TUI
+    if tui && task_graph.task_count() > 0 {
+        return execute_with_rich_tui(
+            path,
+            &evaluator,
+            &executor,
+            display_task_name.as_str(),
+            &task_def,
+            &task_graph,
+            &all_tasks,
+            manifest.env.as_ref(),
+            &runtime_env,
+            capture_output,
+        )
+        .await;
+    }
+
     // Execute using the appropriate method
     let results = execute_task_with_strategy_hermetic(
         path,
@@ -414,6 +436,87 @@ pub async fn execute_task(
     // Format results
     let output = format_task_results(results, capture_output, display_task_name.as_str());
     Ok(output)
+}
+
+/// Execute task with rich TUI interface
+#[allow(clippy::too_many_arguments)]
+async fn execute_with_rich_tui(
+    _project_dir: &str,
+    _evaluator: &CueEvaluator,
+    executor: &TaskExecutor,
+    task_name: &str,
+    _task_def: &TaskDefinition,
+    task_graph: &TaskGraph,
+    all_tasks: &Tasks,
+    _env_base: Option<&cuenv_core::environment::Env>,
+    _hook_env: &Environment,
+    _capture_output: bool,
+) -> Result<String> {
+    // Create event bus for TUI
+    let bus = EventBus::new();
+    let event_layer = CuenvEventLayer::new(bus.sender().inner);
+
+    // Install the event layer into tracing
+    // Note: This temporarily affects the global subscriber
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(event_layer),
+    );
+
+    // Get event receiver for TUI
+    let event_rx = bus.receiver().inner;
+
+    // Create and initialize TUI
+    let mut tui = RichTui::new(event_rx).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to initialize TUI: {e}"))
+    })?;
+
+    // Build TaskInfo structs from the task graph
+    let mut task_infos = Vec::new();
+    let sorted_tasks = task_graph.topological_sort().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to sort task graph: {e}"))
+    })?;
+
+    // Calculate levels based on dependencies
+    let mut levels: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for node in &sorted_tasks {
+        let max_dep_level = node.task.depends_on.iter()
+            .filter_map(|dep| levels.get(&dep.task).copied())
+            .max()
+            .unwrap_or(0);
+        levels.insert(node.name.clone(), max_dep_level + (if node.task.depends_on.is_empty() { 0 } else { 1 }));
+    }
+
+    for node in sorted_tasks {
+        let task_name = node.name.clone();
+        let dependencies: Vec<String> = node.task.depends_on.iter().map(|dep| dep.task.clone()).collect();
+        let level = levels.get(&task_name).copied().unwrap_or(0);
+
+        task_infos.push(TaskInfo::new(task_name, dependencies, level));
+    }
+
+    tui.init_tasks(task_infos);
+
+    // Run TUI and task execution concurrently
+    let tui_handle = tokio::spawn(async move {
+        tui.run().await
+    });
+
+    // Execute tasks
+    let results = executor.execute_graph(task_graph).await?;
+
+    // Wait for TUI to finish
+    let _ = tui_handle.await;
+
+    // Check for failures
+    if let Some(failed) = results.iter().find(|r| !r.success) {
+        return Err(cuenv_core::Error::configuration(summarize_task_failure(
+            failed,
+            TASK_FAILURE_SNIPPET_LINES,
+        )));
+    }
+
+    // Return success message
+    Ok(format!("Task '{task_name}' completed successfully in TUI mode"))
 }
 
 /// Execute a task using the appropriate strategy based on task type and dependencies
