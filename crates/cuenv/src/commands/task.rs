@@ -713,7 +713,18 @@ fn detect_package_name(dir: &Path) -> Result<String> {
 fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Result<Cuenv> {
     evaluator
         .evaluate_typed(dir, package)
-        .map_err(super::convert_engine_error)
+        .map_err(|e| {
+            let converted_err = super::convert_engine_error(e);
+            // Check if this is a deserialization error about missing 'name' field
+            let err_msg = converted_err.to_string();
+            if err_msg.contains("missing field `name`") {
+                cuenv_core::Error::configuration(
+                    "No project found in current directory. The configuration must use schema.#Project with a 'name' field to define tasks."
+                )
+            } else {
+                converted_err
+            }
+        })
 }
 
 #[allow(dead_code)]
