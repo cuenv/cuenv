@@ -1,8 +1,9 @@
 //! Builder pattern for configuring CUE evaluation
 
 use crate::cache::EvaluationCache;
+use crate::error::{CueEngineError, Result};
 use crate::retry::RetryConfig;
-use cuenv_core::{Limits, Result};
+use crate::validation::Limits;
 use std::path::Path;
 use std::time::Duration;
 
@@ -174,11 +175,17 @@ impl CueEvaluator {
     ///
     /// # Example
     /// ```no_run
-    /// use cuengine::{CueEvaluator, Cuenv};
+    /// use cuengine::CueEvaluator;
+    /// use serde::Deserialize;
     /// use std::path::Path;
     ///
+    /// #[derive(Deserialize)]
+    /// struct MyConfig {
+    ///     name: String,
+    /// }
+    ///
     /// let evaluator = CueEvaluator::builder().build().unwrap();
-    /// let manifest: Cuenv = evaluator.evaluate_typed(Path::new("/path"), "cuenv").unwrap();
+    /// let config: MyConfig = evaluator.evaluate_typed(Path::new("/path"), "mypackage").unwrap();
     /// ```
     pub fn evaluate_typed<T>(&self, dir_path: &Path, package_name: &str) -> Result<T>
     where
@@ -191,7 +198,7 @@ impl CueEvaluator {
                 std::any::type_name::<T>(),
                 e
             );
-            cuenv_core::Error::configuration(format!(
+            CueEngineError::configuration(format!(
                 "Failed to parse CUE output as {}: {}",
                 std::any::type_name::<T>(),
                 e

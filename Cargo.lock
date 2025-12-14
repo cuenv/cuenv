@@ -732,6 +732,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.17",
  "tokio-test",
  "tracing",
  "uuid",
@@ -798,6 +799,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-codeowners"
+version = "0.14.1"
+dependencies = [
+ "schemars",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
 name = "cuenv-core"
 version = "0.14.1"
 dependencies = [
@@ -805,6 +815,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "cucumber",
+ "cuenv-codeowners",
  "cuenv-events",
  "cuenv-workspaces",
  "dirs",
@@ -862,6 +873,7 @@ name = "cuenv-ignore"
 version = "0.14.1"
 dependencies = [
  "gix",
+ "serde",
  "tempfile",
  "thiserror 2.0.17",
  "tracing",

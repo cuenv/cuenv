@@ -9,15 +9,20 @@ homepage.workspace = true
 keywords.workspace = true
 categories = ["development-tools", "command-line-utilities"]
 readme = "../../readme.md"
-description = "Ignore file generation for cuenv - gitignore, dockerignore, and more"
+description = "Generate ignore files (.gitignore, .dockerignore, etc.)"
 
 [lints]
 workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
 
 [dependencies]
 gix = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

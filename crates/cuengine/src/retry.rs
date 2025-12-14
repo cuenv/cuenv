@@ -1,6 +1,6 @@
 //! Retry logic with exponential backoff
 
-use cuenv_core::Result;
+use crate::error::Result;
 use std::thread;
 use std::time::Duration;
 

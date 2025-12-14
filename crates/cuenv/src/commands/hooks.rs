@@ -2,7 +2,8 @@
 
 use super::env_file::{self, EnvFileStatus};
 use crate::cli::StatusFormat;
-use cuengine::{CueEvaluator, Cuenv};
+use cuengine::CueEvaluator;
+use cuenv_core::manifest::Cuenv;
 use cuenv_core::{
     Result,
     hooks::{
@@ -61,8 +62,12 @@ fn require_env_file(path: &Path, package: &str) -> Result<PathBuf> {
 
 /// Helper to evaluate CUE configuration
 fn evaluate_config(directory: &Path, package: &str) -> Result<Cuenv> {
-    let evaluator = CueEvaluator::builder().build()?;
-    evaluator.evaluate_typed(directory, package)
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+    evaluator
+        .evaluate_typed(directory, package)
+        .map_err(super::convert_engine_error)
 }
 
 /// Helper to evaluate CUE configuration as Value (for approval system)

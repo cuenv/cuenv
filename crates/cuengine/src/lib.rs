@@ -10,13 +10,18 @@
 
 pub mod builder;
 pub mod cache;
+pub mod error;
 pub mod retry;
 pub mod validation;
 
 // Re-export main types
 pub use builder::{CueEvaluator, CueEvaluatorBuilder};
-pub use cuenv_core::{Error, Result, manifest::Cuenv};
+pub use error::{CueEngineError, Result};
 pub use retry::RetryConfig;
+pub use validation::Limits;
+
+// Local type alias for internal use
+use error::CueEngineError as Error;
 
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
@@ -432,11 +437,17 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
 ///
 /// # Example
 /// ```no_run
-/// use cuengine::{evaluate_cue_package_typed, Cuenv};
+/// use cuengine::evaluate_cue_package_typed;
+/// use serde::Deserialize;
 /// use std::path::Path;
 ///
+/// #[derive(Deserialize)]
+/// struct MyConfig {
+///     name: String,
+/// }
+///
 /// let path = Path::new("/path/to/cue/files");
-/// let manifest: Cuenv = evaluate_cue_package_typed(path, "cuenv").unwrap();
+/// let config: MyConfig = evaluate_cue_package_typed(path, "mypackage").unwrap();
 /// ```
 #[tracing::instrument(
     name = "evaluate_cue_package_typed",
