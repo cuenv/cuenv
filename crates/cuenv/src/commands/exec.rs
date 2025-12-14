@@ -1,8 +1,9 @@
 //! Exec command implementation for running arbitrary commands with CUE environment
 
-use cuengine::{CueEvaluator, Cuenv};
+use cuengine::CueEvaluator;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
+use cuenv_core::manifest::Cuenv;
 use cuenv_core::tasks::execute_command;
 use std::path::Path;
 
@@ -25,8 +26,12 @@ pub async fn execute_exec(
     );
 
     // Evaluate CUE to get environment
-    let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv = evaluator.evaluate_typed(Path::new(path), package)?;
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+    let manifest: Cuenv = evaluator
+        .evaluate_typed(Path::new(path), package)
+        .map_err(super::convert_engine_error)?;
 
     // Get environment with hook-generated vars merged in
     let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());

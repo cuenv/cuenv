@@ -1,7 +1,28 @@
 //! Input validation functions
 
-use cuenv_core::{Error, Limits, Result};
+use crate::error::{CueEngineError as Error, Result};
 use std::path::Path;
+
+/// Configuration limits for CUE evaluation
+#[derive(Debug, Clone)]
+pub struct Limits {
+    /// Maximum path length in characters
+    pub max_path_length: usize,
+    /// Maximum package name length in characters
+    pub max_package_name_length: usize,
+    /// Maximum output size in bytes
+    pub max_output_size: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_path_length: 4096,
+            max_package_name_length: 256,
+            max_output_size: 100 * 1024 * 1024, // 100MB
+        }
+    }
+}
 
 /// Validate a directory path
 ///

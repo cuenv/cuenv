@@ -3,9 +3,10 @@
 // Some functions are reserved for hermetic execution which is temporarily disabled
 #![allow(dead_code)]
 
-use cuengine::{CueEvaluator, Cuenv};
+use cuengine::CueEvaluator;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
+use cuenv_core::manifest::Cuenv;
 use cuenv_core::manifest::TaskRef;
 use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
@@ -75,7 +76,11 @@ pub async fn execute_task(
     );
 
     // Evaluate CUE to get tasks and environment
-    let evaluator = Arc::new(CueEvaluator::builder().build()?);
+    let evaluator = Arc::new(
+        CueEvaluator::builder()
+            .build()
+            .map_err(super::convert_engine_error)?,
+    );
     let manifest: Cuenv =
         evaluate_manifest(&evaluator, Path::new(path), package)?.with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
@@ -706,7 +711,9 @@ fn detect_package_name(dir: &Path) -> Result<String> {
 }
 
 fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Result<Cuenv> {
-    evaluator.evaluate_typed(dir, package)
+    evaluator
+        .evaluate_typed(dir, package)
+        .map_err(super::convert_engine_error)
 }
 
 #[allow(dead_code)]

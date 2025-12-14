@@ -1,6 +1,6 @@
 //! Cache implementation for CUE evaluation results
 
-use cuenv_core::Result;
+use crate::error::{CueEngineError, Result};
 use lru::LruCache;
 use parking_lot::RwLock;
 use std::num::NonZeroUsize;
@@ -33,7 +33,7 @@ impl EvaluationCache {
     /// Returns an error if capacity is 0
     pub fn new(capacity: usize, ttl: Duration) -> Result<Self> {
         let capacity = NonZeroUsize::new(capacity)
-            .ok_or_else(|| cuenv_core::Error::configuration("Cache capacity must be non-zero"))?;
+            .ok_or_else(|| CueEngineError::cache("Cache capacity must be non-zero"))?;
 
         Ok(Self {
             cache: RwLock::new(LruCache::new(capacity)),

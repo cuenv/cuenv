@@ -1,5 +1,5 @@
 [package]
-name = "cuenv-ignore"
+name = "cuenv-codeowners"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,20 +9,16 @@ homepage.workspace = true
 keywords.workspace = true
 categories = ["development-tools", "command-line-utilities"]
 readme = "../../readme.md"
-description = "Generate ignore files (.gitignore, .dockerignore, etc.)"
-
-[lints]
-workspace = true
+description = "Generate CODEOWNERS files for GitHub, GitLab, and Bitbucket"
 
 [features]
 default = []
 serde = ["dep:serde"]
+schemars = ["dep:schemars", "serde"]
 
 [dependencies]
-gix = { workspace = true }
-tracing = { workspace = true }
-thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

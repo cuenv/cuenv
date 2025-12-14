@@ -6,7 +6,8 @@
 //! 3. Return environment diff for shell evaluation
 
 use super::env_file::{self, EnvFileStatus};
-use cuengine::{CueEvaluator, Cuenv};
+use cuengine::CueEvaluator;
+use cuenv_core::manifest::Cuenv;
 use cuenv_core::{
     Result,
     hooks::{
@@ -54,8 +55,12 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
 
     // Always evaluate CUE to get current config (not a bottleneck)
     debug!("Evaluating CUE for {}", directory.display());
-    let evaluator = CueEvaluator::builder().build()?;
-    let config: Cuenv = evaluator.evaluate_typed(&directory, package)?;
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+    let config: Cuenv = evaluator
+        .evaluate_typed(&directory, package)
+        .map_err(super::convert_engine_error)?;
 
     // Load approval manager and check approval status
     let mut approval_manager = ApprovalManager::with_default_file()?;
@@ -306,7 +311,9 @@ fn collect_hooks_from_ancestors(
     directory: &Path,
     package: &str,
 ) -> Result<Vec<cuenv_core::hooks::types::Hook>> {
-    let evaluator = CueEvaluator::builder().build()?;
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
     let ancestors = env_file::find_ancestor_env_files(directory, package)?;
 
     let mut all_hooks = Vec::new();

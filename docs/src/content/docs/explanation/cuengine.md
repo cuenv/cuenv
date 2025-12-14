@@ -1,9 +1,9 @@
 ---
 title: CUE Engine
-description: Core CUE evaluation engine with Rust FFI interface
+description: Standalone Go-Rust FFI bridge for CUE evaluation
 ---
 
-The CUE Engine (`cuengine`) is the foundational component of cuenv, providing fast and reliable CUE evaluation through a Rust FFI interface to the Go CUE library.
+The CUE Engine (`cuengine`) is a standalone Rust crate providing fast and reliable CUE evaluation through an FFI interface to the Go CUE library. It can be used independently of the cuenv ecosystem.
 
 ## Overview
 
@@ -14,7 +14,7 @@ The CUE Engine bridges the gap between Rust's performance and safety with CUE's 
 ```text
 ┌─────────────────┐    ┌──────────────┐    ┌─────────────┐
 │   Rust Client   │◄──►│   cuengine   │◄──►│  Go CUE     │
-│   (cuenv-core)  │    │   (FFI Layer) │    │  Evaluator  │
+│   (your app)    │    │   (FFI Layer) │    │  Evaluator  │
 └─────────────────┘    └──────────────┘    └─────────────┘
 ```
 
@@ -27,7 +27,7 @@ Provides a safe Rust interface to the Go CUE evaluation engine using CGO.
 Implements RAII patterns for automatic cleanup of Go-allocated memory.
 
 **Error Handling**
-Translates Go errors into structured Rust error types with proper error codes.
+Provides structured error types via `CueEngineError` with proper error codes.
 
 **JSON Bridge**
 Handles serialization/deserialization between Rust and Go data structures.
@@ -40,8 +40,14 @@ Handles serialization/deserialization between Rust and Go data structures.
 
 ```rust
 use cuengine::CueEvaluator;
-use cuenv_core::manifest::Cuenv;
+use serde::Deserialize;
 use std::path::Path;
+
+#[derive(Deserialize)]
+struct AppConfig {
+    name: String,
+    port: u16,
+}
 
 let evaluator = CueEvaluator::builder()
     .max_output_size(10 * 1024 * 1024)
@@ -49,10 +55,10 @@ let evaluator = CueEvaluator::builder()
     .build()?;
 
 // Evaluate and get raw JSON
-let json = evaluator.evaluate(Path::new("./project"), "cuenv")?;
+let json = evaluator.evaluate(Path::new("./project"), "config")?;
 
 // Or evaluate and deserialize to a typed struct
-let manifest: Cuenv = evaluator.evaluate_typed(Path::new("./project"), "cuenv")?;
+let config: AppConfig = evaluator.evaluate_typed(Path::new("./project"), "config")?;
 ```
 
 **Common methods**
@@ -85,6 +91,26 @@ The crate also exposes thin wrappers when you do not need a reusable evaluator:
 - `evaluate_cue_package_typed::<T>(path, package)` → `Result<T>`
 - `get_bridge_version()` → `Result<String>`
 
+### Limits
+
+The `Limits` struct configures validation boundaries:
+
+```rust
+use cuengine::Limits;
+
+let limits = Limits {
+    max_path_length: 4096,
+    max_package_name_length: 256,
+    max_output_size: 100 * 1024 * 1024, // 100MB
+};
+```
+
+| Field                    | Default | Description                          |
+| ------------------------ | ------- | ------------------------------------ |
+| `max_path_length`        | 4096    | Maximum path length in characters    |
+| `max_package_name_length`| 256     | Maximum package name length          |
+| `max_output_size`        | 100MB   | Maximum output size in bytes         |
+
 ### RetryConfig
 
 ```rust
@@ -105,6 +131,33 @@ let retry = RetryConfig {
 | `initial_delay`    | Delay before the first retry                      |
 | `max_delay`        | Ceiling applied to the exponential backoff        |
 | `exponential_base` | Multiplier for each successive delay              |
+
+### CueEngineError
+
+The crate provides structured error types:
+
+```rust
+use cuengine::CueEngineError;
+
+// Error variants
+match err {
+    CueEngineError::Configuration { message } => { /* invalid settings */ }
+    CueEngineError::Ffi { function, message } => { /* FFI operation failed */ }
+    CueEngineError::CueParse { path, message } => { /* CUE syntax/eval error */ }
+    CueEngineError::Validation { message } => { /* input/output validation */ }
+    CueEngineError::Cache { message } => { /* cache operation error */ }
+}
+```
+
+**Error constructors**
+
+| Method                             | Description                              |
+| ---------------------------------- | ---------------------------------------- |
+| `CueEngineError::configuration(msg)` | Invalid paths, settings, capacity, etc.  |
+| `CueEngineError::ffi(fn_name, msg)`  | FFI operation failed                     |
+| `CueEngineError::cue_parse(path, msg)`| CUE parsing or evaluation failed        |
+| `CueEngineError::validation(msg)`    | Input/output validation errors           |
+| `CueEngineError::cache(msg)`         | Cache operation errors                   |
 
 ## Performance Characteristics
 
@@ -136,10 +189,10 @@ The CUE Engine is optimized for:
 use cuengine::CueEvaluator;
 use std::path::Path;
 
-fn main() -> cuenv_core::Result<()> {
+fn main() -> cuengine::Result<()> {
     let evaluator = CueEvaluator::builder().build()?;
-    let json = evaluator.evaluate(Path::new("./config"), "cuenv")?;
-    println!("Manifest JSON: {json}");
+    let json = evaluator.evaluate(Path::new("./config"), "app")?;
+    println!("Config JSON: {json}");
     Ok(())
 }
 ```
@@ -147,16 +200,22 @@ fn main() -> cuenv_core::Result<()> {
 ### Configuration Validation
 
 ```rust
-use cuengine::CueEvaluator;
-use cuenv_core::{manifest::Cuenv, Error, Result};
+use cuengine::{CueEvaluator, CueEngineError, Result};
+use serde::Deserialize;
 use std::path::Path;
+
+#[derive(Deserialize)]
+struct AppConfig {
+    name: String,
+    env: Option<std::collections::HashMap<String, String>>,
+}
 
 fn validate_app_config(dir: &Path) -> Result<()> {
     let evaluator = CueEvaluator::builder().build()?;
-    let manifest: Cuenv = evaluator.evaluate_typed(dir, "cuenv")?;
+    let config: AppConfig = evaluator.evaluate_typed(dir, "app")?;
 
-    if manifest.env.is_none() {
-        return Err(Error::configuration("env block is required"));
+    if config.env.is_none() {
+        return Err(CueEngineError::configuration("env block is required"));
     }
 
     Ok(())
@@ -167,18 +226,22 @@ fn validate_app_config(dir: &Path) -> Result<()> {
 
 ```rust
 use cuengine::CueEvaluator;
-use cuenv_core::Result;
+use cuengine::Result;
 use std::path::Path;
 
 fn process_config_directory(path: &Path) -> Result<Vec<String>> {
     let evaluator = CueEvaluator::builder().no_retry().build()?;
     let mut results = Vec::new();
 
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
+    for entry in std::fs::read_dir(path).map_err(|e| {
+        cuengine::CueEngineError::configuration(format!("Failed to read directory: {e}"))
+    })? {
+        let entry = entry.map_err(|e| {
+            cuengine::CueEngineError::configuration(format!("Failed to read entry: {e}"))
+        })?;
         if entry.path().extension().is_some_and(|ext| ext == "cue") {
             if let Some(dir) = entry.path().parent() {
-                results.push(evaluator.evaluate(dir, "cuenv")?);
+                results.push(evaluator.evaluate(dir, "config")?);
             }
         }
     }
@@ -231,6 +294,5 @@ log::debug!("CUE evaluation trace enabled");
 
 ## See Also
 
-- [cuenv-core](/explanation/cuenv-core/) - Higher-level configuration management
 - [API Reference](/reference/rust-api/) - Complete API documentation
 - [Examples](/reference/examples/) - Usage examples and patterns

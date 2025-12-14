@@ -13,10 +13,10 @@ description = "Go-Rust FFI bridge for CUE evaluation with production-ready featu
 workspace = true
 
 [dependencies]
-cuenv-core = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 lru = "0.16"
@@ -31,6 +31,7 @@ proptest = { workspace = true }
 criterion = { workspace = true }
 cucumber = { workspace = true }
 tokio-test = { workspace = true }
+cuenv-core = { workspace = true }
 
 [[bench]]
 name = "evaluation_benchmarks"
