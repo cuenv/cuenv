@@ -564,13 +564,13 @@ fn format_env_diff(dir: &Path, env: HashMap<String, String>, shell: Shell) -> St
         let escaped_value = escape_shell_value(&value);
         match shell {
             Shell::Bash | Shell::Zsh => {
-                writeln!(&mut output, "export {key}=\"{escaped_value}\"").unwrap();
+                writeln!(&mut output, "export {key}=\"{escaped_value}\"").expect("write to string");
             }
             Shell::Fish => {
-                writeln!(&mut output, "set -x {key} \"{escaped_value}\"").unwrap();
+                writeln!(&mut output, "set -x {key} \"{escaped_value}\"").expect("write to string");
             }
             Shell::PowerShell => {
-                writeln!(&mut output, "$env:{key} = \"{escaped_value}\"").unwrap();
+                writeln!(&mut output, "$env:{key} = \"{escaped_value}\"").expect("write to string");
             }
         }
     }
@@ -599,13 +599,13 @@ fn format_env_diff_with_unset(
                 // Variable was removed, generate unset command
                 match shell {
                     Shell::Bash | Shell::Zsh => {
-                        writeln!(&mut output, "unset {key}").unwrap();
+                        writeln!(&mut output, "unset {key}").expect("write to string");
                     }
                     Shell::Fish => {
-                        writeln!(&mut output, "set -e {key}").unwrap();
+                        writeln!(&mut output, "set -e {key}").expect("write to string");
                     }
                     Shell::PowerShell => {
-                        writeln!(&mut output, "Remove-Item Env:{key}").unwrap();
+                        writeln!(&mut output, "Remove-Item Env:{key}").expect("write to string");
                     }
                 }
             }
@@ -617,13 +617,13 @@ fn format_env_diff_with_unset(
         let escaped_value = escape_shell_value(&value);
         match shell {
             Shell::Bash | Shell::Zsh => {
-                writeln!(&mut output, "export {key}=\"{escaped_value}\"").unwrap();
+                writeln!(&mut output, "export {key}=\"{escaped_value}\"").expect("write to string");
             }
             Shell::Fish => {
-                writeln!(&mut output, "set -x {key} \"{escaped_value}\"").unwrap();
+                writeln!(&mut output, "set -x {key} \"{escaped_value}\"").expect("write to string");
             }
             Shell::PowerShell => {
-                writeln!(&mut output, "$env:{key} = \"{escaped_value}\"").unwrap();
+                writeln!(&mut output, "$env:{key} = \"{escaped_value}\"").expect("write to string");
             }
         }
     }

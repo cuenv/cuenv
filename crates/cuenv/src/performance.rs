@@ -50,7 +50,7 @@ impl PerformanceRegistry {
 
     #[allow(dead_code)]
     pub fn get_summary(&self) -> PerformanceSummary {
-        let ops = self.operations.lock().unwrap();
+        let ops = self.operations.lock().expect("performance operations lock");
         let total_operations = ops.len();
         let successful_operations = ops.iter().filter(|op| op.success).count();
         let total_duration: Duration = ops.iter().map(|op| op.duration).sum();

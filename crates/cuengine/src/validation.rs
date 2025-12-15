@@ -99,7 +99,7 @@ pub fn validate_package_name(name: &str, limits: &Limits) -> Result<()> {
     }
 
     // Check first character is alphabetic or underscore (CUE allows underscore-prefixed "hidden" packages)
-    let first_char = name.chars().next().unwrap();
+    let first_char = name.chars().next().expect("name is non-empty (checked above)");
     if !first_char.is_alphabetic() && first_char != '_' {
         return Err(Error::validation(
             "Package name must start with an alphabetic character or underscore",
