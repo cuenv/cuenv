@@ -878,9 +878,36 @@ fn detect_package_name(dir: &Path) -> Result<String> {
 }
 
 fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Result<Cuenv> {
-    evaluator
-        .evaluate_typed(dir, package)
-        .map_err(super::convert_engine_error)
+    // Get raw JSON from CUE evaluation
+    let json_str = evaluator
+        .evaluate(dir, package)
+        .map_err(super::convert_engine_error)?;
+
+    // Parse JSON once to Value
+    let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Invalid JSON from CUE evaluation: {e}"))
+    })?;
+
+    // Try Project first (most specific - has required 'name' field)
+    if let Ok(project) = serde_json::from_value::<Cuenv>(value.clone()) {
+        return Ok(project);
+    }
+
+    // Try Base (less specific - all fields optional)
+    if serde_json::from_value::<cuenv_core::manifest::Base>(value).is_ok() {
+        // Valid Base config, but this command needs Project
+        return Err(cuenv_core::Error::configuration(
+            "This directory uses schema.#Base which doesn't support tasks.\n\
+             To use tasks, update your env.cue to use schema.#Project:\n\n\
+             schema.#Project\n\
+             name: \"your-project-name\"",
+        ));
+    }
+
+    // Neither worked - fundamentally invalid config
+    Err(cuenv_core::Error::configuration(
+        "Invalid cuenv configuration. Check CUE syntax and schema compliance.",
+    ))
 }
 
 #[allow(dead_code)]
