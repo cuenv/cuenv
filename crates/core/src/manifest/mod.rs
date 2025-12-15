@@ -168,6 +168,14 @@ pub struct Base {
     /// Workspaces configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
+
+    /// Code ownership configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owners: Option<Owners>,
+
+    /// Ignore patterns for tool-specific ignore files
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Ignore>,
 }
 
 /// Ignore patterns for tool-specific ignore files.

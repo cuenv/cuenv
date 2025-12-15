@@ -28,6 +28,8 @@ package schema
 	config?:     #Config
 	env?:        #Env
 	workspaces?: #Workspaces
+	owners?:     #Owners
+	ignore?:     #Ignore
 })
 
 #ProjectName: string & =~"^[a-zA-Z0-9._-]+$"
@@ -38,9 +40,7 @@ package schema
 	hooks?:   #Hooks
 	ci?:      #CI
 	release?: #Release
-	owners?:  #Owners
 	tasks?: [string]: #Tasks
-	ignore?: #Ignore
 	cube?:   #Cube
 })
 
