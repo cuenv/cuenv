@@ -3,9 +3,12 @@
 use crate::hooks::types::{ExecutionStatus, HookResult};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
+#[allow(unused_imports)] // Used by load_state_sync for file locking
+use fs4::fs_std::FileExt as SyncFileExt;
 use fs4::tokio::AsyncFileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::fs::OpenOptions;
@@ -313,6 +316,69 @@ impl StateManager {
             .await
             .ok()
             .map(|s| s.trim().to_string())
+    }
+
+    // ========================================================================
+    // Synchronous Methods (for fast path - no tokio runtime required)
+    // ========================================================================
+
+    /// Read the instance hash from a marker file synchronously.
+    /// This is the sync equivalent of `get_marker_instance_hash` for the fast path.
+    pub fn get_marker_instance_hash_sync(&self, directory_path: &Path) -> Option<String> {
+        let dir_key = Self::compute_directory_key(directory_path);
+        let marker_path = self.directory_marker_path(&dir_key);
+        std::fs::read_to_string(&marker_path)
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
+    /// Load execution state from disk synchronously with shared locking.
+    /// This is the sync equivalent of `load_state` for the fast path.
+    pub fn load_state_sync(&self, instance_hash: &str) -> Result<Option<HookExecutionState>> {
+        let state_file = self.state_file_path(instance_hash);
+
+        if !state_file.exists() {
+            return Ok(None);
+        }
+
+        // Open file with shared lock for reading
+        let mut file = match std::fs::File::open(&state_file) {
+            Ok(f) => f,
+            Err(e) => {
+                // File might have been deleted between exists check and open
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(None);
+                }
+                return Err(Error::Io {
+                    source: e,
+                    path: Some(state_file.clone().into_boxed_path()),
+                    operation: "open".to_string(),
+                });
+            }
+        };
+
+        // Acquire shared lock (multiple readers allowed)
+        file.lock_shared().map_err(|e| {
+            Error::configuration(format!(
+                "Failed to acquire shared lock on state file: {}",
+                e
+            ))
+        })?;
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).map_err(|e| Error::Io {
+            source: e,
+            path: Some(state_file.clone().into_boxed_path()),
+            operation: "read_to_string".to_string(),
+        })?;
+
+        // Unlock happens automatically when file is dropped
+        drop(file);
+
+        let state: HookExecutionState = serde_json::from_str(&contents)
+            .map_err(|e| Error::configuration(format!("Failed to deserialize state: {e}")))?;
+
+        Ok(Some(state))
     }
 
     // ========================================================================

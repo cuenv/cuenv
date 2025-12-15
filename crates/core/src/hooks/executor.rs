@@ -320,6 +320,43 @@ impl HookExecutor {
         &self.state_manager
     }
 
+    /// Synchronous fast status check - no tokio runtime required.
+    /// This is the hot path for Starship/shell prompts when no async runtime is available.
+    /// Returns None if no hooks running, Some(state) if hooks active.
+    pub fn get_fast_status_sync(
+        &self,
+        directory_path: &Path,
+    ) -> Result<Option<HookExecutionState>> {
+        // First check: does marker exist? O(1) filesystem stat
+        if !self.state_manager.has_active_marker(directory_path) {
+            return Ok(None);
+        }
+
+        // Marker exists - get instance hash and load state synchronously
+        if let Some(instance_hash) = self
+            .state_manager
+            .get_marker_instance_hash_sync(directory_path)
+        {
+            let state = self.state_manager.load_state_sync(&instance_hash)?;
+
+            match &state {
+                Some(s) if s.is_complete() && !s.should_display_completed() => {
+                    // State is complete and expired - for sync path, just return None
+                    // (async cleanup will happen on next async call)
+                    return Ok(None);
+                }
+                None => {
+                    // State file was deleted but marker exists - return None
+                    // (async cleanup will happen on next async call)
+                    return Ok(None);
+                }
+                Some(_) => return Ok(state),
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Wait for hook execution to complete, with optional timeout in seconds
     pub async fn wait_for_completion(
         &self,

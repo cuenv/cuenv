@@ -294,6 +294,31 @@ pub async fn execute_env_status(
     }
 }
 
+/// Synchronous version of `execute_env_status` for the fast path.
+/// This skips the tokio runtime entirely for shell prompt integration.
+/// Only supports non-wait mode.
+pub fn execute_env_status_sync(path: &str, package: &str, format: StatusFormat) -> Result<String> {
+    // Check env.cue and canonicalize path
+    let directory = match env_file::find_env_file(Path::new(path), package)? {
+        EnvFileStatus::Match(dir) => dir,
+        status => return Ok(env_file_issue_message(path, package, status)),
+    };
+
+    let executor = HookExecutor::with_default_config()?;
+
+    // FAST PATH: Skip config hash computation, use directory-based marker lookup.
+    // This runs synchronously without tokio.
+    if let Some(state) = executor.get_fast_status_sync(&directory)? {
+        Ok(format_status(&state, format))
+    } else {
+        match format {
+            StatusFormat::Text => Ok("No hook execution in progress".to_string()),
+            StatusFormat::Short => Ok("-".to_string()),
+            StatusFormat::Starship => Ok(String::new()), // Empty for starship if nothing happening
+        }
+    }
+}
+
 /// Inspect cached hook state and captured environment
 pub async fn execute_env_inspect(path: &str, package: &str) -> Result<String> {
     use std::fmt::Write;
