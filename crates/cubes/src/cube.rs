@@ -54,9 +54,9 @@ impl Default for FormatConfig {
     }
 }
 
-/// A file definition from the cube
+/// A project file definition from the cube
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileDefinition {
+pub struct ProjectFileDefinition {
     /// Content of the file
     pub content: String,
     /// Programming language of the file
@@ -67,13 +67,16 @@ pub struct FileDefinition {
     /// Formatting configuration
     #[serde(default)]
     pub format: FormatConfig,
+    /// Whether to add this file path to .gitignore
+    #[serde(default)]
+    pub gitignore: bool,
 }
 
 /// A CUE Cube containing file definitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CubeData {
     /// Map of file paths to their definitions
-    pub files: HashMap<String, FileDefinition>,
+    pub files: HashMap<String, ProjectFileDefinition>,
     /// Optional context data
     #[serde(default)]
     pub context: serde_json::Value,
@@ -113,7 +116,7 @@ impl Cube {
 
     /// Get the file definitions from this cube
     #[must_use]
-    pub fn files(&self) -> &HashMap<String, FileDefinition> {
+    pub fn files(&self) -> &HashMap<String, ProjectFileDefinition> {
         &self.data.files
     }
 

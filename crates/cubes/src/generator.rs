@@ -152,7 +152,7 @@ impl Generator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::{CubeData, FileDefinition, FormatConfig};
+    use crate::cube::{CubeData, FormatConfig, ProjectFileDefinition};
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -160,11 +160,12 @@ mod tests {
         let mut files = HashMap::new();
         files.insert(
             "test.json".to_string(),
-            FileDefinition {
+            ProjectFileDefinition {
                 content: r#"{"name":"test"}"#.to_string(),
                 language: "json".to_string(),
                 mode: FileMode::Managed,
                 format: FormatConfig::default(),
+                gitignore: false,
             },
         );
 

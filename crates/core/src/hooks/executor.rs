@@ -109,10 +109,14 @@ impl HookExecutor {
                 && let Ok(pid) = pid_str.trim().parse::<usize>()
             {
                 // Check if process is still alive using sysinfo
-                use sysinfo::{Pid, ProcessRefreshKind, System};
+                use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
                 let mut system = System::new();
                 let process_pid = Pid::from(pid);
-                system.refresh_process_specifics(process_pid, ProcessRefreshKind::new());
+                system.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&[process_pid]),
+                    false,
+                    ProcessRefreshKind::nothing(),
+                );
 
                 if system.process(process_pid).is_some() {
                     info!("Supervisor already running for directory with PID {}", pid);
@@ -407,13 +411,17 @@ impl HookExecutor {
             && let Ok(pid_str) = std::fs::read_to_string(&pid_file)
             && let Ok(pid) = pid_str.trim().parse::<usize>()
         {
-            use sysinfo::{Pid, ProcessRefreshKind, Signal, System};
+            use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, Signal, System};
 
             let mut system = System::new();
             let process_pid = Pid::from(pid);
 
             // Refresh the specific process
-            system.refresh_process_specifics(process_pid, ProcessRefreshKind::new());
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[process_pid]),
+                false,
+                ProcessRefreshKind::nothing(),
+            );
 
             // Check if process exists and kill it
             if let Some(process) = system.process(process_pid) {

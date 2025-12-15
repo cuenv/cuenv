@@ -26,7 +26,7 @@ import "github.com/cuenv/cuenv/schema/cubes"
 #Cube: {
 	// Files to generate
 	// Key is the file path relative to project directory
-	files: [string]: cubes.#CodeFile
+	files: [string]: cubes.#ProjectFile
 
 	// Optional context data for templating
 	// Use this to pass configuration to your cube

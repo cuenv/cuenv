@@ -222,7 +222,7 @@ fn default_indent() -> String {
 
 /// A file definition from the cube
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct CubeFile {
+pub struct ProjectFile {
     /// Content of the file
     pub content: String,
     /// Programming language of the file
@@ -233,6 +233,12 @@ pub struct CubeFile {
     /// Formatting configuration
     #[serde(default)]
     pub format: FormatConfig,
+    /// Whether to add this file path to .gitignore.
+    /// Defaults based on mode (set in CUE schema):
+    ///   - managed: true (generated files should be ignored)
+    ///   - scaffold: false (user-owned files should be committed)
+    #[serde(default)]
+    pub gitignore: bool,
 }
 
 /// A CUE Cube containing file definitions for code generation
@@ -240,7 +246,7 @@ pub struct CubeFile {
 pub struct CubeConfig {
     /// Map of file paths to their definitions
     #[serde(default)]
-    pub files: HashMap<String, CubeFile>,
+    pub files: HashMap<String, ProjectFile>,
     /// Optional context data for templating
     #[serde(default)]
     pub context: serde_json::Value,
