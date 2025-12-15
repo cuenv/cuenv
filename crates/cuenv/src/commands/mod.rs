@@ -579,7 +579,7 @@ impl CommandExecutor {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     async fn execute_task(
         &self,
         path: String,
