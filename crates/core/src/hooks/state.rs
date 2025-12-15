@@ -27,16 +27,14 @@ impl StateManager {
         Self { state_dir }
     }
 
-    /// Get the default state directory (~/.cuenv/state)
+    /// Get the default state directory.
+    ///
+    /// Uses platform-appropriate paths:
+    /// - Linux: `~/.local/state/cuenv/state`
+    /// - macOS: `~/Library/Application Support/cuenv/state`
+    /// - Windows: `%APPDATA%\cuenv\state`
     pub fn default_state_dir() -> Result<PathBuf> {
-        // Check for CUENV_STATE_DIR environment variable first
-        if let Ok(state_dir) = std::env::var("CUENV_STATE_DIR") {
-            return Ok(PathBuf::from(state_dir));
-        }
-
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::configuration("Could not determine home directory"))?;
-        Ok(home.join(".cuenv").join("state"))
+        crate::paths::hook_state_dir()
     }
 
     /// Create a state manager using the default state directory

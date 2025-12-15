@@ -29,24 +29,23 @@ impl ApprovalManager {
         }
     }
 
-    /// Get the default approval file path (~/.cuenv/approved.json)
+    /// Get the default approval file path.
+    ///
+    /// Uses platform-appropriate paths:
+    /// - Linux: `~/.local/state/cuenv/approved.json`
+    /// - macOS: `~/Library/Application Support/cuenv/approved.json`
+    /// - Windows: `%APPDATA%\cuenv\approved.json`
+    ///
+    /// Can be overridden with `CUENV_APPROVAL_FILE` environment variable.
     pub fn default_approval_file() -> Result<PathBuf> {
         // Check for CUENV_APPROVAL_FILE environment variable first
-        if let Ok(approval_file) = std::env::var("CUENV_APPROVAL_FILE") {
+        if let Ok(approval_file) = std::env::var("CUENV_APPROVAL_FILE")
+            && !approval_file.is_empty()
+        {
             return Ok(PathBuf::from(approval_file));
         }
 
-        // Check for CUENV_STATE_DIR to keep consistency with state directory
-        if let Ok(state_dir) = std::env::var("CUENV_STATE_DIR") {
-            let state_path = PathBuf::from(state_dir);
-            if let Some(parent) = state_path.parent() {
-                return Ok(parent.join("approved.json"));
-            }
-        }
-
-        let home = dirs::home_dir()
-            .ok_or_else(|| Error::configuration("Could not determine home directory"))?;
-        Ok(home.join(".cuenv").join("approved.json"))
+        crate::paths::approvals_file()
     }
 
     /// Create an approval manager using the default approval file
