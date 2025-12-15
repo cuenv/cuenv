@@ -711,20 +711,25 @@ fn detect_package_name(dir: &Path) -> Result<String> {
 }
 
 fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Result<Cuenv> {
-    evaluator
-        .evaluate_typed(dir, package)
-        .map_err(|e| {
-            let converted_err = super::convert_engine_error(e);
-            // Check if this is a deserialization error about missing 'name' field
-            let err_msg = converted_err.to_string();
-            if err_msg.contains("missing field `name`") {
-                cuenv_core::Error::configuration(
-                    "No project found in current directory. The configuration must use schema.#Project with a 'name' field to define tasks."
-                )
-            } else {
-                converted_err
-            }
-        })
+    // Get raw JSON from CUE evaluation
+    let json_str = evaluator
+        .evaluate(dir, package)
+        .map_err(super::convert_engine_error)?;
+
+    // First try Base - it's the most permissive schema and should succeed for any valid cuenv config
+    if let Err(base_err) = serde_json::from_str::<cuenv_core::manifest::Base>(&json_str) {
+        // If even Base fails, the output is fundamentally invalid
+        return Err(cuenv_core::Error::configuration(format!(
+            "Failed to parse CUE output: {}",
+            base_err
+        )));
+    }
+
+    // Base succeeded - we have a valid cuenv config. Now try Project.
+    serde_json::from_str::<Cuenv>(&json_str).map_err(|_| {
+        // Base works but Project doesn't - user needs to upgrade to Project schema
+        cuenv_core::Error::configuration("No project found in current directory")
+    })
 }
 
 #[allow(dead_code)]

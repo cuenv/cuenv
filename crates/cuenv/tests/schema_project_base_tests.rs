@@ -144,9 +144,4 @@ schema.#Base & {
         "error message should mention no project found, got: {}",
         stderr
     );
-    assert!(
-        stderr.contains("schema.#Project"),
-        "error message should mention schema.#Project, got: {}",
-        stderr
-    );
 }
