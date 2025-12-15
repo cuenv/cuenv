@@ -25,15 +25,22 @@ fn write_local_cuenv_module(root: &Path) {
     // Copy the real schema package into the temporary module so imports work.
     let schema_src = repo_root().join("schema");
     let schema_dst = root.join("schema");
-    fs::create_dir_all(&schema_dst).unwrap();
-    for entry in fs::read_dir(&schema_src).unwrap() {
+    copy_dir_recursive(&schema_src, &schema_dst);
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).unwrap();
+    for entry in fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("cue") {
-            continue;
-        }
         let file_name = path.file_name().unwrap();
-        fs::copy(&path, schema_dst.join(file_name)).unwrap();
+        let dst_path = dst.join(file_name);
+
+        if path.is_dir() {
+            copy_dir_recursive(&path, &dst_path);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("cue") {
+            fs::copy(&path, &dst_path).unwrap();
+        }
     }
 }
 

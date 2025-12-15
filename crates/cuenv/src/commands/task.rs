@@ -767,7 +767,8 @@ fn format_task_results(
                     output.push('\n');
                 }
             } else {
-                writeln!(output, "failed with exit code {:?}", result.exit_code).expect("write to string");
+                writeln!(output, "failed with exit code {:?}", result.exit_code)
+                    .expect("write to string");
                 if !result.stderr.is_empty() {
                     output.push_str("Error:\n");
                     output.push_str(&result.stderr);
@@ -978,7 +979,10 @@ fn materialize_path(src: &Path, dst: &Path) -> Result<()> {
         // Copy directory recursively
         for entry in walkdir::WalkDir::new(src) {
             let entry = entry.map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
-            let rel = entry.path().strip_prefix(src).expect("WalkDir entry is under src");
+            let rel = entry
+                .path()
+                .strip_prefix(src)
+                .expect("WalkDir entry is under src");
             let target = dst.join(rel);
             if entry.file_type().is_dir() {
                 fs::create_dir_all(&target).map_err(|e| cuenv_core::Error::Io {
@@ -1193,8 +1197,14 @@ async fn resolve_and_materialize_project_reference(
 
         // Note: External tasks use build_for_task which doesn't resolve secrets/policies
         // This is intentional for hermetic execution
-        let vars =
-            Environment::build_for_task(&reference.task, &manifest.env.as_ref().expect("manifest.env required for task environment").base);
+        let vars = Environment::build_for_task(
+            &reference.task,
+            &manifest
+                .env
+                .as_ref()
+                .expect("manifest.env required for task environment")
+                .base,
+        );
         for (k, v) in vars {
             env.set(k, v);
         }
@@ -1330,7 +1340,8 @@ fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
                             .as_ref()
                             .map(|d| format!(" - {d}"))
                             .unwrap_or_default();
-                        writeln!(output, "  {{{{{i}}}}}{required}{default}{desc}").expect("write to string");
+                        writeln!(output, "  {{{{{i}}}}}{required}{default}{desc}")
+                            .expect("write to string");
                     }
                 }
                 if !params.named.is_empty() {
@@ -1355,7 +1366,8 @@ fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
                             .as_ref()
                             .map(|d| format!(" - {d}"))
                             .unwrap_or_default();
-                        writeln!(output, "  {short}--{name}{required}{default}{desc}").expect("write to string");
+                        writeln!(output, "  {short}--{name}{required}{default}{desc}")
+                            .expect("write to string");
                     }
                 }
             }
@@ -2763,7 +2775,8 @@ env: {
         let mut all = Tasks::new();
         all.tasks.insert("copy".into(), def.clone());
         let mut g = TaskGraph::new();
-        g.build_from_definition("copy", &def, &all).expect("write to string");
+        g.build_from_definition("copy", &def, &all)
+            .expect("write to string");
 
         let hook_env = Environment::new();
         let results = execute_task_with_strategy_hermetic(
