@@ -716,20 +716,31 @@ fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Res
         .evaluate(dir, package)
         .map_err(super::convert_engine_error)?;
 
-    // First try Base - it's the most permissive schema and should succeed for any valid cuenv config
-    if let Err(base_err) = serde_json::from_str::<cuenv_core::manifest::Base>(&json_str) {
-        // If even Base fails, the output is fundamentally invalid
-        return Err(cuenv_core::Error::configuration(format!(
-            "Failed to parse CUE output: {}",
-            base_err
-        )));
+    // Parse JSON once to Value
+    let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Invalid JSON from CUE evaluation: {e}"))
+    })?;
+
+    // Try Project first (most specific - has required 'name' field)
+    if let Ok(project) = serde_json::from_value::<Cuenv>(value.clone()) {
+        return Ok(project);
     }
 
-    // Base succeeded - we have a valid cuenv config. Now try Project.
-    serde_json::from_str::<Cuenv>(&json_str).map_err(|_| {
-        // Base works but Project doesn't - user needs to upgrade to Project schema
-        cuenv_core::Error::configuration("No project found in current directory")
-    })
+    // Try Base (less specific - all fields optional)
+    if serde_json::from_value::<cuenv_core::manifest::Base>(value).is_ok() {
+        // Valid Base config, but this command needs Project
+        return Err(cuenv_core::Error::configuration(
+            "This directory uses schema.#Base which doesn't support tasks.\n\
+             To use tasks, update your env.cue to use schema.#Project:\n\n\
+             schema.#Project\n\
+             name: \"your-project-name\"",
+        ));
+    }
+
+    // Neither worked - fundamentally invalid config
+    Err(cuenv_core::Error::configuration(
+        "Invalid cuenv configuration. Check CUE syntax and schema compliance.",
+    ))
 }
 
 #[allow(dead_code)]

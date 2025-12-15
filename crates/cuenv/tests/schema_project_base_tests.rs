@@ -137,11 +137,11 @@ schema.#Base & {
         .expect("Failed to run cuenv");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    
+
     assert!(!output.status.success(), "should fail with Base schema");
     assert!(
-        stderr.contains("No project found in current directory"),
-        "error message should mention no project found, got: {}",
+        stderr.contains("schema.#Base") && stderr.contains("doesn't support tasks"),
+        "error message should explain Base schema doesn't support tasks, got: {}",
         stderr
     );
 }
