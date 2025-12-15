@@ -133,7 +133,9 @@ pub async fn execute_task(
 
         if format == "json" {
             return serde_json::to_string(&workspace_tasks).map_err(|e| {
-                cuenv_core::Error::configuration(format!("Failed to serialize workspace tasks: {e}"))
+                cuenv_core::Error::configuration(format!(
+                    "Failed to serialize workspace tasks: {e}"
+                ))
             });
         }
 
