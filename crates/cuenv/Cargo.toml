@@ -56,6 +56,7 @@ chrono = { workspace = true }
 sha2 = { workspace = true }
 walkdir = "2.5"
 dirs = { workspace = true }
+ctrlc = "3.4"
 
 [dev-dependencies]
 tempfile = { workspace = true }
