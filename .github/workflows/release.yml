@@ -263,3 +263,32 @@ jobs:
         run: ./result/bin/cuenv release publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  publish-vscode:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    needs: upload-release-assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v1
+
+      - name: Update version from tag
+        run: |
+          VERSION="${{ github.event.release.tag_name || inputs.tag_name }}"
+          VERSION="${VERSION#v}"
+          jq --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
+        working-directory: integrations/vscode
+
+      - name: Install dependencies
+        run: bun install
+        working-directory: integrations/vscode
+
+      - name: Bundle extension
+        run: bun run bundle
+        working-directory: integrations/vscode
+
+      - name: Publish to VS Code Marketplace
+        run: npx @vscode/vsce publish --no-dependencies
+        working-directory: integrations/vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
