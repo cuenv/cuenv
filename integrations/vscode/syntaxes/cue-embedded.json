@@ -35,11 +35,15 @@
       "name": "meta.interpolation.cue",
       "begin": "\\\\\\(",
       "beginCaptures": {
-        "0": { "name": "punctuation.section.interpolation.begin.cue keyword.operator.interpolation.cue" }
+        "0": {
+          "name": "punctuation.section.interpolation.begin.cue keyword.operator.interpolation.cue"
+        }
       },
       "end": "\\)",
       "endCaptures": {
-        "0": { "name": "punctuation.section.interpolation.end.cue keyword.operator.interpolation.cue" }
+        "0": {
+          "name": "punctuation.section.interpolation.end.cue keyword.operator.interpolation.cue"
+        }
       },
       "contentName": "meta.embedded.expression.cue",
       "patterns": [
@@ -67,7 +71,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.typescript",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -105,7 +111,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.javascript",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -143,7 +151,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.json",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -181,7 +191,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.jsonc",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -219,7 +231,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.yaml",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -257,7 +271,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.shellscript",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -295,7 +311,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.dockerfile",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -333,7 +351,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.python",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -371,7 +391,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.go",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -409,7 +431,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.rust",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -447,7 +471,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.markdown",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -485,7 +511,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.nix",
       "patterns": [
         { "include": "#cue-interpolation" },
@@ -523,7 +551,9 @@
         "3": { "name": "punctuation.definition.string.begin.cue" }
       },
       "end": "\"\"\"",
-      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.string.end.cue" }
+      },
       "contentName": "meta.embedded.block.sql",
       "patterns": [
         { "include": "#cue-interpolation" },
