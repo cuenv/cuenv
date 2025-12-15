@@ -788,9 +788,12 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             package,
             dry_run,
             check,
+            all,
         } => {
-            match execute_sync_command_safe(subcommand, path, package, dry_run, check, json_mode)
-                .await
+            match execute_sync_command_safe(
+                subcommand, path, package, dry_run, check, all, json_mode,
+            )
+            .await
             {
                 Ok(()) => Ok(()),
                 Err(e) => Err(e),
@@ -1393,10 +1396,9 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     std::fs::remove_file(&config_file).ok();
 
     // Write PID file
-    let state_dir = config
-        .state_dir
-        .clone()
-        .unwrap_or_else(|| StateManager::default_state_dir().expect("failed to get default state dir"));
+    let state_dir = config.state_dir.clone().unwrap_or_else(|| {
+        StateManager::default_state_dir().expect("failed to get default state dir")
+    });
     cuenv_events::emit_supervisor_log!(
         "supervisor",
         format!("Using state dir: {}", state_dir.display())
@@ -1616,6 +1618,7 @@ async fn execute_release_publish_safe(
 }
 
 /// Execute sync command safely
+#[allow(clippy::fn_params_excessive_bools)]
 #[instrument(name = "cuenv_execute_sync_command_safe")]
 async fn execute_sync_command_safe(
     subcommand: Option<crate::cli::SyncCommands>,
@@ -1623,9 +1626,48 @@ async fn execute_sync_command_safe(
     package: String,
     dry_run: bool,
     check: bool,
+    all: bool,
     json_mode: bool,
 ) -> Result<(), CliError> {
     use crate::cli::SyncCommands;
+
+    // Validate: --all and --path are mutually exclusive (when path is explicitly set)
+    if all && path != "." {
+        return Err(CliError::config_with_help(
+            "--all and --path cannot be used together",
+            "Use --all to sync all projects in the workspace, or --path to sync a specific project",
+        ));
+    }
+
+    // Handle workspace-wide sync (--all flag)
+    if all {
+        let result = match &subcommand {
+            Some(SyncCommands::Ignore { .. }) => {
+                commands::sync::execute_sync_ignore_workspace(&package, dry_run, check).await
+            }
+            Some(SyncCommands::Codeowners { .. }) => {
+                commands::sync::execute_sync_codeowners_workspace(&package, dry_run, check).await
+            }
+            Some(SyncCommands::Cubes { diff, .. }) => {
+                commands::sync::execute_sync_cubes_workspace(&package, dry_run, check, *diff)
+            }
+            None => {
+                // No subcommand + --all = sync everything for all projects
+                commands::sync::execute_sync_all_workspace(&package, dry_run, check).await
+            }
+        };
+
+        return match result {
+            Ok(output) => {
+                output_result(&output, json_mode)?;
+                Ok(())
+            }
+            Err(e) => Err(CliError::eval_with_help(
+                format!("Workspace sync failed: {e}"),
+                "Check that you are in a CUE module and your env.cue files are valid",
+            )),
+        };
+    }
 
     // Handle Cubes subcommand separately as it has different parameters
     if let Some(SyncCommands::Cubes {
@@ -1634,6 +1676,7 @@ async fn execute_sync_command_safe(
         dry_run: cube_dry_run,
         check: cube_check,
         diff,
+        ..
     }) = &subcommand
     {
         let result = commands::sync::execute_sync_cubes(
@@ -1647,19 +1690,7 @@ async fn execute_sync_command_safe(
 
         return match result {
             Ok(output) => {
-                if json_mode {
-                    let envelope = OkEnvelope::new(serde_json::json!({
-                        "message": output
-                    }));
-                    match serde_json::to_string(&envelope) {
-                        Ok(json) => println!("{json}"),
-                        Err(e) => {
-                            return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                        }
-                    }
-                } else {
-                    println!("{output}");
-                }
+                output_result(&output, json_mode)?;
                 Ok(())
             }
             Err(e) => Err(CliError::eval_with_help(
@@ -1669,7 +1700,7 @@ async fn execute_sync_command_safe(
         };
     }
 
-    // Determine which sync operations to run
+    // Single project mode: determine which sync operations to run
     let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
     let run_codeowners = matches!(subcommand, None | Some(SyncCommands::Codeowners { .. }));
 
@@ -1712,9 +1743,15 @@ async fn execute_sync_command_safe(
         ));
     }
 
+    output_result(&combined_output, json_mode)?;
+    Ok(())
+}
+
+/// Helper to output result in text or JSON format
+fn output_result(output: &str, json_mode: bool) -> Result<(), CliError> {
     if json_mode {
         let envelope = OkEnvelope::new(serde_json::json!({
-            "message": combined_output
+            "message": output
         }));
         match serde_json::to_string(&envelope) {
             Ok(json) => println!("{json}"),
@@ -1723,7 +1760,7 @@ async fn execute_sync_command_safe(
             }
         }
     } else {
-        println!("{combined_output}");
+        println!("{output}");
     }
     Ok(())
 }

@@ -1,6 +1,9 @@
 package _examples
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"github.com/cuenv/cuenv/schema"
+	"github.com/cuenv/cuenv/schema/cubes"
+)
 
 schema.#Project & {
 	name: "cube-hello-example"
@@ -11,7 +14,7 @@ schema.#Project & {
 		}
 
 		files: {
-			"package.json": schema.#JSON & {
+			"package.json": cubes.#JSONFile & {
 				mode: "managed"
 				content: """
 				{
@@ -20,7 +23,7 @@ schema.#Project & {
 				}
 				"""
 			}
-			"src/main.ts": schema.#TypeScript & {
+			"src/main.ts": cubes.#TypeScriptFile & {
 				mode: "scaffold"
 				content: """
 				console.log("Hello, \(context.serviceName)!");

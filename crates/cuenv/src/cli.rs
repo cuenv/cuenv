@@ -502,6 +502,8 @@ pub enum Commands {
         dry_run: bool,
         #[arg(long, help = "Check if files are in sync without making changes")]
         check: bool,
+        #[arg(long = "all", short = 'A', help = "Sync all projects in the workspace")]
+        all: bool,
     },
 }
 
@@ -527,6 +529,12 @@ pub enum SyncCommands {
         dry_run: bool,
         #[arg(long, help = "Check if files are in sync without making changes")]
         check: bool,
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync ignore files for all projects in the workspace"
+        )]
+        all: bool,
     },
     #[command(about = "Sync CODEOWNERS file from CUE configuration")]
     Codeowners {
@@ -547,13 +555,19 @@ pub enum SyncCommands {
         dry_run: bool,
         #[arg(long, help = "Check if CODEOWNERS is in sync without making changes")]
         check: bool,
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync CODEOWNERS for all projects in the workspace"
+        )]
+        all: bool,
     },
     #[command(about = "Sync files from CUE cube configurations in projects")]
     Cubes {
         #[arg(
             long,
             short = 'p',
-            help = "Path to directory containing CUE files. Use '.' for local project only.",
+            help = "Path to directory containing CUE files",
             default_value = "."
         )]
         path: String,
@@ -569,6 +583,12 @@ pub enum SyncCommands {
         check: bool,
         #[arg(long, help = "Show diff for files that would change")]
         diff: bool,
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync cubes for all projects in the workspace"
+        )]
+        all: bool,
     },
 }
 
@@ -968,6 +988,7 @@ impl Commands {
                 package,
                 dry_run,
                 check,
+                all,
             } => {
                 // If subcommand has its own arguments, use them; otherwise use parent args
                 let (
@@ -976,40 +997,47 @@ impl Commands {
                     effective_package,
                     effective_dry_run,
                     effective_check,
+                    effective_all,
                 ) = match subcommand {
                     Some(SyncCommands::Ignore {
                         path: sub_path,
                         package: sub_package,
                         dry_run: sub_dry_run,
                         check: sub_check,
+                        all: sub_all,
                     }) => (
                         Some(SyncCommands::Ignore {
                             path: sub_path.clone(),
                             package: sub_package.clone(),
                             dry_run: sub_dry_run,
                             check: sub_check,
+                            all: sub_all,
                         }),
                         sub_path,
                         sub_package,
                         sub_dry_run,
                         sub_check,
+                        sub_all || all,
                     ),
                     Some(SyncCommands::Codeowners {
                         path: sub_path,
                         package: sub_package,
                         dry_run: sub_dry_run,
                         check: sub_check,
+                        all: sub_all,
                     }) => (
                         Some(SyncCommands::Codeowners {
                             path: sub_path.clone(),
                             package: sub_package.clone(),
                             dry_run: sub_dry_run,
                             check: sub_check,
+                            all: sub_all,
                         }),
                         sub_path,
                         sub_package,
                         sub_dry_run,
                         sub_check,
+                        sub_all || all,
                     ),
                     Some(SyncCommands::Cubes {
                         path: sub_path,
@@ -1017,6 +1045,7 @@ impl Commands {
                         dry_run: sub_dry_run,
                         check: sub_check,
                         diff,
+                        all: sub_all,
                     }) => (
                         Some(SyncCommands::Cubes {
                             path: sub_path.clone(),
@@ -1024,13 +1053,15 @@ impl Commands {
                             dry_run: sub_dry_run,
                             check: sub_check,
                             diff,
+                            all: sub_all,
                         }),
                         sub_path,
                         sub_package,
                         sub_dry_run,
                         sub_check,
+                        sub_all || all,
                     ),
-                    None => (None, path, package, dry_run, check),
+                    None => (None, path, package, dry_run, check, all),
                 };
                 Command::Sync {
                     subcommand: effective_subcommand,
@@ -1038,6 +1069,7 @@ impl Commands {
                     package: effective_package,
                     dry_run: effective_dry_run,
                     check: effective_check,
+                    all: effective_all,
                 }
             }
         }

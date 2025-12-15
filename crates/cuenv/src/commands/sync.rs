@@ -218,11 +218,10 @@ async fn execute_sync_codeowners_inner(
     }
 }
 
-/// Execute the sync cubes command.
+/// Execute the sync cubes command for a single project.
 ///
-/// Syncs cube-generated files for projects in the CUE module.
-/// When `local_only` is true (path is "."), only syncs the current project.
-/// Otherwise, discovers and syncs all projects with cube configurations.
+/// Syncs cube-generated files for the project at the specified path.
+/// Use `execute_sync_cubes_workspace` for workspace-wide syncing.
 #[instrument(name = "sync_cubes")]
 pub async fn execute_sync_cubes(
     path: &str,
@@ -235,17 +234,7 @@ pub async fn execute_sync_cubes(
     tracing::info!("Starting sync cubes command");
 
     let dir_path = Path::new(path);
-
-    // Check if we're running locally (path is ".")
-    let local_only = path == ".";
-
-    if local_only {
-        // Local mode: sync only the current project
-        return execute_sync_cubes_local(dir_path, package, dry_run, check);
-    }
-
-    // Module mode: discover all projects and sync their cubes
-    execute_sync_cubes_all(dir_path, package, dry_run, check)
+    execute_sync_cubes_local(dir_path, package, dry_run, check)
 }
 
 /// Sync cubes for the local project only
@@ -277,18 +266,26 @@ fn execute_sync_cubes_local(
     sync_cube_files(dir_path, &manifest.name, cube_config, dry_run, check)
 }
 
-/// Discover all projects and sync their cubes
-fn execute_sync_cubes_all(
-    dir_path: &Path,
+/// Sync cubes for all projects in the workspace.
+///
+/// Discovers all projects from the CUE module root and syncs their cube files.
+/// Called when --all flag is provided.
+pub fn execute_sync_cubes_workspace(
     _package: &str,
     dry_run: bool,
     check: bool,
+    _diff: bool,
 ) -> Result<String> {
     use cuenv_core::tasks::discovery::TaskDiscovery;
 
-    // Find the CUE module root
-    let module_root = find_cue_module_root(dir_path).ok_or_else(|| {
-        cuenv_core::Error::configuration("Not in a CUE module (no cue.mod found)")
+    // Find the CUE module root from current directory
+    let cwd = std::env::current_dir().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
+    })?;
+    let module_root = find_cue_module_root(&cwd).ok_or_else(|| {
+        cuenv_core::Error::configuration(
+            "Not in a CUE module (no cue.mod found). Cannot use --all flag.",
+        )
     })?;
 
     // Create evaluator for discovery
@@ -453,6 +450,247 @@ fn detect_package_name(project_path: &Path) -> Result<String> {
     }
 
     Ok("cuenv".to_string())
+}
+
+/// Sync ignore files for all projects in the workspace.
+///
+/// Discovers all projects from the CUE module root and syncs their ignore files.
+/// Called when --all flag is provided.
+#[instrument(name = "sync_ignore_workspace", skip(_package))]
+pub async fn execute_sync_ignore_workspace(
+    _package: &str,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    use cuenv_core::tasks::discovery::TaskDiscovery;
+
+    // Find the CUE module root from current directory
+    let cwd = std::env::current_dir().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
+    })?;
+    let module_root = find_cue_module_root(&cwd).ok_or_else(|| {
+        cuenv_core::Error::configuration(
+            "Not in a CUE module (no cue.mod found). Cannot use --all flag.",
+        )
+    })?;
+
+    // Create evaluator for discovery
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+
+    // Evaluation function for discovery
+    let eval_fn: cuenv_core::tasks::discovery::EvalFn = Box::new(move |project_path: &Path| {
+        let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
+        evaluator
+            .evaluate_typed(project_path, &pkg)
+            .map_err(|e| e.to_string())
+    });
+
+    let mut discovery = TaskDiscovery::new(module_root).with_eval_fn(eval_fn);
+    discovery.discover().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
+    })?;
+
+    let mut output_lines = Vec::new();
+    let mut errors = Vec::new();
+
+    for project in discovery.projects() {
+        // Skip projects without ignore config
+        if project.manifest.ignore.is_none() {
+            continue;
+        }
+
+        let project_path = project.project_root.to_string_lossy();
+        let pkg =
+            detect_package_name(&project.project_root).unwrap_or_else(|_| "cuenv".to_string());
+
+        match execute_sync_ignore(&project_path, &pkg, dry_run, check).await {
+            Ok(output) => {
+                if !output.contains("No ignore patterns")
+                    && !output.contains("all pattern lists are empty")
+                {
+                    output_lines.push(format!("Project: {}", project.manifest.name));
+                    output_lines.push(output);
+                    output_lines.push(String::new());
+                }
+            }
+            Err(e) => {
+                errors.push(format!("{}: {}", project.manifest.name, e));
+            }
+        }
+    }
+
+    if !errors.is_empty() && output_lines.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "All projects failed:\n{}",
+            errors.join("\n")
+        )));
+    }
+
+    if output_lines.is_empty() {
+        return Ok("No projects with ignore configuration found.".to_string());
+    }
+
+    if !errors.is_empty() {
+        output_lines.push("Errors:".to_string());
+        output_lines.extend(errors.into_iter().map(|e| format!("  {e}")));
+    }
+
+    Ok(output_lines.join("\n"))
+}
+
+/// Sync codeowners for all projects in the workspace.
+///
+/// Discovers all projects from the CUE module root and syncs their CODEOWNERS files.
+/// Called when --all flag is provided.
+#[instrument(name = "sync_codeowners_workspace", skip(_package))]
+pub async fn execute_sync_codeowners_workspace(
+    _package: &str,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    use cuenv_core::tasks::discovery::TaskDiscovery;
+
+    // Find the CUE module root from current directory
+    let cwd = std::env::current_dir().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
+    })?;
+    let module_root = find_cue_module_root(&cwd).ok_or_else(|| {
+        cuenv_core::Error::configuration(
+            "Not in a CUE module (no cue.mod found). Cannot use --all flag.",
+        )
+    })?;
+
+    // Create evaluator for discovery
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+
+    // Evaluation function for discovery
+    let eval_fn: cuenv_core::tasks::discovery::EvalFn = Box::new(move |project_path: &Path| {
+        let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
+        evaluator
+            .evaluate_typed(project_path, &pkg)
+            .map_err(|e| e.to_string())
+    });
+
+    let mut discovery = TaskDiscovery::new(module_root).with_eval_fn(eval_fn);
+    discovery.discover().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
+    })?;
+
+    let mut output_lines = Vec::new();
+    let mut errors = Vec::new();
+
+    for project in discovery.projects() {
+        // Skip projects without owners config
+        if project.manifest.owners.is_none() {
+            continue;
+        }
+
+        let project_path = project.project_root.to_string_lossy();
+        let pkg =
+            detect_package_name(&project.project_root).unwrap_or_else(|_| "cuenv".to_string());
+
+        match execute_sync_codeowners_optional(&project_path, &pkg, dry_run, check).await {
+            Ok(output) => {
+                if !output.contains("No owners configuration") {
+                    output_lines.push(format!("Project: {}", project.manifest.name));
+                    output_lines.push(output);
+                    output_lines.push(String::new());
+                }
+            }
+            Err(e) => {
+                errors.push(format!("{}: {}", project.manifest.name, e));
+            }
+        }
+    }
+
+    if !errors.is_empty() && output_lines.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "All projects failed:\n{}",
+            errors.join("\n")
+        )));
+    }
+
+    if output_lines.is_empty() {
+        return Ok("No projects with owners configuration found.".to_string());
+    }
+
+    if !errors.is_empty() {
+        output_lines.push("Errors:".to_string());
+        output_lines.extend(errors.into_iter().map(|e| format!("  {e}")));
+    }
+
+    Ok(output_lines.join("\n"))
+}
+
+/// Sync all (ignore + owners + cubes) for all projects in the workspace.
+///
+/// Discovers all projects from the CUE module root and syncs all file types.
+/// Called when --all flag is provided without a specific subcommand.
+#[instrument(name = "sync_all_workspace")]
+pub async fn execute_sync_all_workspace(
+    package: &str,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    let mut outputs = Vec::new();
+    let mut had_errors = false;
+
+    // Run ignore sync for all projects
+    match execute_sync_ignore_workspace(package, dry_run, check).await {
+        Ok(output) if !output.contains("No projects with ignore") => {
+            outputs.push("=== Ignore Files ===".to_string());
+            outputs.push(output);
+            outputs.push(String::new());
+        }
+        Ok(_) => {}
+        Err(e) => {
+            outputs.push(format!("=== Ignore Files ===\nError: {e}\n"));
+            had_errors = true;
+        }
+    }
+
+    // Run codeowners sync for all projects
+    match execute_sync_codeowners_workspace(package, dry_run, check).await {
+        Ok(output) if !output.contains("No projects with owners") => {
+            outputs.push("=== Codeowners ===".to_string());
+            outputs.push(output);
+            outputs.push(String::new());
+        }
+        Ok(_) => {}
+        Err(e) => {
+            outputs.push(format!("=== Codeowners ===\nError: {e}\n"));
+            had_errors = true;
+        }
+    }
+
+    // Run cubes sync for all projects
+    match execute_sync_cubes_workspace(package, dry_run, check, false) {
+        Ok(output) if !output.contains("No projects with cube") => {
+            outputs.push("=== Cubes ===".to_string());
+            outputs.push(output);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            outputs.push(format!("=== Cubes ===\nError: {e}"));
+            had_errors = true;
+        }
+    }
+
+    if outputs.is_empty() {
+        return Ok("No projects with sync configuration found.".to_string());
+    }
+
+    let output = outputs.join("\n");
+
+    if had_errors && !output.contains("Project:") {
+        return Err(cuenv_core::Error::configuration(output));
+    }
+
+    Ok(output)
 }
 
 #[cfg(test)]
