@@ -8,7 +8,7 @@
     "editor.formatOnSave": true
   },
   "[cue]": {
-    "editor.defaultFormatter": "asvetliakov.vscode-cue",
+    "editor.defaultFormatter": "cuelangorg.vscode-cue",
     "editor.formatOnSave": true
   },
   "rust-analyzer.check.command": "clippy",

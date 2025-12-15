@@ -9,6 +9,31 @@ schema.#Project
 
 name: "cuenv"
 
+owners: {
+	output: platform: "github"
+	rules: [
+		{
+			pattern: "*"
+			owners: ["@rawkode"]
+		},
+	]
+}
+
+ignore: {
+	git: [
+		".cache",
+		".cargo",
+		".cuenv",
+		".test",
+		"*.vsix",
+		"crates/cuengine/vendor",
+	  "dist",
+		"node_modules",
+		"result",
+		"target",
+	]
+}
+
 ci: pipelines: [
 	{
 		name: "ci"
@@ -41,7 +66,7 @@ tasks: {
 		"crates",
 	]
 
-        pwd: command: "pwd"
+	pwd: command: "pwd"
 
 	// CI check task - delegates to nix flake check for optimal caching
 	check: {
@@ -292,20 +317,20 @@ tasks: {
 
 		"task-gen": {
 			command: "gh"
-			args:    ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
-			inputs:  _inputs
+			args: ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
+			inputs: _inputs
 		}
 
 		"env-gen": {
 			command: "gh"
-			args:    ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
-			inputs:  _inputs
+			args: ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
+			inputs: _inputs
 		}
 
 		qa: {
 			command: "gh"
-			args:    ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
-			inputs:  _inputs
+			args: ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
+			inputs: _inputs
 		}
 	}
 
