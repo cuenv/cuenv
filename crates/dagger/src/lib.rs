@@ -116,7 +116,7 @@ impl TaskBackend for DaggerBackend {
                 "Task '{}' references container from task '{}', but no container was found. \
                  Ensure the referenced task runs first (use dependsOn).",
                 name,
-                from_task.as_ref().unwrap()
+                from_task.as_ref().expect("checked is_some above")
             )));
         }
 

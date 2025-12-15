@@ -600,11 +600,11 @@ pub async fn execute_env_check(
             match shell {
                 crate::cli::ShellType::Fish => {
                     use std::fmt::Write;
-                    writeln!(&mut output, "set -x {key} \"{value}\"").unwrap();
+                    writeln!(&mut output, "set -x {key} \"{value}\"").expect("write to string");
                 }
                 crate::cli::ShellType::Bash | crate::cli::ShellType::Zsh => {
                     use std::fmt::Write;
-                    writeln!(&mut output, "export {key}=\"{value}\"").unwrap();
+                    writeln!(&mut output, "export {key}=\"{value}\"").expect("write to string");
                 }
             }
         }
