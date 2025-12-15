@@ -5,6 +5,23 @@ export interface CuenvTask {
     description?: string;
 }
 
+/**
+ * Task reference for workspace-wide task listing (used by IDE completions).
+ * Returned by `cuenv task --workspace --output-format json`.
+ */
+export interface WorkspaceTask {
+    /** Project name from env.cue `name` field */
+    project: string;
+    /** Task name within the project (canonical dotted path) */
+    task: string;
+    /** Full task reference string in format "#project:task" */
+    task_ref: string;
+    /** Task description if available */
+    description: string | null;
+    /** Whether this is a task group */
+    is_group: boolean;
+}
+
 export interface TaskDefinition {
     shell?: {
         command?: string;

@@ -79,6 +79,21 @@ pub struct IndexedTask {
     pub source_file: Option<String>,
 }
 
+/// Task reference for workspace-wide task listing (used by IDE completions)
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceTask {
+    /// Project name from env.cue `name` field
+    pub project: String,
+    /// Task name within the project (canonical dotted path)
+    pub task: String,
+    /// Full task reference string in format "#project:task"
+    pub task_ref: String,
+    /// Task description if available
+    pub description: Option<String>,
+    /// Whether this is a task group
+    pub is_group: bool,
+}
+
 /// Flattened index of all addressable tasks with canonical names
 #[derive(Debug, Clone, Default)]
 pub struct TaskIndex {

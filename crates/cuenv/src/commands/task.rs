@@ -12,7 +12,7 @@ use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
     BackendFactory, ExecutorConfig, ResolvedArgs, Task, TaskDefinition, TaskExecutor, TaskGraph,
-    TaskIndex, TaskParams, Tasks,
+    TaskIndex, TaskParams, Tasks, WorkspaceTask,
 };
 
 use super::env_file::find_cue_module_root;
@@ -68,6 +68,7 @@ pub async fn execute_task(
     backend: Option<&str>,
     tui: bool,
     help: bool,
+    workspace: bool,
     task_args: &[String],
 ) -> Result<String> {
     // Handle CLI help immediately if no task specified
@@ -105,6 +106,40 @@ pub async fn execute_task(
     // Build a canonical index to support nested task paths
     let task_index = TaskIndex::build(&manifest.tasks)?;
     let local_tasks = task_index.to_tasks();
+
+    // Handle workspace-wide task listing for IDE completions
+    if workspace && task_name.is_none() && labels.is_empty() {
+        tracing::debug!("Listing workspace-wide tasks for IDE completions");
+
+        let Some(cue_mod_root) = cue_module_root.as_ref() else {
+            return Err(cuenv_core::Error::configuration(
+                "Cannot use --workspace outside of a CUE module (no cue.mod found)",
+            ));
+        };
+
+        let evaluator_clone = evaluator.clone();
+        let pkg = package.to_string();
+        let eval_fn: EvalFn = Box::new(move |p: &Path| {
+            evaluate_manifest(&evaluator_clone, p, &pkg).map_err(|e| e.to_string())
+        });
+
+        let mut discovery = TaskDiscovery::new(cue_mod_root.clone());
+        discovery = discovery.with_eval_fn(eval_fn);
+        if let Err(e) = discovery.discover() {
+            tracing::warn!("Workspace discovery had errors: {}", e);
+        }
+
+        let workspace_tasks = collect_workspace_tasks(&discovery);
+
+        if format == "json" {
+            return serde_json::to_string(&workspace_tasks).map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to serialize workspace tasks: {e}"))
+            });
+        }
+
+        // Human-readable format for workspace tasks
+        return Ok(render_workspace_task_list(&workspace_tasks));
+    }
 
     // If no task specified, list available tasks
     if task_name.is_none() && labels.is_empty() {
@@ -1335,6 +1370,72 @@ fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
             }
         }
     }
+    output
+}
+
+/// Collect all tasks from discovered projects into WorkspaceTask format
+fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<WorkspaceTask> {
+    let mut result = Vec::new();
+
+    for project in discovery.projects() {
+        let project_name = project.manifest.name.trim();
+        if project_name.is_empty() {
+            continue;
+        }
+
+        if let Ok(index) = TaskIndex::build(&project.manifest.tasks) {
+            for entry in index.list() {
+                // Get description from task definition (only available for single tasks)
+                let description = entry.definition.as_single().and_then(|t| {
+                    let desc = t.description();
+                    if desc.is_empty() {
+                        None
+                    } else {
+                        Some(desc.to_string())
+                    }
+                });
+
+                result.push(WorkspaceTask {
+                    project: project_name.to_string(),
+                    task: entry.name.clone(),
+                    task_ref: format!("#{}:{}", project_name, entry.name),
+                    description,
+                    is_group: entry.is_group,
+                });
+            }
+        }
+    }
+
+    result
+}
+
+/// Render workspace tasks in human-readable format
+fn render_workspace_task_list(tasks: &[WorkspaceTask]) -> String {
+    if tasks.is_empty() {
+        return "No tasks found in workspace".to_string();
+    }
+
+    let mut output = String::new();
+    let mut by_project: BTreeMap<&str, Vec<&WorkspaceTask>> = BTreeMap::new();
+
+    for task in tasks {
+        by_project.entry(&task.project).or_default().push(task);
+    }
+
+    for (project, project_tasks) in by_project {
+        writeln!(output, "\n{}", project).unwrap();
+        writeln!(output, "{}", "─".repeat(project.len())).unwrap();
+
+        for task in project_tasks {
+            let desc = task
+                .description
+                .as_ref()
+                .map(|d| format!(" - {d}"))
+                .unwrap_or_default();
+            writeln!(output, "  {}{}", task.task_ref, desc).unwrap();
+        }
+    }
+
     output
 }
 

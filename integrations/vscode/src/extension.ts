@@ -6,6 +6,7 @@ import { TaskTreeDataProvider, TaskTreeItem } from './providers/taskTree';
 import { EnvTreeDataProvider, EnvTreeItem } from './providers/envTree';
 import { VariableTreeDataProvider, VariableTreeItem } from './providers/variableTree';
 import { CuenvCodeLensProvider } from './providers/codelens';
+import { TaskRefCompletionProvider } from './providers/taskRefCompletion';
 import { GraphWebview } from './webview/graph';
 import { EmbeddedLanguageDetector, VirtualDocumentManager, PositionMapper, EMBEDDED_SCHEME } from './embedded';
 import { EmbeddedCompletionProvider } from './providers/embeddedCompletion';
@@ -97,6 +98,17 @@ export function activate(context: vscode.ExtensionContext) {
         );
     }
 
+    // Task Reference Completion Provider (for dependsOn, hooks, etc.)
+    const cueSelector: vscode.DocumentSelector = { language: 'cue', scheme: 'file' };
+    context.subscriptions.push(
+        vscode.languages.registerCompletionItemProvider(
+            cueSelector,
+            new TaskRefCompletionProvider(client, outputChannel),
+            '"', '#' // Trigger on quote and # for task refs
+        )
+    );
+    outputChannel.appendLine('Task reference completion provider registered');
+
     // Commands
     context.subscriptions.push(
         vscode.commands.registerCommand('cuenv.refresh', () => {
@@ -128,8 +140,9 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Refresh Action
+    // Refresh Action (also invalidates task completion cache)
     const refreshAction = () => {
+        client.invalidateTaskCache();
         taskProvider.refresh();
         envProvider.refresh();
         variableProvider.refresh();
