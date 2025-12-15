@@ -120,19 +120,18 @@ fn test_validate_package_name_characters() {
 fn test_validate_package_name_first_character() {
     let limits = Limits::default();
 
-    // Must start with alphabetic
+    // Must start with alphabetic or underscore
     let result = validate_package_name("1invalid", &limits);
     assert!(result.is_err());
 
     let result = validate_package_name("-invalid", &limits);
     assert!(result.is_err());
 
-    let result = validate_package_name("_invalid", &limits);
-    assert!(result.is_err());
-
-    // Valid first character
+    // Valid first character (alphabetic or underscore for CUE "hidden" packages)
     assert!(validate_package_name("valid", &limits).is_ok());
     assert!(validate_package_name("Valid", &limits).is_ok());
+    assert!(validate_package_name("_hidden", &limits).is_ok());
+    assert!(validate_package_name("_examples", &limits).is_ok());
 }
 
 #[test]

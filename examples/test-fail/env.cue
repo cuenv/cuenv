@@ -1,4 +1,4 @@
-package examples
+package _examples
 
 import "github.com/cuenv/cuenv/schema"
 
