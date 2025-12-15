@@ -61,7 +61,28 @@ cuenv task
 
 # Run a specific task
 cuenv task build
+
+# Run with rich TUI visualization (shows DAG and parallel task output)
+cuenv task build --tui
 ```
+
+### Rich TUI Mode
+
+The `--tui` flag enables an interactive terminal UI that provides:
+
+- **Visual DAG**: See the task dependency graph with real-time status updates
+- **Parallel Output**: View output from up to 4 tasks simultaneously in split-screen panes
+- **Live Status**: Color-coded task states (pending, running, completed, failed, cached)
+- **Progress Tracking**: Overall execution time and task counts
+
+```bash
+cuenv task dev --tui
+```
+
+**Keyboard Controls:**
+
+- `q` or `Esc`: Quit when execution is complete
+- `Ctrl+C`: Force quit/abort execution
 
 ## Dependencies & Parallelism
 
