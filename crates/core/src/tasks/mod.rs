@@ -16,7 +16,7 @@ pub use backend::{
 };
 pub use executor::*;
 pub use graph::*;
-pub use index::{IndexedTask, TaskIndex, TaskPath};
+pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
