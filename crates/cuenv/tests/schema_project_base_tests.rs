@@ -139,9 +139,12 @@ schema.#Base & {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success(), "should fail with Base schema");
+    // Note: miette wraps long lines with │ characters, so we check for parts separately
+    // to avoid failures due to line-break positions.
     assert!(
-        stderr.contains("schema.#Base") && stderr.contains("doesn't support tasks"),
-        "error message should explain Base schema doesn't support tasks, got: {}",
-        stderr
+        stderr.contains("schema.#Base")
+            && stderr.contains("doesn't")
+            && stderr.contains("support tasks"),
+        "error message should explain Base schema doesn't support tasks, got: {stderr}",
     );
 }

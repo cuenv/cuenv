@@ -9,8 +9,8 @@ use tempfile::TempDir;
 
 /// Helper to run cuenv command and capture output
 fn run_cuenv(args: &[&str]) -> (String, String, bool) {
-    let output = Command::new("cargo")
-        .args(["run", "--bin", "cuenv", "--"])
+    let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
+    let output = Command::new(cuenv_bin)
         .args(args)
         .output()
         .expect("Failed to run cuenv");
