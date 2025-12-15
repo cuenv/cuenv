@@ -1,7 +1,7 @@
 //! TUI widgets for task execution visualization
 
-pub mod dag;
-pub mod task_panes;
+pub mod output_panel;
+pub mod task_tree;
 
-pub use dag::DagWidget;
-pub use task_panes::TaskPanesWidget;
+pub use output_panel::OutputPanelWidget;
+pub use task_tree::TaskTreeWidget;

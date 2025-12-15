@@ -226,8 +226,9 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
         ..Default::default()
     };
 
-    let event_bus = match crate::tracing::init_tracing_with_events(tracing_config) {
-        Ok(bus) => bus,
+    // Initialize tracing and get the event receiver for the main renderer
+    let receiver = match crate::tracing::init_tracing_with_events(tracing_config) {
+        Ok(rx) => rx,
         Err(e) => {
             return Err(CliError::config(format!(
                 "Failed to initialize tracing: {e}"
@@ -235,14 +236,25 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
         }
     };
 
+    // Check if TUI mode is enabled (Task command with --tui flag)
+    let tui_mode = matches!(
+        &cli.command,
+        Some(crate::cli::Commands::Task { tui: true, .. })
+    );
+
     // Spawn appropriate renderer based on output mode
-    let receiver = event_bus.subscribe();
+    // Skip CLI renderer in TUI mode - TUI handles its own event rendering
     let renderer_handle = if cli.json {
         // JSON mode: output structured JSON events
         let renderer = JsonRenderer::new();
         Some(tokio::spawn(async move {
             renderer.run(receiver).await;
         }))
+    } else if tui_mode {
+        // TUI mode: don't spawn CLI renderer, TUI subscribes to events directly
+        // Drop the receiver to avoid memory buildup
+        drop(receiver);
+        None
     } else {
         // CLI mode: pretty-print events to terminal
         let renderer = CliRenderer::new();
@@ -859,7 +871,7 @@ async fn execute_env_print_command_safe(
 }
 
 /// Execute task command safely
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 #[instrument(name = "cuenv_execute_task_safe")]
 async fn execute_task_command_safe(
     path: String,

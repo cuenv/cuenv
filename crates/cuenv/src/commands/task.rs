@@ -18,8 +18,6 @@ use cuenv_core::tasks::{
 use super::env_file::find_cue_module_root;
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
-use cuenv_events::{EventBus, CuenvEventLayer};
-use tracing_subscriber::layer::SubscriberExt;
 
 /// Get the dagger backend factory if the feature is enabled
 #[cfg(feature = "dagger-backend")]
@@ -52,7 +50,11 @@ use super::export::get_environment_with_hooks;
 /// When using labels, the function discovers all projects in the CUE module scope,
 /// finds tasks matching the labels, creates a synthetic root task that depends on them,
 /// and executes via the DAG.
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools
+)]
 pub async fn execute_task(
     path: &str,
     package: &str,
@@ -234,7 +236,7 @@ pub async fn execute_task(
             let mut modified_tasks = local_tasks.clone();
             modified_tasks
                 .tasks
-                .insert(display_task_name.to_string(), modified_def.clone());
+                .insert(display_task_name.clone(), modified_def.clone());
 
             (modified_def, modified_tasks)
         } else {
@@ -367,7 +369,7 @@ pub async fn execute_task(
         max_parallel: 0,
         environment: runtime_env.clone(),
         working_dir: None,
-        cue_module_root,
+        cue_module_root: cue_module_root.clone(),
         project_root: project_root.clone(),
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
         cache_dir: None,
@@ -395,17 +397,34 @@ pub async fn execute_task(
 
     // If TUI is requested and we have a task graph, launch the rich TUI
     if tui && task_graph.task_count() > 0 {
+        // For TUI mode, we MUST capture output so it goes through the event system
+        // rather than directly to stdout/stderr (which would corrupt the TUI display).
+        let tui_config = ExecutorConfig {
+            capture_output: true, // Force capture for TUI mode
+            max_parallel: 0,
+            environment: runtime_env.clone(),
+            working_dir: None,
+            cue_module_root: cue_module_root.clone(),
+            project_root: project_root.clone(),
+            materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
+            cache_dir: None,
+            show_cache_path,
+            workspaces: manifest.workspaces.clone(),
+            backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
+            cli_backend: backend.map(ToString::to_string),
+        };
+        let tui_executor = TaskExecutor::with_dagger_factory(tui_config, get_dagger_factory());
+
         return execute_with_rich_tui(
             path,
             &evaluator,
-            &executor,
+            &tui_executor,
             display_task_name.as_str(),
             &task_def,
             &task_graph,
             &all_tasks,
             manifest.env.as_ref(),
             &runtime_env,
-            capture_output,
         )
         .await;
     }
@@ -439,6 +458,9 @@ pub async fn execute_task(
 }
 
 /// Execute task with rich TUI interface
+///
+/// Note: The executor MUST have `capture_output: true` to ensure task output
+/// goes through the event system rather than directly to stdout/stderr.
 #[allow(clippy::too_many_arguments)]
 async fn execute_with_rich_tui(
     _project_dir: &str,
@@ -447,49 +469,51 @@ async fn execute_with_rich_tui(
     task_name: &str,
     _task_def: &TaskDefinition,
     task_graph: &TaskGraph,
-    all_tasks: &Tasks,
+    _all_tasks: &Tasks,
     _env_base: Option<&cuenv_core::environment::Env>,
     _hook_env: &Environment,
-    _capture_output: bool,
 ) -> Result<String> {
-    // Create event bus for TUI
-    let bus = EventBus::new();
-    let event_layer = CuenvEventLayer::new(bus.sender().inner);
+    // Subscribe to the global event bus.
+    // The global bus is set up during CLI initialization and receives all events
+    // emitted via the emit_task_*! macros through the global tracing subscriber.
+    let event_rx = crate::tracing::subscribe_global_events().ok_or_else(|| {
+        cuenv_core::Error::configuration(
+            "Global event bus not initialized - TUI requires event-based tracing".to_string(),
+        )
+    })?;
 
-    // Install the event layer into tracing
-    // Note: This temporarily affects the global subscriber
-    let _guard = tracing::subscriber::set_default(
-        tracing_subscriber::registry().with(event_layer),
-    );
-
-    // Get event receiver for TUI
-    let event_rx = bus.receiver().inner;
+    // Create oneshot channel for TUI readiness signaling.
+    // This prevents a race condition where task execution starts
+    // before the TUI event loop is ready to receive events.
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
 
     // Create and initialize TUI
-    let mut tui = RichTui::new(event_rx).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to initialize TUI: {e}"))
-    })?;
+    let mut tui = RichTui::new(event_rx, ready_tx)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to initialize TUI: {e}")))?;
 
     // Build TaskInfo structs from the task graph
     let mut task_infos = Vec::new();
-    let sorted_tasks = task_graph.topological_sort().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to sort task graph: {e}"))
-    })?;
+    let sorted_tasks = task_graph
+        .topological_sort()
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to sort task graph: {e}")))?;
 
     // Calculate levels based on dependencies
     let mut levels: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for node in &sorted_tasks {
-        let max_dep_level = node.task.depends_on.iter()
-            .filter_map(|dep| levels.get(&dep.task).copied())
+        let max_dep_level = node
+            .task
+            .depends_on
+            .iter()
+            .filter_map(|dep| levels.get(dep).copied())
             .max()
             .unwrap_or(0);
-        let increment = if node.task.depends_on.is_empty() { 0 } else { 1 };
+        let increment = usize::from(!node.task.depends_on.is_empty());
         levels.insert(node.name.clone(), max_dep_level.saturating_add(increment));
     }
 
     for node in sorted_tasks {
         let task_name = node.name.clone();
-        let dependencies: Vec<String> = node.task.depends_on.iter().map(|dep| dep.task.clone()).collect();
+        let dependencies: Vec<String> = node.task.depends_on.clone();
         let level = levels.get(&task_name).copied().unwrap_or(0);
 
         task_infos.push(TaskInfo::new(task_name, dependencies, level));
@@ -498,15 +522,52 @@ async fn execute_with_rich_tui(
     tui.init_tasks(task_infos);
 
     // Run TUI and task execution concurrently
-    let tui_handle = tokio::spawn(async move {
-        tui.run().await
-    });
+    // Note: TUI run() is blocking (uses crossterm::event::poll), so we spawn_blocking
+    let tui_handle = tokio::task::spawn_blocking(move || tui.run());
+
+    // Wait for TUI to signal it's ready before starting task execution.
+    // This prevents a race condition where early events are missed.
+    if ready_rx.await.is_err() {
+        // TUI failed to start or was dropped before signaling ready
+        return Err(cuenv_core::Error::configuration(
+            "TUI failed to initialize - event loop did not start".to_string(),
+        ));
+    }
 
     // Execute tasks
     let results = executor.execute_graph(task_graph).await?;
 
-    // Wait for TUI to finish
-    let _ = tui_handle.await;
+    // Determine overall success
+    let all_succeeded = results.iter().all(|r| r.success);
+
+    // Emit completion event so the TUI knows execution is done.
+    // This must happen BEFORE the event bus sender is dropped.
+    cuenv_events::emit_command_completed!("task", all_succeeded, 0_u64);
+
+    // Wait for TUI to finish and handle any errors.
+    // Note: No sleep is needed here because:
+    // 1. The TUI polls for events every 50ms
+    // 2. We're waiting for the user to dismiss the TUI (via tui_handle.await)
+    // 3. The channel stays open until this function returns (after TUI finishes)
+    // Note: By this point, the TUI's TerminalGuard has been dropped,
+    // so the terminal is restored and stderr output will be visible.
+    match tui_handle.await {
+        Ok(Ok(())) => {
+            // TUI completed successfully
+        }
+        Ok(Err(e)) => {
+            // TUI returned an error - log it but don't fail the task execution
+            // since the tasks themselves may have succeeded
+            tracing::warn!("TUI error (task execution may have succeeded): {e}");
+            eprintln!("Warning: TUI encountered an error: {e}");
+            eprintln!("Task output may not have been fully displayed. Check logs for details.");
+        }
+        Err(e) => {
+            // TUI task panicked or was cancelled
+            tracing::error!("TUI task failed: {e}");
+            eprintln!("Warning: TUI terminated unexpectedly: {e}");
+        }
+    }
 
     // Check for failures
     if let Some(failed) = results.iter().find(|r| !r.success) {
@@ -517,7 +578,9 @@ async fn execute_with_rich_tui(
     }
 
     // Return success message
-    Ok(format!("Task '{task_name}' completed successfully in TUI mode"))
+    Ok(format!(
+        "Task '{task_name}' completed successfully in TUI mode"
+    ))
 }
 
 /// Execute a task using the appropriate strategy based on task type and dependencies

@@ -786,7 +786,8 @@ impl TaskExecutor {
             "Executing non-hermetic task"
         );
 
-        // Emit command being run
+        // Emit command being run - always emit task_started for all modes
+        // (TUI needs events even when capture_output is true)
         let cmd_str = if let Some(script) = &task.script {
             format!("[script: {} bytes]", script.len())
         } else if task.command.is_empty() {
@@ -794,9 +795,8 @@ impl TaskExecutor {
         } else {
             format!("{} {}", task.command, task.args.join(" "))
         };
-        if !self.config.capture_output {
-            cuenv_events::emit_task_started!(name, cmd_str, false);
-        }
+
+        cuenv_events::emit_task_started!(name, cmd_str, false);
 
         // Build command - handle script mode vs command mode
         let mut cmd = if let Some(script) = &task.script {
@@ -864,21 +864,80 @@ impl TaskExecutor {
         // Execute - always capture output for consistent behavior
         // If not in capture mode, stream output to terminal in real-time
         if self.config.capture_output {
-            let output = cmd
+            use tokio::io::{AsyncBufReadExt, BufReader};
+
+            let start_time = std::time::Instant::now();
+
+            // Spawn with piped stdout/stderr for streaming
+            let mut child = cmd
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .output()
-                .await
+                .spawn()
                 .map_err(|e| Error::Io {
                     source: e,
                     path: None,
                     operation: format!("spawn task {}", name),
                 })?;
 
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let exit_code = output.status.code().unwrap_or(-1);
-            let success = output.status.success();
+            // Take ownership of stdout/stderr handles
+            let stdout_handle = child.stdout.take();
+            let stderr_handle = child.stderr.take();
+
+            // Collect output while streaming events in real-time
+            let mut stdout_lines = Vec::new();
+            let mut stderr_lines = Vec::new();
+
+            // Stream stdout
+            let name_for_stdout = name.to_string();
+            let stdout_task = tokio::spawn(async move {
+                let mut lines = Vec::new();
+                if let Some(stdout) = stdout_handle {
+                    let mut reader = BufReader::new(stdout).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        cuenv_events::emit_task_output!(name_for_stdout, "stdout", line);
+                        lines.push(line);
+                    }
+                }
+                lines
+            });
+
+            // Stream stderr
+            let name_for_stderr = name.to_string();
+            let stderr_task = tokio::spawn(async move {
+                let mut lines = Vec::new();
+                if let Some(stderr) = stderr_handle {
+                    let mut reader = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        cuenv_events::emit_task_output!(name_for_stderr, "stderr", line);
+                        lines.push(line);
+                    }
+                }
+                lines
+            });
+
+            // Wait for process to complete and collect output
+            let status = child.wait().await.map_err(|e| Error::Io {
+                source: e,
+                path: None,
+                operation: format!("wait for task {}", name),
+            })?;
+
+            // Collect streamed output
+            if let Ok(lines) = stdout_task.await {
+                stdout_lines = lines;
+            }
+            if let Ok(lines) = stderr_task.await {
+                stderr_lines = lines;
+            }
+
+            let duration_ms = start_time.elapsed().as_millis() as u64;
+            let stdout = stdout_lines.join("\n");
+            let stderr = stderr_lines.join("\n");
+            let exit_code = status.code().unwrap_or(-1);
+            let success = status.success();
+
+            // Emit task completion event
+            cuenv_events::emit_task_completed!(name, success, exit_code, duration_ms);
 
             if !success {
                 tracing::warn!(task = %name, exit = exit_code, "Task failed");

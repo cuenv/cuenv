@@ -80,6 +80,7 @@ cuenv task dev --tui
 ```
 
 **Keyboard Controls:**
+
 - `q` or `Esc`: Quit when execution is complete
 - `Ctrl+C`: Force quit/abort execution
 

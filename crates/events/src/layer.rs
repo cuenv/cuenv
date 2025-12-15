@@ -354,6 +354,46 @@ impl Visit for CuenvEventVisitor {
                     self.options = Some(options);
                 }
             }
+            // Fallback: try to extract string fields from debug formatting
+            // When tracing uses Display formatting (%), it wraps values in a DisplayValue
+            // which then gets passed to record_debug instead of record_str
+            "event_type" | "task_name" | "name" | "command" | "cmd" | "content" | "cache_key"
+            | "stream" => {
+                // Remove surrounding quotes if present (debug format adds them for strings)
+                let cleaned = value_str.trim_matches('"');
+                match field.name() {
+                    "event_type" => self.event_type = Some(cleaned.to_string()),
+                    "task_name" | "name" => self.task_name = Some(cleaned.to_string()),
+                    "command" | "cmd" => self.command = Some(cleaned.to_string()),
+                    "content" => self.content = Some(cleaned.to_string()),
+                    "cache_key" => self.cache_key = Some(cleaned.to_string()),
+                    "stream" => {
+                        self.stream = match cleaned {
+                            "stdout" => Some(Stream::Stdout),
+                            "stderr" => Some(Stream::Stderr),
+                            _ => None,
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            // Handle exit_code which uses Debug formatting (?exit_code)
+            // Can be "Some(0)", "None", or just "0" depending on context
+            "exit_code" => {
+                // Try to parse as Option<i32> format first (e.g., "Some(0)")
+                if let Some(inner) = value_str
+                    .strip_prefix("Some(")
+                    .and_then(|s| s.strip_suffix(')'))
+                    && let Ok(code) = inner.parse::<i32>()
+                {
+                    self.exit_code = Some(code);
+                } else if value_str != "None" {
+                    // Try to parse as plain integer
+                    if let Ok(code) = value_str.parse::<i32>() {
+                        self.exit_code = Some(code);
+                    }
+                }
+            }
             _ => {}
         }
     }

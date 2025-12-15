@@ -105,11 +105,11 @@ let limits = Limits {
 };
 ```
 
-| Field                    | Default | Description                          |
-| ------------------------ | ------- | ------------------------------------ |
-| `max_path_length`        | 4096    | Maximum path length in characters    |
-| `max_package_name_length`| 256     | Maximum package name length          |
-| `max_output_size`        | 100MB   | Maximum output size in bytes         |
+| Field                     | Default | Description                       |
+| ------------------------- | ------- | --------------------------------- |
+| `max_path_length`         | 4096    | Maximum path length in characters |
+| `max_package_name_length` | 256     | Maximum package name length       |
+| `max_output_size`         | 100MB   | Maximum output size in bytes      |
 
 ### RetryConfig
 
@@ -151,13 +151,13 @@ match err {
 
 **Error constructors**
 
-| Method                             | Description                              |
-| ---------------------------------- | ---------------------------------------- |
-| `CueEngineError::configuration(msg)` | Invalid paths, settings, capacity, etc.  |
-| `CueEngineError::ffi(fn_name, msg)`  | FFI operation failed                     |
-| `CueEngineError::cue_parse(path, msg)`| CUE parsing or evaluation failed        |
-| `CueEngineError::validation(msg)`    | Input/output validation errors           |
-| `CueEngineError::cache(msg)`         | Cache operation errors                   |
+| Method                                 | Description                             |
+| -------------------------------------- | --------------------------------------- |
+| `CueEngineError::configuration(msg)`   | Invalid paths, settings, capacity, etc. |
+| `CueEngineError::ffi(fn_name, msg)`    | FFI operation failed                    |
+| `CueEngineError::cue_parse(path, msg)` | CUE parsing or evaluation failed        |
+| `CueEngineError::validation(msg)`      | Input/output validation errors          |
+| `CueEngineError::cache(msg)`           | Cache operation errors                  |
 
 ## Performance Characteristics
 
