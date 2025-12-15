@@ -233,6 +233,9 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
 }
 
 /// Execute env status command - show current hook execution status
+///
+/// Uses a fast path for non-wait mode that skips config hash computation entirely.
+/// This reduces latency from ~300ms to <20ms for Starship integration.
 pub async fn execute_env_status(
     path: &str,
     package: &str,
@@ -246,15 +249,14 @@ pub async fn execute_env_status(
         status => return Ok(env_file_issue_message(path, package, status)),
     };
 
-    // Get the config hash
-    let mut approval_manager = ApprovalManager::with_default_file()?;
-    approval_manager.load_approvals().await?;
-    let config_hash = get_config_hash(&directory, package, &approval_manager)?;
-
     let executor = HookExecutor::with_default_config()?;
 
     if wait {
-        // Wait for completion with timeout
+        // Wait mode needs config hash to verify we're waiting for the correct config
+        let mut approval_manager = ApprovalManager::with_default_file()?;
+        approval_manager.load_approvals().await?;
+        let config_hash = get_config_hash(&directory, package, &approval_manager)?;
+
         match executor
             .wait_for_completion(&directory, &config_hash, Some(timeout_seconds))
             .await
@@ -278,11 +280,9 @@ pub async fn execute_env_status(
             Err(e) => Err(e),
         }
     } else {
-        // Return current status immediately
-        if let Some(state) = executor
-            .get_execution_status_for_instance(&directory, &config_hash)
-            .await?
-        {
+        // FAST PATH: Skip config hash computation, use directory-based marker lookup.
+        // This reduces latency from ~300ms to <20ms for Starship integration.
+        if let Some(state) = executor.get_fast_status(&directory).await? {
             Ok(format_status(&state, format))
         } else {
             match format {

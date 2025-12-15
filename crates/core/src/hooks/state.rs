@@ -239,6 +239,86 @@ impl StateManager {
         Ok(states)
     }
 
+    // ========================================================================
+    // Directory Marker System - Fast status lookups without config hash
+    // ========================================================================
+
+    /// Compute a key for directory-only lookups (used for fast status checks).
+    /// This hashes just the canonicalized directory path, without config hash.
+    pub fn compute_directory_key(path: &Path) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        hasher.update(canonical.to_string_lossy().as_bytes());
+        format!("{:x}", hasher.finalize())[..16].to_string()
+    }
+
+    /// Get the path for a directory marker file
+    fn directory_marker_path(&self, directory_key: &str) -> PathBuf {
+        self.state_dir.join(format!("{}.marker", directory_key))
+    }
+
+    /// Create a marker file linking directory to instance hash.
+    /// Called when hooks start to enable fast status lookups.
+    pub async fn create_directory_marker(
+        &self,
+        directory_path: &Path,
+        instance_hash: &str,
+    ) -> Result<()> {
+        self.ensure_state_dir().await?;
+        let dir_key = Self::compute_directory_key(directory_path);
+        let marker_path = self.directory_marker_path(&dir_key);
+
+        fs::write(&marker_path, instance_hash)
+            .await
+            .map_err(|e| Error::Io {
+                source: e,
+                path: Some(marker_path.into_boxed_path()),
+                operation: "write_marker".to_string(),
+            })?;
+
+        debug!(
+            "Created directory marker for {} -> {}",
+            directory_path.display(),
+            instance_hash
+        );
+        Ok(())
+    }
+
+    /// Remove marker file for a directory.
+    /// Called when hooks complete/fail and display timeout expires.
+    pub async fn remove_directory_marker(&self, directory_path: &Path) -> Result<()> {
+        let dir_key = Self::compute_directory_key(directory_path);
+        let marker_path = self.directory_marker_path(&dir_key);
+
+        if marker_path.exists() {
+            fs::remove_file(&marker_path).await.ok(); // Ignore errors
+            debug!("Removed directory marker for {}", directory_path.display());
+        }
+        Ok(())
+    }
+
+    /// Fast synchronous check: does a marker exist for this directory?
+    /// This is the hot path for Starship - just a single stat() syscall.
+    pub fn has_active_marker(&self, directory_path: &Path) -> bool {
+        let dir_key = Self::compute_directory_key(directory_path);
+        self.directory_marker_path(&dir_key).exists()
+    }
+
+    /// Read the instance hash from a marker file (if it exists).
+    pub async fn get_marker_instance_hash(&self, directory_path: &Path) -> Option<String> {
+        let dir_key = Self::compute_directory_key(directory_path);
+        let marker_path = self.directory_marker_path(&dir_key);
+        fs::read_to_string(&marker_path)
+            .await
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
+    // ========================================================================
+    // Cleanup Methods
+    // ========================================================================
+
     /// Clean up the entire state directory
     pub async fn cleanup_state_directory(&self) -> Result<usize> {
         if !self.state_dir.exists() {
@@ -259,18 +339,23 @@ impl StateManager {
         })? {
             let path = entry.path();
 
-            // Only clean up JSON state files
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                // Try to load and check if it's a completed state
+            let extension = path.extension().and_then(|s| s.to_str());
+
+            // Clean up JSON state files
+            if extension == Some("json") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     match self.load_state(stem).await {
                         Ok(Some(state)) if state.is_complete() => {
-                            // Remove completed states
+                            // Remove completed states and their markers
                             if let Err(e) = fs::remove_file(&path).await {
                                 warn!("Failed to remove state file {}: {}", path.display(), e);
                             } else {
                                 cleaned_count += 1;
                                 debug!("Cleaned up state file: {}", path.display());
+                                // Also remove the directory marker
+                                self.remove_directory_marker(&state.directory_path)
+                                    .await
+                                    .ok();
                             }
                         }
                         Ok(Some(_)) => {
@@ -295,10 +380,37 @@ impl StateManager {
                     }
                 }
             }
+            // Clean up orphaned marker files (markers without corresponding state)
+            else if extension == Some("marker")
+                && let Ok(instance_hash) = fs::read_to_string(&path).await
+            {
+                let instance_hash = instance_hash.trim();
+                // Check if corresponding state exists
+                match self.load_state(instance_hash).await {
+                    Ok(None) => {
+                        // State doesn't exist, remove orphaned marker
+                        if fs::remove_file(&path).await.is_ok() {
+                            cleaned_count += 1;
+                            debug!("Cleaned up orphaned marker: {}", path.display());
+                        }
+                    }
+                    Ok(Some(state)) if state.is_complete() && !state.should_display_completed() => {
+                        // State is complete and expired, remove marker
+                        if fs::remove_file(&path).await.is_ok() {
+                            cleaned_count += 1;
+                            debug!("Cleaned up expired marker: {}", path.display());
+                        }
+                    }
+                    _ => {} // Keep marker
+                }
+            }
         }
 
         if cleaned_count > 0 {
-            info!("Cleaned up {} state files from directory", cleaned_count);
+            info!(
+                "Cleaned up {} state/marker files from directory",
+                cleaned_count
+            );
         }
 
         Ok(cleaned_count)
@@ -318,6 +430,10 @@ impl StateManager {
                     state.started_at
                 );
                 self.remove_state(&state.instance_hash).await?;
+                // Also remove the directory marker
+                self.remove_directory_marker(&state.directory_path)
+                    .await
+                    .ok();
                 cleaned_count += 1;
             }
         }
