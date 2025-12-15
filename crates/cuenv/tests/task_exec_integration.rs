@@ -474,7 +474,7 @@ mod test_examples {
             "-p",
             example_path.to_str().unwrap(),
             "--package",
-            "examples",
+            "_examples",
         ]);
 
         assert!(success, "Should list tasks successfully");
@@ -491,7 +491,7 @@ mod test_examples {
             "-p",
             example_path.to_str().unwrap(),
             "--package",
-            "examples",
+            "_examples",
             "interpolate",
         ]);
 
@@ -507,7 +507,7 @@ mod test_examples {
             "-p",
             example_path.to_str().unwrap(),
             "--package",
-            "examples",
+            "_examples",
             "propagate",
         ]);
 
@@ -523,7 +523,7 @@ mod test_examples {
             "-p",
             example_path.to_str().unwrap(),
             "--package",
-            "examples",
+            "_examples",
             "printenv",
             "NAME",
         ]);
