@@ -381,29 +381,27 @@ impl StateManager {
                 }
             }
             // Clean up orphaned marker files (markers without corresponding state)
-            else if extension == Some("marker") {
-                if let Ok(instance_hash) = fs::read_to_string(&path).await {
-                    let instance_hash = instance_hash.trim();
-                    // Check if corresponding state exists
-                    match self.load_state(instance_hash).await {
-                        Ok(None) => {
-                            // State doesn't exist, remove orphaned marker
-                            if fs::remove_file(&path).await.is_ok() {
-                                cleaned_count += 1;
-                                debug!("Cleaned up orphaned marker: {}", path.display());
-                            }
+            else if extension == Some("marker")
+                && let Ok(instance_hash) = fs::read_to_string(&path).await
+            {
+                let instance_hash = instance_hash.trim();
+                // Check if corresponding state exists
+                match self.load_state(instance_hash).await {
+                    Ok(None) => {
+                        // State doesn't exist, remove orphaned marker
+                        if fs::remove_file(&path).await.is_ok() {
+                            cleaned_count += 1;
+                            debug!("Cleaned up orphaned marker: {}", path.display());
                         }
-                        Ok(Some(state))
-                            if state.is_complete() && !state.should_display_completed() =>
-                        {
-                            // State is complete and expired, remove marker
-                            if fs::remove_file(&path).await.is_ok() {
-                                cleaned_count += 1;
-                                debug!("Cleaned up expired marker: {}", path.display());
-                            }
-                        }
-                        _ => {} // Keep marker
                     }
+                    Ok(Some(state)) if state.is_complete() && !state.should_display_completed() => {
+                        // State is complete and expired, remove marker
+                        if fs::remove_file(&path).await.is_ok() {
+                            cleaned_count += 1;
+                            debug!("Cleaned up expired marker: {}", path.display());
+                        }
+                    }
+                    _ => {} // Keep marker
                 }
             }
         }
