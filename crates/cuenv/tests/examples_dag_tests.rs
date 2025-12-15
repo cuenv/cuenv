@@ -36,7 +36,7 @@ fn get_examples_dir() -> PathBuf {
 
 /// Load a Cuenv manifest from an example directory
 fn load_example_manifest(example_path: &Path) -> Result<Cuenv, String> {
-    evaluate_cue_package_typed::<Cuenv>(example_path, "examples")
+    evaluate_cue_package_typed::<Cuenv>(example_path, "_examples")
         .map_err(|e| format!("Failed to load manifest: {e}"))
 }
 

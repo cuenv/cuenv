@@ -22,7 +22,7 @@ fn test_parse_task_basic_example() {
 
     // Evaluate the actual example CUE file
     let evaluator = CueEvaluator::builder().build().unwrap();
-    let json = evaluator.evaluate(&example_path, "examples").unwrap();
+    let json = evaluator.evaluate(&example_path, "_examples").unwrap();
 
     println!("Raw JSON from CUE evaluation:");
     println!("{json}");

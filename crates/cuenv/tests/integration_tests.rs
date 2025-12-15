@@ -354,7 +354,7 @@ fn test_env_print_command_basic() {
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "_examples",
     ]);
 
     match result {
@@ -383,7 +383,7 @@ fn test_env_print_command_json_format() {
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "_examples",
         "--output-format",
         "json",
     ]);
@@ -409,7 +409,7 @@ fn test_env_print_command_json_format() {
 #[test]
 fn test_env_print_command_with_short_path_flag() {
     let test_path = get_test_examples_path();
-    let result = run_cuenv_command(&["env", "print", "-p", &test_path, "--package", "examples"]);
+    let result = run_cuenv_command(&["env", "print", "-p", &test_path, "--package", "_examples"]);
 
     match result {
         Ok((stdout, _stderr, success)) => {
@@ -430,7 +430,7 @@ fn test_env_print_command_invalid_path() {
         "--path",
         "nonexistent/path",
         "--package",
-        "examples",
+        "_examples",
     ]);
 
     if let Ok((_stdout, _stderr, success)) = result {
@@ -467,7 +467,7 @@ fn test_env_print_command_unsupported_format() {
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "_examples",
         "--output-format",
         "yaml",
     ]);
@@ -551,7 +551,7 @@ fn test_sync_command_invalid_path() {
         "--path",
         "nonexistent/path",
         "--package",
-        "examples",
+        "_examples",
         "--dry-run",
     ]);
 
@@ -678,7 +678,7 @@ fn test_sync_codeowners_dry_run() {
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "_examples",
         "--dry-run",
     ]);
 
@@ -725,7 +725,7 @@ fn test_sync_codeowners_dry_run_sections() {
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "_examples",
         "--dry-run",
     ]);
 
@@ -764,7 +764,7 @@ fn test_sync_codeowners_check_no_file() {
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "_examples",
         "--check",
     ]);
 
@@ -795,7 +795,7 @@ fn test_sync_codeowners_no_config() {
         "--path",
         &test_path,
         "--package",
-        "examples",
+        "_examples",
         "--dry-run",
     ]);
 
