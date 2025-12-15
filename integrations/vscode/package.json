@@ -105,9 +105,36 @@
           "type": "string",
           "default": "cuenv",
           "description": "Path to the cuenv executable"
+        },
+        "cuenv.embeddedLanguages.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable IntelliSense for embedded code in CUE files"
         }
       }
-    }
+    },
+    "grammars": [
+      {
+        "scopeName": "cuenv.embedded.injection",
+        "path": "./syntaxes/cue-embedded.json",
+        "injectTo": ["source.cue"],
+        "embeddedLanguages": {
+          "meta.embedded.block.typescript": "typescript",
+          "meta.embedded.block.javascript": "javascript",
+          "meta.embedded.block.json": "json",
+          "meta.embedded.block.jsonc": "jsonc",
+          "meta.embedded.block.yaml": "yaml",
+          "meta.embedded.block.shellscript": "shellscript",
+          "meta.embedded.block.dockerfile": "dockerfile",
+          "meta.embedded.block.python": "python",
+          "meta.embedded.block.go": "go",
+          "meta.embedded.block.rust": "rust",
+          "meta.embedded.block.markdown": "markdown",
+          "meta.embedded.block.nix": "nix",
+          "meta.embedded.block.sql": "sql"
+        }
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "bun run bundle",

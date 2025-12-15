@@ -41,6 +41,7 @@ package schema
 	owners?:  #Owners
 	tasks?: [string]: #Tasks
 	ignore?: #Ignore
+	cube?:   #Cube
 })
 
 #Workspaces: [string]: #WorkspaceConfig
