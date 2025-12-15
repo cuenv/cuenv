@@ -130,8 +130,8 @@ schema.#Base & {
     .unwrap();
 
     // Try to execute task command (which requires schema.#Project)
-    let output = Command::new("cargo")
-        .args(["run", "--bin", "cuenv", "--"])
+    let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
+    let output = Command::new(cuenv_bin)
         .args(["task", "--path", root.to_str().unwrap()])
         .output()
         .expect("Failed to run cuenv");
