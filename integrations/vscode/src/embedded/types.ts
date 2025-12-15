@@ -57,10 +57,30 @@ export function getVSCodeLanguageId(language: string): string {
 }
 
 /**
+ * Known code schema types that should trigger embedded language support.
+ * Other schema types like #Cube, #Project, etc. are NOT code types.
+ */
+const CODE_SCHEMA_TYPES = new Set([
+    'Code', 'TypeScript', 'JavaScript', 'JSON', 'JSONC', 'YAML', 'TOML',
+    'Rust', 'Go', 'Python', 'Markdown', 'Shell', 'Dockerfile', 'Nix', 'SQL',
+]);
+
+/**
+ * Check if a schema type is a code type that should have embedded language support.
+ */
+export function isCodeSchemaType(schemaType: string): boolean {
+    return CODE_SCHEMA_TYPES.has(schemaType);
+}
+
+/**
  * Convert a schema type name to a language identifier.
  * e.g., "TypeScript" -> "typescript", "JSON" -> "json"
+ * Returns null if not a code schema type.
  */
-export function schemaTypeToLanguage(schemaType: string): string {
+export function schemaTypeToLanguage(schemaType: string): string | null {
+    if (!isCodeSchemaType(schemaType)) {
+        return null;
+    }
     // Special case: #Code is the base type, defaults to text
     if (schemaType === 'Code') {
         return 'text';

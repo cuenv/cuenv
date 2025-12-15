@@ -14,8 +14,13 @@ export class EmbeddedCompletionProvider implements vscode.CompletionItemProvider
     constructor(
         private detector: EmbeddedLanguageDetector,
         private virtualDocManager: VirtualDocumentManager,
-        private positionMapper: PositionMapper
+        private positionMapper: PositionMapper,
+        private outputChannel?: vscode.OutputChannel
     ) {}
+
+    private log(message: string) {
+        this.outputChannel?.appendLine(`[Completion] ${message}`);
+    }
 
     async provideCompletionItems(
         document: vscode.TextDocument,
@@ -23,16 +28,24 @@ export class EmbeddedCompletionProvider implements vscode.CompletionItemProvider
         token: vscode.CancellationToken,
         context: vscode.CompletionContext
     ): Promise<vscode.CompletionItem[] | vscode.CompletionList | null> {
+        const offset = document.offsetAt(position);
+        this.log(`Triggered at line ${position.line}, char ${position.character}, offset ${offset}`);
+
         // Find embedded region at cursor position
         const region = this.detector.findRegionAtPosition(document, position);
         if (!region) {
+            // Log available regions for debugging
+            const regions = this.detector.detectRegions(document);
+            this.log(`Not in embedded region. Available regions: ${regions.map(r => `[${r.startOffset}-${r.endOffset}]`).join(', ')}`);
             return null; // Not in embedded region, let default provider handle
         }
 
+        this.log(`In region: language=${region.language}, lines ${region.startLine}-${region.endLine}`);
+
         // Check if cursor is within a CUE interpolation
-        const cueOffset = document.offsetAt(position);
-        const interpolation = this.positionMapper.getInterpolationAtOffset(region, cueOffset);
+        const interpolation = this.positionMapper.getInterpolationAtOffset(region, offset);
         if (interpolation) {
+            this.log('In CUE interpolation, skipping');
             return null; // In CUE interpolation, don't provide embedded completions
         }
 
@@ -42,16 +55,21 @@ export class EmbeddedCompletionProvider implements vscode.CompletionItemProvider
 
         // Create virtual document URI
         const virtualUri = this.virtualDocManager.createVirtualUri(document.uri, region, regionIndex);
+        this.log(`Virtual URI: ${virtualUri.toString()}`);
 
         // Map position to virtual document
         const virtualPosition = this.positionMapper.toVirtualPosition(region, document, position);
         if (!virtualPosition) {
+            this.log('Failed to map position');
             return null;
         }
 
+        this.log(`Virtual position: line ${virtualPosition.line}, char ${virtualPosition.character}`);
+
         try {
             // Ensure virtual document content is available
-            await vscode.workspace.openTextDocument(virtualUri);
+            const virtualDoc = await vscode.workspace.openTextDocument(virtualUri);
+            this.log(`Virtual doc opened, languageId=${virtualDoc.languageId}, length=${virtualDoc.getText().length}`);
 
             // Forward to the appropriate language server
             const completions = await vscode.commands.executeCommand<vscode.CompletionList>(
@@ -60,6 +78,8 @@ export class EmbeddedCompletionProvider implements vscode.CompletionItemProvider
                 virtualPosition,
                 context.triggerCharacter
             );
+
+            this.log(`Got ${completions?.items?.length ?? 0} completions`);
 
             if (!completions || !completions.items) {
                 return null;

@@ -18,8 +18,15 @@ export class VirtualDocumentManager implements vscode.TextDocumentContentProvide
     readonly onDidChange = this._onDidChange.event;
 
     private cache: Map<string, string> = new Map();
+    private outputChannel?: vscode.OutputChannel;
 
-    constructor(private detector: EmbeddedLanguageDetector) {}
+    constructor(private detector: EmbeddedLanguageDetector, outputChannel?: vscode.OutputChannel) {
+        this.outputChannel = outputChannel;
+    }
+
+    private log(message: string) {
+        this.outputChannel?.appendLine(`[VirtualDoc] ${message}`);
+    }
 
     /**
      * Generate a virtual document URI for an embedded region.
@@ -41,17 +48,34 @@ export class VirtualDocumentManager implements vscode.TextDocumentContentProvide
         if (uri.scheme !== EMBEDDED_SCHEME) return null;
 
         const language = uri.authority;
-        const pathParts = uri.path.split('/');
-        const encodedSourcePath = pathParts[1];
-        const regionPart = pathParts[2]; // e.g., "region-0.ts"
+        // Path format: /encoded-source-path/region-N.ext
+        // The encoded source path may contain / so we need to find the region part from the end
+        const path = uri.path;
 
-        if (!encodedSourcePath || !regionPart) return null;
+        // Find the region part (always at the end, starts with /region-)
+        const regionMatch = path.match(/\/region-(\d+)(\.[^/]+)?$/);
+        if (!regionMatch) {
+            this.log(`No region match in path: ${path}`);
+            return null;
+        }
 
-        const sourceUri = vscode.Uri.parse(decodeURIComponent(encodedSourcePath));
-        const regionMatch = regionPart.match(/region-(\d+)/);
-        const regionIndex = regionMatch ? parseInt(regionMatch[1], 10) : 0;
+        const regionIndex = parseInt(regionMatch[1], 10);
+        // Everything before the region part is the encoded source path
+        const encodedSourcePath = path.slice(1, regionMatch.index); // Skip leading /
 
-        return { sourceUri, regionIndex, language };
+        if (!encodedSourcePath) {
+            this.log('Empty encoded source path');
+            return null;
+        }
+
+        try {
+            const sourceUri = vscode.Uri.parse(decodeURIComponent(encodedSourcePath));
+            this.log(`Parsed URI: language=${language}, regionIndex=${regionIndex}, sourceUri=${sourceUri.toString()}`);
+            return { sourceUri, regionIndex, language };
+        } catch (e) {
+            this.log(`Failed to parse source URI: ${e}`);
+            return null;
+        }
     }
 
     /**
@@ -59,24 +83,43 @@ export class VirtualDocumentManager implements vscode.TextDocumentContentProvide
      * Returns the content for a virtual document URI.
      */
     provideTextDocumentContent(uri: vscode.Uri): string | null {
+        this.log(`provideTextDocumentContent called for: ${uri.toString()}`);
+
         const cached = this.cache.get(uri.toString());
         if (cached !== undefined) {
+            this.log('Returning cached content');
             return cached;
         }
 
         const parsed = this.parseVirtualUri(uri);
-        if (!parsed) return null;
+        if (!parsed) {
+            this.log('Failed to parse URI');
+            return null;
+        }
+
+        this.log(`Parsed: sourceUri=${parsed.sourceUri.toString()}, regionIndex=${parsed.regionIndex}`);
 
         const sourceDocument = vscode.workspace.textDocuments.find(
             doc => doc.uri.toString() === parsed.sourceUri.toString()
         );
-        if (!sourceDocument) return null;
+        if (!sourceDocument) {
+            this.log(`Source document not found. Open docs: ${vscode.workspace.textDocuments.map(d => d.uri.toString()).join(', ')}`);
+            return null;
+        }
+
+        this.log(`Found source document: ${sourceDocument.fileName}`);
 
         const regions = this.detector.detectRegions(sourceDocument);
+        this.log(`Detected ${regions.length} regions, looking for index ${parsed.regionIndex}`);
+
         const region = regions[parsed.regionIndex];
-        if (!region) return null;
+        if (!region) {
+            this.log('Region not found at index');
+            return null;
+        }
 
         const virtualContent = this.createVirtualContent(region);
+        this.log(`Created virtual content: ${virtualContent.length} chars`);
         this.cache.set(uri.toString(), virtualContent);
 
         return virtualContent;
@@ -100,8 +143,9 @@ export class VirtualDocumentManager implements vscode.TextDocumentContentProvide
             const length = relativeEnd - relativeStart;
 
             // Replace with placeholder of same length
-            // Use underscores for identifiers, wrapped in quotes if in string context
-            const placeholder = '_'.repeat(length);
+            // Use spaces (whitespace) as recommended by VS Code docs for embedded languages
+            // Whitespace is neutral and won't confuse language parsers
+            const placeholder = ' '.repeat(length);
 
             content =
                 content.slice(0, relativeStart) +

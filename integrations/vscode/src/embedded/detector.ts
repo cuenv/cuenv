@@ -32,13 +32,17 @@ export class EmbeddedLanguageDetector {
 
     /**
      * Find the embedded region containing a specific position.
+     * Uses the full region bounds (including """) to ensure positions on the
+     * first line of content are detected correctly.
      */
     findRegionAtPosition(document: vscode.TextDocument, position: vscode.Position): EmbeddedRegion | undefined {
         const regions = this.detectRegions(document);
         const offset = document.offsetAt(position);
 
         return regions.find(region =>
-            offset >= region.contentStartOffset && offset <= region.contentEndOffset
+            // Use full region bounds (startOffset includes """)
+            // This ensures typing on the first content line is detected
+            offset >= region.startOffset && offset <= region.endOffset
         );
     }
 
@@ -64,6 +68,9 @@ export class EmbeddedLanguageDetector {
         while ((schemaMatch = schemaPattern.exec(text)) !== null) {
             const schemaType = schemaMatch[1];
             const language = schemaTypeToLanguage(schemaType);
+
+            // Skip non-code schema types (e.g., #Cube, #Project)
+            if (!language) continue;
 
             // Find the content field within this block
             const blockStart = schemaMatch.index + schemaMatch[0].length;

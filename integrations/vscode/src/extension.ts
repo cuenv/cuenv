@@ -38,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
     const embeddedEnabled = vscode.workspace.getConfiguration('cuenv').get('embeddedLanguages.enabled', true);
     if (embeddedEnabled) {
         const detector = new EmbeddedLanguageDetector();
-        const virtualDocManager = new VirtualDocumentManager(detector);
+        const virtualDocManager = new VirtualDocumentManager(detector, outputChannel);
         const positionMapper = new PositionMapper();
 
         // Register virtual document provider
@@ -52,7 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(
             vscode.languages.registerCompletionItemProvider(
                 cueSelector,
-                new EmbeddedCompletionProvider(detector, virtualDocManager, positionMapper),
+                new EmbeddedCompletionProvider(detector, virtualDocManager, positionMapper, outputChannel),
                 '.', '"', "'", '/', '<' // Trigger characters for various languages
             )
         );
@@ -82,6 +82,19 @@ export function activate(context: vscode.ExtensionContext) {
         );
 
         outputChannel.appendLine('Embedded language support enabled');
+
+        // Debug: log detected regions when document changes
+        context.subscriptions.push(
+            vscode.workspace.onDidOpenTextDocument(doc => {
+                if (doc.languageId === 'cue') {
+                    const regions = detector.detectRegions(doc);
+                    outputChannel.appendLine(`[Debug] Detected ${regions.length} embedded regions in ${doc.fileName}`);
+                    regions.forEach((r, i) => {
+                        outputChannel.appendLine(`  Region ${i}: language=${r.language}, lines ${r.startLine}-${r.endLine}`);
+                    });
+                }
+            })
+        );
     }
 
     // Commands
