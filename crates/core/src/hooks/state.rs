@@ -293,10 +293,7 @@ impl StateManager {
 
         if marker_path.exists() {
             fs::remove_file(&marker_path).await.ok(); // Ignore errors
-            debug!(
-                "Removed directory marker for {}",
-                directory_path.display()
-            );
+            debug!("Removed directory marker for {}", directory_path.display());
         }
         Ok(())
     }
@@ -356,7 +353,9 @@ impl StateManager {
                                 cleaned_count += 1;
                                 debug!("Cleaned up state file: {}", path.display());
                                 // Also remove the directory marker
-                                self.remove_directory_marker(&state.directory_path).await.ok();
+                                self.remove_directory_marker(&state.directory_path)
+                                    .await
+                                    .ok();
                             }
                         }
                         Ok(Some(_)) => {
@@ -394,7 +393,9 @@ impl StateManager {
                                 debug!("Cleaned up orphaned marker: {}", path.display());
                             }
                         }
-                        Ok(Some(state)) if state.is_complete() && !state.should_display_completed() => {
+                        Ok(Some(state))
+                            if state.is_complete() && !state.should_display_completed() =>
+                        {
                             // State is complete and expired, remove marker
                             if fs::remove_file(&path).await.is_ok() {
                                 cleaned_count += 1;
@@ -408,7 +409,10 @@ impl StateManager {
         }
 
         if cleaned_count > 0 {
-            info!("Cleaned up {} state/marker files from directory", cleaned_count);
+            info!(
+                "Cleaned up {} state/marker files from directory",
+                cleaned_count
+            );
         }
 
         Ok(cleaned_count)
@@ -429,7 +433,9 @@ impl StateManager {
                 );
                 self.remove_state(&state.instance_hash).await?;
                 // Also remove the directory marker
-                self.remove_directory_marker(&state.directory_path).await.ok();
+                self.remove_directory_marker(&state.directory_path)
+                    .await
+                    .ok();
                 cleaned_count += 1;
             }
         }

@@ -51,32 +51,32 @@ The crate uses feature flags for minimal dependency footprint:
 
 ### Discovery Features
 
-| Feature                 | Description                              |
-| ----------------------- | ---------------------------------------- |
-| `discovery-javascript`  | npm, Bun, Yarn, pnpm discovery (default) |
-| `discovery-rust`        | Cargo workspace discovery                |
-| `discovery-package-json`| npm/Bun/Yarn via package.json            |
-| `discovery-pnpm`        | pnpm via pnpm-workspace.yaml             |
-| `discovery-cargo`       | Cargo via Cargo.toml                     |
+| Feature                  | Description                              |
+| ------------------------ | ---------------------------------------- |
+| `discovery-javascript`   | npm, Bun, Yarn, pnpm discovery (default) |
+| `discovery-rust`         | Cargo workspace discovery                |
+| `discovery-package-json` | npm/Bun/Yarn via package.json            |
+| `discovery-pnpm`         | pnpm via pnpm-workspace.yaml             |
+| `discovery-cargo`        | Cargo via Cargo.toml                     |
 
 ### Parser Features
 
-| Feature               | Description                              |
-| --------------------- | ---------------------------------------- |
-| `parsers-javascript`  | All JavaScript parsers (default)         |
-| `parsers-rust`        | All Rust parsers                         |
-| `parser-npm`          | npm's package-lock.json (v3)             |
-| `parser-bun`          | Bun's bun.lock (JSONC)                   |
-| `parser-pnpm`         | pnpm's pnpm-lock.yaml                    |
-| `parser-yarn-classic` | Yarn Classic (v1.x)                      |
-| `parser-yarn-modern`  | Yarn Modern (v2+)                        |
-| `parser-cargo`        | Cargo's Cargo.lock                       |
+| Feature               | Description                      |
+| --------------------- | -------------------------------- |
+| `parsers-javascript`  | All JavaScript parsers (default) |
+| `parsers-rust`        | All Rust parsers                 |
+| `parser-npm`          | npm's package-lock.json (v3)     |
+| `parser-bun`          | Bun's bun.lock (JSONC)           |
+| `parser-pnpm`         | pnpm's pnpm-lock.yaml            |
+| `parser-yarn-classic` | Yarn Classic (v1.x)              |
+| `parser-yarn-modern`  | Yarn Modern (v2+)                |
+| `parser-cargo`        | Cargo's Cargo.lock               |
 
 ### Other Features
 
-| Feature     | Description                              |
-| ----------- | ---------------------------------------- |
-| `detection` | Package manager detection (default)      |
+| Feature     | Description                         |
+| ----------- | ----------------------------------- |
+| `detection` | Package manager detection (default) |
 
 ### Default Features
 
@@ -147,6 +147,7 @@ let workspace = discovery.discover(Path::new("."))?;
 ```
 
 Available implementations:
+
 - `PackageJsonDiscovery` - npm/Bun/Yarn workspaces
 - `PnpmWorkspaceDiscovery` - pnpm workspaces
 - `CargoTomlDiscovery` - Cargo workspaces
@@ -166,6 +167,7 @@ for entry in entries {
 ```
 
 Available implementations:
+
 - `NpmLockfileParser` - package-lock.json
 - `BunLockfileParser` - bun.lock
 - `PnpmLockfileParser` - pnpm-lock.yaml
@@ -283,10 +285,12 @@ for member in &workspace.members {
 The crate handles edge cases gracefully:
 
 ### Cargo Workspaces
+
 - **Missing `[workspace]` section**: Treated as valid empty workspace (single-package repo)
 - **Missing/malformed member manifests**: Silently skipped; only valid members included
 
 ### JavaScript Workspaces
+
 - **Missing/malformed member manifests**: Silently skipped
 - **Members without `name` field**: Skipped during enumeration
 
