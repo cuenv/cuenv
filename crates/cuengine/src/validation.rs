@@ -74,7 +74,7 @@ pub fn validate_path(path: &Path, limits: &Limits) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error if the name is empty, too long, contains invalid characters,
-/// or doesn't start with an alphabetic character
+/// or doesn't start with an alphabetic character or underscore
 pub fn validate_package_name(name: &str, limits: &Limits) -> Result<()> {
     // Check length
     if name.is_empty() {
@@ -98,10 +98,11 @@ pub fn validate_package_name(name: &str, limits: &Limits) -> Result<()> {
         ));
     }
 
-    // Check first character is alphabetic
-    if !name.chars().next().unwrap().is_alphabetic() {
+    // Check first character is alphabetic or underscore (CUE allows underscore-prefixed "hidden" packages)
+    let first_char = name.chars().next().unwrap();
+    if !first_char.is_alphabetic() && first_char != '_' {
         return Err(Error::validation(
-            "Package name must start with an alphabetic character",
+            "Package name must start with an alphabetic character or underscore",
         ));
     }
 
