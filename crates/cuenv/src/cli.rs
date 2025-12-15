@@ -539,6 +539,28 @@ pub enum SyncCommands {
         #[arg(long, help = "Check if CODEOWNERS is in sync without making changes")]
         check: bool,
     },
+    #[command(about = "Sync files from CUE cube configurations in projects")]
+    Cubes {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files. Use '.' for local project only.",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(long, help = "Show what would be generated without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Check if files are in sync without making changes")]
+        check: bool,
+        #[arg(long, help = "Show diff for files that would change")]
+        diff: bool,
+    },
 }
 
 /// Output format for status command
@@ -970,6 +992,25 @@ impl Commands {
                             package: sub_package.clone(),
                             dry_run: sub_dry_run,
                             check: sub_check,
+                        }),
+                        sub_path,
+                        sub_package,
+                        sub_dry_run,
+                        sub_check,
+                    ),
+                    Some(SyncCommands::Cubes {
+                        path: sub_path,
+                        package: sub_package,
+                        dry_run: sub_dry_run,
+                        check: sub_check,
+                        diff,
+                    }) => (
+                        Some(SyncCommands::Cubes {
+                            path: sub_path.clone(),
+                            package: sub_package.clone(),
+                            dry_run: sub_dry_run,
+                            check: sub_check,
+                            diff,
                         }),
                         sub_path,
                         sub_package,

@@ -401,8 +401,47 @@ impl CommandExecutor {
 
         // If no subcommand, run all sync operations (ignore + codeowners)
         // If specific subcommand, run only that operation
+        // Note: Cubes is not part of the default aggregate sync
         let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
         let run_codeowners = matches!(subcommand, None | Some(SyncCommands::Codeowners { .. }));
+
+        // Handle Cubes subcommand separately as it has different parameters
+        if let Some(SyncCommands::Cubes {
+            path: cube_path,
+            package: cube_package,
+            dry_run: cube_dry_run,
+            check: cube_check,
+            diff,
+        }) = &subcommand
+        {
+            let result = sync::execute_sync_cubes(
+                cube_path,
+                cube_package,
+                *cube_dry_run,
+                *cube_check,
+                *diff,
+            )
+            .await;
+
+            match result {
+                Ok(output) => {
+                    self.send_event(Event::CommandComplete {
+                        command: command_name.to_string(),
+                        success: true,
+                        output: output.clone(),
+                    });
+                    return Ok(());
+                }
+                Err(e) => {
+                    self.send_event(Event::CommandComplete {
+                        command: command_name.to_string(),
+                        success: false,
+                        output: format!("Cubes sync error: {e}"),
+                    });
+                    return Err(e);
+                }
+            }
+        }
 
         let mut outputs = Vec::new();
         let mut had_error = false;

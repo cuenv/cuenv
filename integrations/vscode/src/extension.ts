@@ -7,6 +7,10 @@ import { EnvTreeDataProvider, EnvTreeItem } from './providers/envTree';
 import { VariableTreeDataProvider, VariableTreeItem } from './providers/variableTree';
 import { CuenvCodeLensProvider } from './providers/codelens';
 import { GraphWebview } from './webview/graph';
+import { EmbeddedLanguageDetector, VirtualDocumentManager, PositionMapper, EMBEDDED_SCHEME } from './embedded';
+import { EmbeddedCompletionProvider } from './providers/embeddedCompletion';
+import { EmbeddedHoverProvider } from './providers/embeddedHover';
+import { EmbeddedDefinitionProvider } from './providers/embeddedDefinition';
 
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel("Cuenv");
@@ -29,6 +33,56 @@ export function activate(context: vscode.ExtensionContext) {
             new CuenvCodeLensProvider(client)
         )
     );
+
+    // Embedded Language Support
+    const embeddedEnabled = vscode.workspace.getConfiguration('cuenv').get('embeddedLanguages.enabled', true);
+    if (embeddedEnabled) {
+        const detector = new EmbeddedLanguageDetector();
+        const virtualDocManager = new VirtualDocumentManager(detector);
+        const positionMapper = new PositionMapper();
+
+        // Register virtual document provider
+        context.subscriptions.push(
+            vscode.workspace.registerTextDocumentContentProvider(EMBEDDED_SCHEME, virtualDocManager)
+        );
+
+        // Register embedded language providers
+        const cueSelector: vscode.DocumentSelector = { language: 'cue', scheme: 'file' };
+
+        context.subscriptions.push(
+            vscode.languages.registerCompletionItemProvider(
+                cueSelector,
+                new EmbeddedCompletionProvider(detector, virtualDocManager, positionMapper),
+                '.', '"', "'", '/', '<' // Trigger characters for various languages
+            )
+        );
+
+        context.subscriptions.push(
+            vscode.languages.registerHoverProvider(
+                cueSelector,
+                new EmbeddedHoverProvider(detector, virtualDocManager, positionMapper)
+            )
+        );
+
+        context.subscriptions.push(
+            vscode.languages.registerDefinitionProvider(
+                cueSelector,
+                new EmbeddedDefinitionProvider(detector, virtualDocManager, positionMapper)
+            )
+        );
+
+        // Notify virtual document manager when CUE files change
+        context.subscriptions.push(
+            vscode.workspace.onDidChangeTextDocument(e => {
+                if (e.document.languageId === 'cue') {
+                    detector.clearCache(e.document.uri.toString());
+                    virtualDocManager.notifyChange(e.document.uri);
+                }
+            })
+        );
+
+        outputChannel.appendLine('Embedded language support enabled');
+    }
 
     // Commands
     context.subscriptions.push(

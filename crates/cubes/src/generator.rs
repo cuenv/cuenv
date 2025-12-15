@@ -161,7 +161,6 @@ mod tests {
         files.insert(
             "test.json".to_string(),
             FileDefinition {
-                path: "test.json".to_string(),
                 content: r#"{"name":"test"}"#.to_string(),
                 language: "json".to_string(),
                 mode: FileMode::Managed,

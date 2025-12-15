@@ -3,7 +3,7 @@ package cube
 
 import (
 	"encoding/json"
-	"github.com/cuenv/cuenv-codegen/schemas/code"
+	"github.com/cuenv/cuenv-cubes/schemas/code"
 )
 
 // Project context

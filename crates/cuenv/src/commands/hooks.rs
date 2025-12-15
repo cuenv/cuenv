@@ -739,6 +739,7 @@ mod tests {
             name: "test".to_string(),
             ignore: None,
             owners: None,
+            cube: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -781,6 +782,7 @@ mod tests {
             name: "test".to_string(),
             ignore: None,
             owners: None,
+            cube: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -803,6 +805,7 @@ mod tests {
             name: "test".to_string(),
             ignore: None,
             owners: None,
+            cube: None,
         };
 
         let hooks = extract_hooks_from_config(&config);

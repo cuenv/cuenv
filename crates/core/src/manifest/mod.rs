@@ -177,6 +177,75 @@ pub struct Base {
 /// - An object with patterns and optional filename override
 pub type Ignore = HashMap<String, IgnoreValue>;
 
+// ============================================================================
+// Cube Types (for code generation)
+// ============================================================================
+
+/// File generation mode
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FileMode {
+    /// Always regenerate this file (managed by codegen)
+    #[default]
+    Managed,
+    /// Generate only if file doesn't exist (user owns this file)
+    Scaffold,
+}
+
+/// Format configuration for a generated file
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatConfig {
+    /// Indent style: "space" or "tab"
+    #[serde(default = "default_indent")]
+    pub indent: String,
+    /// Indent size (number of spaces or tab width)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indent_size: Option<usize>,
+    /// Maximum line width
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_width: Option<usize>,
+    /// Trailing comma style
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trailing_comma: Option<String>,
+    /// Use semicolons
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semicolons: Option<bool>,
+    /// Quote style: "single" or "double"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quotes: Option<String>,
+}
+
+fn default_indent() -> String {
+    "space".to_string()
+}
+
+/// A file definition from the cube
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct CubeFile {
+    /// Content of the file
+    pub content: String,
+    /// Programming language of the file
+    pub language: String,
+    /// Generation mode (managed or scaffold)
+    #[serde(default)]
+    pub mode: FileMode,
+    /// Formatting configuration
+    #[serde(default)]
+    pub format: FormatConfig,
+}
+
+/// A CUE Cube containing file definitions for code generation
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct CubeConfig {
+    /// Map of file paths to their definitions
+    #[serde(default)]
+    pub files: HashMap<String, CubeFile>,
+    /// Optional context data for templating
+    #[serde(default)]
+    pub context: serde_json::Value,
+}
+
 /// Value for an ignore entry - either a simple list of patterns or an extended config.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(untagged)]
@@ -254,6 +323,10 @@ pub struct Project {
     /// Ignore patterns for tool-specific ignore files
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ignore: Option<Ignore>,
+
+    /// Cube configuration for code generation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cube: Option<CubeConfig>,
 }
 
 /// Type alias for backward compatibility

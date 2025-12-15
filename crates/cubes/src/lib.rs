@@ -1,34 +1,32 @@
-//! # cuenv-codegen
+//! # cuenv-cubes
 //!
-//! Literate project scaffolding and management using CUE Cubes.
+//! CUE Cubes - code generation and project scaffolding from CUE templates.
 //!
-//! This crate provides a code generation system based on pure CUE Cubes that:
-//! - Uses schema-wrapped code blocks (e.g., `code.#TypeScript`, `code.#Rust`)
+//! This crate provides a code generation system based on CUE Cubes that:
+//! - Uses schema-wrapped code blocks (e.g., `schema.#TypeScript`, `schema.#JSON`)
 //! - Supports managed (always regenerated) and scaffold (generate once) file modes
-//! - Auto-generates formatter configs from CUE schemas
-//! - Provides formatting integration for multiple languages
+//! - Integrates with `cuenv sync cubes` command
 //!
 //! ## What is a CUE Cube?
 //!
 //! A Cube is a CUE-based template that generates multiple project files.
-//! Think of it as a 3D blueprint - each face of the cube represents
-//! different aspects of your project (source code, config, tests, etc.)
-//!
-//! ## Architecture
-//!
-//! - `cube`: Load and evaluate CUE Cubes
-//! - `generator`: Core file generation logic
-//! - `formatter`: Language-specific formatting
-//! - `config`: Generate formatter configs (biome.json, .prettierrc, etc.)
+//! Define your files in CUE with type-safe schemas, then sync them with
+//! `cuenv sync cubes`.
 //!
 //! ## Example
 //!
-//! ```ignore
-//! use cuenv_codegen::{Cube, Generator};
-//!
-//! let cube = Cube::load("my-project.cube.cue")?;
-//! let generator = Generator::new(cube);
-//! generator.generate()?;
+//! ```cue
+//! schema.#Project & {
+//!     name: "my-service"
+//!     cube: {
+//!         files: {
+//!             "package.json": schema.#JSON & {
+//!                 mode: "managed"
+//!                 content: """{"name": "my-service"}"""
+//!             }
+//!         }
+//!     }
+//! }
 //! ```
 
 #![warn(missing_docs)]

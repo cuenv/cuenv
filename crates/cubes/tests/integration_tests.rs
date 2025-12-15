@@ -1,29 +1,31 @@
-use cuenv_codegen::{Cube, GenerateOptions, Generator};
+use cuenv_cubes::{Cube, GenerateOptions, Generator};
 use tempfile::TempDir;
 
 #[test]
-fn test_basic_cube_json() {
-    // Create a simple cube in JSON format
+fn test_basic_cube_cue() {
+    // Create a simple cube in CUE format
     let temp_dir = TempDir::new().unwrap();
-    let cube_path = temp_dir.path().join("cube.json");
+    let cube_path = temp_dir.path().join("cube.cue");
 
-    let cube_json = r#"{
-        "files": {
-            "test.json": {
-                "path": "test.json",
-                "content": "{\"name\":\"test\"}",
-                "language": "json",
-                "mode": "managed",
-                "format": {
-                    "indent": "space",
-                    "indentSize": 2
-                }
-            }
-        },
-        "context": null
-    }"#;
+    let cube_cue = r#"package cubes
 
-    std::fs::write(&cube_path, cube_json).unwrap();
+files: {
+    "test.json": {
+        path: "test.json"
+        content: "{\"name\":\"test\"}"
+        language: "json"
+        mode: "managed"
+        format: {
+            indent: "space"
+            indentSize: 2
+        }
+    }
+}
+
+context: null
+"#;
+
+    std::fs::write(&cube_path, cube_cue).unwrap();
 
     // Load and generate
     let cube = Cube::load(&cube_path).unwrap();

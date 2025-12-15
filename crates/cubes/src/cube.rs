@@ -5,6 +5,7 @@
 //! files to generate for a project.
 
 use crate::{CodegenError, Result};
+use cuengine::CueEvaluator;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -56,8 +57,6 @@ impl Default for FormatConfig {
 /// A file definition from the cube
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDefinition {
-    /// Path where the file should be written
-    pub path: String,
     /// Content of the file
     pub content: String,
     /// Programming language of the file
@@ -132,12 +131,7 @@ impl Cube {
 
     /// Evaluate a CUE file and extract the cube data
     fn evaluate_cue(path: &Path) -> Result<CubeData> {
-        // This is a placeholder implementation
-        // In the real implementation, we would:
-        // 1. Run `cue export --out json path` to get JSON
-        // 2. Parse the JSON into CubeData
-
-        // For now, return a simple error if the file doesn't exist
+        // Verify the file exists
         if !path.exists() {
             return Err(CodegenError::Cube(format!(
                 "Cube file not found: {}",
@@ -145,22 +139,46 @@ impl Cube {
             )));
         }
 
-        // Read and parse the CUE file using cuengine
-        // This is a simplified version - the real implementation will use cuengine properly
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| CodegenError::Cube(format!("Failed to read cube: {e}")))?;
+        // Determine the directory and package name from the path
+        let dir_path = path.parent().ok_or_else(|| {
+            CodegenError::Cube("Invalid cube path: no parent directory".to_string())
+        })?;
 
-        // For now, we'll expect the cube to be pre-evaluated to JSON
-        // In a real implementation, we'd use cuengine to evaluate the CUE
-        if content.trim_start().starts_with('{') {
-            // It's JSON, parse it directly
-            let data: CubeData = serde_json::from_str(&content)?;
-            Ok(data)
-        } else {
-            Err(CodegenError::Cube(
-                "CUE evaluation not yet implemented. Please provide JSON cube for now.".to_string(),
-            ))
+        // Determine package name - try to infer from file content or use default
+        let package_name = Self::determine_package_name(path)?;
+
+        // Create a CUE evaluator and evaluate the package
+        let evaluator = CueEvaluator::builder()
+            .build()
+            .map_err(|e| CodegenError::Cube(format!("Failed to create CUE evaluator: {e}")))?;
+
+        let data: CubeData = evaluator
+            .evaluate_typed(dir_path, &package_name)
+            .map_err(|e| CodegenError::Cube(format!("CUE evaluation failed: {e}")))?;
+
+        Ok(data)
+    }
+
+    /// Determine the CUE package name from a file
+    ///
+    /// Reads the first few lines of the file to find a `package` declaration.
+    /// Falls back to "cubes" if not found.
+    fn determine_package_name(path: &Path) -> Result<String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| CodegenError::Cube(format!("Failed to read cube file: {e}")))?;
+
+        // Look for package declaration in the first few lines
+        for line in content.lines().take(10) {
+            let trimmed = line.trim();
+            if trimmed.starts_with("package ") {
+                // Extract package name
+                let package_name = trimmed.strip_prefix("package ").unwrap_or("cubes").trim();
+                return Ok(package_name.to_string());
+            }
         }
+
+        // Default to "cubes" if no package declaration found
+        Ok("cubes".to_string())
     }
 }
 

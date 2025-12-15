@@ -105,6 +105,11 @@
           "type": "string",
           "default": "cuenv",
           "description": "Path to the cuenv executable"
+        },
+        "cuenv.embeddedLanguages.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable IntelliSense for embedded code in CUE files"
         }
       }
     }

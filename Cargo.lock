@@ -752,6 +752,7 @@ dependencies = [
  "cuengine",
  "cuenv-ci",
  "cuenv-core",
+ "cuenv-cubes",
  "cuenv-dagger",
  "cuenv-events",
  "cuenv-ignore",
@@ -799,27 +800,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cuenv-codegen"
-version = "0.14.1"
-dependencies = [
- "clap",
- "cuengine",
- "cuenv-core",
- "cuenv-events",
- "glob",
- "miette",
- "serde",
- "serde-json-fmt",
- "serde_json",
- "tempfile",
- "thiserror 2.0.17",
- "tokio",
- "tokio-test",
- "tracing",
- "walkdir",
-]
-
-[[package]]
 name = "cuenv-codeowners"
 version = "0.14.1"
 dependencies = [
@@ -863,6 +843,27 @@ dependencies = [
  "tracing",
  "walkdir",
  "zstd",
+]
+
+[[package]]
+name = "cuenv-cubes"
+version = "0.14.1"
+dependencies = [
+ "clap",
+ "cuengine",
+ "cuenv-core",
+ "cuenv-events",
+ "glob",
+ "miette",
+ "serde",
+ "serde-json-fmt",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "walkdir",
 ]
 
 [[package]]
