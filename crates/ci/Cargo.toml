@@ -28,7 +28,7 @@ chrono = { workspace = true }
 cuenv-events = { workspace = true }
 glob = "0.3"
 regex = "1.10"
-octocrab = "0.41"
+octocrab = "0.48"
 # We'll stick to shelling out to git for now as per spec preference for "native reporting"
 # but we might need git2 later if we want tighter integration.
 # For now, standard process execution is safer/simpler for "git diff" logic.

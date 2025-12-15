@@ -143,7 +143,7 @@ impl CargoManifest {
                 )
             })?;
 
-            let doc: toml::Value = content.parse().map_err(|e| {
+            let doc: toml::Value = toml::from_str(&content).map_err(|e| {
                 Error::manifest(
                     format!("Failed to parse {}: {e}", manifest_path.display()),
                     Some(manifest_path.clone()),
@@ -184,7 +184,7 @@ impl CargoManifest {
                 )
             })?;
 
-            let doc: toml::Value = content.parse().map_err(|e| {
+            let doc: toml::Value = toml::from_str(&content).map_err(|e| {
                 Error::manifest(
                     format!("Failed to parse {}: {e}", manifest_path.display()),
                     Some(manifest_path.clone()),
@@ -228,7 +228,7 @@ impl CargoManifest {
                 )
             })?;
 
-            let doc: toml::Value = content.parse().map_err(|e| {
+            let doc: toml::Value = toml::from_str(&content).map_err(|e| {
                 Error::manifest(
                     format!("Failed to parse {}: {e}", manifest_path.display()),
                     Some(manifest_path.clone()),
@@ -341,7 +341,7 @@ impl CargoManifest {
                 )
             })?;
 
-            let doc: toml::Value = content.parse().map_err(|e| {
+            let doc: toml::Value = toml::from_str(&content).map_err(|e| {
                 Error::manifest(
                     format!("Failed to parse {}: {e}", manifest_path.display()),
                     Some(manifest_path.clone()),
@@ -485,8 +485,7 @@ mod tests {
         let root = temp.path().to_path_buf();
 
         // Create root Cargo.toml
-        let root_manifest = r#"
-[workspace]
+        let root_manifest = r#"[workspace]
 resolver = "2"
 members = ["crates/foo", "crates/bar"]
 
@@ -504,15 +503,13 @@ bar = { path = "crates/bar", version = "1.2.3" }
         fs::create_dir_all(root.join("crates/foo")).unwrap();
         fs::create_dir_all(root.join("crates/bar")).unwrap();
 
-        let foo_manifest = r#"
-[package]
+        let foo_manifest = r#"[package]
 name = "foo"
 version.workspace = true
 "#;
         fs::write(root.join("crates/foo/Cargo.toml"), foo_manifest).unwrap();
 
-        let bar_manifest = r#"
-[package]
+        let bar_manifest = r#"[package]
 name = "bar"
 version.workspace = true
 "#;

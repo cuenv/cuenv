@@ -35,6 +35,9 @@ ignore = [
     # paste crate is unmaintained but ratatui dependency is acceptable for now
     # Alternative would be to switch to a different TUI library
     "RUSTSEC-2024-0436",
+    # rsa timing side-channel (Marvin Attack) - transitive dep from octocrab->jsonwebtoken
+    # Used only for GitHub API JWT auth, not for cryptographic operations we control
+    "RUSTSEC-2023-0071",
 ]
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is
