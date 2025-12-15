@@ -42,6 +42,7 @@ pub mod environment;
 pub mod hooks;
 pub mod manifest;
 pub mod owners;
+pub mod paths;
 pub mod secrets;
 pub mod shell;
 pub mod tasks;
