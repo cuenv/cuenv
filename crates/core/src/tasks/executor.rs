@@ -402,8 +402,8 @@ impl TaskExecutor {
 
                 if let Some(shell) = &task.shell {
                     if shell.command.is_some() && shell.flag.is_some() {
-                        let shell_command = shell.command.as_ref().unwrap();
-                        let shell_flag = shell.flag.as_ref().unwrap();
+                        let shell_command = shell.command.as_ref().expect("checked is_some above");
+                        let shell_flag = shell.flag.as_ref().expect("checked is_some above");
                         // Resolve shell command too
                         let resolved_shell = self.config.environment.resolve_command(shell_command);
                         let mut cmd = Command::new(&resolved_shell);
@@ -822,8 +822,8 @@ impl TaskExecutor {
 
             if let Some(shell) = &task.shell {
                 if shell.command.is_some() && shell.flag.is_some() {
-                    let shell_command = shell.command.as_ref().unwrap();
-                    let shell_flag = shell.flag.as_ref().unwrap();
+                    let shell_command = shell.command.as_ref().expect("checked is_some above");
+                    let shell_flag = shell.flag.as_ref().expect("checked is_some above");
                     let resolved_shell = self.config.environment.resolve_command(shell_command);
                     let mut cmd = Command::new(&resolved_shell);
                     cmd.arg(shell_flag);

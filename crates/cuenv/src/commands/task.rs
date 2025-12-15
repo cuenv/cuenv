@@ -199,7 +199,7 @@ pub async fn execute_task(
 
     if normalized_labels.is_empty() {
         // Execute a named task
-        let requested_task = task_name.unwrap();
+        let requested_task = task_name.expect("task_name required when no labels provided");
         tracing::debug!("Looking for specific task: {}", requested_task);
 
         // If help requested for specific task/group
@@ -758,7 +758,7 @@ fn format_task_results(
     let mut output = String::new();
     for result in results {
         if capture_output {
-            write!(output, "Task '{}' ", result.name).unwrap();
+            write!(output, "Task '{}' ", result.name).expect("write to string");
             if result.success {
                 output.push_str("succeeded\n");
                 if !result.stdout.is_empty() {
@@ -767,7 +767,7 @@ fn format_task_results(
                     output.push('\n');
                 }
             } else {
-                writeln!(output, "failed with exit code {:?}", result.exit_code).unwrap();
+                writeln!(output, "failed with exit code {:?}", result.exit_code).expect("write to string");
                 if !result.stderr.is_empty() {
                     output.push_str("Error:\n");
                     output.push_str(&result.stderr);
@@ -978,7 +978,7 @@ fn materialize_path(src: &Path, dst: &Path) -> Result<()> {
         // Copy directory recursively
         for entry in walkdir::WalkDir::new(src) {
             let entry = entry.map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
-            let rel = entry.path().strip_prefix(src).unwrap();
+            let rel = entry.path().strip_prefix(src).expect("WalkDir entry is under src");
             let target = dst.join(rel);
             if entry.file_type().is_dir() {
                 fs::create_dir_all(&target).map_err(|e| cuenv_core::Error::Io {
@@ -1194,7 +1194,7 @@ async fn resolve_and_materialize_project_reference(
         // Note: External tasks use build_for_task which doesn't resolve secrets/policies
         // This is intentional for hermetic execution
         let vars =
-            Environment::build_for_task(&reference.task, &manifest.env.as_ref().unwrap().base);
+            Environment::build_for_task(&reference.task, &manifest.env.as_ref().expect("manifest.env required for task environment").base);
         for (k, v) in vars {
             env.set(k, v);
         }
@@ -1294,30 +1294,30 @@ Options:
 
 fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
     let mut output = String::new();
-    writeln!(output, "Task: {}", task.name).unwrap();
+    writeln!(output, "Task: {}", task.name).expect("write to string");
 
     match &task.definition {
         TaskDefinition::Single(t) => {
             if let Some(desc) = &t.description {
-                writeln!(output, "Description: {desc}").unwrap();
+                writeln!(output, "Description: {desc}").expect("write to string");
             }
-            writeln!(output, "Command: {}", t.command).unwrap();
+            writeln!(output, "Command: {}", t.command).expect("write to string");
             if !t.args.is_empty() {
-                writeln!(output, "Args: {:?}", t.args).unwrap();
+                writeln!(output, "Args: {:?}", t.args).expect("write to string");
             }
             if !t.depends_on.is_empty() {
-                writeln!(output, "Depends on: {:?}", t.depends_on).unwrap();
+                writeln!(output, "Depends on: {:?}", t.depends_on).expect("write to string");
             }
             if !t.inputs.is_empty() {
-                writeln!(output, "Inputs: {:?}", t.inputs).unwrap();
+                writeln!(output, "Inputs: {:?}", t.inputs).expect("write to string");
             }
             if !t.outputs.is_empty() {
-                writeln!(output, "Outputs: {:?}", t.outputs).unwrap();
+                writeln!(output, "Outputs: {:?}", t.outputs).expect("write to string");
             }
             // Show params if defined
             if let Some(params) = &t.params {
                 if !params.positional.is_empty() {
-                    writeln!(output, "\nPositional Arguments:").unwrap();
+                    writeln!(output, "\nPositional Arguments:").expect("write to string");
                     for (i, param) in params.positional.iter().enumerate() {
                         let required = if param.required { " (required)" } else { "" };
                         let default = param
@@ -1330,11 +1330,11 @@ fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
                             .as_ref()
                             .map(|d| format!(" - {d}"))
                             .unwrap_or_default();
-                        writeln!(output, "  {{{{{i}}}}}{required}{default}{desc}").unwrap();
+                        writeln!(output, "  {{{{{i}}}}}{required}{default}{desc}").expect("write to string");
                     }
                 }
                 if !params.named.is_empty() {
-                    writeln!(output, "\nNamed Arguments:").unwrap();
+                    writeln!(output, "\nNamed Arguments:").expect("write to string");
                     let mut names: Vec<_> = params.named.keys().collect();
                     names.sort();
                     for name in names {
@@ -1355,19 +1355,19 @@ fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
                             .as_ref()
                             .map(|d| format!(" - {d}"))
                             .unwrap_or_default();
-                        writeln!(output, "  {short}--{name}{required}{default}{desc}").unwrap();
+                        writeln!(output, "  {short}--{name}{required}{default}{desc}").expect("write to string");
                     }
                 }
             }
         }
         TaskDefinition::Group(g) => {
-            writeln!(output, "Type: Task Group").unwrap();
+            writeln!(output, "Type: Task Group").expect("write to string");
             match g {
                 cuenv_core::tasks::TaskGroup::Sequential(_) => {
-                    writeln!(output, "Mode: Sequential").unwrap();
+                    writeln!(output, "Mode: Sequential").expect("write to string");
                 }
                 cuenv_core::tasks::TaskGroup::Parallel(_) => {
-                    writeln!(output, "Mode: Parallel").unwrap();
+                    writeln!(output, "Mode: Parallel").expect("write to string");
                 }
             }
         }
@@ -1425,8 +1425,8 @@ fn render_workspace_task_list(tasks: &[WorkspaceTask]) -> String {
     }
 
     for (project, project_tasks) in by_project {
-        writeln!(output, "\n{project}").unwrap();
-        writeln!(output, "{}", "─".repeat(project.len())).unwrap();
+        writeln!(output, "\n{project}").expect("write to string");
+        writeln!(output, "{}", "─".repeat(project.len())).expect("write to string");
 
         for task in project_tasks {
             let desc = task
@@ -1434,7 +1434,7 @@ fn render_workspace_task_list(tasks: &[WorkspaceTask]) -> String {
                 .as_ref()
                 .map(|d| format!(" - {d}"))
                 .unwrap_or_default();
-            writeln!(output, "  {}{}", task.task_ref, desc).unwrap();
+            writeln!(output, "  {}{}", task.task_ref, desc).expect("write to string");
         }
     }
 
@@ -1494,7 +1494,7 @@ fn render_task_tree(
         } else {
             format!("Tasks from {source}:")
         };
-        writeln!(output, "{header}").unwrap();
+        writeln!(output, "{header}").expect("write to string");
 
         // Build and render tree for this source's tasks
         let source_tasks = &by_source[source];
@@ -1638,16 +1638,16 @@ fn print_tree_nodes(
         let current_line_len =
             prefix.chars().count() + marker.chars().count() + name.chars().count();
 
-        write!(output, "{prefix}{marker}{name}").unwrap();
+        write!(output, "{prefix}{marker}{name}").expect("write to string");
 
         if let Some(desc) = &node.description {
             // Pad with dots
             let padding = max_width.saturating_sub(current_line_len);
             // Add a minimum spacing
             let dots = ".".repeat(padding + 4);
-            write!(output, " {dots} {desc}").unwrap();
+            write!(output, " {dots} {desc}").expect("write to string");
         }
-        writeln!(output).unwrap();
+        writeln!(output).expect("write to string");
 
         let child_prefix = if is_last_item { "   " } else { "│  " };
         let new_prefix = format!("{prefix}{child_prefix}");
@@ -2473,12 +2473,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_tasks_empty() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = TempDir::new().expect("write to string");
         let cue_content = r#"package test
 env: {
     FOO: "bar"
 }"#;
-        fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+        fs::write(temp_dir.path().join("env.cue"), cue_content).expect("write to string");
 
         let result = execute_task(
             temp_dir.path().to_str().unwrap(),
@@ -2508,15 +2508,15 @@ env: {
 
     #[test]
     fn test_find_git_root_success_and_failure() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("write to string");
         // failure: no .git
         let err = find_git_root(tmp.path()).expect_err("should fail without .git");
         let _ = err; // silence unused
 
         // success: with .git at parent
         let proj = tmp.path().join("proj");
-        fs::create_dir_all(proj.join("sub")).unwrap();
-        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        fs::create_dir_all(proj.join("sub")).expect("write to string");
+        fs::create_dir_all(tmp.path().join(".git")).expect("write to string");
         let root = find_git_root(&proj).expect("should locate git root");
         // canonicalization should normalize to tmp root
         assert_eq!(root, std::fs::canonicalize(tmp.path()).unwrap());
@@ -2524,35 +2524,35 @@ env: {
 
     #[test]
     fn test_canonicalize_within_root_ok_and_reject_outside() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("write to string");
         let root = tmp.path();
-        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::create_dir_all(root.join(".git")).expect("write to string");
         let inside = root.join("a/b");
-        fs::create_dir_all(&inside).unwrap();
+        fs::create_dir_all(&inside).expect("write to string");
         let ok = canonicalize_within_root(root, &inside).expect("inside should be ok");
-        let root_canon = std::fs::canonicalize(root).unwrap();
+        let root_canon = std::fs::canonicalize(root).expect("write to string");
         assert!(ok.starts_with(&root_canon));
 
         // outside: a sibling temp dir
-        let other = TempDir::new().unwrap();
+        let other = TempDir::new().expect("write to string");
         let outside = other.path().join("x");
-        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&outside).expect("write to string");
         let err = canonicalize_within_root(root, &outside).expect_err("should reject outside");
         let _ = err; // silence unused
     }
 
     #[test]
     fn test_detect_package_name_ok_and_err() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("write to string");
         let dir = tmp.path();
 
         // ok
-        fs::write(dir.join("env.cue"), "package mypkg\n// rest").unwrap();
+        fs::write(dir.join("env.cue"), "package mypkg\n// rest").expect("write to string");
         let pkg = detect_package_name(dir).expect("should detect package");
         assert_eq!(pkg, "mypkg");
 
         // err: empty dir
-        let empty = TempDir::new().unwrap();
+        let empty = TempDir::new().expect("write to string");
         let err = detect_package_name(empty.path()).expect_err("no package should error");
         let _ = err;
     }
@@ -2564,17 +2564,17 @@ env: {
         assert!(dir.exists());
 
         // materialize file
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("write to string");
         let src_file = tmp.path().join("data.txt");
-        fs::write(&src_file, "hello").unwrap();
+        fs::write(&src_file, "hello").expect("write to string");
         let dst_file = dir.join("copy/data.txt");
         materialize_path(&src_file, &dst_file).expect("materialize file");
         assert_eq!(fs::read_to_string(&dst_file).unwrap(), "hello");
 
         // materialize directory
         let src_dir = tmp.path().join("tree");
-        fs::create_dir_all(src_dir.join("nested")).unwrap();
-        fs::write(src_dir.join("nested/file.txt"), "content").unwrap();
+        fs::create_dir_all(src_dir.join("nested")).expect("write to string");
+        fs::write(src_dir.join("nested/file.txt"), "content").expect("write to string");
         let dst_dir = dir.join("tree_copy");
         materialize_path(&src_dir, &dst_dir).expect("materialize dir");
         assert_eq!(
@@ -2585,11 +2585,11 @@ env: {
 
     #[test]
     fn test_compute_task_cache_key_changes_on_input_change() {
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("write to string");
         // prepare a workspace inputs root
         let ws = tmp.path().join("ws");
-        fs::create_dir_all(ws.join("inputs")).unwrap();
-        fs::write(ws.join("inputs/a.txt"), "A").unwrap();
+        fs::create_dir_all(ws.join("inputs")).expect("write to string");
+        fs::write(ws.join("inputs/a.txt"), "A").expect("write to string");
 
         let mut env = Environment::new();
         env.set("FOO".into(), "1".into());
@@ -2602,15 +2602,15 @@ env: {
 
         let k1 = compute_task_cache_key(&task, &env, &ws).expect("key1");
         // mutate input
-        fs::write(ws.join("inputs/a.txt"), "B").unwrap();
+        fs::write(ws.join("inputs/a.txt"), "B").expect("write to string");
         let k2 = compute_task_cache_key(&task, &env, &ws).expect("key2");
         assert_ne!(k1, k2, "key should change when input changes");
     }
 
     #[test]
     fn test_resolve_task_ref_merges_dependencies() {
-        let tmp = TempDir::new().unwrap();
-        fs::write(tmp.path().join("env.cue"), "package test").unwrap();
+        let tmp = TempDir::new().expect("write to string");
+        fs::write(tmp.path().join("env.cue"), "package test").expect("write to string");
 
         let mut manifest = Cuenv {
             name: "proj".to_string(),
@@ -2698,11 +2698,11 @@ env: {
     #[tokio::test]
     async fn test_run_task_hermetic_local_inputs_and_outputs() {
         // project dir with .git and local inputs
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("write to string");
         let proj = tmp.path().join("proj");
-        fs::create_dir_all(proj.join(".git")).unwrap();
-        fs::create_dir_all(proj.join("inputs")).unwrap();
-        fs::write(proj.join("inputs/in.txt"), "data").unwrap();
+        fs::create_dir_all(proj.join(".git")).expect("write to string");
+        fs::create_dir_all(proj.join("inputs")).expect("write to string");
+        fs::write(proj.join("inputs/in.txt"), "data").expect("write to string");
 
         let evaluator = cuengine::CueEvaluator::builder()
             .no_retry()
@@ -2733,11 +2733,11 @@ env: {
     #[tokio::test]
     async fn test_execute_task_with_strategy_hermetic_single_task() {
         // Build a single task that declares inputs/outputs to trigger hermetic path
-        let tmp = TempDir::new().unwrap();
+        let tmp = TempDir::new().expect("write to string");
         let proj = tmp.path().join("proj");
-        fs::create_dir_all(proj.join(".git")).unwrap();
-        fs::create_dir_all(proj.join("inputs")).unwrap();
-        fs::write(proj.join("inputs/in.txt"), "x").unwrap();
+        fs::create_dir_all(proj.join(".git")).expect("write to string");
+        fs::create_dir_all(proj.join("inputs")).expect("write to string");
+        fs::write(proj.join("inputs/in.txt"), "x").expect("write to string");
 
         let evaluator = cuengine::CueEvaluator::builder()
             .no_retry()
@@ -2763,7 +2763,7 @@ env: {
         let mut all = Tasks::new();
         all.tasks.insert("copy".into(), def.clone());
         let mut g = TaskGraph::new();
-        g.build_from_definition("copy", &def, &all).unwrap();
+        g.build_from_definition("copy", &def, &all).expect("write to string");
 
         let hook_env = Environment::new();
         let results = execute_task_with_strategy_hermetic(
@@ -2938,7 +2938,7 @@ env: {
     #[test]
     fn test_resolve_task_args_no_params_passthrough() {
         let args = vec!["arg1".to_string(), "--flag".to_string(), "val".to_string()];
-        let resolved = resolve_task_args(None, &args).unwrap();
+        let resolved = resolve_task_args(None, &args).expect("write to string");
         assert_eq!(resolved.positional, vec!["arg1"]);
         assert_eq!(resolved.named.get("flag"), Some(&"val".to_string()));
     }
@@ -2962,7 +2962,7 @@ env: {
         };
 
         let args: Vec<String> = vec![];
-        let resolved = resolve_task_args(Some(&params), &args).unwrap();
+        let resolved = resolve_task_args(Some(&params), &args).expect("write to string");
         assert_eq!(resolved.named.get("quality"), Some(&"1080p".to_string()));
     }
 
@@ -3012,7 +3012,7 @@ env: {
 
         // With required positional arg
         let args = vec!["VIDEO123".to_string()];
-        let result = resolve_task_args(Some(&params), &args).unwrap();
+        let result = resolve_task_args(Some(&params), &args).expect("write to string");
         assert_eq!(result.positional, vec!["VIDEO123"]);
     }
 

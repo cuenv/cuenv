@@ -1396,7 +1396,7 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     let state_dir = config
         .state_dir
         .clone()
-        .unwrap_or_else(|| StateManager::default_state_dir().unwrap());
+        .unwrap_or_else(|| StateManager::default_state_dir().expect("failed to get default state dir"));
     cuenv_events::emit_supervisor_log!(
         "supervisor",
         format!("Using state dir: {}", state_dir.display())
