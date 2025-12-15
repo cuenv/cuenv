@@ -117,7 +117,9 @@
       {
         "scopeName": "cuenv.embedded.injection",
         "path": "./syntaxes/cue-embedded.json",
-        "injectTo": ["source.cue"],
+        "injectTo": [
+          "source.cue"
+        ],
         "embeddedLanguages": {
           "meta.embedded.block.typescript": "typescript",
           "meta.embedded.block.javascript": "javascript",

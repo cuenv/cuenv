@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.14.2] - Unreleased
 
 ### Added
+
 - Initial release of cuenv-cubes
 - `schema.#Cube` schema in `/schema/cubes.cue`
 - `cuenv sync cubes` CLI command
