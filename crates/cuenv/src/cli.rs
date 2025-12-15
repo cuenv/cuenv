@@ -1270,7 +1270,7 @@ mod tests {
             "--path",
             "examples/env-basic",
             "--package",
-            "examples",
+            "_examples",
             "--output-format",
             "json",
         ])
@@ -1284,7 +1284,7 @@ mod tests {
                     output_format,
                 } => {
                     assert_eq!(path, "examples/env-basic");
-                    assert_eq!(package, "examples");
+                    assert_eq!(package, "_examples");
                     assert!(matches!(output_format, OutputFormat::Json));
                 }
                 _ => panic!("Expected EnvCommands::Print"),
