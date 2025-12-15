@@ -7,14 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Renamed "Blueprint" to "Cube" throughout the crate ("CUE Cubes" - much cooler name!)
+- `Blueprint` struct is now `Cube`
+- `BlueprintData` struct is now `CubeData`
+- `blueprint` module is now `cube`
+- Error variant `CodegenError::Blueprint` is now `CodegenError::Cube`
+
 ### Added
 - Initial implementation of cuenv-codegen
-- Blueprint loading and evaluation
+- CUE Cube loading and evaluation
 - File generation with managed vs scaffold modes
 - JSON code formatting
 - CUE schemas for multiple languages (TypeScript, Rust, Go, Python, etc.)
 - Config generation for biome.json, .prettierrc, rustfmt.toml
-- Example blueprint for Node.js API project
+- Example cube for Node.js API project
 - Comprehensive test coverage
 
 ### Features
@@ -27,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Documentation
 - README with overview and examples
 - Inline documentation for all public APIs
-- Example blueprints
+- Example cubes
 
 ## [0.14.0] - 2024-12-14
 

@@ -1,16 +1,22 @@
 //! # cuenv-codegen
 //!
-//! Literate project scaffolding and management using CUE templates.
+//! Literate project scaffolding and management using CUE Cubes.
 //!
-//! This crate provides a code generation system based on pure CUE blueprints that:
+//! This crate provides a code generation system based on pure CUE Cubes that:
 //! - Uses schema-wrapped code blocks (e.g., `code.#TypeScript`, `code.#Rust`)
 //! - Supports managed (always regenerated) and scaffold (generate once) file modes
 //! - Auto-generates formatter configs from CUE schemas
 //! - Provides formatting integration for multiple languages
 //!
+//! ## What is a CUE Cube?
+//!
+//! A Cube is a CUE-based template that generates multiple project files.
+//! Think of it as a 3D blueprint - each face of the cube represents
+//! different aspects of your project (source code, config, tests, etc.)
+//!
 //! ## Architecture
 //!
-//! - `blueprint`: Load and evaluate CUE blueprints
+//! - `cube`: Load and evaluate CUE Cubes
 //! - `generator`: Core file generation logic
 //! - `formatter`: Language-specific formatting
 //! - `config`: Generate formatter configs (biome.json, .prettierrc, etc.)
@@ -18,10 +24,10 @@
 //! ## Example
 //!
 //! ```ignore
-//! use cuenv_codegen::{Blueprint, Generator};
+//! use cuenv_codegen::{Cube, Generator};
 //!
-//! let blueprint = Blueprint::load("blueprint.cue")?;
-//! let generator = Generator::new(blueprint);
+//! let cube = Cube::load("my-project.cube.cue")?;
+//! let generator = Generator::new(cube);
 //! generator.generate()?;
 //! ```
 
@@ -29,22 +35,22 @@
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 
-pub mod blueprint;
 pub mod config;
+pub mod cube;
 pub mod formatter;
 pub mod generator;
 
-pub use blueprint::Blueprint;
-pub use generator::Generator;
+pub use cube::Cube;
+pub use generator::{GenerateOptions, Generator};
 
 use thiserror::Error;
 
 /// Errors that can occur during code generation
 #[derive(Error, Debug)]
 pub enum CodegenError {
-    /// Error loading or evaluating CUE blueprint
-    #[error("Blueprint error: {0}")]
-    Blueprint(String),
+    /// Error loading or evaluating CUE Cube
+    #[error("Cube error: {0}")]
+    Cube(String),
 
     /// Error during file generation
     #[error("Generation error: {0}")]

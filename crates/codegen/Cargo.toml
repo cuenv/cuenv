@@ -31,7 +31,7 @@ walkdir = "2.5"
 glob = { workspace = true }
 
 # JSON formatting
-serde_json_fmt = "0.4"
+serde-json-fmt = "0.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

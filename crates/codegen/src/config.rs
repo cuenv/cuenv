@@ -3,7 +3,7 @@
 //! This module handles automatic generation of formatter configuration files
 //! (biome.json, .prettierrc, rustfmt.toml, etc.) based on CUE schema format settings.
 
-use crate::blueprint::FormatConfig;
+use crate::cube::FormatConfig;
 use serde_json::json;
 
 /// Generate biome.json configuration from format config

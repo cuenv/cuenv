@@ -1,5 +1,5 @@
-// Simple Node.js API Blueprint Example
-package blueprint
+// Simple Node.js API Cube Example
+package cube
 
 import (
 	"encoding/json"

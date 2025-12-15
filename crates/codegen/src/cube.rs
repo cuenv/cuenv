@@ -1,7 +1,8 @@
-//! Blueprint loading and evaluation
+//! CUE Cube loading and evaluation
 //!
-//! This module handles loading CUE blueprints and evaluating them to extract
-//! file definitions.
+//! This module handles loading CUE Cubes and evaluating them to extract
+//! file definitions. A "Cube" is a CUE-based template that defines multiple
+//! files to generate for a project.
 
 use crate::{CodegenError, Result};
 use serde::{Deserialize, Serialize};
@@ -9,19 +10,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// File generation mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileMode {
     /// Always regenerate this file (managed by codegen)
+    #[default]
     Managed,
     /// Generate only if file doesn't exist (user owns this file)
     Scaffold,
-}
-
-impl Default for FileMode {
-    fn default() -> Self {
-        Self::Managed
-    }
 }
 
 /// Format configuration for a code file
@@ -57,7 +53,7 @@ impl Default for FormatConfig {
     }
 }
 
-/// A file definition from the blueprint
+/// A file definition from the cube
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileDefinition {
     /// Path where the file should be written
@@ -74,9 +70,9 @@ pub struct FileDefinition {
     pub format: FormatConfig,
 }
 
-/// A CUE blueprint containing file definitions
+/// A CUE Cube containing file definitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlueprintData {
+pub struct CubeData {
     /// Map of file paths to their definitions
     pub files: HashMap<String, FileDefinition>,
     /// Optional context data
@@ -84,15 +80,21 @@ pub struct BlueprintData {
     pub context: serde_json::Value,
 }
 
-/// Blueprint loader and evaluator
+/// CUE Cube loader and evaluator
+///
+/// A Cube is a CUE-based template that generates multiple project files.
+/// Think of it as a 3D blueprint - each face of the cube represents
+/// different aspects of your project (source code, config, tests, etc.)
 #[derive(Debug)]
-pub struct Blueprint {
-    data: BlueprintData,
-    source_path: PathBuf,
+pub struct Cube {
+    /// The cube data containing file definitions
+    pub data: CubeData,
+    /// Path to the source CUE file
+    pub source_path: PathBuf,
 }
 
-impl Blueprint {
-    /// Load a blueprint from a CUE file
+impl Cube {
+    /// Load a cube from a CUE file
     ///
     /// # Errors
     ///
@@ -110,7 +112,7 @@ impl Blueprint {
         })
     }
 
-    /// Get the file definitions from this blueprint
+    /// Get the file definitions from this cube
     #[must_use]
     pub fn files(&self) -> &HashMap<String, FileDefinition> {
         &self.data.files
@@ -122,23 +124,23 @@ impl Blueprint {
         &self.data.context
     }
 
-    /// Get the source path of this blueprint
+    /// Get the source path of this cube
     #[must_use]
     pub fn source_path(&self) -> &Path {
         &self.source_path
     }
 
-    /// Evaluate a CUE file and extract the blueprint data
-    fn evaluate_cue(path: &Path) -> Result<BlueprintData> {
+    /// Evaluate a CUE file and extract the cube data
+    fn evaluate_cue(path: &Path) -> Result<CubeData> {
         // This is a placeholder implementation
         // In the real implementation, we would:
         // 1. Run `cue export --out json path` to get JSON
-        // 2. Parse the JSON into BlueprintData
+        // 2. Parse the JSON into CubeData
 
         // For now, return a simple error if the file doesn't exist
         if !path.exists() {
-            return Err(CodegenError::Blueprint(format!(
-                "Blueprint file not found: {}",
+            return Err(CodegenError::Cube(format!(
+                "Cube file not found: {}",
                 path.display()
             )));
         }
@@ -146,17 +148,17 @@ impl Blueprint {
         // Read and parse the CUE file using cuengine
         // This is a simplified version - the real implementation will use cuengine properly
         let content = std::fs::read_to_string(path)
-            .map_err(|e| CodegenError::Blueprint(format!("Failed to read blueprint: {}", e)))?;
+            .map_err(|e| CodegenError::Cube(format!("Failed to read cube: {e}")))?;
 
-        // For now, we'll expect the blueprint to be pre-evaluated to JSON
+        // For now, we'll expect the cube to be pre-evaluated to JSON
         // In a real implementation, we'd use cuengine to evaluate the CUE
         if content.trim_start().starts_with('{') {
             // It's JSON, parse it directly
-            let data: BlueprintData = serde_json::from_str(&content)?;
+            let data: CubeData = serde_json::from_str(&content)?;
             Ok(data)
         } else {
-            Err(CodegenError::Blueprint(
-                "CUE evaluation not yet implemented. Please provide JSON blueprint for now.".to_string()
+            Err(CodegenError::Cube(
+                "CUE evaluation not yet implemented. Please provide JSON cube for now.".to_string(),
             ))
         }
     }

@@ -1,14 +1,13 @@
-use cuenv_codegen::{Blueprint, Generator, GenerateOptions};
-use std::path::PathBuf;
+use cuenv_codegen::{Cube, GenerateOptions, Generator};
 use tempfile::TempDir;
 
 #[test]
-fn test_basic_blueprint_json() {
-    // Create a simple blueprint in JSON format
+fn test_basic_cube_json() {
+    // Create a simple cube in JSON format
     let temp_dir = TempDir::new().unwrap();
-    let blueprint_path = temp_dir.path().join("blueprint.json");
+    let cube_path = temp_dir.path().join("cube.json");
 
-    let blueprint_json = r#"{
+    let cube_json = r#"{
         "files": {
             "test.json": {
                 "path": "test.json",
@@ -24,11 +23,11 @@ fn test_basic_blueprint_json() {
         "context": null
     }"#;
 
-    std::fs::write(&blueprint_path, blueprint_json).unwrap();
+    std::fs::write(&cube_path, cube_json).unwrap();
 
     // Load and generate
-    let blueprint = Blueprint::load(&blueprint_path).unwrap();
-    let generator = Generator::new(blueprint);
+    let cube = Cube::load(&cube_path).unwrap();
+    let generator = Generator::new(cube);
 
     let output_dir = TempDir::new().unwrap();
     let options = GenerateOptions {

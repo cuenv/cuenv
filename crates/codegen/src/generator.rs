@@ -5,7 +5,7 @@
 //! - Formatting generated code
 //! - Checking if files need updates
 
-use crate::blueprint::{Blueprint, FileMode};
+use crate::cube::{Cube, FileMode};
 use crate::formatter::Formatter;
 use crate::{CodegenError, Result};
 use std::path::{Path, PathBuf};
@@ -47,21 +47,21 @@ impl Default for GenerateOptions {
 /// File generator
 #[derive(Debug)]
 pub struct Generator {
-    blueprint: Blueprint,
+    cube: Cube,
     formatter: Formatter,
 }
 
 impl Generator {
-    /// Create a new generator from a blueprint
+    /// Create a new generator from a cube
     #[must_use]
-    pub fn new(blueprint: Blueprint) -> Self {
+    pub fn new(cube: Cube) -> Self {
         Self {
-            blueprint,
+            cube,
             formatter: Formatter::new(),
         }
     }
 
-    /// Generate all files from the blueprint
+    /// Generate all files from the cube
     ///
     /// # Errors
     ///
@@ -69,15 +69,13 @@ impl Generator {
     pub fn generate(&self, options: &GenerateOptions) -> Result<Vec<GeneratedFile>> {
         let mut generated_files = Vec::new();
 
-        for (file_path, file_def) in self.blueprint.files() {
+        for (file_path, file_def) in self.cube.files() {
             let output_path = options.output_dir.join(file_path);
 
             // Format the content
-            let formatted_content = self.formatter.format(
-                &file_def.content,
-                &file_def.language,
-                &file_def.format,
-            )?;
+            let formatted_content =
+                self.formatter
+                    .format(&file_def.content, &file_def.language, &file_def.format)?;
 
             let generated = GeneratedFile {
                 path: output_path.clone(),
@@ -100,8 +98,7 @@ impl Generator {
                         tracing::info!("Skipping {} (scaffold mode, file exists)", file_path);
                     } else if options.check {
                         return Err(CodegenError::Generation(format!(
-                            "Missing scaffold file: {}",
-                            file_path
+                            "Missing scaffold file: {file_path}"
                         )));
                     } else {
                         self.write_file(&output_path, &formatted_content)?;
@@ -116,6 +113,7 @@ impl Generator {
     }
 
     /// Write a file to disk
+    #[allow(clippy::unused_self)] // Will use self for write options in future
     fn write_file(&self, path: &Path, content: &str) -> Result<()> {
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
@@ -129,6 +127,7 @@ impl Generator {
     }
 
     /// Check if a file would be modified
+    #[allow(clippy::unused_self)] // Will use self for check options in future
     fn check_file(&self, path: &Path, expected_content: &str) -> Result<()> {
         if !path.exists() {
             return Err(CodegenError::Generation(format!(
@@ -153,11 +152,11 @@ impl Generator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blueprint::{BlueprintData, FileDefinition, FormatConfig};
+    use crate::cube::{CubeData, FileDefinition, FormatConfig};
     use std::collections::HashMap;
     use tempfile::TempDir;
 
-    fn create_test_blueprint() -> Blueprint {
+    fn create_test_cube() -> Cube {
         let mut files = HashMap::new();
         files.insert(
             "test.json".to_string(),
@@ -170,12 +169,12 @@ mod tests {
             },
         );
 
-        let data = BlueprintData {
+        let data = CubeData {
             files,
             context: serde_json::Value::Null,
         };
 
-        Blueprint {
+        Cube {
             data,
             source_path: PathBuf::from("test.cue"),
         }
@@ -183,15 +182,15 @@ mod tests {
 
     #[test]
     fn test_generator_new() {
-        let blueprint = create_test_blueprint();
-        let generator = Generator::new(blueprint);
-        assert!(generator.blueprint.files().contains_key("test.json"));
+        let cube = create_test_cube();
+        let generator = Generator::new(cube);
+        assert!(generator.cube.files().contains_key("test.json"));
     }
 
     #[test]
     fn test_generate_managed_file() {
-        let blueprint = create_test_blueprint();
-        let generator = Generator::new(blueprint);
+        let cube = create_test_cube();
+        let generator = Generator::new(cube);
 
         let temp_dir = TempDir::new().unwrap();
         let options = GenerateOptions {

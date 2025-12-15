@@ -1,15 +1,19 @@
 # cuenv-codegen
 
-Literate project scaffolding and management using CUE templates.
+Literate project scaffolding and management using CUE Cubes.
 
 ## Overview
 
-`cuenv-codegen` is a code generation system that uses pure CUE blueprints to generate project files. It features:
+`cuenv-codegen` is a code generation system that uses pure CUE Cubes to generate project files. It features:
 
 - **Schema-wrapped code blocks** - Use `code.#TypeScript`, `code.#Rust`, etc. to define files
 - **Managed vs Scaffold modes** - Choose whether files are always regenerated or only created once
 - **Auto-generated formatter configs** - Biome, Prettier, rustfmt configs generated from CUE schemas
 - **Language-specific formatting** - Built-in support for JSON, TypeScript, Rust, and more
+
+## What is a CUE Cube?
+
+A **Cube** is a CUE-based template that generates multiple project files. Think of it as a 3D blueprint - each face of the cube represents different aspects of your project (source code, config, tests, etc.)
 
 ## Key Concepts
 
@@ -60,9 +64,9 @@ files: {
 }
 ```
 
-## Example Blueprint
+## Example Cube
 
-See `examples/simple-api.cue` for a complete example of a Node.js API blueprint that:
+See `examples/simple-api.cue` for a complete example of a Node.js API cube that:
 
 - Generates `package.json` with conditional dependencies
 - Creates TypeScript source files
@@ -72,10 +76,10 @@ See `examples/simple-api.cue` for a complete example of a Node.js API blueprint 
 ## Usage
 
 ```rust
-use cuenv_codegen::{Blueprint, Generator, GenerateOptions};
+use cuenv_codegen::{Cube, Generator, GenerateOptions};
 
-let blueprint = Blueprint::load("blueprint.cue")?;
-let generator = Generator::new(blueprint);
+let cube = Cube::load("my-project.cube.cue")?;
+let generator = Generator::new(cube);
 
 let options = GenerateOptions {
     output_dir: PathBuf::from("./my-project"),
@@ -90,21 +94,21 @@ generator.generate(&options)?;
 
 This is an initial implementation (Phase 1) with:
 
-- ✅ Basic blueprint loading
-- ✅ File generation with managed/scaffold modes
-- ✅ JSON formatting
-- ✅ Config generation for biome, prettier, rustfmt
-- ⏳ CUE evaluation (currently requires pre-evaluated JSON)
-- ⏳ TypeScript/Rust formatting integration
-- ⏳ CLI tool
-- ⏳ VSCode plugin
+- CUE Cube loading
+- File generation with managed/scaffold modes
+- JSON formatting
+- Config generation for biome, prettier, rustfmt
+- CUE evaluation (currently requires pre-evaluated JSON)
+- TypeScript/Rust formatting integration
+- CLI tool
+- VSCode plugin
 
 ## Future Phases
 
 - **Phase 2**: Config generation improvements
 - **Phase 3**: VSCode plugin for syntax highlighting
 - **Phase 4**: Full LSP integration
-- **Phase 5**: Blueprint registry
+- **Phase 5**: Cube registry
 - **Phase 6**: Advanced features (diff mode, composition, etc.)
 
 ## License

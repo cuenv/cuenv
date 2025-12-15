@@ -2,7 +2,7 @@
 //!
 //! This module provides formatting capabilities for various programming languages.
 
-use crate::blueprint::FormatConfig;
+use crate::cube::FormatConfig;
 use crate::{CodegenError, Result};
 
 /// Language-specific code formatter
@@ -21,12 +21,7 @@ impl Formatter {
     /// # Errors
     ///
     /// Returns an error if formatting fails
-    pub fn format(
-        &self,
-        content: &str,
-        language: &str,
-        config: &FormatConfig,
-    ) -> Result<String> {
+    pub fn format(&self, content: &str, language: &str, config: &FormatConfig) -> Result<String> {
         match language {
             "json" => self.format_json(content, config),
             "typescript" | "javascript" => {
@@ -44,6 +39,7 @@ impl Formatter {
     }
 
     /// Format JSON content
+    #[allow(clippy::unused_self)] // Will use self for formatting state in future
     fn format_json(&self, content: &str, config: &FormatConfig) -> Result<String> {
         let value: serde_json::Value = serde_json::from_str(content)?;
 
@@ -54,14 +50,12 @@ impl Formatter {
             serde_json::to_string_pretty(&value)?
         } else {
             let mut buf = Vec::new();
-            let formatter = serde_json::ser::PrettyFormatter::with_indent(
-                vec![b' '; indent_size].as_slice(),
-            );
+            let indent = vec![b' '; indent_size];
+            let formatter = serde_json::ser::PrettyFormatter::with_indent(indent.as_slice());
             let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
             serde::Serialize::serialize(&value, &mut ser)
                 .map_err(|e| CodegenError::Formatting(e.to_string()))?;
-            String::from_utf8(buf)
-                .map_err(|e| CodegenError::Formatting(e.to_string()))?
+            String::from_utf8(buf).map_err(|e| CodegenError::Formatting(e.to_string()))?
         };
 
         Ok(formatted)
@@ -80,7 +74,7 @@ mod tests {
 
     #[test]
     fn test_format_json() {
-        let formatter = Formatter::new();
+        let fmt = Formatter::new();
         let input = r#"{"name":"test","value":123}"#;
         let config = FormatConfig {
             indent: "space".to_string(),
@@ -88,12 +82,12 @@ mod tests {
             ..Default::default()
         };
 
-        let result = formatter.format(input, "json", &config);
+        let result = fmt.format(input, "json", &config);
         assert!(result.is_ok());
 
-        let formatted = result.unwrap();
-        assert!(formatted.contains("  ")); // Should have 2-space indentation
-        assert!(formatted.contains("\"name\": \"test\""));
+        let output = result.unwrap();
+        assert!(output.contains("  ")); // Should have 2-space indentation
+        assert!(output.contains("\"name\": \"test\""));
     }
 
     #[test]
