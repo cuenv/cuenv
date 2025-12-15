@@ -1375,7 +1375,7 @@ fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
     output
 }
 
-/// Collect all tasks from discovered projects into WorkspaceTask format
+/// Collect all tasks from discovered projects into `WorkspaceTask` format
 fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<WorkspaceTask> {
     let mut result = Vec::new();
 
@@ -1425,7 +1425,7 @@ fn render_workspace_task_list(tasks: &[WorkspaceTask]) -> String {
     }
 
     for (project, project_tasks) in by_project {
-        writeln!(output, "\n{}", project).unwrap();
+        writeln!(output, "\n{project}").unwrap();
         writeln!(output, "{}", "─".repeat(project.len())).unwrap();
 
         for task in project_tasks {
