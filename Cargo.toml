@@ -73,7 +73,7 @@ criterion = "0.5"
 tempfile = "3.0"
 
 # BDD testing dependencies
-cucumber = "0.21"
+cucumber = "0.22"
 gherkin = "0.14"
 tokio-test = "0.4"
 
