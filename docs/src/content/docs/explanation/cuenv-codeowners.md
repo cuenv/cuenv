@@ -58,11 +58,11 @@ let gitlab = Platform::Gitlab;    // CODEOWNERS, [Section]
 let bitbucket = Platform::Bitbucket; // CODEOWNERS, # Section
 ```
 
-| Platform   | Default Path          | Section Syntax |
-| ---------- | --------------------- | -------------- |
-| `Github`   | `.github/CODEOWNERS`  | `# Section`    |
-| `Gitlab`   | `CODEOWNERS`          | `[Section]`    |
-| `Bitbucket`| `CODEOWNERS`          | `# Section`    |
+| Platform    | Default Path         | Section Syntax |
+| ----------- | -------------------- | -------------- |
+| `Github`    | `.github/CODEOWNERS` | `# Section`    |
+| `Gitlab`    | `CODEOWNERS`         | `[Section]`    |
+| `Bitbucket` | `CODEOWNERS`         | `# Section`    |
 
 ### Rule
 
@@ -80,11 +80,11 @@ let rule = Rule::new("/docs/**", ["@docs-team", "@tech-writers"])
     .section("Documentation");
 ```
 
-| Method                  | Description                                    |
-| ----------------------- | ---------------------------------------------- |
-| `new(pattern, owners)`  | Create a rule with pattern and owner list      |
-| `description(text)`     | Add a comment above the rule                   |
-| `section(name)`         | Assign to a section for grouped output         |
+| Method                 | Description                               |
+| ---------------------- | ----------------------------------------- |
+| `new(pattern, owners)` | Create a rule with pattern and owner list |
+| `description(text)`    | Add a comment above the rule              |
+| `section(name)`        | Assign to a section for grouped output    |
 
 ### Codeowners
 
@@ -108,35 +108,35 @@ let content = codeowners.generate();
 let path = codeowners.output_path(); // ".github/CODEOWNERS"
 ```
 
-| Method                        | Description                                      |
-| ----------------------------- | ------------------------------------------------ |
-| `builder()`                   | Create a new builder                             |
-| `generate()`                  | Generate the CODEOWNERS file content             |
-| `output_path()`               | Get the output path (custom or platform default) |
-| `detect_platform(repo_root)`  | Auto-detect platform from repo structure         |
+| Method                       | Description                                      |
+| ---------------------------- | ------------------------------------------------ |
+| `builder()`                  | Create a new builder                             |
+| `generate()`                 | Generate the CODEOWNERS file content             |
+| `output_path()`              | Get the output path (custom or platform default) |
+| `detect_platform(repo_root)` | Auto-detect platform from repo structure         |
 
 ### CodeownersBuilder
 
 Fluent builder for configuration:
 
-| Method                  | Description                                       |
-| ----------------------- | ------------------------------------------------- |
-| `platform(Platform)`    | Set target platform                               |
-| `path(str)`             | Override output path                              |
-| `header(str)`           | Set header comment                                |
-| `default_owners(iter)`  | Set default owners (`*` rule)                     |
-| `rule(Rule)`            | Add a single rule                                 |
-| `rules(iter)`           | Add multiple rules                                |
-| `build()`               | Build the `Codeowners` configuration              |
+| Method                 | Description                          |
+| ---------------------- | ------------------------------------ |
+| `platform(Platform)`   | Set target platform                  |
+| `path(str)`            | Override output path                 |
+| `header(str)`          | Set header comment                   |
+| `default_owners(iter)` | Set default owners (`*` rule)        |
+| `rule(Rule)`           | Add a single rule                    |
+| `rules(iter)`          | Add multiple rules                   |
+| `build()`              | Build the `Codeowners` configuration |
 
 ## Features
 
 The crate supports optional features:
 
-| Feature    | Description                                    |
-| ---------- | ---------------------------------------------- |
-| `serde`    | Enable serialization/deserialization           |
-| `schemars` | Enable JSON Schema generation (implies serde)  |
+| Feature    | Description                                   |
+| ---------- | --------------------------------------------- |
+| `serde`    | Enable serialization/deserialization          |
+| `schemars` | Enable JSON Schema generation (implies serde) |
 
 ```toml
 [dependencies]

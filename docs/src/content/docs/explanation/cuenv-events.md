@@ -326,35 +326,35 @@ fn process_files(files: &[String]) {
 
 ### TaskEvent Variants
 
-| Event Type       | Fields                                    |
-| ---------------- | ----------------------------------------- |
-| `Started`        | name, command, hermetic                   |
-| `CacheHit`       | name, cache_key                           |
-| `CacheMiss`      | name                                      |
-| `Output`         | name, stream (stdout/stderr), content     |
-| `Completed`      | name, success, exit_code, duration_ms     |
-| `GroupStarted`   | name, sequential, task_count              |
-| `GroupCompleted` | name, success, duration_ms                |
+| Event Type       | Fields                                |
+| ---------------- | ------------------------------------- |
+| `Started`        | name, command, hermetic               |
+| `CacheHit`       | name, cache_key                       |
+| `CacheMiss`      | name                                  |
+| `Output`         | name, stream (stdout/stderr), content |
+| `Completed`      | name, success, exit_code, duration_ms |
+| `GroupStarted`   | name, sequential, task_count          |
+| `GroupCompleted` | name, success, duration_ms            |
 
 ### CiEvent Variants
 
-| Event Type          | Fields                              |
-| ------------------- | ----------------------------------- |
-| `ContextDetected`   | provider, event_type, ref_name      |
-| `ChangedFiles`      | count                               |
-| `ProjectsDiscovered`| count                               |
-| `ProjectSkipped`    | path, reason                        |
-| `TaskExecuting`     | project, task                       |
-| `TaskResult`        | project, task, success, error?      |
-| `ReportGenerated`   | path                                |
+| Event Type           | Fields                         |
+| -------------------- | ------------------------------ |
+| `ContextDetected`    | provider, event_type, ref_name |
+| `ChangedFiles`       | count                          |
+| `ProjectsDiscovered` | count                          |
+| `ProjectSkipped`     | path, reason                   |
+| `TaskExecuting`      | project, task                  |
+| `TaskResult`         | project, task, success, error? |
+| `ReportGenerated`    | path                           |
 
 ### CommandEvent Variants
 
-| Event Type  | Fields                              |
-| ----------- | ----------------------------------- |
-| `Started`   | command, args?                      |
-| `Progress`  | command, progress (0.0-1.0), message|
-| `Completed` | command, success, duration_ms       |
+| Event Type  | Fields                               |
+| ----------- | ------------------------------------ |
+| `Started`   | command, args?                       |
+| `Progress`  | command, progress (0.0-1.0), message |
+| `Completed` | command, success, duration_ms        |
 
 ## Testing
 

@@ -65,17 +65,17 @@ assert_eq!(file.output_filename(), ".gitignore");
 let content = file.generate();
 ```
 
-| Method                    | Description                                   |
-| ------------------------- | --------------------------------------------- |
-| `new(tool)`               | Create config for a tool (e.g., "git", "docker") |
-| `pattern(str)`            | Add a single pattern                          |
-| `patterns(iter)`          | Add multiple patterns                         |
-| `filename(str)`           | Override output filename                      |
-| `header(str)`             | Set header comment                            |
-| `output_filename()`       | Get output filename (`.{tool}ignore` or custom) |
-| `tool()`                  | Get tool name                                 |
-| `patterns_list()`         | Get patterns slice                            |
-| `generate()`              | Generate file content                         |
+| Method              | Description                                      |
+| ------------------- | ------------------------------------------------ |
+| `new(tool)`         | Create config for a tool (e.g., "git", "docker") |
+| `pattern(str)`      | Add a single pattern                             |
+| `patterns(iter)`    | Add multiple patterns                            |
+| `filename(str)`     | Override output filename                         |
+| `header(str)`       | Set header comment                               |
+| `output_filename()` | Get output filename (`.{tool}ignore` or custom)  |
+| `tool()`            | Get tool name                                    |
+| `patterns_list()`   | Get patterns slice                               |
+| `generate()`        | Generate file content                            |
 
 ### IgnoreFiles / IgnoreFilesBuilder
 
@@ -100,14 +100,14 @@ for file in &result.files {
 }
 ```
 
-| Builder Method          | Description                                      |
-| ----------------------- | ------------------------------------------------ |
-| `directory(path)`       | Set output directory (default: current dir)      |
-| `file(IgnoreFile)`      | Add a single ignore file config                  |
-| `files(iter)`           | Add multiple ignore file configs                 |
-| `require_git_repo(bool)`| Require directory to be in a Git repo            |
-| `dry_run(bool)`         | Preview changes without writing                  |
-| `generate()`            | Generate all ignore files                        |
+| Builder Method           | Description                                 |
+| ------------------------ | ------------------------------------------- |
+| `directory(path)`        | Set output directory (default: current dir) |
+| `file(IgnoreFile)`       | Add a single ignore file config             |
+| `files(iter)`            | Add multiple ignore file configs            |
+| `require_git_repo(bool)` | Require directory to be in a Git repo       |
+| `dry_run(bool)`          | Preview changes without writing             |
+| `generate()`             | Generate all ignore files                   |
 
 ### FileStatus
 
@@ -141,9 +141,9 @@ match err {
 
 ## Features
 
-| Feature | Description                              |
-| ------- | ---------------------------------------- |
-| `serde` | Enable serialization/deserialization     |
+| Feature | Description                          |
+| ------- | ------------------------------------ |
+| `serde` | Enable serialization/deserialization |
 
 ```toml
 [dependencies]

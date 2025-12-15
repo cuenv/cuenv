@@ -349,6 +349,8 @@ pub enum Commands {
             value_name = "BACKEND"
         )]
         backend: Option<String>,
+        #[arg(long, help = "Use rich TUI for task execution")]
+        tui: bool,
         #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
         help: bool,
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
@@ -831,6 +833,7 @@ impl Commands {
                 materialize_outputs,
                 show_cache_path,
                 backend,
+                tui,
                 help,
                 task_args,
             } => Command::Task {
@@ -843,6 +846,7 @@ impl Commands {
                 materialize_outputs,
                 show_cache_path,
                 backend,
+                tui,
                 help,
                 task_args,
             },

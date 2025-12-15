@@ -3,11 +3,25 @@
 //! This module provides structured, contextual tracing with multiple output formats,
 //! correlation IDs, performance instrumentation, and structured event capture.
 
-use cuenv_events::{CuenvEventLayer, EventBus};
+use cuenv_events::{CuenvEventLayer, EventBus, EventReceiver};
 use std::io;
+use std::sync::OnceLock;
 pub use tracing::Level;
 use tracing_subscriber::{filter::EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
+
+/// Global `EventBus` for the application.
+/// Set during initialization and can be accessed from anywhere to subscribe to events.
+static GLOBAL_EVENT_BUS: OnceLock<EventBus> = OnceLock::new();
+
+/// Subscribe to the global event bus.
+///
+/// Returns `None` if the event bus hasn't been initialized yet (e.g., during tests
+/// or if called before `init_tracing_with_events`).
+#[must_use]
+pub fn subscribe_global_events() -> Option<EventReceiver> {
+    GLOBAL_EVENT_BUS.get().map(EventBus::subscribe)
+}
 
 /// Tracing output format options
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -177,10 +191,11 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
 
 /// Initialize tracing with event capture support.
 ///
-/// Returns an `EventBus` that can be used to subscribe to structured events
-/// and spawn renderers (CLI, JSON, TUI, etc.).
+/// Returns an `EventReceiver` for the main renderer (CLI, JSON, etc.).
+/// The global `EventBus` is stored internally and can be subscribed to
+/// via `subscribe_global_events()` for additional subscribers (like TUI).
 #[allow(clippy::needless_pass_by_value)] // Config is small and taking by value is more ergonomic
-pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventBus> {
+pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventReceiver> {
     // Sync correlation ID with cuenv_events
     let corr_id = correlation_id();
     cuenv_events::set_correlation_id(corr_id);
@@ -188,6 +203,14 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventBu
     // Create event bus and layer
     let event_bus = EventBus::new();
     let event_layer = CuenvEventLayer::new(event_bus.sender().into_inner());
+
+    // Get a receiver for the main renderer before storing the bus globally
+    let main_receiver = event_bus.subscribe();
+
+    // Store the bus globally for additional subscribers (like TUI)
+    if GLOBAL_EVENT_BUS.set(event_bus).is_err() {
+        return Err(miette::miette!("Global event bus already initialized"));
+    }
 
     // Create base filter - always capture cuenv events at info level
     let env_filter = if let Some(ref filter) = config.filter {
@@ -268,7 +291,7 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventBu
         "Event-based tracing initialized"
     );
 
-    Ok(event_bus)
+    Ok(main_receiver)
 }
 
 /// Create a new span for command execution with structured fields

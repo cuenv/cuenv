@@ -55,6 +55,7 @@ pub mod ci_cmd {
                 None,     // materialize_outputs
                 false,    // show_cache_path
                 None,     // backend
+                false,    // tui
                 false,    // help
                 &[],      // task_args
             )
@@ -188,6 +189,7 @@ pub enum Command {
         materialize_outputs: Option<String>,
         show_cache_path: bool,
         backend: Option<String>,
+        tui: bool,
         help: bool,
         task_args: Vec<String>,
     },
@@ -295,6 +297,7 @@ impl CommandExecutor {
                 materialize_outputs,
                 show_cache_path,
                 backend,
+                tui,
                 help,
                 task_args,
             } => {
@@ -308,6 +311,7 @@ impl CommandExecutor {
                     materialize_outputs,
                     show_cache_path,
                     backend,
+                    tui,
                     help,
                     task_args,
                 )
@@ -544,6 +548,7 @@ impl CommandExecutor {
         materialize_outputs: Option<String>,
         show_cache_path: bool,
         backend: Option<String>,
+        tui: bool,
         help: bool,
         task_args: Vec<String>,
     ) -> Result<()> {
@@ -565,6 +570,7 @@ impl CommandExecutor {
             materialize_outputs.as_deref(),
             show_cache_path,
             backend.as_deref(),
+            tui,
             help,
             &task_args,
         )
