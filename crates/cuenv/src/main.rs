@@ -626,6 +626,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             backend,
             tui,
             help,
+            workspace,
             task_args,
             format,
         } => match execute_task_command_safe(
@@ -640,6 +641,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             backend,
             tui,
             help,
+            workspace,
             task_args,
             json_mode,
         )
@@ -1211,6 +1213,7 @@ async fn execute_task_command_safe(
     backend: Option<String>,
     tui: bool,
     help: bool,
+    workspace: bool,
     task_args: Vec<String>,
     json_mode: bool,
 ) -> Result<(), CliError> {
@@ -1230,6 +1233,7 @@ async fn execute_task_command_safe(
         backend.as_deref(),
         tui,
         help,
+        workspace,
         &task_args,
     )
     .await;

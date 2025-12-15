@@ -57,6 +57,7 @@ pub mod ci_cmd {
                 None,     // backend
                 false,    // tui
                 false,    // help
+                false,    // workspace
                 &[],      // task_args
             )
             .await
@@ -191,6 +192,7 @@ pub enum Command {
         backend: Option<String>,
         tui: bool,
         help: bool,
+        workspace: bool,
         task_args: Vec<String>,
     },
     Exec {
@@ -299,6 +301,7 @@ impl CommandExecutor {
                 backend,
                 tui,
                 help,
+                workspace,
                 task_args,
             } => {
                 self.execute_task(
@@ -313,6 +316,7 @@ impl CommandExecutor {
                     backend,
                     tui,
                     help,
+                    workspace,
                     task_args,
                 )
                 .await
@@ -589,6 +593,7 @@ impl CommandExecutor {
         backend: Option<String>,
         tui: bool,
         help: bool,
+        workspace: bool,
         task_args: Vec<String>,
     ) -> Result<()> {
         let command_name = "task";
@@ -611,6 +616,7 @@ impl CommandExecutor {
             backend.as_deref(),
             tui,
             help,
+            workspace,
             &task_args,
         )
         .await

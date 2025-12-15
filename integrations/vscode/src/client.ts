@@ -1,9 +1,14 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
-import { CuenvTask } from './types';
+import { CuenvTask, WorkspaceTask } from './types';
 
 export class CuenvClient {
     private currentEnv: string | undefined = 'Base';
+
+    // Cache for workspace tasks (used by completion provider)
+    private workspaceTasksCache: WorkspaceTask[] | null = null;
+    private workspaceTasksCacheTime: number = 0;
+    private readonly CACHE_TTL_MS = 30000; // 30 seconds
 
     constructor(private outputChannel: vscode.OutputChannel) {}
 
@@ -111,5 +116,46 @@ export class CuenvClient {
 
     getCurrentEnvironment(): string | undefined {
         return this.currentEnv;
+    }
+
+    /**
+     * Get all tasks from all projects in the workspace.
+     * Results are cached for 30 seconds.
+     */
+    async getWorkspaceTasks(forceRefresh = false): Promise<WorkspaceTask[]> {
+        const now = Date.now();
+        if (
+            !forceRefresh &&
+            this.workspaceTasksCache &&
+            now - this.workspaceTasksCacheTime < this.CACHE_TTL_MS
+        ) {
+            return this.workspaceTasksCache;
+        }
+
+        const root = this.getWorkspaceRoot();
+        if (!root) return [];
+
+        try {
+            const output = await this.execJson(
+                ['task', '--workspace', '--output-format', 'json'],
+                root
+            );
+            this.workspaceTasksCache = output as WorkspaceTask[];
+            this.workspaceTasksCacheTime = now;
+            return this.workspaceTasksCache;
+        } catch (e) {
+            this.outputChannel.appendLine(`Error fetching workspace tasks: ${e}`);
+            // Return stale cache if available, otherwise empty array
+            return this.workspaceTasksCache || [];
+        }
+    }
+
+    /**
+     * Invalidate the workspace tasks cache.
+     * Call this when CUE files change.
+     */
+    invalidateTaskCache(): void {
+        this.workspaceTasksCache = null;
+        this.workspaceTasksCacheTime = 0;
     }
 }

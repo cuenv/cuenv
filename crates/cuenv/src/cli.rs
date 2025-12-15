@@ -353,6 +353,13 @@ pub enum Commands {
         tui: bool,
         #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
         help: bool,
+        #[arg(
+            long = "workspace",
+            short = 'w',
+            help = "List tasks from all projects in the workspace (for IDE completions)",
+            default_value_t = false
+        )]
+        workspace: bool,
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,
     },
@@ -857,6 +864,7 @@ impl Commands {
                 backend,
                 tui,
                 help,
+                workspace,
                 task_args,
             } => Command::Task {
                 path,
@@ -870,6 +878,7 @@ impl Commands {
                 backend,
                 tui,
                 help,
+                workspace,
                 task_args,
             },
             Commands::Exec {
