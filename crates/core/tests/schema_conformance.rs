@@ -174,6 +174,7 @@ fn test_round_trip_serialization() {
         name: "round-trip".to_string(),
         ignore: None,
         owners: None,
+        cube: None,
     };
 
     // Serialize to JSON
