@@ -262,6 +262,7 @@ pub enum Command {
         package: String,
         dry_run: bool,
         check: bool,
+        all: bool,
     },
 }
 
@@ -377,6 +378,7 @@ impl CommandExecutor {
                 package,
                 dry_run,
                 check,
+                ..
             } => {
                 self.execute_sync(subcommand, path, package, dry_run, check)
                     .await
@@ -420,6 +422,7 @@ impl CommandExecutor {
             dry_run: cube_dry_run,
             check: cube_check,
             diff,
+            ..
         }) = &subcommand
         {
             let result = sync::execute_sync_cubes(
