@@ -66,6 +66,4 @@ package schema
 	check:  #Check
 	clippy: #Clippy
 	doc:    #Doc
-
-	...
 }
