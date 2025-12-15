@@ -96,7 +96,7 @@ type WorkspaceMembers = HashMap<String, PathBuf>;
 fn map_manifest_error(path: &Path, err: CargoManifestError) -> Error {
     match err {
         CargoManifestError::Parse(source) => Error::Toml {
-            source,
+            source: *source,
             path: Some(path.to_path_buf()),
         },
         CargoManifestError::Io(source) => Error::Io {
@@ -104,10 +104,13 @@ fn map_manifest_error(path: &Path, err: CargoManifestError) -> Error {
             path: Some(path.to_path_buf()),
             operation: "reading Cargo manifest".to_string(),
         },
-        CargoManifestError::Workspace(inner) => Error::LockfileParseFailed {
-            path: path.to_path_buf(),
-            message: format!("workspace manifest error: {inner}"),
-        },
+        CargoManifestError::Workspace(inner) => {
+            let (err, _) = *inner;
+            Error::LockfileParseFailed {
+                path: path.to_path_buf(),
+                message: format!("workspace manifest error: {err}"),
+            }
+        }
         CargoManifestError::WorkspaceIntegrity(message) => Error::LockfileParseFailed {
             path: path.to_path_buf(),
             message,

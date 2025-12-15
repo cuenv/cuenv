@@ -48,18 +48,18 @@ libc = "0.2"
 tokio = { version = "1.0", features = ["full"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 ratatui = "0.29"
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
 miette = { version = "7.0", features = ["fancy"] }
 uuid = { version = "1.18", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.8.3"
 # New dependencies for hook execution system
-dirs = "5.0"
+dirs = "6.0"
 sha2 = "0.10"
 
 # Workspace detection and parsing dependencies
-toml = "0.8"
-toml_edit = "0.22"
+toml = "0.9"
+toml_edit = "0.23"
 
 # Git and conventional commits
 git-conventional = "0.12"
@@ -69,11 +69,11 @@ glob = "0.3"
 
 # Testing dependencies
 proptest = "1.0"
-criterion = "0.5"
+criterion = "0.8"
 tempfile = "3.0"
 
 # BDD testing dependencies
-cucumber = "0.21"
+cucumber = "0.22"
 gherkin = "0.14"
 tokio-test = "0.4"
 

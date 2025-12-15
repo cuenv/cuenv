@@ -1,11 +1,11 @@
 package cubes
 
 // ============================================================================
-// Code File Schemas - Language-specific file definitions
+// Project File Schemas - Language-specific file definitions
 // ============================================================================
 
-// #CodeFile is the base schema for all generated file content
-#CodeFile: {
+// #ProjectFile is the base schema for all generated file content
+#ProjectFile: {
 	// The actual code content
 	content: string
 
@@ -16,6 +16,18 @@ package cubes
 	// - managed: Always regenerated when cube is synced
 	// - scaffold: Only created if file doesn't exist
 	mode: "managed" | "scaffold" | *"managed"
+
+	// Whether to add this file path to .gitignore
+	// Defaults based on mode:
+	//   - managed: defaults to true (generated files should be ignored)
+	//   - scaffold: defaults to false (user-owned files should be committed)
+	gitignore: bool
+	if mode == "managed" {
+		gitignore: *true | _
+	}
+	if mode == "scaffold" {
+		gitignore: *false | _
+	}
 
 	// Formatting configuration
 	format?: {
@@ -39,7 +51,7 @@ package cubes
 // ============================================================================
 
 // TypeScript files
-#TypeScriptFile: #CodeFile & {
+#TypeScriptFile: #ProjectFile & {
 	language: "typescript"
 
 	format: {
@@ -61,7 +73,7 @@ package cubes
 }
 
 // JavaScript files
-#JavaScriptFile: #CodeFile & {
+#JavaScriptFile: #ProjectFile & {
 	language: "javascript"
 
 	format: {
@@ -75,7 +87,7 @@ package cubes
 }
 
 // JSON files
-#JSONFile: #CodeFile & {
+#JSONFile: #ProjectFile & {
 	language: "json"
 
 	format: {
@@ -85,7 +97,7 @@ package cubes
 }
 
 // JSONC (JSON with comments) - for tsconfig.json, wrangler.jsonc, etc.
-#JSONCFile: #CodeFile & {
+#JSONCFile: #ProjectFile & {
 	language: "jsonc"
 
 	format: {
@@ -95,7 +107,7 @@ package cubes
 }
 
 // YAML files
-#YAMLFile: #CodeFile & {
+#YAMLFile: #ProjectFile & {
 	language: "yaml"
 
 	format: {
@@ -105,7 +117,7 @@ package cubes
 }
 
 // TOML files
-#TOMLFile: #CodeFile & {
+#TOMLFile: #ProjectFile & {
 	language: "toml"
 
 	format: {
@@ -115,7 +127,7 @@ package cubes
 }
 
 // Rust files
-#RustFile: #CodeFile & {
+#RustFile: #ProjectFile & {
 	language: "rust"
 
 	format: {
@@ -132,7 +144,7 @@ package cubes
 }
 
 // Go files
-#GoFile: #CodeFile & {
+#GoFile: #ProjectFile & {
 	language: "go"
 
 	format: {
@@ -142,7 +154,7 @@ package cubes
 }
 
 // Python files
-#PythonFile: #CodeFile & {
+#PythonFile: #ProjectFile & {
 	language: "python"
 
 	format: {
@@ -153,7 +165,7 @@ package cubes
 }
 
 // Markdown files
-#MarkdownFile: #CodeFile & {
+#MarkdownFile: #ProjectFile & {
 	language: "markdown"
 
 	format: {
@@ -164,7 +176,7 @@ package cubes
 }
 
 // Shell script files
-#ShellScriptFile: #CodeFile & {
+#ShellScriptFile: #ProjectFile & {
 	language: "shell"
 
 	format: {
@@ -174,7 +186,7 @@ package cubes
 }
 
 // Dockerfile
-#DockerfileFile: #CodeFile & {
+#DockerfileFile: #ProjectFile & {
 	language: "dockerfile"
 
 	format: {
@@ -184,7 +196,7 @@ package cubes
 }
 
 // Nix expressions
-#NixFile: #CodeFile & {
+#NixFile: #ProjectFile & {
 	language: "nix"
 
 	format: {

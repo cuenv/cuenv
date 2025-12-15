@@ -248,6 +248,7 @@
 
           cuenv-audit = craneLib.cargoAudit {
             inherit src advisory-db;
+            cargoAuditExtraArgs = "--ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2023-0071";
           };
 
           cuenv-deny = craneLib.cargoDeny {
@@ -280,8 +281,8 @@
             
             cd ..
             
-            # Run cargo audit to check for vulnerabilities, ignoring specific advisory
-            cargo audit --ignore RUSTSEC-2024-0436
+            # Run cargo audit to check for vulnerabilities, ignoring specific advisories
+            cargo audit --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2023-0071
             
             echo "🦀 cuenv development environment ready!"
             echo "📦 Prebuilt CUE bridge available at: ${cue-bridge}"

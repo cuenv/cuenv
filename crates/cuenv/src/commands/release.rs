@@ -379,7 +379,7 @@ fn publish_to_crates_io(crate_dir: &Path) -> cuenv_core::Result<bool> {
         ))
     })?;
 
-    let doc: TomlValue = content.parse().map_err(|e| {
+    let doc: TomlValue = toml::from_str(&content).map_err(|e| {
         cuenv_core::Error::configuration(format!(
             "Failed to parse crate manifest {}: {e}",
             manifest_path.display()
@@ -592,8 +592,7 @@ mod tests {
         let root = temp.path();
 
         // Create root Cargo.toml
-        let root_manifest = r#"
-[workspace]
+        let root_manifest = r#"[workspace]
 resolver = "2"
 members = ["crates/foo", "crates/bar"]
 
@@ -611,15 +610,13 @@ bar = { path = "crates/bar", version = "1.0.0" }
         fs::create_dir_all(root.join("crates/foo")).unwrap();
         fs::create_dir_all(root.join("crates/bar")).unwrap();
 
-        let foo_manifest = r#"
-[package]
+        let foo_manifest = r#"[package]
 name = "foo"
 version.workspace = true
 "#;
         fs::write(root.join("crates/foo/Cargo.toml"), foo_manifest).unwrap();
 
-        let bar_manifest = r#"
-[package]
+        let bar_manifest = r#"[package]
 name = "bar"
 version.workspace = true
 "#;

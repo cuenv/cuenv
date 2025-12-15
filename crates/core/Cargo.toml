@@ -29,13 +29,13 @@ tracing = { workspace = true }
 async-recursion = "1.1"
 async-trait = "0.1"
 futures = "0.3"
-fs4 = { version = "0.11", features = ["tokio"] }
+fs4 = { version = "0.13", features = ["tokio"] }
 
 # Dependencies for hook execution system
 dirs = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
-sysinfo = "0.30"
+sysinfo = "0.37"
 # For input resolution, snapshots, and hashing
 globset = "0.4"
 regex = "1.10"
