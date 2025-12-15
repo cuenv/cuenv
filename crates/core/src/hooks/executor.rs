@@ -86,6 +86,11 @@ impl HookExecutor {
         // Save initial state
         self.state_manager.save_state(&state).await?;
 
+        // Create directory marker for fast status lookups
+        self.state_manager
+            .create_directory_marker(&directory_path, &instance_hash)
+            .await?;
+
         info!(
             "Starting background execution of {} hooks for directory: {}",
             total_hooks,
@@ -264,6 +269,55 @@ impl HookExecutor {
     ) -> Result<Option<HookExecutionState>> {
         let instance_hash = compute_instance_hash(directory_path, config_hash);
         self.state_manager.load_state(&instance_hash).await
+    }
+
+    /// Fast check if any hooks are active for a directory (no config hash needed).
+    /// This is the hot path for Starship - skips config hash computation entirely.
+    /// Returns None if no hooks running, Some(state) if hooks active.
+    pub async fn get_fast_status(
+        &self,
+        directory_path: &Path,
+    ) -> Result<Option<HookExecutionState>> {
+        // First check: does marker exist? O(1) filesystem stat
+        if !self.state_manager.has_active_marker(directory_path) {
+            return Ok(None);
+        }
+
+        // Marker exists - get instance hash and load state
+        if let Some(instance_hash) = self
+            .state_manager
+            .get_marker_instance_hash(directory_path)
+            .await
+        {
+            let state = self.state_manager.load_state(&instance_hash).await?;
+
+            match &state {
+                Some(s) if s.is_complete() && !s.should_display_completed() => {
+                    // State is complete and expired, clean up marker
+                    self.state_manager
+                        .remove_directory_marker(directory_path)
+                        .await
+                        .ok();
+                    return Ok(None);
+                }
+                None => {
+                    // State file was deleted but marker exists - clean up orphaned marker
+                    self.state_manager
+                        .remove_directory_marker(directory_path)
+                        .await
+                        .ok();
+                    return Ok(None);
+                }
+                Some(_) => return Ok(state),
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Get a reference to the state manager (for marker operations from execute_hooks)
+    pub fn state_manager(&self) -> &StateManager {
+        &self.state_manager
     }
 
     /// Wait for hook execution to complete, with optional timeout in seconds
