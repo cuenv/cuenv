@@ -1,0 +1,545 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "CUE Embedded Languages",
+  "scopeName": "cuenv.embedded.injection",
+  "injectionSelector": "L:source.cue",
+  "patterns": [
+    { "include": "#typescript-schema" },
+    { "include": "#typescript-hint" },
+    { "include": "#javascript-schema" },
+    { "include": "#javascript-hint" },
+    { "include": "#json-schema" },
+    { "include": "#json-hint" },
+    { "include": "#jsonc-schema" },
+    { "include": "#jsonc-hint" },
+    { "include": "#yaml-schema" },
+    { "include": "#yaml-hint" },
+    { "include": "#shell-schema" },
+    { "include": "#shell-hint" },
+    { "include": "#dockerfile-schema" },
+    { "include": "#dockerfile-hint" },
+    { "include": "#python-schema" },
+    { "include": "#python-hint" },
+    { "include": "#go-schema" },
+    { "include": "#go-hint" },
+    { "include": "#rust-schema" },
+    { "include": "#rust-hint" },
+    { "include": "#markdown-schema" },
+    { "include": "#markdown-hint" },
+    { "include": "#nix-schema" },
+    { "include": "#nix-hint" },
+    { "include": "#sql-hint" }
+  ],
+  "repository": {
+    "cue-interpolation": {
+      "name": "meta.interpolation.cue",
+      "begin": "\\\\\\(",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.interpolation.begin.cue keyword.operator.interpolation.cue" }
+      },
+      "end": "\\)",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.interpolation.end.cue keyword.operator.interpolation.cue" }
+      },
+      "contentName": "meta.embedded.expression.cue",
+      "patterns": [
+        { "include": "#nested-parens" },
+        { "match": "[a-zA-Z_][a-zA-Z0-9_]*", "name": "variable.other.cue" },
+        { "match": "\\.", "name": "punctuation.accessor.cue" },
+        { "match": "\\?", "name": "keyword.operator.ternary.cue" },
+        { "match": ":", "name": "keyword.operator.ternary.cue" }
+      ]
+    },
+    "nested-parens": {
+      "begin": "\\(",
+      "end": "\\)",
+      "patterns": [
+        { "include": "#nested-parens" },
+        { "match": "[a-zA-Z_][a-zA-Z0-9_]*", "name": "variable.other.cue" }
+      ]
+    },
+
+    "typescript-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.typescript",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.ts" }
+      ]
+    },
+
+    "typescript-schema": {
+      "begin": "(#TypeScript)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#typescript-content" }]
+    },
+
+    "typescript-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"(?:typescript|ts)\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#typescript-content" }]
+    },
+
+    "javascript-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.javascript",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.js" }
+      ]
+    },
+
+    "javascript-schema": {
+      "begin": "(#JavaScript)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#javascript-content" }]
+    },
+
+    "javascript-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"(?:javascript|js)\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#javascript-content" }]
+    },
+
+    "json-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.json",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.json" }
+      ]
+    },
+
+    "json-schema": {
+      "begin": "(#JSON)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#json-content" }]
+    },
+
+    "json-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"json\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#json-content" }]
+    },
+
+    "jsonc-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.jsonc",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.json.comments" }
+      ]
+    },
+
+    "jsonc-schema": {
+      "begin": "(#JSONC)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#jsonc-content" }]
+    },
+
+    "jsonc-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"jsonc\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#jsonc-content" }]
+    },
+
+    "yaml-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.yaml",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.yaml" }
+      ]
+    },
+
+    "yaml-schema": {
+      "begin": "(#YAML)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#yaml-content" }]
+    },
+
+    "yaml-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"(?:yaml|yml)\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#yaml-content" }]
+    },
+
+    "shell-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.shellscript",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.shell" }
+      ]
+    },
+
+    "shell-schema": {
+      "begin": "(#Shell)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#shell-content" }]
+    },
+
+    "shell-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"(?:shell|sh|bash|shellscript)\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#shell-content" }]
+    },
+
+    "dockerfile-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.dockerfile",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.dockerfile" }
+      ]
+    },
+
+    "dockerfile-schema": {
+      "begin": "(#Dockerfile)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#dockerfile-content" }]
+    },
+
+    "dockerfile-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"dockerfile\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#dockerfile-content" }]
+    },
+
+    "python-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.python",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.python" }
+      ]
+    },
+
+    "python-schema": {
+      "begin": "(#Python)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#python-content" }]
+    },
+
+    "python-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"(?:python|py)\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#python-content" }]
+    },
+
+    "go-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.go",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.go" }
+      ]
+    },
+
+    "go-schema": {
+      "begin": "(#Go)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#go-content" }]
+    },
+
+    "go-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"(?:go|golang)\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#go-content" }]
+    },
+
+    "rust-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.rust",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.rust" }
+      ]
+    },
+
+    "rust-schema": {
+      "begin": "(#Rust)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#rust-content" }]
+    },
+
+    "rust-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"(?:rust|rs)\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#rust-content" }]
+    },
+
+    "markdown-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.markdown",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "text.html.markdown" }
+      ]
+    },
+
+    "markdown-schema": {
+      "begin": "(#Markdown)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#markdown-content" }]
+    },
+
+    "markdown-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"(?:markdown|md)\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#markdown-content" }]
+    },
+
+    "nix-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.nix",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.nix" }
+      ]
+    },
+
+    "nix-schema": {
+      "begin": "(#Nix)\\s*(&?)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "entity.name.type.cue" },
+        "2": { "name": "keyword.operator.cue" },
+        "3": { "name": "punctuation.definition.block.cue" }
+      },
+      "end": "(?=\\})",
+      "patterns": [{ "include": "#nix-content" }]
+    },
+
+    "nix-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"nix\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#nix-content" }]
+    },
+
+    "sql-content": {
+      "begin": "(content)\\s*(:)\\s*(\"\"\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "punctuation.definition.string.begin.cue" }
+      },
+      "end": "\"\"\"",
+      "endCaptures": { "0": { "name": "punctuation.definition.string.end.cue" } },
+      "contentName": "meta.embedded.block.sql",
+      "patterns": [
+        { "include": "#cue-interpolation" },
+        { "include": "source.sql" }
+      ]
+    },
+
+    "sql-hint": {
+      "begin": "(_language|language)\\s*(:)\\s*(\"sql\")",
+      "beginCaptures": {
+        "1": { "name": "variable.other.property.cue" },
+        "2": { "name": "punctuation.separator.key-value.cue" },
+        "3": { "name": "string.quoted.double.cue" }
+      },
+      "end": "^\\s*\\}",
+      "patterns": [{ "include": "#sql-content" }]
+    }
+  }
+}

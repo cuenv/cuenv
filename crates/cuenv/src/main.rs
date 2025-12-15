@@ -1623,6 +1623,48 @@ async fn execute_sync_command_safe(
 ) -> Result<(), CliError> {
     use crate::cli::SyncCommands;
 
+    // Handle Cubes subcommand separately as it has different parameters
+    if let Some(SyncCommands::Cubes {
+        path: cube_path,
+        package: cube_package,
+        dry_run: cube_dry_run,
+        check: cube_check,
+        diff,
+    }) = &subcommand
+    {
+        let result = commands::sync::execute_sync_cubes(
+            cube_path,
+            cube_package,
+            *cube_dry_run,
+            *cube_check,
+            *diff,
+        )
+        .await;
+
+        return match result {
+            Ok(output) => {
+                if json_mode {
+                    let envelope = OkEnvelope::new(serde_json::json!({
+                        "message": output
+                    }));
+                    match serde_json::to_string(&envelope) {
+                        Ok(json) => println!("{json}"),
+                        Err(e) => {
+                            return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                        }
+                    }
+                } else {
+                    println!("{output}");
+                }
+                Ok(())
+            }
+            Err(e) => Err(CliError::eval_with_help(
+                format!("Cubes sync failed: {e}"),
+                "Check that your cube.cue file is valid CUE",
+            )),
+        };
+    }
+
     // Determine which sync operations to run
     let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
     let run_codeowners = matches!(subcommand, None | Some(SyncCommands::Codeowners { .. }));

@@ -3,13 +3,14 @@
 //! Supports generating:
 //! - Ignore files (.gitignore, .dockerignore, etc.) from the `ignore` field
 //! - CODEOWNERS file from the `owners` field
+//! - Project files from CUE cube templates
 
 use super::owners;
 use cuengine::CueEvaluator;
 use cuenv_core::Result;
 use cuenv_core::manifest::Cuenv;
 use cuenv_ignore::{FileStatus, IgnoreFile, IgnoreFiles};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::instrument;
 
 /// The header added to all cuenv-generated ignore files.
@@ -215,6 +216,243 @@ async fn execute_sync_codeowners_inner(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Execute the sync cubes command.
+///
+/// Syncs cube-generated files for projects in the CUE module.
+/// When `local_only` is true (path is "."), only syncs the current project.
+/// Otherwise, discovers and syncs all projects with cube configurations.
+#[instrument(name = "sync_cubes")]
+pub async fn execute_sync_cubes(
+    path: &str,
+    package: &str,
+    dry_run: bool,
+    check: bool,
+    diff: bool,
+) -> Result<String> {
+    let _ = diff; // TODO: implement diff mode
+    tracing::info!("Starting sync cubes command");
+
+    let dir_path = Path::new(path);
+
+    // Check if we're running locally (path is ".")
+    let local_only = path == ".";
+
+    if local_only {
+        // Local mode: sync only the current project
+        return execute_sync_cubes_local(dir_path, package, dry_run, check);
+    }
+
+    // Module mode: discover all projects and sync their cubes
+    execute_sync_cubes_all(dir_path, package, dry_run, check)
+}
+
+/// Sync cubes for the local project only
+fn execute_sync_cubes_local(
+    dir_path: &Path,
+    package: &str,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    // Auto-detect package name from env.cue if using default
+    let effective_package = if package == "cuenv" {
+        detect_package_name(dir_path)?
+    } else {
+        package.to_string()
+    };
+
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+
+    let manifest: Cuenv = evaluator
+        .evaluate_typed(dir_path, &effective_package)
+        .map_err(super::convert_engine_error)?;
+
+    let Some(cube_config) = &manifest.cube else {
+        return Ok("No cube configuration found in this project.".to_string());
+    };
+
+    sync_cube_files(dir_path, &manifest.name, cube_config, dry_run, check)
+}
+
+/// Discover all projects and sync their cubes
+fn execute_sync_cubes_all(
+    dir_path: &Path,
+    _package: &str,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    use cuenv_core::tasks::discovery::TaskDiscovery;
+
+    // Find the CUE module root
+    let module_root = find_cue_module_root(dir_path).ok_or_else(|| {
+        cuenv_core::Error::configuration("Not in a CUE module (no cue.mod found)")
+    })?;
+
+    // Create evaluator for discovery
+    let evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+
+    // Evaluation function for discovery
+    let eval_fn: cuenv_core::tasks::discovery::EvalFn = Box::new(move |project_path: &Path| {
+        let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
+        evaluator
+            .evaluate_typed(project_path, &pkg)
+            .map_err(|e| e.to_string())
+    });
+
+    let mut discovery = TaskDiscovery::new(module_root.clone()).with_eval_fn(eval_fn);
+    discovery.discover().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
+    })?;
+
+    let mut output_lines = Vec::new();
+    let mut total_files = 0;
+
+    for project in discovery.projects() {
+        let Some(cube_config) = &project.manifest.cube else {
+            continue; // Skip projects without cube config
+        };
+
+        let project_output = sync_cube_files(
+            &project.project_root,
+            &project.manifest.name,
+            cube_config,
+            dry_run,
+            check,
+        )?;
+
+        if !project_output.is_empty() {
+            output_lines.push(format!("Project: {}", project.manifest.name));
+            output_lines.push(project_output);
+            total_files += cube_config.files.len();
+        }
+    }
+
+    if output_lines.is_empty() {
+        return Ok("No projects with cube configurations found.".to_string());
+    }
+
+    if dry_run {
+        output_lines.insert(0, format!("Would generate {total_files} files:"));
+    } else if check {
+        output_lines.insert(0, format!("Checked {total_files} files:"));
+    }
+
+    Ok(output_lines.join("\n"))
+}
+
+/// Sync cube files for a single project
+fn sync_cube_files(
+    project_root: &Path,
+    project_name: &str,
+    cube_config: &cuenv_core::manifest::CubeConfig,
+    dry_run: bool,
+    check: bool,
+) -> Result<String> {
+    use cuenv_core::manifest::FileMode;
+
+    let mut output_lines = Vec::new();
+
+    for (file_path, file_def) in &cube_config.files {
+        let output_path = project_root.join(file_path);
+
+        match file_def.mode {
+            FileMode::Managed => {
+                if check {
+                    // Check if file exists and matches
+                    if output_path.exists() {
+                        let existing = std::fs::read_to_string(&output_path).unwrap_or_default();
+                        if existing == file_def.content {
+                            output_lines.push(format!("  OK: {file_path}"));
+                        } else {
+                            output_lines.push(format!("  Out of sync: {file_path}"));
+                        }
+                    } else {
+                        output_lines.push(format!("  Missing: {file_path}"));
+                    }
+                } else if dry_run {
+                    if output_path.exists() {
+                        output_lines.push(format!("  Would update: {file_path}"));
+                    } else {
+                        output_lines.push(format!("  Would create: {file_path}"));
+                    }
+                } else {
+                    // Actually write the file
+                    if let Some(parent) = output_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&output_path, &file_def.content)?;
+                    output_lines.push(format!("  Generated: {file_path}"));
+                }
+            }
+            FileMode::Scaffold => {
+                if output_path.exists() {
+                    if !dry_run && !check {
+                        tracing::debug!("Skipping {} (scaffold mode, file exists)", file_path);
+                    }
+                    output_lines.push(format!("  Skipped (exists): {file_path}"));
+                } else if check {
+                    output_lines.push(format!("  Missing scaffold: {file_path}"));
+                } else if dry_run {
+                    output_lines.push(format!("  Would scaffold: {file_path}"));
+                } else {
+                    // Actually write the file
+                    if let Some(parent) = output_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&output_path, &file_def.content)?;
+                    output_lines.push(format!("  Scaffolded: {file_path}"));
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        project = project_name,
+        files = cube_config.files.len(),
+        "Cube sync complete"
+    );
+
+    Ok(output_lines.join("\n"))
+}
+
+/// Find the CUE module root by walking up directories looking for cue.mod
+fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        if current.join("cue.mod").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+/// Detect the CUE package name from env.cue
+fn detect_package_name(project_path: &Path) -> Result<String> {
+    let env_cue = project_path.join("env.cue");
+    if !env_cue.exists() {
+        return Ok("cuenv".to_string());
+    }
+
+    let content = std::fs::read_to_string(&env_cue)?;
+    for line in content.lines().take(10) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("package ") {
+            return Ok(trimmed
+                .strip_prefix("package ")
+                .unwrap_or("cuenv")
+                .trim()
+                .to_string());
+        }
+    }
+
+    Ok("cuenv".to_string())
 }
 
 #[cfg(test)]

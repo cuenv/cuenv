@@ -1,0 +1,38 @@
+[package]
+name = "cuenv-cubes"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "CUE Cubes - code generation and project scaffolding from CUE templates"
+
+[features]
+default = []
+
+[dependencies]
+cuenv-core = { workspace = true }
+cuenv-events = { workspace = true }
+cuengine = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+miette = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+
+# File system operations
+walkdir = "2.5"
+glob = { workspace = true }
+
+# JSON formatting
+serde-json-fmt = "0.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
