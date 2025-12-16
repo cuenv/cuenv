@@ -723,16 +723,17 @@ fn test_sync_codeowners_check_no_file() {
             // Should fail because CODEOWNERS file doesn't exist (it's not committed)
             // Note: If CODEOWNERS exists in the repo, this test will pass instead
             let combined = format!("{stdout}{stderr}");
-            if !success {
-                assert!(
-                    combined.contains("not found") || combined.contains("Run 'cuenv sync codeowners'"),
-                    "Error should mention file not found or suggest running sync"
-                );
-            } else {
+            if success {
                 // If CODEOWNERS exists, the check should report sync status
                 assert!(
                     combined.contains("in sync") || combined.contains("out of sync"),
                     "Should report sync status when file exists"
+                );
+            } else {
+                assert!(
+                    combined.contains("not found")
+                        || combined.contains("Run 'cuenv sync codeowners'"),
+                    "Error should mention file not found or suggest running sync"
                 );
             }
         }

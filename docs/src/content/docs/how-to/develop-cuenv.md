@@ -70,8 +70,7 @@ cuenv/
 │   ├── cuenv-workspaces/   # Workspace management
 │   ├── cuenv-events/       # Event system
 │   ├── cuenv-ci/           # CI pipeline support
-│   ├── cuenv-release/      # Release management
-│   └── schema-validator/   # Schema validation
+│   └── cuenv-release/      # Release management
 ├── schema/                 # CUE schema definitions
 ├── integrations/           # Editor integrations (VSCode)
 ├── examples/               # Example configurations

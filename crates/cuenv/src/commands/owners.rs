@@ -39,8 +39,7 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
         if rule.owners.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
                 "Rule '{}' (pattern '{}') has no owners defined. Each rule must have at least one owner.",
-                key,
-                rule.pattern
+                key, rule.pattern
             )));
         }
     }
@@ -118,8 +117,7 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
         if rule.owners.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
                 "Rule '{}' (pattern '{}') has no owners defined. Each rule must have at least one owner.",
-                key,
-                rule.pattern
+                key, rule.pattern
             )));
         }
     }

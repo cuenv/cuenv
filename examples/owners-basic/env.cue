@@ -13,23 +13,23 @@ env: {
 owners: {
 	output: platform: "github"
 	defaultOwners: ["@core-team"]
-	rules: [
-		{
-			pattern: "*.rs"
-			owners: ["@rust-team"]
-			section: "Backend"
+	rules: {
+		"rust-files": {
+			pattern:     "*.rs"
+			owners:      ["@rust-team"]
+			section:     "Backend"
 			description: "Rust source files"
-		},
-		{
-			pattern: "*.ts"
-			owners: ["@frontend-team"]
-			section: "Frontend"
+		}
+		"ts-files": {
+			pattern:     "*.ts"
+			owners:      ["@frontend-team"]
+			section:     "Frontend"
 			description: "TypeScript files"
-		},
-		{
-			pattern: "/docs/**"
-			owners: ["@docs-team"]
+		}
+		"docs": {
+			pattern:     "/docs/**"
+			owners:      ["@docs-team"]
 			description: "Documentation"
-		},
-	]
+		}
+	}
 }

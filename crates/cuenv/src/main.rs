@@ -1622,6 +1622,7 @@ async fn execute_release_publish_safe(
 
 /// Execute sync command safely
 #[allow(clippy::fn_params_excessive_bools)]
+#[allow(clippy::too_many_lines)]
 #[instrument(name = "cuenv_execute_sync_command_safe")]
 async fn execute_sync_command_safe(
     subcommand: Option<crate::cli::SyncCommands>,

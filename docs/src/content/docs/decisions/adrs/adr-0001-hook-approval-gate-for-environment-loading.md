@@ -21,21 +21,17 @@ This ADR builds upon [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/d
 ## Decision
 
 1. **Mandatory Approval**
-
    - `cuenv env load` MUST verify configuration approval (via `ApprovalManager`) before executing hooks.
    - Approved configurations are keyed by canonical directory path and configuration hash. Unapproved configurations result in instructional guidance instead of execution.
 
 2. **Feedback Messages**
-
    - When approval is missing or outdated, the CLI MUST return descriptive guidance, including truncated hashes and a summary derived from `ConfigSummary`.
    - Messages SHOULD direct users to `cuenv allow --path <dir>`.
 
 3. **Silent Handling of Missing Files**
-
    - If no `env.cue` is present, `env load` MUST respond with a no-op message stating the absence of configuration instead of surfacing an error.
 
 4. **Hashing Strategy**
-
    - Configuration hashes are computed from fully serialised manifests to capture effective changes.
    - Hash mismatches MUST invalidate prior approvals.
 

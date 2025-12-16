@@ -41,22 +41,18 @@ Left undocumented, future changes risk fragmenting the user experience and break
 ## Proposed Approach
 
 1. **Command Taxonomy**
-
    - Retain the current top-level subcommands enumerated in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:239).
    - Document the rationale for each grouping (`env` for environment inspection and hook lifecycle, `task` for orchestration, `exec` for ad-hoc commands, `shell` for integration, `allow` for approvals).
 
 2. **Default Arguments**
-
    - Standardise `--path` defaulting to `.` and `--package` defaulting to `cuenv`.
    - Promote `--format` as a global flag with allowed values (`simple`, `env`, `json`), matching the `OutputFormat` value enum at [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140).
 
 3. **Discoverability Enhancements**
-
    - Ensure `--help` output surfaces subcommands, aliases, and examples consistent with documentation commitments in [readme.md](readme.md:242).
    - Provide canonical command usage snippets to be reused in docs and BDD scenarios.
 
 4. **Stability Guarantees**
-
    - Define stability categories (stable, experimental, hidden) to guide future additions.
    - Define criteria to graduate an experimental command (minimum documentation, feature coverage, and telemetry).
 

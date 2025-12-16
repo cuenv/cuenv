@@ -155,7 +155,9 @@ pub async fn execute_sync_ignore(
 
     if files.is_empty() {
         tracing::info!("No ignore patterns configured");
-        return Ok("No ignore patterns configured. Add an `ignore` field to your env.cue.".to_string());
+        return Ok(
+            "No ignore patterns configured. Add an `ignore` field to your env.cue.".to_string(),
+        );
     }
 
     // Check if all files have empty patterns
@@ -547,7 +549,7 @@ fn detect_package_name(project_path: &Path) -> Result<String> {
 /// from the CUE module root and syncs their ignore files.
 /// Called when --all flag is provided.
 ///
-/// This function uses BaseDiscovery which finds all env.cue files regardless of
+/// This function uses `BaseDiscovery` which finds all env.cue files regardless of
 /// whether they use schema.#Base or schema.#Project, enabling nested directories
 /// with just ignore configuration to be included.
 #[instrument(name = "sync_ignore_workspace", skip(_package))]
@@ -591,8 +593,7 @@ pub async fn execute_sync_ignore_workspace(
 
     for base in discovery.with_ignore() {
         let project_path = base.project_root.to_string_lossy();
-        let pkg =
-            detect_package_name(&base.project_root).unwrap_or_else(|_| "cuenv".to_string());
+        let pkg = detect_package_name(&base.project_root).unwrap_or_else(|_| "cuenv".to_string());
 
         match execute_sync_ignore(&project_path, &pkg, dry_run, check).await {
             Ok(output) => {
@@ -635,7 +636,7 @@ pub async fn execute_sync_ignore_workspace(
 /// from the CUE module root and aggregates their ownership rules into a single
 /// CODEOWNERS file at the repository root.
 ///
-/// This function uses BaseDiscovery which finds all env.cue files regardless of
+/// This function uses `BaseDiscovery` which finds all env.cue files regardless of
 /// whether they use schema.#Base or schema.#Project, enabling nested directories
 /// with just owners configuration to be included.
 #[allow(clippy::too_many_lines)]
@@ -682,7 +683,11 @@ pub async fn execute_sync_codeowners_workspace(
     let mut project_owners_list = Vec::new();
 
     for base in discovery.with_owners() {
-        let owners = base.manifest.owners.as_ref().expect("filtered by with_owners");
+        let owners = base
+            .manifest
+            .owners
+            .as_ref()
+            .expect("filtered by with_owners");
 
         // Calculate relative path from module root to project
         let relative_path = base
@@ -714,8 +719,7 @@ pub async fn execute_sync_codeowners_workspace(
             .collect();
 
         // Use synthetic name from directory path
-        let mut proj_owners =
-            ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
+        let mut proj_owners = ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
 
         if let Some(default_owners) = &owners.default_owners {
             proj_owners = proj_owners.with_default_owners(default_owners.to_owned());
@@ -798,8 +802,8 @@ pub async fn execute_sync_codeowners_workspace(
 /// Called when --all flag is provided without a specific subcommand.
 ///
 /// This function uses:
-/// - BaseDiscovery for ignore and codeowners (finds all env.cue files, both #Base and #Project)
-/// - TaskDiscovery for cubes (finds only #Project configs, since cube is Project-only)
+/// - `BaseDiscovery` for ignore and codeowners (finds all env.cue files, both #Base and #Project)
+/// - `TaskDiscovery` for cubes (finds only #Project configs, since cube is Project-only)
 #[instrument(name = "sync_all_workspace", skip(package))]
 pub async fn execute_sync_all_workspace(
     package: &str,
@@ -933,8 +937,7 @@ async fn sync_ignore_with_bases(
         }
 
         let project_path = base.project_root.to_string_lossy();
-        let pkg =
-            detect_package_name(&base.project_root).unwrap_or_else(|_| "cuenv".to_string());
+        let pkg = detect_package_name(&base.project_root).unwrap_or_else(|_| "cuenv".to_string());
 
         match execute_sync_ignore(&project_path, &pkg, dry_run, check).await {
             Ok(output) => {
@@ -1021,8 +1024,7 @@ async fn sync_codeowners_with_bases(
             .collect();
 
         // Use synthetic name from directory path
-        let mut proj_owners =
-            ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
+        let mut proj_owners = ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
 
         if let Some(default_owners) = &owners.default_owners {
             proj_owners = proj_owners.with_default_owners(default_owners.to_owned());

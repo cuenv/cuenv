@@ -421,13 +421,13 @@ cuenv tui                                  # Interactive TUI dashboard
 
 ### Global Options
 
-| Option              | Description                                   |
-| ------------------- | --------------------------------------------- |
-| `--env, -e`         | Environment to use (dev, staging, production) |
-| `-p, --path`        | Directory with CUE files (default: ".")       |
-| `--package`         | CUE package name (default: "cuenv")           |
-| `--output-format`   | Output format (json, env, simple)             |
-| `-L, --level`       | Log level (trace, debug, info, warn, error)   |
+| Option            | Description                                   |
+| ----------------- | --------------------------------------------- |
+| `--env, -e`       | Environment to use (dev, staging, production) |
+| `-p, --path`      | Directory with CUE files (default: ".")       |
+| `--package`       | CUE package name (default: "cuenv")           |
+| `--output-format` | Output format (json, env, simple)             |
+| `-L, --level`     | Log level (trace, debug, info, warn, error)   |
 
 ---
 

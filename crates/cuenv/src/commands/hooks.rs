@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn test_extract_hooks_from_config() {
         use cuenv_core::hooks::types::Hook;
-        use cuenv_core::manifest::{Project, Hooks};
+        use cuenv_core::manifest::{Hooks, Project};
         use std::collections::HashMap;
 
         let mut on_enter = HashMap::new();
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn test_extract_hooks_single_hook() {
         use cuenv_core::hooks::types::Hook;
-        use cuenv_core::manifest::{Project, Hooks};
+        use cuenv_core::manifest::{Hooks, Project};
         use std::collections::HashMap;
 
         let mut on_enter = HashMap::new();

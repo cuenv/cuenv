@@ -2,11 +2,10 @@
 //!
 //! Based on schema/config.cue
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Main configuration structure for cuenv
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     /// Task output format
@@ -41,7 +40,7 @@ pub struct Config {
 }
 
 /// Task output format options
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
     Tui,
@@ -52,7 +51,7 @@ pub enum OutputFormat {
 }
 
 /// Cache mode options
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CacheMode {
     Off,
@@ -66,7 +65,7 @@ fn default_backend_type() -> String {
 }
 
 /// Backend configuration
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct BackendConfig {
     /// Which backend to use for tasks
     #[serde(default = "default_backend_type", rename = "type")]
@@ -78,7 +77,7 @@ pub struct BackendConfig {
 }
 
 /// Backend-specific options supported by cuenv
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct BackendOptions {
     /// Default container image for the Dagger backend
     #[serde(skip_serializing_if = "Option::is_none")]

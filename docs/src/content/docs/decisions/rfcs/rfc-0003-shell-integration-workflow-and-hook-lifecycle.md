@@ -40,23 +40,19 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 ## Proposed Approach
 
 1. **Approval First**
-
    - Require `cuenv allow` to run before `env load` can initiate hooks, verifying configuration fingerprints using [ApprovalManager](crates/cuenv-cli/src/commands/hooks.rs:191).
    - Document responses for `Approved`, `RequiresApproval`, and `NotApproved` states.
 
 2. **Background Execution Contract**
-
    - Hooks execute asynchronously, with progress tracked via persistent state so `env status --wait` can poll reliably.
    - The current integration uses prompt- or directory-change hooks (PROMPT_COMMAND / precmd / on-variable PWD) that invoke an `export` flow on each prompt. Those handlers are designed to be safe and idempotent: when no work is required the export flow returns a fast no-op.
    - The runtime handles cancellation and state updates via `HookExecutor::cancel_execution` which marks the state as cancelled and attempts to signal supervisor processes. Shell-side handlers remain installed by default and will continue to run the export flow on subsequent prompts. If automatic handler deregistration (self-unload) is desired for UX reasons, a follow-up ADR should define the contract and cross-shell implementation plan.
 
 3. **Environment Loading**
-
    - Environment variables appear in the user's shell only after successful hook completion, as seen in `execute_env_check`.
    - Secrets remain redacted when streamed back to the shell (ties into RFC-0005/ADR-0004).
 
 4. **Shell Script Requirements**
-
    - Provide canonical scripts for Bash, Zsh, Fish (see generator functions around `generate_bash_integration`).
    - Ensure scripts set `CUENV_SHELL_INTEGRATION` and re-run `cuenv export` on prompt events.
 
