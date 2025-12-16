@@ -442,7 +442,7 @@ cuenv tui                                  # Interactive TUI dashboard
 | Parallel Execution     | ✅                 | ⚠️ -j flag | ✅             | ⚠️ Limited | ❌               |
 | Caching                | ✅ Content-aware   | ❌         | ✅ Advanced    | ❌         | ❌               |
 | CI Integration         | ✅ Native          | ❌         | ⚠️ Rules       | ❌         | ❌               |
-| Security Isolation     | 📋 Planned         | ❌         | ✅ Sandboxing  | ❌         | ❌               |
+| Security Isolation     | ✅ Via Dagger      | ❌         | ✅ Sandboxing  | ❌         | ❌               |
 | Shell Integration      | ✅                 | ❌         | ❌             | ❌         | ✅               |
 
 ---
@@ -458,7 +458,7 @@ cuenv tui                                  # Interactive TUI dashboard
 | CI Integration        | 🚧 Development |
 | Release Management    | 🚧 Development |
 | Code Generation       | 🚧 Development |
-| Security Isolation    | 📋 Planned     |
+| Security Isolation    | ✅ Complete    |
 
 ---
 
