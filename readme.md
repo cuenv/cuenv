@@ -6,7 +6,7 @@
 [![Build Status](https://github.com/cuenv/cuenv/workflows/ci/badge.svg)](https://github.com/cuenv/cuenv/actions)
 [![Crates.io](https://img.shields.io/crates/v/cuenv)](https://crates.io/crates/cuenv)
 
-> **Status**: Alpha - Core evaluation engine complete, CLI and task runner in active development
+> **Status**: Beta - Core features complete, new capabilities (CI, release management, codegen) in active development
 
 ---
 
@@ -136,6 +136,9 @@ cuenv task dev
 
 # List available tasks
 cuenv task
+
+# Generate CI workflow (optional)
+cuenv ci --generate github
 ```
 
 ---
@@ -272,34 +275,159 @@ cd ~/projects/myapp
 
 ---
 
-## CLI Reference
+### CI Integration
+
+Generate CI workflows from your CUE configuration. cuenv detects affected projects and runs only what's needed:
 
 ```bash
-# Execute commands with your validated environment + resolved secrets
-cuenv exec -- npm start
+# Generate GitHub Actions workflow
+cuenv ci --generate github
+
+# Run CI locally
+cuenv ci
+
+# Preview what would run
+cuenv ci --dry-run
+```
+
+cuenv automatically detects your CI provider (GitHub Actions, GitLab CI, etc.) and optimizes pipelines based on which files changed.
+
+---
+
+### Release Management
+
+Manage releases with changesets and automated publishing:
+
+```bash
+# Add a changeset describing your changes
+cuenv changeset add -s "Added dark mode" -P my-package:minor
+
+# Or generate from conventional commits
+cuenv changeset from-commits
+
+# Preview version bumps
+cuenv release version --dry-run
+
+# Publish packages in dependency order
+cuenv release publish
+```
+
+Changesets integrate with conventional commits and automatically calculate semantic version bumps.
+
+---
+
+### Code Generation (Cubes)
+
+Generate and sync files from CUE templates—configuration files, boilerplate, and more:
+
+```bash
+# Sync all generated files
+cuenv sync cubes
+
+# Check if files are in sync (useful in CI)
+cuenv sync cubes --check
+
+# Preview changes
+cuenv sync cubes --diff --dry-run
+```
+
+Define cubes in your CUE configuration to generate TypeScript configs, Dockerfiles, or any templated content.
+
+---
+
+### Multi-Platform VCS Support
+
+cuenv supports GitHub, GitLab, and Bitbucket for CODEOWNERS and CI integration:
+
+```bash
+# Sync CODEOWNERS for your platform
+cuenv sync codeowners
+
+# Works with GitHub, GitLab, or Bitbucket
+# Platform is auto-detected from your repository
+```
+
+---
+
+## CLI Reference
+
+### Core Commands
+
+```bash
+# Execute commands with validated environment + resolved secrets
+cuenv exec -- npm start                    # or: cuenv x -- npm start
 cuenv exec -e production -- ./deploy.sh
 
 # Run named tasks with dependencies, parallelism, caching
-cuenv task build
+cuenv task build                           # or: cuenv t build
 cuenv task -e staging test
+cuenv task --tui build                     # Rich TUI output
+cuenv task -l ci                           # Run all tasks with label "ci"
+```
 
+### Environment Management
+
+```bash
 # View environment (secrets are redacted)
 cuenv env print
-cuenv env print --format json
+cuenv env print --output-format json
+cuenv env list                             # List available environments
 
 # Shell integration
 cuenv shell init zsh >> ~/.zshrc
-
-# Security approval for configurations
-cuenv allow
-cuenv deny
+cuenv env load                             # Load environment in background
+cuenv env status                           # Check hook execution status
 ```
 
-| Option            | Description                                   |
-| ----------------- | --------------------------------------------- |
-| `--env, -e`       | Environment to use (dev, staging, production) |
-| `--cache`         | Cache mode (off, read, read-write, write)     |
-| `--output-format` | Output format (tui, spinner, simple, tree)    |
+### Code Generation & Sync
+
+```bash
+# Sync generated files from CUE configuration
+cuenv sync                                 # Sync all
+cuenv sync ignore                          # Generate .gitignore/.dockerignore
+cuenv sync codeowners                      # Sync CODEOWNERS file
+cuenv sync cubes                           # Sync code from CUE cubes
+cuenv sync --check                         # Check if files are in sync
+```
+
+### CI & Release Management
+
+```bash
+# CI integration
+cuenv ci                                   # Run CI pipeline
+cuenv ci --generate github                 # Generate GitHub Actions workflow
+cuenv ci --dry-run                         # Preview what would run
+
+# Release management
+cuenv changeset add                        # Add a changeset entry
+cuenv changeset status                     # Show pending changesets
+cuenv changeset from-commits               # Generate from conventional commits
+cuenv release version                      # Calculate and apply version bumps
+cuenv release publish                      # Publish to crates.io
+```
+
+### Security & Utilities
+
+```bash
+# Security approval for configurations
+cuenv allow                                # Approve configuration for hooks
+cuenv deny                                 # Revoke approval
+
+# Utilities
+cuenv version                              # Show version info
+cuenv completions zsh                      # Generate shell completions
+cuenv tui                                  # Interactive TUI dashboard
+```
+
+### Global Options
+
+| Option              | Description                                   |
+| ------------------- | --------------------------------------------- |
+| `--env, -e`         | Environment to use (dev, staging, production) |
+| `-p, --path`        | Directory with CUE files (default: ".")       |
+| `--package`         | CUE package name (default: "cuenv")           |
+| `--output-format`   | Output format (json, env, simple)             |
+| `-L, --level`       | Log level (trace, debug, info, warn, error)   |
 
 ---
 
@@ -313,8 +441,9 @@ cuenv deny
 | Task Dependencies      | ✅ Smart           | ✅         | ✅ Advanced    | ✅ Basic   | ❌               |
 | Parallel Execution     | ✅                 | ⚠️ -j flag | ✅             | ⚠️ Limited | ❌               |
 | Caching                | ✅ Content-aware   | ❌         | ✅ Advanced    | ❌         | ❌               |
+| CI Integration         | ✅ Native          | ❌         | ⚠️ Rules       | ❌         | ❌               |
 | Security Isolation     | 📋 Planned         | ❌         | ✅ Sandboxing  | ❌         | ❌               |
-| Shell Integration      | 🚧                 | ❌         | ❌             | ❌         | ✅               |
+| Shell Integration      | ✅                 | ❌         | ❌             | ❌         | ✅               |
 
 ---
 
@@ -323,9 +452,12 @@ cuenv deny
 | Component             | Status         |
 | --------------------- | -------------- |
 | CUE Evaluation Engine | ✅ Complete    |
-| CLI + Task Runner     | 🚧 Development |
-| Secret Management     | 🚧 Development |
-| Shell Integration     | 🚧 Development |
+| CLI + Task Runner     | ✅ Complete    |
+| Secret Management     | ✅ Complete    |
+| Shell Integration     | ✅ Complete    |
+| CI Integration        | 🚧 Development |
+| Release Management    | 🚧 Development |
+| Code Generation       | 🚧 Development |
 | Security Isolation    | 📋 Planned     |
 
 ---
@@ -357,14 +489,23 @@ cuenv task build
 ```
 cuenv/
 ├── crates/
-│   ├── cuengine/           # Core CUE evaluation engine
-│   │   ├── src/
-│   │   ├── bridge.go       # Go FFI bridge
-│   │   └── tests/
-│   ├── core/               # Shared types and domain logic
-│   └── cuenv/              # CLI
-├── examples/               # CUE configuration examples
-└── docs/                   # Documentation
+│   ├── cuengine/       # CUE evaluation engine (Go FFI bridge)
+│   ├── core/           # Shared types, task execution, caching
+│   ├── cuenv/          # CLI and TUI
+│   ├── events/         # Event system for UI frontends
+│   ├── workspaces/     # Monorepo and package manager detection
+│   ├── ci/             # CI pipeline integration
+│   ├── release/        # Version management and publishing
+│   ├── cubes/          # CUE-based code generation
+│   ├── ignore/         # Ignore file generation
+│   ├── codeowners/     # CODEOWNERS generation
+│   ├── github/         # GitHub provider
+│   ├── gitlab/         # GitLab provider
+│   ├── bitbucket/      # Bitbucket provider
+│   └── dagger/         # Dagger task execution backend
+├── schema/             # CUE schema definitions
+├── examples/           # CUE configuration examples
+└── docs/               # Documentation
 ```
 
 ### Testing
