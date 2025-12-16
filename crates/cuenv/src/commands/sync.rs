@@ -541,17 +541,22 @@ fn detect_package_name(project_path: &Path) -> Result<String> {
     Ok("cuenv".to_string())
 }
 
-/// Sync ignore files for all projects in the workspace.
+/// Sync ignore files for all Base configurations in the workspace.
 ///
-/// Discovers all projects from the CUE module root and syncs their ignore files.
+/// Discovers all env.cue files with ignore configuration (both #Base and #Project)
+/// from the CUE module root and syncs their ignore files.
 /// Called when --all flag is provided.
+///
+/// This function uses BaseDiscovery which finds all env.cue files regardless of
+/// whether they use schema.#Base or schema.#Project, enabling nested directories
+/// with just ignore configuration to be included.
 #[instrument(name = "sync_ignore_workspace", skip(_package))]
 pub async fn execute_sync_ignore_workspace(
     _package: &str,
     dry_run: bool,
     check: bool,
 ) -> Result<String> {
-    use cuenv_core::tasks::discovery::TaskDiscovery;
+    use cuenv_core::base::discovery::BaseDiscovery;
 
     // Find the CUE module root from current directory
     let cwd = std::env::current_dir().map_err(|e| {
@@ -568,57 +573,52 @@ pub async fn execute_sync_ignore_workspace(
         .build()
         .map_err(super::convert_engine_error)?;
 
-    // Evaluation function for discovery
-    let eval_fn: cuenv_core::tasks::discovery::EvalFn = Box::new(move |project_path: &Path| {
+    // Evaluation function for Base discovery
+    let eval_fn: cuenv_core::base::discovery::BaseEvalFn = Box::new(move |project_path: &Path| {
         let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
         evaluator
             .evaluate_typed(project_path, &pkg)
             .map_err(|e| e.to_string())
     });
 
-    let mut discovery = TaskDiscovery::new(module_root).with_eval_fn(eval_fn);
+    let mut discovery = BaseDiscovery::new(module_root).with_eval_fn(eval_fn);
     discovery.discover().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
+        cuenv_core::Error::configuration(format!("Failed to discover configs: {e}"))
     })?;
 
     let mut output_lines = Vec::new();
     let mut errors = Vec::new();
 
-    for project in discovery.projects() {
-        // Skip projects without ignore config
-        if project.manifest.ignore.is_none() {
-            continue;
-        }
-
-        let project_path = project.project_root.to_string_lossy();
+    for base in discovery.with_ignore() {
+        let project_path = base.project_root.to_string_lossy();
         let pkg =
-            detect_package_name(&project.project_root).unwrap_or_else(|_| "cuenv".to_string());
+            detect_package_name(&base.project_root).unwrap_or_else(|_| "cuenv".to_string());
 
         match execute_sync_ignore(&project_path, &pkg, dry_run, check).await {
             Ok(output) => {
                 if !output.contains("No ignore patterns")
                     && !output.contains("all pattern lists are empty")
                 {
-                    output_lines.push(format!("Project: {}", project.manifest.name));
+                    output_lines.push(format!("Config: {}", base.synthetic_name));
                     output_lines.push(output);
                     output_lines.push(String::new());
                 }
             }
             Err(e) => {
-                errors.push(format!("{}: {}", project.manifest.name, e));
+                errors.push(format!("{}: {}", base.synthetic_name, e));
             }
         }
     }
 
     if !errors.is_empty() && output_lines.is_empty() {
         return Err(cuenv_core::Error::configuration(format!(
-            "All projects failed:\n{}",
+            "All configs failed:\n{}",
             errors.join("\n")
         )));
     }
 
     if output_lines.is_empty() {
-        return Ok("No projects with ignore configuration found.".to_string());
+        return Ok("No configs with ignore configuration found.".to_string());
     }
 
     if !errors.is_empty() {
@@ -629,11 +629,15 @@ pub async fn execute_sync_ignore_workspace(
     Ok(output_lines.join("\n"))
 }
 
-/// Sync codeowners for all projects in the workspace.
+/// Sync codeowners for all Base configurations in the workspace.
 ///
-/// Discovers all projects from the CUE module root and aggregates their ownership rules
-/// into a single CODEOWNERS file at the repository root.
-/// Called when --all flag is provided.
+/// Discovers all env.cue files with owners configuration (both #Base and #Project)
+/// from the CUE module root and aggregates their ownership rules into a single
+/// CODEOWNERS file at the repository root.
+///
+/// This function uses BaseDiscovery which finds all env.cue files regardless of
+/// whether they use schema.#Base or schema.#Project, enabling nested directories
+/// with just owners configuration to be included.
 #[allow(clippy::too_many_lines)]
 #[instrument(name = "sync_codeowners_workspace", skip(_package))]
 pub async fn execute_sync_codeowners_workspace(
@@ -644,7 +648,7 @@ pub async fn execute_sync_codeowners_workspace(
     use crate::providers::detect_codeowners_provider;
     use cuenv_codeowners::Rule;
     use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
-    use cuenv_core::tasks::discovery::TaskDiscovery;
+    use cuenv_core::base::discovery::BaseDiscovery;
 
     // Find the CUE module root from current directory
     let cwd = std::env::current_dir().map_err(|e| {
@@ -652,7 +656,7 @@ pub async fn execute_sync_codeowners_workspace(
     })?;
     let module_root = find_cue_module_root(&cwd).ok_or_else(|| {
         cuenv_core::Error::configuration(
-            "Not in a CUE module (no cue.mod found). Cannot use --all flag.",
+            "Not in a CUE module (no cue.mod found). Run from within a CUE module.",
         )
     })?;
 
@@ -661,62 +665,67 @@ pub async fn execute_sync_codeowners_workspace(
         .build()
         .map_err(super::convert_engine_error)?;
 
-    // Evaluation function for discovery
-    let eval_fn: cuenv_core::tasks::discovery::EvalFn = Box::new(move |project_path: &Path| {
+    // Evaluation function for Base discovery
+    let eval_fn: cuenv_core::base::discovery::BaseEvalFn = Box::new(move |project_path: &Path| {
         let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
         evaluator
             .evaluate_typed(project_path, &pkg)
             .map_err(|e| e.to_string())
     });
 
-    let mut discovery = TaskDiscovery::new(module_root.clone()).with_eval_fn(eval_fn);
+    let mut discovery = BaseDiscovery::new(module_root.clone()).with_eval_fn(eval_fn);
     discovery.discover().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
+        cuenv_core::Error::configuration(format!("Failed to discover configs: {e}"))
     })?;
 
-    // Collect all projects with owners configuration
+    // Collect all configs with owners configuration
     let mut project_owners_list = Vec::new();
 
-    for project in discovery.projects() {
-        let Some(owners) = &project.manifest.owners else {
-            continue;
-        };
+    for base in discovery.with_owners() {
+        let owners = base.manifest.owners.as_ref().expect("filtered by with_owners");
 
         // Calculate relative path from module root to project
-        let relative_path = project
+        let relative_path = base
             .project_root
             .strip_prefix(&module_root)
-            .unwrap_or(&project.project_root)
+            .unwrap_or(&base.project_root)
             .to_path_buf();
 
-        // Convert manifest rules to codeowners rules
-        let rules: Vec<Rule> = owners
-            .rules
+        // Convert manifest rules to codeowners rules (sorted by order then key)
+        let mut rule_entries: Vec<_> = owners.rules.iter().collect();
+        rule_entries.sort_by(|a, b| {
+            let order_a = a.1.order.unwrap_or(i32::MAX);
+            let order_b = b.1.order.unwrap_or(i32::MAX);
+            order_a.cmp(&order_b).then_with(|| a.0.cmp(b.0))
+        });
+
+        let rules: Vec<Rule> = rule_entries
             .iter()
-            .map(|r| {
+            .map(|(_key, r)| {
                 let mut rule = Rule::new(&r.pattern, r.owners.clone());
-                if let Some(ref desc) = r.description {
-                    rule = rule.description(desc.clone());
+                if let Some(desc) = &r.description {
+                    rule = rule.description(desc.to_owned());
                 }
-                if let Some(ref section) = r.section {
-                    rule = rule.section(section.clone());
+                if let Some(section) = &r.section {
+                    rule = rule.section(section.to_owned());
                 }
                 rule
             })
             .collect();
 
+        // Use synthetic name from directory path
         let mut proj_owners =
-            ProjectOwners::new(relative_path, project.manifest.name.clone(), rules);
+            ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
 
-        if let Some(ref default_owners) = owners.default_owners {
-            proj_owners = proj_owners.with_default_owners(default_owners.clone());
+        if let Some(default_owners) = &owners.default_owners {
+            proj_owners = proj_owners.with_default_owners(default_owners.to_owned());
         }
 
         project_owners_list.push(proj_owners);
     }
 
     if project_owners_list.is_empty() {
-        return Ok("No projects with owners configuration found.".to_string());
+        return Ok("No configs with owners configuration found.".to_string());
     }
 
     // Detect provider based on repo structure
@@ -735,12 +744,12 @@ pub async fn execute_sync_codeowners_workspace(
             ))
         } else if result.actual.is_none() {
             Err(cuenv_core::Error::configuration(format!(
-                "CODEOWNERS file not found at {}. Run 'cuenv sync codeowners -A' to generate it.",
+                "CODEOWNERS file not found at {}. Run 'cuenv sync codeowners' to generate it.",
                 result.path.display()
             )))
         } else {
             Err(cuenv_core::Error::configuration(format!(
-                "CODEOWNERS file is out of sync at {}. Run 'cuenv sync codeowners -A' to update it.",
+                "CODEOWNERS file is out of sync at {}. Run 'cuenv sync codeowners' to update it.",
                 result.path.display()
             )))
         }
@@ -762,10 +771,10 @@ pub async fn execute_sync_codeowners_workspace(
 
         let mut output = format!("{} CODEOWNERS: {}\n", status_msg, result.path.display());
 
-        // List projects included
+        // List configs included
         let _ = writeln!(
             output,
-            "Aggregated {} project(s): {}",
+            "Aggregated {} config(s): {}",
             project_owners_list.len(),
             project_owners_list
                 .iter()
@@ -783,13 +792,14 @@ pub async fn execute_sync_codeowners_workspace(
     }
 }
 
-/// Sync all (ignore + owners + cubes) for all projects in the workspace.
+/// Sync all (ignore + owners + cubes) for all configurations in the workspace.
 ///
-/// Discovers all projects from the CUE module root and syncs all file types.
+/// Discovers configurations from the CUE module root and syncs all file types.
 /// Called when --all flag is provided without a specific subcommand.
 ///
-/// This function performs a SINGLE discovery pass and reuses the results
-/// for all sync operations, avoiding the performance penalty of 3x discovery.
+/// This function uses:
+/// - BaseDiscovery for ignore and codeowners (finds all env.cue files, both #Base and #Project)
+/// - TaskDiscovery for cubes (finds only #Project configs, since cube is Project-only)
 #[instrument(name = "sync_all_workspace", skip(package))]
 pub async fn execute_sync_all_workspace(
     package: &str,
@@ -797,6 +807,7 @@ pub async fn execute_sync_all_workspace(
     check: bool,
 ) -> Result<String> {
     let _ = package; // Reserved for future use
+    use cuenv_core::base::discovery::{BaseDiscovery, DiscoveredBase};
     use cuenv_core::tasks::discovery::{DiscoveredProject, TaskDiscovery};
 
     // Find the CUE module root from current directory
@@ -809,34 +820,32 @@ pub async fn execute_sync_all_workspace(
         )
     })?;
 
-    // Create evaluator for discovery - SINGLE evaluator for all projects
-    let evaluator = CueEvaluator::builder()
-        .build()
-        .map_err(super::convert_engine_error)?;
-
-    // Evaluation function for discovery
-    let eval_fn: cuenv_core::tasks::discovery::EvalFn = Box::new(move |project_path: &Path| {
-        let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
-        evaluator
-            .evaluate_typed(project_path, &pkg)
-            .map_err(|e| e.to_string())
-    });
-
-    // SINGLE discovery pass
-    let mut discovery = TaskDiscovery::new(module_root.clone()).with_eval_fn(eval_fn);
-    discovery.discover().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
-    })?;
-
-    // Clone projects for reuse across all sync operations
-    let projects: Vec<DiscoveredProject> = discovery.projects().to_vec();
-
     let mut outputs = Vec::new();
     let mut had_errors = false;
 
-    // Run ignore sync using pre-discovered projects
-    match sync_ignore_with_projects(&projects, dry_run, check).await {
-        Ok(output) if !output.contains("No projects with ignore") => {
+    // BaseDiscovery for ignore and codeowners (finds all env.cue, not just Projects)
+    let base_evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+
+    let base_eval_fn: cuenv_core::base::discovery::BaseEvalFn =
+        Box::new(move |project_path: &Path| {
+            let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
+            base_evaluator
+                .evaluate_typed(project_path, &pkg)
+                .map_err(|e| e.to_string())
+        });
+
+    let mut base_discovery = BaseDiscovery::new(module_root.clone()).with_eval_fn(base_eval_fn);
+    base_discovery.discover().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to discover Base configs: {e}"))
+    })?;
+
+    let bases: Vec<DiscoveredBase> = base_discovery.bases().to_vec();
+
+    // Run ignore sync using BaseDiscovery results
+    match sync_ignore_with_bases(&bases, dry_run, check).await {
+        Ok(output) if !output.contains("No configs with ignore") => {
             outputs.push("=== Ignore Files ===".to_string());
             outputs.push(output);
             outputs.push(String::new());
@@ -848,9 +857,9 @@ pub async fn execute_sync_all_workspace(
         }
     }
 
-    // Run codeowners sync using pre-discovered projects
-    match sync_codeowners_with_projects(&projects, &module_root, dry_run, check).await {
-        Ok(output) if !output.contains("No projects with owners") => {
+    // Run codeowners sync using BaseDiscovery results
+    match sync_codeowners_with_bases(&bases, &module_root, dry_run, check).await {
+        Ok(output) if !output.contains("No configs with owners") => {
             outputs.push("=== Codeowners ===".to_string());
             outputs.push(output);
             outputs.push(String::new());
@@ -862,76 +871,96 @@ pub async fn execute_sync_all_workspace(
         }
     }
 
-    // Run cubes sync using pre-discovered projects
-    match sync_cubes_with_projects(&projects, dry_run, check) {
-        Ok(output) if !output.contains("No projects with cube") => {
-            outputs.push("=== Cubes ===".to_string());
-            outputs.push(output);
-        }
-        Ok(_) => {}
-        Err(e) => {
-            outputs.push(format!("=== Cubes ===\nError: {e}"));
-            had_errors = true;
+    // TaskDiscovery for cubes (Project-only feature)
+    let project_evaluator = CueEvaluator::builder()
+        .build()
+        .map_err(super::convert_engine_error)?;
+
+    let project_eval_fn: cuenv_core::tasks::discovery::EvalFn =
+        Box::new(move |project_path: &Path| {
+            let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
+            project_evaluator
+                .evaluate_typed(project_path, &pkg)
+                .map_err(|e| e.to_string())
+        });
+
+    let mut project_discovery =
+        TaskDiscovery::new(module_root.clone()).with_eval_fn(project_eval_fn);
+    // Note: discovery errors for cubes are not fatal - Base configs may still sync successfully
+    if project_discovery.discover().is_ok() {
+        let projects: Vec<DiscoveredProject> = project_discovery.projects().to_vec();
+
+        // Run cubes sync using TaskDiscovery results
+        match sync_cubes_with_projects(&projects, dry_run, check) {
+            Ok(output) if !output.contains("No projects with cube") => {
+                outputs.push("=== Cubes ===".to_string());
+                outputs.push(output);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                outputs.push(format!("=== Cubes ===\nError: {e}"));
+                had_errors = true;
+            }
         }
     }
 
     if outputs.is_empty() {
-        return Ok("No projects with sync configuration found.".to_string());
+        return Ok("No configs with sync configuration found.".to_string());
     }
 
     let output = outputs.join("\n");
 
-    if had_errors && !output.contains("Project:") {
+    if had_errors && !output.contains("Config:") && !output.contains("Project:") {
         return Err(cuenv_core::Error::configuration(output));
     }
 
     Ok(output)
 }
 
-/// Sync ignore files using pre-discovered projects (no re-discovery).
-async fn sync_ignore_with_projects(
-    projects: &[cuenv_core::tasks::discovery::DiscoveredProject],
+/// Sync ignore files using pre-discovered Base configs (no re-discovery).
+async fn sync_ignore_with_bases(
+    bases: &[cuenv_core::base::discovery::DiscoveredBase],
     dry_run: bool,
     check: bool,
 ) -> Result<String> {
     let mut output_lines = Vec::new();
     let mut errors = Vec::new();
 
-    for project in projects {
-        // Skip projects without ignore config
-        if project.manifest.ignore.is_none() {
+    for base in bases {
+        // Skip configs without ignore
+        if base.manifest.ignore.is_none() {
             continue;
         }
 
-        let project_path = project.project_root.to_string_lossy();
+        let project_path = base.project_root.to_string_lossy();
         let pkg =
-            detect_package_name(&project.project_root).unwrap_or_else(|_| "cuenv".to_string());
+            detect_package_name(&base.project_root).unwrap_or_else(|_| "cuenv".to_string());
 
         match execute_sync_ignore(&project_path, &pkg, dry_run, check).await {
             Ok(output) => {
                 if !output.contains("No ignore patterns")
                     && !output.contains("all pattern lists are empty")
                 {
-                    output_lines.push(format!("Project: {}", project.manifest.name));
+                    output_lines.push(format!("Config: {}", base.synthetic_name));
                     output_lines.push(output);
                     output_lines.push(String::new());
                 }
             }
             Err(e) => {
-                errors.push(format!("{}: {}", project.manifest.name, e));
+                errors.push(format!("{}: {}", base.synthetic_name, e));
             }
         }
     }
 
     if !errors.is_empty() && output_lines.is_empty() {
         return Err(cuenv_core::Error::configuration(format!(
-            "All projects failed:\n{}",
+            "All configs failed:\n{}",
             errors.join("\n")
         )));
     }
 
     if output_lines.is_empty() {
-        return Ok("No projects with ignore configuration found.".to_string());
+        return Ok("No configs with ignore configuration found.".to_string());
     }
 
     if !errors.is_empty() {
@@ -942,10 +971,10 @@ async fn sync_ignore_with_projects(
     Ok(output_lines.join("\n"))
 }
 
-/// Sync codeowners using pre-discovered projects (no re-discovery).
+/// Sync codeowners using pre-discovered Base configs (no re-discovery).
 #[allow(clippy::unused_async)] // Async for API consistency with other sync functions
-async fn sync_codeowners_with_projects(
-    projects: &[cuenv_core::tasks::discovery::DiscoveredProject],
+async fn sync_codeowners_with_bases(
+    bases: &[cuenv_core::base::discovery::DiscoveredBase],
     module_root: &Path,
     dry_run: bool,
     check: bool,
@@ -954,49 +983,56 @@ async fn sync_codeowners_with_projects(
     use cuenv_codeowners::Rule;
     use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
 
-    // Collect all projects with owners configuration
+    // Collect all configs with owners configuration
     let mut project_owners_list = Vec::new();
 
-    for project in projects {
-        let Some(owners) = &project.manifest.owners else {
+    for base in bases {
+        let Some(owners) = &base.manifest.owners else {
             continue;
         };
 
         // Calculate relative path from module root to project
-        let relative_path = project
+        let relative_path = base
             .project_root
             .strip_prefix(module_root)
-            .unwrap_or(&project.project_root)
+            .unwrap_or(&base.project_root)
             .to_path_buf();
 
-        // Convert manifest rules to codeowners rules
-        let rules: Vec<Rule> = owners
-            .rules
+        // Convert manifest rules to codeowners rules (sorted by order then key)
+        let mut rule_entries: Vec<_> = owners.rules.iter().collect();
+        rule_entries.sort_by(|a, b| {
+            let order_a = a.1.order.unwrap_or(i32::MAX);
+            let order_b = b.1.order.unwrap_or(i32::MAX);
+            order_a.cmp(&order_b).then_with(|| a.0.cmp(b.0))
+        });
+
+        let rules: Vec<Rule> = rule_entries
             .iter()
-            .map(|r| {
+            .map(|(_key, r)| {
                 let mut rule = Rule::new(&r.pattern, r.owners.clone());
-                if let Some(ref desc) = r.description {
-                    rule = rule.description(desc.clone());
+                if let Some(desc) = &r.description {
+                    rule = rule.description(desc.to_owned());
                 }
-                if let Some(ref section) = r.section {
-                    rule = rule.section(section.clone());
+                if let Some(section) = &r.section {
+                    rule = rule.section(section.to_owned());
                 }
                 rule
             })
             .collect();
 
+        // Use synthetic name from directory path
         let mut proj_owners =
-            ProjectOwners::new(relative_path, project.manifest.name.clone(), rules);
+            ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
 
-        if let Some(ref default_owners) = owners.default_owners {
-            proj_owners = proj_owners.with_default_owners(default_owners.clone());
+        if let Some(default_owners) = &owners.default_owners {
+            proj_owners = proj_owners.with_default_owners(default_owners.to_owned());
         }
 
         project_owners_list.push(proj_owners);
     }
 
     if project_owners_list.is_empty() {
-        return Ok("No projects with owners configuration found.".to_string());
+        return Ok("No configs with owners configuration found.".to_string());
     }
 
     // Detect provider based on repo structure
@@ -1015,12 +1051,12 @@ async fn sync_codeowners_with_projects(
             ))
         } else if result.actual.is_none() {
             Err(cuenv_core::Error::configuration(format!(
-                "CODEOWNERS file not found at {}. Run 'cuenv sync codeowners -A' to generate it.",
+                "CODEOWNERS file not found at {}. Run 'cuenv sync codeowners' to generate it.",
                 result.path.display()
             )))
         } else {
             Err(cuenv_core::Error::configuration(format!(
-                "CODEOWNERS file is out of sync at {}. Run 'cuenv sync codeowners -A' to update it.",
+                "CODEOWNERS file is out of sync at {}. Run 'cuenv sync codeowners' to update it.",
                 result.path.display()
             )))
         }
@@ -1042,10 +1078,10 @@ async fn sync_codeowners_with_projects(
 
         let mut output = format!("{} CODEOWNERS: {}\n", status_msg, result.path.display());
 
-        // List projects included
+        // List configs included
         let _ = writeln!(
             output,
-            "Aggregated {} project(s): {}",
+            "Aggregated {} config(s): {}",
             project_owners_list.len(),
             project_owners_list
                 .iter()

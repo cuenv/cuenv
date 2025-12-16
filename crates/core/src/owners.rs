@@ -9,6 +9,7 @@
 use cuenv_codeowners::{Codeowners, CodeownersBuilder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 
@@ -106,6 +107,10 @@ pub struct OwnerRule {
     /// Section name for grouping rules in the output file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
+
+    /// Optional order for deterministic output (lower values appear first).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<i32>,
 }
 
 /// Code ownership configuration for a project.
@@ -124,9 +129,10 @@ pub struct Owners {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_owners: Option<Vec<String>>,
 
-    /// Code ownership rules - maps patterns to owners.
+    /// Code ownership rules - maps rule names to rule definitions.
+    /// Using a map enables CUE unification/layering across configs.
     #[serde(default)]
-    pub rules: Vec<OwnerRule>,
+    pub rules: HashMap<String, OwnerRule>,
 }
 
 impl Owners {
@@ -168,8 +174,15 @@ impl Owners {
             builder = builder.default_owners(default_owners.clone());
         }
 
-        // Add rules
-        for rule in &self.rules {
+        // Add rules - sort by order then by key for determinism
+        let mut rule_entries: Vec<_> = self.rules.iter().collect();
+        rule_entries.sort_by(|a, b| {
+            let order_a = a.1.order.unwrap_or(i32::MAX);
+            let order_b = b.1.order.unwrap_or(i32::MAX);
+            order_a.cmp(&order_b).then_with(|| a.0.cmp(b.0))
+        });
+
+        for (_key, rule) in rule_entries {
             let mut lib_rule = cuenv_codeowners::Rule::new(&rule.pattern, rule.owners.clone());
             if let Some(ref description) = rule.description {
                 lib_rule = lib_rule.description(description.clone());
@@ -252,21 +265,30 @@ mod tests {
 
     #[test]
     fn test_generate_simple() {
+        let mut rules = HashMap::new();
+        rules.insert(
+            "rust-files".to_string(),
+            OwnerRule {
+                pattern: "*.rs".to_string(),
+                owners: vec!["@rust-team".to_string()],
+                description: None,
+                section: None,
+                order: Some(1),
+            },
+        );
+        rules.insert(
+            "docs".to_string(),
+            OwnerRule {
+                pattern: "/docs/**".to_string(),
+                owners: vec!["@docs-team".to_string(), "@tech-writers".to_string()],
+                description: None,
+                section: None,
+                order: Some(2),
+            },
+        );
+
         let owners = Owners {
-            rules: vec![
-                OwnerRule {
-                    pattern: "*.rs".to_string(),
-                    owners: vec!["@rust-team".to_string()],
-                    description: None,
-                    section: None,
-                },
-                OwnerRule {
-                    pattern: "/docs/**".to_string(),
-                    owners: vec!["@docs-team".to_string(), "@tech-writers".to_string()],
-                    description: None,
-                    section: None,
-                },
-            ],
+            rules,
             ..Default::default()
         };
 
@@ -277,21 +299,30 @@ mod tests {
 
     #[test]
     fn test_generate_with_sections() {
+        let mut rules = HashMap::new();
+        rules.insert(
+            "rust-files".to_string(),
+            OwnerRule {
+                pattern: "*.rs".to_string(),
+                owners: vec!["@backend".to_string()],
+                description: Some("Rust source files".to_string()),
+                section: Some("Backend".to_string()),
+                order: Some(1),
+            },
+        );
+        rules.insert(
+            "typescript-files".to_string(),
+            OwnerRule {
+                pattern: "*.ts".to_string(),
+                owners: vec!["@frontend".to_string()],
+                description: None,
+                section: Some("Frontend".to_string()),
+                order: Some(2),
+            },
+        );
+
         let owners = Owners {
-            rules: vec![
-                OwnerRule {
-                    pattern: "*.rs".to_string(),
-                    owners: vec!["@backend".to_string()],
-                    description: Some("Rust source files".to_string()),
-                    section: Some("Backend".to_string()),
-                },
-                OwnerRule {
-                    pattern: "*.ts".to_string(),
-                    owners: vec!["@frontend".to_string()],
-                    description: None,
-                    section: Some("Frontend".to_string()),
-                },
-            ],
+            rules,
             ..Default::default()
         };
 
@@ -303,14 +334,21 @@ mod tests {
 
     #[test]
     fn test_generate_with_default_owners() {
-        let owners = Owners {
-            default_owners: Some(vec!["@core-team".to_string()]),
-            rules: vec![OwnerRule {
+        let mut rules = HashMap::new();
+        rules.insert(
+            "security".to_string(),
+            OwnerRule {
                 pattern: "/security/**".to_string(),
                 owners: vec!["@security-team".to_string()],
                 description: None,
                 section: None,
-            }],
+                order: None,
+            },
+        );
+
+        let owners = Owners {
+            default_owners: Some(vec!["@core-team".to_string()]),
+            rules,
             ..Default::default()
         };
 
@@ -327,7 +365,7 @@ mod tests {
                 path: None,
                 header: Some("Custom Header\nLine 2".to_string()),
             }),
-            rules: vec![],
+            rules: HashMap::new(),
             ..Default::default()
         };
 
@@ -338,26 +376,35 @@ mod tests {
 
     #[test]
     fn test_generate_gitlab_sections() {
+        let mut rules = HashMap::new();
+        rules.insert(
+            "rust-files".to_string(),
+            OwnerRule {
+                pattern: "*.rs".to_string(),
+                owners: vec!["@backend".to_string()],
+                section: Some("Backend".to_string()),
+                description: None,
+                order: Some(1),
+            },
+        );
+        rules.insert(
+            "typescript-files".to_string(),
+            OwnerRule {
+                pattern: "*.ts".to_string(),
+                owners: vec!["@frontend".to_string()],
+                section: Some("Frontend".to_string()),
+                description: None,
+                order: Some(2),
+            },
+        );
+
         let owners = Owners {
             output: Some(OwnersOutput {
                 platform: Some(Platform::Gitlab),
                 path: None,
                 header: None,
             }),
-            rules: vec![
-                OwnerRule {
-                    pattern: "*.rs".to_string(),
-                    owners: vec!["@backend".to_string()],
-                    section: Some("Backend".to_string()),
-                    description: None,
-                },
-                OwnerRule {
-                    pattern: "*.ts".to_string(),
-                    owners: vec!["@frontend".to_string()],
-                    section: Some("Frontend".to_string()),
-                    description: None,
-                },
-            ],
+            rules,
             ..Default::default()
         };
 
@@ -384,28 +431,42 @@ mod tests {
 
     #[test]
     fn test_generate_groups_rules_by_section() {
-        // Test that rules with same section are grouped together even if not contiguous in input
+        // Test that rules with same section are grouped together
+        // Using order field to control ordering since HashMap doesn't preserve insertion order
+        let mut rules = HashMap::new();
+        rules.insert(
+            "rust-files".to_string(),
+            OwnerRule {
+                pattern: "*.rs".to_string(),
+                owners: vec!["@backend".to_string()],
+                section: Some("Backend".to_string()),
+                description: None,
+                order: Some(1),
+            },
+        );
+        rules.insert(
+            "typescript-files".to_string(),
+            OwnerRule {
+                pattern: "*.ts".to_string(),
+                owners: vec!["@frontend".to_string()],
+                section: Some("Frontend".to_string()),
+                description: None,
+                order: Some(2),
+            },
+        );
+        rules.insert(
+            "go-files".to_string(),
+            OwnerRule {
+                pattern: "*.go".to_string(),
+                owners: vec!["@backend".to_string()],
+                section: Some("Backend".to_string()),
+                description: None,
+                order: Some(3),
+            },
+        );
+
         let owners = Owners {
-            rules: vec![
-                OwnerRule {
-                    pattern: "*.rs".to_string(),
-                    owners: vec!["@backend".to_string()],
-                    section: Some("Backend".to_string()),
-                    description: None,
-                },
-                OwnerRule {
-                    pattern: "*.ts".to_string(),
-                    owners: vec!["@frontend".to_string()],
-                    section: Some("Frontend".to_string()),
-                    description: None,
-                },
-                OwnerRule {
-                    pattern: "*.go".to_string(),
-                    owners: vec!["@backend".to_string()],
-                    section: Some("Backend".to_string()),
-                    description: None,
-                },
-            ],
+            rules,
             ..Default::default()
         };
 
@@ -429,6 +490,57 @@ mod tests {
         assert!(
             go_idx > backend_idx && go_idx < frontend_idx,
             "*.go should be in Backend section"
+        );
+    }
+
+    #[test]
+    fn test_order_sorting() {
+        // Test that rules are sorted by order field
+        let mut rules = HashMap::new();
+        rules.insert(
+            "z-last".to_string(),
+            OwnerRule {
+                pattern: "*.last".to_string(),
+                owners: vec!["@team".to_string()],
+                description: None,
+                section: None,
+                order: Some(3),
+            },
+        );
+        rules.insert(
+            "a-first".to_string(),
+            OwnerRule {
+                pattern: "*.first".to_string(),
+                owners: vec!["@team".to_string()],
+                description: None,
+                section: None,
+                order: Some(1),
+            },
+        );
+        rules.insert(
+            "m-middle".to_string(),
+            OwnerRule {
+                pattern: "*.middle".to_string(),
+                owners: vec!["@team".to_string()],
+                description: None,
+                section: None,
+                order: Some(2),
+            },
+        );
+
+        let owners = Owners {
+            rules,
+            ..Default::default()
+        };
+
+        let content = owners.generate();
+        let first_idx = content.find("*.first").unwrap();
+        let middle_idx = content.find("*.middle").unwrap();
+        let last_idx = content.find("*.last").unwrap();
+
+        assert!(
+            first_idx < middle_idx && middle_idx < last_idx,
+            "Rules should be sorted by order: first={first_idx}, middle={middle_idx}, last={last_idx}"
         );
     }
 }

@@ -35,6 +35,7 @@
 //! };
 //! ```
 
+pub mod base;
 pub mod cache;
 pub mod ci;
 pub mod config;

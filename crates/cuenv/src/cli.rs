@@ -538,13 +538,16 @@ pub enum SyncCommands {
         )]
         all: bool,
     },
-    #[command(about = "Sync CODEOWNERS file from CUE configuration")]
+    #[command(
+        about = "Sync CODEOWNERS file from CUE configuration (always aggregates all configs)"
+    )]
     Codeowners {
         #[arg(
             long,
             short = 'p',
-            help = "Path to directory containing CUE files",
-            default_value = "."
+            help = "Ignored - codeowners always scans from CUE module root",
+            default_value = ".",
+            hide = true
         )]
         path: String,
         #[arg(
@@ -560,7 +563,8 @@ pub enum SyncCommands {
         #[arg(
             long = "all",
             short = 'A',
-            help = "Sync CODEOWNERS for all projects in the workspace"
+            help = "Deprecated: codeowners always aggregates all configs",
+            hide = true
         )]
         all: bool,
     },
