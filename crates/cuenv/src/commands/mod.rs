@@ -58,7 +58,7 @@ pub mod ci_cmd {
                 None,     // backend
                 false,    // tui
                 false,    // help
-                false,    // workspace
+                false,    // all
                 &[],      // task_args
             )
             .await
@@ -71,6 +71,7 @@ pub mod ci_cmd {
         pipeline: Option<String>,
         generate: Option<String>,
         from: Option<String>,
+        force: bool,
     ) -> Result<()> {
         if let Some(provider) = generate {
             if provider != "github" {
@@ -78,8 +79,6 @@ pub mod ci_cmd {
                     "Unsupported CI provider: {provider}. Currently only 'github' is supported."
                 )));
             }
-
-            println!("Generating workflow for: {provider}");
 
             let workflow_content = r#"name: CI
 
@@ -118,6 +117,15 @@ jobs:
             }
 
             let workflow_path = workflows_dir.join("ci.yml");
+
+            // Check if file exists and force not specified
+            if workflow_path.exists() && !force {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Workflow file already exists at: {}. Use --force to overwrite.",
+                    workflow_path.display()
+                )));
+            }
+
             std::fs::write(&workflow_path, workflow_content).map_err(|e| {
                 cuenv_core::Error::Io {
                     source: e,
@@ -197,7 +205,7 @@ pub enum Command {
         backend: Option<String>,
         tui: bool,
         help: bool,
-        workspace: bool,
+        all: bool,
         task_args: Vec<String>,
     },
     Exec {
@@ -230,6 +238,7 @@ pub enum Command {
         pipeline: Option<String>,
         generate: Option<String>,
         from: Option<String>,
+        force: bool,
     },
     Tui,
     Web {
@@ -307,7 +316,7 @@ impl CommandExecutor {
                 backend,
                 tui,
                 help,
-                workspace,
+                all,
                 task_args,
             } => {
                 self.execute_task(
@@ -322,7 +331,7 @@ impl CommandExecutor {
                     backend,
                     tui,
                     help,
-                    workspace,
+                    all,
                     task_args,
                 )
                 .await
@@ -376,7 +385,8 @@ impl CommandExecutor {
                 pipeline,
                 generate,
                 from,
-            } => self.execute_ci(dry_run, pipeline, generate, from).await,
+                force,
+            } => self.execute_ci(dry_run, pipeline, generate, from, force).await,
             Command::Sync {
                 subcommand,
                 path,
@@ -601,7 +611,7 @@ impl CommandExecutor {
         backend: Option<String>,
         tui: bool,
         help: bool,
-        workspace: bool,
+        all: bool,
         task_args: Vec<String>,
     ) -> Result<()> {
         let command_name = "task";
@@ -624,7 +634,7 @@ impl CommandExecutor {
             backend.as_deref(),
             tui,
             help,
-            workspace,
+            all,
             &task_args,
         )
         .await
@@ -946,13 +956,14 @@ impl CommandExecutor {
         pipeline: Option<String>,
         generate: Option<String>,
         from: Option<String>,
+        force: bool,
     ) -> Result<()> {
         let command_name = "ci";
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
         });
 
-        match ci_cmd::execute_ci(dry_run, pipeline, generate, from).await {
+        match ci_cmd::execute_ci(dry_run, pipeline, generate, from, force).await {
             Ok(()) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
