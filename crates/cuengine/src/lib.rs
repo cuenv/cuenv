@@ -197,6 +197,9 @@ pub struct FieldMeta {
 pub struct ModuleResult {
     /// Map of relative path to evaluated JSON value
     pub instances: std::collections::HashMap<String, serde_json::Value>,
+    /// Paths that conform to schema.#Project (verified via CUE unification)
+    #[serde(default)]
+    pub projects: Vec<String>,
     /// Map of "path/field" to source location (only populated when with_meta: true)
     #[serde(default)]
     pub meta: std::collections::HashMap<String, FieldMeta>,

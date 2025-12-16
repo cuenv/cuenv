@@ -93,8 +93,8 @@ pub fn execute_info(
         });
     }
 
-    // Convert to ModuleEvaluation
-    let module = ModuleEvaluation::from_raw(module_root.clone(), raw_result.instances);
+    // Convert to ModuleEvaluation (using schema-verified project list)
+    let module = ModuleEvaluation::from_raw(module_root.clone(), raw_result.instances, raw_result.projects);
 
     // Collect project information
     let mut projects: Vec<ProjectInfo> = module

@@ -22,15 +22,26 @@ pub struct ModuleEvaluation {
 
 impl ModuleEvaluation {
     /// Create a new module evaluation from raw FFI result
+    ///
+    /// # Arguments
+    /// * `root` - Path to the CUE module root
+    /// * `raw_instances` - Map of relative paths to evaluated JSON values
+    /// * `project_paths` - Paths verified to conform to `schema.#Project` via CUE unification
     pub fn from_raw(
         root: PathBuf,
         raw_instances: HashMap<String, serde_json::Value>,
+        project_paths: Vec<String>,
     ) -> Self {
+        // Convert project paths to a set for O(1) lookup
+        let project_set: std::collections::HashSet<&str> =
+            project_paths.iter().map(String::as_str).collect();
+
         let instances = raw_instances
             .into_iter()
             .map(|(path, value)| {
                 let path_buf = PathBuf::from(&path);
-                let kind = if value.get("name").is_some() {
+                // Use CUE's schema verification instead of heuristic name check
+                let kind = if project_set.contains(path.as_str()) {
                     InstanceKind::Project
                 } else {
                     InstanceKind::Base
@@ -83,14 +94,20 @@ impl ModuleEvaluation {
 
     /// Get all ancestor paths for a given path
     ///
-    /// Returns paths from immediate parent up to (but not including) root.
+    /// Returns paths from immediate parent up to (and including) the root ".".
+    /// Returns empty vector if path is already the root.
     pub fn ancestors(&self, path: &Path) -> Vec<PathBuf> {
+        // Root has no ancestors
+        if path == Path::new(".") {
+            return Vec::new();
+        }
+
         let mut ancestors = Vec::new();
         let mut current = path.to_path_buf();
 
         while let Some(parent) = current.parent() {
             if parent.as_os_str().is_empty() {
-                // Reached root, add "." as the root path
+                // Reached filesystem root, add "." as the module root path
                 ancestors.push(PathBuf::from("."));
                 break;
             }
@@ -218,7 +235,13 @@ mod tests {
             }),
         );
 
-        ModuleEvaluation::from_raw(PathBuf::from("/test/repo"), raw)
+        // Specify which paths are projects (simulating CUE schema verification)
+        let project_paths = vec![
+            "projects/api".to_string(),
+            "projects/web".to_string(),
+        ];
+
+        ModuleEvaluation::from_raw(PathBuf::from("/test/repo"), raw, project_paths)
     }
 
     #[test]

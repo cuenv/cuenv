@@ -649,6 +649,7 @@ type ModuleInstance struct {
 // ModuleResult contains all evaluated instances in a module
 type ModuleResult struct {
 	Instances map[string]json.RawMessage `json:"instances"`
+	Projects  []string                   `json:"projects"`       // paths that conform to schema.#Project
 	Meta      map[string]ValueMeta       `json:"meta,omitempty"` // "path/field" -> source location
 }
 
@@ -752,8 +753,19 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		return result
 	}
 
+	// Load the schema package to get #Project definition for type checking
+	var projectDef cue.Value
+	schemaInsts := load.Instances([]string{"github.com/cuenv/cuenv/schema"}, cfg)
+	if len(schemaInsts) > 0 && schemaInsts[0].Err == nil {
+		schemaValue := ctx.BuildInstance(schemaInsts[0])
+		if schemaValue.Err() == nil {
+			projectDef = schemaValue.LookupPath(cue.ParsePath("#Project"))
+		}
+	}
+
 	// Evaluate instances and collect results
 	instances := make(map[string]json.RawMessage)
+	var projects []string
 	allMeta := make(map[string]ValueMeta)
 
 	for _, inst := range loadedInstances {
@@ -783,6 +795,14 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 			continue
 		}
 
+		// Check if this instance conforms to schema.#Project using CUE unification
+		if projectDef.Exists() {
+			unified := projectDef.Unify(v)
+			if unified.Err() == nil {
+				projects = append(projects, relPath)
+			}
+		}
+
 		// Build clean JSON (without inline _meta)
 		jsonBytes, err := buildJSONClean(v)
 		if err != nil {
@@ -809,6 +829,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// Marshal the result
 	moduleResult := ModuleResult{
 		Instances: instances,
+		Projects:  projects,
 	}
 	if options.WithMeta && len(allMeta) > 0 {
 		moduleResult.Meta = allMeta
