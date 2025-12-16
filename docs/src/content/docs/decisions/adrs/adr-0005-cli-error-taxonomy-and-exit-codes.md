@@ -21,18 +21,15 @@ This ADR builds on [rfc-0002-output-formatting-and-error-envelope-strategy](/dec
 ## Decision
 
 1. **Error Categories**
-
    - `Config`: Represents CLI usage errors, configuration issues, and validation failures; MUST exit with code `2`.
    - `Eval`: Represents evaluation or FFI failures; MUST exit with code `3`.
    - `Other`: Represents unexpected errors; MUST also exit with code `3`.
 
 2. **Diagnostic Presentation**
-
    - Human-readable output MUST use `miette` to render `CliError` values with optional help text.
    - JSON mode MUST wrap errors in `ErrorEnvelope` with fields `status: "error"` and `error.code` set to `config|eval|other`.
 
 3. **Extensibility**
-
    - New error categories MUST be added by extending `CliError` and MUST document exit codes and envelope schema updates.
    - Deprecating an error type requires a future ADR referencing this decision.
 

@@ -52,9 +52,6 @@ pub mod tasks;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(test)]
-mod schema_tests;
-
-#[cfg(test)]
 pub mod test_utils;
 
 use miette::{Diagnostic, SourceSpan};

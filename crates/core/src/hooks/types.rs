@@ -1,6 +1,5 @@
 //! Type definitions for hooks and hook execution
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::ExitStatus;
@@ -12,7 +11,7 @@ fn default_order() -> i32 {
 
 /// A hook represents a command that can be executed when entering or exiting environments
 /// Based on schema/hooks.cue #ExecHook definition
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Hook {
     /// Execution order within a single env.cue (lower runs first, default 100)
     #[serde(default = "default_order")]
@@ -37,7 +36,7 @@ pub struct Hook {
 }
 
 /// Result of executing a single hook
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HookResult {
     /// The hook that was executed
     pub hook: Hook,
@@ -113,7 +112,7 @@ impl HookResult {
 }
 
 /// Configuration for hook execution
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookExecutionConfig {
     /// Default timeout for hooks that don't specify one
     pub default_timeout_seconds: u64,
@@ -134,7 +133,7 @@ impl Default for HookExecutionConfig {
 }
 
 /// Status of hook execution
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ExecutionStatus {
     /// Hooks are currently being executed
     Running,

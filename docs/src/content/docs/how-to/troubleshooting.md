@@ -300,7 +300,6 @@ If you can't resolve an issue:
 1. **Search existing issues:** [GitHub Issues](https://github.com/cuenv/cuenv/issues)
 
 2. **Create a new issue** with:
-
    - cuenv version (`cuenv version`)
    - Operating system and version
    - Complete error message

@@ -18,7 +18,6 @@ pub use executor::*;
 pub use graph::*;
 pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -28,7 +27,7 @@ fn default_hermetic() -> bool {
 }
 
 /// Shell configuration for task execution
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Shell {
     /// Shell executable name (e.g., "bash", "fish", "zsh")
     pub command: Option<String>,
@@ -37,7 +36,7 @@ pub struct Shell {
 }
 
 /// Mapping of external output to local workspace path
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Mapping {
     /// Path relative to external project root of a declared output from the external task
     pub from: String,
@@ -46,7 +45,7 @@ pub struct Mapping {
 }
 
 /// A single task input definition
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Input {
     /// Local path/glob input
@@ -81,7 +80,7 @@ impl Input {
 }
 
 /// Cross-project input declaration
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectReference {
     /// Path to project root relative to env.cue or absolute-from-repo-root
     pub project: String,
@@ -92,7 +91,7 @@ pub struct ProjectReference {
 }
 
 /// Reference to another task's outputs within the same project
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskOutput {
     /// Name of the task whose cached outputs to consume (e.g. "docs.build")
     pub task: String,
@@ -103,7 +102,7 @@ pub struct TaskOutput {
 }
 
 /// Source location metadata from CUE evaluation
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct SourceLocation {
     /// Path to source file, relative to cue.mod root
     pub file: String,
@@ -129,7 +128,7 @@ impl SourceLocation {
 /// deserialized when it has a `command` or `script` field. This is necessary
 /// because TaskDefinition uses untagged enum, and we need to distinguish
 /// between a Task and a TaskGroup during deserialization.
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Task {
     /// Shell configuration for command execution (optional)
     #[serde(default)]
@@ -305,7 +304,7 @@ impl<'de> serde::Deserialize<'de> for Task {
 }
 
 /// Dagger-specific task configuration
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct DaggerTaskConfig {
     /// Base container image for running the task (e.g., "ubuntu:22.04")
     /// Overrides the global backend.options.image if set.
@@ -328,7 +327,7 @@ pub struct DaggerTaskConfig {
 }
 
 /// Secret configuration for Dagger containers
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DaggerSecret {
     /// Name identifier for the secret in Dagger
     pub name: String,
@@ -346,7 +345,7 @@ pub struct DaggerSecret {
 }
 
 /// Cache volume mount configuration for Dagger
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DaggerCacheMount {
     /// Path inside the container to mount the cache (e.g., "/root/.npm")
     pub path: String,
@@ -356,7 +355,7 @@ pub struct DaggerCacheMount {
 }
 
 /// Task parameter definitions for CLI arguments
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TaskParams {
     /// Positional arguments (order matters, consumed left-to-right)
     /// Referenced in args as {{0}}, {{1}}, etc.
@@ -370,7 +369,7 @@ pub struct TaskParams {
 }
 
 /// Parameter type for validation
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ParamType {
     #[default]
@@ -380,7 +379,7 @@ pub enum ParamType {
 }
 
 /// Parameter definition for task arguments
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ParamDef {
     /// Human-readable description shown in --help
     #[serde(default)]
@@ -539,7 +538,7 @@ fn apply_prefix(prefix: Option<&Path>, value: &str) -> String {
 }
 
 /// A parallel task group with optional shared dependencies
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ParallelGroup {
     /// Named tasks that can run concurrently
     #[serde(flatten)]
@@ -551,7 +550,7 @@ pub struct ParallelGroup {
 }
 
 /// Represents a group of tasks with execution mode
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum TaskGroup {
     /// Sequential execution: array of tasks executed in order
@@ -562,7 +561,7 @@ pub enum TaskGroup {
 }
 
 /// A task definition can be either a single task or a group of tasks
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum TaskDefinition {
     /// A single task
@@ -573,7 +572,7 @@ pub enum TaskDefinition {
 }
 
 /// Root tasks structure from CUE
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Tasks {
     /// Map of task names to their definitions
     #[serde(flatten)]

@@ -122,8 +122,16 @@ impl BaseDiscovery {
 
         tracing::debug!(
             discovered = self.bases.len(),
-            with_owners = self.bases.iter().filter(|b| b.manifest.owners.is_some()).count(),
-            with_ignore = self.bases.iter().filter(|b| b.manifest.ignore.is_some()).count(),
+            with_owners = self
+                .bases
+                .iter()
+                .filter(|b| b.manifest.owners.is_some())
+                .count(),
+            with_ignore = self
+                .bases
+                .iter()
+                .filter(|b| b.manifest.ignore.is_some())
+                .count(),
             failures = load_failures.len(),
             "Base discovery complete"
         );
@@ -218,31 +226,19 @@ mod tests {
     fn test_derive_synthetic_name() {
         // Root directory
         let workspace = PathBuf::from("/workspace");
-        assert_eq!(
-            derive_synthetic_name(&workspace, &workspace),
-            "root"
-        );
+        assert_eq!(derive_synthetic_name(&workspace, &workspace), "root");
 
         // Nested directory
         let nested = PathBuf::from("/workspace/services/api");
-        assert_eq!(
-            derive_synthetic_name(&workspace, &nested),
-            "services-api"
-        );
+        assert_eq!(derive_synthetic_name(&workspace, &nested), "services-api");
 
         // Single level
         let single = PathBuf::from("/workspace/frontend");
-        assert_eq!(
-            derive_synthetic_name(&workspace, &single),
-            "frontend"
-        );
+        assert_eq!(derive_synthetic_name(&workspace, &single), "frontend");
 
         // Deep nesting
         let deep = PathBuf::from("/workspace/a/b/c/d");
-        assert_eq!(
-            derive_synthetic_name(&workspace, &deep),
-            "a-b-c-d"
-        );
+        assert_eq!(derive_synthetic_name(&workspace, &deep), "a-b-c-d");
     }
 
     #[test]

@@ -2,7 +2,6 @@
 //!
 //! Based on schema/core.cue
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -15,7 +14,7 @@ use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 
 /// Workspace configuration
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceConfig {
     /// Enable or disable the workspace
@@ -34,7 +33,7 @@ pub struct WorkspaceConfig {
 }
 
 /// Workspace lifecycle hooks for pre/post install
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceHooks {
     /// Tasks or references to run before workspace install
@@ -47,7 +46,7 @@ pub struct WorkspaceHooks {
 }
 
 /// A hook step to run as part of workspace lifecycle hooks.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum HookItem {
     /// Reference to a task in another project
@@ -59,7 +58,7 @@ pub enum HookItem {
 }
 
 /// Hook step that expands to tasks discovered via TaskMatcher.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MatchHook {
     /// Optional stable name used for task naming/logging
@@ -72,7 +71,7 @@ pub struct MatchHook {
 }
 
 /// Reference to a task in another env.cue project by its name property
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskRef {
     /// Format: "#project-name:task-name" where project-name is the `name` field in env.cue
     /// Example: "#projen-generator:bun.install"
@@ -101,7 +100,7 @@ impl TaskRef {
 }
 
 /// Match tasks across workspace by metadata for discovery-based execution
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskMatcher {
     /// Limit to specific workspaces (by name)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,7 +124,7 @@ pub struct TaskMatcher {
 }
 
 /// Pattern matcher for task arguments
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ArgMatcher {
     /// Match if any arg contains this substring
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -141,7 +140,7 @@ fn default_true() -> bool {
 }
 
 /// Collection of hooks that can be executed
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Hooks {
     /// Named hooks to execute when entering an environment (map of name -> hook)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,7 +154,7 @@ pub struct Hooks {
 }
 
 /// Base configuration structure (composable across directories)
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Base {
     /// Configuration settings
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,7 +189,7 @@ pub type Ignore = HashMap<String, IgnoreValue>;
 // ============================================================================
 
 /// File generation mode
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FileMode {
     /// Always regenerate this file (managed by codegen)
@@ -201,7 +200,7 @@ pub enum FileMode {
 }
 
 /// Format configuration for a generated file
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FormatConfig {
     /// Indent style: "space" or "tab"
@@ -229,7 +228,7 @@ fn default_indent() -> String {
 }
 
 /// A file definition from the cube
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectFile {
     /// Content of the file
     pub content: String,
@@ -250,7 +249,7 @@ pub struct ProjectFile {
 }
 
 /// A CUE Cube containing file definitions for code generation
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct CubeConfig {
     /// Map of file paths to their definitions
     #[serde(default)]
@@ -261,7 +260,7 @@ pub struct CubeConfig {
 }
 
 /// Value for an ignore entry - either a simple list of patterns or an extended config.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum IgnoreValue {
     /// Simple list of patterns
@@ -271,7 +270,7 @@ pub enum IgnoreValue {
 }
 
 /// Extended ignore configuration with patterns and optional filename override.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IgnoreEntry {
     /// List of patterns to include in the ignore file
     pub patterns: Vec<String>,
@@ -301,7 +300,7 @@ impl IgnoreValue {
 }
 
 /// Root Project configuration structure (leaf node - cannot unify with other projects)
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Project {
     /// Configuration settings
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -342,7 +341,6 @@ pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cube: Option<CubeConfig>,
 }
-
 
 impl Project {
     /// Create a new Project configuration with a required name.

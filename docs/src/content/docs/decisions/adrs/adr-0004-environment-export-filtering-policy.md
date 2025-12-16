@@ -21,19 +21,15 @@ This ADR complements [rfc-0005-environment-export-and-exec-invocation-contracts]
 ## Decision
 
 1. **Secret Redaction**
-
    - Values flagged as secrets MUST NOT appear in any CLI output produced by `env print`, `env check`, or `export`. The placeholder `[SECRET]` MUST be stripped entirely rather than printed.
 
 2. **Deterministic Ordering**
-
    - Exported environment variables MUST be sorted alphabetically for stable diffs and scripting friendliness.
 
 3. **Shell-Specific Formats**
-
    - `env check`/`export` MUST emit shell-specific statements (`export KEY="VALUE"` for Bash/Zsh, `set -x KEY "VALUE"` for Fish) using the same filtered dataset.
 
 4. **Hook-Augmented Values**
-
    - Environment variables produced by hook execution MAY be merged into the exported dataset but are subject to the same filtering rules.
 
 5. **JSON Output**

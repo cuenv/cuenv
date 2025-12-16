@@ -3,13 +3,12 @@
 //! This module handles environment variables from CUE configurations,
 //! including extraction, propagation, and environment-specific overrides.
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 
 /// Policy for controlling environment variable access
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Policy {
     /// Allowlist of task names that can access this variable
     #[serde(skip_serializing_if = "Option::is_none", rename = "allowTasks")]
@@ -21,7 +20,7 @@ pub struct Policy {
 }
 
 /// Environment variable with optional access policies
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EnvVarWithPolicies {
     /// The actual value
     pub value: EnvValueSimple,
@@ -32,7 +31,7 @@ pub struct EnvVarWithPolicies {
 }
 
 /// Simple environment variable values (non-recursive)
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum EnvValueSimple {
     String(String),
@@ -43,7 +42,7 @@ pub enum EnvValueSimple {
 
 /// Environment variable values can be strings, integers, booleans, secrets, or values with policies
 /// When exported to actual environment, these will always be strings
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum EnvValue {
     // Value with policies must come first for serde untagged to try it first
@@ -57,7 +56,7 @@ pub enum EnvValue {
 
 /// Environment configuration with environment-specific overrides
 /// Based on schema/env.cue
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Env {
     /// Base environment variables
     /// Keys must match pattern: ^[A-Z][A-Z0-9_]*$

@@ -133,10 +133,9 @@ Fluent builder for configuration:
 
 The crate supports optional features:
 
-| Feature    | Description                                   |
-| ---------- | --------------------------------------------- |
-| `serde`    | Enable serialization/deserialization          |
-| `schemars` | Enable JSON Schema generation (implies serde) |
+| Feature | Description                          |
+| ------- | ------------------------------------ |
+| `serde` | Enable serialization/deserialization |
 
 ```toml
 [dependencies]

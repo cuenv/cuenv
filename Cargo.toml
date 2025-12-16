@@ -9,7 +9,6 @@ members = [
     "crates/workspaces",
     "crates/ci",
     "crates/release",
-    "crates/schema-validator",
     "crates/ignore",
     "crates/codeowners",
     "crates/cubes",

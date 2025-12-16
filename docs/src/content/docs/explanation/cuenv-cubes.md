@@ -373,16 +373,11 @@ cube: {
 
 ## Features
 
-The crate supports optional features:
-
-| Feature    | Description                                   |
-| ---------- | --------------------------------------------- |
-| `serde`    | Enable serialization/deserialization          |
-| `schemars` | Enable JSON Schema generation (implies serde) |
+The crate uses serde for serialization/deserialization.
 
 ```toml
 [dependencies]
-cuenv-cubes = { version = "...", features = ["serde"] }
+cuenv-cubes = "..."
 ```
 
 ## Testing
