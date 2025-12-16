@@ -71,11 +71,12 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
         .sync(&repo_root, &[project_owners], dry_run)
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
 
+    let display_path = result.path.strip_prefix(&repo_root).unwrap_or(&result.path);
     let output = if dry_run {
         // Dry-run output format for backward compatibility with tests
         format!(
             "Would write to: {}\n\n--- Content ---\n{}",
-            result.path.display(),
+            display_path.display(),
             result.content
         )
     } else {
@@ -86,7 +87,7 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
             SyncStatus::WouldCreate => "Would create",
             SyncStatus::WouldUpdate => "Would update",
         };
-        format!("{} CODEOWNERS: {}", status_msg, result.path.display())
+        format!("{} CODEOWNERS: {}", status_msg, display_path.display())
     };
 
     Ok(output)

@@ -769,19 +769,10 @@ pub async fn execute_sync_codeowners_workspace(
             SyncStatus::WouldUpdate => "Would update",
         };
 
-        let mut output = format!("{} CODEOWNERS: {}\n", status_msg, result.path.display());
+        let display_path = result.path.strip_prefix(&module_root).unwrap_or(&result.path);
+        let mut output = format!("{} CODEOWNERS: {}\n", status_msg, display_path.display());
 
-        // List configs included
-        let _ = writeln!(
-            output,
-            "Aggregated {} config(s): {}",
-            project_owners_list.len(),
-            project_owners_list
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let _ = writeln!(output, "Aggregated {} config(s)", project_owners_list.len());
 
         if dry_run {
             output.push_str("\n--- Content ---\n");
@@ -1070,19 +1061,10 @@ async fn sync_codeowners_with_bases(
             SyncStatus::WouldUpdate => "Would update",
         };
 
-        let mut output = format!("{} CODEOWNERS: {}\n", status_msg, result.path.display());
+        let display_path = result.path.strip_prefix(module_root).unwrap_or(&result.path);
+        let mut output = format!("{} CODEOWNERS: {}\n", status_msg, display_path.display());
 
-        // List configs included
-        let _ = writeln!(
-            output,
-            "Aggregated {} config(s): {}",
-            project_owners_list.len(),
-            project_owners_list
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let _ = writeln!(output, "Aggregated {} config(s)", project_owners_list.len());
 
         if dry_run {
             output.push_str("\n--- Content ---\n");
