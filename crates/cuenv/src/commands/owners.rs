@@ -35,11 +35,11 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
     }
 
     // Validate rules have at least one owner
-    for (i, rule) in owners.rules.iter().enumerate() {
+    for (key, rule) in &owners.rules {
         if rule.owners.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
-                "Rule {} (pattern '{}') has no owners defined. Each rule must have at least one owner.",
-                i + 1,
+                "Rule '{}' (pattern '{}') has no owners defined. Each rule must have at least one owner.",
+                key,
                 rule.pattern
             )));
         }
@@ -114,11 +114,11 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
     }
 
     // Validate rules have at least one owner
-    for (i, rule) in owners.rules.iter().enumerate() {
+    for (key, rule) in &owners.rules {
         if rule.owners.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
-                "Rule {} (pattern '{}') has no owners defined. Each rule must have at least one owner.",
-                i + 1,
+                "Rule '{}' (pattern '{}') has no owners defined. Each rule must have at least one owner.",
+                key,
                 rule.pattern
             )));
         }
@@ -176,10 +176,17 @@ fn convert_to_project_owners(
     owners: &Owners,
     relative_path: PathBuf,
 ) -> ProjectOwners {
-    let rules: Vec<Rule> = owners
-        .rules
+    // Sort rules by order then by key for determinism
+    let mut rule_entries: Vec<_> = owners.rules.iter().collect();
+    rule_entries.sort_by(|a, b| {
+        let order_a = a.1.order.unwrap_or(i32::MAX);
+        let order_b = b.1.order.unwrap_or(i32::MAX);
+        order_a.cmp(&order_b).then_with(|| a.0.cmp(b.0))
+    });
+
+    let rules: Vec<Rule> = rule_entries
         .iter()
-        .map(|r| {
+        .map(|(_key, r)| {
             let mut rule = Rule::new(&r.pattern, r.owners.clone());
             if let Some(ref desc) = r.description {
                 rule = rule.description(desc.clone());
@@ -241,9 +248,22 @@ fn load_owners_config(root: &Path, package: &str) -> Result<Owners> {
 mod tests {
     use super::*;
     use cuenv_core::owners::{OwnerRule, OwnersOutput, Platform};
+    use std::collections::HashMap;
 
     #[test]
     fn test_owners_generate_content() {
+        let mut rules = HashMap::new();
+        rules.insert(
+            "rust-files".to_string(),
+            OwnerRule {
+                pattern: "*.rs".to_string(),
+                owners: vec!["@rust-team".to_string()],
+                description: Some("Rust files".to_string()),
+                section: Some("Backend".to_string()),
+                order: None,
+            },
+        );
+
         let owners = Owners {
             output: Some(OwnersOutput {
                 platform: Some(Platform::Github),
@@ -251,12 +271,7 @@ mod tests {
                 header: Some("Test Header".to_string()),
             }),
             default_owners: Some(vec!["@default-team".to_string()]),
-            rules: vec![OwnerRule {
-                pattern: "*.rs".to_string(),
-                owners: vec!["@rust-team".to_string()],
-                description: Some("Rust files".to_string()),
-                section: Some("Backend".to_string()),
-            }],
+            rules,
         };
 
         let content = owners.generate();

@@ -9,8 +9,9 @@ package schema
 	// Global default owners applied to all patterns without explicit owners
 	defaultOwners?: [...#Owner]
 
-	// Code ownership rules - maps patterns to owners
-	rules: [...#OwnerRule]
+	// Code ownership rules - maps rule names to rule definitions
+	// Using a map enables CUE unification/layering across configs
+	rules: [string]: #OwnerRule
 })
 
 // #OwnersOutput configures where to write the CODEOWNERS file
@@ -44,6 +45,10 @@ package schema
 	// Section name for grouping rules in the output file
 	// Rules with the same section are grouped together with a header comment
 	section?: string
+
+	// Optional order for deterministic output (lower values appear first)
+	// Rules without order are sorted alphabetically by key after ordered rules
+	order?: int
 })
 
 // #Owner represents a code owner (user, team, or email)
