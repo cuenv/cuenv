@@ -3,7 +3,7 @@
 use cuengine::CueEvaluator;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use cuenv_core::tasks::execute_command;
 use std::path::Path;
 
@@ -29,7 +29,7 @@ pub async fn execute_exec(
     let evaluator = CueEvaluator::builder()
         .build()
         .map_err(super::convert_engine_error)?;
-    let manifest: Cuenv = evaluator
+    let manifest: Project = evaluator
         .evaluate_typed(Path::new(path), package)
         .map_err(super::convert_engine_error)?;
 

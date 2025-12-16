@@ -1,4 +1,4 @@
-//! `Cuenv` CLI Application
+//! cuenv CLI Application
 
 //! cuenv CLI Application - Production-grade CUE environment toolchain
 //!

@@ -9,7 +9,7 @@ use cuengine::CueEvaluator;
 use cuenv_codeowners::Rule;
 use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
 use cuenv_core::Result;
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Base;
 use cuenv_core::owners::Owners;
 use std::path::{Path, PathBuf};
 
@@ -25,8 +25,8 @@ use std::path::{Path, PathBuf};
 pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Result<String> {
     let project_root = Path::new(path);
 
-    // Load the CUE configuration
-    let (manifest, owners) = load_owners_config_with_manifest(project_root, package)?;
+    // Load the CUE configuration (uses Base schema - works with or without project name)
+    let owners = load_owners_config(project_root, package)?;
 
     if owners.rules.is_empty() && owners.default_owners.is_none() {
         return Err(cuenv_core::Error::configuration(
@@ -61,8 +61,8 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
         .unwrap_or(Path::new(""))
         .to_path_buf();
 
-    // Convert to provider types
-    let project_owners = convert_to_project_owners(&manifest, &owners, relative_path);
+    // Convert to provider types (derives project name from directory)
+    let project_owners = convert_to_project_owners(project_root, &owners, relative_path);
 
     // Detect provider based on repo structure
     let provider = detect_codeowners_provider(&repo_root);
@@ -104,8 +104,8 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
 pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
     let project_root = Path::new(path);
 
-    // Load the CUE configuration
-    let (manifest, owners) = load_owners_config_with_manifest(project_root, package)?;
+    // Load the CUE configuration (uses Base schema - works with or without project name)
+    let owners = load_owners_config(project_root, package)?;
 
     if owners.rules.is_empty() && owners.default_owners.is_none() {
         return Ok(
@@ -140,8 +140,8 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
         .unwrap_or(Path::new(""))
         .to_path_buf();
 
-    // Convert to provider types
-    let project_owners = convert_to_project_owners(&manifest, &owners, relative_path);
+    // Convert to provider types (derives project name from directory)
+    let project_owners = convert_to_project_owners(project_root, &owners, relative_path);
 
     // Detect provider based on repo structure
     let provider = detect_codeowners_provider(&repo_root);
@@ -170,8 +170,9 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
 }
 
 /// Convert manifest owners configuration to provider `ProjectOwners` type.
+/// For Base configs (without a name), the project name is derived from the directory.
 fn convert_to_project_owners(
-    manifest: &Cuenv,
+    project_root: &Path,
     owners: &Owners,
     relative_path: PathBuf,
 ) -> ProjectOwners {
@@ -190,7 +191,14 @@ fn convert_to_project_owners(
         })
         .collect();
 
-    let mut project_owners = ProjectOwners::new(relative_path, manifest.name.clone(), rules);
+    // Use directory name as project name for Base configs
+    let project_name = project_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
+
+    let mut project_owners = ProjectOwners::new(relative_path, project_name, rules);
 
     if let Some(ref default_owners) = owners.default_owners {
         project_owners = project_owners.with_default_owners(default_owners.clone());
@@ -212,22 +220,21 @@ fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Load code ownership configuration from CUE, returning both manifest and owners.
-fn load_owners_config_with_manifest(root: &Path, package: &str) -> Result<(Cuenv, Owners)> {
+/// Load code ownership configuration from CUE using Base schema.
+/// Works with both schema.#Base and schema.#Project configurations.
+fn load_owners_config(root: &Path, package: &str) -> Result<Owners> {
     let evaluator = CueEvaluator::builder()
         .build()
         .map_err(super::convert_engine_error)?;
-    let manifest: Cuenv = evaluator
+    let manifest: Base = evaluator
         .evaluate_typed(root, package)
         .map_err(super::convert_engine_error)?;
 
-    let owners = manifest.owners.clone().ok_or_else(|| {
+    manifest.owners.ok_or_else(|| {
         cuenv_core::Error::configuration(
             "No 'owners' configuration found in env.cue. Add an 'owners' section with code ownership rules."
         )
-    })?;
-
-    Ok((manifest, owners))
+    })
 }
 
 #[cfg(test)]

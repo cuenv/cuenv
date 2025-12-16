@@ -168,6 +168,14 @@ pub struct Base {
     /// Workspaces configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
+
+    /// Code ownership configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owners: Option<Owners>,
+
+    /// Ignore patterns for tool-specific ignore files
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Ignore>,
 }
 
 /// Ignore patterns for tool-specific ignore files.
@@ -335,8 +343,6 @@ pub struct Project {
     pub cube: Option<CubeConfig>,
 }
 
-/// Type alias for backward compatibility
-pub type Cuenv = Project;
 
 impl Project {
     /// Create a new Project configuration with a required name.
@@ -634,7 +640,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv
             .tasks
             .insert("deploy".into(), TaskDefinition::Single(Box::new(task)));
@@ -664,7 +670,7 @@ mod tests {
 
     #[test]
     fn test_implicit_bun_install_task() {
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -698,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_implicit_npm_install_task() {
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "npm".into(),
             WorkspaceConfig {
@@ -726,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_implicit_cargo_fetch_task() {
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "cargo".into(),
             WorkspaceConfig {
@@ -759,7 +765,7 @@ mod tests {
 
     #[test]
     fn test_no_override_user_defined_task() {
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -791,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_no_override_user_defined_nested_install_task() {
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -845,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_disabled_workspace_no_implicit_task() {
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -862,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_unknown_workspace_no_implicit_task() {
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "unknown-package-manager".into(),
             WorkspaceConfig {
@@ -879,7 +885,7 @@ mod tests {
 
     #[test]
     fn test_no_workspaces_unchanged() {
-        let cuenv = Cuenv::new("test");
+        let cuenv = Project::new("test");
         let cuenv = cuenv.with_implicit_tasks();
         assert!(cuenv.tasks.is_empty());
     }
@@ -887,7 +893,7 @@ mod tests {
     #[test]
     fn test_no_workspace_tasks_when_unused() {
         // When no task uses a workspace, the implicit install tasks should not be created
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.workspaces = Some(HashMap::from([(
             "bun".into(),
             WorkspaceConfig {
@@ -1247,7 +1253,7 @@ mod tests {
     }
 
     // ============================================================================
-    // WorkspaceHooks with Cuenv Integration Tests
+    // WorkspaceHooks with Project Integration Tests
     // ============================================================================
 
     #[test]
@@ -1276,7 +1282,7 @@ mod tests {
         }}"#,
             "#generator:types"
         );
-        let cuenv: Cuenv = serde_json::from_str(&json).unwrap();
+        let cuenv: Project = serde_json::from_str(&json).unwrap();
 
         assert_eq!(cuenv.name, "test-project");
         let workspaces = cuenv.workspaces.unwrap();
@@ -1311,7 +1317,7 @@ mod tests {
         }}"#,
             "#projen:types"
         );
-        let cuenv: Cuenv = serde_json::from_str(&json).unwrap();
+        let cuenv: Project = serde_json::from_str(&json).unwrap();
 
         let workspaces = cuenv.workspaces.unwrap();
         assert!(workspaces.contains_key("bun"));
@@ -1341,7 +1347,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv
             .tasks
             .insert("bundle".into(), TaskDefinition::Single(Box::new(task)));
@@ -1374,7 +1380,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.tasks.insert(
             "pipeline".into(),
             TaskDefinition::Group(TaskGroup::Sequential(vec![
@@ -1423,7 +1429,7 @@ mod tests {
         parallel_tasks.insert("a".to_string(), TaskDefinition::Single(Box::new(task1)));
         parallel_tasks.insert("b".to_string(), TaskDefinition::Single(Box::new(task2)));
 
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.tasks.insert(
             "parallel".into(),
             TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
@@ -1463,7 +1469,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv
             .tasks
             .insert("deploy".into(), TaskDefinition::Single(Box::new(task)));
@@ -1489,7 +1495,7 @@ mod tests {
         on_enter.insert("hook_a".to_string(), create_test_hook(100, "echo a"));
         on_enter.insert("hook_b".to_string(), create_test_hook(200, "echo b"));
 
-        let mut cuenv = Cuenv::new("test");
+        let mut cuenv = Project::new("test");
         cuenv.hooks = Some(Hooks {
             on_enter: Some(on_enter),
             on_exit: None,
@@ -1510,7 +1516,7 @@ mod tests {
         on_enter.insert("z_hook".to_string(), create_test_hook(100, "echo z"));
         on_enter.insert("a_hook".to_string(), create_test_hook(100, "echo a"));
 
-        let cuenv = Cuenv {
+        let cuenv = Project {
             name: "test".to_string(),
             hooks: Some(Hooks {
                 on_enter: Some(on_enter),
@@ -1529,7 +1535,7 @@ mod tests {
 
     #[test]
     fn test_empty_hooks() {
-        let cuenv = Cuenv::new("test");
+        let cuenv = Project::new("test");
 
         let on_enter = cuenv.on_enter_hooks();
         let on_exit = cuenv.on_exit_hooks();

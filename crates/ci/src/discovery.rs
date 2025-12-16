@@ -1,13 +1,13 @@
 use cuengine::evaluate_cue_package_typed;
 use cuenv_core::Result;
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use glob::glob;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
-pub struct Project {
+pub struct DiscoveredCIProject {
     pub path: PathBuf,
-    pub config: Cuenv,
+    pub config: Project,
 }
 
 /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
@@ -30,7 +30,7 @@ fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 ///
 /// # Panics
 /// Panics if the regex pattern is invalid (should not happen as it is hardcoded)
-pub fn discover_projects() -> Result<Vec<Project>> {
+pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
     // Check if we're inside a CUE module first
     let cwd = std::env::current_dir().map_err(|e| cuenv_core::Error::Io {
         source: e,
@@ -74,11 +74,11 @@ pub fn discover_projects() -> Result<Vec<Project>> {
 
         // Load the configuration
         // We assume the package name is "cuenv" based on convention
-        if let Ok(mut config) = evaluate_cue_package_typed::<Cuenv>(dir_path, "cuenv") {
+        if let Ok(mut config) = evaluate_cue_package_typed::<Project>(dir_path, "cuenv") {
             // Expand cross-project references and implicit dependencies
             config.expand_cross_project_references();
 
-            projects.push(Project {
+            projects.push(DiscoveredCIProject {
                 path: entry,
                 config,
             });

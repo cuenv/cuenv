@@ -48,7 +48,7 @@ pub async fn run_ci(
     println!("Changed files: {}", changed_files.len());
 
     // 3. Discover projects
-    // We need a way to load Cuenv configs.
+    // We need a way to load Project configs.
     let projects = discover_projects()?;
     if projects.is_empty() {
         return Err(cuenv_core::Error::configuration(

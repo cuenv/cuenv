@@ -7,7 +7,7 @@
 
 use super::env_file::{self, EnvFileStatus};
 use cuengine::CueEvaluator;
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use cuenv_core::{
     Result,
     hooks::{
@@ -58,7 +58,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
     let evaluator = CueEvaluator::builder()
         .build()
         .map_err(super::convert_engine_error)?;
-    let config: Cuenv = evaluator
+    let config: Project = evaluator
         .evaluate_typed(&directory, package)
         .map_err(super::convert_engine_error)?;
 
@@ -67,7 +67,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
     approval_manager.load_approvals().await?;
 
     debug!("Checking approval for directory: {}", directory.display());
-    // Convert Cuenv to Value for approval check (temporary until approval system is updated)
+    // Convert Project to Value for approval check (temporary until approval system is updated)
     let config_value = serde_json::to_value(&config).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
     })?;
@@ -172,7 +172,7 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
 }
 
 /// Extract hooks from CUE config
-fn extract_hooks_from_config(config: &Cuenv) -> Vec<cuenv_core::hooks::types::Hook> {
+fn extract_hooks_from_config(config: &Project) -> Vec<cuenv_core::hooks::types::Hook> {
     config.on_enter_hooks()
 }
 
@@ -192,7 +192,7 @@ fn resolve_hook_dir(hook: &mut cuenv_core::hooks::types::Hook, env_cue_dir: &Pat
 
 /// Extract hooks from a config and resolve their `dir` fields relative to the given directory.
 fn extract_hooks_with_resolved_dirs(
-    config: &Cuenv,
+    config: &Project,
     env_cue_dir: &Path,
 ) -> Vec<cuenv_core::hooks::types::Hook> {
     let mut hooks = config.on_enter_hooks();
@@ -203,7 +203,7 @@ fn extract_hooks_with_resolved_dirs(
 }
 
 /// Extract static environment variables from CUE config
-fn extract_static_env_vars(config: &Cuenv) -> HashMap<String, String> {
+fn extract_static_env_vars(config: &Project) -> HashMap<String, String> {
     let mut env_vars = HashMap::new();
 
     if let Some(env) = &config.env {
@@ -223,7 +223,7 @@ fn extract_static_env_vars(config: &Cuenv) -> HashMap<String, String> {
 
 /// Collect all environment variables (static + hook-generated)
 fn collect_all_env_vars(
-    config: &Cuenv,
+    config: &Project,
     hook_env: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     let mut all_vars = extract_static_env_vars(config);
@@ -242,7 +242,7 @@ async fn run_hooks_foreground(
     directory: &Path,
     config_hash: &str,
     hooks: Vec<cuenv_core::hooks::types::Hook>,
-    config: &Cuenv,
+    config: &Project,
 ) -> Result<HashMap<String, String>> {
     let static_env = extract_static_env_vars(config);
     let instance_hash = compute_instance_hash(directory, config_hash);
@@ -323,7 +323,7 @@ fn collect_hooks_from_ancestors(
         let is_current_dir = i == ancestors_len - 1;
 
         // Evaluate the CUE config for this ancestor
-        let config: Cuenv = match evaluator.evaluate_typed(&ancestor_dir, package) {
+        let config: Project = match evaluator.evaluate_typed(&ancestor_dir, package) {
             Ok(c) => c,
             Err(e) => {
                 debug!(
@@ -372,7 +372,7 @@ fn collect_hooks_from_ancestors(
 #[allow(clippy::too_many_lines)]
 pub async fn get_environment_with_hooks(
     directory: &Path,
-    config: &Cuenv,
+    config: &Project,
     package: &str,
 ) -> Result<HashMap<String, String>> {
     // Start with static environment from CUE manifest
@@ -513,7 +513,7 @@ fn format_loaded_check(dir: &Path, shell: Shell) -> String {
     match shell {
         Shell::Bash | Shell::Zsh => format!(
             r#"if [ "${{{loaded}:-}}" != "{escaped_dir}" ]; then
-    echo "Cuenv environment loaded" >&2
+    echo "Project environment loaded" >&2
     export {loaded}="{escaped_dir}"
     unset {pending} 2>/dev/null
 fi"#,
@@ -523,11 +523,11 @@ fi"#,
         ),
         Shell::Fish => format!(
             r#"if not set -q {loaded}
-    echo "Cuenv environment loaded" >&2
+    echo "Project environment loaded" >&2
     set -x {loaded} "{escaped_dir}"
     set -e {pending} 2>/dev/null
 else if test "${loaded}" != "{escaped_dir}"
-    echo "Cuenv environment loaded" >&2
+    echo "Project environment loaded" >&2
     set -x {loaded} "{escaped_dir}"
     set -e {pending} 2>/dev/null
 end"#,
@@ -539,7 +539,7 @@ end"#,
             let ps_dir = dir_display.replace('\'', "''");
             format!(
                 r"if ($env:{loaded} -ne '{ps_dir}') {{
-    Write-Host 'Cuenv environment loaded'
+    Write-Host 'Project environment loaded'
     $env:{loaded} = '{ps_dir}'
     Remove-Item Env:{pending} -ErrorAction SilentlyContinue
 }}",
@@ -740,7 +740,7 @@ if (Test-Path Env:{loaded}) {{ Remove-Item Env:{loaded} }}
 mod tests {
     use super::*;
     use cuenv_core::environment::{Env, EnvValue, EnvValueSimple, EnvVarWithPolicies};
-    use cuenv_core::manifest::Cuenv;
+    use cuenv_core::manifest::Project;
     use cuenv_core::secrets::Secret;
     use std::collections::HashMap;
     use std::path::Path;
@@ -827,22 +827,22 @@ mod tests {
         env.insert("NUM".to_string(), "42".to_string());
 
         let bash = format_env_diff(dir, env.clone(), Shell::Bash);
-        assert!(bash.contains("echo \"Cuenv environment loaded\" >&2"));
+        assert!(bash.contains("echo \"Project environment loaded\" >&2"));
         assert!(bash.contains("export CUENV_LOADED_DIR=\"/tmp/project\""));
         assert!(bash.contains("export FOO=\"bar baz\""));
         assert!(bash.contains("export NUM=\"42\""));
 
         let zsh = format_env_diff(dir, env.clone(), Shell::Zsh);
-        assert!(zsh.contains("echo \"Cuenv environment loaded\" >&2"));
+        assert!(zsh.contains("echo \"Project environment loaded\" >&2"));
         assert!(zsh.contains("export FOO=\"bar baz\""));
 
         let fish = format_env_diff(dir, env.clone(), Shell::Fish);
-        assert!(fish.contains("echo \"Cuenv environment loaded\" >&2"));
+        assert!(fish.contains("echo \"Project environment loaded\" >&2"));
         assert!(fish.contains("set -x CUENV_LOADED_DIR \"/tmp/project\""));
         assert!(fish.contains("set -x FOO \"bar baz\""));
 
         let pwsh = format_env_diff(dir, env, Shell::PowerShell);
-        assert!(pwsh.contains("Write-Host 'Cuenv environment loaded'"));
+        assert!(pwsh.contains("Write-Host 'Project environment loaded'"));
         assert!(pwsh.contains("$env:CUENV_LOADED_DIR = '/tmp/project'"));
         assert!(pwsh.contains("$env:FOO = \"bar baz\""));
     }
@@ -863,7 +863,7 @@ mod tests {
             format_env_diff_with_unset(dir, current.clone(), Some(&previous), Shell::Bash);
         assert!(out_bash.lines().any(|l| l == "unset REMOVED"));
         assert!(out_bash.contains("export A=\"1\""));
-        assert!(out_bash.contains("echo \"Cuenv environment loaded\""));
+        assert!(out_bash.contains("echo \"Project environment loaded\""));
 
         let out_fish =
             format_env_diff_with_unset(dir, current.clone(), Some(&previous), Shell::Fish);
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn test_extract_static_env_vars_skips_secrets() {
-        // Build Cuenv with one normal var and one secret
+        // Build Project with one normal var and one secret
         let mut base = HashMap::new();
         base.insert("PLAIN".to_string(), EnvValue::String("value".to_string()));
         let secret = Secret::new("cmd".to_string(), vec!["arg".to_string()]);
@@ -885,7 +885,7 @@ mod tests {
             base,
             environment: None,
         };
-        let cfg = Cuenv {
+        let cfg = Project {
             config: None,
             env: Some(env_cfg),
             hooks: None,
@@ -915,7 +915,7 @@ mod tests {
             }),
         );
 
-        let cfg = Cuenv {
+        let cfg = Project {
             config: None,
             env: Some(Env {
                 base,

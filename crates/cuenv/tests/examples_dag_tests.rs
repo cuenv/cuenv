@@ -4,7 +4,7 @@
 //! loaded and produce valid task DAGs.
 
 use cuengine::evaluate_cue_package_typed;
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskGraph, Tasks};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,14 +34,14 @@ fn get_examples_dir() -> PathBuf {
         .join("examples")
 }
 
-/// Load a Cuenv manifest from an example directory
-fn load_example_manifest(example_path: &Path) -> Result<Cuenv, String> {
-    evaluate_cue_package_typed::<Cuenv>(example_path, "_examples")
+/// Load a Project manifest from an example directory
+fn load_example_manifest(example_path: &Path) -> Result<Project, String> {
+    evaluate_cue_package_typed::<Project>(example_path, "_examples")
         .map_err(|e| format!("Failed to load manifest: {e}"))
 }
 
-/// Build a `TaskGraph` from a `Cuenv` manifest and validate it
-fn build_and_validate_graph(manifest: &Cuenv) -> Result<TaskGraph, String> {
+/// Build a `TaskGraph` from a `Project` manifest and validate it
+fn build_and_validate_graph(manifest: &Project) -> Result<TaskGraph, String> {
     // Convert the manifest tasks to a Tasks struct
     let tasks = Tasks {
         tasks: manifest.tasks.clone(),

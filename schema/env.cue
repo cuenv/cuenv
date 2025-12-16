@@ -14,7 +14,7 @@ package schema
 // but when exported to the actual environment,
 // these will always be strings.
 #Environment: close({
-	[=~"^[A-Z][A-Z0-9_]*$"]: #EnvironmentVariable
+	[=~"^[A-Z0-9_]*$"]: #EnvironmentVariable
 })
 
 // #Env defines the structure for environment variable configuration

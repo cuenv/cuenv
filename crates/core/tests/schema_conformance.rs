@@ -2,7 +2,7 @@
 //!
 //! These tests ensure that Rust types and CUE schemas remain in sync
 
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use schemars::schema_for;
 use serde_json::Value;
 use std::fs;
@@ -12,10 +12,10 @@ use std::process::Command;
 #[test]
 fn test_rust_schema_generation() {
     // Test that we can generate valid JSON Schema from Rust types
-    let schema = schema_for!(Cuenv);
+    let schema = schema_for!(Project);
     let json = serde_json::to_string_pretty(&schema).unwrap();
 
-    // Schema should contain expected top-level properties (Cuenv is an alias to Project)
+    // Schema should contain expected top-level properties (Project is an alias to Project)
     assert!(json.contains("\"title\": \"Project\""));
     assert!(json.contains("\"properties\""));
     assert!(json.contains("config"));
@@ -31,7 +31,7 @@ fn test_valid_fixtures_parse() {
 
     // Test minimal config
     if let Ok(json) = export_and_parse_cue(&fixtures_dir.join("minimal.cue")) {
-        let result = serde_json::from_value::<Cuenv>(json);
+        let result = serde_json::from_value::<Project>(json);
         assert!(
             result.is_ok(),
             "Minimal config should parse: {:?}",
@@ -41,7 +41,7 @@ fn test_valid_fixtures_parse() {
 
     // Test full config
     if let Ok(json) = export_and_parse_cue(&fixtures_dir.join("full.cue")) {
-        let result = serde_json::from_value::<Cuenv>(json);
+        let result = serde_json::from_value::<Project>(json);
         assert!(
             result.is_ok(),
             "Full config should parse: {:?}",
@@ -57,7 +57,7 @@ fn test_valid_fixtures_parse() {
 
     // Test hooks config
     if let Ok(json) = export_and_parse_cue(&fixtures_dir.join("hooks.cue")) {
-        let result = serde_json::from_value::<Cuenv>(json);
+        let result = serde_json::from_value::<Project>(json);
         assert!(
             result.is_ok(),
             "Hooks config should parse: {:?}",
@@ -122,11 +122,11 @@ fn test_round_trip_serialization() {
         config::{CacheMode, Config, OutputFormat},
         environment::{Env, EnvValue},
         hooks::types::Hook,
-        manifest::{Cuenv, Hooks},
+        manifest::{Project, Hooks},
     };
     use std::collections::HashMap;
 
-    // Create a sample Cuenv structure
+    // Create a sample Project structure
     let mut env_vars = HashMap::new();
     env_vars.insert(
         "DATABASE_URL".to_string(),
@@ -149,7 +149,7 @@ fn test_round_trip_serialization() {
         },
     );
 
-    let cuenv = Cuenv {
+    let cuenv = Project {
         config: Some(Config {
             output_format: Some(OutputFormat::Simple),
             cache_mode: Some(CacheMode::ReadWrite),
@@ -181,7 +181,7 @@ fn test_round_trip_serialization() {
     let json = serde_json::to_value(&cuenv).unwrap();
 
     // Deserialize back
-    let deserialized: Cuenv = serde_json::from_value(json.clone()).unwrap();
+    let deserialized: Project = serde_json::from_value(json.clone()).unwrap();
 
     // Should match original
     assert_eq!(cuenv, deserialized);
