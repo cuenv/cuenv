@@ -1,6 +1,6 @@
 ---
-title: Cubes
-description: Generating project files from CUE templates with cuenv
+title: Cubes (Codegen)
+description: Code generation and project scaffolding from CUE templates with cuenv
 ---
 
 cuenv can generate and manage project files from CUE templates using Cubes. This enables you to define configuration files, scaffolding code, and generated assets in a type-safe, declarative way.
