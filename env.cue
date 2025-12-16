@@ -9,7 +9,10 @@ schema.#Project
 
 name: "cuenv"
 
-owners: defaultOwners: [ "@rawkode" ]
+owners: rules: default: {
+	pattern: "**"
+	owners: ["@rawkode"]
+}
 
 ignore: {
 	git: [

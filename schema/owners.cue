@@ -6,11 +6,9 @@ package schema
 	// Output configuration for CODEOWNERS file generation
 	output?: #OwnersOutput
 
-	// Global default owners applied to all patterns without explicit owners
-	defaultOwners?: [...#Owner]
-
 	// Code ownership rules - maps rule names to rule definitions
 	// Using a map enables CUE unification/layering across configs
+	// For a catch-all rule, use pattern "*" with your default owners
 	rules: [string]: #OwnerRule
 })
 

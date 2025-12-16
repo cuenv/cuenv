@@ -10,7 +10,7 @@
 //!
 //! let codeowners = Codeowners::builder()
 //!     .platform(Platform::Github)
-//!     .default_owners(["@org/core-team"])
+//!     .rule(Rule::new("*", ["@org/core-team"]))  // Catch-all rule
 //!     .rule(Rule::new("*.rs", ["@rust-team"]))
 //!     .rule(Rule::new("/docs/**", ["@docs-team"]).section("Documentation"))
 //!     .build();
@@ -182,7 +182,7 @@ impl Rule {
 /// let codeowners = Codeowners::builder()
 ///     .platform(Platform::Github)
 ///     .header("Custom header comment")
-///     .default_owners(["@org/maintainers"])
+///     .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
 ///     .rule(Rule::new("*.rs", ["@rust-team"]))
 ///     .build();
 ///
@@ -202,9 +202,6 @@ pub struct Codeowners {
     /// Custom header comment for the file.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub header: Option<String>,
-    /// Default owners applied to all files (`*` rule).
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub default_owners: Option<Vec<String>>,
     /// Ownership rules.
     #[cfg_attr(feature = "serde", serde(default))]
     pub rules: Vec<Rule>,
@@ -253,17 +250,6 @@ impl Codeowners {
                 output.push_str(line);
                 output.push('\n');
             }
-            output.push('\n');
-        }
-
-        // Add default owners if any
-        if let Some(ref default_owners) = self.default_owners
-            && !default_owners.is_empty()
-        {
-            output.push_str("# Default owners for all files\n");
-            output.push_str("* ");
-            output.push_str(&default_owners.join(" "));
-            output.push('\n');
             output.push('\n');
         }
 
@@ -367,7 +353,7 @@ impl Codeowners {
 /// let codeowners = Codeowners::builder()
 ///     .platform(Platform::Github)
 ///     .header("Code ownership rules")
-///     .default_owners(["@org/maintainers"])
+///     .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
 ///     .rule(Rule::new("*.rs", ["@rust-team"]))
 ///     .rules([
 ///         Rule::new("/docs/**", ["@docs-team"]),
@@ -380,7 +366,6 @@ pub struct CodeownersBuilder {
     platform: Option<Platform>,
     path: Option<String>,
     header: Option<String>,
-    default_owners: Option<Vec<String>>,
     rules: Vec<Rule>,
 }
 
@@ -410,15 +395,6 @@ impl CodeownersBuilder {
         self
     }
 
-    /// Set default owners for all files.
-    ///
-    /// This creates a `* @owner1 @owner2` rule at the top of the file.
-    #[must_use]
-    pub fn default_owners(mut self, owners: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.default_owners = Some(owners.into_iter().map(Into::into).collect());
-        self
-    }
-
     /// Add a single rule.
     #[must_use]
     pub fn rule(mut self, rule: Rule) -> Self {
@@ -440,7 +416,6 @@ impl CodeownersBuilder {
             platform: self.platform,
             path: self.path,
             header: self.header,
-            default_owners: self.default_owners,
             rules: self.rules,
         }
     }
@@ -516,18 +491,6 @@ mod tests {
         let content = codeowners.generate();
         assert!(content.contains("# Backend"));
         assert!(content.contains("# Frontend"));
-    }
-
-    #[test]
-    fn test_generate_with_default_owners() {
-        let codeowners = Codeowners::builder()
-            .default_owners(["@core-team"])
-            .rule(Rule::new("/security/**", ["@security-team"]))
-            .build();
-
-        let content = codeowners.generate();
-        assert!(content.contains("* @core-team"));
-        assert!(content.contains("/security/** @security-team"));
     }
 
     #[test]
@@ -621,7 +584,6 @@ mod tests {
             .platform(Platform::Github)
             .path(".github/CODEOWNERS")
             .header("Code ownership")
-            .default_owners(["@org/maintainers"])
             .rule(Rule::new("*.rs", ["@rust"]))
             .rules([
                 Rule::new("*.ts", ["@typescript"]),
@@ -632,10 +594,6 @@ mod tests {
         assert_eq!(codeowners.platform, Some(Platform::Github));
         assert_eq!(codeowners.path, Some(".github/CODEOWNERS".to_string()));
         assert_eq!(codeowners.header, Some("Code ownership".to_string()));
-        assert_eq!(
-            codeowners.default_owners,
-            Some(vec!["@org/maintainers".to_string()])
-        );
         assert_eq!(codeowners.rules.len(), 3);
     }
 }
