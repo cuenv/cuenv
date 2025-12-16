@@ -719,11 +719,7 @@ pub async fn execute_sync_codeowners_workspace(
             .collect();
 
         // Use synthetic name from directory path
-        let mut proj_owners = ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
-
-        if let Some(default_owners) = &owners.default_owners {
-            proj_owners = proj_owners.with_default_owners(default_owners.to_owned());
-        }
+        let proj_owners = ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
 
         project_owners_list.push(proj_owners);
     }
@@ -1024,11 +1020,7 @@ async fn sync_codeowners_with_bases(
             .collect();
 
         // Use synthetic name from directory path
-        let mut proj_owners = ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
-
-        if let Some(default_owners) = &owners.default_owners {
-            proj_owners = proj_owners.with_default_owners(default_owners.to_owned());
-        }
+        let proj_owners = ProjectOwners::new(relative_path, base.synthetic_name.clone(), rules);
 
         project_owners_list.push(proj_owners);
     }

@@ -28,9 +28,9 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
     // Load the CUE configuration (uses Base schema - works with or without project name)
     let owners = load_owners_config(project_root, package)?;
 
-    if owners.rules.is_empty() && owners.default_owners.is_none() {
+    if owners.rules.is_empty() {
         return Err(cuenv_core::Error::configuration(
-            "No code ownership rules defined in configuration. Add 'owners' section to your env.cue file.",
+            "No code ownership rules defined in configuration. Add 'owners.rules' section to your env.cue file.",
         ));
     }
 
@@ -106,7 +106,7 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
     // Load the CUE configuration (uses Base schema - works with or without project name)
     let owners = load_owners_config(project_root, package)?;
 
-    if owners.rules.is_empty() && owners.default_owners.is_none() {
+    if owners.rules.is_empty() {
         return Ok(
             "No code ownership rules defined in configuration. Nothing to check.".to_string(),
         );
@@ -203,13 +203,7 @@ fn convert_to_project_owners(
         .unwrap_or("project")
         .to_string();
 
-    let mut project_owners = ProjectOwners::new(relative_path, project_name, rules);
-
-    if let Some(ref default_owners) = owners.default_owners {
-        project_owners = project_owners.with_default_owners(default_owners.clone());
-    }
-
-    project_owners
+    ProjectOwners::new(relative_path, project_name, rules)
 }
 
 /// Find the CUE module root by walking up from the given path.
@@ -268,13 +262,11 @@ mod tests {
                 path: None,
                 header: Some("Test Header".to_string()),
             }),
-            default_owners: Some(vec!["@default-team".to_string()]),
             rules,
         };
 
         let content = owners.generate();
         assert!(content.contains("# Test Header"));
-        assert!(content.contains("* @default-team"));
         assert!(content.contains("# Backend"));
         assert!(content.contains("# Rust files"));
         assert!(content.contains("*.rs @rust-team"));
