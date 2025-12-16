@@ -1703,9 +1703,28 @@ async fn execute_sync_command_safe(
         };
     }
 
+    // Handle Codeowners subcommand - ALWAYS uses workspace sync (auto-all behavior)
+    // CODEOWNERS is a single file at repo root, so it must aggregate all configs
+    if matches!(subcommand, Some(SyncCommands::Codeowners { .. })) {
+        let result =
+            commands::sync::execute_sync_codeowners_workspace(&package, dry_run, check).await;
+
+        return match result {
+            Ok(output) => {
+                output_result(&output, json_mode)?;
+                Ok(())
+            }
+            Err(e) => Err(CliError::eval_with_help(
+                format!("Codeowners sync failed: {e}"),
+                "Check that you are in a CUE module and your env.cue files are valid",
+            )),
+        };
+    }
+
     // Single project mode: determine which sync operations to run
+    // Note: Codeowners always uses workspace sync (CODEOWNERS is a repo-wide file)
     let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
-    let run_codeowners = matches!(subcommand, None | Some(SyncCommands::Codeowners { .. }));
+    let run_codeowners_in_aggregate = subcommand.is_none(); // Only in aggregate sync (cuenv sync)
 
     let mut outputs = Vec::new();
     let mut had_error = false;
@@ -1720,15 +1739,10 @@ async fn execute_sync_command_safe(
         }
     }
 
-    if run_codeowners {
-        // Use optional version when running aggregate sync (no specific subcommand)
-        let is_aggregate_sync = subcommand.is_none();
-        let codeowners_result = if is_aggregate_sync {
-            commands::sync::execute_sync_codeowners_optional(&path, &package, dry_run, check).await
-        } else {
-            commands::sync::execute_sync_codeowners(&path, &package, dry_run, check).await
-        };
-        match codeowners_result {
+    if run_codeowners_in_aggregate {
+        // Codeowners always uses workspace sync because CODEOWNERS is a single file
+        // at repo root that must aggregate all configs (same as explicit `sync codeowners`)
+        match commands::sync::execute_sync_codeowners_workspace(&package, dry_run, check).await {
             Ok(output) => outputs.push(output),
             Err(e) => {
                 outputs.push(format!("Codeowners sync error: {e}"));
