@@ -1,5 +1,5 @@
 ---
-title: cuenv-cubes
+title: cuenv-cubes (Codegen)
 description: Code generation and project scaffolding from CUE templates
 ---
 
