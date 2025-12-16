@@ -3,6 +3,7 @@ pub(crate) mod env_file;
 pub mod exec;
 pub mod export;
 pub mod hooks;
+pub mod info;
 pub mod owners;
 pub mod release;
 pub mod sync;
@@ -161,6 +162,12 @@ use tracing::{Level, event};
 pub enum Command {
     Version {
         format: String,
+    },
+    Info {
+        /// None = recursive (./...), Some(path) = specific directory only
+        path: Option<String>,
+        package: String,
+        meta: bool,
     },
     EnvPrint {
         path: String,
@@ -401,10 +408,11 @@ impl CommandExecutor {
                 self.execute_sync(subcommand, path, package, dry_run, check)
                     .await
             }
-            // Tui, Web, Completions, and release commands are handled directly in main.rs
+            // Tui, Web, Completions, Info, and release commands are handled directly in main.rs
             Command::Tui
             | Command::Web { .. }
             | Command::Completions { .. }
+            | Command::Info { .. }
             | Command::ChangesetAdd { .. }
             | Command::ChangesetStatus { .. }
             | Command::ChangesetFromCommits { .. }

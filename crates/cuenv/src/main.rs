@@ -91,6 +91,7 @@ fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
         Some(cmd) => match cmd {
             // Commands that DON'T need tokio (fast path)
             crate::cli::Commands::Version { .. }
+            | crate::cli::Commands::Info { .. }
             | crate::cli::Commands::Completions { .. }
             | crate::cli::Commands::Changeset { .. }
             | crate::cli::Commands::Release { .. } => false,
@@ -174,6 +175,19 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             let version_info = commands::version::get_version_info();
             println!("{version_info}");
             Ok(())
+        }
+
+        Command::Info { path, package, meta } => {
+            match commands::info::execute_info(path.as_deref(), &package, json_mode, meta) {
+                Ok(output) => {
+                    print!("{output}");
+                    Ok(())
+                }
+                Err(e) => Err(CliError::eval_with_help(
+                    format!("Info command failed: {e}"),
+                    "Check that you are in a CUE module with valid env.cue files",
+                )),
+            }
         }
 
         Command::ShellInit { shell } => execute_shell_init_command_safe(shell, json_mode),
@@ -605,6 +619,19 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Ok(()) => Ok(()),
             Err(e) => Err(CliError::other(format!("Version command failed: {e}"))),
         },
+        Command::Info { path, package, meta } => {
+            // Info is a sync command, call it directly
+            match commands::info::execute_info(path.as_deref(), &package, json_mode, meta) {
+                Ok(output) => {
+                    print!("{output}");
+                    Ok(())
+                }
+                Err(e) => Err(CliError::eval_with_help(
+                    format!("Info command failed: {e}"),
+                    "Check that you are in a CUE module with valid env.cue files",
+                )),
+            }
+        }
         Command::EnvPrint {
             path,
             package,
