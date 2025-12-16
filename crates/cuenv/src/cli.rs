@@ -354,12 +354,12 @@ pub enum Commands {
         #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
         help: bool,
         #[arg(
-            long = "workspace",
-            short = 'w',
+            long = "all",
+            short = 'A',
             help = "List tasks from all projects in the workspace (for IDE completions)",
             default_value_t = false
         )]
-        workspace: bool,
+        all: bool,
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,
     },
@@ -456,6 +456,8 @@ pub enum Commands {
         generate: Option<String>,
         #[arg(long, help = "Base ref to compare against (branch name or commit SHA)")]
         from: Option<String>,
+        #[arg(long, help = "Overwrite existing workflow file")]
+        force: bool,
     },
     #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
     Tui,
@@ -884,7 +886,7 @@ impl Commands {
                 backend,
                 tui,
                 help,
-                workspace,
+                all,
                 task_args,
             } => Command::Task {
                 path,
@@ -898,7 +900,7 @@ impl Commands {
                 backend,
                 tui,
                 help,
-                workspace,
+                all,
                 task_args,
             },
             Commands::Exec {
@@ -934,11 +936,13 @@ impl Commands {
                 pipeline,
                 generate,
                 from,
+                force,
             } => Command::Ci {
                 dry_run,
                 pipeline,
                 generate,
                 from,
+                force,
             },
             Commands::Tui => Command::Tui,
             Commands::Web { port, host } => Command::Web { port, host },

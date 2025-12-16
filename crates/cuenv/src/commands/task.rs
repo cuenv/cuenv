@@ -68,7 +68,7 @@ pub async fn execute_task(
     backend: Option<&str>,
     tui: bool,
     help: bool,
-    workspace: bool,
+    all: bool,
     task_args: &[String],
 ) -> Result<String> {
     // Handle CLI help immediately if no task specified
@@ -108,12 +108,12 @@ pub async fn execute_task(
     let local_tasks = task_index.to_tasks();
 
     // Handle workspace-wide task listing for IDE completions
-    if workspace && task_name.is_none() && labels.is_empty() {
+    if all && task_name.is_none() && labels.is_empty() {
         tracing::debug!("Listing workspace-wide tasks for IDE completions");
 
         let Some(cue_mod_root) = cue_module_root.as_ref() else {
             return Err(cuenv_core::Error::configuration(
-                "Cannot use --workspace outside of a CUE module (no cue.mod found)",
+                "Cannot use --all outside of a CUE module (no cue.mod found)",
             ));
         };
 
