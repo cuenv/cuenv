@@ -627,7 +627,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             backend,
             tui,
             help,
-            workspace,
+            all,
             task_args,
             format,
         } => match execute_task_command_safe(
@@ -642,7 +642,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             backend,
             tui,
             help,
-            workspace,
+            all,
             task_args,
             json_mode,
         )
@@ -728,7 +728,8 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             pipeline,
             generate,
             from,
-        } => match execute_ci_command_safe(dry_run, pipeline, generate, from).await {
+            force,
+        } => match execute_ci_command_safe(dry_run, pipeline, generate, from, force).await {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -810,8 +811,9 @@ async fn execute_ci_command_safe(
     pipeline: Option<String>,
     generate: Option<String>,
     from: Option<String>,
+    force: bool,
 ) -> Result<(), CliError> {
-    match commands::ci_cmd::execute_ci(dry_run, pipeline, generate, from).await {
+    match commands::ci_cmd::execute_ci(dry_run, pipeline, generate, from, force).await {
         Ok(()) => Ok(()),
         Err(e) => Err(CliError::other(format!("CI execution failed: {e}"))),
     }
@@ -1217,7 +1219,7 @@ async fn execute_task_command_safe(
     backend: Option<String>,
     tui: bool,
     help: bool,
-    workspace: bool,
+    all: bool,
     task_args: Vec<String>,
     json_mode: bool,
 ) -> Result<(), CliError> {
@@ -1237,7 +1239,7 @@ async fn execute_task_command_safe(
         backend.as_deref(),
         tui,
         help,
-        workspace,
+        all,
         &task_args,
     )
     .await;
