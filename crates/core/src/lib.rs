@@ -42,11 +42,15 @@ pub mod config;
 pub mod environment;
 pub mod hooks;
 pub mod manifest;
+pub mod module;
 pub mod owners;
 pub mod paths;
 pub mod secrets;
 pub mod shell;
 pub mod tasks;
+
+// Re-export module types for convenience
+pub use module::{Instance, InstanceKind, ModuleEvaluation};
 
 /// Version of the `cuenv-core` crate (used by task cache metadata)
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
