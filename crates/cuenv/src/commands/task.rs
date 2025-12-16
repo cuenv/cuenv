@@ -6,7 +6,7 @@
 use cuengine::CueEvaluator;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use cuenv_core::manifest::TaskRef;
 use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
@@ -89,7 +89,7 @@ pub async fn execute_task(
             .build()
             .map_err(super::convert_engine_error)?,
     );
-    let manifest: Cuenv =
+    let manifest: Project =
         evaluate_manifest(&evaluator, Path::new(path), package)?.with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
 
@@ -915,7 +915,7 @@ fn detect_package_name(dir: &Path) -> Result<String> {
     )))
 }
 
-fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Result<Cuenv> {
+fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Result<Project> {
     // Get raw JSON from CUE evaluation
     let json_str = evaluator
         .evaluate(dir, package)
@@ -927,7 +927,7 @@ fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Res
     })?;
 
     // Try Project first (most specific - has required 'name' field)
-    if let Ok(project) = serde_json::from_value::<Cuenv>(value.clone()) {
+    if let Ok(project) = serde_json::from_value::<Project>(value.clone()) {
         return Ok(project);
     }
 
@@ -1143,7 +1143,7 @@ async fn resolve_and_materialize_project_reference(
 
     // Detect package name and evaluate
     let package = detect_package_name(&ext_dir)?;
-    let manifest: Cuenv = evaluate_manifest(evaluator, &ext_dir, &package)?.with_implicit_tasks();
+    let manifest: Project = evaluate_manifest(evaluator, &ext_dir, &package)?.with_implicit_tasks();
 
     // Locate external task
     let task_def = manifest.tasks.get(&reference.task).ok_or_else(|| {
@@ -1862,7 +1862,7 @@ fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> String {
     segments.join(".")
 }
 
-fn compute_project_id(manifest: &Cuenv, project_root: &Path, module_root: &Path) -> String {
+fn compute_project_id(manifest: &Project, project_root: &Path, module_root: &Path) -> String {
     let trimmed = manifest.name.trim();
     if !trimmed.is_empty() {
         return trimmed.to_string();
@@ -2057,7 +2057,7 @@ fn resolve_task_refs_in_definition(
 }
 
 fn resolve_task_refs_in_manifest(
-    manifest: &mut Cuenv,
+    manifest: &mut Project,
     discovery: &TaskDiscovery,
     manifest_project_id: &str,
     project_id_by_name: &HashMap<String, String>,
@@ -2118,7 +2118,7 @@ fn get_task_mut_by_name_or_path<'a>(
 
 #[allow(clippy::too_many_lines)]
 fn inject_workspace_setup_tasks(
-    manifest: &mut Cuenv,
+    manifest: &mut Project,
     discovery: &TaskDiscovery,
     manifest_project_id: &str,
 ) -> Result<()> {
@@ -2363,7 +2363,7 @@ fn inject_workspace_setup_tasks(
 struct ProjectCtx {
     root: PathBuf,
     id: String,
-    manifest: Cuenv,
+    manifest: Project,
     is_current: bool,
 }
 
@@ -2371,7 +2371,7 @@ fn build_global_tasks(
     evaluator: Arc<CueEvaluator>,
     module_root: &Path,
     current_project_root: &Path,
-    current_manifest: &Cuenv,
+    current_manifest: &Project,
 ) -> Result<(Tasks, String)> {
     // Evaluation function for discovery.
     // Each project can have a different CUE package name, so detect it per-project.
@@ -2624,7 +2624,7 @@ env: {
         let tmp = TempDir::new().expect("write to string");
         fs::write(tmp.path().join("env.cue"), "package test").expect("write to string");
 
-        let mut manifest = Cuenv {
+        let mut manifest = Project {
             name: "proj".to_string(),
             ..Default::default()
         };

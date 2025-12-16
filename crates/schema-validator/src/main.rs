@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use schemars::schema_for;
 use serde_json::Value;
 use std::fs;
@@ -75,8 +75,8 @@ fn generate_schemas(output_dir: &Path) -> Result<()> {
         )
     })?;
 
-    // Generate schema for main Cuenv type
-    let cuenv_schema = schema_for!(Cuenv);
+    // Generate schema for main Project type
+    let cuenv_schema = schema_for!(Project);
     let cuenv_json = serde_json::to_string_pretty(&cuenv_schema)?;
     let cuenv_path = output_dir.join("cuenv.schema.json");
     fs::write(&cuenv_path, cuenv_json)
@@ -312,8 +312,8 @@ fn validate_with_rust(json_path: &Path) -> bool {
         Err(_) => return false,
     };
 
-    // Try to deserialize as Cuenv type
-    match serde_json::from_str::<Cuenv>(&json_str) {
+    // Try to deserialize as Project type
+    match serde_json::from_str::<Project>(&json_str) {
         Ok(_) => true,
         Err(e) => {
             warn!("Rust validation failed: {}", e);

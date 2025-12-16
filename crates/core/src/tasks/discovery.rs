@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 use regex::Regex;
 
-use crate::manifest::{ArgMatcher, Cuenv, TaskMatcher, TaskRef};
+use crate::manifest::{ArgMatcher, Project, TaskMatcher, TaskRef};
 use crate::tasks::{Task, TaskIndex};
 
 /// A discovered project in the workspace
@@ -20,7 +20,7 @@ pub struct DiscoveredProject {
     /// Path to the project root (directory containing env.cue)
     pub project_root: PathBuf,
     /// The parsed manifest
-    pub manifest: Cuenv,
+    pub manifest: Project,
 }
 
 /// Result of matching a task
@@ -37,7 +37,7 @@ pub struct MatchedTask {
 }
 
 /// Function type for evaluating env.cue files
-pub type EvalFn = Box<dyn Fn(&Path) -> Result<Cuenv, String> + Send + Sync>;
+pub type EvalFn = Box<dyn Fn(&Path) -> Result<Project, String> + Send + Sync>;
 
 /// Discovers tasks across a monorepo workspace
 pub struct TaskDiscovery {
@@ -152,8 +152,8 @@ impl TaskDiscovery {
 
     /// Add a pre-loaded project to the discovery
     ///
-    /// This is useful when you already have a Cuenv manifest loaded.
-    pub fn add_project(&mut self, project_root: PathBuf, manifest: Cuenv) {
+    /// This is useful when you already have a Project manifest loaded.
+    pub fn add_project(&mut self, project_root: PathBuf, manifest: Project) {
         let env_cue_path = project_root.join("env.cue");
         let project = DiscoveredProject {
             env_cue_path,
@@ -515,7 +515,7 @@ mod tests {
             TaskDefinition::Single(Box::new(make_task())),
         );
 
-        let mut manifest = Cuenv::new("test");
+        let mut manifest = Project::new("test");
         manifest.tasks.insert(
             "projen".into(),
             TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {

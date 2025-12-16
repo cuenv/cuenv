@@ -4,7 +4,7 @@
 
 use cuengine::CueEvaluator;
 use cuenv_core::environment::{EnvValue, Environment};
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use std::path::Path;
 
 #[test]
@@ -40,11 +40,11 @@ fn test_parse_task_basic_example() {
         }
     }
 
-    // Try to parse as typed Cuenv
-    let manifest: Result<Cuenv, _> = serde_json::from_str(&json);
+    // Try to parse as typed Project
+    let manifest: Result<Project, _> = serde_json::from_str(&json);
     match manifest {
         Ok(cuenv) => {
-            println!("\nSuccessfully parsed as Cuenv");
+            println!("\nSuccessfully parsed as Project");
 
             // Extract environment variables
             let mut env = Environment::new();
@@ -72,7 +72,7 @@ fn test_parse_task_basic_example() {
             assert!(cuenv.tasks.contains_key("shellExample"));
         }
         Err(e) => {
-            println!("\nFailed to parse as Cuenv: {e}");
+            println!("\nFailed to parse as Project: {e}");
             println!("This might be expected if the example structure doesn't match");
         }
     }
@@ -104,8 +104,8 @@ tasks: {
     let evaluator = CueEvaluator::builder().build().unwrap();
     let json = evaluator.evaluate(temp_dir.path(), "test").unwrap();
 
-    // Parse as typed Cuenv
-    let manifest: Cuenv = serde_json::from_str(&json).unwrap();
+    // Parse as typed Project
+    let manifest: Project = serde_json::from_str(&json).unwrap();
 
     // Verify environment
     let env_config = manifest.env.unwrap();

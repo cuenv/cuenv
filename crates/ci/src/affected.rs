@@ -1,5 +1,5 @@
-use crate::discovery::Project;
-use cuenv_core::manifest::Cuenv;
+use crate::discovery::DiscoveredCIProject;
+use cuenv_core::manifest::Project;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -9,8 +9,8 @@ pub fn compute_affected_tasks(
     changed_files: &[PathBuf],
     pipeline_tasks: &[String],
     project_root: &Path,
-    config: &Cuenv,
-    all_projects: &HashMap<String, Project>,
+    config: &Project,
+    all_projects: &HashMap<String, DiscoveredCIProject>,
 ) -> Vec<String> {
     let mut affected = HashSet::new();
     let mut directly_affected = HashSet::new();
@@ -75,7 +75,7 @@ pub fn compute_affected_tasks(
 
 fn is_task_directly_affected(
     task_name: &str,
-    config: &Cuenv,
+    config: &Project,
     changed_files: &[PathBuf],
     project_root: &Path,
 ) -> bool {
@@ -92,7 +92,7 @@ fn is_task_directly_affected(
 #[allow(clippy::implicit_hasher)]
 fn check_external_dependency(
     dep: &str,
-    all_projects: &HashMap<String, Project>,
+    all_projects: &HashMap<String, DiscoveredCIProject>,
     changed_files: &[PathBuf],
     cache: &mut HashMap<String, bool>,
 ) -> bool {

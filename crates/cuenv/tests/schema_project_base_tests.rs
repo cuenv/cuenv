@@ -1,7 +1,7 @@
 #![allow(missing_docs)]
 
 use cuengine::evaluate_cue_package_typed;
-use cuenv_core::manifest::{Base, Cuenv};
+use cuenv_core::manifest::{Base, Project};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,7 +63,7 @@ schema.#Project & {
     )
     .unwrap();
 
-    let res = evaluate_cue_package_typed::<Cuenv>(root, "cuenv");
+    let res = evaluate_cue_package_typed::<Project>(root, "cuenv");
     assert!(res.is_err(), "schema should reject missing `name`");
 }
 
@@ -86,7 +86,7 @@ schema.#Project & {
     )
     .unwrap();
 
-    let res = evaluate_cue_package_typed::<Cuenv>(root, "cuenv");
+    let res = evaluate_cue_package_typed::<Project>(root, "cuenv");
     assert!(res.is_err(), "schema should reject empty `name`");
 }
 

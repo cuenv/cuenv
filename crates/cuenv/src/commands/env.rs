@@ -1,6 +1,6 @@
 use cuengine::CueEvaluator;
 use cuenv_core::Result;
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Base;
 use std::path::Path;
 use tracing::instrument;
 
@@ -16,9 +16,9 @@ pub async fn execute_env_list(path: &str, package: &str, format: &str) -> Result
     // Convert path string to Path
     let dir_path = Path::new(path);
 
-    // Evaluate the CUE package
+    // Evaluate the CUE package (uses Base schema - works with or without project name)
     tracing::debug!("Evaluating CUE package '{}' at path '{}'", package, path);
-    let manifest: Cuenv = evaluator
+    let manifest: Base = evaluator
         .evaluate_typed(dir_path, package)
         .map_err(super::convert_engine_error)?;
 
@@ -65,9 +65,9 @@ pub async fn execute_env_print(
     // Convert path string to Path
     let dir_path = Path::new(path);
 
-    // Evaluate the CUE package
+    // Evaluate the CUE package (uses Base schema - works with or without project name)
     tracing::debug!("Evaluating CUE package '{}' at path '{}'", package, path);
-    let manifest: Cuenv = evaluator
+    let manifest: Base = evaluator
         .evaluate_typed(dir_path, package)
         .map_err(super::convert_engine_error)?;
 
