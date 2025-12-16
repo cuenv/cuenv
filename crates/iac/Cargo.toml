@@ -1,0 +1,96 @@
+[package]
+name = "cuenv-iac"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords = ["iac", "terraform", "infrastructure", "actor", "cue"]
+categories = ["development-tools", "asynchronous"]
+description = "CUE-powered Infrastructure as Code actor system with Terraform provider integration"
+
+[features]
+default = []
+# Enable drift detection via cloud audit logs
+drift-aws = ["dep:aws-config", "dep:aws-sdk-cloudtrail", "dep:aws-sdk-eventbridge"]
+drift-gcp = ["dep:google-cloud-pubsub", "dep:google-cloud-logging"]
+drift-azure = ["dep:azure_identity", "dep:azure_mgmt_monitor"]
+
+[dependencies]
+# Actor framework
+ractor = "0.15"
+
+# gRPC for Terraform providers
+tonic = { version = "0.12", features = ["tls", "transport"] }
+prost = "0.13"
+prost-types = "0.13"
+
+# MessagePack for Terraform DynamicValue serialization
+rmp-serde = "1.3"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["process", "net", "io-util"] }
+tokio-stream = "0.1"
+async-trait = "0.1"
+futures = "0.3"
+
+# Error handling
+thiserror = { workspace = true }
+miette = { workspace = true }
+
+# Tracing and events
+tracing = { workspace = true }
+cuenv-events = { workspace = true }
+
+# Graph for dependency resolution
+petgraph = { workspace = true }
+
+# CUE integration (via existing engine)
+cuengine = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = "0.4"
+dashmap = "6.1"
+parking_lot = "0.12"
+base64 = "0.22"
+rand = "0.9"
+
+# TLS for provider communication
+rustls = "0.23"
+rustls-pemfile = "2.2"
+rcgen = "0.13"
+tokio-rustls = "0.26"
+
+# Optional: AWS drift detection
+aws-config = { version = "1.5", optional = true }
+aws-sdk-cloudtrail = { version = "1.66", optional = true }
+aws-sdk-eventbridge = { version = "1.65", optional = true }
+
+# Optional: GCP drift detection
+google-cloud-pubsub = { version = "0.30", optional = true }
+google-cloud-logging = { version = "0.10", optional = true }
+
+# Optional: Azure drift detection
+azure_identity = { version = "0.22", optional = true }
+azure_mgmt_monitor = { version = "0.22", optional = true }
+
+[build-dependencies]
+tonic-build = "0.12"
+prost-build = "0.13"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+wiremock = "0.6"
+
+[lints]
+workspace = true
