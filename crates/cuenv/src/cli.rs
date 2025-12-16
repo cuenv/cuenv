@@ -289,6 +289,23 @@ pub enum Commands {
         )]
         output_format: OutputFormat,
     },
+    #[command(about = "Show module information (bases, projects)")]
+    Info {
+        /// Path to a specific directory to evaluate. If omitted, evaluates the entire module recursively.
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(
+            long,
+            help = "Include _meta source location for all values (JSON output)"
+        )]
+        meta: bool,
+    },
     #[command(about = "Environment variable operations")]
     Env {
         #[command(subcommand)]
@@ -834,6 +851,7 @@ impl Commands {
             Commands::Version { output_format } => Command::Version {
                 format: output_format.to_string(),
             },
+            Commands::Info { path, package, meta } => Command::Info { path, package, meta },
             Commands::Env { subcommand } => match subcommand {
                 EnvCommands::Print {
                     path,
