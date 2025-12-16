@@ -7,7 +7,7 @@ export interface CuenvTask {
 
 /**
  * Task reference for workspace-wide task listing (used by IDE completions).
- * Returned by `cuenv task --workspace --output-format json`.
+ * Returned by `cuenv task --all --output-format json`.
  */
 export interface WorkspaceTask {
     /** Project name from env.cue `name` field */

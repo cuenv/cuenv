@@ -137,7 +137,7 @@ export class CuenvClient {
 
         try {
             const output = await this.execJson(
-                ['task', '--workspace', '--output-format', 'json'],
+                ['task', '--all', '--output-format', 'json'],
                 root
             );
             this.workspaceTasksCache = output as WorkspaceTask[];
