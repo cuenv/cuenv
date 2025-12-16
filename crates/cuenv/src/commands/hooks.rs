@@ -3,7 +3,7 @@
 use super::env_file::{self, EnvFileStatus};
 use crate::cli::StatusFormat;
 use cuengine::CueEvaluator;
-use cuenv_core::manifest::Cuenv;
+use cuenv_core::manifest::Project;
 use cuenv_core::{
     Result,
     hooks::{
@@ -61,7 +61,7 @@ fn require_env_file(path: &Path, package: &str) -> Result<PathBuf> {
 }
 
 /// Helper to evaluate CUE configuration
-fn evaluate_config(directory: &Path, package: &str) -> Result<Cuenv> {
+fn evaluate_config(directory: &Path, package: &str) -> Result<Project> {
     let evaluator = CueEvaluator::builder()
         .build()
         .map_err(super::convert_engine_error)?;
@@ -626,7 +626,7 @@ pub fn execute_shell_init(shell: crate::cli::ShellType) -> String {
 }
 
 /// Extract hooks from the configuration JSON
-fn extract_hooks_from_config(config: &Cuenv) -> Vec<Hook> {
+fn extract_hooks_from_config(config: &Project) -> Vec<Hook> {
     config.on_enter_hooks()
 }
 
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn test_extract_hooks_from_config() {
         use cuenv_core::hooks::types::Hook;
-        use cuenv_core::manifest::{Cuenv, Hooks};
+        use cuenv_core::manifest::{Project, Hooks};
         use std::collections::HashMap;
 
         let mut on_enter = HashMap::new();
@@ -751,7 +751,7 @@ mod tests {
             },
         );
 
-        let config = Cuenv {
+        let config = Project {
             config: None,
             env: None,
             hooks: Some(Hooks {
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn test_extract_hooks_single_hook() {
         use cuenv_core::hooks::types::Hook;
-        use cuenv_core::manifest::{Cuenv, Hooks};
+        use cuenv_core::manifest::{Project, Hooks};
         use std::collections::HashMap;
 
         let mut on_enter = HashMap::new();
@@ -794,7 +794,7 @@ mod tests {
             },
         );
 
-        let config = Cuenv {
+        let config = Project {
             config: None,
             env: None,
             hooks: Some(Hooks {
@@ -818,9 +818,9 @@ mod tests {
 
     #[test]
     fn test_extract_hooks_empty_config() {
-        use cuenv_core::manifest::Cuenv;
+        use cuenv_core::manifest::Project;
 
-        let config = Cuenv {
+        let config = Project {
             config: None,
             env: None,
             hooks: None,

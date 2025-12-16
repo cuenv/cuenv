@@ -30,7 +30,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
     };
 
     let dir_path = std::path::Path::new(path);
-    let Ok(manifest) = evaluator.evaluate_typed::<cuenv_core::manifest::Cuenv>(dir_path, package)
+    let Ok(manifest) = evaluator.evaluate_typed::<cuenv_core::manifest::Project>(dir_path, package)
     else {
         return Vec::new();
     };
@@ -83,7 +83,7 @@ fn get_task_params(
 ) -> Option<Vec<(String, Option<String>)>> {
     let evaluator = cuengine::CueEvaluator::builder().build().ok()?;
     let dir_path = std::path::Path::new(path);
-    let manifest: cuenv_core::manifest::Cuenv = evaluator.evaluate_typed(dir_path, package).ok()?;
+    let manifest: cuenv_core::manifest::Project = evaluator.evaluate_typed(dir_path, package).ok()?;
     let manifest = manifest.with_implicit_tasks();
 
     let task_index = cuenv_core::tasks::TaskIndex::build(&manifest.tasks).ok()?;
