@@ -873,11 +873,15 @@ dependencies = [
  "ctrlc",
  "cucumber",
  "cuengine",
+ "cuenv-bitbucket",
  "cuenv-ci",
+ "cuenv-codeowners",
  "cuenv-core",
  "cuenv-cubes",
  "cuenv-dagger",
  "cuenv-events",
+ "cuenv-github",
+ "cuenv-gitlab",
  "cuenv-ignore",
  "cuenv-release",
  "dirs 6.0.0",
@@ -903,6 +907,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-bitbucket"
+version = "0.15.4"
+dependencies = [
+ "cuenv-codeowners",
+ "cuenv-core",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-ci"
 version = "0.15.4"
 dependencies = [
@@ -913,7 +927,6 @@ dependencies = [
  "cuenv-events",
  "glob",
  "miette",
- "octocrab",
  "regex",
  "serde",
  "serde_json",
@@ -1011,6 +1024,29 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "cuenv-github"
+version = "0.15.4"
+dependencies = [
+ "async-trait",
+ "cuenv-ci",
+ "cuenv-codeowners",
+ "cuenv-core",
+ "octocrab",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "cuenv-gitlab"
+version = "0.15.4"
+dependencies = [
+ "cuenv-codeowners",
+ "cuenv-core",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

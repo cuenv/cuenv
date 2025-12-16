@@ -2,7 +2,7 @@
   description = "cuenv - Configuration utilities and validation engine";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     flake-utils.url = "github:numtide/flake-utils";
@@ -49,14 +49,10 @@
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         # Platform-specific build inputs
-        darwinFrameworks = with pkgs.darwin.apple_sdk.frameworks; [
-          CoreFoundation
-          Security
-          SystemConfiguration
-        ];
-
+        # Note: darwin frameworks (CoreFoundation, Security, etc.) are now provided
+        # automatically by the default SDK - no explicit references needed
         platformBuildInputs = with pkgs;
-          [ libiconv ] ++ lib.optionals stdenv.isDarwin darwinFrameworks;
+          [ libiconv ];
 
         # CUE bridge builder
         cue-bridge = pkgs.buildGoModule {
@@ -66,7 +62,6 @@
           vendorHash = "sha256-tHAcwRsNWNwPUkTlQT8mw3GNKsMFCMCKwdSq3KNad80=";
           go = pkgs.go_1_24;
           nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
-          buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin darwinFrameworks;
 
           buildPhase = ''
             runHook preBuild

@@ -25,12 +25,20 @@
 //! - **GitLab**: Uses `CODEOWNERS` path and `[Section]` syntax for sections
 //! - **Bitbucket**: Uses `CODEOWNERS` path and `# Section` comment syntax
 //!
+//! # Provider Support
+//!
+//! The [`provider`] module provides a trait-based abstraction for syncing
+//! CODEOWNERS files. Use [`provider::detect_provider`] to auto-detect the
+//! platform and get the appropriate provider.
+//!
 //! # Features
 //!
 //! - `serde`: Enable serde serialization/deserialization for all types
 //! - `schemars`: Enable JSON Schema generation (implies `serde`)
 
 #![warn(missing_docs)]
+
+pub mod provider;
 
 use std::collections::BTreeMap;
 use std::fmt;
