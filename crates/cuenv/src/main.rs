@@ -14,6 +14,7 @@ mod completions;
 mod coordinator;
 mod events;
 mod performance;
+mod providers;
 mod tracing;
 mod tui;
 
