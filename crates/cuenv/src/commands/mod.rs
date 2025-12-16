@@ -28,6 +28,7 @@ pub(crate) fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core:
 
 pub mod ci_cmd {
     use crate::commands::task;
+    use crate::providers::detect_ci_provider;
     use async_trait::async_trait;
     use cuenv_ci::executor::{TaskRunner, run_ci};
     use cuenv_core::Result;
@@ -133,7 +134,11 @@ jobs:
         }
 
         let runner = Arc::new(CliTaskRunner);
-        run_ci(dry_run, pipeline, from, runner).await
+
+        // Detect CI provider (with optional base_ref for local provider)
+        let provider = detect_ci_provider(from);
+
+        run_ci(provider, dry_run, pipeline, runner).await
     }
 }
 

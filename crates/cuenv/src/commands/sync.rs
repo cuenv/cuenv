@@ -605,14 +605,19 @@ pub async fn execute_sync_ignore_workspace(
 
 /// Sync codeowners for all projects in the workspace.
 ///
-/// Discovers all projects from the CUE module root and syncs their CODEOWNERS files.
+/// Discovers all projects from the CUE module root and aggregates their ownership rules
+/// into a single CODEOWNERS file at the repository root.
 /// Called when --all flag is provided.
+#[allow(clippy::too_many_lines)]
 #[instrument(name = "sync_codeowners_workspace", skip(_package))]
 pub async fn execute_sync_codeowners_workspace(
     _package: &str,
     dry_run: bool,
     check: bool,
 ) -> Result<String> {
+    use crate::providers::detect_codeowners_provider;
+    use cuenv_codeowners::Rule;
+    use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
     use cuenv_core::tasks::discovery::TaskDiscovery;
 
     // Find the CUE module root from current directory
@@ -638,55 +643,118 @@ pub async fn execute_sync_codeowners_workspace(
             .map_err(|e| e.to_string())
     });
 
-    let mut discovery = TaskDiscovery::new(module_root).with_eval_fn(eval_fn);
+    let mut discovery = TaskDiscovery::new(module_root.clone()).with_eval_fn(eval_fn);
     discovery.discover().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
     })?;
 
-    let mut output_lines = Vec::new();
-    let mut errors = Vec::new();
+    // Collect all projects with owners configuration
+    let mut project_owners_list = Vec::new();
 
     for project in discovery.projects() {
-        // Skip projects without owners config
-        if project.manifest.owners.is_none() {
+        let Some(owners) = &project.manifest.owners else {
             continue;
-        }
+        };
 
-        let project_path = project.project_root.to_string_lossy();
-        let pkg =
-            detect_package_name(&project.project_root).unwrap_or_else(|_| "cuenv".to_string());
+        // Calculate relative path from module root to project
+        let relative_path = project
+            .project_root
+            .strip_prefix(&module_root)
+            .unwrap_or(&project.project_root)
+            .to_path_buf();
 
-        match execute_sync_codeowners_optional(&project_path, &pkg, dry_run, check).await {
-            Ok(output) => {
-                if !output.contains("No owners configuration") {
-                    output_lines.push(format!("Project: {}", project.manifest.name));
-                    output_lines.push(output);
-                    output_lines.push(String::new());
+        // Convert manifest rules to codeowners rules
+        let rules: Vec<Rule> = owners
+            .rules
+            .iter()
+            .map(|r| {
+                let mut rule = Rule::new(&r.pattern, r.owners.clone());
+                if let Some(ref desc) = r.description {
+                    rule = rule.description(desc.clone());
                 }
-            }
-            Err(e) => {
-                errors.push(format!("{}: {}", project.manifest.name, e));
-            }
+                if let Some(ref section) = r.section {
+                    rule = rule.section(section.clone());
+                }
+                rule
+            })
+            .collect();
+
+        let mut proj_owners =
+            ProjectOwners::new(relative_path, project.manifest.name.clone(), rules);
+
+        if let Some(ref default_owners) = owners.default_owners {
+            proj_owners = proj_owners.with_default_owners(default_owners.clone());
         }
+
+        project_owners_list.push(proj_owners);
     }
 
-    if !errors.is_empty() && output_lines.is_empty() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "All projects failed:\n{}",
-            errors.join("\n")
-        )));
-    }
-
-    if output_lines.is_empty() {
+    if project_owners_list.is_empty() {
         return Ok("No projects with owners configuration found.".to_string());
     }
 
-    if !errors.is_empty() {
-        output_lines.push("Errors:".to_string());
-        output_lines.extend(errors.into_iter().map(|e| format!("  {e}")));
-    }
+    // Detect provider based on repo structure
+    let provider = detect_codeowners_provider(&module_root);
 
-    Ok(output_lines.join("\n"))
+    if check {
+        // Check mode - verify CODEOWNERS is in sync
+        let result = provider
+            .check(&module_root, &project_owners_list)
+            .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
+
+        if result.in_sync {
+            Ok(format!(
+                "CODEOWNERS file is in sync: {}",
+                result.path.display()
+            ))
+        } else if result.actual.is_none() {
+            Err(cuenv_core::Error::configuration(format!(
+                "CODEOWNERS file not found at {}. Run 'cuenv sync codeowners -A' to generate it.",
+                result.path.display()
+            )))
+        } else {
+            Err(cuenv_core::Error::configuration(format!(
+                "CODEOWNERS file is out of sync at {}. Run 'cuenv sync codeowners -A' to update it.",
+                result.path.display()
+            )))
+        }
+    } else {
+        use std::fmt::Write;
+
+        // Sync mode - write aggregated CODEOWNERS file
+        let result = provider
+            .sync(&module_root, &project_owners_list, dry_run)
+            .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
+
+        let status_msg = match result.status {
+            SyncStatus::Created => "Created",
+            SyncStatus::Updated => "Updated",
+            SyncStatus::Unchanged => "Unchanged",
+            SyncStatus::WouldCreate => "Would create",
+            SyncStatus::WouldUpdate => "Would update",
+        };
+
+        let mut output = format!("{} CODEOWNERS: {}\n", status_msg, result.path.display());
+
+        // List projects included
+        let _ = writeln!(
+            output,
+            "Aggregated {} project(s): {}",
+            project_owners_list.len(),
+            project_owners_list
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        if dry_run {
+            output.push_str("\n--- Content ---\n");
+            output.push_str(&result.content);
+        }
+
+        Ok(output)
+    }
 }
 
 /// Sync all (ignore + owners + cubes) for all projects in the workspace.

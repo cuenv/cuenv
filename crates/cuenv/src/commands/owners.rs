@@ -4,26 +4,29 @@
 //! - `cuenv sync codeowners` - Sync CODEOWNERS file from CUE configuration
 //! - `cuenv sync codeowners --check` - Check CODEOWNERS file is in sync with CUE configuration
 
+use crate::providers::detect_codeowners_provider;
 use cuengine::CueEvaluator;
+use cuenv_codeowners::Rule;
+use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
 use cuenv_core::Result;
 use cuenv_core::manifest::Cuenv;
 use cuenv_core::owners::Owners;
-use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 /// Execute the `owners sync` command.
 ///
 /// Generates a CODEOWNERS file from the CUE configuration and writes it to the repository.
+/// Uses the provider system to write to the correct location based on platform.
 ///
 /// # Errors
 ///
 /// Returns an error if the configuration cannot be loaded or the file cannot be written.
 #[allow(clippy::unused_async)] // Async for API consistency with other commands
 pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Result<String> {
-    let root = Path::new(path);
+    let project_root = Path::new(path);
 
     // Load the CUE configuration
-    let owners = load_owners_config(root, package)?;
+    let (manifest, owners) = load_owners_config_with_manifest(project_root, package)?;
 
     if owners.rules.is_empty() && owners.default_owners.is_none() {
         return Err(cuenv_core::Error::configuration(
@@ -42,38 +45,52 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
         }
     }
 
-    // Generate CODEOWNERS content
-    let content = owners.generate();
+    // Find the repo root (cue.mod directory)
+    let repo_root =
+        find_cue_module_root(project_root).unwrap_or_else(|| project_root.to_path_buf());
 
-    // Validate output path to prevent path traversal attacks
-    let output_path = validate_output_path(root, Path::new(owners.output_path()))?;
+    // Calculate relative path from repo root to project
+    let relative_path = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf())
+        .strip_prefix(
+            repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.clone()),
+        )
+        .unwrap_or(Path::new(""))
+        .to_path_buf();
 
-    if dry_run {
-        let mut result = format!("Would write to: {}\n\n", output_path.display());
-        result.push_str("--- Content ---\n");
-        result.push_str(&content);
-        return Ok(result);
-    }
+    // Convert to provider types
+    let project_owners = convert_to_project_owners(&manifest, &owners, relative_path);
 
-    // Ensure parent directory exists
-    if let Some(parent) = output_path.parent()
-        && !parent.exists()
-    {
-        fs::create_dir_all(parent).map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(parent.to_path_buf().into_boxed_path()),
-            operation: "create directory".to_string(),
-        })?;
-    }
+    // Detect provider based on repo structure
+    let provider = detect_codeowners_provider(&repo_root);
 
-    // Write the file
-    fs::write(&output_path, &content).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(output_path.clone().into_boxed_path()),
-        operation: "write CODEOWNERS file".to_string(),
-    })?;
+    // Sync using the provider
+    let result = provider
+        .sync(&repo_root, &[project_owners], dry_run)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
 
-    Ok(format!("Wrote CODEOWNERS to: {}", output_path.display()))
+    let output = if dry_run {
+        // Dry-run output format for backward compatibility with tests
+        format!(
+            "Would write to: {}\n\n--- Content ---\n{}",
+            result.path.display(),
+            result.content
+        )
+    } else {
+        let status_msg = match result.status {
+            SyncStatus::Created => "Created",
+            SyncStatus::Updated => "Updated",
+            SyncStatus::Unchanged => "Unchanged",
+            SyncStatus::WouldCreate => "Would create",
+            SyncStatus::WouldUpdate => "Would update",
+        };
+        format!("{} CODEOWNERS: {}", status_msg, result.path.display())
+    };
+
+    Ok(output)
 }
 
 /// Execute the `owners check` command.
@@ -85,10 +102,10 @@ pub async fn execute_owners_sync(path: &str, package: &str, dry_run: bool) -> Re
 /// Returns an error if the configuration cannot be loaded or the files are out of sync.
 #[allow(clippy::unused_async)] // Async for API consistency with other commands
 pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
-    let root = Path::new(path);
+    let project_root = Path::new(path);
 
     // Load the CUE configuration
-    let owners = load_owners_config(root, package)?;
+    let (manifest, owners) = load_owners_config_with_manifest(project_root, package)?;
 
     if owners.rules.is_empty() && owners.default_owners.is_none() {
         return Ok(
@@ -107,51 +124,96 @@ pub async fn execute_owners_check(path: &str, package: &str) -> Result<String> {
         }
     }
 
-    // Generate expected CODEOWNERS content
-    let expected_content = owners.generate();
+    // Find the repo root (cue.mod directory)
+    let repo_root =
+        find_cue_module_root(project_root).unwrap_or_else(|| project_root.to_path_buf());
 
-    // Validate output path to prevent path traversal attacks
-    let output_path = validate_output_path(root, Path::new(owners.output_path()))?;
+    // Calculate relative path from repo root to project
+    let relative_path = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf())
+        .strip_prefix(
+            repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.clone()),
+        )
+        .unwrap_or(Path::new(""))
+        .to_path_buf();
 
-    // Check if file exists
-    if !output_path.exists() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "CODEOWNERS file not found at {}. Run 'cuenv sync codeowners' to generate it.",
-            output_path.display()
-        )));
-    }
+    // Convert to provider types
+    let project_owners = convert_to_project_owners(&manifest, &owners, relative_path);
 
-    // Read current content
-    let current_content = fs::read_to_string(&output_path).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(output_path.clone().into_boxed_path()),
-        operation: "read CODEOWNERS file".to_string(),
-    })?;
+    // Detect provider based on repo structure
+    let provider = detect_codeowners_provider(&repo_root);
 
-    // Compare (normalize line endings and trailing whitespace for robust comparison)
-    let normalize = |s: &str| -> String {
-        s.replace("\r\n", "\n")
-            .lines()
-            .map(str::trim_end)
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    // Check using the provider
+    let result = provider
+        .check(&repo_root, &[project_owners])
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
 
-    if normalize(&current_content) == normalize(&expected_content) {
+    if result.in_sync {
         Ok(format!(
             "CODEOWNERS file is in sync: {}",
-            output_path.display()
+            result.path.display()
         ))
+    } else if result.actual.is_none() {
+        Err(cuenv_core::Error::configuration(format!(
+            "CODEOWNERS file not found at {}. Run 'cuenv sync codeowners' to generate it.",
+            result.path.display()
+        )))
     } else {
         Err(cuenv_core::Error::configuration(format!(
             "CODEOWNERS file is out of sync at {}. Run 'cuenv sync codeowners' to update it.",
-            output_path.display()
+            result.path.display()
         )))
     }
 }
 
-/// Load code ownership configuration from CUE.
-fn load_owners_config(root: &Path, package: &str) -> Result<Owners> {
+/// Convert manifest owners configuration to provider `ProjectOwners` type.
+fn convert_to_project_owners(
+    manifest: &Cuenv,
+    owners: &Owners,
+    relative_path: PathBuf,
+) -> ProjectOwners {
+    let rules: Vec<Rule> = owners
+        .rules
+        .iter()
+        .map(|r| {
+            let mut rule = Rule::new(&r.pattern, r.owners.clone());
+            if let Some(ref desc) = r.description {
+                rule = rule.description(desc.clone());
+            }
+            if let Some(ref section) = r.section {
+                rule = rule.section(section.clone());
+            }
+            rule
+        })
+        .collect();
+
+    let mut project_owners = ProjectOwners::new(relative_path, manifest.name.clone(), rules);
+
+    if let Some(ref default_owners) = owners.default_owners {
+        project_owners = project_owners.with_default_owners(default_owners.clone());
+    }
+
+    project_owners
+}
+
+/// Find the CUE module root by walking up from the given path.
+fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        if current.join("cue.mod").is_dir() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+/// Load code ownership configuration from CUE, returning both manifest and owners.
+fn load_owners_config_with_manifest(root: &Path, package: &str) -> Result<(Cuenv, Owners)> {
     let evaluator = CueEvaluator::builder()
         .build()
         .map_err(super::convert_engine_error)?;
@@ -159,56 +221,13 @@ fn load_owners_config(root: &Path, package: &str) -> Result<Owners> {
         .evaluate_typed(root, package)
         .map_err(super::convert_engine_error)?;
 
-    manifest.owners.ok_or_else(|| {
+    let owners = manifest.owners.clone().ok_or_else(|| {
         cuenv_core::Error::configuration(
             "No 'owners' configuration found in env.cue. Add an 'owners' section with code ownership rules."
         )
-    })
-}
+    })?;
 
-/// Validate that the output path stays within the repository root.
-/// Prevents path traversal attacks (e.g., ../../../../etc/CODEOWNERS).
-fn validate_output_path(root: &Path, output_path: &Path) -> Result<PathBuf> {
-    // Check for suspicious path components
-    for component in output_path.components() {
-        if let Component::ParentDir = component {
-            return Err(cuenv_core::Error::configuration(
-                "Output path cannot contain parent directory references (..). \
-                 Configure a path within the repository.",
-            ));
-        }
-    }
-
-    let full_path = root.join(output_path);
-
-    // Canonicalize root to compare
-    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-
-    // For the output path, we need to handle non-existent directories
-    // Walk up until we find an existing parent, then validate
-    let mut check_path = full_path.clone();
-    while !check_path.exists() {
-        if let Some(parent) = check_path.parent() {
-            check_path = parent.to_path_buf();
-        } else {
-            break;
-        }
-    }
-
-    if check_path.exists() {
-        let canonical_check = check_path.canonicalize().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to resolve output path: {e}"))
-        })?;
-
-        if !canonical_check.starts_with(&canonical_root) {
-            return Err(cuenv_core::Error::configuration(
-                "Output path must be within the repository root. \
-                 Path traversal outside repository is not allowed.",
-            ));
-        }
-    }
-
-    Ok(full_path)
+    Ok((manifest, owners))
 }
 
 #[cfg(test)]

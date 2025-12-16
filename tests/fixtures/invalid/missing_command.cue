@@ -1,4 +1,4 @@
-package cuenv
+package _tests
 
 import "github.com/cuenv/cuenv/schema"
 

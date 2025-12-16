@@ -1,0 +1,27 @@
+[package]
+name = "cuenv-gitlab"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "development-tools::build-utils"]
+readme = "../../readme.md"
+description = "GitLab provider implementations for cuenv"
+
+[lints]
+workspace = true
+
+[features]
+default = ["codeowners"]
+codeowners = ["dep:cuenv-codeowners"]
+
+[dependencies]
+cuenv-core = { workspace = true }
+cuenv-codeowners = { workspace = true, optional = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

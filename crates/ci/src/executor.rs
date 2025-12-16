@@ -4,8 +4,6 @@
 use crate::affected::compute_affected_tasks;
 use crate::discovery::discover_projects;
 use crate::provider::CIProvider;
-use crate::provider::github::GitHubProvider;
-use crate::provider::local::LocalProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use async_trait::async_trait;
@@ -20,29 +18,25 @@ pub trait TaskRunner: Send + Sync {
 
 /// Run the CI pipeline logic
 ///
+/// # Arguments
+///
+/// * `provider` - The CI provider to use for changed files detection and reporting
+/// * `dry_run` - If true, don't actually run tasks
+/// * `specific_pipeline` - If set, only run tasks from this pipeline
+/// * `runner` - The task runner implementation
+///
 /// # Errors
-/// Returns error if provider detection fails or IO errors occur
+/// Returns error if IO errors occur or tasks fail
 ///
 /// # Panics
 /// Panics if project path has no parent directory (should not happen for valid paths)
 #[allow(clippy::too_many_lines)]
 pub async fn run_ci(
+    provider: Arc<dyn CIProvider>,
     dry_run: bool,
     specific_pipeline: Option<String>,
-    from_ref: Option<String>,
     runner: Arc<dyn TaskRunner>,
 ) -> Result<()> {
-    // 1. Detect Provider
-    let provider: Arc<dyn CIProvider> = if let Some(p) = GitHubProvider::detect() {
-        Arc::new(p)
-    } else if let Some(base_ref) = from_ref {
-        Arc::new(LocalProvider::with_base_ref(base_ref))
-    } else if let Some(p) = LocalProvider::detect() {
-        Arc::new(p)
-    } else {
-        return Err(cuenv_core::Error::configuration("No CI provider detected"));
-    };
-
     let context = provider.context();
     println!(
         "Context: {} (event: {}, ref: {})",

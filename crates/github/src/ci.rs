@@ -1,13 +1,24 @@
-use super::{CIContext, CIProvider};
-use crate::report::{CheckHandle, PipelineReport, PipelineStatus, markdown::generate_summary};
+//! GitHub Actions CI provider.
+//!
+//! This provider integrates with GitHub Actions to:
+//! - Detect changed files in PRs and pushes
+//! - Create and update check runs
+//! - Post PR comments with pipeline reports
+
 use async_trait::async_trait;
+use cuenv_ci::context::CIContext;
+use cuenv_ci::provider::CIProvider;
+use cuenv_ci::report::{CheckHandle, PipelineReport, PipelineStatus, markdown::generate_summary};
 use cuenv_core::Result;
 use octocrab::Octocrab;
 use std::path::PathBuf;
 use std::process::Command;
 use tracing::{debug, info, warn};
 
-pub struct GitHubProvider {
+/// GitHub Actions CI provider.
+///
+/// Provides CI integration for repositories hosted on GitHub using GitHub Actions.
+pub struct GitHubCIProvider {
     context: CIContext,
     token: String,
     owner: String,
@@ -17,7 +28,7 @@ pub struct GitHubProvider {
 
 const NULL_SHA: &str = "0000000000000000000000000000000000000000";
 
-impl GitHubProvider {
+impl GitHubCIProvider {
     fn parse_repo(repo_str: &str) -> (String, String) {
         let parts: Vec<&str> = repo_str.split('/').collect();
         if parts.len() == 2 {
@@ -120,7 +131,7 @@ impl GitHubProvider {
 }
 
 #[async_trait]
-impl CIProvider for GitHubProvider {
+impl CIProvider for GitHubCIProvider {
     fn detect() -> Option<Self> {
         if std::env::var("GITHUB_ACTIONS").ok()? != "true" {
             return None;
@@ -316,14 +327,14 @@ mod tests {
 
     #[test]
     fn test_parse_repo() {
-        let (owner, repo) = GitHubProvider::parse_repo("cuenv/cuenv");
+        let (owner, repo) = GitHubCIProvider::parse_repo("cuenv/cuenv");
         assert_eq!(owner, "cuenv");
         assert_eq!(repo, "cuenv");
     }
 
     #[test]
     fn test_parse_repo_invalid() {
-        let (owner, repo) = GitHubProvider::parse_repo("invalid");
+        let (owner, repo) = GitHubCIProvider::parse_repo("invalid");
         assert_eq!(owner, "");
         assert_eq!(repo, "");
     }
@@ -337,14 +348,14 @@ mod tests {
     #[test]
     fn test_parse_pr_number() {
         assert_eq!(
-            GitHubProvider::parse_pr_number("refs/pull/123/merge"),
+            GitHubCIProvider::parse_pr_number("refs/pull/123/merge"),
             Some(123)
         );
         assert_eq!(
-            GitHubProvider::parse_pr_number("refs/pull/456/head"),
+            GitHubCIProvider::parse_pr_number("refs/pull/456/head"),
             Some(456)
         );
-        assert_eq!(GitHubProvider::parse_pr_number("refs/heads/main"), None);
-        assert_eq!(GitHubProvider::parse_pr_number("main"), None);
+        assert_eq!(GitHubCIProvider::parse_pr_number("refs/heads/main"), None);
+        assert_eq!(GitHubCIProvider::parse_pr_number("main"), None);
     }
 }
