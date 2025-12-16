@@ -18,11 +18,11 @@ schema.#Project & {
     name: "my-project"
 
     owners: {
-        defaultOwners: ["@myorg/maintainers"]
-        rules: [
-            {pattern: "*.rs", owners: ["@rust-team"]},
-            {pattern: "/docs/**", owners: ["@docs-team"]},
-        ]
+        rules: {
+            "default": {pattern: "*", owners: ["@myorg/maintainers"], order: 0}
+            "rust": {pattern: "*.rs", owners: ["@rust-team"], order: 1}
+            "docs": {pattern: "/docs/**", owners: ["@docs-team"], order: 2}
+        }
     }
 }
 ```
@@ -80,9 +80,9 @@ owners: {
     output: {
         platform: "github"  // or "gitlab" or "bitbucket"
     }
-    rules: [
-        {pattern: "*", owners: ["@owner"]},
-    ]
+    rules: {
+        "default": {pattern: "*", owners: ["@owner"]}
+    }
 }
 ```
 
@@ -102,27 +102,27 @@ Owners can be specified in several formats:
 
 ```cue
 owners: {
-    rules: [
-        {pattern: "*.ts", owners: ["@frontend-team", "@alice"]},
-        {pattern: "/security/**", owners: ["security@company.com"]},
-    ]
+    rules: {
+        "typescript": {pattern: "*.ts", owners: ["@frontend-team", "@alice"]}
+        "security": {pattern: "/security/**", owners: ["security@company.com"]}
+    }
 }
 ```
 
-### Default Owners
+### Catch-all Rules
 
-Set fallback owners for files that don't match any pattern:
+Set fallback owners for files that don't match any specific pattern using the `*` pattern:
 
 ```cue
 owners: {
-    defaultOwners: ["@myorg/core-team"]
-    rules: [
-        {pattern: "*.ts", owners: ["@frontend-team"]},
-    ]
+    rules: {
+        "default": {pattern: "*", owners: ["@myorg/core-team"], order: 0}
+        "typescript": {pattern: "*.ts", owners: ["@frontend-team"], order: 1}
+    }
 }
 ```
 
-This generates a `* @myorg/core-team` rule at the top of the file.
+This generates a `* @myorg/core-team` rule at the top of the file. Use the `order` field to ensure it appears first.
 
 ### Sections
 
@@ -130,13 +130,13 @@ Organize rules with section headers for better readability:
 
 ```cue
 owners: {
-    rules: [
-        {pattern: "*.rs", owners: ["@backend"], section: "Backend"},
-        {pattern: "*.go", owners: ["@backend"], section: "Backend"},
-        {pattern: "*.ts", owners: ["@frontend"], section: "Frontend"},
-        {pattern: "*.tsx", owners: ["@frontend"], section: "Frontend"},
-        {pattern: "/docs/**", owners: ["@docs-team"], section: "Documentation"},
-    ]
+    rules: {
+        "rust": {pattern: "*.rs", owners: ["@backend"], section: "Backend", order: 1}
+        "go": {pattern: "*.go", owners: ["@backend"], section: "Backend", order: 2}
+        "ts": {pattern: "*.ts", owners: ["@frontend"], section: "Frontend", order: 3}
+        "tsx": {pattern: "*.tsx", owners: ["@frontend"], section: "Frontend", order: 4}
+        "docs": {pattern: "/docs/**", owners: ["@docs-team"], section: "Documentation", order: 5}
+    }
 }
 ```
 
@@ -148,13 +148,13 @@ Add comments above rules to explain their purpose:
 
 ```cue
 owners: {
-    rules: [
-        {
+    rules: {
+        "security": {
             pattern:     "/security/**"
             owners:      ["@security-team"]
             description: "Security-sensitive code requires security team review"
-        },
-    ]
+        }
+    }
 }
 ```
 
@@ -167,9 +167,9 @@ owners: {
     output: {
         header: "Code ownership rules for my-project"
     }
-    rules: [
-        {pattern: "*", owners: ["@owner"]},
-    ]
+    rules: {
+        "default": {pattern: "*", owners: ["@owner"]}
+    }
 }
 ```
 
@@ -182,9 +182,9 @@ owners: {
     output: {
         path: "CODEOWNERS"  // Write to root instead of .github/
     }
-    rules: [
-        {pattern: "*", owners: ["@owner"]},
-    ]
+    rules: {
+        "default": {pattern: "*", owners: ["@owner"]}
+    }
 }
 ```
 
@@ -219,26 +219,27 @@ owners: {
         platform: "github"
         header:   "Auto-generated CODEOWNERS - configure in env.cue"
     }
-    defaultOwners: ["@myorg/maintainers"]
-    rules: [
+    rules: {
+        "default": {pattern: "*", owners: ["@myorg/maintainers"], order: 0}
+
         // Backend
-        {pattern: "*.rs", owners: ["@rust-team"], section: "Backend"},
-        {pattern: "*.go", owners: ["@go-team"], section: "Backend"},
+        "rust": {pattern: "*.rs", owners: ["@rust-team"], section: "Backend", order: 1}
+        "go": {pattern: "*.go", owners: ["@go-team"], section: "Backend", order: 2}
 
         // Frontend
-        {pattern: "*.ts", owners: ["@frontend"], section: "Frontend"},
-        {pattern: "*.tsx", owners: ["@frontend"], section: "Frontend"},
-        {pattern: "*.css", owners: ["@frontend"], section: "Frontend"},
+        "ts": {pattern: "*.ts", owners: ["@frontend"], section: "Frontend", order: 3}
+        "tsx": {pattern: "*.tsx", owners: ["@frontend"], section: "Frontend", order: 4}
+        "css": {pattern: "*.css", owners: ["@frontend"], section: "Frontend", order: 5}
 
         // Infrastructure
-        {pattern: "*.tf", owners: ["@platform-team"], section: "Infrastructure"},
-        {pattern: "Dockerfile", owners: ["@platform-team"], section: "Infrastructure"},
-        {pattern: ".github/**", owners: ["@platform-team"], section: "Infrastructure"},
+        "terraform": {pattern: "*.tf", owners: ["@platform-team"], section: "Infrastructure", order: 6}
+        "docker": {pattern: "Dockerfile", owners: ["@platform-team"], section: "Infrastructure", order: 7}
+        "github": {pattern: ".github/**", owners: ["@platform-team"], section: "Infrastructure", order: 8}
 
         // Documentation
-        {pattern: "/docs/**", owners: ["@docs-team"], section: "Documentation"},
-        {pattern: "*.md", owners: ["@docs-team"], section: "Documentation"},
-    ]
+        "docs": {pattern: "/docs/**", owners: ["@docs-team"], section: "Documentation", order: 9}
+        "markdown": {pattern: "*.md", owners: ["@docs-team"], section: "Documentation", order: 10}
+    }
 }
 ```
 
@@ -249,11 +250,11 @@ owners: {
     output: {
         platform: "gitlab"
     }
-    rules: [
-        {pattern: "*.py", owners: ["@backend-group"], section: "Backend"},
-        {pattern: "/api/**", owners: ["@api-team"], section: "API"},
-        {pattern: "/frontend/**", owners: ["@frontend-group"], section: "Frontend"},
-    ]
+    rules: {
+        "python": {pattern: "*.py", owners: ["@backend-group"], section: "Backend"}
+        "api": {pattern: "/api/**", owners: ["@api-team"], section: "API"}
+        "frontend": {pattern: "/frontend/**", owners: ["@frontend-group"], section: "Frontend"}
+    }
 }
 ```
 
@@ -261,25 +262,27 @@ owners: {
 
 ```cue
 owners: {
-    defaultOwners: ["@platform-team"]
-    rules: [
+    rules: {
+        "default": {pattern: "*", owners: ["@platform-team"], order: 0}
+
         // Service ownership
-        {pattern: "/services/auth/**", owners: ["@auth-team"], section: "Services"},
-        {pattern: "/services/billing/**", owners: ["@billing-team"], section: "Services"},
-        {pattern: "/services/notifications/**", owners: ["@notifications-team"], section: "Services"},
+        "auth": {pattern: "/services/auth/**", owners: ["@auth-team"], section: "Services", order: 1}
+        "billing": {pattern: "/services/billing/**", owners: ["@billing-team"], section: "Services", order: 2}
+        "notifications": {pattern: "/services/notifications/**", owners: ["@notifications-team"], section: "Services", order: 3}
 
         // Shared libraries
-        {pattern: "/packages/ui/**", owners: ["@design-system"], section: "Packages"},
-        {pattern: "/packages/utils/**", owners: ["@platform-team"], section: "Packages"},
+        "ui": {pattern: "/packages/ui/**", owners: ["@design-system"], section: "Packages", order: 4}
+        "utils": {pattern: "/packages/utils/**", owners: ["@platform-team"], section: "Packages", order: 5}
 
         // Critical paths
-        {
+        "security": {
             pattern:     "/services/*/security/**"
             owners:      ["@security-team"]
             description: "Security code requires security team approval"
             section:     "Security"
-        },
-    ]
+            order:       6
+        }
+    }
 }
 ```
 
@@ -291,7 +294,6 @@ Generated CODEOWNERS files include a header comment indicating they're managed b
 # CODEOWNERS file - Generated by cuenv
 # Do not edit manually. Configure in env.cue and run `cuenv sync codeowners`
 
-# Default owners for all files
 * @myorg/maintainers
 
 # Backend

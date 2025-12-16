@@ -12,24 +12,32 @@ env: {
 
 owners: {
 	output: platform: "github"
-	defaultOwners: ["@core-team"]
 	rules: {
+		"default": {
+			pattern:     "*"
+			owners:      ["@core-team"]
+			description: "Default owners for all files"
+			order:       0
+		}
 		"rust-files": {
 			pattern:     "*.rs"
 			owners:      ["@rust-team"]
 			section:     "Backend"
 			description: "Rust source files"
+			order:       1
 		}
 		"ts-files": {
 			pattern:     "*.ts"
 			owners:      ["@frontend-team"]
 			section:     "Frontend"
 			description: "TypeScript files"
+			order:       2
 		}
 		"docs": {
 			pattern:     "/docs/**"
 			owners:      ["@docs-team"]
 			description: "Documentation"
+			order:       3
 		}
 	}
 }

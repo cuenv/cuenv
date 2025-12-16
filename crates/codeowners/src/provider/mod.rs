@@ -76,8 +76,6 @@ pub struct ProjectOwners {
     pub path: PathBuf,
     /// Project name (used for section headers).
     pub name: String,
-    /// Default owners for all files in this project.
-    pub default_owners: Option<Vec<String>>,
     /// Ownership rules for this project.
     pub rules: Vec<Rule>,
 }
@@ -88,16 +86,8 @@ impl ProjectOwners {
         Self {
             path: path.into(),
             name: name.into(),
-            default_owners: None,
             rules,
         }
-    }
-
-    /// Set default owners for this project.
-    #[must_use]
-    pub fn with_default_owners(mut self, owners: Vec<String>) -> Self {
-        self.default_owners = Some(owners);
-        self
     }
 }
 
@@ -250,15 +240,6 @@ pub fn generate_aggregated_content(
 
     // Process each project
     for project in projects {
-        // Add default owners for this project as a catch-all pattern
-        if let Some(ref default_owners) = project.default_owners
-            && !default_owners.is_empty()
-        {
-            let pattern = prefix_pattern(&project.path, "**");
-            let rule = Rule::new(pattern, default_owners.clone()).section(project.name.clone());
-            builder = builder.rule(rule);
-        }
-
         // Add rules with prefixed patterns
         for rule in &project.rules {
             let prefixed_pattern = prefix_pattern(&project.path, &rule.pattern);

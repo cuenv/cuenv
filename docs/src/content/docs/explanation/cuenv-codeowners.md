@@ -11,7 +11,6 @@ CODEOWNERS files automatically assign reviewers to pull requests based on file p
 
 - Multi-platform support (GitHub, GitLab, Bitbucket)
 - Section grouping for organized output
-- Default owner rules
 - Custom headers and descriptions
 
 ## Architecture
@@ -96,7 +95,7 @@ use cuenv_codeowners::{Codeowners, Platform, Rule};
 let codeowners = Codeowners::builder()
     .platform(Platform::Github)
     .header("Code ownership rules")
-    .default_owners(["@org/maintainers"])
+    .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
     .rule(Rule::new("*.rs", ["@rust-team"]))
     .rule(Rule::new("/docs/**", ["@docs-team"]).section("Documentation"))
     .build();
@@ -119,15 +118,14 @@ let path = codeowners.output_path(); // ".github/CODEOWNERS"
 
 Fluent builder for configuration:
 
-| Method                 | Description                          |
-| ---------------------- | ------------------------------------ |
-| `platform(Platform)`   | Set target platform                  |
-| `path(str)`            | Override output path                 |
-| `header(str)`          | Set header comment                   |
-| `default_owners(iter)` | Set default owners (`*` rule)        |
-| `rule(Rule)`           | Add a single rule                    |
-| `rules(iter)`          | Add multiple rules                   |
-| `build()`              | Build the `Codeowners` configuration |
+| Method               | Description                          |
+| -------------------- | ------------------------------------ |
+| `platform(Platform)` | Set target platform                  |
+| `path(str)`          | Override output path                 |
+| `header(str)`        | Set header comment                   |
+| `rule(Rule)`         | Add a single rule                    |
+| `rules(iter)`        | Add multiple rules                   |
+| `build()`            | Build the `Codeowners` configuration |
 
 ## Features
 
@@ -152,7 +150,7 @@ use std::fs;
 
 let codeowners = Codeowners::builder()
     .platform(Platform::Github)
-    .default_owners(["@org/core-team"])
+    .rule(Rule::new("*", ["@org/core-team"]))  // Catch-all rule
     .rule(Rule::new("*.rs", ["@rust-team"]))
     .rule(Rule::new("*.ts", ["@frontend-team"]))
     .build();
@@ -184,8 +182,8 @@ use cuenv_codeowners::{Codeowners, Platform, Rule};
 let codeowners = Codeowners::builder()
     .platform(Platform::Github)
     .header("Auto-generated CODEOWNERS\nDo not edit manually")
-    .default_owners(["@org/maintainers"])
     // Rules with same section are grouped together
+    .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
     .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
     .rule(Rule::new("*.go", ["@backend"]).section("Backend"))
     .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
@@ -198,7 +196,6 @@ println!("{}", codeowners.generate());
 // # Auto-generated CODEOWNERS
 // # Do not edit manually
 //
-// # Default owners for all files
 // * @org/maintainers
 //
 // # Backend
