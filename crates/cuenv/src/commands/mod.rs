@@ -386,7 +386,10 @@ impl CommandExecutor {
                 generate,
                 from,
                 force,
-            } => self.execute_ci(dry_run, pipeline, generate, from, force).await,
+            } => {
+                self.execute_ci(dry_run, pipeline, generate, from, force)
+                    .await
+            }
             Command::Sync {
                 subcommand,
                 path,

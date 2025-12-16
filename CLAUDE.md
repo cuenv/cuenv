@@ -43,20 +43,20 @@ The project uses `cuenv` with a `#NixFlake` hook that automatically runs `nix pr
 
 ### Crate Structure
 
-| Crate | Purpose |
-|-------|---------|
-| **cuengine** | Go-Rust FFI bridge for CUE evaluation |
-| **cuenv-core** | Shared types, task execution, caching, environment management |
-| **cuenv** | CLI binary with TUI (clap + ratatui) |
-| **cuenv-events** | Event system for UI frontends (CLI/JSON renderers) |
-| **cuenv-workspaces** | Package manager workspace detection (npm, Cargo, pnpm, etc.) |
-| **cuenv-ci** | CI pipeline integration |
-| **cuenv-release** | Version management and publishing |
-| **cuenv-dagger** | Optional containerized task execution backend |
-| **cuenv-cubes** | CUE-based code generation |
-| **cuenv-ignore** | .gitignore/.dockerignore generation |
-| **cuenv-codeowners** | CODEOWNERS file generation |
-| **cuenv-github/gitlab/bitbucket** | VCS provider integrations |
+| Crate                             | Purpose                                                       |
+| --------------------------------- | ------------------------------------------------------------- |
+| **cuengine**                      | Go-Rust FFI bridge for CUE evaluation                         |
+| **cuenv-core**                    | Shared types, task execution, caching, environment management |
+| **cuenv**                         | CLI binary with TUI (clap + ratatui)                          |
+| **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)            |
+| **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.)  |
+| **cuenv-ci**                      | CI pipeline integration                                       |
+| **cuenv-release**                 | Version management and publishing                             |
+| **cuenv-dagger**                  | Optional containerized task execution backend                 |
+| **cuenv-cubes**                   | CUE-based code generation                                     |
+| **cuenv-ignore**                  | .gitignore/.dockerignore generation                           |
+| **cuenv-codeowners**              | CODEOWNERS file generation                                    |
+| **cuenv-github/gitlab/bitbucket** | VCS provider integrations                                     |
 
 ### Key Data Flow
 
@@ -106,6 +106,7 @@ cuenv exec -- cargo run -- env print --path examples/env-basic --package _exampl
 ## Code Quality Checklist
 
 Before committing:
+
 ```bash
 cuenv task fmt.fix
 cuenv task lint

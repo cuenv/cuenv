@@ -3,14 +3,13 @@
 //! Based on schema/secrets.cue
 
 use crate::{Error, Result};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::process::Command;
 
 /// Resolver for executing commands to retrieve secret values
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExecResolver {
     /// Command to execute
     pub command: String,
@@ -21,7 +20,7 @@ pub struct ExecResolver {
 
 /// Secret definition with resolver
 /// This is the base type that can be extended in CUE
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Secret {
     /// Resolver type (currently only "exec" is supported)
     pub resolver: String,

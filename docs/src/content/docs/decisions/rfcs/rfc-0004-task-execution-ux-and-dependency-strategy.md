@@ -40,22 +40,18 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 ## Proposed Approach
 
 1. **Task Discovery and Listing**
-
    - When `cuenv task` is executed without arguments, list all available tasks sorted by manifest order, mirroring the logic in `execute_task` that returns `Available tasks`.
    - Support aliases (e.g. `cuenv t`) and ensure help text references them.
 
 2. **Execution Semantics**
-
    - For `TaskDefinition::Single` without dependencies, execute directly and stream output if `capture_output` is enabled.
    - For singles with dependencies or groups, construct a `TaskGraph` via [TaskGraph::build_for_task](crates/cuenv-cli/src/commands/task.rs:92) and execute using `execute_graph`, preserving topological order.
 
 3. **Environment Handling**
-
    - Build a task-specific environment using `Environment::build_for_task`, injecting base variables while respecting secret redaction.
    - Support future policy hooks via cuenv-core without altering CLI contracts.
 
 4. **Failure Behaviour**
-
    - Abort on the first failing dependency, returning configuration errors with exit code 2 where applicable.
    - Provide structured output summarising success/failure, aligning with `format_task_results`.
 

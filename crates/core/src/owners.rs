@@ -7,7 +7,6 @@
 //! Based on schema/owners.cue
 
 use cuenv_codeowners::{Codeowners, CodeownersBuilder};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -20,7 +19,7 @@ pub use cuenv_codeowners::Platform as LibPlatform;
 /// Platform for CODEOWNERS file generation.
 ///
 /// This is the manifest-compatible version with serde/schemars derives.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
     /// GitHub - uses `.github/CODEOWNERS`
@@ -67,7 +66,7 @@ impl fmt::Display for Platform {
 }
 
 /// Output configuration for CODEOWNERS file generation.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct OwnersOutput {
     /// Platform to generate CODEOWNERS for.
     pub platform: Option<Platform>,
@@ -92,7 +91,7 @@ impl OwnersOutput {
 }
 
 /// A single code ownership rule.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OwnerRule {
     /// File pattern (glob syntax) - same as CODEOWNERS format.
     pub pattern: String,
@@ -118,7 +117,7 @@ pub struct OwnerRule {
 /// This type is designed for deserializing from CUE manifests. Use
 /// [`to_codeowners()`](Self::to_codeowners) to convert to the library type
 /// for generation.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Owners {
     /// Output configuration for CODEOWNERS file generation.

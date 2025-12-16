@@ -40,24 +40,20 @@ Documenting the strategy provides a single source of truth that feature files an
 ## Proposed Approach
 
 1. **Output Format Definitions**
-
    - `simple`: Human-readable text optimised for TUI output.
    - `env`: Line-delimited `KEY=VALUE` pairs, omitting secrets and invalid shell tokens.
    - `json`: Structured payload equivalent to `serde_json::Value`.
    - `--json` flag: Wrap output inside an envelope while respecting the chosen format for the `data` field.
 
 2. **Error Envelope Contract**
-
    - Enumerate `CliError::{Config, Eval, Other}` as the canonical categories, each mapping to `code: config|eval|other`.
    - Provide optional `help` messages surfaced via miette when not in JSON mode.
 
 3. **Exit Code Mapping**
-
    - Maintain the explicit mapping in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:109).
    - Document future additions to the error taxonomy through ADR updates.
 
 4. **Testing Strategy**
-
    - Expand BDD coverage in [features/cli/errors.feature](features/cli/errors.feature:1) to assert envelope structure, redaction rules, and exit codes.
    - Introduce snapshot tests to detect schema regressions.
 
