@@ -124,7 +124,12 @@ fn test_external_auto_run_and_materialization() {
         "First run should succeed.\n--- stdout ---\n{}\n--- stderr ---\n{}",
         stdout, stderr
     );
-    assert!(stdout.contains("Task 'consume' completed") || stdout.contains("succeeded"));
+    assert!(
+        stdout.contains("Task 'consume' completed") || stdout.contains("succeeded"),
+        "Expected success message in output.\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        stdout,
+        stderr
+    );
 }
 
 #[test]

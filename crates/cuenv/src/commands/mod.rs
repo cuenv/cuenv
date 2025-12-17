@@ -187,7 +187,7 @@ pub struct ModuleGuard<'a> {
     guard: MutexGuard<'a, Option<ModuleEvaluation>>,
 }
 
-impl<'a> std::ops::Deref for ModuleGuard<'a> {
+impl std::ops::Deref for ModuleGuard<'_> {
     type Target = ModuleEvaluation;
 
     fn deref(&self) -> &Self::Target {
@@ -199,6 +199,7 @@ impl<'a> std::ops::Deref for ModuleGuard<'a> {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Command {
     Version {
         format: String,
@@ -332,6 +333,7 @@ pub enum Command {
 /// The `CommandExecutor` provides lazy-loading of CUE module evaluation, ensuring
 /// that the module is only loaded when a command actually needs CUE access.
 /// This avoids startup overhead for simple commands like `version` or `completions`.
+#[allow(dead_code)]
 pub struct CommandExecutor {
     event_sender: EventSender,
     /// Lazy-loaded module evaluation, cached after first access
@@ -340,6 +342,7 @@ pub struct CommandExecutor {
     package: String,
 }
 
+#[allow(dead_code)]
 impl CommandExecutor {
     /// Create a new executor with the specified event sender and package name.
     pub fn new(event_sender: EventSender, package: String) -> Self {
@@ -351,6 +354,7 @@ impl CommandExecutor {
     }
 
     /// Get the CUE package name used for evaluation.
+    #[allow(dead_code)]
     pub fn package(&self) -> &str {
         &self.package
     }
@@ -401,6 +405,7 @@ impl CommandExecutor {
     /// Get the module root path if the module has been loaded.
     ///
     /// Returns `None` if `get_module` hasn't been called yet.
+    #[allow(dead_code)]
     pub fn module_root(&self) -> Option<PathBuf> {
         self.module
             .lock()
@@ -413,6 +418,7 @@ impl CommandExecutor {
     /// This is a convenience wrapper around `relative_path_from_root` that
     /// uses the cached module root. Returns an error if the module hasn't
     /// been loaded yet.
+    #[allow(dead_code)]
     pub fn relative_path(&self, target: &Path) -> Result<PathBuf> {
         let root = self.module_root().ok_or_else(|| {
             cuenv_core::Error::configuration("Module not loaded; call get_module first")
@@ -424,6 +430,7 @@ impl CommandExecutor {
     ///
     /// This uses the CUE schema verification performed during module evaluation
     /// to determine if an instance conforms to `schema.#Project`.
+    #[allow(dead_code)]
     pub fn is_project(&self, path: &Path) -> bool {
         self.module
             .lock()
@@ -601,6 +608,10 @@ impl CommandExecutor {
 
             match result {
                 Ok(output) => {
+                    // Print output to stdout (needed for CLI mode)
+                    if !output.is_empty() {
+                        println!("{output}");
+                    }
                     self.send_event(Event::CommandComplete {
                         command: command_name.to_string(),
                         success: true,
@@ -633,13 +644,10 @@ impl CommandExecutor {
         }
 
         if run_codeowners {
-            // Use optional version when running aggregate sync (no specific subcommand)
-            let is_aggregate_sync = subcommand.is_none();
-            let codeowners_result = if is_aggregate_sync {
-                sync::execute_sync_codeowners_optional(&path, &package, dry_run, check).await
-            } else {
-                sync::execute_sync_codeowners(&path, &package, dry_run, check).await
-            };
+            // CODEOWNERS is a single file at repo root, so it must aggregate all configs
+            // from the workspace. Always use workspace sync for codeowners.
+            let codeowners_result =
+                sync::execute_sync_codeowners_workspace(&package, dry_run, check).await;
             match codeowners_result {
                 Ok(output) => outputs.push(output),
                 Err(e) => {
@@ -649,19 +657,25 @@ impl CommandExecutor {
             }
         }
 
+        let combined_output = outputs.join("\n");
+
         if had_error {
             self.send_event(Event::CommandComplete {
                 command: command_name.to_string(),
                 success: false,
-                output: outputs.join("\n"),
+                output: combined_output.clone(),
             });
-            return Err(cuenv_core::Error::configuration(outputs.join("\n")));
+            return Err(cuenv_core::Error::configuration(combined_output));
         }
 
+        // Print output to stdout (needed for CLI mode)
+        if !combined_output.is_empty() {
+            println!("{combined_output}");
+        }
         self.send_event(Event::CommandComplete {
             command: command_name.to_string(),
             success: true,
-            output: outputs.join("\n"),
+            output: combined_output,
         });
         Ok(())
     }
@@ -793,6 +807,10 @@ impl CommandExecutor {
         .await
         {
             Ok(output) => {
+                // Print output to stdout (needed for CLI mode)
+                if !output.is_empty() {
+                    println!("{output}");
+                }
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
                     success: true,

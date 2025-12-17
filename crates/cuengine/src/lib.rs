@@ -497,6 +497,12 @@ pub fn get_bridge_version() -> Result<String> {
 ///
 /// # Returns
 /// JSON string containing the evaluated CUE configuration
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The CUE module evaluation fails (see [`evaluate_module`])
+/// - No CUE instance is found in the specified directory
 #[tracing::instrument(
     name = "evaluate_cue_package",
     fields(

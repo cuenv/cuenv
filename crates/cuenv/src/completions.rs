@@ -63,20 +63,19 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
     );
 
     // Calculate relative path from module root to target
-    let target_path = match dir_path.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return Vec::new(),
+    let Ok(target_path) = dir_path.canonicalize() else {
+        return Vec::new();
     };
-    let relative_path = target_path
-        .strip_prefix(&module_root)
-        .map(|p| {
+    let relative_path = target_path.strip_prefix(&module_root).map_or_else(
+        |_| PathBuf::from("."),
+        |p| {
             if p.as_os_str().is_empty() {
                 PathBuf::from(".")
             } else {
                 p.to_path_buf()
             }
-        })
-        .unwrap_or_else(|_| PathBuf::from("."));
+        },
+    );
 
     let Some(instance) = module.get(&relative_path) else {
         return Vec::new();
@@ -152,16 +151,16 @@ fn get_task_params(
 
     // Calculate relative path
     let target_path = dir_path.canonicalize().ok()?;
-    let relative_path = target_path
-        .strip_prefix(&module_root)
-        .map(|p| {
+    let relative_path = target_path.strip_prefix(&module_root).map_or_else(
+        |_| PathBuf::from("."),
+        |p| {
             if p.as_os_str().is_empty() {
                 PathBuf::from(".")
             } else {
                 p.to_path_buf()
             }
-        })
-        .unwrap_or_else(|_| PathBuf::from("."));
+        },
+    );
 
     let instance = module.get(&relative_path)?;
     let manifest: cuenv_core::manifest::Project = instance.deserialize().ok()?;
