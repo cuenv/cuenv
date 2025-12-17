@@ -10,7 +10,12 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::execute_command;
 use std::path::Path;
 
-use super::export::get_environment_with_hooks;
+use cuenv_core::hooks::approval::{
+    ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status,
+};
+use cuenv_events::emit_stderr;
+
+use super::export::{extract_static_env_vars, get_environment_with_hooks};
 
 /// Execute an arbitrary command with the CUE environment.
 ///
@@ -117,7 +122,33 @@ pub async fn execute_exec(
 
     // Get environment with hook-generated vars merged in
     let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
-    let base_env_vars = get_environment_with_hooks(&directory, &manifest, package).await?;
+
+    // Check approval status before running hooks
+    let config_value = serde_json::to_value(&manifest).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
+    })?;
+    let summary = ConfigSummary::from_json(&config_value);
+
+    let hooks_approved = if summary.has_hooks {
+        let mut approval_manager = ApprovalManager::with_default_file()?;
+        approval_manager.load_approvals().await?;
+        let approval_status = check_approval_status(&approval_manager, &directory, &config_value)?;
+        matches!(approval_status, ApprovalStatus::Approved)
+    } else {
+        true // No hooks = nothing to approve
+    };
+
+    if !hooks_approved {
+        emit_stderr!(
+            "\x1b[1;33mWarning:\x1b[0m Hooks not run (approval required). Run '\x1b[36mcuenv allow\x1b[0m' to enable."
+        );
+    }
+
+    let base_env_vars = if hooks_approved {
+        get_environment_with_hooks(&directory, &manifest, package).await?
+    } else {
+        extract_static_env_vars(&manifest)
+    };
     tracing::debug!(
         "Base environment variables after hooks: {:?}",
         base_env_vars
