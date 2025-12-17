@@ -104,8 +104,8 @@ git push origin feature/my-new-feature
 - Write unit tests for all public functions
 
 ````rust
-use cuengine::CueEvaluator;
-use cuenv_core::manifest::Cuenv;
+use cuengine::evaluate_cue_package_typed;
+use cuenv_core::manifest::Project;
 use std::path::Path;
 
 /// Evaluates the `cuenv` package inside `dir` and returns the typed manifest.
@@ -121,16 +121,14 @@ use std::path::Path;
 /// # Examples
 ///
 /// ```rust
-/// # use cuengine::CueEvaluator;
+/// # use cuengine::evaluate_cue_package;
 /// # use std::path::Path;
-/// let evaluator = CueEvaluator::builder().build()?;
-/// let json = evaluator.evaluate(Path::new("./config"), "cuenv")?;
+/// let json = evaluate_cue_package(Path::new("./config"), "cuenv")?;
 /// assert!(json.contains("env"));
-/// # Ok::<_, cuenv_core::Error>(())
+/// # Ok::<_, cuengine::CueEngineError>(())
 /// ```
-pub fn load_manifest(dir: &Path) -> cuenv_core::Result<Cuenv> {
-    let evaluator = CueEvaluator::builder().build()?;
-    evaluator.evaluate_typed(dir, "cuenv")
+pub fn load_manifest(dir: &Path) -> cuengine::Result<Project> {
+    evaluate_cue_package_typed(dir, "cuenv")
 }
 ````
 
@@ -157,13 +155,12 @@ Write comprehensive tests using Rust's built-in test framework:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuengine::CueEvaluator;
+    use cuengine::evaluate_cue_package;
     use std::path::Path;
 
     #[test]
     fn evaluator_runs() {
-        let evaluator = CueEvaluator::builder().no_retry().build().unwrap();
-        let result = evaluator.evaluate(Path::new("."), "cuenv");
+        let result = evaluate_cue_package(Path::new("."), "cuenv");
         assert!(result.is_ok());
     }
 }

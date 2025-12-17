@@ -1,21 +1,28 @@
 //! Exec command implementation for running arbitrary commands with CUE environment
 
-use cuengine::CueEvaluator;
+use super::env_file::find_cue_module_root;
+use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
+use cuengine::ModuleEvalOptions;
+use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::execute_command;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::export::get_environment_with_hooks;
 
-/// Execute an arbitrary command with the CUE environment
+/// Execute an arbitrary command with the CUE environment.
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
 pub async fn execute_exec(
     path: &str,
     package: &str,
     command: &str,
     args: &[String],
     environment_override: Option<&str>,
+    executor: Option<&CommandExecutor>,
 ) -> Result<i32> {
     tracing::info!(
         "Executing command with CUE environment from path: {}, package: {}, command: {} {:?}",
@@ -25,13 +32,87 @@ pub async fn execute_exec(
         args
     );
 
-    // Evaluate CUE to get environment
-    let evaluator = CueEvaluator::builder()
-        .build()
-        .map_err(super::convert_engine_error)?;
-    let manifest: Project = evaluator
-        .evaluate_typed(Path::new(path), package)
-        .map_err(super::convert_engine_error)?;
+    // Evaluate CUE to get environment using module-wide evaluation
+    let target_path = Path::new(path)
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(Path::new(path).to_path_buf().into_boxed_path()),
+            operation: "canonicalize path".to_string(),
+        })?;
+
+    // Use executor's cached module if available
+    let manifest: Project = if let Some(exec) = executor {
+        tracing::debug!("Using cached module evaluation from executor");
+        let module = exec.get_module(&target_path)?;
+        let rel_path = relative_path_from_root(&module.root, &target_path);
+
+        let instance = module.get(&rel_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE instance found at path: {} (relative: {})",
+                target_path.display(),
+                rel_path.display()
+            ))
+        })?;
+
+        // Check if this is a Project (has name field) or Base (no name)
+        match instance.kind {
+            cuenv_core::InstanceKind::Project => instance.deserialize()?,
+            cuenv_core::InstanceKind::Base => {
+                return Err(cuenv_core::Error::configuration(
+                    "This directory uses schema.#Base which doesn't support exec.\n\
+                     To use exec, update your env.cue to use schema.#Project:\n\n\
+                     schema.#Project\n\
+                     name: \"your-project-name\"",
+                ));
+            }
+        }
+    } else {
+        // Legacy path: fresh evaluation
+        tracing::debug!("Using fresh module evaluation (no executor)");
+
+        let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE module found (looking for cue.mod/) starting from: {}",
+                target_path.display()
+            ))
+        })?;
+
+        let options = ModuleEvalOptions {
+            recursive: true,
+            ..Default::default()
+        };
+        let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
+            .map_err(convert_engine_error)?;
+
+        let module = ModuleEvaluation::from_raw(
+            module_root.clone(),
+            raw_result.instances,
+            raw_result.projects,
+        );
+
+        let rel_path = relative_path_from_root(&module_root, &target_path);
+        let instance = module.get(&rel_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE instance found at path: {} (relative: {})",
+                target_path.display(),
+                rel_path.display()
+            ))
+        })?;
+
+        // Check if this is a Project (has name field) or Base (no name)
+        match instance.kind {
+            cuenv_core::InstanceKind::Project => instance.deserialize()?,
+            cuenv_core::InstanceKind::Base => {
+                return Err(cuenv_core::Error::configuration(
+                    "This directory uses schema.#Base which doesn't support exec.\n\
+                     To use exec, update your env.cue to use schema.#Project:\n\n\
+                     schema.#Project\n\
+                     name: \"your-project-name\"",
+                ));
+            }
+        }
+    };
 
     // Get environment with hook-generated vars merged in
     let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
@@ -97,6 +178,7 @@ env: {
             "echo",
             &["test".to_string()],
             None,
+            None, // executor
         )
         .await;
 
@@ -123,6 +205,7 @@ env: {
             "sh",
             &["-c".to_string(), "echo Hello".to_string()],
             None,
+            None, // executor
         )
         .await;
 

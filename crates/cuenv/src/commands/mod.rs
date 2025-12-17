@@ -61,6 +61,7 @@ pub mod ci_cmd {
                 false,    // help
                 false,    // all
                 &[],      // task_args
+                None,     // executor - CI runner doesn't have access to executor
             )
             .await
             .map(|_| ())
@@ -154,9 +155,48 @@ jobs:
 use crate::cli::{StatusFormat, SyncCommands};
 use crate::events::{Event, EventSender};
 use clap_complete::Shell;
-use cuenv_core::Result;
+use cuengine::ModuleEvalOptions;
+use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use tokio::time::{Duration, sleep};
 use tracing::{Level, event};
+
+/// Compute the relative path from module root to target directory.
+///
+/// Returns the path suitable for looking up instances in `ModuleEvaluation`.
+/// Returns `"."` for the module root itself.
+pub fn relative_path_from_root(module_root: &Path, target: &Path) -> PathBuf {
+    target.strip_prefix(module_root).map_or_else(
+        |_| PathBuf::from("."),
+        |p| {
+            if p.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                p.to_path_buf()
+            }
+        },
+    )
+}
+
+/// A guard that provides access to the loaded `ModuleEvaluation`.
+///
+/// This wrapper around `MutexGuard` ensures the inner `Option` is always `Some`
+/// by the time it's constructed, providing direct access to the module.
+pub struct ModuleGuard<'a> {
+    guard: MutexGuard<'a, Option<ModuleEvaluation>>,
+}
+
+impl<'a> std::ops::Deref for ModuleGuard<'a> {
+    type Target = ModuleEvaluation;
+
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: ModuleGuard is only constructed after ensuring the Option is Some
+        self.guard
+            .as_ref()
+            .expect("ModuleGuard invariant violated: module should be loaded")
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -287,15 +327,113 @@ pub enum Command {
     },
 }
 
-#[allow(dead_code)]
+/// Executes CLI commands with centralized module evaluation and event handling.
+///
+/// The `CommandExecutor` provides lazy-loading of CUE module evaluation, ensuring
+/// that the module is only loaded when a command actually needs CUE access.
+/// This avoids startup overhead for simple commands like `version` or `completions`.
 pub struct CommandExecutor {
     event_sender: EventSender,
+    /// Lazy-loaded module evaluation, cached after first access
+    module: Mutex<Option<ModuleEvaluation>>,
+    /// The CUE package name to evaluate (typically "cuenv")
+    package: String,
 }
 
-#[allow(dead_code)]
 impl CommandExecutor {
-    pub fn new(event_sender: EventSender) -> Self {
-        Self { event_sender }
+    /// Create a new executor with the specified event sender and package name.
+    pub fn new(event_sender: EventSender, package: String) -> Self {
+        Self {
+            event_sender,
+            module: Mutex::new(None),
+            package,
+        }
+    }
+
+    /// Get the CUE package name used for evaluation.
+    pub fn package(&self) -> &str {
+        &self.package
+    }
+
+    /// Get or load the module evaluation (cached after first call).
+    ///
+    /// This method lazily loads the CUE module on first access and caches it
+    /// for subsequent calls. Commands that don't need CUE evaluation
+    /// (version, completions, etc.) never trigger this load.
+    ///
+    /// # Arguments
+    /// * `path` - Directory to start searching for module root
+    ///
+    /// # Returns
+    /// A `ModuleGuard` that provides direct access to the `ModuleEvaluation`
+    pub fn get_module(&self, path: &Path) -> Result<ModuleGuard<'_>> {
+        let mut guard = self
+            .module
+            .lock()
+            .map_err(|_| cuenv_core::Error::configuration("Failed to acquire module lock"))?;
+
+        if guard.is_none() {
+            let module_root = env_file::find_cue_module_root(path).ok_or_else(|| {
+                cuenv_core::Error::configuration(format!(
+                    "No CUE module found (looking for cue.mod/) starting from: {}",
+                    path.display()
+                ))
+            })?;
+
+            // Evaluate the entire module recursively
+            let options = ModuleEvalOptions {
+                recursive: true,
+                ..Default::default()
+            };
+            let raw = cuengine::evaluate_module(&module_root, &self.package, Some(options))
+                .map_err(convert_engine_error)?;
+
+            *guard = Some(ModuleEvaluation::from_raw(
+                module_root,
+                raw.instances,
+                raw.projects,
+            ));
+        }
+
+        Ok(ModuleGuard { guard })
+    }
+
+    /// Get the module root path if the module has been loaded.
+    ///
+    /// Returns `None` if `get_module` hasn't been called yet.
+    pub fn module_root(&self) -> Option<PathBuf> {
+        self.module
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|m| m.root.clone()))
+    }
+
+    /// Compute the relative path from module root to target directory.
+    ///
+    /// This is a convenience wrapper around `relative_path_from_root` that
+    /// uses the cached module root. Returns an error if the module hasn't
+    /// been loaded yet.
+    pub fn relative_path(&self, target: &Path) -> Result<PathBuf> {
+        let root = self.module_root().ok_or_else(|| {
+            cuenv_core::Error::configuration("Module not loaded; call get_module first")
+        })?;
+        Ok(relative_path_from_root(&root, target))
+    }
+
+    /// Check if a path is a Project (vs Base) using schema unification.
+    ///
+    /// This uses the CUE schema verification performed during module evaluation
+    /// to determine if an instance conforms to `schema.#Project`.
+    pub fn is_project(&self, path: &Path) -> bool {
+        self.module
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .as_ref()
+                    .and_then(|m| m.get(path).map(|i| i.kind == InstanceKind::Project))
+            })
+            .unwrap_or(false)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -457,6 +595,7 @@ impl CommandExecutor {
                 *cube_dry_run,
                 *cube_check,
                 *diff,
+                Some(self),
             )
             .await;
 
@@ -484,7 +623,7 @@ impl CommandExecutor {
         let mut had_error = false;
 
         if run_ignore {
-            match sync::execute_sync_ignore(&path, &package, dry_run, check).await {
+            match sync::execute_sync_ignore(&path, &package, dry_run, check, Some(self)).await {
                 Ok(output) => outputs.push(output),
                 Err(e) => {
                     outputs.push(format!("Ignore sync error: {e}"));
@@ -587,8 +726,10 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        // Execute the env print command
-        match env::execute_env_print(&path, &package, &format, environment.as_deref()).await {
+        // Execute the env print command (with cached module from self)
+        match env::execute_env_print(&path, &package, &format, environment.as_deref(), Some(self))
+            .await
+        {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -631,7 +772,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        // Execute the task command
+        // Execute the task command (with cached module from self)
         match task::execute_task(
             &path,
             &package,
@@ -647,6 +788,7 @@ impl CommandExecutor {
             help,
             all,
             &task_args,
+            Some(self),
         )
         .await
         {
@@ -683,8 +825,17 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        // Execute the exec command
-        match exec::execute_exec(&path, &package, &command, &args, environment.as_deref()).await {
+        // Execute the exec command (with cached module from self)
+        match exec::execute_exec(
+            &path,
+            &package,
+            &command,
+            &args,
+            environment.as_deref(),
+            Some(self),
+        )
+        .await
+        {
             Ok(exit_code) => {
                 let success = exit_code == 0;
                 self.send_event(Event::CommandComplete {
@@ -718,7 +869,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_env_load(&path, &package).await {
+        match hooks::execute_env_load(&path, &package, Some(self)).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -752,7 +903,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_env_status(&path, &package, wait, timeout, format).await {
+        match hooks::execute_env_status(&path, &package, wait, timeout, format, Some(self)).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -784,7 +935,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_env_check(&path, &package, shell).await {
+        match hooks::execute_env_check(&path, &package, shell, Some(self)).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -811,7 +962,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match env::execute_env_list(&path, &package, &format).await {
+        match env::execute_env_list(&path, &package, &format, Some(self)).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -838,7 +989,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_env_inspect(&path, &package).await {
+        match hooks::execute_env_inspect(&path, &package, Some(self)).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -886,7 +1037,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match hooks::execute_allow(&path, &package, note, yes).await {
+        match hooks::execute_allow(&path, &package, note, yes, Some(self)).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -941,7 +1092,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match export::execute_export(shell.as_deref(), &package).await {
+        match export::execute_export(shell.as_deref(), &package, Some(self)).await {
             Ok(output) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
@@ -1011,7 +1162,7 @@ mod tests {
 
     fn create_test_executor() -> (CommandExecutor, EventReceiver) {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let executor = CommandExecutor::new(sender);
+        let executor = CommandExecutor::new(sender, "cuenv".to_string());
         (executor, receiver)
     }
 
@@ -1029,8 +1180,9 @@ mod tests {
     #[tokio::test]
     async fn test_command_executor_new() {
         let (sender, _receiver) = mpsc::unbounded_channel();
-        let executor = CommandExecutor::new(sender);
+        let executor = CommandExecutor::new(sender, "cuenv".to_string());
         assert!(matches!(executor, CommandExecutor { .. }));
+        assert_eq!(executor.package(), "cuenv");
     }
 
     #[tokio::test]
@@ -1205,7 +1357,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_event() {
         let (sender, mut receiver) = mpsc::unbounded_channel();
-        let executor = CommandExecutor::new(sender);
+        let executor = CommandExecutor::new(sender, "cuenv".to_string());
 
         // Send a test event
         executor.send_event(Event::CommandStart {
@@ -1220,7 +1372,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_event_with_closed_channel() {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let executor = CommandExecutor::new(sender);
+        let executor = CommandExecutor::new(sender, "cuenv".to_string());
 
         // Close the receiver
         drop(receiver);

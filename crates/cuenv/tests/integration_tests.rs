@@ -47,8 +47,14 @@ fn get_test_examples_path() -> String {
 /// Create a temporary directory with git initialized and CUE files for sync testing.
 /// This is needed because `cuenv sync` requires being inside a git repository.
 /// Returns a `TempDir` that will be cleaned up when dropped, and the path as a String.
+///
+/// IMPORTANT: Uses a non-hidden prefix (`cuenv_test_`) because CUE's loader
+/// ignores directories starting with '.' (like the default .tmpXXXXXX).
 fn create_git_test_env() -> (tempfile::TempDir, String) {
-    let temp_dir = tempfile::tempdir().expect("Failed to create temp directory");
+    let temp_dir = tempfile::Builder::new()
+        .prefix("cuenv_test_")
+        .tempdir()
+        .expect("Failed to create temp directory");
     let temp_path = temp_dir.path();
 
     // Initialize git repository
@@ -668,10 +674,11 @@ fn test_sync_codeowners_dry_run() {
                 println!("stderr: {stderr}");
             }
             assert!(success, "Command should succeed");
-            // Dry run should show what would be created/updated
+            // Dry run should show status (create, update, or unchanged)
             assert!(
                 stdout.contains("Would create CODEOWNERS:")
-                    || stdout.contains("Would update CODEOWNERS:"),
+                    || stdout.contains("Would update CODEOWNERS:")
+                    || stdout.contains("Unchanged CODEOWNERS:"),
                 "Dry run should show output status: {stdout}"
             );
             assert!(

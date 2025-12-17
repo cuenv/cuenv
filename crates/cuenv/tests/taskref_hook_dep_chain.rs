@@ -14,6 +14,18 @@ use tempfile::TempDir;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+/// Create a test directory with proper prefix (non-hidden) for CUE loader compatibility.
+///
+/// CUE's `load.Instances` ignores directories starting with `.` (hidden directories).
+/// The default `TempDir::new()` creates hidden directories like `.tmpXXXXX`, which causes
+/// CUE evaluation to fail with "No instances could be evaluated".
+fn create_test_dir() -> TempDir {
+    tempfile::Builder::new()
+        .prefix("cuenv_test_")
+        .tempdir()
+        .expect("Failed to create temp directory")
+}
+
 fn run_cuenv(args: &[&str]) -> (String, String, bool) {
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
     let output = Command::new(cuenv_bin)
@@ -59,7 +71,7 @@ fn write_cue_module(root: &Path) {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn test_before_install_taskref_executes_transitive_dep_chain() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_dir();
     let root = tmp.path();
 
     // Some execution paths look for a git root.
@@ -67,11 +79,12 @@ fn test_before_install_taskref_executes_transitive_dep_chain() {
     write_cue_module(root);
 
     // Project B: referenced via TaskRef (name = projen-generator)
+    // All projects must use `package cuenv` - this is enforced by cuenv
     let proj_b = root.join("projen-generator");
     fs::create_dir_all(&proj_b).unwrap();
     fs::write(
         proj_b.join("env.cue"),
-        r#"package projen_generator
+        r#"package cuenv
 
 name: "projen-generator"
 
@@ -97,7 +110,7 @@ tasks: {
     fs::create_dir_all(&proj_a).unwrap();
     fs::write(
         proj_a.join("env.cue"),
-        r##"package website
+        r##"package cuenv
 
 name: "website"
 
@@ -141,7 +154,7 @@ tasks: {
     fs::create_dir_all(&gen_proj).unwrap();
     fs::write(
         gen_proj.join("env.cue"),
-        r#"package gen_proj
+        r#"package cuenv
 
 name: "gen-proj"
 
@@ -163,7 +176,7 @@ tasks: {
         "-p",
         proj_a.to_str().unwrap(),
         "--package",
-        "website",
+        "cuenv",
         "dev",
     ]);
 
@@ -207,7 +220,7 @@ tasks: {
 #[cfg(unix)]
 #[allow(clippy::too_many_lines)]
 fn test_match_hooks_run_before_injected_bun_install() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_dir();
     let root = tmp.path();
 
     fs::create_dir_all(root.join(".git")).unwrap();
@@ -228,11 +241,12 @@ fn test_match_hooks_run_before_injected_bun_install() {
     fs::set_permissions(&bun_path, perms).unwrap();
 
     // Project B: referenced via TaskRef (name = projen-generator)
+    // All projects must use `package cuenv` - this is enforced by cuenv
     let proj_b = root.join("projen-generator");
     fs::create_dir_all(&proj_b).unwrap();
     fs::write(
         proj_b.join("env.cue"),
-        r#"package projen_generator
+        r#"package cuenv
 
 name: "projen-generator"
 
@@ -258,7 +272,7 @@ tasks: {
     fs::create_dir_all(&gen_proj).unwrap();
     fs::write(
         gen_proj.join("env.cue"),
-        r#"package gen_proj
+        r#"package cuenv
 
 name: "gen-proj"
 
@@ -283,7 +297,7 @@ tasks: {
     fs::write(proj_a.join("bun.lock"), "\n").unwrap();
     fs::write(
         proj_a.join("env.cue"),
-        r##"package website
+        r##"package cuenv
 
 name: "website"
 
@@ -322,7 +336,7 @@ tasks: {
             "-p",
             proj_a.to_str().unwrap(),
             "--package",
-            "website",
+            "cuenv",
             "dev",
         ],
         &bin_dir,
