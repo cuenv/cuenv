@@ -177,16 +177,16 @@ impl Cube {
         let target_path = dir_path
             .canonicalize()
             .map_err(|e| CodegenError::Cube(format!("Failed to canonicalize path: {e}")))?;
-        let relative_path = target_path
-            .strip_prefix(&module_root)
-            .map(|p| {
+        let relative_path = target_path.strip_prefix(&module_root).map_or_else(
+            |_| PathBuf::from("."),
+            |p| {
                 if p.as_os_str().is_empty() {
                     PathBuf::from(".")
                 } else {
                     p.to_path_buf()
                 }
-            })
-            .unwrap_or_else(|_| PathBuf::from("."));
+            },
+        );
 
         let instance = module.get(&relative_path).ok_or_else(|| {
             CodegenError::Cube(format!(

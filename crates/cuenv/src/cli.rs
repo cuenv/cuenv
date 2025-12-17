@@ -105,6 +105,17 @@ impl CliError {
             help: Some(help.into()),
         }
     }
+
+    /// Add help text to an existing error, returning a new error with the help text set.
+    #[must_use]
+    pub fn with_help(self, help_text: impl Into<String>) -> Self {
+        let help = Some(help_text.into());
+        match self {
+            Self::Config { message, .. } => Self::Config { message, help },
+            Self::Eval { message, .. } => Self::Eval { message, help },
+            Self::Other { message, .. } => Self::Other { message, help },
+        }
+    }
 }
 
 /// Convert `cuenv_core::Error` to appropriate `CliError` variant.
@@ -845,7 +856,7 @@ impl Commands {
     /// Extract the package name from the command.
     ///
     /// This allows accessing the package before consuming the command via `into_command()`.
-    /// Used by the CommandExecutor to cache module evaluation with the correct package.
+    /// Used by the [`CommandExecutor`] to cache module evaluation with the correct package.
     /// Commands without CUE evaluation needs return "cuenv" as a reasonable default.
     #[must_use]
     pub fn package(&self) -> &str {

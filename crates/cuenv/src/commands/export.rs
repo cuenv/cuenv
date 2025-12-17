@@ -21,7 +21,7 @@ use cuenv_core::{
 };
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 

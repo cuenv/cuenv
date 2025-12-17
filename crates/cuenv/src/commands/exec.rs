@@ -8,7 +8,7 @@ use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::execute_command;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::export::get_environment_with_hooks;
 
@@ -16,6 +16,7 @@ use super::export::get_environment_with_hooks;
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+#[allow(clippy::too_many_lines)]
 pub async fn execute_exec(
     path: &str,
     package: &str,

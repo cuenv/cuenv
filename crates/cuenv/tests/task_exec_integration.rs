@@ -1031,8 +1031,9 @@ tasks: {
         !success,
         "Expected failure when specifying both task name and label"
     );
+    // Note: miette may line-wrap the message, so check for key parts separately
     assert!(
-        stderr.contains("Cannot specify both a task name and --label"),
+        stderr.contains("Cannot specify both a task name") && stderr.contains("--label"),
         "Error message should mention conflict. Got: {stderr}"
     );
 }
@@ -1076,8 +1077,9 @@ tasks: {
         "Expected failure when using trailing args with label selection"
     );
     // With trailing_var_arg, "arg1" becomes the task name, triggering the conflict error
+    // Note: miette may line-wrap the message, so check for key parts separately
     assert!(
-        stderr.contains("Cannot specify both a task name and --label"),
+        stderr.contains("Cannot specify both a task name") && stderr.contains("--label"),
         "Error message should mention conflict (trailing arg becomes task name). Got: {stderr}"
     );
 }
