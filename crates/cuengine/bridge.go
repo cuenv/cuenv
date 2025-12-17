@@ -802,8 +802,54 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	projects := []string{} // Use empty slice, not nil, so JSON serializes as [] instead of null
 	allMeta := make(map[string]ValueMeta)
 
-	// Parallel evaluation with worker pool
-	results := make(chan instanceResult, len(validInstances))
+	// Build CUE values SEQUENTIALLY to avoid race conditions.
+	// CUE's build.Instance objects share internal state (file caches, parsed ASTs),
+	// so concurrent BuildInstance calls on different instances can race.
+	// JSON serialization is expensive but thread-safe, so we parallelize that below.
+	type builtInstance struct {
+		relPath   string
+		value     cue.Value
+		isProject bool
+		inst      *build.Instance // Needed for meta extraction
+	}
+	var builtInstances []builtInstance
+
+	ctx := cuecontext.New()
+	for _, inst := range validInstances {
+		// Calculate relative path from module root
+		relPath, err := filepath.Rel(goModuleRoot, inst.Dir)
+		if err != nil {
+			relPath = inst.Dir
+		}
+		if relPath == "" {
+			relPath = "."
+		}
+
+		// Build the CUE value (must be sequential)
+		v := ctx.BuildInstance(inst)
+		if v.Err() != nil {
+			// Skip instances with build errors (logged below if no instances succeed)
+			continue
+		}
+
+		// Check if this is a Project (has required "name" field) vs Base (no name)
+		isProject := false
+		nameField := v.LookupPath(cue.ParsePath("name"))
+		if nameField.Exists() && nameField.Err() == nil {
+			isProject = true
+		}
+
+		builtInstances = append(builtInstances, builtInstance{
+			relPath:   relPath,
+			value:     v,
+			isProject: isProject,
+			inst:      inst,
+		})
+	}
+
+	// Parallel JSON serialization with worker pool
+	// JSON marshaling is expensive but thread-safe, so we parallelize this part.
+	results := make(chan instanceResult, len(builtInstances))
 	var wg sync.WaitGroup
 
 	// Limit concurrency to avoid memory pressure
@@ -813,62 +859,33 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	moduleRoot := goModuleRoot
 	withMeta := options.WithMeta
 
-	for _, inst := range validInstances {
+	for _, built := range builtInstances {
 		wg.Add(1)
-		go func(inst *build.Instance) {
+		go func(b builtInstance) {
 			defer wg.Done()
 			semaphore <- struct{}{}        // Acquire
 			defer func() { <-semaphore }() // Release
 
-			// Each goroutine gets its own CUE context for thread safety
-			localCtx := cuecontext.New()
-
-			// Calculate relative path from module root
-			relPath, err := filepath.Rel(moduleRoot, inst.Dir)
-			if err != nil {
-				relPath = inst.Dir
-			}
-			if relPath == "" {
-				relPath = "."
-			}
-
-			// Build the CUE value
-			v := localCtx.BuildInstance(inst)
-			if v.Err() != nil {
-				results <- instanceResult{
-					relPath: relPath,
-					err:     fmt.Errorf("build error at %s: %w", relPath, v.Err()),
-				}
-				return
-			}
-
-			// Check if this is a Project (has required "name" field) vs Base (no name)
-			isProject := false
-			nameField := v.LookupPath(cue.ParsePath("name"))
-			if nameField.Exists() && nameField.Err() == nil {
-				isProject = true
-			}
-
-			// Build clean JSON (without inline _meta)
-			jsonBytes, err := buildJSONClean(v)
+			// Build clean JSON (without inline _meta) - thread-safe
+			jsonBytes, err := buildJSONClean(b.value)
 			if err != nil {
 				results <- instanceResult{err: err}
 				return
 			}
 
-			// Extract meta separately if requested
+			// Extract meta separately if requested - thread-safe (read-only)
 			var meta map[string]ValueMeta
 			if withMeta {
-				meta = extractFieldMetaSeparate(inst, moduleRoot, relPath)
+				meta = extractFieldMetaSeparate(b.inst, moduleRoot, b.relPath)
 			}
 
 			results <- instanceResult{
-				relPath:   relPath,
+				relPath:   b.relPath,
 				jsonBytes: jsonBytes,
-				isProject: isProject,
+				isProject: b.isProject,
 				meta:      meta,
 			}
-		}(inst)
+		}(built)
 	}
 
 	// Close results channel when all goroutines complete
@@ -894,8 +911,8 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	}
 
 	if len(instances) == 0 {
-		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, loadedInstances=%d, validInstances=%d, errors=%v",
-			evalDir, goModuleRoot, loadPattern, len(loadedInstances), len(validInstances), buildErrors)
+		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, loadedInstances=%d, validInstances=%d, builtInstances=%d, errors=%v",
+			evalDir, goModuleRoot, loadPattern, len(loadedInstances), len(validInstances), len(builtInstances), buildErrors)
 		result = createErrorResponse(ErrorCodeBuildValue, "No instances could be evaluated", &hint)
 		return result
 	}
