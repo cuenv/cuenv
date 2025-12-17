@@ -2,6 +2,11 @@
 //!
 //! This module provides comprehensive performance monitoring with
 //! structured tracing, timing measurements, and resource usage tracking.
+//!
+//! Note: Currently only used by tests and the performance macros.
+//! The infrastructure is available for future use in command implementations.
+
+#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

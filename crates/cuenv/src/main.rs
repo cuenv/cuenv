@@ -251,15 +251,29 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             environment,
         } => {
             // CUE evaluation is sync FFI, so we can call the async function via a mini runtime
-            // But for maximum speed, let's use block_on just for this
             let rt = tokio::runtime::Builder::new_current_thread()
                 .build()
                 .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
             rt.block_on(async {
-                // Sync path: no executor available
-                execute_env_print_command_safe(path, package, format, environment, json_mode, None)
-                    .await
+                match commands::env::execute_env_print(
+                    &path,
+                    &package,
+                    &format,
+                    environment.as_deref(),
+                    None,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        println!("{result}");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let cli_err: CliError = e.into();
+                        Err(cli_err.with_help("Check your CUE files and package configuration"))
+                    }
+                }
             })
         }
 
@@ -273,8 +287,16 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                 .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
             rt.block_on(async {
-                // Sync path: no executor available
-                execute_env_list_command_safe(path, package, format, json_mode, None).await
+                match commands::env::execute_env_list(&path, &package, &format, None).await {
+                    Ok(result) => {
+                        println!("{result}");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let cli_err: CliError = e.into();
+                        Err(cli_err.with_help("Check your CUE files and package configuration"))
+                    }
+                }
             })
         }
 
@@ -568,7 +590,7 @@ struct InitResult {
     renderer_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// Create a CommandExecutor with the given package name.
+/// Create a [`CommandExecutor`] with the given package name.
 ///
 /// The executor provides centralized module evaluation - commands that need
 /// CUE access can call `executor.get_module()` to get the cached evaluation.
@@ -652,28 +674,41 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
 
 /// Execute command safely without ? operator
 ///
-/// The `executor` provides centralized module evaluation - commands that need
-/// CUE access should call `executor.get_module()` to get the cached evaluation.
-#[allow(clippy::too_many_lines)]
+/// Execute a command using the `CommandExecutor`.
+///
+/// Special commands (Tui, Web, Completions) are handled directly here since they
+/// don't fit the standard command execution pattern. All other commands are delegated
+/// to the executor's event-driven `execute()` method.
 #[instrument(name = "cuenv_execute_command_safe", skip(executor))]
 async fn execute_command_safe(
     command: Command,
     json_mode: bool,
     executor: &CommandExecutor,
 ) -> Result<(), CliError> {
-    // The executor provides cached CUE module evaluation for commands
-    match command {
-        Command::Version { format: _ } => match execute_version_command_safe().await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(CliError::other(format!("Version command failed: {e}"))),
-        },
+    // Special commands that bypass the executor (they don't fit the event pattern)
+    match &command {
+        Command::Tui => {
+            return execute_tui_command()
+                .await
+                .map_err(|e| CliError::other(e.to_string()));
+        }
+        Command::Web { port, host } => {
+            return execute_web_command(*port, host.clone())
+                .await
+                .map_err(|e| CliError::other(e.to_string()));
+        }
+        Command::Completions { shell } => {
+            // Completions are handled early in real_main, this is just for exhaustiveness
+            crate::cli::generate_completions(*shell);
+            return Ok(());
+        }
+        // Info command needs special handling for json_mode and output
         Command::Info {
             path,
             package,
             meta,
         } => {
-            // Info is a sync command, call it directly
-            match commands::info::execute_info(path.as_deref(), &package, json_mode, meta) {
+            return match commands::info::execute_info(path.as_deref(), package, json_mode, *meta) {
                 Ok(output) => {
                     print!("{output}");
                     Ok(())
@@ -682,255 +717,45 @@ async fn execute_command_safe(
                     format!("Info command failed: {e}"),
                     "Check that you are in a CUE module with valid env.cue files",
                 )),
-            }
+            };
         }
-        Command::EnvPrint {
-            path,
-            package,
-            format,
-            environment,
-        } => match execute_env_print_command_safe(
-            path,
-            package,
-            format,
-            environment,
-            json_mode,
-            Some(executor),
-        )
-        .await
-        {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
-        Command::Task {
-            path,
-            package,
-            name,
-            labels,
-            environment,
-            materialize_outputs,
-            show_cache_path,
-            backend,
-            tui,
-            help,
-            all,
-            task_args,
-            format,
-        } => match execute_task_command_safe(
-            path,
-            package,
-            name,
-            labels,
-            environment,
-            format,
-            materialize_outputs,
-            show_cache_path,
-            backend,
-            tui,
-            help,
-            all,
-            task_args,
-            json_mode,
-            Some(executor),
-        )
-        .await
-        {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
-        Command::Exec {
-            path,
-            package,
-            command,
-            args,
-            environment,
-        } => match execute_exec_command_safe(path, package, command, args, environment).await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
-        Command::EnvLoad { path, package } => {
-            match execute_env_load_command_safe(path, package, json_mode, Some(executor)).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
-        Command::EnvStatus {
-            path,
-            package,
-            wait,
-            timeout,
-            format,
-        } => {
-            match execute_env_status_command_safe(
-                path,
-                package,
-                wait,
-                timeout,
-                format,
-                json_mode,
-                Some(executor),
-            )
-            .await
-            {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
-        Command::EnvInspect { path, package } => {
-            match execute_env_inspect_command_safe(path, package, json_mode, Some(executor)).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
-        Command::EnvCheck {
-            path,
-            package,
-            shell,
-        } => {
-            match execute_env_check_command_safe(path, package, shell, json_mode, Some(executor))
-                .await
-            {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
-        Command::EnvList {
-            path,
-            package,
-            format,
-        } => match execute_env_list_command_safe(path, package, format, json_mode, Some(executor))
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
-        Command::ShellInit { shell } => execute_shell_init_command_safe(shell, json_mode),
-        Command::Allow {
-            path,
-            package,
-            note,
-            yes,
-        } => {
-            match execute_allow_command_safe(path, package, note, yes, json_mode, Some(executor))
-                .await
-            {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
-        Command::Deny { path, package, all } => {
-            match execute_deny_command_safe(path, package, all, json_mode).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
-        Command::Export { shell, package } => {
-            match execute_export_command_safe(shell, package, Some(executor)).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
-        Command::Ci {
-            dry_run,
-            pipeline,
-            generate,
-            from,
-            force,
-        } => match execute_ci_command_safe(dry_run, pipeline, generate, from, force).await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
-        Command::Tui => match execute_tui_command().await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
-        Command::Web { port, host } => match execute_web_command(port, host).await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
+        // Changeset commands need special handling for json_mode
         Command::ChangesetAdd {
             path,
             summary,
             description,
             packages,
         } => {
-            match execute_changeset_add_safe(path, summary, description, packages, json_mode).await
-            {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
+            return execute_changeset_add_safe(
+                path.clone(),
+                summary.clone(),
+                description.clone(),
+                packages.clone(),
+                json_mode,
+            )
+            .await;
         }
         Command::ChangesetStatus { path, json } => {
-            // Use the command-specific --json flag, or fall back to global --json
-            let use_json = json || json_mode;
-            match execute_changeset_status_safe(path, use_json).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
+            let use_json = *json || json_mode;
+            return execute_changeset_status_safe(path.clone(), use_json).await;
         }
         Command::ChangesetFromCommits { path, since } => {
-            match execute_changeset_from_commits_safe(path, since, json_mode).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
+            return execute_changeset_from_commits_safe(path.clone(), since.clone(), json_mode)
+                .await;
         }
         Command::ReleaseVersion { path, dry_run } => {
-            match execute_release_version_safe(path, dry_run, json_mode).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
+            return execute_release_version_safe(path.clone(), *dry_run, json_mode).await;
         }
         Command::ReleasePublish { path, dry_run } => {
-            match execute_release_publish_safe(path, dry_run, json_mode).await {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
+            return execute_release_publish_safe(path.clone(), *dry_run, json_mode).await;
         }
-        Command::Completions { shell } => {
-            // Completions are handled early in real_main, this is just for exhaustiveness
-            crate::cli::generate_completions(shell);
-            Ok(())
-        }
-        Command::Sync {
-            subcommand,
-            path,
-            package,
-            dry_run,
-            check,
-            all,
-        } => {
-            match execute_sync_command_safe(
-                subcommand,
-                path,
-                package,
-                dry_run,
-                check,
-                all,
-                json_mode,
-                Some(executor),
-            )
-            .await
-            {
-                Ok(()) => Ok(()),
-                Err(e) => Err(e),
-            }
-        }
+        _ => {}
     }
-}
 
-/// Execute CI command safely
-#[instrument(name = "cuenv_execute_ci_safe")]
-async fn execute_ci_command_safe(
-    dry_run: bool,
-    pipeline: Option<String>,
-    generate: Option<String>,
-    from: Option<String>,
-    force: bool,
-) -> Result<(), CliError> {
-    match commands::ci_cmd::execute_ci(dry_run, pipeline, generate, from, force).await {
-        Ok(()) => Ok(()),
-        Err(e) => Err(CliError::other(format!("CI execution failed: {e}"))),
-    }
+    // All other commands go through the executor's event-driven execute() method
+    executor.execute(command).await.map_err(|e| {
+        CliError::eval_with_help(e.to_string(), "Run with --help for usage information")
+    })
 }
 
 /// Execute TUI command - starts interactive event dashboard
@@ -983,196 +808,6 @@ async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Execute version command safely
-#[instrument(name = "cuenv_execute_version_safe")]
-async fn execute_version_command_safe() -> Result<(), String> {
-    let mut perf_guard = performance::PerformanceGuard::new("version_command");
-    perf_guard.add_metadata("command_type", "version");
-
-    let version_info = measure_perf!("get_version_info", {
-        commands::version::get_version_info()
-    });
-
-    println!("{version_info}");
-    perf_guard.finish(true);
-
-    Ok(())
-}
-
-/// Execute env load command safely
-#[instrument(name = "cuenv_execute_env_load_safe", skip(executor))]
-async fn execute_env_load_command_safe(
-    path: String,
-    package: String,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    match commands::hooks::execute_env_load(&path, &package, executor).await {
-        Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "message": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                println!("{output}");
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Env load failed: {e}"),
-            "Check that your env.cue file is valid and the directory is approved",
-        )),
-    }
-}
-
-/// Execute env status command safely
-#[instrument(name = "cuenv_execute_env_status_safe", skip(executor))]
-async fn execute_env_status_command_safe(
-    path: String,
-    package: String,
-    wait: bool,
-    timeout: u64,
-    format: crate::cli::StatusFormat,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    match commands::hooks::execute_env_status(&path, &package, wait, timeout, format, executor)
-        .await
-    {
-        Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "status": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                println!("{output}");
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Env status failed: {e}"),
-            "Check that your env.cue file exists and hook execution has been started",
-        )),
-    }
-}
-
-/// Execute env list command safely
-#[instrument(name = "cuenv_execute_env_list_safe", skip(executor))]
-async fn execute_env_list_command_safe(
-    path: String,
-    package: String,
-    format: String,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    let mut perf_guard = performance::PerformanceGuard::new("env_list_command");
-    perf_guard.add_metadata("command_type", "env_list");
-    perf_guard.add_metadata("package", &package);
-    perf_guard.add_metadata("format", &format);
-
-    let output = measure_perf!("env_list_execution", {
-        commands::env::execute_env_list(&path, &package, &format, executor).await
-    });
-
-    match output {
-        Ok(result) => {
-            println!("{result}");
-            perf_guard.finish(true);
-            Ok(())
-        }
-        Err(e) => {
-            perf_guard.finish(false);
-            let mut cli_err: CliError = e.into();
-            match &mut cli_err {
-                CliError::Config { help, .. }
-                | CliError::Eval { help, .. }
-                | CliError::Other { help, .. } => {
-                    *help = Some("Check your CUE files and package configuration".to_string());
-                }
-            }
-            Err(cli_err)
-        }
-    }
-}
-
-/// Execute env check command safely
-#[instrument(name = "cuenv_execute_env_check_safe", skip(executor))]
-async fn execute_env_check_command_safe(
-    path: String,
-    package: String,
-    shell: crate::cli::ShellType,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    match commands::hooks::execute_env_check(&path, &package, shell, executor).await {
-        Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "exports": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                // Output shell export commands directly (no extra formatting)
-                print!("{output}");
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Env check failed: {e}"),
-            "Check that your env.cue file exists and hooks have completed successfully",
-        )),
-    }
-}
-
-/// Execute env inspect command safely
-#[instrument(name = "cuenv_execute_env_inspect_safe", skip(executor))]
-async fn execute_env_inspect_command_safe(
-    path: String,
-    package: String,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    match commands::hooks::execute_env_inspect(&path, &package, executor).await {
-        Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "state": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                println!("{output}");
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Env inspect failed: {e}"),
-            "Check that your env.cue is approved and hooks have run at least once",
-        )),
-    }
-}
-
 /// Execute shell init command safely
 #[instrument(name = "cuenv_execute_shell_init_safe")]
 fn execute_shell_init_command_safe(
@@ -1193,246 +828,6 @@ fn execute_shell_init_command_safe(
         println!("{output}");
     }
     Ok(())
-}
-
-/// Execute allow command safely
-#[instrument(name = "cuenv_execute_allow_safe", skip(executor))]
-async fn execute_allow_command_safe(
-    path: String,
-    package: String,
-    note: Option<String>,
-    yes: bool,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    match commands::hooks::execute_allow(&path, &package, note, yes, executor).await {
-        Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "message": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                println!("{output}");
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Allow failed: {e}"),
-            "Check that your env.cue file is valid and the directory exists",
-        )),
-    }
-}
-
-/// Execute deny command safely
-#[instrument(name = "cuenv_execute_deny_safe")]
-async fn execute_deny_command_safe(
-    path: String,
-    package: String,
-    all: bool,
-    json_mode: bool,
-) -> Result<(), CliError> {
-    match commands::hooks::execute_deny(&path, &package, all).await {
-        Ok(output) => {
-            if json_mode {
-                let envelope = OkEnvelope::new(serde_json::json!({
-                    "message": output
-                }));
-                match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
-                    Err(e) => {
-                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
-                    }
-                }
-            } else {
-                println!("{output}");
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError::eval_with_help(
-            format!("Deny failed: {e}"),
-            "Check that the directory path is correct",
-        )),
-    }
-}
-
-/// Execute export command safely
-#[instrument(name = "cuenv_execute_export_safe", skip_all)]
-async fn execute_export_command_safe(
-    shell: Option<String>,
-    package: String,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    match commands::export::execute_export(shell.as_deref(), &package, executor).await {
-        Ok(output) => {
-            // Export command always outputs raw shell commands - no JSON mode
-            print!("{output}");
-            Ok(())
-        }
-        Err(e) => {
-            let mut cli_err: CliError = e.into();
-            match &mut cli_err {
-                CliError::Config { help, .. }
-                | CliError::Eval { help, .. }
-                | CliError::Other { help, .. } => {
-                    *help = Some("Check that your env.cue file is valid".to_string());
-                }
-            }
-            Err(cli_err)
-        }
-    }
-}
-
-/// Execute env print command safely
-#[instrument(name = "cuenv_execute_env_print_safe", skip(executor))]
-async fn execute_env_print_command_safe(
-    path: String,
-    package: String,
-    format: String,
-    environment: Option<String>,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    let mut perf_guard = performance::PerformanceGuard::new("env_print_command");
-    perf_guard.add_metadata("command_type", "env_print");
-    perf_guard.add_metadata("package", &package);
-    perf_guard.add_metadata("format", &format);
-
-    let output = measure_perf!("env_print_execution", {
-        commands::env::execute_env_print(&path, &package, &format, environment.as_deref(), executor)
-            .await
-    });
-
-    match output {
-        Ok(result) => {
-            println!("{result}");
-            perf_guard.finish(true);
-            Ok(())
-        }
-        Err(e) => {
-            perf_guard.finish(false);
-            let mut cli_err: CliError = e.into();
-            match &mut cli_err {
-                CliError::Config { help, .. }
-                | CliError::Eval { help, .. }
-                | CliError::Other { help, .. } => {
-                    *help = Some("Check your CUE files and package configuration".to_string());
-                }
-            }
-            Err(cli_err)
-        }
-    }
-}
-
-/// Execute task command safely
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-#[instrument(name = "cuenv_execute_task_safe", skip(executor))]
-async fn execute_task_command_safe(
-    path: String,
-    package: String,
-    name: Option<String>,
-    labels: Vec<String>,
-    environment: Option<String>,
-    format: String,
-    materialize_outputs: Option<String>,
-    show_cache_path: bool,
-    backend: Option<String>,
-    tui: bool,
-    help: bool,
-    all: bool,
-    task_args: Vec<String>,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    let mut perf_guard = performance::PerformanceGuard::new("task_command");
-    perf_guard.add_metadata("command_type", "task");
-
-    let result = commands::task::execute_task(
-        &path,
-        &package,
-        name.as_deref(),
-        &labels,
-        environment.as_deref(),
-        &format,
-        false,
-        materialize_outputs.as_deref(),
-        show_cache_path,
-        backend.as_deref(),
-        tui,
-        help,
-        all,
-        &task_args,
-        executor,
-    )
-    .await;
-
-    match result {
-        Ok(output) => {
-            println!("{output}");
-            perf_guard.finish(true);
-            Ok(())
-        }
-        Err(e) => {
-            perf_guard.finish(false);
-            // Convert error to appropriate CLI error category
-            let mut cli_err: CliError = e.into();
-            // Add debug hint only for execution errors, not config errors
-            match &mut cli_err {
-                CliError::Config { .. } => {
-                    // Config errors (task not found, etc.) don't need the debug hint
-                }
-                CliError::Eval { help, .. } | CliError::Other { help, .. } => {
-                    *help = Some(
-                        "Re-run with --level=debug to stream task output from child processes"
-                            .to_string(),
-                    );
-                }
-            }
-            Err(cli_err)
-        }
-    }
-}
-
-/// Execute exec command safely
-#[instrument(name = "cuenv_execute_exec_safe")]
-async fn execute_exec_command_safe(
-    path: String,
-    package: String,
-    command: String,
-    args: Vec<String>,
-    environment: Option<String>,
-) -> Result<(), CliError> {
-    let mut perf_guard = performance::PerformanceGuard::new("exec_command");
-    perf_guard.add_metadata("command_type", "exec");
-
-    let result = commands::exec::execute_exec(
-        &path,
-        &package,
-        &command,
-        &args,
-        environment.as_deref(),
-        None,
-    )
-    .await;
-
-    match result {
-        Ok(exit_code) => {
-            perf_guard.finish(exit_code == 0);
-            if exit_code != 0 {
-                std::process::exit(exit_code);
-            }
-            Ok(())
-        }
-        Err(e) => {
-            perf_guard.finish(false);
-            Err(e.into())
-        }
-    }
 }
 
 /// Run as the coordinator server (internal - spawned by discovery)
@@ -1752,173 +1147,6 @@ async fn execute_release_publish_safe(
         )),
     }
 }
-
-/// Execute sync command safely
-#[allow(clippy::fn_params_excessive_bools)]
-#[allow(clippy::too_many_lines)]
-#[instrument(name = "cuenv_execute_sync_command_safe", skip(executor))]
-async fn execute_sync_command_safe(
-    subcommand: Option<crate::cli::SyncCommands>,
-    path: String,
-    package: String,
-    dry_run: bool,
-    check: bool,
-    all: bool,
-    json_mode: bool,
-    executor: Option<&commands::CommandExecutor>,
-) -> Result<(), CliError> {
-    use crate::cli::SyncCommands;
-
-    // Validate: --all and --path are mutually exclusive (when path is explicitly set)
-    if all && path != "." {
-        return Err(CliError::config_with_help(
-            "--all and --path cannot be used together",
-            "Use --all to sync all projects in the workspace, or --path to sync a specific project",
-        ));
-    }
-
-    // Handle workspace-wide sync (--all flag)
-    if all {
-        let result = match &subcommand {
-            Some(SyncCommands::Ignore { .. }) => {
-                commands::sync::execute_sync_ignore_workspace(&package, dry_run, check).await
-            }
-            Some(SyncCommands::Codeowners { .. }) => {
-                commands::sync::execute_sync_codeowners_workspace(&package, dry_run, check).await
-            }
-            Some(SyncCommands::Cubes { diff, .. }) => {
-                commands::sync::execute_sync_cubes_workspace(&package, dry_run, check, *diff)
-            }
-            None => {
-                // No subcommand + --all = sync everything for all projects
-                commands::sync::execute_sync_all_workspace(&package, dry_run, check).await
-            }
-        };
-
-        return match result {
-            Ok(output) => {
-                output_result(&output, json_mode)?;
-                Ok(())
-            }
-            Err(e) => Err(CliError::eval_with_help(
-                format!("Workspace sync failed: {e}"),
-                "Check that you are in a CUE module and your env.cue files are valid",
-            )),
-        };
-    }
-
-    // Handle Cubes subcommand separately as it has different parameters
-    if let Some(SyncCommands::Cubes {
-        path: cube_path,
-        package: cube_package,
-        dry_run: cube_dry_run,
-        check: cube_check,
-        diff,
-        ..
-    }) = &subcommand
-    {
-        let result = commands::sync::execute_sync_cubes(
-            cube_path,
-            cube_package,
-            *cube_dry_run,
-            *cube_check,
-            *diff,
-            executor,
-        )
-        .await;
-
-        return match result {
-            Ok(output) => {
-                output_result(&output, json_mode)?;
-                Ok(())
-            }
-            Err(e) => Err(CliError::eval_with_help(
-                format!("Cubes sync failed: {e}"),
-                "Check that your cube.cue file is valid CUE",
-            )),
-        };
-    }
-
-    // Handle Codeowners subcommand - ALWAYS uses workspace sync (auto-all behavior)
-    // CODEOWNERS is a single file at repo root, so it must aggregate all configs
-    if matches!(subcommand, Some(SyncCommands::Codeowners { .. })) {
-        let result =
-            commands::sync::execute_sync_codeowners_workspace(&package, dry_run, check).await;
-
-        return match result {
-            Ok(output) => {
-                output_result(&output, json_mode)?;
-                Ok(())
-            }
-            Err(e) => Err(CliError::eval_with_help(
-                format!("Codeowners sync failed: {e}"),
-                "Check that you are in a CUE module and your env.cue files are valid",
-            )),
-        };
-    }
-
-    // Single project mode: determine which sync operations to run
-    // Note: Codeowners always uses workspace sync (CODEOWNERS is a repo-wide file)
-    let run_ignore = matches!(subcommand, None | Some(SyncCommands::Ignore { .. }));
-    let run_codeowners_in_aggregate = subcommand.is_none(); // Only in aggregate sync (cuenv sync)
-
-    let mut outputs = Vec::new();
-    let mut had_error = false;
-
-    if run_ignore {
-        match commands::sync::execute_sync_ignore(&path, &package, dry_run, check, None).await {
-            Ok(output) => outputs.push(output),
-            Err(e) => {
-                outputs.push(format!("Ignore sync error: {e}"));
-                had_error = true;
-            }
-        }
-    }
-
-    if run_codeowners_in_aggregate {
-        // Codeowners always uses workspace sync because CODEOWNERS is a single file
-        // at repo root that must aggregate all configs (same as explicit `sync codeowners`)
-        match commands::sync::execute_sync_codeowners_workspace(&package, dry_run, check).await {
-            Ok(output) => outputs.push(output),
-            Err(e) => {
-                outputs.push(format!("Codeowners sync error: {e}"));
-                had_error = true;
-            }
-        }
-    }
-
-    let combined_output = outputs.join("\n");
-
-    if had_error {
-        return Err(CliError::eval_with_help(
-            format!("Sync failed: {combined_output}"),
-            "Check that your env.cue file is valid and contains the appropriate configuration",
-        ));
-    }
-
-    output_result(&combined_output, json_mode)?;
-    Ok(())
-}
-
-/// Helper to output result in text or JSON format
-fn output_result(output: &str, json_mode: bool) -> Result<(), CliError> {
-    if json_mode {
-        let envelope = OkEnvelope::new(serde_json::json!({
-            "message": output
-        }));
-        match serde_json::to_string(&envelope) {
-            Ok(json) => println!("{json}"),
-            Err(e) => {
-                return Err(CliError::other(format!("JSON serialization failed: {e}")));
-            }
-        }
-    } else {
-        println!("{output}");
-    }
-    Ok(())
-}
-
-// Note: These functions are currently unused but reserved for future async main implementation
 
 #[cfg(test)]
 mod tests {

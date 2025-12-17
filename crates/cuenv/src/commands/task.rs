@@ -2451,6 +2451,7 @@ struct ProjectCtx {
     is_current: bool,
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_global_tasks(
     module_root: &Path,
     current_project_root: &Path,

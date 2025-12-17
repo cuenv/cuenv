@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Returns an error if the configuration cannot be loaded or the file cannot be written.
 #[allow(clippy::unused_async)] // Async for API consistency with other commands
+#[allow(dead_code)]
 pub async fn execute_owners_sync(
     path: &str,
     package: &str,
@@ -114,6 +115,7 @@ pub async fn execute_owners_sync(
 ///
 /// Returns an error if the configuration cannot be loaded or the files are out of sync.
 #[allow(clippy::unused_async)] // Async for API consistency with other commands
+#[allow(dead_code)]
 pub async fn execute_owners_check(
     path: &str,
     package: &str,
@@ -187,6 +189,7 @@ pub async fn execute_owners_check(
 
 /// Convert manifest owners configuration to provider `ProjectOwners` type.
 /// For Base configs (without a name), the project name is derived from the directory.
+#[allow(dead_code)]
 fn convert_to_project_owners(
     project_root: &Path,
     owners: &Owners,
@@ -229,6 +232,7 @@ fn convert_to_project_owners(
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+#[allow(dead_code)]
 fn load_owners_config(
     root: &Path,
     package: &str,
