@@ -391,7 +391,7 @@ pub async fn execute_task(
 
     // Get environment with hook-generated vars merged in
     let directory = project_root.clone();
-    let base_env_vars = get_environment_with_hooks(&directory, &manifest, package).await?;
+    let base_env_vars = get_environment_with_hooks(&directory, &manifest, package, executor).await?;
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut runtime_env = Environment::new();
@@ -1272,7 +1272,9 @@ async fn resolve_and_materialize_project_reference(
     let mut env = Environment::new();
     if let Some(_base) = manifest.env.as_ref() {
         // Get base environment with hook-generated vars
-        let base_env_vars = get_environment_with_hooks(&ext_dir, &manifest, &package).await?;
+        // Note: External project references use fresh evaluation (no executor caching)
+        // since they may be in different CUE modules
+        let base_env_vars = get_environment_with_hooks(&ext_dir, &manifest, &package, None).await?;
 
         // Apply base environment (static + hooks)
         for (k, v) in &base_env_vars {

@@ -145,7 +145,7 @@ pub async fn execute_exec(
     }
 
     let base_env_vars = if hooks_approved {
-        get_environment_with_hooks(&directory, &manifest, package).await?
+        get_environment_with_hooks(&directory, &manifest, package, executor).await?
     } else {
         extract_static_env_vars(&manifest)
     };
