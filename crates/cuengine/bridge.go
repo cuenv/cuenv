@@ -378,7 +378,7 @@ func buildValueClean(v cue.Value) interface{} {
 	switch v.Kind() {
 	case cue.StructKind:
 		result := make(map[string]interface{})
-		iter, _ := v.Fields(cue.Hidden(true))
+		iter, _ := v.Fields()
 		for iter.Next() {
 			sel := iter.Selector()
 			fieldName := unquoteSelector(sel.String())
@@ -414,7 +414,7 @@ func buildValueWithMeta(v cue.Value, path string, positions map[string]ValueMeta
 	switch v.Kind() {
 	case cue.StructKind:
 		result := make(map[string]interface{})
-		iter, _ := v.Fields(cue.Hidden(true))
+		iter, _ := v.Fields()
 		for iter.Next() {
 			sel := iter.Selector()
 			fieldName := unquoteSelector(sel.String())
@@ -455,14 +455,13 @@ func buildValueWithMeta(v cue.Value, path string, positions map[string]ValueMeta
 	}
 }
 
-// buildJSONWithHidden builds a JSON representation of a CUE value including hidden fields.
-// This is necessary because CUE's MarshalJSON() excludes hidden fields (prefixed with _).
-// Hidden fields like _ci are package-scoped and don't unify across packages, making them
-// useful for location-specific configuration that shouldn't be inherited.
-func buildJSONWithHidden(v cue.Value, moduleRoot string, taskPositions map[string]TaskSourcePos) ([]byte, error) {
+// buildJSON builds a JSON representation of a CUE value.
+// This excludes hidden fields (_foo) and definitions (#Foo) which are
+// internal CUE constructs not meant for export.
+func buildJSON(v cue.Value, moduleRoot string, taskPositions map[string]TaskSourcePos) ([]byte, error) {
 	result := make(map[string]interface{})
 
-	iter, err := v.Fields(cue.Hidden(true))
+	iter, err := v.Fields()
 	if err != nil {
 		return nil, err
 	}
@@ -636,10 +635,9 @@ func cue_eval_package(dirPath *C.char, packageName *C.char) *C.char {
 	// Extract task positions from AST (CUE's Pos() returns schema positions after unification)
 	taskPositions := extractTaskPositions(inst, moduleRoot)
 
-	// Build JSON including hidden fields (like _ci) which are package-scoped
-	// and don't participate in cross-package unification
+	// Build JSON excluding hidden fields and definitions
 	// Pass taskPositions so source metadata uses actual definition locations
-	jsonBytes, err := buildJSONWithHidden(v, moduleRoot, taskPositions)
+	jsonBytes, err := buildJSON(v, moduleRoot, taskPositions)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to marshal JSON: %v", err)
 		result = createErrorResponse(ErrorCodeOrderedJSON, msg, nil)
