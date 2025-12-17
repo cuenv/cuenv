@@ -400,6 +400,7 @@ async fn run_hooks_foreground(
 fn collect_hooks_from_ancestors(
     directory: &Path,
     package: &str,
+    executor: Option<&CommandExecutor>,
 ) -> Result<Vec<cuenv_core::hooks::types::Hook>> {
     let ancestors = env_file::find_ancestor_env_files(directory, package)?;
 
@@ -410,7 +411,7 @@ fn collect_hooks_from_ancestors(
         let is_current_dir = i == ancestors_len - 1;
 
         // Evaluate the CUE config for this ancestor using module-wide evaluation
-        let config: Project = match evaluate_project(&ancestor_dir, package, None) {
+        let config: Project = match evaluate_project(&ancestor_dir, package, executor) {
             Ok(c) => c,
             Err(e) => {
                 debug!(
@@ -461,12 +462,13 @@ pub async fn get_environment_with_hooks(
     directory: &Path,
     config: &Project,
     package: &str,
+    executor: Option<&CommandExecutor>,
 ) -> Result<HashMap<String, String>> {
     // Start with static environment from CUE manifest
     let static_env = extract_static_env_vars(config);
 
     // Collect hooks from all ancestors with resolved dirs
-    let all_hooks = collect_hooks_from_ancestors(directory, package)?;
+    let all_hooks = collect_hooks_from_ancestors(directory, package, executor)?;
 
     if all_hooks.is_empty() {
         return Ok(static_env);
@@ -522,7 +524,7 @@ pub async fn get_environment_with_hooks(
     // Wait for completion with progress indicator (timeout 60s)
     debug!("Waiting for hooks to complete for {}", directory.display());
 
-    let poll_interval = Duration::from_millis(500);
+    let poll_interval = Duration::from_millis(50);
     let start_time = Instant::now();
     let timeout_seconds = 60u64;
     let is_tty = std::io::stderr().is_terminal();
