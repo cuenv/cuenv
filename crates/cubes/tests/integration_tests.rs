@@ -53,7 +53,7 @@ context: null
     let cube = Cube::load(&cube_path).unwrap();
     let generator = Generator::new(cube);
 
-    let output_dir = TempDir::new().unwrap();
+    let output_dir = create_test_dir();
     let options = GenerateOptions {
         output_dir: output_dir.path().to_path_buf(),
         check: false,

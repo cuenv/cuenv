@@ -362,6 +362,17 @@ func buildJSONClean(v cue.Value) ([]byte, error) {
 	return json.Marshal(result)
 }
 
+// unquoteSelector strips surrounding quotes from a selector string.
+// CUE's Selector.String() returns quoted strings for string-keyed fields,
+// e.g., `"test.json"` instead of `test.json`. We need the unquoted form
+// for proper JSON serialization and file path handling.
+func unquoteSelector(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
 // buildValueClean recursively builds a clean value without metadata
 func buildValueClean(v cue.Value) interface{} {
 	switch v.Kind() {
@@ -370,7 +381,7 @@ func buildValueClean(v cue.Value) interface{} {
 		iter, _ := v.Fields(cue.Hidden(true))
 		for iter.Next() {
 			sel := iter.Selector()
-			fieldName := sel.String()
+			fieldName := unquoteSelector(sel.String())
 			result[fieldName] = buildValueClean(iter.Value())
 		}
 		return result
@@ -406,7 +417,7 @@ func buildValueWithMeta(v cue.Value, path string, positions map[string]ValueMeta
 		iter, _ := v.Fields(cue.Hidden(true))
 		for iter.Next() {
 			sel := iter.Selector()
-			fieldName := sel.String()
+			fieldName := unquoteSelector(sel.String())
 			childPath := fieldName
 			if path != "" {
 				childPath = path + "." + fieldName
@@ -458,7 +469,7 @@ func buildJSONWithHidden(v cue.Value, moduleRoot string, taskPositions map[strin
 
 	for iter.Next() {
 		sel := iter.Selector()
-		fieldName := sel.String()
+		fieldName := unquoteSelector(sel.String())
 		fieldValue := iter.Value()
 
 		// Decode each field value to interface{}
