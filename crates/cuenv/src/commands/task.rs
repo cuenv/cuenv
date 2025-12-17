@@ -3,7 +3,8 @@
 // Some functions are reserved for hermetic execution which is temporarily disabled
 #![allow(dead_code)]
 
-use cuengine::CueEvaluator;
+use cuengine::ModuleEvalOptions;
+use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::Project;
@@ -16,6 +17,7 @@ use cuenv_core::tasks::{
 };
 
 use super::env_file::find_cue_module_root;
+use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
 
@@ -36,7 +38,6 @@ use std::fmt::Write;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use uuid::Uuid;
 
 use super::export::get_environment_with_hooks;
@@ -50,6 +51,9 @@ use super::export::get_environment_with_hooks;
 /// When using labels, the function discovers all projects in the CUE module scope,
 /// finds tasks matching the labels, creates a synthetic root task that depends on them,
 /// and executes via the DAG.
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
 #[allow(
     clippy::too_many_lines,
     clippy::too_many_arguments,
@@ -70,6 +74,7 @@ pub async fn execute_task(
     help: bool,
     all: bool,
     task_args: &[String],
+    executor: Option<&CommandExecutor>,
 ) -> Result<String> {
     // Handle CLI help immediately if no task specified
     if task_name.is_none() && help {
@@ -83,14 +88,9 @@ pub async fn execute_task(
         task_name
     );
 
-    // Evaluate CUE to get tasks and environment
-    let evaluator = Arc::new(
-        CueEvaluator::builder()
-            .build()
-            .map_err(super::convert_engine_error)?,
-    );
+    // Evaluate CUE to get tasks and environment using module-wide evaluation
     let manifest: Project =
-        evaluate_manifest(&evaluator, Path::new(path), package)?.with_implicit_tasks();
+        evaluate_manifest(Path::new(path), package, executor)?.with_implicit_tasks();
     tracing::debug!("CUE evaluation successful");
 
     tracing::debug!(
@@ -117,16 +117,41 @@ pub async fn execute_task(
             ));
         };
 
-        let evaluator_clone = evaluator.clone();
-        let pkg = package.to_string();
-        let eval_fn: EvalFn = Box::new(move |p: &Path| {
-            evaluate_manifest(&evaluator_clone, p, &pkg).map_err(|e| e.to_string())
-        });
-
         let mut discovery = TaskDiscovery::new(cue_mod_root.clone());
-        discovery = discovery.with_eval_fn(eval_fn);
-        if let Err(e) = discovery.discover() {
-            tracing::warn!("Workspace discovery had errors: {}", e);
+
+        // Use executor's cached module if available (single evaluation for all projects)
+        if let Some(exec) = executor {
+            tracing::debug!("Using cached module for workspace task discovery");
+            let module = exec.get_module(cue_mod_root)?;
+
+            // Iterate through all Project instances and add them directly
+            for instance in module.projects() {
+                match instance.deserialize::<Project>() {
+                    Ok(project) => {
+                        let project_root = module.root.join(&instance.path);
+                        discovery.add_project(project_root, project);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %instance.path.display(),
+                            error = %e,
+                            "Failed to deserialize project - tasks will not be available"
+                        );
+                    }
+                }
+            }
+        } else {
+            // Legacy path: use EvalFn for per-project evaluation
+            tracing::debug!("Using legacy EvalFn for workspace task discovery");
+            let pkg = package.to_string();
+            let eval_fn: EvalFn = Box::new(move |p: &Path| {
+                evaluate_manifest(p, &pkg, None).map_err(|e| e.to_string())
+            });
+
+            discovery = discovery.with_eval_fn(eval_fn);
+            if let Err(e) = discovery.discover() {
+                tracing::warn!("Workspace discovery had errors: {}", e);
+            }
         }
 
         let workspace_tasks = collect_workspace_tasks(&discovery);
@@ -289,7 +314,7 @@ pub async fn execute_task(
         // This enables cross-project dependency graphs and proper cycle detection.
         let (global_tasks, task_root_name) = if let Some(module_root) = &cue_module_root {
             let (mut global, current_project_id) =
-                build_global_tasks(evaluator.clone(), module_root, &project_root, &manifest)?;
+                build_global_tasks(module_root, &project_root, &manifest, executor)?;
 
             // If we interpolated args for the invoked task, patch that task node in the
             // global registry so execution matches the CLI-resolved definition.
@@ -315,17 +340,16 @@ pub async fn execute_task(
         task_graph_root_name = task_root_name;
     } else {
         // Execute tasks by label
-        let (mut tasks_in_scope, _current_project_id) =
-            if let Some(module_root) = &cue_module_root {
-                build_global_tasks(evaluator.clone(), module_root, &project_root, &manifest)
-                    .map_err(|e| {
-                        cuenv_core::Error::configuration(format!(
-                            "Failed to discover tasks for label execution: {e}"
-                        ))
-                    })?
-            } else {
-                (local_tasks.clone(), String::new())
-            };
+        let (mut tasks_in_scope, _current_project_id) = if let Some(module_root) = &cue_module_root
+        {
+            build_global_tasks(module_root, &project_root, &manifest, executor).map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to discover tasks for label execution: {e}"
+                ))
+            })?
+        } else {
+            (local_tasks.clone(), String::new())
+        };
 
         let matching_tasks = find_tasks_with_labels(&tasks_in_scope, &normalized_labels);
 
@@ -454,7 +478,6 @@ pub async fn execute_task(
 
         return execute_with_rich_tui(
             path,
-            &evaluator,
             &tui_executor,
             display_task_name.as_str(),
             &task_def,
@@ -469,7 +492,7 @@ pub async fn execute_task(
     // Execute using the appropriate method
     let results = execute_task_with_strategy_hermetic(
         path,
-        &evaluator,
+        package,
         &executor,
         display_task_name.as_str(),
         &task_def,
@@ -501,7 +524,6 @@ pub async fn execute_task(
 #[allow(clippy::too_many_arguments)]
 async fn execute_with_rich_tui(
     _project_dir: &str,
-    _evaluator: &CueEvaluator,
     executor: &TaskExecutor,
     task_name: &str,
     _task_def: &TaskDefinition,
@@ -624,7 +646,7 @@ async fn execute_with_rich_tui(
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn execute_task_with_strategy_hermetic(
     project_dir: &str,
-    evaluator: &CueEvaluator,
+    _package: &str,
     executor: &TaskExecutor,
     task_name: &str,
     task_def: &TaskDefinition,
@@ -649,7 +671,7 @@ async fn execute_task_with_strategy_hermetic(
             //
             // TODO: Re-enable hermetic execution when sandbox properly preserves
             // monorepo structure and handles all edge cases.
-            let _ = (project_dir, evaluator, env_base, capture_output, t); // Suppress unused warnings
+            let _ = (project_dir, env_base, capture_output, t); // Suppress unused warnings
 
             // IMPORTANT:
             // The TaskDefinition passed here may be sourced from the *local* manifest
@@ -672,7 +694,7 @@ async fn execute_task_with_strategy_hermetic(
 /// Execute a single task hermetically with pre-computed hook environment
 async fn run_task_hermetic(
     project_dir: &Path,
-    evaluator: &CueEvaluator,
+    package: &str,
     name: &str,
     task: &Task,
     env_base: Option<&cuenv_core::environment::Env>,
@@ -696,7 +718,7 @@ async fn run_task_hermetic(
         resolve_and_materialize_project_reference(
             &git_root,
             project_dir,
-            evaluator,
+            package,
             reference,
             &workspace,
             capture_output,
@@ -915,37 +937,99 @@ fn detect_package_name(dir: &Path) -> Result<String> {
     )))
 }
 
-fn evaluate_manifest(evaluator: &CueEvaluator, dir: &Path, package: &str) -> Result<Project> {
-    // Get raw JSON from CUE evaluation
-    let json_str = evaluator
-        .evaluate(dir, package)
-        .map_err(super::convert_engine_error)?;
-
-    // Parse JSON once to Value
-    let value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Invalid JSON from CUE evaluation: {e}"))
+/// Evaluate a CUE manifest using module-wide evaluation.
+///
+/// This function evaluates the entire CUE module once and extracts the Project
+/// configuration at the specified directory. It provides helpful error messages
+/// when the config uses Base schema instead of Project (tasks require Project).
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
+fn evaluate_manifest(
+    dir: &Path,
+    package: &str,
+    executor: Option<&CommandExecutor>,
+) -> Result<Project> {
+    let target_path = dir.canonicalize().map_err(|e| cuenv_core::Error::Io {
+        source: e,
+        path: Some(dir.to_path_buf().into_boxed_path()),
+        operation: "canonicalize path".to_string(),
     })?;
 
-    // Try Project first (most specific - has required 'name' field)
-    if let Ok(project) = serde_json::from_value::<Project>(value.clone()) {
-        return Ok(project);
+    // Use executor's cached module if available
+    if let Some(exec) = executor {
+        tracing::debug!("Using cached module evaluation from executor");
+        let module = exec.get_module(&target_path)?;
+        let rel_path = relative_path_from_root(&module.root, &target_path);
+
+        let instance = module.get(&rel_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE instance found at path: {} (relative: {})",
+                target_path.display(),
+                rel_path.display()
+            ))
+        })?;
+
+        // Check if this is a Project (has name field) or Base (no name)
+        return match instance.kind {
+            cuenv_core::InstanceKind::Project => instance.deserialize(),
+            cuenv_core::InstanceKind::Base => {
+                // Valid Base config, but this command needs Project
+                Err(cuenv_core::Error::configuration(
+                    "This directory uses schema.#Base which doesn't support tasks.\n\
+                     To use tasks, update your env.cue to use schema.#Project:\n\n\
+                     schema.#Project\n\
+                     name: \"your-project-name\"",
+                ))
+            }
+        };
     }
 
-    // Try Base (less specific - all fields optional)
-    if serde_json::from_value::<cuenv_core::manifest::Base>(value).is_ok() {
-        // Valid Base config, but this command needs Project
-        return Err(cuenv_core::Error::configuration(
-            "This directory uses schema.#Base which doesn't support tasks.\n\
-             To use tasks, update your env.cue to use schema.#Project:\n\n\
-             schema.#Project\n\
-             name: \"your-project-name\"",
-        ));
-    }
+    // Legacy path: fresh evaluation
+    tracing::debug!("Using fresh module evaluation (no executor)");
 
-    // Neither worked - fundamentally invalid config
-    Err(cuenv_core::Error::configuration(
-        "Invalid cuenv configuration. Check CUE syntax and schema compliance.",
-    ))
+    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "No CUE module found (looking for cue.mod/) starting from: {}",
+            target_path.display()
+        ))
+    })?;
+
+    let options = ModuleEvalOptions {
+        recursive: true,
+        ..Default::default()
+    };
+    let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
+        .map_err(convert_engine_error)?;
+
+    let module = ModuleEvaluation::from_raw(
+        module_root.clone(),
+        raw_result.instances,
+        raw_result.projects,
+    );
+
+    let rel_path = relative_path_from_root(&module_root, &target_path);
+    let instance = module.get(&rel_path).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "No CUE instance found at path: {} (relative: {})",
+            target_path.display(),
+            rel_path.display()
+        ))
+    })?;
+
+    // Check if this is a Project (has name field) or Base (no name)
+    match instance.kind {
+        cuenv_core::InstanceKind::Project => instance.deserialize(),
+        cuenv_core::InstanceKind::Base => {
+            // Valid Base config, but this command needs Project
+            Err(cuenv_core::Error::configuration(
+                "This directory uses schema.#Base which doesn't support tasks.\n\
+                 To use tasks, update your env.cue to use schema.#Project:\n\n\
+                 schema.#Project\n\
+                 name: \"your-project-name\"",
+            ))
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -1119,7 +1203,7 @@ fn store_outputs_in_cache(workspace: &Path, outputs: &[String], outputs_dir: &Pa
 async fn resolve_and_materialize_project_reference(
     git_root: &Path,
     current_project_dir: &Path,
-    evaluator: &CueEvaluator,
+    _parent_package: &str,
     reference: &cuenv_core::tasks::ProjectReference,
     workspace: &Path,
     capture_output: bool,
@@ -1143,7 +1227,7 @@ async fn resolve_and_materialize_project_reference(
 
     // Detect package name and evaluate
     let package = detect_package_name(&ext_dir)?;
-    let manifest: Project = evaluate_manifest(evaluator, &ext_dir, &package)?.with_implicit_tasks();
+    let manifest: Project = evaluate_manifest(&ext_dir, &package, None)?.with_implicit_tasks();
 
     // Locate external task
     let task_def = manifest.tasks.get(&reference.task).ok_or_else(|| {
@@ -2368,22 +2452,47 @@ struct ProjectCtx {
 }
 
 fn build_global_tasks(
-    evaluator: Arc<CueEvaluator>,
     module_root: &Path,
     current_project_root: &Path,
     current_manifest: &Project,
+    executor: Option<&CommandExecutor>,
 ) -> Result<(Tasks, String)> {
-    // Evaluation function for discovery.
-    // Each project can have a different CUE package name, so detect it per-project.
-    let eval_fn: EvalFn = Box::new(move |project_path: &Path| {
-        let pkg = detect_package_name(project_path).map_err(|e| e.to_string())?;
-        evaluate_manifest(&evaluator, project_path, &pkg).map_err(|e| e.to_string())
-    });
+    let mut discovery = TaskDiscovery::new(module_root.to_path_buf());
 
-    let mut discovery = TaskDiscovery::new(module_root.to_path_buf()).with_eval_fn(eval_fn);
-    discovery.discover().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
-    })?;
+    // Use executor's cached module if available (single evaluation for all projects).
+    // All projects must use `package cuenv` - this is enforced by the CUE schema.
+    if let Some(exec) = executor {
+        tracing::debug!("Using cached module for global task registry build");
+        let module = exec.get_module(module_root)?;
+
+        // Iterate through all Project instances and add them directly
+        for instance in module.projects() {
+            match instance.deserialize::<Project>() {
+                Ok(project) => {
+                    let project_root = module.root.join(&instance.path);
+                    discovery.add_project(project_root, project);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %instance.path.display(),
+                        error = %e,
+                        "Failed to deserialize project for global task registry"
+                    );
+                }
+            }
+        }
+    } else {
+        // Legacy path: use EvalFn for per-project evaluation (when no executor available)
+        tracing::debug!("Using legacy EvalFn for global task registry build");
+        let eval_fn: EvalFn = Box::new(move |project_path: &Path| {
+            evaluate_manifest(project_path, "cuenv", None).map_err(|e| e.to_string())
+        });
+
+        discovery = discovery.with_eval_fn(eval_fn);
+        discovery.discover().map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
+        })?;
+    }
 
     let current_root = fs::canonicalize(current_project_root)
         .unwrap_or_else(|_| current_project_root.to_path_buf());
@@ -2507,6 +2616,7 @@ env: {
             false,
             false, // workspace
             &[],
+            None, // executor
         )
         .await;
 
@@ -2716,11 +2826,6 @@ env: {
         fs::create_dir_all(proj.join("inputs")).expect("write to string");
         fs::write(proj.join("inputs/in.txt"), "data").expect("write to string");
 
-        let evaluator = cuengine::CueEvaluator::builder()
-            .no_retry()
-            .build()
-            .unwrap();
-
         let task = Task {
             command: "sh".into(),
             args: vec![
@@ -2734,7 +2839,7 @@ env: {
 
         // Execute directly via helper
         let hook_env = Environment::new();
-        let res = run_task_hermetic(&proj, &evaluator, "mytask", &task, None, &hook_env, true)
+        let res = run_task_hermetic(&proj, "test", "mytask", &task, None, &hook_env, true)
             .await
             .expect("hermetic run ok");
         assert!(res.success);
@@ -2751,10 +2856,6 @@ env: {
         fs::create_dir_all(proj.join("inputs")).expect("write to string");
         fs::write(proj.join("inputs/in.txt"), "x").expect("write to string");
 
-        let evaluator = cuengine::CueEvaluator::builder()
-            .no_retry()
-            .build()
-            .unwrap();
         let exec = TaskExecutor::with_dagger_factory(
             ExecutorConfig {
                 capture_output: true,
@@ -2781,7 +2882,7 @@ env: {
         let hook_env = Environment::new();
         let results = execute_task_with_strategy_hermetic(
             proj.to_str().unwrap(),
-            &evaluator,
+            "test",
             &exec,
             "copy",
             &def,

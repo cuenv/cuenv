@@ -7,6 +7,30 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
+/// Create a test directory with proper prefix (non-hidden) for CUE loader compatibility.
+///
+/// CUE's `load.Instances` ignores directories starting with `.` (hidden directories).
+/// The default `TempDir::new()` creates hidden directories like `.tmpXXXXX`, which causes
+/// CUE evaluation to fail with "No instances could be evaluated".
+fn create_test_dir() -> TempDir {
+    tempfile::Builder::new()
+        .prefix("cuenv_test_")
+        .tempdir()
+        .expect("Failed to create temp directory")
+}
+
+/// Initialize a CUE module in the given directory.
+fn init_cue_module(dir: &Path) {
+    fs::create_dir_all(dir.join("cue.mod")).unwrap();
+    fs::write(
+        dir.join("cue.mod/module.cue"),
+        r#"module: "test.example/test"
+language: version: "v0.9.0"
+"#,
+    )
+    .unwrap();
+}
+
 /// Helper to run cuenv command and capture output
 fn run_cuenv(args: &[&str]) -> (String, String, bool) {
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
@@ -25,7 +49,8 @@ fn run_cuenv(args: &[&str]) -> (String, String, bool) {
 #[test]
 fn test_task_list_with_shorthand() {
     // Create a temporary directory with test CUE files
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -45,13 +70,6 @@ tasks: {
     }
 }"#;
 
-    // Create cue.mod to ensure module root detection works for source path normalization
-    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
-    fs::write(
-        temp_dir.path().join("cue.mod/module.cue"),
-        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
-    )
-    .unwrap();
     fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test listing tasks with 't' shorthand
@@ -71,7 +89,8 @@ tasks: {
 
 #[test]
 fn test_task_execution() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -88,7 +107,7 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test running a task with 'task' command
     let (stdout, _, success) = run_cuenv(&[
@@ -113,7 +132,8 @@ tasks: {
 
 #[test]
 fn test_task_with_environment_propagation() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -129,7 +149,7 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test that environment variables are propagated to tasks
     let (stdout, _, success) = run_cuenv(&[
@@ -150,7 +170,8 @@ tasks: {
 
 #[test]
 fn test_exec_command_with_shorthand() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -159,7 +180,7 @@ env: {
     EXEC_TEST: "exec_value"
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test exec with 'x' shorthand (changed from 'e' to avoid conflict with -e global flag)
     let (stdout, _, success) = run_cuenv(&[
@@ -181,7 +202,8 @@ env: {
 
 #[test]
 fn test_exec_with_arguments() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -190,7 +212,7 @@ env: {
     PREFIX: "Test"
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test exec with multiple arguments
     let (stdout, _, success) = run_cuenv(&[
@@ -214,7 +236,8 @@ env: {
 
 #[test]
 fn test_task_sequential_list() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -240,7 +263,7 @@ tasks: {
     ]
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test running a sequential task list
     let (stdout, _, success) = run_cuenv(&[
@@ -268,7 +291,8 @@ tasks: {
 
 #[test]
 fn test_task_nested_groups() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -288,7 +312,7 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test running nested task groups
     let (stdout, _, success) = run_cuenv(&[
@@ -309,7 +333,8 @@ tasks: {
 
 #[test]
 fn test_nested_task_paths_and_aliases() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -331,7 +356,7 @@ tasks: {
 }
 "#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Listing should include canonical dotted paths
     let (stdout, _, success) = run_cuenv(&[
@@ -396,7 +421,8 @@ tasks: {
 
 #[test]
 fn test_nonexistent_task_error() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r#"package test
 
 name: "test"
@@ -410,7 +436,7 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test running a nonexistent task
     let (_, stderr, success) = run_cuenv(&[
@@ -431,12 +457,13 @@ tasks: {
 
 #[test]
 fn test_exec_command_exit_code() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     let cue_content = r"package test
 
 env: {}";
 
-    fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Test that exec propagates exit codes correctly
     let (_, _, success) = run_cuenv(&[
@@ -537,7 +564,8 @@ mod test_examples {
 
     #[test]
     fn test_complex_task_dependency_chain() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = create_test_dir();
+        init_cue_module(temp_dir.path());
         let cue_content = r#"package test
 
 name: "test"
@@ -571,10 +599,10 @@ tasks: {
     }
 }"#;
 
-        fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+        fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
         // Test running the final task should execute all dependencies
-        let (stdout, _, success) = run_cuenv(&[
+        let (stdout, stderr, success) = run_cuenv(&[
             "task",
             "-p",
             temp_dir.path().to_str().unwrap(),
@@ -583,8 +611,14 @@ tasks: {
             "deploy",
         ]);
 
-        assert!(success, "Command should succeed");
-        assert!(stdout.contains("Initializing"), "Init task should run");
+        assert!(
+            success,
+            "Command should succeed, stdout: {stdout}, stderr: {stderr}"
+        );
+        assert!(
+            stdout.contains("Initializing"),
+            "Init task should run, stdout: {stdout}"
+        );
         assert!(stdout.contains("Building"), "Build task should run");
         assert!(stdout.contains("Testing"), "Test task should run");
         assert!(stdout.contains("Deploying"), "Deploy task should run");
@@ -602,7 +636,8 @@ tasks: {
 
     #[test]
     fn test_task_failure_handling() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = create_test_dir();
+        init_cue_module(temp_dir.path());
         let cue_content = r#"package test
 
 name: "test"
@@ -616,7 +651,7 @@ tasks: {
     }
 }"#;
 
-        fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+        fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
         // Test that task failure is properly handled
         let (_, stderr, success) = run_cuenv(&[
@@ -637,7 +672,8 @@ tasks: {
 
     #[test]
     fn test_mixed_task_types() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = create_test_dir();
+        init_cue_module(temp_dir.path());
         let cue_content = r#"package test
 
 name: "test"
@@ -675,7 +711,7 @@ tasks: {
     }
 }"#;
 
-        fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+        fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
         // Test single task
         let (stdout, _, success) = run_cuenv(&[
@@ -718,7 +754,8 @@ tasks: {
 
     #[test]
     fn test_special_characters_in_environment() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = create_test_dir();
+        init_cue_module(temp_dir.path());
         let cue_content = r#"package test
 
 name: "test"
@@ -746,7 +783,7 @@ tasks: {
     }
 }"#;
 
-        fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+        fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
         // Test special characters are passed literally
         let (stdout, _, success) = run_cuenv(&[
@@ -787,7 +824,8 @@ tasks: {
 
     #[test]
     fn test_exec_with_complex_args() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = create_test_dir();
+        init_cue_module(temp_dir.path());
         let cue_content = r#"package test
 
 name: "test"
@@ -796,7 +834,7 @@ env: {
     TEST_VAR: "test_value"
 }"#;
 
-        fs::write(temp_dir.path().join("test.cue"), cue_content).unwrap();
+        fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
         // Test exec with arguments containing special characters
         let (stdout, _, success) = run_cuenv(&[
@@ -825,19 +863,15 @@ env: {
 
 #[test]
 fn test_task_label_execution_discovers_projects() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
-    fs::write(
-        temp_dir.path().join("cue.mod/module.cue"),
-        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
-    )
-    .unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
 
+    // All projects must use `package cuenv` - this is enforced by cuenv
     let project_a = temp_dir.path().join("project-a");
     fs::create_dir_all(&project_a).unwrap();
     fs::write(
         project_a.join("env.cue"),
-        r#"package project_a
+        r#"package cuenv
 
 name: "project-a"
 
@@ -858,7 +892,7 @@ tasks: {
     fs::create_dir_all(&project_b).unwrap();
     fs::write(
         project_b.join("env.cue"),
-        r#"package project_b
+        r#"package cuenv
 
 name: "project-b"
 
@@ -880,7 +914,7 @@ tasks: {
         "-p",
         project_a.to_str().unwrap(),
         "--package",
-        "project_a",
+        "cuenv",
         "-l",
         "projen",
     ]);
@@ -895,13 +929,8 @@ tasks: {
 
 #[test]
 fn test_task_label_multiple_labels_and_semantics() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
-    fs::write(
-        temp_dir.path().join("cue.mod/module.cue"),
-        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
-    )
-    .unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
 
     // Create a project with multiple tasks having different label combinations
     fs::write(
@@ -968,13 +997,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_conflicting_task_name_and_label() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
-    fs::write(
-        temp_dir.path().join("cue.mod/module.cue"),
-        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
-    )
-    .unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     fs::write(
         temp_dir.path().join("env.cue"),
         r#"package test
@@ -1015,13 +1039,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_trailing_args_become_task_name() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
-    fs::write(
-        temp_dir.path().join("cue.mod/module.cue"),
-        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
-    )
-    .unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     fs::write(
         temp_dir.path().join("env.cue"),
         r#"package test
@@ -1065,13 +1084,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_no_matching_tasks() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
-    fs::write(
-        temp_dir.path().join("cue.mod/module.cue"),
-        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
-    )
-    .unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     fs::write(
         temp_dir.path().join("env.cue"),
         r#"package test
@@ -1108,13 +1122,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_empty_labels() {
-    let temp_dir = TempDir::new().unwrap();
-    fs::create_dir(temp_dir.path().join("cue.mod")).unwrap();
-    fs::write(
-        temp_dir.path().join("cue.mod/module.cue"),
-        "module: \"test.com\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}",
-    )
-    .unwrap();
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
     fs::write(
         temp_dir.path().join("env.cue"),
         r#"package test

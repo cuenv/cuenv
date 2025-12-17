@@ -9,69 +9,65 @@ This page documents the public APIs of cuenv's Rust crates. For schema definitio
 
 The CUE evaluation engine crate provides the interface to evaluate CUE configurations through the Go FFI bridge.
 
-### CueEvaluatorBuilder
+### `evaluate_module` (Recommended)
 
-Builder for configuring a `CueEvaluator`. The usual entry point is `CueEvaluator::builder()`, which returns this type.
-
-```rust
-use cuengine::{CueEvaluator, RetryConfig};
-use cuenv_core::manifest::Cuenv;
-use std::{path::Path, time::Duration};
-
-let evaluator = CueEvaluator::builder()
-    .max_output_size(10 * 1024 * 1024)
-    .retry_config(RetryConfig {
-        max_attempts: 5,
-        initial_delay: Duration::from_millis(50),
-        max_delay: Duration::from_secs(2),
-        exponential_base: 1.5,
-    })
-    .build()?;
-
-// Evaluate a CUE package
-let json = evaluator.evaluate(Path::new("./project"), "cuenv")?;
-
-// Or evaluate and deserialize to a typed struct
-let manifest: Cuenv = evaluator.evaluate_typed(Path::new("./project"), "cuenv")?;
-```
-
-**Builder methods:**
-
-| Method                              | Description                                                        |
-| ----------------------------------- | ------------------------------------------------------------------ |
-| `new()` / `CueEvaluator::builder()` | Create a builder with default limits, retry config, and cache size |
-| `max_path_length(len)`              | Clamp the maximum accepted path length for evaluated directories   |
-| `max_package_name_length(len)`      | Limit the package name length validated before evaluation          |
-| `max_output_size(bytes)`            | Bound the JSON payload size returned from the bridge               |
-| `retry_config(RetryConfig)`         | Customize retry behavior (see below)                               |
-| `no_retry()`                        | Disable retries entirely                                           |
-| `cache_capacity(entries)`           | Configure the in-memory evaluation cache (set to `0` to disable)   |
-| `cache_ttl(duration)`               | Set the TTL for cached evaluation results                          |
-| `build()`                           | Create a `CueEvaluator`                                            |
-
-### CueEvaluator
-
-The main type for evaluating CUE packages.
+The recommended entry point for CUE evaluation. Evaluates an entire CUE module at once, returning all instances (projects and bases) in a single call. This is more efficient than per-directory evaluation when working with monorepos.
 
 ```rust
+use cuengine::{evaluate_module, ModuleEvaluation};
+use cuenv_core::module::find_cue_module_root;
+use cuenv_core::manifest::Project;
 use std::path::Path;
 
-let evaluator = CueEvaluator::builder().no_retry().build()?;
-let json = evaluator.evaluate(Path::new("./project"), "cuenv")?;
+// Find the module root (directory containing cue.mod/)
+let project_path = Path::new("./my-project");
+let module_root = find_cue_module_root(project_path)?;
+
+// Evaluate the entire module with a specific package
+let raw_json = evaluate_module(&module_root, "cuenv", None)?;
+
+// Parse into ModuleEvaluation for easy access
+let module = ModuleEvaluation::from_raw(&module_root, &raw_json)?;
+
+// Access specific project by relative path
+let instance = module.get(Path::new("my-project"))?;
+let project: Project = instance.deserialize()?;
+
+// Iterate all projects in the module
+for instance in module.projects() {
+    println!("Project at: {}", instance.path.display());
+}
 ```
 
-**Key methods:**
+**Key types:**
 
-| Method                                                | Description                                                    |
-| ----------------------------------------------------- | -------------------------------------------------------------- |
-| `builder()`                                           | Returns a `CueEvaluatorBuilder`                                |
-| `evaluate(&self, dir: &Path, package: &str)`          | Evaluates the package and returns the raw JSON string from CUE |
-| `evaluate_typed<T>(&self, dir: &Path, package: &str)` | Evaluates the package and deserializes it into `T`             |
-| `clear_cache()`                                       | Drops any cached evaluation results held by this evaluator     |
+| Type               | Description                                                    |
+| ------------------ | -------------------------------------------------------------- |
+| `ModuleEvaluation` | Wrapper around evaluated module with helper methods            |
+| `Instance`         | Single evaluated instance (project or base) with path and kind |
+| `InstanceKind`     | Enum: `Project` (has name field) or `Base` (no name field)     |
+
+**ModuleEvaluation methods:**
+
+| Method         | Description                                         |
+| -------------- | --------------------------------------------------- |
+| `from_raw()`   | Parse raw JSON into structured module evaluation    |
+| `get(path)`    | Get instance at relative path                       |
+| `projects()`   | Iterator over all Project instances                 |
+| `bases()`      | Iterator over all Base instances                    |
+| `ancestors(p)` | Get ancestor instances for a path (for inheritance) |
+
+**Instance methods:**
+
+| Method          | Description                                 |
+| --------------- | ------------------------------------------- |
+| `deserialize()` | Deserialize instance data into typed struct |
+| `kind`          | Whether this is a Project or Base           |
+| `path`          | Relative path within the module             |
 
 ### `evaluate_cue_package`
 
-The crate also exposes free functions when you don't need a cached evaluator:
+Free function for single-directory evaluation. Use `evaluate_module()` for module-wide operations:
 
 ```rust
 use cuengine::{evaluate_cue_package, evaluate_cue_package_typed};
@@ -341,14 +337,13 @@ All errors implement `miette::Diagnostic` for rich error reporting:
 
 ```rust
 use miette::Result;
+use cuengine::evaluate_cue_package_typed;
+use cuenv_core::manifest::Project;
+use std::path::Path;
 
 fn run() -> Result<()> {
-    let evaluator = CueEvaluatorBuilder::new()
-        .directory(".")
-        .package("cuenv")
-        .build()?;
-
-    let manifest = evaluator.evaluate()?;
+    let manifest: Project = evaluate_cue_package_typed(Path::new("."), "cuenv")?;
+    println!("Loaded project: {:?}", manifest.name);
     Ok(())
 }
 ```

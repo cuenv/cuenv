@@ -688,7 +688,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		}
 	}
 
-
 	// PackageName from options takes precedence over legacy parameter
 	effectivePackageName := goPackageName
 	if options.PackageName != nil {
@@ -753,19 +752,14 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		return result
 	}
 
-	// Load the schema package to get #Project definition for type checking
-	var projectDef cue.Value
-	schemaInsts := load.Instances([]string{"github.com/cuenv/cuenv/schema"}, cfg)
-	if len(schemaInsts) > 0 && schemaInsts[0].Err == nil {
-		schemaValue := ctx.BuildInstance(schemaInsts[0])
-		if schemaValue.Err() == nil {
-			projectDef = schemaValue.LookupPath(cue.ParsePath("#Project"))
-		}
-	}
+	// NOTE: We don't load the schema package separately anymore.
+	// The schema is already imported by each CUE file (import "github.com/cuenv/cuenv/schema")
+	// and validated during BuildInstance. We detect Projects by checking for the required
+	// "name" field (Projects have name!, Bases don't) instead of expensive schema unification.
 
 	// Evaluate instances and collect results
 	instances := make(map[string]json.RawMessage)
-	var projects []string
+	projects := []string{} // Use empty slice, not nil, so JSON serializes as [] instead of null
 	allMeta := make(map[string]ValueMeta)
 
 	for _, inst := range loadedInstances {
@@ -795,12 +789,12 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 			continue
 		}
 
-		// Check if this instance conforms to schema.#Project using CUE unification
-		if projectDef.Exists() {
-			unified := projectDef.Unify(v)
-			if unified.Err() == nil {
-				projects = append(projects, relPath)
-			}
+		// Check if this is a Project (has required "name" field) vs Base (no name)
+		// This is much faster than schema unification since the schema validation
+		// already happened during BuildInstance via the CUE import.
+		nameField := v.LookupPath(cue.ParsePath("name"))
+		if nameField.Exists() && nameField.Err() == nil {
+			projects = append(projects, relPath)
 		}
 
 		// Build clean JSON (without inline _meta)

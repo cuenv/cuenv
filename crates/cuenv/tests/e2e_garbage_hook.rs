@@ -4,9 +4,26 @@ use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;
 
+/// Create a test directory with non-hidden name and CUE module setup
+fn create_test_dir() -> TempDir {
+    let temp_dir = tempfile::Builder::new()
+        .prefix("cuenv_test_")
+        .tempdir()
+        .expect("Failed to create temp directory");
+    let path = temp_dir.path();
+    // Create CUE module for module-wide evaluation
+    fs::create_dir_all(path.join("cue.mod")).unwrap();
+    fs::write(
+        path.join("cue.mod/module.cue"),
+        "module: \"test.example/garbage\"\nlanguage: version: \"v0.9.0\"\n",
+    )
+    .unwrap();
+    temp_dir
+}
+
 #[test]
 fn test_hook_with_syntax_error_output() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = create_test_dir();
     let path = temp_dir.path();
 
     // Create env.cue with a hook that outputs a SYNTAX ERROR (unclosed quote)

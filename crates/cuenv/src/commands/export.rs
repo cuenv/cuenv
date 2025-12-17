@@ -5,11 +5,12 @@
 //! 2. Start supervisor if needed (async)
 //! 3. Return environment diff for shell evaluation
 
-use super::env_file::{self, EnvFileStatus};
-use cuengine::CueEvaluator;
+use super::env_file::{self, EnvFileStatus, find_cue_module_root};
+use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
+use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
 use cuenv_core::{
-    Result,
+    ModuleEvaluation, Result,
     hooks::{
         approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
         executor::{HookExecutor, execute_hooks},
@@ -20,16 +21,110 @@ use cuenv_core::{
 };
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
 const PENDING_APPROVAL_ENV: &str = "CUENV_PENDING_APPROVAL_DIR";
 const LOADED_DIR_ENV: &str = "CUENV_LOADED_DIR";
 
+/// Evaluate CUE configuration using module-wide evaluation.
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
+fn evaluate_project(
+    directory: &Path,
+    package: &str,
+    executor: Option<&CommandExecutor>,
+) -> Result<Project> {
+    let target_path = directory
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(directory.to_path_buf().into_boxed_path()),
+            operation: "canonicalize path".to_string(),
+        })?;
+
+    // Use executor's cached module if available
+    if let Some(exec) = executor {
+        tracing::debug!("Using cached module evaluation from executor");
+        let module = exec.get_module(&target_path)?;
+        let rel_path = relative_path_from_root(&module.root, &target_path);
+
+        let instance = module.get(&rel_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE instance found at path: {} (relative: {})",
+                target_path.display(),
+                rel_path.display()
+            ))
+        })?;
+
+        // Check if this is a Project (has name field) or Base (no name)
+        return match instance.kind {
+            cuenv_core::InstanceKind::Project => instance.deserialize(),
+            cuenv_core::InstanceKind::Base => Err(cuenv_core::Error::configuration(
+                "This directory uses schema.#Base which doesn't support export.\n\
+                 To use export, update your env.cue to use schema.#Project:\n\n\
+                 schema.#Project\n\
+                 name: \"your-project-name\"",
+            )),
+        };
+    }
+
+    // Legacy path: fresh evaluation
+    tracing::debug!("Using fresh module evaluation (no executor)");
+
+    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "No CUE module found (looking for cue.mod/) starting from: {}",
+            target_path.display()
+        ))
+    })?;
+
+    let options = ModuleEvalOptions {
+        recursive: true,
+        ..Default::default()
+    };
+    let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
+        .map_err(convert_engine_error)?;
+
+    let module = ModuleEvaluation::from_raw(
+        module_root.clone(),
+        raw_result.instances,
+        raw_result.projects,
+    );
+
+    let rel_path = relative_path_from_root(&module_root, &target_path);
+    let instance = module.get(&rel_path).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "No CUE instance found at path: {} (relative: {})",
+            target_path.display(),
+            rel_path.display()
+        ))
+    })?;
+
+    // Check if this is a Project (has name field) or Base (no name)
+    match instance.kind {
+        cuenv_core::InstanceKind::Project => instance.deserialize(),
+        cuenv_core::InstanceKind::Base => Err(cuenv_core::Error::configuration(
+            "This directory uses schema.#Base which doesn't support export.\n\
+             To use export, update your env.cue to use schema.#Project:\n\n\
+             schema.#Project\n\
+             name: \"your-project-name\"",
+        )),
+    }
+}
+
 /// Execute the export command - the main entry point for shell integration
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
 #[allow(clippy::too_many_lines, clippy::uninlined_format_args)]
-pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<String> {
+pub async fn execute_export(
+    shell_type: Option<&str>,
+    package: &str,
+    executor: Option<&CommandExecutor>,
+) -> Result<String> {
     let shell = Shell::detect(shell_type);
     let current_dir = std::env::current_dir().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
@@ -53,14 +148,9 @@ pub async fn execute_export(shell_type: Option<&str>, package: &str) -> Result<S
         }
     };
 
-    // Always evaluate CUE to get current config (not a bottleneck)
+    // Always evaluate CUE to get current config (uses executor cache if available)
     debug!("Evaluating CUE for {}", directory.display());
-    let evaluator = CueEvaluator::builder()
-        .build()
-        .map_err(super::convert_engine_error)?;
-    let config: Project = evaluator
-        .evaluate_typed(&directory, package)
-        .map_err(super::convert_engine_error)?;
+    let config: Project = evaluate_project(&directory, package, executor)?;
 
     // Load approval manager and check approval status
     let mut approval_manager = ApprovalManager::with_default_file()?;
@@ -311,9 +401,6 @@ fn collect_hooks_from_ancestors(
     directory: &Path,
     package: &str,
 ) -> Result<Vec<cuenv_core::hooks::types::Hook>> {
-    let evaluator = CueEvaluator::builder()
-        .build()
-        .map_err(super::convert_engine_error)?;
     let ancestors = env_file::find_ancestor_env_files(directory, package)?;
 
     let mut all_hooks = Vec::new();
@@ -322,8 +409,8 @@ fn collect_hooks_from_ancestors(
     for (i, ancestor_dir) in ancestors.into_iter().enumerate() {
         let is_current_dir = i == ancestors_len - 1;
 
-        // Evaluate the CUE config for this ancestor
-        let config: Project = match evaluator.evaluate_typed(&ancestor_dir, package) {
+        // Evaluate the CUE config for this ancestor using module-wide evaluation
+        let config: Project = match evaluate_project(&ancestor_dir, package, None) {
             Ok(c) => c,
             Err(e) => {
                 debug!(

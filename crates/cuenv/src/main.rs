@@ -19,7 +19,7 @@ mod tracing;
 mod tui;
 
 use crate::cli::{CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, render_error};
-use crate::commands::Command;
+use crate::commands::{Command, CommandExecutor};
 use crate::tracing::{Level, TracingConfig, TracingFormat};
 use crossterm::ExecutableCommand;
 use cuenv_core::hooks::execute_hooks;
@@ -27,6 +27,7 @@ use cuenv_core::hooks::state::StateManager;
 use cuenv_core::hooks::{ExecutionStatus, Hook, HookExecutionConfig};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::instrument;
 
 /// Exit code for SIGINT (128 + signal number 2)
@@ -130,6 +131,26 @@ fn run_sync(cli: crate::cli::Cli) -> i32 {
         std::process::exit(EXIT_SIGINT);
     });
 
+    // Initialize tracing for sync path (simpler than async path, no event bus needed)
+    let log_level = match cli.level {
+        crate::tracing::LogLevel::Trace => Level::TRACE,
+        crate::tracing::LogLevel::Debug => Level::DEBUG,
+        crate::tracing::LogLevel::Info => Level::INFO,
+        crate::tracing::LogLevel::Warn => Level::WARN,
+        crate::tracing::LogLevel::Error => Level::ERROR,
+    };
+    let tracing_config = tracing::TracingConfig {
+        format: if cli.json {
+            tracing::TracingFormat::Json
+        } else {
+            tracing::TracingFormat::Pretty
+        },
+        level: log_level,
+        ..Default::default()
+    };
+    // Ignore error if tracing already initialized (e.g., in tests)
+    let _ = crate::tracing::init_tracing(tracing_config);
+
     // Handle --llms flag
     if cli.llms {
         print!("{LLMS_CONTENT}");
@@ -177,18 +198,20 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             Ok(())
         }
 
-        Command::Info { path, package, meta } => {
-            match commands::info::execute_info(path.as_deref(), &package, json_mode, meta) {
-                Ok(output) => {
-                    print!("{output}");
-                    Ok(())
-                }
-                Err(e) => Err(CliError::eval_with_help(
-                    format!("Info command failed: {e}"),
-                    "Check that you are in a CUE module with valid env.cue files",
-                )),
+        Command::Info {
+            path,
+            package,
+            meta,
+        } => match commands::info::execute_info(path.as_deref(), &package, json_mode, meta) {
+            Ok(output) => {
+                print!("{output}");
+                Ok(())
             }
-        }
+            Err(e) => Err(CliError::eval_with_help(
+                format!("Info command failed: {e}"),
+                "Check that you are in a CUE module with valid env.cue files",
+            )),
+        },
 
         Command::ShellInit { shell } => execute_shell_init_command_safe(shell, json_mode),
 
@@ -234,7 +257,9 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                 .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
             rt.block_on(async {
-                execute_env_print_command_safe(path, package, format, environment, json_mode).await
+                // Sync path: no executor available
+                execute_env_print_command_safe(path, package, format, environment, json_mode, None)
+                    .await
             })
         }
 
@@ -248,7 +273,8 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                 .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
             rt.block_on(async {
-                execute_env_list_command_safe(path, package, format, json_mode).await
+                // Sync path: no executor available
+                execute_env_list_command_safe(path, package, format, json_mode, None).await
             })
         }
 
@@ -513,11 +539,16 @@ async fn real_main() -> Result<(), CliError> {
         return Ok(());
     }
 
+    // Create executor with the command's package for correct module caching.
+    // Each command specifies its package (--package flag, defaults to "cuenv"),
+    // and the executor caches the module evaluation for that specific package.
+    let executor = create_executor(cli_command.package());
+
     // Convert CLI command to internal command, passing global environment
     let command: Command = cli_command.into_command(init_result.cli.environment.clone());
 
-    // Execute the command
-    let result = execute_command_safe(command, init_result.cli.json).await;
+    // Execute the command with the shared executor for module caching
+    let result = execute_command_safe(command, init_result.cli.json, &executor).await;
 
     // Wait for renderer to finish processing any remaining events
     if let Some(handle) = init_result.renderer_handle {
@@ -535,6 +566,15 @@ struct InitResult {
     /// This handle should be awaited before program exit to ensure
     /// all events are properly rendered.
     renderer_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Create a CommandExecutor with the given package name.
+///
+/// The executor provides centralized module evaluation - commands that need
+/// CUE access can call `executor.get_module()` to get the cached evaluation.
+fn create_executor(package: &str) -> Arc<CommandExecutor> {
+    let (event_sender, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    Arc::new(CommandExecutor::new(event_sender, package.to_string()))
 }
 
 /// Initialize CLI parsing and tracing configuration
@@ -611,15 +651,27 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
 }
 
 /// Execute command safely without ? operator
+///
+/// The `executor` provides centralized module evaluation - commands that need
+/// CUE access should call `executor.get_module()` to get the cached evaluation.
 #[allow(clippy::too_many_lines)]
-#[instrument(name = "cuenv_execute_command_safe")]
-async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), CliError> {
+#[instrument(name = "cuenv_execute_command_safe", skip(executor))]
+async fn execute_command_safe(
+    command: Command,
+    json_mode: bool,
+    executor: &CommandExecutor,
+) -> Result<(), CliError> {
+    // The executor provides cached CUE module evaluation for commands
     match command {
         Command::Version { format: _ } => match execute_version_command_safe().await {
             Ok(()) => Ok(()),
             Err(e) => Err(CliError::other(format!("Version command failed: {e}"))),
         },
-        Command::Info { path, package, meta } => {
+        Command::Info {
+            path,
+            package,
+            meta,
+        } => {
             // Info is a sync command, call it directly
             match commands::info::execute_info(path.as_deref(), &package, json_mode, meta) {
                 Ok(output) => {
@@ -637,8 +689,15 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             package,
             format,
             environment,
-        } => match execute_env_print_command_safe(path, package, format, environment, json_mode)
-            .await
+        } => match execute_env_print_command_safe(
+            path,
+            package,
+            format,
+            environment,
+            json_mode,
+            Some(executor),
+        )
+        .await
         {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
@@ -672,6 +731,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             all,
             task_args,
             json_mode,
+            Some(executor),
         )
         .await
         {
@@ -689,7 +749,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             Err(e) => Err(e),
         },
         Command::EnvLoad { path, package } => {
-            match execute_env_load_command_safe(path, package, json_mode).await {
+            match execute_env_load_command_safe(path, package, json_mode, Some(executor)).await {
                 Ok(()) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -700,14 +760,24 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             wait,
             timeout,
             format,
-        } => match execute_env_status_command_safe(path, package, wait, timeout, format, json_mode)
+        } => {
+            match execute_env_status_command_safe(
+                path,
+                package,
+                wait,
+                timeout,
+                format,
+                json_mode,
+                Some(executor),
+            )
             .await
-        {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
+            {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
         Command::EnvInspect { path, package } => {
-            match execute_env_inspect_command_safe(path, package, json_mode).await {
+            match execute_env_inspect_command_safe(path, package, json_mode, Some(executor)).await {
                 Ok(()) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -716,15 +786,21 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             path,
             package,
             shell,
-        } => match execute_env_check_command_safe(path, package, shell, json_mode).await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
+        } => {
+            match execute_env_check_command_safe(path, package, shell, json_mode, Some(executor))
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
         Command::EnvList {
             path,
             package,
             format,
-        } => match execute_env_list_command_safe(path, package, format, json_mode).await {
+        } => match execute_env_list_command_safe(path, package, format, json_mode, Some(executor))
+            .await
+        {
             Ok(()) => Ok(()),
             Err(e) => Err(e),
         },
@@ -734,10 +810,14 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             package,
             note,
             yes,
-        } => match execute_allow_command_safe(path, package, note, yes, json_mode).await {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        },
+        } => {
+            match execute_allow_command_safe(path, package, note, yes, json_mode, Some(executor))
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
         Command::Deny { path, package, all } => {
             match execute_deny_command_safe(path, package, all, json_mode).await {
                 Ok(()) => Ok(()),
@@ -745,7 +825,7 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             }
         }
         Command::Export { shell, package } => {
-            match execute_export_command_safe(shell, package).await {
+            match execute_export_command_safe(shell, package, Some(executor)).await {
                 Ok(()) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -820,7 +900,14 @@ async fn execute_command_safe(command: Command, json_mode: bool) -> Result<(), C
             all,
         } => {
             match execute_sync_command_safe(
-                subcommand, path, package, dry_run, check, all, json_mode,
+                subcommand,
+                path,
+                package,
+                dry_run,
+                check,
+                all,
+                json_mode,
+                Some(executor),
             )
             .await
             {
@@ -913,13 +1000,14 @@ async fn execute_version_command_safe() -> Result<(), String> {
 }
 
 /// Execute env load command safely
-#[instrument(name = "cuenv_execute_env_load_safe")]
+#[instrument(name = "cuenv_execute_env_load_safe", skip(executor))]
 async fn execute_env_load_command_safe(
     path: String,
     package: String,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_env_load(&path, &package).await {
+    match commands::hooks::execute_env_load(&path, &package, executor).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -944,7 +1032,7 @@ async fn execute_env_load_command_safe(
 }
 
 /// Execute env status command safely
-#[instrument(name = "cuenv_execute_env_status_safe")]
+#[instrument(name = "cuenv_execute_env_status_safe", skip(executor))]
 async fn execute_env_status_command_safe(
     path: String,
     package: String,
@@ -952,8 +1040,11 @@ async fn execute_env_status_command_safe(
     timeout: u64,
     format: crate::cli::StatusFormat,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_env_status(&path, &package, wait, timeout, format).await {
+    match commands::hooks::execute_env_status(&path, &package, wait, timeout, format, executor)
+        .await
+    {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -978,12 +1069,13 @@ async fn execute_env_status_command_safe(
 }
 
 /// Execute env list command safely
-#[instrument(name = "cuenv_execute_env_list_safe")]
+#[instrument(name = "cuenv_execute_env_list_safe", skip(executor))]
 async fn execute_env_list_command_safe(
     path: String,
     package: String,
     format: String,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("env_list_command");
     perf_guard.add_metadata("command_type", "env_list");
@@ -991,7 +1083,7 @@ async fn execute_env_list_command_safe(
     perf_guard.add_metadata("format", &format);
 
     let output = measure_perf!("env_list_execution", {
-        commands::env::execute_env_list(&path, &package, &format).await
+        commands::env::execute_env_list(&path, &package, &format, executor).await
     });
 
     match output {
@@ -1016,14 +1108,15 @@ async fn execute_env_list_command_safe(
 }
 
 /// Execute env check command safely
-#[instrument(name = "cuenv_execute_env_check_safe")]
+#[instrument(name = "cuenv_execute_env_check_safe", skip(executor))]
 async fn execute_env_check_command_safe(
     path: String,
     package: String,
     shell: crate::cli::ShellType,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_env_check(&path, &package, shell).await {
+    match commands::hooks::execute_env_check(&path, &package, shell, executor).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -1049,13 +1142,14 @@ async fn execute_env_check_command_safe(
 }
 
 /// Execute env inspect command safely
-#[instrument(name = "cuenv_execute_env_inspect_safe")]
+#[instrument(name = "cuenv_execute_env_inspect_safe", skip(executor))]
 async fn execute_env_inspect_command_safe(
     path: String,
     package: String,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_env_inspect(&path, &package).await {
+    match commands::hooks::execute_env_inspect(&path, &package, executor).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -1102,15 +1196,16 @@ fn execute_shell_init_command_safe(
 }
 
 /// Execute allow command safely
-#[instrument(name = "cuenv_execute_allow_safe")]
+#[instrument(name = "cuenv_execute_allow_safe", skip(executor))]
 async fn execute_allow_command_safe(
     path: String,
     package: String,
     note: Option<String>,
     yes: bool,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
-    match commands::hooks::execute_allow(&path, &package, note, yes).await {
+    match commands::hooks::execute_allow(&path, &package, note, yes, executor).await {
         Ok(output) => {
             if json_mode {
                 let envelope = OkEnvelope::new(serde_json::json!({
@@ -1171,8 +1266,9 @@ async fn execute_deny_command_safe(
 async fn execute_export_command_safe(
     shell: Option<String>,
     package: String,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
-    match commands::export::execute_export(shell.as_deref(), &package).await {
+    match commands::export::execute_export(shell.as_deref(), &package, executor).await {
         Ok(output) => {
             // Export command always outputs raw shell commands - no JSON mode
             print!("{output}");
@@ -1193,13 +1289,14 @@ async fn execute_export_command_safe(
 }
 
 /// Execute env print command safely
-#[instrument(name = "cuenv_execute_env_print_safe")]
+#[instrument(name = "cuenv_execute_env_print_safe", skip(executor))]
 async fn execute_env_print_command_safe(
     path: String,
     package: String,
     format: String,
     environment: Option<String>,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("env_print_command");
     perf_guard.add_metadata("command_type", "env_print");
@@ -1207,7 +1304,8 @@ async fn execute_env_print_command_safe(
     perf_guard.add_metadata("format", &format);
 
     let output = measure_perf!("env_print_execution", {
-        commands::env::execute_env_print(&path, &package, &format, environment.as_deref()).await
+        commands::env::execute_env_print(&path, &package, &format, environment.as_deref(), executor)
+            .await
     });
 
     match output {
@@ -1233,7 +1331,7 @@ async fn execute_env_print_command_safe(
 
 /// Execute task command safely
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-#[instrument(name = "cuenv_execute_task_safe")]
+#[instrument(name = "cuenv_execute_task_safe", skip(executor))]
 async fn execute_task_command_safe(
     path: String,
     package: String,
@@ -1249,6 +1347,7 @@ async fn execute_task_command_safe(
     all: bool,
     task_args: Vec<String>,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
     let mut perf_guard = performance::PerformanceGuard::new("task_command");
     perf_guard.add_metadata("command_type", "task");
@@ -1268,6 +1367,7 @@ async fn execute_task_command_safe(
         help,
         all,
         &task_args,
+        executor,
     )
     .await;
 
@@ -1310,9 +1410,15 @@ async fn execute_exec_command_safe(
     let mut perf_guard = performance::PerformanceGuard::new("exec_command");
     perf_guard.add_metadata("command_type", "exec");
 
-    let result =
-        commands::exec::execute_exec(&path, &package, &command, &args, environment.as_deref())
-            .await;
+    let result = commands::exec::execute_exec(
+        &path,
+        &package,
+        &command,
+        &args,
+        environment.as_deref(),
+        None,
+    )
+    .await;
 
     match result {
         Ok(exit_code) => {
@@ -1650,7 +1756,7 @@ async fn execute_release_publish_safe(
 /// Execute sync command safely
 #[allow(clippy::fn_params_excessive_bools)]
 #[allow(clippy::too_many_lines)]
-#[instrument(name = "cuenv_execute_sync_command_safe")]
+#[instrument(name = "cuenv_execute_sync_command_safe", skip(executor))]
 async fn execute_sync_command_safe(
     subcommand: Option<crate::cli::SyncCommands>,
     path: String,
@@ -1659,6 +1765,7 @@ async fn execute_sync_command_safe(
     check: bool,
     all: bool,
     json_mode: bool,
+    executor: Option<&commands::CommandExecutor>,
 ) -> Result<(), CliError> {
     use crate::cli::SyncCommands;
 
@@ -1716,6 +1823,7 @@ async fn execute_sync_command_safe(
             *cube_dry_run,
             *cube_check,
             *diff,
+            executor,
         )
         .await;
 
@@ -1758,7 +1866,7 @@ async fn execute_sync_command_safe(
     let mut had_error = false;
 
     if run_ignore {
-        match commands::sync::execute_sync_ignore(&path, &package, dry_run, check).await {
+        match commands::sync::execute_sync_ignore(&path, &package, dry_run, check, None).await {
             Ok(output) => outputs.push(output),
             Err(e) => {
                 outputs.push(format!("Ignore sync error: {e}"));

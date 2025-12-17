@@ -1,7 +1,7 @@
-use cuengine::evaluate_cue_package_typed;
+use cuengine::ModuleEvalOptions;
+use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
-use glob::glob;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -38,51 +38,45 @@ pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
         operation: "get current directory".to_string(),
     })?;
 
-    if find_cue_module_root(&cwd).is_none() {
-        return Err(cuenv_core::Error::configuration(
+    let module_root = find_cue_module_root(&cwd).ok_or_else(|| {
+        cuenv_core::Error::configuration(
             "Not inside a CUE module. Run 'cue mod init' or navigate to a directory with cue.mod/",
-        ));
-    }
-
-    let mut projects = Vec::new();
-    let package_re = regex::Regex::new(r"(?m)^package\s+cuenv\s*$").expect("Invalid regex");
-
-    // Glob for all env.cue files
-    let entries = glob("**/env.cue").map_err(|e| cuenv_core::Error::Configuration {
-        src: String::new(),
-        span: None,
-        message: format!("Glob error: {e}"),
+        )
     })?;
 
-    for entry in entries.flatten() {
-        // Check if file declares package cuenv
-        let Ok(content) = std::fs::read_to_string(&entry) else {
-            continue;
+    // Use module-wide evaluation instead of per-project evaluation
+    let options = ModuleEvalOptions {
+        recursive: true,
+        ..Default::default()
+    };
+    let raw_result = cuengine::evaluate_module(&module_root, "cuenv", Some(options))
+        .map_err(|e| cuenv_core::Error::configuration(format!("CUE evaluation failed: {e}")))?;
+
+    let module = ModuleEvaluation::from_raw(
+        module_root.clone(),
+        raw_result.instances,
+        raw_result.projects,
+    );
+
+    let mut projects = Vec::new();
+
+    // Iterate through all Project instances (schema-verified)
+    for instance in module.projects() {
+        let mut config: Project = match instance.deserialize() {
+            Ok(c) => c,
+            Err(_) => continue, // Skip instances that can't be deserialized
         };
 
-        if !package_re.is_match(&content) {
-            continue;
-        }
+        // Expand cross-project references and implicit dependencies
+        config.expand_cross_project_references();
 
-        let parent = entry.parent().unwrap_or_else(|| std::path::Path::new("."));
-        // Fix for empty path issue (root directory)
-        let dir_path = if parent.as_os_str().is_empty() {
-            std::path::Path::new(".")
-        } else {
-            parent
-        };
+        // Build the path to the env.cue file
+        let env_cue_path = module_root.join(&instance.path).join("env.cue");
 
-        // Load the configuration
-        // We assume the package name is "cuenv" based on convention
-        if let Ok(mut config) = evaluate_cue_package_typed::<Project>(dir_path, "cuenv") {
-            // Expand cross-project references and implicit dependencies
-            config.expand_cross_project_references();
-
-            projects.push(DiscoveredCIProject {
-                path: entry,
-                config,
-            });
-        }
+        projects.push(DiscoveredCIProject {
+            path: env_cue_path,
+            config,
+        });
     }
 
     Ok(projects)

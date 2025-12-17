@@ -257,7 +257,8 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
     );
 
     let path = if dir == "examples" {
-        // Use a .test directory in the repo root so CUE can find the module
+        // Use a bdd_test_runs directory in the repo root so CUE can find the module
+        // NOTE: Must NOT start with '.' because CUE's loader ignores hidden directories
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest_dir
             .parent()
@@ -265,7 +266,9 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
             .parent()
             .unwrap()
             .to_path_buf();
-        let test_dir = repo_root.join(".test").join(format!("test_{unique_id}"));
+        let test_dir = repo_root
+            .join("bdd_test_runs")
+            .join(format!("test_{unique_id}"));
         if !test_dir.exists() {
             fs::create_dir_all(&test_dir).await.unwrap();
         }
@@ -281,7 +284,9 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
             .parent()
             .unwrap()
             .to_path_buf();
-        let test_dir = repo_root.join(".test").join(format!("test_{unique_id}"));
+        let test_dir = repo_root
+            .join("bdd_test_runs")
+            .join(format!("test_{unique_id}"));
         test_dir.join(dir)
     };
 
