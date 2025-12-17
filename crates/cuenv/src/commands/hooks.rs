@@ -1,11 +1,12 @@
 //! Hook-related command implementations
 
-use super::env_file::{self, EnvFileStatus};
+use super::env_file::{self, EnvFileStatus, find_cue_module_root};
+use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use crate::cli::StatusFormat;
-use cuengine::CueEvaluator;
+use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
 use cuenv_core::{
-    Result,
+    ModuleEvaluation, Result,
     hooks::{
         HookExecutionState,
         approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
@@ -60,19 +61,85 @@ fn require_env_file(path: &Path, package: &str) -> Result<PathBuf> {
     }
 }
 
-/// Helper to evaluate CUE configuration
-fn evaluate_config(directory: &Path, package: &str) -> Result<Project> {
-    let evaluator = CueEvaluator::builder()
-        .build()
-        .map_err(super::convert_engine_error)?;
-    evaluator
-        .evaluate_typed(directory, package)
-        .map_err(super::convert_engine_error)
+/// Helper to evaluate CUE configuration using module-wide evaluation.
+///
+/// This function loads the entire CUE module once and extracts the Project
+/// configuration at the specified directory path.
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
+fn evaluate_config(
+    directory: &Path,
+    package: &str,
+    executor: Option<&CommandExecutor>,
+) -> Result<Project> {
+    let target_path = directory
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(directory.to_path_buf().into_boxed_path()),
+            operation: "canonicalize path".to_string(),
+        })?;
+
+    // Use executor's cached module if available
+    if let Some(exec) = executor {
+        tracing::debug!("Using cached module evaluation from executor");
+        let module = exec.get_module(&target_path)?;
+        let rel_path = relative_path_from_root(&module.root, &target_path);
+
+        let instance = module.get(&rel_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE instance found at path: {} (relative: {})",
+                target_path.display(),
+                rel_path.display()
+            ))
+        })?;
+
+        return instance.deserialize();
+    }
+
+    // Legacy path: fresh evaluation
+    tracing::debug!("Using fresh module evaluation (no executor)");
+
+    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "No CUE module found (looking for cue.mod/) starting from: {}",
+            target_path.display()
+        ))
+    })?;
+
+    let options = ModuleEvalOptions {
+        recursive: true,
+        ..Default::default()
+    };
+    let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
+        .map_err(convert_engine_error)?;
+
+    let module = ModuleEvaluation::from_raw(
+        module_root.clone(),
+        raw_result.instances,
+        raw_result.projects,
+    );
+
+    let rel_path = relative_path_from_root(&module_root, &target_path);
+    let instance = module.get(&rel_path).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "No CUE instance found at path: {} (relative: {})",
+            target_path.display(),
+            rel_path.display()
+        ))
+    })?;
+
+    instance.deserialize()
 }
 
 /// Helper to evaluate CUE configuration as Value (for approval system)
-fn evaluate_config_as_value(directory: &Path, package: &str) -> Result<Value> {
-    let manifest = evaluate_config(directory, package)?;
+fn evaluate_config_as_value(
+    directory: &Path,
+    package: &str,
+    executor: Option<&CommandExecutor>,
+) -> Result<Value> {
+    let manifest = evaluate_config(directory, package, executor)?;
     serde_json::to_value(&manifest)
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize config: {e}")))
 }
@@ -82,12 +149,13 @@ fn get_config_hash(
     directory: &Path,
     package: &str,
     approval_manager: &ApprovalManager,
+    executor: Option<&CommandExecutor>,
 ) -> Result<String> {
     if let Some(approval) = approval_manager.get_approval(directory.to_str().unwrap_or("")) {
         Ok(approval.config_hash.clone())
     } else {
         // If not approved, compute it from current config
-        let config_value = evaluate_config_as_value(directory, package)?;
+        let config_value = evaluate_config_as_value(directory, package, executor)?;
         Ok(cuenv_core::hooks::approval::compute_approval_hash(
             &config_value,
         ))
@@ -167,7 +235,14 @@ fn format_starship_status(state: &HookExecutionState) -> String {
 }
 
 /// Execute env load command - evaluates config, checks approval, starts hook execution
-pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
+pub async fn execute_env_load(
+    path: &str,
+    package: &str,
+    executor: Option<&CommandExecutor>,
+) -> Result<String> {
     // Check env.cue and canonicalize path
     let directory = match env_file::find_env_file(Path::new(path), package)? {
         EnvFileStatus::Match(dir) => dir,
@@ -175,7 +250,7 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
     };
 
     // Evaluate the CUE configuration
-    let config = evaluate_config(&directory, package)?;
+    let config = evaluate_config(&directory, package, executor)?;
     let config_value = serde_json::to_value(&config).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
     })?;
@@ -236,12 +311,16 @@ pub async fn execute_env_load(path: &str, package: &str) -> Result<String> {
 ///
 /// Uses a fast path for non-wait mode that skips config hash computation entirely.
 /// This reduces latency from ~300ms to <20ms for Starship integration.
+///
+/// When a `cmd_executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
 pub async fn execute_env_status(
     path: &str,
     package: &str,
     wait: bool,
     timeout_seconds: u64,
     format: StatusFormat,
+    cmd_executor: Option<&CommandExecutor>,
 ) -> Result<String> {
     // Check env.cue and canonicalize path
     let directory = match env_file::find_env_file(Path::new(path), package)? {
@@ -249,22 +328,22 @@ pub async fn execute_env_status(
         status => return Ok(env_file_issue_message(path, package, status)),
     };
 
-    let executor = HookExecutor::with_default_config()?;
+    let hook_executor = HookExecutor::with_default_config()?;
 
     if wait {
         // Wait mode needs config hash to verify we're waiting for the correct config
         let mut approval_manager = ApprovalManager::with_default_file()?;
         approval_manager.load_approvals().await?;
-        let config_hash = get_config_hash(&directory, package, &approval_manager)?;
+        let config_hash = get_config_hash(&directory, package, &approval_manager, cmd_executor)?;
 
-        match executor
+        match hook_executor
             .wait_for_completion(&directory, &config_hash, Some(timeout_seconds))
             .await
         {
             Ok(state) => Ok(format_status(&state, format)),
             Err(cuenv_core::Error::Timeout { .. }) => {
                 // Timeout occurred, get current status
-                if let Some(state) = executor
+                if let Some(state) = hook_executor
                     .get_execution_status_for_instance(&directory, &config_hash)
                     .await?
                 {
@@ -282,7 +361,7 @@ pub async fn execute_env_status(
     } else {
         // FAST PATH: Skip config hash computation, use directory-based marker lookup.
         // This reduces latency from ~300ms to <20ms for Starship integration.
-        if let Some(state) = executor.get_fast_status(&directory).await? {
+        if let Some(state) = hook_executor.get_fast_status(&directory).await? {
             Ok(format_status(&state, format))
         } else {
             match format {
@@ -320,7 +399,14 @@ pub fn execute_env_status_sync(path: &str, package: &str, format: StatusFormat) 
 }
 
 /// Inspect cached hook state and captured environment
-pub async fn execute_env_inspect(path: &str, package: &str) -> Result<String> {
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
+pub async fn execute_env_inspect(
+    path: &str,
+    package: &str,
+    executor: Option<&CommandExecutor>,
+) -> Result<String> {
     use std::fmt::Write;
     // Validate env.cue presence and canonicalize
     let directory = require_env_file(Path::new(path), package)?;
@@ -328,7 +414,7 @@ pub async fn execute_env_inspect(path: &str, package: &str) -> Result<String> {
     // Compute config hash using the same path approval uses
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
-    let config_hash = get_config_hash(&directory, package, &approval_manager)?;
+    let config_hash = get_config_hash(&directory, package, &approval_manager, executor)?;
 
     // Locate state file
     let instance_hash = compute_instance_hash(&directory, &config_hash);
@@ -435,17 +521,21 @@ pub async fn execute_env_inspect(path: &str, package: &str) -> Result<String> {
 }
 
 /// Execute allow command - approve current directory's configuration
+///
+/// When an `executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
 pub async fn execute_allow(
     path: &str,
     package: &str,
     note: Option<String>,
     yes: bool,
+    executor: Option<&CommandExecutor>,
 ) -> Result<String> {
     // Check env.cue and canonicalize path
     let directory = require_env_file(Path::new(path), package)?;
 
     // Evaluate the CUE configuration
-    let config = evaluate_config(&directory, package)?;
+    let config = evaluate_config(&directory, package, executor)?;
     let config_value = serde_json::to_value(&config).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
     })?;
@@ -548,10 +638,14 @@ pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<Strin
 }
 
 /// Execute env check command - check hook status and output env for shell
+///
+/// When a `cmd_executor` is provided, uses its cached module evaluation.
+/// Otherwise, falls back to fresh evaluation (legacy behavior).
 pub async fn execute_env_check(
     path: &str,
     package: &str,
     shell: crate::cli::ShellType,
+    cmd_executor: Option<&CommandExecutor>,
 ) -> Result<String> {
     // Check env.cue and canonicalize path - silent return if no env.cue
     let EnvFileStatus::Match(directory) = env_file::find_env_file(Path::new(path), package)? else {
@@ -561,12 +655,12 @@ pub async fn execute_env_check(
     // Get the config hash
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
-    let config_hash = get_config_hash(&directory, package, &approval_manager)?;
+    let config_hash = get_config_hash(&directory, package, &approval_manager, cmd_executor)?;
 
-    let executor = HookExecutor::with_default_config()?;
+    let hook_executor = HookExecutor::with_default_config()?;
 
     // Check execution status using the specific instance
-    if let Some(state) = executor
+    if let Some(state) = hook_executor
         .get_execution_status_for_instance(&directory, &config_hash)
         .await?
         && state.is_complete()
@@ -576,7 +670,7 @@ pub async fn execute_env_check(
         let mut all_env_vars = HashMap::new();
 
         // First, get environment variables from CUE configuration
-        let config = evaluate_config(&directory, package)?;
+        let config = evaluate_config(&directory, package, cmd_executor)?;
 
         // Add CUE env variables to our map
         if let Some(env) = &config.env {
@@ -854,7 +948,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_allow_no_directory() {
-        let result = execute_allow("/nonexistent/directory", "cuenv", None, false).await;
+        let result = execute_allow("/nonexistent/directory", "cuenv", None, false, None).await;
         assert!(result.is_err());
         // The error type is Configuration error, which doesn't include the detailed message in Display
         // Just verify it's an error for a non-existent directory
@@ -867,7 +961,14 @@ mod tests {
     #[tokio::test]
     async fn test_execute_allow_no_env_cue() {
         let temp_dir = TempDir::new().unwrap();
-        let result = execute_allow(temp_dir.path().to_str().unwrap(), "cuenv", None, false).await;
+        let result = execute_allow(
+            temp_dir.path().to_str().unwrap(),
+            "cuenv",
+            None,
+            false,
+            None,
+        )
+        .await;
         assert!(result.is_err());
         // The error type is Configuration error for missing env.cue file
         assert!(matches!(
@@ -879,7 +980,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_env_load_no_file() {
         let temp_dir = TempDir::new().unwrap();
-        let result = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv").await;
+        let result = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv", None).await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("No env.cue file found"));
@@ -894,6 +995,7 @@ mod tests {
             false,
             30,
             StatusFormat::Text,
+            None,
         )
         .await;
         assert!(result.is_ok());
@@ -906,7 +1008,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         fs::write(temp_dir.path().join("env.cue"), "package other\n\nenv: {}").unwrap();
 
-        let output = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv")
+        let output = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv", None)
             .await
             .unwrap();
         assert!(output.contains("uses package 'other'"));

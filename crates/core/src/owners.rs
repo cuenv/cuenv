@@ -331,7 +331,6 @@ mod tests {
                 header: Some("Custom Header\nLine 2".to_string()),
             }),
             rules: HashMap::new(),
-            ..Default::default()
         };
 
         let content = owners.generate();
@@ -370,7 +369,6 @@ mod tests {
                 header: None,
             }),
             rules,
-            ..Default::default()
         };
 
         let content = owners.generate();

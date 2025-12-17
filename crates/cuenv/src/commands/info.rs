@@ -8,6 +8,7 @@ use crate::commands::env_file::find_cue_module_root;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::{ModuleEvaluation, Result};
 use serde::Serialize;
+use std::fmt::Write;
 use std::path::Path;
 
 /// Output format for JSON mode
@@ -54,13 +55,14 @@ pub fn execute_info(
     let recursive = path.is_none();
     let effective_path = path.unwrap_or(".");
 
-    let start_path = Path::new(effective_path).canonicalize().map_err(|e| {
-        cuenv_core::Error::Io {
-            source: e,
-            path: Some(Path::new(effective_path).to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        }
-    })?;
+    let start_path =
+        Path::new(effective_path)
+            .canonicalize()
+            .map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(Path::new(effective_path).to_path_buf().into_boxed_path()),
+                operation: "canonicalize path".to_string(),
+            })?;
 
     // Find the CUE module root
     let module_root = find_cue_module_root(&start_path).ok_or_else(|| {
@@ -78,8 +80,8 @@ pub fn execute_info(
     });
 
     // Evaluate the entire module
-    let raw_result = cuengine::evaluate_module(&module_root, package, options)
-        .map_err(convert_engine_error)?;
+    let raw_result =
+        cuengine::evaluate_module(&module_root, package, options).map_err(convert_engine_error)?;
 
     // If --meta is requested, dump the full JSON with separate meta map
     if with_meta {
@@ -94,7 +96,11 @@ pub fn execute_info(
     }
 
     // Convert to ModuleEvaluation (using schema-verified project list)
-    let module = ModuleEvaluation::from_raw(module_root.clone(), raw_result.instances, raw_result.projects);
+    let module = ModuleEvaluation::from_raw(
+        module_root.clone(),
+        raw_result.instances,
+        raw_result.projects,
+    );
 
     // Collect project information
     let mut projects: Vec<ProjectInfo> = module
@@ -117,16 +123,15 @@ pub fn execute_info(
             project_count: module.project_count(),
             projects,
         };
-        serde_json::to_string_pretty(&output).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}"))
-        })
+        serde_json::to_string_pretty(&output)
+            .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}")))
     } else {
         // Human-readable output
         let mut output = String::new();
 
-        output.push_str(&format!("Module: {}\n\n", module_root.display()));
-        output.push_str(&format!("Bases: {}\n", module.base_count()));
-        output.push_str(&format!("Projects: {}\n", module.project_count()));
+        let _ = writeln!(output, "Module: {}\n", module_root.display());
+        let _ = writeln!(output, "Bases: {}", module.base_count());
+        let _ = writeln!(output, "Projects: {}", module.project_count());
 
         if !projects.is_empty() {
             output.push_str("\nProjects:\n");
@@ -140,12 +145,13 @@ pub fn execute_info(
                 .max(20);
 
             for project in &projects {
-                output.push_str(&format!(
-                    "  {:<width$}  {}\n",
+                let _ = writeln!(
+                    output,
+                    "  {:<width$}  {}",
                     project.name,
                     project.path,
                     width = max_name_len
-                ));
+                );
             }
         }
 

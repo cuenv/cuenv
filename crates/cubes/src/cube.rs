@@ -5,7 +5,8 @@
 //! files to generate for a project.
 
 use crate::{CodegenError, Result};
-use cuengine::CueEvaluator;
+use cuengine::ModuleEvalOptions;
+use cuenv_core::ModuleEvaluation;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -150,16 +151,67 @@ impl Cube {
         // Determine package name - try to infer from file content or use default
         let package_name = Self::determine_package_name(path)?;
 
-        // Create a CUE evaluator and evaluate the package
-        let evaluator = CueEvaluator::builder()
-            .build()
-            .map_err(|e| CodegenError::Cube(format!("Failed to create CUE evaluator: {e}")))?;
+        // Find the module root
+        let module_root = Self::find_cue_module_root(dir_path).ok_or_else(|| {
+            CodegenError::Cube(format!(
+                "No CUE module found (looking for cue.mod/) starting from: {}",
+                dir_path.display()
+            ))
+        })?;
 
-        let data: CubeData = evaluator
-            .evaluate_typed(dir_path, &package_name)
+        // Use module-wide evaluation
+        let options = ModuleEvalOptions {
+            recursive: true,
+            ..Default::default()
+        };
+        let raw_result = cuengine::evaluate_module(&module_root, &package_name, Some(options))
             .map_err(|e| CodegenError::Cube(format!("CUE evaluation failed: {e}")))?;
 
-        Ok(data)
+        let module = ModuleEvaluation::from_raw(
+            module_root.clone(),
+            raw_result.instances,
+            raw_result.projects,
+        );
+
+        // Calculate relative path and get the instance
+        let target_path = dir_path
+            .canonicalize()
+            .map_err(|e| CodegenError::Cube(format!("Failed to canonicalize path: {e}")))?;
+        let relative_path = target_path
+            .strip_prefix(&module_root)
+            .map(|p| {
+                if p.as_os_str().is_empty() {
+                    PathBuf::from(".")
+                } else {
+                    p.to_path_buf()
+                }
+            })
+            .unwrap_or_else(|_| PathBuf::from("."));
+
+        let instance = module.get(&relative_path).ok_or_else(|| {
+            CodegenError::Cube(format!(
+                "No CUE instance found at path: {} (relative: {})",
+                dir_path.display(),
+                relative_path.display()
+            ))
+        })?;
+
+        instance
+            .deserialize()
+            .map_err(|e| CodegenError::Cube(format!("Failed to deserialize cube data: {e}")))
+    }
+
+    /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
+    fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
+        let mut current = start.canonicalize().ok()?;
+        loop {
+            if current.join("cue.mod").is_dir() {
+                return Some(current);
+            }
+            if !current.pop() {
+                return None;
+            }
+        }
     }
 
     /// Determine the CUE package name from a file

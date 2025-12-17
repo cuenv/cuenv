@@ -8,14 +8,12 @@
 #![allow(clippy::missing_safety_doc)] // Safety is documented inline
 #![allow(clippy::missing_panics_doc)] // Panics are documented where relevant
 
-pub mod builder;
 pub mod cache;
 pub mod error;
 pub mod retry;
 pub mod validation;
 
 // Re-export main types
-pub use builder::{CueEvaluator, CueEvaluatorBuilder};
 pub use error::{CueEngineError, Result};
 pub use retry::RetryConfig;
 pub use validation::Limits;
@@ -51,6 +49,7 @@ struct BridgeError {
 /// Structured response envelope from the Go bridge
 #[derive(Debug, Deserialize)]
 struct BridgeEnvelope<'a> {
+    #[allow(dead_code)] // Used in tests for version compatibility checks
     version: String,
     #[serde(borrow)]
     ok: Option<&'a serde_json::value::RawValue>,
@@ -157,8 +156,12 @@ impl Drop for CStringPtr {
 // 3. Concurrent access to cue_free_string from multiple threads is undefined behavior
 // 4. Raw pointers are inherently not Send/Sync, so PhantomData<*const ()> prevents both
 
+// Real FFI for normal builds
+#[cfg(not(docsrs))]
 #[link(name = "cue_bridge")]
 unsafe extern "C" {
+    // Note: cue_eval_package is retained for Go bridge compatibility but unused in Rust
+    #[allow(dead_code)]
     fn cue_eval_package(dir_path: *const c_char, package_name: *const c_char) -> *mut c_char;
     fn cue_eval_module(
         module_root: *const c_char,
@@ -167,6 +170,25 @@ unsafe extern "C" {
     ) -> *mut c_char;
     fn cue_free_string(s: *mut c_char);
     fn cue_bridge_version() -> *mut c_char;
+}
+
+// Stub FFI for documentation builds - these satisfy the compiler but panic if called
+#[cfg(docsrs)]
+unsafe fn cue_eval_package(_: *const c_char, _: *const c_char) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
+#[cfg(docsrs)]
+unsafe fn cue_eval_module(_: *const c_char, _: *const c_char, _: *const c_char) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
+#[cfg(docsrs)]
+unsafe fn cue_free_string(_: *mut c_char) {}
+
+#[cfg(docsrs)]
+unsafe fn cue_bridge_version() -> *mut c_char {
+    panic!("FFI not available in documentation builds")
 }
 
 /// Options for module evaluation
@@ -200,7 +222,7 @@ pub struct ModuleResult {
     /// Paths that conform to schema.#Project (verified via CUE unification)
     #[serde(default)]
     pub projects: Vec<String>,
-    /// Map of "path/field" to source location (only populated when with_meta: true)
+    /// Map of "path/field" to source location (only populated when `with_meta`: true)
     #[serde(default)]
     pub meta: std::collections::HashMap<String, FieldMeta>,
 }
@@ -213,7 +235,7 @@ pub struct ModuleResult {
 ///
 /// # Arguments
 /// * `module_root` - Path to the CUE module root (directory containing cue.mod/)
-/// * `package_name` - Name of the CUE package to evaluate (legacy parameter, prefer using options.package_name)
+/// * `package_name` - Name of the CUE package to evaluate (legacy parameter, prefer using `options.package_name`)
 /// * `options` - Evaluation options:
 ///   - `with_meta`: Extract source positions into separate `meta` map
 ///   - `recursive`: Evaluate entire module tree (./...) or just current directory (.)
@@ -229,6 +251,7 @@ pub struct ModuleResult {
 /// - The module root path is invalid
 /// - The CUE module cannot be loaded
 /// - All CUE instances fail evaluation
+#[allow(clippy::too_many_lines)]
 #[tracing::instrument(
     name = "evaluate_module",
     fields(
@@ -277,8 +300,8 @@ pub fn evaluate_module(
     };
 
     // Serialize options to JSON for FFI
-    let options_json = serde_json::to_string(&options.unwrap_or_default())
-        .unwrap_or_else(|_| "{}".to_string());
+    let options_json =
+        serde_json::to_string(&options.unwrap_or_default()).unwrap_or_else(|_| "{}".to_string());
     let c_options = match CString::new(options_json) {
         Ok(c_string) => c_string,
         Err(e) => {
@@ -298,7 +321,11 @@ pub fn evaluate_module(
     // - Returns either null or a valid pointer to a C string
     // - The returned pointer must be freed with cue_free_string
     let result_ptr = unsafe {
-        cue_eval_module(c_module_root.as_ptr(), c_package.as_ptr(), c_options.as_ptr())
+        cue_eval_module(
+            c_module_root.as_ptr(),
+            c_package.as_ptr(),
+            c_options.as_ptr(),
+        )
     };
 
     let ffi_duration = ffi_start.elapsed();
@@ -365,6 +392,9 @@ pub fn evaluate_module(
             }
             ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE | ERROR_CODE_DEPENDENCY_RES => {
                 Err(Error::cue_parse(module_root, full_message))
+            }
+            ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => {
+                Err(Error::ffi("cue_eval_module", full_message))
             }
             _ => Err(Error::ffi("cue_eval_module", full_message)),
         };
@@ -457,15 +487,9 @@ pub fn get_bridge_version() -> Result<String> {
     Ok(bridge_version)
 }
 
-/// Evaluates a CUE package and returns the result as a JSON string
+/// Convenience wrapper around `evaluate_module` for single-directory evaluation.
 ///
-/// # Errors
-///
-/// Returns an error if:
-/// - The directory path is invalid or contains non-UTF-8 characters
-/// - The package name contains null bytes
-/// - The CUE evaluation fails
-/// - The result contains invalid UTF-8 or is not valid JSON
+/// Uses `evaluate_module` with `recursive: false` internally.
 ///
 /// # Arguments
 /// * `dir_path` - Directory containing the CUE files
@@ -473,188 +497,36 @@ pub fn get_bridge_version() -> Result<String> {
 ///
 /// # Returns
 /// JSON string containing the evaluated CUE configuration
-#[allow(clippy::too_many_lines)] // Function complexity justified for FFI bridge
 #[tracing::instrument(
     name = "evaluate_cue_package",
     fields(
         dir_path = %dir_path.display(),
         package_name = package_name,
-        operation_id = %uuid::Uuid::new_v4(),
     ),
     level = "info"
 )]
 pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<String> {
-    tracing::info!("Starting CUE package evaluation");
-    let start_time = std::time::Instant::now();
-
-    let Some(dir_path_str) = dir_path.to_str() else {
-        tracing::error!("Directory path is not valid UTF-8: {:?}", dir_path);
-        return Err(Error::configuration(
-            "Invalid directory path: not UTF-8".to_string(),
-        ));
+    let options = ModuleEvalOptions {
+        with_meta: false,
+        recursive: false,
+        package_name: None,
     };
 
-    tracing::debug!(
-        dir_path_str = dir_path_str,
-        package_name = package_name,
-        "Validated input parameters"
-    );
+    let result = evaluate_module(dir_path, package_name, Some(options))?;
 
-    let c_dir = match CString::new(dir_path_str) {
-        Ok(c_string) => c_string,
-        Err(e) => {
-            tracing::error!("Failed to convert directory path to C string: {}", e);
-            return Err(Error::ffi(
-                "cue_eval_package",
-                format!("Invalid directory path: {e}"),
-            ));
-        }
-    };
+    // For single-directory eval, extract the instance at "." or the only instance
+    let instance = result
+        .instances
+        .get(".")
+        .or_else(|| result.instances.values().next())
+        .ok_or_else(|| {
+            Error::configuration(format!(
+                "No CUE instance found in directory: {}",
+                dir_path.display()
+            ))
+        })?;
 
-    let c_package = match CString::new(package_name) {
-        Ok(c_string) => c_string,
-        Err(e) => {
-            tracing::error!("Failed to convert package name to C string: {}", e);
-            return Err(Error::ffi(
-                "cue_eval_package",
-                format!("Invalid package name: {e}"),
-            ));
-        }
-    };
-
-    tracing::debug!("Calling FFI function cue_eval_package");
-    let ffi_start = std::time::Instant::now();
-
-    // Safety: cue_eval_package is an FFI function that:
-    // - Takes two valid C string pointers (guaranteed by CString::as_ptr())
-    // - Returns either null or a valid pointer to a C string
-    // - The returned pointer must be freed with cue_free_string
-    // - Does not retain references to the input pointers after returning
-    let result_ptr = unsafe { cue_eval_package(c_dir.as_ptr(), c_package.as_ptr()) };
-
-    let ffi_duration = ffi_start.elapsed();
-    tracing::debug!(
-        ffi_duration_ms = ffi_duration.as_millis(),
-        "FFI call completed"
-    );
-
-    // Safety: CStringPtr::new is safe because:
-    // - result_ptr is either null or a valid pointer from cue_eval_package
-    // - CStringPtr takes ownership and will free the memory on drop
-    // - No other code will access result_ptr after this point
-    let result = unsafe { CStringPtr::new(result_ptr) };
-
-    if result.is_null() {
-        tracing::error!("FFI function returned null pointer");
-        return Err(Error::ffi(
-            "cue_eval_package",
-            "CUE evaluation returned null".to_string(),
-        ));
-    }
-
-    // Safety: result.to_str() is safe because:
-    // - We've already checked that result is not null
-    // - The pointer points to a valid C string from the Go side
-    // - The memory will not be modified while we use the &str
-    // - The &str lifetime is bounded by result's lifetime
-    let json_str = match unsafe { result.to_str() } {
-        Ok(str_ref) => str_ref,
-        Err(e) => {
-            tracing::error!("Failed to convert FFI result to UTF-8 string: {}", e);
-            return Err(e);
-        }
-    };
-
-    tracing::debug!(
-        result_length = json_str.len(),
-        "FFI result converted to string"
-    );
-
-    // Parse the structured JSON envelope from Go
-    let envelope: BridgeEnvelope = match serde_json::from_str(json_str) {
-        Ok(env) => env,
-        Err(e) => {
-            tracing::error!(
-                json_response = json_str,
-                parse_error = %e,
-                "Failed to parse JSON envelope from Go bridge"
-            );
-            return Err(Error::ffi(
-                "cue_eval_package",
-                format!("Invalid JSON envelope from Go bridge: {e}"),
-            ));
-        }
-    };
-
-    tracing::debug!(
-        bridge_version = envelope.version,
-        has_ok = envelope.ok.is_some(),
-        has_error = envelope.error.is_some(),
-        "Parsed bridge envelope"
-    );
-
-    // Check envelope version compatibility
-    if !envelope.version.starts_with("bridge/1") {
-        tracing::warn!(
-            expected_version = "bridge/1",
-            actual_version = envelope.version,
-            "Bridge version mismatch - may cause compatibility issues"
-        );
-    }
-
-    // Handle error response
-    if let Some(bridge_error) = envelope.error {
-        tracing::error!(
-            error_code = bridge_error.code,
-            error_message = bridge_error.message,
-            error_hint = bridge_error.hint,
-            "CUE evaluation failed with structured error from Go"
-        );
-
-        #[allow(clippy::option_if_let_else)] // More readable than map_or
-        let full_message = if let Some(hint) = bridge_error.hint {
-            format!("{} (Hint: {})", bridge_error.message, hint)
-        } else {
-            bridge_error.message
-        };
-
-        return match bridge_error.code.as_str() {
-            ERROR_CODE_INVALID_INPUT | ERROR_CODE_REGISTRY_INIT => {
-                Err(Error::configuration(full_message))
-            }
-            ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE | ERROR_CODE_DEPENDENCY_RES => {
-                Err(Error::cue_parse(dir_path, full_message))
-            }
-            ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => {
-                Err(Error::ffi("cue_eval_package", full_message))
-            }
-            _ => Err(Error::cue_parse(
-                dir_path,
-                format!("Unknown error: {full_message}"),
-            )),
-        };
-    }
-
-    // Handle success response
-    let json_data = if let Some(raw_json) = envelope.ok {
-        raw_json.get()
-    } else {
-        tracing::error!("Bridge envelope has neither 'ok' nor 'error' field");
-        return Err(Error::ffi(
-            "cue_eval_package",
-            "Invalid bridge response: missing both 'ok' and 'error' fields".to_string(),
-        ));
-    };
-
-    let total_duration = start_time.elapsed();
-    tracing::info!(
-        total_duration_ms = total_duration.as_millis(),
-        ffi_duration_ms = ffi_duration.as_millis(),
-        result_size_bytes = json_data.len(),
-        "CUE package evaluation completed successfully"
-    );
-
-    Ok(json_data.to_string())
+    Ok(instance.to_string())
 }
 
 /// Evaluates a CUE package and returns the result as a typed struct

@@ -2,7 +2,7 @@
 
 #![allow(clippy::print_stdout)]
 
-use cuengine::CueEvaluator;
+use cuengine::evaluate_cue_package;
 use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::manifest::Project;
 use std::path::Path;
@@ -21,8 +21,7 @@ fn test_parse_task_basic_example() {
     }
 
     // Evaluate the actual example CUE file
-    let evaluator = CueEvaluator::builder().build().unwrap();
-    let json = evaluator.evaluate(&example_path, "_examples").unwrap();
+    let json = evaluate_cue_package(&example_path, "_examples").unwrap();
 
     println!("Raw JSON from CUE evaluation:");
     println!("{json}");
@@ -101,8 +100,7 @@ tasks: {
     fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Evaluate the CUE file
-    let evaluator = CueEvaluator::builder().build().unwrap();
-    let json = evaluator.evaluate(temp_dir.path(), "test").unwrap();
+    let json = evaluate_cue_package(temp_dir.path(), "test").unwrap();
 
     // Parse as typed Project
     let manifest: Project = serde_json::from_str(&json).unwrap();

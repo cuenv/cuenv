@@ -34,62 +34,43 @@ Handles serialization/deserialization between Rust and Go data structures.
 
 ## API Reference
 
-### CueEvaluator
+### Module Evaluation (Recommended)
 
-`CueEvaluator` is the high-level interface for evaluating CUE packages. Build it via the fluent builder and call `evaluate` or `evaluate_typed`:
+`evaluate_module` is the primary API for evaluating CUE modules. It evaluates an entire module at once, returning all instances for efficient cross-project operations:
 
 ```rust
-use cuengine::CueEvaluator;
-use serde::Deserialize;
+use cuengine::evaluate_module;
+use cuenv_core::ModuleEvaluation;
+use cuenv_core::manifest::Project;
 use std::path::Path;
 
-#[derive(Deserialize)]
-struct AppConfig {
-    name: String,
-    port: u16,
+// Evaluate the entire module
+let raw = evaluate_module(Path::new("./my-module"), "cuenv", None)?;
+
+// Parse into ModuleEvaluation for structured access
+let module = ModuleEvaluation::from_raw(
+    Path::new("./my-module").to_path_buf(),
+    raw.instances,
+    raw.projects,
+);
+
+// Access a specific project
+let instance = module.get(Path::new("my-project"))?;
+let project: Project = instance.deserialize()?;
+
+// Iterate all projects
+for instance in module.projects() {
+    println!("Project at: {}", instance.path.display());
 }
-
-let evaluator = CueEvaluator::builder()
-    .max_output_size(10 * 1024 * 1024)
-    .no_retry()
-    .build()?;
-
-// Evaluate and get raw JSON
-let json = evaluator.evaluate(Path::new("./project"), "config")?;
-
-// Or evaluate and deserialize to a typed struct
-let config: AppConfig = evaluator.evaluate_typed(Path::new("./project"), "config")?;
 ```
 
-**Common methods**
+### Free Functions
 
-| Method                                                | Description                                                       |
-| ----------------------------------------------------- | ----------------------------------------------------------------- |
-| `builder()`                                           | Returns a `CueEvaluatorBuilder` with sane defaults                |
-| `evaluate(&self, dir: &Path, package: &str)`          | Returns the raw JSON string emitted by the Go bridge              |
-| `evaluate_typed<T>(&self, dir: &Path, package: &str)` | Deserializes the JSON into any `serde::de::DeserializeOwned` type |
-| `clear_cache()`                                       | Flushes the in-memory evaluation cache                            |
+For simpler single-directory evaluation:
 
-**Builder options**
-
-| Method                         | Description                                                 |
-| ------------------------------ | ----------------------------------------------------------- |
-| `max_path_length(len)`         | Clamp accepted directory path length                        |
-| `max_package_name_length(len)` | Restrict package name length                                |
-| `max_output_size(bytes)`       | Reject bridge responses larger than `bytes`                 |
-| `retry_config(RetryConfig)`    | Customize retry/backoff behavior                            |
-| `no_retry()`                   | Disable retries                                             |
-| `cache_capacity(entries)`      | Number of cached evaluations to keep (`0` disables caching) |
-| `cache_ttl(duration)`          | Expiration for cached evaluations                           |
-| `build()`                      | Produce a `CueEvaluator`                                    |
-
-### Free functions
-
-The crate also exposes thin wrappers when you do not need a reusable evaluator:
-
-- `evaluate_cue_package(path, package)` → `Result<String>`
-- `evaluate_cue_package_typed::<T>(path, package)` → `Result<T>`
-- `get_bridge_version()` → `Result<String>`
+- `evaluate_cue_package(path, package)` → `Result<String>` - Returns raw JSON
+- `evaluate_cue_package_typed::<T>(path, package)` → `Result<T>` - Deserializes to type
+- `get_bridge_version()` → `Result<String>` - Bridge diagnostics
 
 ### Limits
 
@@ -186,12 +167,11 @@ The CUE Engine is optimized for:
 ### Basic Usage
 
 ```rust
-use cuengine::CueEvaluator;
+use cuengine::evaluate_cue_package;
 use std::path::Path;
 
 fn main() -> cuengine::Result<()> {
-    let evaluator = CueEvaluator::builder().build()?;
-    let json = evaluator.evaluate(Path::new("./config"), "app")?;
+    let json = evaluate_cue_package(Path::new("./config"), "cuenv")?;
     println!("Config JSON: {json}");
     Ok(())
 }
@@ -200,7 +180,7 @@ fn main() -> cuengine::Result<()> {
 ### Configuration Validation
 
 ```rust
-use cuengine::{CueEvaluator, CueEngineError, Result};
+use cuengine::{evaluate_cue_package_typed, CueEngineError, Result};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -211,8 +191,7 @@ struct AppConfig {
 }
 
 fn validate_app_config(dir: &Path) -> Result<()> {
-    let evaluator = CueEvaluator::builder().build()?;
-    let config: AppConfig = evaluator.evaluate_typed(dir, "app")?;
+    let config: AppConfig = evaluate_cue_package_typed(dir, "cuenv")?;
 
     if config.env.is_none() {
         return Err(CueEngineError::configuration("env block is required"));
@@ -222,31 +201,30 @@ fn validate_app_config(dir: &Path) -> Result<()> {
 }
 ```
 
-### Batch Processing
+### Module-Wide Processing
 
 ```rust
-use cuengine::CueEvaluator;
-use cuengine::Result;
+use cuengine::evaluate_module;
+use cuenv_core::ModuleEvaluation;
+use cuenv_core::manifest::Project;
 use std::path::Path;
 
-fn process_config_directory(path: &Path) -> Result<Vec<String>> {
-    let evaluator = CueEvaluator::builder().no_retry().build()?;
-    let mut results = Vec::new();
+fn process_all_projects(module_root: &Path) -> cuengine::Result<Vec<Project>> {
+    let raw = evaluate_module(module_root, "cuenv", None)?;
+    let module = ModuleEvaluation::from_raw(
+        module_root.to_path_buf(),
+        raw.instances,
+        raw.projects,
+    );
 
-    for entry in std::fs::read_dir(path).map_err(|e| {
-        cuengine::CueEngineError::configuration(format!("Failed to read directory: {e}"))
-    })? {
-        let entry = entry.map_err(|e| {
-            cuengine::CueEngineError::configuration(format!("Failed to read entry: {e}"))
-        })?;
-        if entry.path().extension().is_some_and(|ext| ext == "cue") {
-            if let Some(dir) = entry.path().parent() {
-                results.push(evaluator.evaluate(dir, "config")?);
-            }
+    let mut projects = Vec::new();
+    for instance in module.projects() {
+        if let Ok(project) = instance.deserialize::<Project>() {
+            projects.push(project);
         }
     }
 
-    Ok(results)
+    Ok(projects)
 }
 ```
 
@@ -275,7 +253,7 @@ RUST_LOG=debug cargo test -p cuengine -- --nocapture
 Ensure the Go bridge library is properly built and accessible.
 
 **Memory Leaks**
-Ensure every `CueEvaluator` (and any cached evaluation result) is dropped when no longer needed.
+The FFI bridge uses RAII wrappers (`CStringPtr`) to automatically free Go-allocated memory when results go out of scope. Ensure evaluation results are not held longer than necessary.
 
 **Evaluation Timeouts**
 Increase timeout settings for complex CUE expressions.

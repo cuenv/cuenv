@@ -5,6 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    // Skip entire build script on docs.rs - no Go toolchain available
+    if env::var("DOCS_RS").is_ok() {
+        println!("cargo:warning=Skipping Go FFI build for docs.rs");
+        return;
+    }
+
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=bridge.go");
     println!("cargo:rerun-if-changed=bridge.h");

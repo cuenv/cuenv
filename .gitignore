@@ -7,9 +7,9 @@
 .cuenv
 .test
 *.vsix
+bdd_test_runs
 crates/cuengine/vendor
 dist
 node_modules
 result
 target
-cue

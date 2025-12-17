@@ -41,20 +41,17 @@ The CUE evaluation engine providing a safe Rust interface to the Go-based CUE ev
 
 **Notable features:**
 
-- `CueEvaluator` - Main evaluator type with builder pattern configuration
+- `evaluate_module()` - Module-wide CUE evaluation for efficient cross-project operations
+- `evaluate_cue_package()` - Single-directory evaluation
 - `CStringPtr` - RAII wrapper for C strings returned from FFI
 - Response envelope parsing with structured error handling
-- LRU cache for evaluation results
 
 ```rust
-use cuengine::CueEvaluatorBuilder;
+use cuengine::evaluate_module;
+use std::path::Path;
 
-let evaluator = CueEvaluatorBuilder::new()
-    .directory("./project")
-    .package("cuenv")
-    .build()?;
-
-let result = evaluator.evaluate()?;
+let raw = evaluate_module(Path::new("./project"), "cuenv", None)?;
+// Access raw.instances and raw.projects
 ```
 
 ### cuenv-core

@@ -4,6 +4,22 @@
 //! handles completion requests - all logic in Rust, no shell scripts needed.
 
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
+use cuengine::ModuleEvalOptions;
+use cuenv_core::ModuleEvaluation;
+use std::path::{Path, PathBuf};
+
+/// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
+fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
+    let mut current = start.canonicalize().ok()?;
+    loop {
+        if current.join("cue.mod").is_dir() {
+            return Some(current);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
 
 /// Complete task names by querying the CUE configuration in the current directory
 fn complete_tasks() -> Vec<CompletionCandidate> {
@@ -24,14 +40,49 @@ fn complete_tasks() -> Vec<CompletionCandidate> {
 
 /// Get available tasks from a CUE configuration
 fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>)> {
-    // Use the CUE evaluator to get actual task definitions
-    let Ok(evaluator) = cuengine::CueEvaluator::builder().build() else {
+    let dir_path = Path::new(path);
+
+    // Find the module root
+    let Some(module_root) = find_cue_module_root(dir_path) else {
         return Vec::new();
     };
 
-    let dir_path = std::path::Path::new(path);
-    let Ok(manifest) = evaluator.evaluate_typed::<cuenv_core::manifest::Project>(dir_path, package)
-    else {
+    // Use module-wide evaluation
+    let options = ModuleEvalOptions {
+        recursive: true,
+        ..Default::default()
+    };
+    let Ok(raw_result) = cuengine::evaluate_module(&module_root, package, Some(options)) else {
+        return Vec::new();
+    };
+
+    let module = ModuleEvaluation::from_raw(
+        module_root.clone(),
+        raw_result.instances,
+        raw_result.projects,
+    );
+
+    // Calculate relative path from module root to target
+    let target_path = match dir_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let relative_path = target_path
+        .strip_prefix(&module_root)
+        .map(|p| {
+            if p.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                p.to_path_buf()
+            }
+        })
+        .unwrap_or_else(|_| PathBuf::from("."));
+
+    let Some(instance) = module.get(&relative_path) else {
+        return Vec::new();
+    };
+
+    let Ok(manifest) = instance.deserialize::<cuenv_core::manifest::Project>() else {
         return Vec::new();
     };
 
@@ -81,10 +132,39 @@ fn get_task_params(
     package: &str,
     task_name: &str,
 ) -> Option<Vec<(String, Option<String>)>> {
-    let evaluator = cuengine::CueEvaluator::builder().build().ok()?;
-    let dir_path = std::path::Path::new(path);
-    let manifest: cuenv_core::manifest::Project =
-        evaluator.evaluate_typed(dir_path, package).ok()?;
+    let dir_path = Path::new(path);
+
+    // Find the module root
+    let module_root = find_cue_module_root(dir_path)?;
+
+    // Use module-wide evaluation
+    let options = ModuleEvalOptions {
+        recursive: true,
+        ..Default::default()
+    };
+    let raw_result = cuengine::evaluate_module(&module_root, package, Some(options)).ok()?;
+
+    let module = ModuleEvaluation::from_raw(
+        module_root.clone(),
+        raw_result.instances,
+        raw_result.projects,
+    );
+
+    // Calculate relative path
+    let target_path = dir_path.canonicalize().ok()?;
+    let relative_path = target_path
+        .strip_prefix(&module_root)
+        .map(|p| {
+            if p.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                p.to_path_buf()
+            }
+        })
+        .unwrap_or_else(|_| PathBuf::from("."));
+
+    let instance = module.get(&relative_path)?;
+    let manifest: cuenv_core::manifest::Project = instance.deserialize().ok()?;
     let manifest = manifest.with_implicit_tasks();
 
     let task_index = cuenv_core::tasks::TaskIndex::build(&manifest.tasks).ok()?;

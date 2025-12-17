@@ -3,9 +3,12 @@
 //! This module provides types for representing the result of evaluating
 //! an entire CUE module at once, enabling analysis across all instances.
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use crate::Error;
 
 /// Result of evaluating an entire CUE module
 ///
@@ -133,12 +136,11 @@ impl ModuleEvaluation {
 
         // Check each ancestor
         for ancestor_path in self.ancestors(child_path) {
-            if let Some(ancestor) = self.instances.get(&ancestor_path) {
-                if let Some(ancestor_value) = ancestor.value.get(field) {
-                    if child_value == ancestor_value {
-                        return true;
-                    }
-                }
+            if let Some(ancestor) = self.instances.get(&ancestor_path)
+                && let Some(ancestor_value) = ancestor.value.get(field)
+                && child_value == ancestor_value
+            {
+                return true;
             }
         }
 
@@ -160,6 +162,28 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// Deserialize this instance's value into a typed struct
+    ///
+    /// This enables commands to extract strongly-typed configuration
+    /// from the evaluated CUE without re-evaluating.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let instance = module.get(path)?;
+    /// let project: Project = instance.deserialize()?;
+    /// ```
+    pub fn deserialize<T: DeserializeOwned>(&self) -> crate::Result<T> {
+        serde_json::from_value(self.value.clone()).map_err(|e| {
+            Error::configuration(format!(
+                "Failed to deserialize {} as {}: {}",
+                self.path.display(),
+                std::any::type_name::<T>(),
+                e
+            ))
+        })
+    }
+
     /// Get the project name if this is a Project instance
     pub fn project_name(&self) -> Option<&str> {
         if matches!(self.kind, InstanceKind::Project) {
@@ -236,10 +260,7 @@ mod tests {
         );
 
         // Specify which paths are projects (simulating CUE schema verification)
-        let project_paths = vec![
-            "projects/api".to_string(),
-            "projects/web".to_string(),
-        ];
+        let project_paths = vec!["projects/api".to_string(), "projects/web".to_string()];
 
         ModuleEvaluation::from_raw(PathBuf::from("/test/repo"), raw, project_paths)
     }
@@ -290,5 +311,58 @@ mod tests {
     fn test_instance_kind_display() {
         assert_eq!(InstanceKind::Base.to_string(), "Base");
         assert_eq!(InstanceKind::Project.to_string(), "Project");
+    }
+
+    #[test]
+    fn test_instance_deserialize() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct TestConfig {
+            name: String,
+            env: std::collections::HashMap<String, String>,
+        }
+
+        let instance = Instance {
+            path: PathBuf::from("test/path"),
+            kind: InstanceKind::Project,
+            value: json!({
+                "name": "my-project",
+                "env": { "FOO": "bar" }
+            }),
+        };
+
+        let config: TestConfig = instance.deserialize().unwrap();
+        assert_eq!(config.name, "my-project");
+        assert_eq!(config.env.get("FOO"), Some(&"bar".to_string()));
+    }
+
+    #[test]
+    fn test_instance_deserialize_error() {
+        #[derive(Debug, Deserialize)]
+        #[allow(dead_code)]
+        struct RequiredFields {
+            required_field: String,
+        }
+
+        let instance = Instance {
+            path: PathBuf::from("test/path"),
+            kind: InstanceKind::Base,
+            value: json!({}), // Missing required field
+        };
+
+        let result: crate::Result<RequiredFields> = instance.deserialize();
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("test/path"),
+            "Error should mention path: {}",
+            msg
+        );
+        assert!(
+            msg.contains("RequiredFields"),
+            "Error should mention target type: {}",
+            msg
+        );
     }
 }

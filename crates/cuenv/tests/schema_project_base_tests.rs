@@ -7,6 +7,14 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
+/// Create a test directory with non-hidden prefix for CUE loader compatibility.
+fn create_test_dir() -> TempDir {
+    tempfile::Builder::new()
+        .prefix("cuenv_test_")
+        .tempdir()
+        .expect("Failed to create temp directory")
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -46,7 +54,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 
 #[test]
 fn project_name_is_required_by_schema() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_dir();
     let root = tmp.path();
     write_local_cuenv_module(root);
 
@@ -69,7 +77,7 @@ schema.#Project & {
 
 #[test]
 fn project_name_cannot_be_empty() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_dir();
     let root = tmp.path();
     write_local_cuenv_module(root);
 
@@ -92,7 +100,7 @@ schema.#Project & {
 
 #[test]
 fn base_can_be_composed_standalone() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_dir();
     let root = tmp.path();
     write_local_cuenv_module(root);
 
@@ -117,7 +125,7 @@ schema.#Base & {
 
 #[test]
 fn task_command_with_base_schema_shows_helpful_error() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_dir();
     let root = tmp.path();
     write_local_cuenv_module(root);
 

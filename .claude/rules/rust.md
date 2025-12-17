@@ -6,7 +6,6 @@ paths: "**/*.rs"
 
 These standards apply to all `.rs` files. They prioritize **safety**, **expressiveness**, and **maintainability**.
 
-
 ## I. Trait-Driven Design
 
 > "Structs are nouns, Traits are verbs."

@@ -4,6 +4,36 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
+/// Create a test directory with non-hidden name (CUE ignores hidden directories)
+/// and initialize it with a `.git` directory.
+fn create_test_root() -> TempDir {
+    let tmp = tempfile::Builder::new()
+        .prefix("cuenv_test_")
+        .tempdir()
+        .expect("Failed to create temp directory");
+    let root = tmp.path();
+    // Create fake git root
+    fs::create_dir_all(root.join(".git")).unwrap();
+    tmp
+}
+
+/// Initialize a directory as a CUE module with proper structure
+fn init_cue_module(dir: &Path, module_name: &str) {
+    fs::create_dir_all(dir.join("cue.mod")).unwrap();
+    // CUE module paths must be lowercase
+    let lowercase_name = module_name.to_lowercase();
+    fs::write(
+        dir.join("cue.mod/module.cue"),
+        format!(
+            r#"module: "test.example/{}"
+language: version: "v0.9.0"
+"#,
+            lowercase_name
+        ),
+    )
+    .unwrap();
+}
+
 fn run_cuenv(args: &[&str]) -> (String, String, bool) {
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
     let output = Command::new(cuenv_bin)
@@ -21,6 +51,8 @@ fn run_cuenv(args: &[&str]) -> (String, String, bool) {
 fn write_proj_b(dir: &Path, version: &str) {
     let projb = dir.join("projB");
     fs::create_dir_all(projb.join("src")).unwrap();
+    // Initialize projB as its own CUE module
+    init_cue_module(&projb, "projB");
     // package detection relies on first package line
     let cue_b = r#"package projB
 
@@ -44,6 +76,8 @@ tasks: {
 fn write_proj_a(dir: &Path, mapping_from: &str, mapping_to: &str, external_project: &str) {
     let proja = dir.join("projA");
     fs::create_dir_all(&proja).unwrap();
+    // Initialize projA as its own CUE module
+    init_cue_module(&proja, "projA");
     let cue_a = format!(
         r#"package projA
 
@@ -70,10 +104,8 @@ tasks: {{
 
 #[test]
 fn test_external_auto_run_and_materialization() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_root();
     let root = tmp.path();
-    // Create fake git root
-    fs::create_dir_all(root.join(".git")).unwrap();
 
     write_proj_b(root, "v1-auto");
     write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB");
@@ -97,9 +129,8 @@ fn test_external_auto_run_and_materialization() {
 
 #[test]
 fn test_cache_hits_and_invalidation() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_root();
     let root = tmp.path();
-    fs::create_dir_all(root.join(".git")).unwrap();
 
     write_proj_b(root, "v1-cache");
     write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB");
@@ -146,9 +177,8 @@ fn test_cache_hits_and_invalidation() {
 #[test]
 #[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
 fn test_mapping_error_undeclared_output() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_root();
     let root = tmp.path();
-    fs::create_dir_all(root.join(".git")).unwrap();
 
     write_proj_b(root, "v1-map");
     write_proj_a(root, "dist/missing.txt", "vendor/app.txt", "../projB");
@@ -168,9 +198,8 @@ fn test_mapping_error_undeclared_output() {
 #[test]
 #[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
 fn test_path_safety_outside_git_root() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_root();
     let root = tmp.path();
-    fs::create_dir_all(root.join(".git")).unwrap();
 
     // Create projA only
     write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../../outside");
@@ -193,9 +222,8 @@ fn test_path_safety_outside_git_root() {
 #[test]
 #[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
 fn test_collision_duplicate_dest() {
-    let tmp = TempDir::new().unwrap();
+    let tmp = create_test_root();
     let root = tmp.path();
-    fs::create_dir_all(root.join(".git")).unwrap();
 
     // Write projB
     write_proj_b(root, "v1-coll");
@@ -203,6 +231,7 @@ fn test_collision_duplicate_dest() {
     // Write projA with two mappings to same 'to'
     let proja = root.join("projA");
     fs::create_dir_all(&proja).unwrap();
+    init_cue_module(&proja, "projA");
     let cue_a = r#"package projA
 
 name: "projA"

@@ -842,6 +842,45 @@ pub enum ReleaseCommands {
 }
 
 impl Commands {
+    /// Extract the package name from the command.
+    ///
+    /// This allows accessing the package before consuming the command via `into_command()`.
+    /// Used by the CommandExecutor to cache module evaluation with the correct package.
+    /// Commands without CUE evaluation needs return "cuenv" as a reasonable default.
+    #[must_use]
+    pub fn package(&self) -> &str {
+        match self {
+            // Commands with explicit --package parameter
+            Commands::Info { package, .. }
+            | Commands::Task { package, .. }
+            | Commands::Exec { package, .. }
+            | Commands::Sync { package, .. }
+            | Commands::Allow { package, .. }
+            | Commands::Deny { package, .. }
+            | Commands::Export { package, .. } => package,
+
+            // Nested env subcommands with --package
+            Commands::Env { subcommand } => match subcommand {
+                EnvCommands::Print { package, .. }
+                | EnvCommands::Load { package, .. }
+                | EnvCommands::Status { package, .. }
+                | EnvCommands::Inspect { package, .. }
+                | EnvCommands::Check { package, .. }
+                | EnvCommands::List { package, .. } => package,
+            },
+
+            // Commands that don't use CUE evaluation or have no package param
+            Commands::Version { .. }
+            | Commands::Completions { .. }
+            | Commands::Shell { .. }
+            | Commands::Ci { .. }
+            | Commands::Tui
+            | Commands::Web { .. }
+            | Commands::Changeset { .. }
+            | Commands::Release { .. } => "cuenv",
+        }
+    }
+
     /// Convert CLI commands to internal Command representation
     /// The environment parameter comes from the global CLI flag
     #[allow(clippy::too_many_lines)]
@@ -851,7 +890,15 @@ impl Commands {
             Commands::Version { output_format } => Command::Version {
                 format: output_format.to_string(),
             },
-            Commands::Info { path, package, meta } => Command::Info { path, package, meta },
+            Commands::Info {
+                path,
+                package,
+                meta,
+            } => Command::Info {
+                path,
+                package,
+                meta,
+            },
             Commands::Env { subcommand } => match subcommand {
                 EnvCommands::Print {
                     path,
