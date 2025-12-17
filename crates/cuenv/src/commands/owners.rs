@@ -277,9 +277,11 @@ fn load_owners_config(
         ))
     })?;
 
-    // Evaluate the entire module (recursively to include all subdirectories)
+    // Use non-recursive evaluation since owners only need the current project's config,
+    // not cross-project references.
     let options = ModuleEvalOptions {
-        recursive: true,
+        recursive: false,
+        target_dir: Some(target_path.to_string_lossy().to_string()),
         ..Default::default()
     };
     let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))

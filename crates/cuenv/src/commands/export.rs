@@ -81,8 +81,11 @@ fn evaluate_project(
         ))
     })?;
 
+    // Use non-recursive evaluation since export only needs the current project's config,
+    // not cross-project references. This is called on every shell prompt so speed matters.
     let options = ModuleEvalOptions {
-        recursive: true,
+        recursive: false,
+        target_dir: Some(target_path.to_string_lossy().to_string()),
         ..Default::default()
     };
     let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))

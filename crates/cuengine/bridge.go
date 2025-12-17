@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"cuelang.org/go/cue"
@@ -667,6 +668,16 @@ type ModuleEvalOptions struct {
 	WithMeta    bool    `json:"withMeta"`    // Extract source positions into separate Meta map
 	Recursive   bool    `json:"recursive"`   // true: cue eval ./..., false: cue eval .
 	PackageName *string `json:"packageName"` // Filter to specific package, nil = all packages
+	TargetDir   *string `json:"targetDir"`   // Directory to evaluate (for non-recursive), nil = module root
+}
+
+// instanceResult holds the result of evaluating a single CUE instance (used for parallel evaluation)
+type instanceResult struct {
+	relPath   string
+	jsonBytes []byte
+	isProject bool
+	meta      map[string]ValueMeta
+	err       error
 }
 
 //export cue_eval_module
@@ -717,8 +728,8 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		return result
 	}
 
-	// Create CUE context
-	ctx := cuecontext.New()
+	// NOTE: We don't create a global CUE context here because each goroutine
+	// creates its own context for thread safety during parallel evaluation.
 
 	// Initialize registry
 	registry, err := modconfig.NewRegistry(&modconfig.Config{
@@ -735,8 +746,16 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// Configure load pattern based on recursive option
 	// recursive: true  -> cue eval ./...
 	// recursive: false -> cue eval .
+	//
+	// For non-recursive evaluation, TargetDir specifies which directory to evaluate.
+	// This allows evaluating a subdirectory while still using the module root for imports.
+	evalDir := goModuleRoot
+	if options.TargetDir != nil && *options.TargetDir != "" {
+		evalDir = *options.TargetDir
+	}
+
 	cfg := &load.Config{
-		Dir:        goModuleRoot,
+		Dir:        evalDir,
 		ModuleRoot: goModuleRoot,
 		Registry:   registry,
 	}
@@ -766,65 +785,117 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// and validated during BuildInstance. We detect Projects by checking for the required
 	// "name" field (Projects have name!, Bases don't) instead of expensive schema unification.
 
-	// Evaluate instances and collect results
+	// Pre-filter valid instances (cheap filtering before parallelization)
+	var validInstances []*build.Instance
+	for _, inst := range loadedInstances {
+		if inst.Err != nil {
+			continue
+		}
+		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
+			continue
+		}
+		validInstances = append(validInstances, inst)
+	}
+
+	// Prepare result containers
 	instances := make(map[string]json.RawMessage)
 	projects := []string{} // Use empty slice, not nil, so JSON serializes as [] instead of null
 	allMeta := make(map[string]ValueMeta)
 
-	for _, inst := range loadedInstances {
-		if inst.Err != nil {
-			// Skip instances with load errors
-			continue
-		}
+	// Parallel evaluation with worker pool
+	results := make(chan instanceResult, len(validInstances))
+	var wg sync.WaitGroup
 
-		// Filter by package name if specified (post-processing filter)
-		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
-			continue
-		}
+	// Limit concurrency to avoid memory pressure
+	semaphore := make(chan struct{}, runtime.NumCPU())
 
-		// Calculate relative path from module root
-		relPath, err := filepath.Rel(goModuleRoot, inst.Dir)
-		if err != nil {
-			relPath = inst.Dir
-		}
-		if relPath == "" {
-			relPath = "."
-		}
+	// Capture variables for goroutines
+	moduleRoot := goModuleRoot
+	withMeta := options.WithMeta
 
-		// Build the CUE value
-		v := ctx.BuildInstance(inst)
-		if v.Err() != nil {
-			// Skip instances with build errors
-			continue
-		}
+	for _, inst := range validInstances {
+		wg.Add(1)
+		go func(inst *build.Instance) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // Acquire
+			defer func() { <-semaphore }() // Release
 
-		// Check if this is a Project (has required "name" field) vs Base (no name)
-		// This is much faster than schema unification since the schema validation
-		// already happened during BuildInstance via the CUE import.
-		nameField := v.LookupPath(cue.ParsePath("name"))
-		if nameField.Exists() && nameField.Err() == nil {
-			projects = append(projects, relPath)
-		}
+			// Each goroutine gets its own CUE context for thread safety
+			localCtx := cuecontext.New()
 
-		// Build clean JSON (without inline _meta)
-		jsonBytes, err := buildJSONClean(v)
-		if err != nil {
-			continue
-		}
-
-		instances[relPath] = json.RawMessage(jsonBytes)
-
-		// Extract meta separately if requested
-		if options.WithMeta {
-			instMeta := extractFieldMetaSeparate(inst, goModuleRoot, relPath)
-			for key, meta := range instMeta {
-				allMeta[key] = meta
+			// Calculate relative path from module root
+			relPath, err := filepath.Rel(moduleRoot, inst.Dir)
+			if err != nil {
+				relPath = inst.Dir
 			}
+			if relPath == "" {
+				relPath = "."
+			}
+
+			// Build the CUE value
+			v := localCtx.BuildInstance(inst)
+			if v.Err() != nil {
+				results <- instanceResult{
+					relPath: relPath,
+					err:     fmt.Errorf("build error at %s: %w", relPath, v.Err()),
+				}
+				return
+			}
+
+			// Check if this is a Project (has required "name" field) vs Base (no name)
+			isProject := false
+			nameField := v.LookupPath(cue.ParsePath("name"))
+			if nameField.Exists() && nameField.Err() == nil {
+				isProject = true
+			}
+
+			// Build clean JSON (without inline _meta)
+			jsonBytes, err := buildJSONClean(v)
+			if err != nil {
+				results <- instanceResult{err: err}
+				return
+			}
+
+			// Extract meta separately if requested
+			var meta map[string]ValueMeta
+			if withMeta {
+				meta = extractFieldMetaSeparate(inst, moduleRoot, relPath)
+			}
+
+			results <- instanceResult{
+				relPath:   relPath,
+				jsonBytes: jsonBytes,
+				isProject: isProject,
+				meta:      meta,
+			}
+		}(inst)
+	}
+
+	// Close results channel when all goroutines complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results (order doesn't matter for maps)
+	var buildErrors []string
+	for r := range results {
+		if r.err != nil {
+			buildErrors = append(buildErrors, r.err.Error())
+			continue // Skip failed instances
+		}
+		instances[r.relPath] = json.RawMessage(r.jsonBytes)
+		if r.isProject {
+			projects = append(projects, r.relPath)
+		}
+		for k, v := range r.meta {
+			allMeta[k] = v
 		}
 	}
 
 	if len(instances) == 0 {
-		hint := "All CUE instances had errors during evaluation"
+		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, loadedInstances=%d, validInstances=%d, errors=%v",
+			evalDir, goModuleRoot, loadPattern, len(loadedInstances), len(validInstances), buildErrors)
 		result = createErrorResponse(ErrorCodeBuildValue, "No instances could be evaluated", &hint)
 		return result
 	}
