@@ -9,6 +9,8 @@ schema.#Project
 
 name: "cuenv"
 
+hooks: onEnter: nix: schema.#NixFlake
+
 owners: rules: default: {
 	pattern: "**"
 	owners: ["@rawkode"]
@@ -47,12 +49,6 @@ ci: pipelines: [
 		tasks: ["release.generate-pr"]
 	},
 ]
-
-hooks: {
-	onEnter: {
-		nix: schema.#NixFlake
-	}
-}
 
 tasks: {
 	// Common inputs for Rust/Cargo tasks

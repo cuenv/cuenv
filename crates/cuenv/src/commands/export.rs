@@ -293,7 +293,7 @@ fn extract_hooks_with_resolved_dirs(
 }
 
 /// Extract static environment variables from CUE config
-fn extract_static_env_vars(config: &Project) -> HashMap<String, String> {
+pub fn extract_static_env_vars(config: &Project) -> HashMap<String, String> {
     let mut env_vars = HashMap::new();
 
     if let Some(env) = &config.env {
