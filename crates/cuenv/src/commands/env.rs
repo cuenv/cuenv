@@ -37,7 +37,7 @@ fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor
     }
 
     // Legacy path: fresh evaluation
-    tracing::debug!("Using fresh module evaluation (no executor)");
+    tracing::debug!("Using fresh single-instance evaluation (no executor)");
 
     // Find the CUE module root
     let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
@@ -47,9 +47,11 @@ fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor
         ))
     })?;
 
-    // Evaluate the entire module (recursively to include all subdirectories)
+    // Evaluate only the target directory (non-recursive) since env commands
+    // only need the current project's configuration, not cross-project references
     let options = ModuleEvalOptions {
-        recursive: true,
+        recursive: false,
+        target_dir: Some(target_path.to_string_lossy().to_string()),
         ..Default::default()
     };
     let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
