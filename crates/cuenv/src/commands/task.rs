@@ -391,7 +391,8 @@ pub async fn execute_task(
 
     // Get environment with hook-generated vars merged in
     let directory = project_root.clone();
-    let base_env_vars = get_environment_with_hooks(&directory, &manifest, package, executor).await?;
+    let base_env_vars =
+        get_environment_with_hooks(&directory, &manifest, package, executor).await?;
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut runtime_env = Environment::new();

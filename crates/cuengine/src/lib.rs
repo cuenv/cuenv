@@ -201,6 +201,10 @@ pub struct ModuleEvalOptions {
     pub recursive: bool,
     /// Filter to specific package name, None = all packages
     pub package_name: Option<String>,
+    /// Directory to evaluate (for non-recursive), None = module root.
+    /// Use this to evaluate a specific subdirectory without loading the entire module.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_dir: Option<String>,
 }
 
 /// Source location metadata for a single field
@@ -516,6 +520,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         with_meta: false,
         recursive: false,
         package_name: None,
+        target_dir: None, // Use module root
     };
 
     let result = evaluate_module(dir_path, package_name, Some(options))?;
