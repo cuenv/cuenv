@@ -8,6 +8,8 @@ pub mod owners;
 pub mod release;
 pub mod sync;
 pub mod task;
+pub mod task_list;
+pub mod task_picker;
 pub mod version;
 
 /// Convert cuengine error to `cuenv_core` error
@@ -58,6 +60,7 @@ pub mod ci_cmd {
                 false,    // show_cache_path
                 None,     // backend
                 false,    // tui
+                false,    // interactive
                 false,    // help
                 false,    // all
                 &[],      // task_args
@@ -252,6 +255,7 @@ pub enum Command {
         show_cache_path: bool,
         backend: Option<String>,
         tui: bool,
+        interactive: bool,
         help: bool,
         all: bool,
         task_args: Vec<String>,
@@ -467,6 +471,7 @@ impl CommandExecutor {
                 show_cache_path,
                 backend,
                 tui,
+                interactive,
                 help,
                 all,
                 task_args,
@@ -482,6 +487,7 @@ impl CommandExecutor {
                     show_cache_path,
                     backend,
                     tui,
+                    interactive,
                     help,
                     all,
                     task_args,
@@ -776,6 +782,7 @@ impl CommandExecutor {
         show_cache_path: bool,
         backend: Option<String>,
         tui: bool,
+        interactive: bool,
         help: bool,
         all: bool,
         task_args: Vec<String>,
@@ -799,6 +806,7 @@ impl CommandExecutor {
             show_cache_path,
             backend.as_deref(),
             tui,
+            interactive,
             help,
             all,
             &task_args,

@@ -1247,11 +1247,11 @@ mod tests {
 
         // Test Version command conversion
         let cli_command = Commands::Version {
-            output_format: OutputFormat::Simple,
+            output_format: OutputFormat::Text,
         };
         let command: Command = cli_command.into_command(None);
         match command {
-            Command::Version { format } => assert_eq!(format, "simple"),
+            Command::Version { format } => assert_eq!(format, "text"),
             _ => panic!("Expected Command::Version"),
         }
     }
