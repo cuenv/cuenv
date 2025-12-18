@@ -69,6 +69,7 @@ sha2 = { workspace = true }
 walkdir = "2.5"
 dirs = { workspace = true }
 ctrlc = "3.4"
+similar = "2.6"
 
 [dev-dependencies]
 tempfile = { workspace = true }
