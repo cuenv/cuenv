@@ -124,15 +124,12 @@ pub async fn execute_exec(
     let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
 
     // Check approval status before running hooks
-    let config_value = serde_json::to_value(&manifest).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
-    })?;
-    let summary = ConfigSummary::from_json(&config_value);
+    let summary = ConfigSummary::from_project(&manifest);
 
     let hooks_approved = if summary.has_hooks {
         let mut approval_manager = ApprovalManager::with_default_file()?;
         approval_manager.load_approvals().await?;
-        let approval_status = check_approval_status(&approval_manager, &directory, &config_value)?;
+        let approval_status = check_approval_status(&approval_manager, &directory, &manifest)?;
         matches!(approval_status, ApprovalStatus::Approved)
     } else {
         true // No hooks = nothing to approve

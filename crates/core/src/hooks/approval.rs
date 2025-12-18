@@ -1,12 +1,13 @@
 //! Configuration approval management for secure hook execution
 
+use crate::hooks::types::Hook;
+use crate::manifest::{Hooks, Project};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use fs4::tokio::AsyncFileExt;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use tokio::fs;
 use tokio::fs::OpenOptions;
@@ -298,11 +299,40 @@ pub enum ApprovalStatus {
     NotApproved { current_hash: String },
 }
 
+#[derive(Debug, Serialize)]
+struct ApprovalHashInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hooks: Option<HooksForHash>,
+}
+
+#[derive(Debug, Serialize)]
+struct HooksForHash {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "onEnter")]
+    on_enter: Option<BTreeMap<String, Hook>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "onExit")]
+    on_exit: Option<BTreeMap<String, Hook>>,
+}
+
+impl HooksForHash {
+    fn from_hooks(hooks: &Hooks) -> Self {
+        Self {
+            on_enter: hooks.on_enter.as_ref().map(sorted_hooks_map),
+            on_exit: hooks.on_exit.as_ref().map(sorted_hooks_map),
+        }
+    }
+}
+
+fn sorted_hooks_map(map: &HashMap<String, Hook>) -> BTreeMap<String, Hook> {
+    map.iter()
+        .map(|(name, hook)| (name.clone(), hook.clone()))
+        .collect()
+}
+
 /// Check the approval status for a configuration
 pub fn check_approval_status(
     manager: &ApprovalManager,
     directory_path: &Path,
-    config: &Value,
+    config: &Project,
 ) -> Result<ApprovalStatus> {
     let current_hash = compute_approval_hash(config);
 
@@ -322,27 +352,17 @@ pub fn check_approval_status(
 /// Compute a hash for approval based only on security-sensitive hooks.
 /// Only onEnter and onExit hooks are included since they execute arbitrary commands.
 /// Changes to env vars, tasks, config settings do NOT require re-approval.
-pub fn compute_approval_hash(config: &Value) -> String {
+pub fn compute_approval_hash(config: &Project) -> String {
     let mut hasher = Sha256::new();
 
     // Extract only the hooks portion for hashing
-    let hooks_only = extract_hooks_for_hash(config);
+    let hooks_only = ApprovalHashInput {
+        hooks: config.hooks.as_ref().map(HooksForHash::from_hooks),
+    };
     let canonical = serde_json::to_string(&hooks_only).unwrap_or_default();
     hasher.update(canonical.as_bytes());
 
     format!("{:x}", hasher.finalize())[..16].to_string()
-}
-
-/// Extract only hooks (onEnter/onExit) from config for approval hashing
-fn extract_hooks_for_hash(config: &Value) -> Value {
-    if let Some(obj) = config.as_object()
-        && let Some(hooks) = obj.get("hooks")
-    {
-        // Return a normalized structure with only hooks
-        return serde_json::json!({ "hooks": hooks });
-    }
-    // No hooks = empty object (will hash to consistent value)
-    serde_json::json!({})
 }
 
 /// Compute a directory key for the approvals map
@@ -450,8 +470,8 @@ pub struct ConfigSummary {
 }
 
 impl ConfigSummary {
-    /// Create a summary from a JSON configuration
-    pub fn from_json(config: &Value) -> Self {
+    /// Create a summary from a Project configuration
+    pub fn from_project(config: &Project) -> Self {
         let mut summary = Self {
             has_hooks: false,
             hook_count: 0,
@@ -461,51 +481,23 @@ impl ConfigSummary {
             task_count: 0,
         };
 
-        if let Some(obj) = config.as_object() {
-            // Check for hooks
-            if let Some(hooks) = obj.get("hooks")
-                && let Some(hooks_obj) = hooks.as_object()
-            {
-                summary.has_hooks = true;
-
-                // Count onEnter hooks
-                if let Some(on_enter) = hooks_obj.get("onEnter") {
-                    if let Some(arr) = on_enter.as_array() {
-                        summary.hook_count += arr.len();
-                    } else if on_enter.is_object() {
-                        summary.hook_count += 1;
-                    }
-                }
-
-                // Count onExit hooks
-                if let Some(on_exit) = hooks_obj.get("onExit") {
-                    if let Some(arr) = on_exit.as_array() {
-                        summary.hook_count += arr.len();
-                    } else if on_exit.is_object() {
-                        summary.hook_count += 1;
-                    }
-                }
-            }
-
-            // Check for environment variables
-            if let Some(env) = obj.get("env")
-                && let Some(env_obj) = env.as_object()
-            {
-                summary.has_env_vars = true;
-                summary.env_var_count = env_obj.len();
-            }
-
-            // Check for tasks
-            if let Some(tasks) = obj.get("tasks") {
-                if let Some(tasks_obj) = tasks.as_object() {
-                    summary.has_tasks = true;
-                    summary.task_count = tasks_obj.len();
-                } else if let Some(tasks_arr) = tasks.as_array() {
-                    summary.has_tasks = true;
-                    summary.task_count = tasks_arr.len();
-                }
-            }
+        if let Some(hooks) = &config.hooks {
+            let on_enter_count = hooks.on_enter.as_ref().map_or(0, |map| map.len());
+            let on_exit_count = hooks.on_exit.as_ref().map_or(0, |map| map.len());
+            summary.hook_count = on_enter_count + on_exit_count;
+            summary.has_hooks = summary.hook_count > 0;
         }
+
+        if let Some(env) = &config.env {
+            summary.env_var_count = env.base.len();
+            if env.environment.is_some() {
+                summary.env_var_count += 1;
+            }
+            summary.has_env_vars = summary.env_var_count > 0;
+        }
+
+        summary.task_count = config.tasks.len();
+        summary.has_tasks = summary.task_count > 0;
 
         summary
     }
@@ -549,8 +541,36 @@ impl ConfigSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use crate::environment::{Env, EnvValue};
+    use crate::manifest::{Hooks, Project};
+    use crate::tasks::{Task, TaskDefinition};
+    use std::collections::HashMap;
     use tempfile::TempDir;
+
+    fn base_project() -> Project {
+        let mut project = Project::default();
+        project.name = "test".to_string();
+        project
+    }
+
+    fn make_hook(command: &str, args: &[&str]) -> Hook {
+        Hook {
+            order: 100,
+            propagate: false,
+            command: command.to_string(),
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+            dir: None,
+            inputs: vec![],
+            source: None,
+        }
+    }
+
+    fn make_task(command: &str) -> TaskDefinition {
+        TaskDefinition::Single(Box::new(Task {
+            command: command.to_string(),
+            ..Default::default()
+        }))
+    }
 
     #[tokio::test]
     async fn test_approval_manager_operations() {
@@ -594,24 +614,52 @@ mod tests {
     #[test]
     fn test_approval_hash_only_includes_hooks() {
         // Same hooks with different env vars should produce same hash
-        let config1 = json!({
-            "env": {"TEST": "value1"},
-            "hooks": {"onEnter": {"setup": {"command": "echo", "args": ["hello"]}}}
-        });
+        let mut hooks_map = HashMap::new();
+        hooks_map.insert("setup".to_string(), make_hook("echo", &["hello"]));
+        let hooks = Hooks {
+            on_enter: Some(hooks_map),
+            on_exit: None,
+        };
 
-        let config2 = json!({
-            "env": {"TEST": "value2", "NEW_VAR": "new"},
-            "hooks": {"onEnter": {"setup": {"command": "echo", "args": ["hello"]}}}
+        let mut config1 = base_project();
+        config1.env = Some(Env {
+            base: HashMap::from([(
+                "TEST".to_string(),
+                EnvValue::String("value1".to_string()),
+            )]),
+            environment: None,
         });
+        config1.hooks = Some(hooks.clone());
+
+        let mut config2 = base_project();
+        config2.env = Some(Env {
+            base: HashMap::from([
+                (
+                    "TEST".to_string(),
+                    EnvValue::String("value2".to_string()),
+                ),
+                (
+                    "NEW_VAR".to_string(),
+                    EnvValue::String("new".to_string()),
+                ),
+            ]),
+            environment: None,
+        });
+        config2.hooks = Some(hooks);
 
         let hash1 = compute_approval_hash(&config1);
         let hash2 = compute_approval_hash(&config2);
         assert_eq!(hash1, hash2, "Env changes should not affect approval hash");
 
         // Different hooks should produce different hash
-        let config3 = json!({
-            "env": {"TEST": "value1"},
-            "hooks": {"onEnter": {"setup": {"command": "echo", "args": ["world"]}}}
+        let mut hooks_map = HashMap::new();
+        hooks_map.insert("setup".to_string(), make_hook("echo", &["world"]));
+
+        let mut config3 = base_project();
+        config3.env = config1.env.clone();
+        config3.hooks = Some(Hooks {
+            on_enter: Some(hooks_map),
+            on_exit: None,
         });
 
         let hash3 = compute_approval_hash(&config3);
@@ -620,14 +668,22 @@ mod tests {
 
     #[test]
     fn test_approval_hash_ignores_tasks() {
-        let config1 = json!({
-            "tasks": {"build": {"command": "npm", "args": ["run", "build"]}},
-            "hooks": {"onEnter": {"setup": {"command": "echo"}}}
-        });
+        let mut hooks_map = HashMap::new();
+        hooks_map.insert("setup".to_string(), make_hook("echo", &[]));
 
-        let config2 = json!({
-            "tasks": {},
-            "hooks": {"onEnter": {"setup": {"command": "echo"}}}
+        let mut config1 = base_project();
+        config1.hooks = Some(Hooks {
+            on_enter: Some(hooks_map.clone()),
+            on_exit: None,
+        });
+        config1
+            .tasks
+            .insert("build".to_string(), make_task("npm"));
+
+        let mut config2 = base_project();
+        config2.hooks = Some(Hooks {
+            on_enter: Some(hooks_map),
+            on_exit: None,
         });
 
         let hash1 = compute_approval_hash(&config1);
@@ -638,14 +694,24 @@ mod tests {
     #[test]
     fn test_approval_hash_no_hooks() {
         // Configs without hooks should produce same consistent hash
-        let config1 = json!({
-            "env": {"TEST": "value"}
+        let mut config1 = base_project();
+        config1.env = Some(Env {
+            base: HashMap::from([(
+                "TEST".to_string(),
+                EnvValue::String("value".to_string()),
+            )]),
+            environment: None,
         });
 
-        let config2 = json!({
-            "env": {"OTHER": "different"},
-            "tasks": {"test": {}}
+        let mut config2 = base_project();
+        config2.env = Some(Env {
+            base: HashMap::from([(
+                "OTHER".to_string(),
+                EnvValue::String("different".to_string()),
+            )]),
+            environment: None,
         });
+        config2.tasks.insert("test".to_string(), make_task("echo"));
 
         let hash1 = compute_approval_hash(&config1);
         let hash2 = compute_approval_hash(&config2);
@@ -654,27 +720,38 @@ mod tests {
 
     #[test]
     fn test_config_summary() {
-        let config = json!({
-            "env": {
-                "NODE_ENV": "development",
-                "API_URL": "http://localhost:3000"
-            },
-            "hooks": {
-                "onEnter": [
-                    {"command": "npm", "args": ["install"]},
-                    {"command": "docker-compose", "args": ["up", "-d"]}
-                ],
-                "onExit": [
-                    {"command": "docker-compose", "args": ["down"]}
-                ]
-            },
-            "tasks": {
-                "build": {"command": "npm", "args": ["run", "build"]},
-                "test": {"command": "npm", "args": ["test"]}
-            }
-        });
+        let mut on_enter = HashMap::new();
+        on_enter.insert("npm".to_string(), make_hook("npm", &["install"]));
+        on_enter.insert(
+            "docker".to_string(),
+            make_hook("docker-compose", &["up", "-d"]),
+        );
 
-        let summary = ConfigSummary::from_json(&config);
+        let mut on_exit = HashMap::new();
+        on_exit.insert("docker".to_string(), make_hook("docker-compose", &["down"]));
+
+        let mut config = base_project();
+        config.env = Some(Env {
+            base: HashMap::from([
+                (
+                    "NODE_ENV".to_string(),
+                    EnvValue::String("development".to_string()),
+                ),
+                (
+                    "API_URL".to_string(),
+                    EnvValue::String("http://localhost:3000".to_string()),
+                ),
+            ]),
+            environment: None,
+        });
+        config.hooks = Some(Hooks {
+            on_enter: Some(on_enter),
+            on_exit: Some(on_exit),
+        });
+        config.tasks.insert("build".to_string(), make_task("npm"));
+        config.tasks.insert("test".to_string(), make_task("npm"));
+
+        let summary = ConfigSummary::from_project(&config);
         assert!(summary.has_hooks);
         assert_eq!(summary.hook_count, 3);
         assert!(summary.has_env_vars);
@@ -692,7 +769,14 @@ mod tests {
     fn test_approval_status() {
         let mut manager = ApprovalManager::new(PathBuf::from("/tmp/test"));
         let directory = Path::new("/test/dir");
-        let config = json!({"env": {"TEST": "value"}});
+        let mut config = base_project();
+        config.env = Some(Env {
+            base: HashMap::from([(
+                "TEST".to_string(),
+                EnvValue::String("value".to_string()),
+            )]),
+            environment: None,
+        });
 
         let status = check_approval_status(&manager, directory, &config).unwrap();
         assert!(matches!(status, ApprovalStatus::NotApproved { .. }));
