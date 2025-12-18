@@ -12,6 +12,7 @@ use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::{Base, Project};
 use cuenv_core::{ModuleEvaluation, Result};
 use cuenv_ignore::{FileStatus, IgnoreFile, IgnoreFiles};
+use similar::TextDiff;
 use std::path::{Path, PathBuf};
 use tracing::instrument;
 
@@ -582,11 +583,10 @@ pub async fn execute_sync_cubes(
     diff: bool,
     executor: Option<&CommandExecutor>,
 ) -> Result<String> {
-    let _ = diff; // TODO: implement diff mode
     tracing::info!("Starting sync cubes command");
 
     let dir_path = Path::new(path);
-    execute_sync_cubes_local(dir_path, package, dry_run, check, executor)
+    execute_sync_cubes_local(dir_path, package, dry_run, check, diff, executor)
 }
 
 /// Sync cubes for the local project only
@@ -595,6 +595,7 @@ fn execute_sync_cubes_local(
     package: &str,
     dry_run: bool,
     check: bool,
+    diff: bool,
     executor: Option<&CommandExecutor>,
 ) -> Result<String> {
     // Auto-detect package name from env.cue if using default
@@ -611,7 +612,7 @@ fn execute_sync_cubes_local(
         return Ok("No cube configuration found in this project.".to_string());
     };
 
-    sync_cube_files(dir_path, &manifest.name, cube_config, dry_run, check)
+    sync_cube_files(dir_path, &manifest.name, cube_config, dry_run, check, diff)
 }
 
 /// Sync cube files for a single project
@@ -621,6 +622,7 @@ fn sync_cube_files(
     cube_config: &cuenv_core::manifest::CubeConfig,
     dry_run: bool,
     check: bool,
+    diff: bool,
 ) -> Result<String> {
     use cuenv_core::manifest::FileMode;
 
@@ -631,17 +633,30 @@ fn sync_cube_files(
 
         match file_def.mode {
             FileMode::Managed => {
-                if check {
-                    // Check if file exists and matches
+                if check || diff {
                     if output_path.exists() {
-                        let existing = std::fs::read_to_string(&output_path).unwrap_or_default();
-                        if existing == file_def.content {
+                        let contents = std::fs::read_to_string(&output_path).unwrap_or_default();
+                        if contents == file_def.content {
                             output_lines.push(format!("  OK: {file_path}"));
                         } else {
                             output_lines.push(format!("  Out of sync: {file_path}"));
+                            maybe_push_diff(
+                                &mut output_lines,
+                                diff,
+                                file_path,
+                                Some(&contents),
+                                &file_def.content,
+                            );
                         }
                     } else {
                         output_lines.push(format!("  Missing: {file_path}"));
+                        maybe_push_diff(
+                            &mut output_lines,
+                            diff,
+                            file_path,
+                            None,
+                            &file_def.content,
+                        );
                     }
                 } else if dry_run {
                     if output_path.exists() {
@@ -664,8 +679,15 @@ fn sync_cube_files(
                         tracing::debug!("Skipping {} (scaffold mode, file exists)", file_path);
                     }
                     output_lines.push(format!("  Skipped (exists): {file_path}"));
-                } else if check {
+                } else if check || diff {
                     output_lines.push(format!("  Missing scaffold: {file_path}"));
+                    maybe_push_diff(
+                        &mut output_lines,
+                        diff,
+                        file_path,
+                        None,
+                        &file_def.content,
+                    );
                 } else if dry_run {
                     output_lines.push(format!("  Would scaffold: {file_path}"));
                 } else {
@@ -687,6 +709,32 @@ fn sync_cube_files(
     );
 
     Ok(output_lines.join("\n"))
+}
+
+fn maybe_push_diff(
+    output_lines: &mut Vec<String>,
+    diff: bool,
+    file_path: &str,
+    existing: Option<&str>,
+    expected: &str,
+) {
+    if !diff {
+        return;
+    }
+    let current = existing.unwrap_or("");
+    if current == expected {
+        return;
+    }
+    output_lines.push(format_unified_diff(file_path, current, expected));
+}
+
+fn format_unified_diff(path: &str, current: &str, expected: &str) -> String {
+    let diff = TextDiff::from_lines(current, expected);
+    let from = format!("a/{path}");
+    let to = format!("b/{path}");
+    diff.unified_diff()
+        .header(&from, &to)
+        .to_string()
 }
 
 /// Detect the CUE package name from env.cue
