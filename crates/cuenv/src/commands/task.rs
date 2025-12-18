@@ -71,6 +71,7 @@ pub async fn execute_task(
     show_cache_path: bool,
     backend: Option<&str>,
     tui: bool,
+    interactive: bool,
     help: bool,
     all: bool,
     task_args: &[String],
@@ -168,8 +169,79 @@ pub async fn execute_task(
         return Ok(render_workspace_task_list(&workspace_tasks));
     }
 
+    // Handle interactive mode: show picker and execute selected task
+    if interactive && task_name.is_none() && labels.is_empty() {
+        use super::task_picker::{PickerResult, SelectableTask, run_picker};
+
+        let tasks = task_index.list();
+        let selectable: Vec<SelectableTask> = tasks
+            .iter()
+            .filter(|t| {
+                // Only show executable tasks, not groups
+                matches!(
+                    t.definition,
+                    TaskDefinition::Single(_) | TaskDefinition::Group(_)
+                )
+            })
+            .map(|t| {
+                let description = match &t.definition {
+                    TaskDefinition::Single(task) => task.description.clone(),
+                    TaskDefinition::Group(g) => match g {
+                        cuenv_core::tasks::TaskGroup::Sequential(sub) => {
+                            sub.first().and_then(|t| match t {
+                                TaskDefinition::Single(st) => st.description.clone(),
+                                TaskDefinition::Group(_) => None,
+                            })
+                        }
+                        cuenv_core::tasks::TaskGroup::Parallel(_) => None,
+                    },
+                };
+                SelectableTask {
+                    name: t.name.clone(),
+                    description,
+                }
+            })
+            .collect();
+
+        match run_picker(selectable) {
+            Ok(PickerResult::Selected(selected_task)) => {
+                // Recursively call execute_task with the selected task
+                return Box::pin(execute_task(
+                    path,
+                    package,
+                    Some(&selected_task),
+                    labels,
+                    environment,
+                    format,
+                    capture_output,
+                    materialize_outputs,
+                    show_cache_path,
+                    backend,
+                    tui,
+                    false, // interactive = false for the actual execution
+                    help,
+                    all,
+                    task_args,
+                    executor,
+                ))
+                .await;
+            }
+            Ok(PickerResult::Cancelled) => {
+                return Ok(String::new());
+            }
+            Err(e) => {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Interactive picker failed: {e}"
+                )));
+            }
+        }
+    }
+
     // If no task specified, list available tasks
     if task_name.is_none() && labels.is_empty() {
+        use super::task_list::{RichFormatter, TaskListFormatter, TextFormatter, build_task_list};
+        use std::io::IsTerminal;
+
         tracing::debug!("Listing available tasks");
         let tasks = task_index.list();
         tracing::debug!("Found {} tasks to list", tasks.len());
@@ -195,7 +267,32 @@ pub async fn execute_task(
                 .map(|p| p.to_string_lossy().to_string())
         });
 
-        return Ok(render_task_tree(tasks, cwd_relative.as_deref()));
+        // Build task list data
+        let task_data = build_task_list(&tasks, cwd_relative.as_deref());
+
+        // Select formatter based on format flag and TTY detection
+        let output = match format {
+            "rich" => {
+                let formatter = RichFormatter::new();
+                formatter.format(&task_data)
+            }
+            "text" => {
+                let formatter = TextFormatter;
+                formatter.format(&task_data)
+            }
+            _ => {
+                // Default: rich for TTY, text otherwise
+                if std::io::stdout().is_terminal() {
+                    let formatter = RichFormatter::new();
+                    formatter.format(&task_data)
+                } else {
+                    let formatter = TextFormatter;
+                    formatter.format(&task_data)
+                }
+            }
+        };
+
+        return Ok(output);
     }
 
     if !labels.is_empty() && task_name.is_some() {
@@ -1372,21 +1469,16 @@ async fn resolve_and_materialize_project_reference(
 }
 
 fn get_task_cli_help() -> String {
-    r"Execute a task defined in CUE configuration
-
-Usage: cuenv task [OPTIONS] [NAME]
-
-Arguments:
-  [NAME]  Name of the task to execute (list tasks if not provided)
-
-Options:
-  -p, --path <PATH>                  Path to directory containing CUE files [default: .]
-      --package <PACKAGE>            Name of the CUE package to evaluate [default: cuenv]
-      --materialize-outputs <DIR>    Materialize cached outputs to this directory on cache hit (off by default)
-      --show-cache-path              Print the cache path for this task key
-      --backend <BACKEND>            Force specific execution backend (e.g., 'host', 'dagger')
-      --help                         Print help"
-        .to_string()
+    use clap::CommandFactory;
+    let mut cmd = crate::cli::Cli::command();
+    // Navigate to the "task" subcommand
+    for subcmd in cmd.get_subcommands_mut() {
+        if subcmd.get_name() == "task" {
+            return subcmd.render_help().to_string();
+        }
+    }
+    // Fallback (shouldn't happen)
+    "Execute a task defined in CUE configuration\n\nUsage: cuenv task [OPTIONS] [NAME]".to_string()
 }
 
 fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
@@ -2616,9 +2708,10 @@ env: {
             None,
             false,
             None,
-            false,
-            false,
-            false, // workspace
+            false, // tui
+            false, // interactive
+            false, // help
+            false, // all
             &[],
             None, // executor
         )

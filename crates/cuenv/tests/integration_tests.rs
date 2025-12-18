@@ -269,7 +269,7 @@ fn test_combined_flags() {
         "info",
         "--json",
         "version",
-        "--output-format",
+        "--output",
         "json",
     ]);
 
@@ -390,7 +390,7 @@ fn test_env_print_command_json_format() {
         &test_path,
         "--package",
         "_examples",
-        "--output-format",
+        "--output",
         "json",
     ]);
 
@@ -474,7 +474,7 @@ fn test_env_print_command_unsupported_format() {
         &test_path,
         "--package",
         "_examples",
-        "--output-format",
+        "--output",
         "yaml",
     ]);
 

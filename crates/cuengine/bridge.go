@@ -379,7 +379,7 @@ func buildValueClean(v cue.Value) interface{} {
 	switch v.Kind() {
 	case cue.StructKind:
 		result := make(map[string]interface{})
-		iter, _ := v.Fields()
+		iter, _ := v.Fields(cue.Definitions(false))
 		for iter.Next() {
 			sel := iter.Selector()
 			fieldName := unquoteSelector(sel.String())
@@ -415,7 +415,7 @@ func buildValueWithMeta(v cue.Value, path string, positions map[string]ValueMeta
 	switch v.Kind() {
 	case cue.StructKind:
 		result := make(map[string]interface{})
-		iter, _ := v.Fields()
+		iter, _ := v.Fields(cue.Definitions(false))
 		for iter.Next() {
 			sel := iter.Selector()
 			fieldName := unquoteSelector(sel.String())
@@ -462,7 +462,7 @@ func buildValueWithMeta(v cue.Value, path string, positions map[string]ValueMeta
 func buildJSON(v cue.Value, moduleRoot string, taskPositions map[string]TaskSourcePos) ([]byte, error) {
 	result := make(map[string]interface{})
 
-	iter, err := v.Fields()
+	iter, err := v.Fields(cue.Definitions(false))
 	if err != nil {
 		return nil, err
 	}
@@ -472,11 +472,8 @@ func buildJSON(v cue.Value, moduleRoot string, taskPositions map[string]TaskSour
 		fieldName := unquoteSelector(sel.String())
 		fieldValue := iter.Value()
 
-		// Decode each field value to interface{}
-		var val interface{}
-		if err := fieldValue.Decode(&val); err != nil {
-			return nil, fmt.Errorf("failed to decode field %s: %w", fieldName, err)
-		}
+		// Build value recursively, excluding definitions at every level
+		val := buildValueClean(fieldValue)
 
 		// For tasks field, enrich with source position metadata from AST
 		if fieldName == "tasks" {

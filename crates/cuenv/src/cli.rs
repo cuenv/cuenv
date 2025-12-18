@@ -188,9 +188,11 @@ pub enum OutputFormat {
     Json,
     /// Environment variable format (KEY=VALUE lines)
     Env,
-    /// Simple text format
+    /// Plain text format (no colors or styling)
     #[default]
-    Simple,
+    Text,
+    /// Rich styled output with colors and formatting
+    Rich,
 }
 
 impl std::fmt::Display for OutputFormat {
@@ -198,7 +200,8 @@ impl std::fmt::Display for OutputFormat {
         let s = match self {
             OutputFormat::Json => "json",
             OutputFormat::Env => "env",
-            OutputFormat::Simple => "simple",
+            OutputFormat::Text => "text",
+            OutputFormat::Rich => "rich",
         };
         write!(f, "{s}")
     }
@@ -209,7 +212,8 @@ impl AsRef<str> for OutputFormat {
         match self {
             OutputFormat::Json => "json",
             OutputFormat::Env => "env",
-            OutputFormat::Simple => "simple",
+            OutputFormat::Text => "text",
+            OutputFormat::Rich => "rich",
         }
     }
 }
@@ -293,10 +297,11 @@ pub enum Commands {
     #[command(about = "Show version information")]
     Version {
         #[arg(
-            long = "output-format",
+            long = "output",
+            short = 'o',
             help = "Output format",
             value_enum,
-            default_value_t = OutputFormat::Simple
+            default_value_t = OutputFormat::Text
         )]
         output_format: OutputFormat,
     },
@@ -353,10 +358,11 @@ pub enum Commands {
         )]
         labels: Vec<String>,
         #[arg(
-            long = "output-format",
+            long = "output",
+            short = 'o',
             help = "Output format (only used when listing tasks)",
             value_enum,
-            default_value_t = OutputFormat::Simple
+            default_value_t = OutputFormat::Text
         )]
         output_format: OutputFormat,
         #[arg(
@@ -379,6 +385,12 @@ pub enum Commands {
         backend: Option<String>,
         #[arg(long, help = "Use rich TUI for task execution")]
         tui: bool,
+        #[arg(
+            long,
+            short = 'i',
+            help = "Interactive task picker - select a task to run"
+        )]
+        interactive: bool,
         #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
         help: bool,
         #[arg(
@@ -668,7 +680,8 @@ pub enum EnvCommands {
         )]
         package: String,
         #[arg(
-            long = "output-format",
+            long = "output",
+            short = 'o',
             help = "Output format",
             value_enum,
             default_value_t = OutputFormat::Env
@@ -711,7 +724,8 @@ pub enum EnvCommands {
         #[arg(long, help = "Timeout in seconds for waiting", default_value = "300")]
         timeout: u64,
         #[arg(
-            long = "output-format",
+            long = "output",
+            short = 'o',
             help = "Output format",
             value_enum,
             default_value_t = StatusFormat::Text
@@ -773,10 +787,11 @@ pub enum EnvCommands {
         )]
         package: String,
         #[arg(
-            long = "output-format",
+            long = "output",
+            short = 'o',
             help = "Output format",
             value_enum,
-            default_value_t = OutputFormat::Simple
+            default_value_t = OutputFormat::Text
         )]
         output_format: OutputFormat,
     },
@@ -965,6 +980,7 @@ impl Commands {
                 show_cache_path,
                 backend,
                 tui,
+                interactive,
                 help,
                 all,
                 task_args,
@@ -979,6 +995,7 @@ impl Commands {
                 show_cache_path,
                 backend,
                 tui,
+                interactive,
                 help,
                 all,
                 task_args,
@@ -1236,7 +1253,7 @@ mod tests {
         assert!(!cli.json); // Default JSON is false
         assert!(!cli.llms); // Default llms is false
         if let Some(Commands::Version { output_format }) = cli.command {
-            assert_eq!(output_format, OutputFormat::Simple);
+            assert_eq!(output_format, OutputFormat::Text);
         } else {
             panic!("Expected Version command");
         }
@@ -1279,7 +1296,7 @@ mod tests {
 
     #[test]
     fn test_cli_format_option() {
-        let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "json"]).unwrap();
+        let cli = Cli::try_parse_from(["cuenv", "version", "--output", "json"]).unwrap();
         if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Json);
         } else {
@@ -1290,13 +1307,7 @@ mod tests {
     #[test]
     fn test_cli_combined_flags() {
         let cli = Cli::try_parse_from([
-            "cuenv",
-            "--level",
-            "debug",
-            "--json",
-            "version",
-            "--output-format",
-            "env",
+            "cuenv", "--level", "debug", "--json", "version", "--output", "env",
         ])
         .unwrap();
 
@@ -1312,11 +1323,11 @@ mod tests {
     #[test]
     fn test_command_conversion() {
         let version_cmd = Commands::Version {
-            output_format: OutputFormat::Simple,
+            output_format: OutputFormat::Text,
         };
         let command: Command = version_cmd.into_command(None);
         match command {
-            Command::Version { format } => assert_eq!(format, "simple"),
+            Command::Version { format } => assert_eq!(format, "text"),
             _ => panic!("Expected Command::Version"),
         }
     }
@@ -1387,7 +1398,7 @@ mod tests {
             "examples/env-basic",
             "--package",
             "_examples",
-            "--output-format",
+            "--output",
             "json",
         ])
         .unwrap();
@@ -1461,7 +1472,7 @@ mod tests {
 
     #[test]
     fn test_output_format_enum() {
-        assert_eq!(OutputFormat::default(), OutputFormat::Simple);
+        assert_eq!(OutputFormat::default(), OutputFormat::Text);
 
         // Test serialization/deserialization
         let json_fmt = OutputFormat::Json;
@@ -1503,23 +1514,31 @@ mod tests {
     #[test]
     fn test_output_format_value_enum() {
         // Test that the formats work with clap
-        let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "simple"]).unwrap();
+        let cli = Cli::try_parse_from(["cuenv", "version", "--output", "text"]).unwrap();
         if let Some(Commands::Version { output_format }) = cli.command {
-            assert_eq!(output_format, OutputFormat::Simple);
+            assert_eq!(output_format, OutputFormat::Text);
         } else {
             panic!("Expected Version command");
         }
 
-        let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "env"]).unwrap();
+        let cli = Cli::try_parse_from(["cuenv", "version", "--output", "env"]).unwrap();
         if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Env);
         } else {
             panic!("Expected Version command");
         }
 
-        let cli = Cli::try_parse_from(["cuenv", "version", "--output-format", "json"]).unwrap();
+        let cli = Cli::try_parse_from(["cuenv", "version", "--output", "json"]).unwrap();
         if let Some(Commands::Version { output_format }) = cli.command {
             assert_eq!(output_format, OutputFormat::Json);
+        } else {
+            panic!("Expected Version command");
+        }
+
+        // Test short form -o
+        let cli = Cli::try_parse_from(["cuenv", "version", "-o", "rich"]).unwrap();
+        if let Some(Commands::Version { output_format }) = cli.command {
+            assert_eq!(output_format, OutputFormat::Rich);
         } else {
             panic!("Expected Version command");
         }
@@ -1527,7 +1546,7 @@ mod tests {
 
     #[test]
     fn test_invalid_output_format() {
-        let result = Cli::try_parse_from(["cuenv", "version", "--output-format", "invalid"]);
+        let result = Cli::try_parse_from(["cuenv", "version", "--output", "invalid"]);
         assert!(result.is_err());
     }
 

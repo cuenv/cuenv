@@ -1541,4 +1541,79 @@ mod tests {
         assert!(on_enter.is_empty());
         assert!(on_exit.is_empty());
     }
+
+    #[test]
+    fn test_project_deserialization_with_script_tasks() {
+        // This test mimics the structure of cuenv's actual env.cue
+        let json = r#"{
+            "name": "cuenv",
+            "hooks": {
+                "onEnter": {
+                    "nix": {
+                        "order": 10,
+                        "propagate": false,
+                        "command": "nix",
+                        "args": ["print-dev-env"],
+                        "inputs": ["flake.nix", "flake.lock"],
+                        "source": true
+                    }
+                }
+            },
+            "tasks": {
+                "pwd": { "command": "pwd" },
+                "check": {
+                    "command": "nix",
+                    "args": ["flake", "check"],
+                    "inputs": ["flake.nix"]
+                },
+                "fmt": {
+                    "fix": {
+                        "command": "treefmt",
+                        "inputs": [".config"]
+                    },
+                    "check": {
+                        "command": "treefmt",
+                        "args": ["--fail-on-change"],
+                        "inputs": [".config"]
+                    }
+                },
+                "cross": {
+                    "linux": {
+                        "script": "echo building for linux",
+                        "inputs": ["Cargo.toml"]
+                    }
+                },
+                "docs": {
+                    "build": {
+                        "command": "bash",
+                        "args": ["-c", "bun install"],
+                        "inputs": ["docs"],
+                        "outputs": ["docs/dist"]
+                    },
+                    "deploy": {
+                        "command": "bash",
+                        "args": ["-c", "wrangler deploy"],
+                        "dependsOn": ["docs.build"],
+                        "inputsFrom": [{"task": "docs.build"}]
+                    }
+                }
+            }
+        }"#;
+
+        let result: Result<Project, _> = serde_json::from_str(json);
+        match result {
+            Ok(project) => {
+                assert_eq!(project.name, "cuenv");
+                assert_eq!(project.tasks.len(), 5);
+                assert!(project.tasks.contains_key("pwd"));
+                assert!(project.tasks.contains_key("cross"));
+                // Verify cross.linux is a script task
+                let cross = project.tasks.get("cross").unwrap();
+                assert!(cross.is_group());
+            }
+            Err(e) => {
+                panic!("Failed to deserialize Project with script tasks: {}", e);
+            }
+        }
+    }
 }
