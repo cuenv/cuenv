@@ -4,8 +4,10 @@
 //! The `TaskListData` structure captures all information about available tasks,
 //! while `TaskListFormatter` implementations handle different output formats.
 
+use cuenv_core::cache::tasks as task_cache;
 use cuenv_core::tasks::{IndexedTask, TaskDefinition, TaskGroup};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 // ============================================================================
 // Data Structures
@@ -44,7 +46,7 @@ pub struct TaskNode {
     pub is_group: bool,
     /// Number of dependencies (0 if none)
     pub dep_count: usize,
-    /// Whether cached result exists (placeholder for future)
+    /// Whether cached result exists for this task
     pub is_cached: bool,
     /// Nested child nodes
     pub children: Vec<TaskNode>,
@@ -83,7 +85,13 @@ pub trait TaskListFormatter {
 /// # Arguments
 /// * `tasks` - Slice of indexed tasks from the task index
 /// * `cwd_relative` - Optional path relative to cue.mod root for proximity sorting
-pub fn build_task_list(tasks: &[&IndexedTask], cwd_relative: Option<&str>) -> TaskListData {
+/// * `project_root` - Project root for cache lookups
+pub fn build_task_list(
+    tasks: &[&IndexedTask],
+    cwd_relative: Option<&str>,
+    project_root: &Path,
+) -> TaskListData {
+    let cached_tasks = collect_cached_tasks(tasks, project_root);
     // Group tasks by source file
     let mut by_source: BTreeMap<String, Vec<&IndexedTask>> = BTreeMap::new();
     for task in tasks {
@@ -117,7 +125,7 @@ pub fn build_task_list(tasks: &[&IndexedTask], cwd_relative: Option<&str>) -> Ta
             format!("Tasks from {source}")
         };
 
-        let (nodes, group_stats) = build_tree_nodes(source_tasks);
+        let (nodes, group_stats) = build_tree_nodes(source_tasks, &cached_tasks);
         stats.total_tasks += group_stats.total_tasks;
         stats.total_groups += group_stats.total_groups;
         stats.cached_count += group_stats.cached_count;
@@ -136,13 +144,30 @@ pub fn build_task_list(tasks: &[&IndexedTask], cwd_relative: Option<&str>) -> Ta
 }
 
 /// Build tree nodes from a flat list of tasks
-fn build_tree_nodes(tasks: &[&IndexedTask]) -> (Vec<TaskNode>, TaskListStats) {
+fn collect_cached_tasks(tasks: &[&IndexedTask], project_root: &Path) -> HashSet<String> {
+    let mut cached = HashSet::new();
+    for task in tasks {
+        let Some(cache_key) = task_cache::lookup_latest(project_root, &task.name, None) else {
+            continue;
+        };
+        if task_cache::lookup(&cache_key, None).is_some() {
+            cached.insert(task.name.clone());
+        }
+    }
+    cached
+}
+
+fn build_tree_nodes(
+    tasks: &[&IndexedTask],
+    cached_tasks: &HashSet<String>,
+) -> (Vec<TaskNode>, TaskListStats) {
     // Intermediate structure for building the tree
     struct TreeBuilder {
         name: String,
         full_name: Option<String>,
         description: Option<String>,
         is_task: bool,
+        is_cached: bool,
         dep_count: usize,
         children: BTreeMap<String, TreeBuilder>,
     }
@@ -154,6 +179,7 @@ fn build_tree_nodes(tasks: &[&IndexedTask]) -> (Vec<TaskNode>, TaskListStats) {
                 full_name: None,
                 description: None,
                 is_task: false,
+                is_cached: false,
                 dep_count: 0,
                 children: BTreeMap::new(),
             }
@@ -177,6 +203,7 @@ fn build_tree_nodes(tasks: &[&IndexedTask]) -> (Vec<TaskNode>, TaskListStats) {
                 node.is_task = true;
                 node.full_name = Some(task.name.clone());
                 node.dep_count = get_dep_count(&task.definition);
+                node.is_cached = cached_tasks.contains(&task.name);
 
                 // Extract description from definition
                 node.description = match &task.definition {
@@ -191,6 +218,9 @@ fn build_tree_nodes(tasks: &[&IndexedTask]) -> (Vec<TaskNode>, TaskListStats) {
                 };
 
                 stats.total_tasks += 1;
+                if node.is_cached {
+                    stats.cached_count += 1;
+                }
             }
 
             current_level = &mut node.children;
@@ -216,7 +246,7 @@ fn build_tree_nodes(tasks: &[&IndexedTask]) -> (Vec<TaskNode>, TaskListStats) {
                     description: builder.description,
                     is_group,
                     dep_count: builder.dep_count,
-                    is_cached: false, // TODO: integrate with cache system
+                    is_cached: builder.is_cached,
                     children: convert(builder.children, stats),
                 }
             })

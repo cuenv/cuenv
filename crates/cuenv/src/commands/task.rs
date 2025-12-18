@@ -268,7 +268,7 @@ pub async fn execute_task(
         });
 
         // Build task list data
-        let task_data = build_task_list(&tasks, cwd_relative.as_deref());
+        let task_data = build_task_list(&tasks, cwd_relative.as_deref(), &project_root);
 
         // Select formatter based on format flag and TTY detection
         let output = match format {
