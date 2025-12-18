@@ -73,6 +73,25 @@ pub fn compute_affected_tasks(
         .collect()
 }
 
+#[must_use]
+pub fn matched_inputs_for_task(
+    task_name: &str,
+    config: &Project,
+    changed_files: &[PathBuf],
+    project_root: &Path,
+) -> Vec<String> {
+    let Some(task_def) = config.tasks.get(task_name) else {
+        return Vec::new();
+    };
+    let Some(task) = task_def.as_single() else {
+        return Vec::new();
+    };
+    task.iter_path_inputs()
+        .filter(|input_glob| matches_any(changed_files, project_root, input_glob))
+        .cloned()
+        .collect()
+}
+
 fn is_task_directly_affected(
     task_name: &str,
     config: &Project,
