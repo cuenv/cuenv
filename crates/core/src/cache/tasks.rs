@@ -324,6 +324,21 @@ pub fn lookup_latest(project_root: &Path, task_name: &str, root: Option<&Path>) 
     index.entries.get(&proj_hash)?.get(task_name).cloned()
 }
 
+/// Retrieve all latest cache keys for a given project
+pub fn get_project_cache_keys(
+    project_root: &Path,
+    root: Option<&Path>,
+) -> Option<BTreeMap<String, String>> {
+    let path = latest_index_path(root).ok()?;
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&path).ok()?;
+    let index: TaskLatestIndex = serde_json::from_str(&content).ok()?;
+    let proj_hash = project_hash(project_root);
+    index.entries.get(&proj_hash).cloned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheKeyEnvelope {
     pub inputs: BTreeMap<String, String>,
