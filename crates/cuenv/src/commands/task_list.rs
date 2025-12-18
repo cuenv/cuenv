@@ -152,8 +152,15 @@ fn collect_cached_tasks(tasks: &[&IndexedTask], project_root: &Path) -> HashSet<
     let mut cached = HashSet::new();
 
     // Batch load the index once for the whole project
-    let Some(project_cache_keys) = task_cache::get_project_cache_keys(project_root, None) else {
-        return cached;
+    let project_cache_keys = match task_cache::get_project_cache_keys(project_root, None) {
+        Ok(Some(keys)) => keys,
+        Ok(None) => return cached,
+        Err(e) => {
+            // Log warning but proceed with empty cache (graceful degradation)
+            // Note: tracing might not be initialized in all contexts, but is the standard way here
+            tracing::warn!("Failed to load task cache index: {}", e);
+            return cached;
+        }
     };
 
     for task in tasks {

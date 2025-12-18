@@ -328,15 +328,20 @@ pub fn lookup_latest(project_root: &Path, task_name: &str, root: Option<&Path>) 
 pub fn get_project_cache_keys(
     project_root: &Path,
     root: Option<&Path>,
-) -> Option<BTreeMap<String, String>> {
-    let path = latest_index_path(root).ok()?;
+) -> Result<Option<BTreeMap<String, String>>> {
+    let path = latest_index_path(root)?;
     if !path.exists() {
-        return None;
+        return Ok(None);
     }
-    let content = fs::read_to_string(&path).ok()?;
-    let index: TaskLatestIndex = serde_json::from_str(&content).ok()?;
+    let content = fs::read_to_string(&path).map_err(|e| Error::Io {
+        source: e,
+        path: Some(path.clone().into()),
+        operation: "read".into(),
+    })?;
+    let index: TaskLatestIndex =
+        serde_json::from_str(&content).map_err(|e| Error::configuration(format!("Failed to parse task index: {e}")))?;
     let proj_hash = project_hash(project_root);
-    index.entries.get(&proj_hash).cloned()
+    Ok(index.entries.get(&proj_hash).cloned())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
