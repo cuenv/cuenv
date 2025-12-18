@@ -15,7 +15,6 @@ use cuenv_core::{
         types::{ExecutionStatus, Hook},
     },
 };
-use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -136,17 +135,6 @@ fn evaluate_config(
     instance.deserialize()
 }
 
-/// Helper to evaluate CUE configuration as Value (for approval system)
-fn evaluate_config_as_value(
-    directory: &Path,
-    package: &str,
-    executor: Option<&CommandExecutor>,
-) -> Result<Value> {
-    let manifest = evaluate_config(directory, package, executor)?;
-    serde_json::to_value(&manifest)
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize config: {e}")))
-}
-
 /// Helper to get config hash from approval manager or compute it
 fn get_config_hash(
     directory: &Path,
@@ -158,9 +146,9 @@ fn get_config_hash(
         Ok(approval.config_hash.clone())
     } else {
         // If not approved, compute it from current config
-        let config_value = evaluate_config_as_value(directory, package, executor)?;
+        let config = evaluate_config(directory, package, executor)?;
         Ok(cuenv_core::hooks::approval::compute_approval_hash(
-            &config_value,
+            &config,
         ))
     }
 }
@@ -254,15 +242,12 @@ pub async fn execute_env_load(
 
     // Evaluate the CUE configuration
     let config = evaluate_config(&directory, package, executor)?;
-    let config_value = serde_json::to_value(&config).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
-    })?;
 
     // Check approval status
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
 
-    let approval_status = check_approval_status(&approval_manager, &directory, &config_value)?;
+    let approval_status = check_approval_status(&approval_manager, &directory, &config)?;
 
     match approval_status {
         ApprovalStatus::Approved => {
@@ -275,7 +260,7 @@ pub async fn execute_env_load(
 
             // Start background execution
             let executor = HookExecutor::with_default_config()?;
-            let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config_value);
+            let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config);
 
             let result = executor
                 .execute_hooks_background(directory.clone(), config_hash, hooks)
@@ -284,7 +269,7 @@ pub async fn execute_env_load(
             Ok(result)
         }
         ApprovalStatus::RequiresApproval { current_hash } => {
-            let summary = ConfigSummary::from_json(&config_value);
+            let summary = ConfigSummary::from_project(&config);
             Ok(format!(
                 "Configuration has changed and requires approval.\n\
                  This configuration contains: {}\n\
@@ -296,7 +281,7 @@ pub async fn execute_env_load(
             ))
         }
         ApprovalStatus::NotApproved { current_hash } => {
-            let summary = ConfigSummary::from_json(&config_value);
+            let summary = ConfigSummary::from_project(&config);
             Ok(format!(
                 "Configuration not approved.\n\
                  This configuration contains: {}\n\
@@ -539,12 +524,9 @@ pub async fn execute_allow(
 
     // Evaluate the CUE configuration
     let config = evaluate_config(&directory, package, executor)?;
-    let config_value = serde_json::to_value(&config).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
-    })?;
 
     // Compute configuration hash (only hooks are included for security purposes)
-    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config_value);
+    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config);
 
     // Initialize approval manager
     let mut approval_manager = ApprovalManager::with_default_file()?;
@@ -559,7 +541,7 @@ pub async fn execute_allow(
     }
 
     // Show what we're approving
-    let summary = ConfigSummary::from_json(&config_value);
+    let summary = ConfigSummary::from_project(&config);
 
     // If we need confirmation and yes flag is not set
     if !yes {

@@ -160,15 +160,11 @@ pub async fn execute_export(
     approval_manager.load_approvals().await?;
 
     debug!("Checking approval for directory: {}", directory.display());
-    // Convert Project to Value for approval check (temporary until approval system is updated)
-    let config_value = serde_json::to_value(&config).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize config: {e}"))
-    })?;
-    let approval_status = check_approval_status(&approval_manager, &directory, &config_value)?;
+    let approval_status = check_approval_status(&approval_manager, &directory, &config)?;
 
     match approval_status {
         ApprovalStatus::NotApproved { .. } | ApprovalStatus::RequiresApproval { .. } => {
-            let summary = ConfigSummary::from_json(&config_value);
+            let summary = ConfigSummary::from_project(&config);
             // Only require approval if there are hooks
             if summary.has_hooks {
                 // Return a comment that tells user to approve
@@ -182,7 +178,7 @@ pub async fn execute_export(
     }
 
     // Compute config hash for this directory + config (only hooks are included)
-    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config_value);
+    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config);
 
     // Check if state is ready
     let executor = HookExecutor::with_default_config()?;
