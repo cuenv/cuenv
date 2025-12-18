@@ -4,8 +4,10 @@
 //! The `TaskListData` structure captures all information about available tasks,
 //! while `TaskListFormatter` implementations handle different output formats.
 
+use cuenv_core::cache::tasks as task_cache;
 use cuenv_core::tasks::{IndexedTask, TaskDefinition, TaskGroup};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 // ============================================================================
 // Data Structures
@@ -44,7 +46,7 @@ pub struct TaskNode {
     pub is_group: bool,
     /// Number of dependencies (0 if none)
     pub dep_count: usize,
-    /// Whether cached result exists (placeholder for future)
+    /// Whether cached result exists for this task
     pub is_cached: bool,
     /// Nested child nodes
     pub children: Vec<TaskNode>,
@@ -83,7 +85,13 @@ pub trait TaskListFormatter {
 /// # Arguments
 /// * `tasks` - Slice of indexed tasks from the task index
 /// * `cwd_relative` - Optional path relative to cue.mod root for proximity sorting
-pub fn build_task_list(tasks: &[&IndexedTask], cwd_relative: Option<&str>) -> TaskListData {
+/// * `project_root` - Project root for cache lookups
+pub fn build_task_list(
+    tasks: &[&IndexedTask],
+    cwd_relative: Option<&str>,
+    project_root: &Path,
+) -> TaskListData {
+    let cached_tasks = collect_cached_tasks(tasks, project_root);
     // Group tasks by source file
     let mut by_source: BTreeMap<String, Vec<&IndexedTask>> = BTreeMap::new();
     for task in tasks {
@@ -117,7 +125,7 @@ pub fn build_task_list(tasks: &[&IndexedTask], cwd_relative: Option<&str>) -> Ta
             format!("Tasks from {source}")
         };
 
-        let (nodes, group_stats) = build_tree_nodes(source_tasks);
+        let (nodes, group_stats) = build_tree_nodes(source_tasks, &cached_tasks);
         stats.total_tasks += group_stats.total_tasks;
         stats.total_groups += group_stats.total_groups;
         stats.cached_count += group_stats.cached_count;
@@ -136,30 +144,95 @@ pub fn build_task_list(tasks: &[&IndexedTask], cwd_relative: Option<&str>) -> Ta
 }
 
 /// Build tree nodes from a flat list of tasks
-fn build_tree_nodes(tasks: &[&IndexedTask]) -> (Vec<TaskNode>, TaskListStats) {
-    // Intermediate structure for building the tree
-    struct TreeBuilder {
-        name: String,
-        full_name: Option<String>,
-        description: Option<String>,
-        is_task: bool,
-        dep_count: usize,
-        children: BTreeMap<String, TreeBuilder>,
-    }
+/// Collect task names that have cached results
+///
+/// Queries the cache index to determine which tasks have valid cached
+/// results available. This is used to mark tasks in the display output.
+fn collect_cached_tasks(tasks: &[&IndexedTask], project_root: &Path) -> HashSet<String> {
+    let mut cached = HashSet::new();
 
-    impl Default for TreeBuilder {
-        fn default() -> Self {
-            Self {
-                name: String::new(),
-                full_name: None,
-                description: None,
-                is_task: false,
-                dep_count: 0,
-                children: BTreeMap::new(),
+    // Batch load the index once for the whole project
+    let project_cache_keys = match task_cache::get_project_cache_keys(project_root, None) {
+        Ok(Some(keys)) => keys,
+        Ok(None) => return cached,
+        Err(e) => {
+            // Log warning but proceed with empty cache (graceful degradation)
+            // Note: tracing might not be initialized in all contexts, but is the standard way here
+            tracing::warn!("Failed to load task cache index: {}", e);
+            return cached;
+        }
+    };
+
+    for task in tasks {
+        if let Some(cache_key) = project_cache_keys.get(&task.name) {
+            // Check if the specific cache entry actually exists on disk
+            if task_cache::lookup(cache_key, None).is_some() {
+                cached.insert(task.name.clone());
             }
         }
     }
+    cached
+}
 
+// Intermediate structure for building the tree
+struct TreeBuilder {
+    name: String,
+    full_name: Option<String>,
+    description: Option<String>,
+    is_task: bool,
+    is_cached: bool,
+    dep_count: usize,
+    children: BTreeMap<String, TreeBuilder>,
+}
+
+impl Default for TreeBuilder {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            full_name: None,
+            description: None,
+            is_task: false,
+            is_cached: false,
+            dep_count: 0,
+            children: BTreeMap::new(),
+        }
+    }
+}
+
+// Convert TreeBuilder to TaskNode
+fn convert(
+    builders: BTreeMap<String, TreeBuilder>,
+    stats: &mut TaskListStats,
+) -> Vec<TaskNode> {
+    builders
+        .into_iter()
+        .map(|(_, builder)| {
+            let is_group = !builder.is_task;
+            if is_group {
+                stats.total_groups += 1;
+            }
+
+            let child_nodes = convert(builder.children, stats);
+            // Propagate cached status: a group is cached if any child is cached
+            let group_cached = builder.is_cached || child_nodes.iter().any(|c| c.is_cached);
+
+            TaskNode {
+                name: builder.name,
+                full_name: builder.full_name,
+                description: builder.description,
+                is_group,
+                dep_count: builder.dep_count,
+                is_cached: group_cached,
+                children: child_nodes,
+            }
+        })
+        .collect()
+}
+
+fn build_tree_nodes(
+    tasks: &[&IndexedTask],
+    cached_tasks: &HashSet<String>,
+) -> (Vec<TaskNode>, TaskListStats) {
     let mut roots: BTreeMap<String, TreeBuilder> = BTreeMap::new();
     let mut stats = TaskListStats::default();
 
@@ -177,6 +250,7 @@ fn build_tree_nodes(tasks: &[&IndexedTask]) -> (Vec<TaskNode>, TaskListStats) {
                 node.is_task = true;
                 node.full_name = Some(task.name.clone());
                 node.dep_count = get_dep_count(&task.definition);
+                node.is_cached = cached_tasks.contains(&task.name);
 
                 // Extract description from definition
                 node.description = match &task.definition {
@@ -191,36 +265,13 @@ fn build_tree_nodes(tasks: &[&IndexedTask]) -> (Vec<TaskNode>, TaskListStats) {
                 };
 
                 stats.total_tasks += 1;
+                if node.is_cached {
+                    stats.cached_count += 1;
+                }
             }
 
             current_level = &mut node.children;
         }
-    }
-
-    // Convert TreeBuilder to TaskNode
-    fn convert(
-        builders: BTreeMap<String, TreeBuilder>,
-        stats: &mut TaskListStats,
-    ) -> Vec<TaskNode> {
-        builders
-            .into_iter()
-            .map(|(_, builder)| {
-                let is_group = !builder.is_task;
-                if is_group {
-                    stats.total_groups += 1;
-                }
-
-                TaskNode {
-                    name: builder.name,
-                    full_name: builder.full_name,
-                    description: builder.description,
-                    is_group,
-                    dep_count: builder.dep_count,
-                    is_cached: false, // TODO: integrate with cache system
-                    children: convert(builder.children, stats),
-                }
-            })
-            .collect()
     }
 
     let nodes = convert(roots, &mut stats);
@@ -532,5 +583,65 @@ mod tests {
         assert!(!formatter.use_colors);
         // Without colors, cyan should return plain text
         assert_eq!(formatter.cyan("test"), "test");
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_collect_cached_tasks_empty() {
+        let temp = TempDir::new().unwrap();
+        let tasks = vec![];
+        let cached = collect_cached_tasks(&tasks, temp.path());
+        assert!(cached.is_empty());
+    }
+
+    #[test]
+    fn test_group_cache_propagation() {
+        let mut stats = TaskListStats::default();
+        let mut children = BTreeMap::new();
+        
+        // Child 1: Cached
+        children.insert("child1".to_string(), super::TreeBuilder {
+            name: "child1".to_string(),
+            is_task: true,
+            is_cached: true,
+            ..Default::default()
+        });
+        
+        // Child 2: Not cached
+        children.insert("child2".to_string(), super::TreeBuilder {
+            name: "child2".to_string(),
+            is_task: true,
+            is_cached: false,
+            ..Default::default()
+        });
+
+        let mut root_builder = BTreeMap::new();
+        root_builder.insert("group".to_string(), super::TreeBuilder {
+            name: "group".to_string(),
+            is_task: false, // It's a group
+            is_cached: false, // Initially false
+            children,
+            ..Default::default()
+        });
+
+        let nodes = super::convert(root_builder, &mut stats);
+        
+        assert_eq!(nodes.len(), 1);
+        let group = &nodes[0];
+        assert_eq!(group.name, "group");
+        assert!(group.is_group);
+        // Should be true because child1 is cached
+        assert!(group.is_cached); 
+        
+        assert_eq!(group.children.len(), 2);
+        let c1 = group.children.iter().find(|c| c.name == "child1").unwrap();
+        assert!(c1.is_cached);
+        let c2 = group.children.iter().find(|c| c.name == "child2").unwrap();
+        assert!(!c2.is_cached);
     }
 }
