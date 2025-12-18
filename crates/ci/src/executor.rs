@@ -1,13 +1,14 @@
 // CI executor outputs to stdout/stderr as part of its normal operation
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use crate::affected::compute_affected_tasks;
+use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
 use crate::discovery::discover_projects;
 use crate::provider::CIProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use async_trait::async_trait;
 use chrono::Utc;
+use cuenv_core::cache::tasks as task_cache;
 use cuenv_core::Result;
 use std::sync::Arc;
 
@@ -142,6 +143,15 @@ pub async fn run_ci(
             let mut pipeline_status = PipelineStatus::Success;
 
             for task_name in tasks_to_run {
+                let inputs_matched =
+                    matched_inputs_for_task(&task_name, config, &changed_files, project_root);
+                let outputs = config
+                    .tasks
+                    .get(&task_name)
+                    .and_then(|def| def.as_single())
+                    .map(|task| task.outputs.clone())
+                    .unwrap_or_default();
+
                 println!("  -> Executing {task_name}");
                 let task_start = std::time::Instant::now();
                 let result = runner.run_task(project_root, &task_name).await;
@@ -159,6 +169,13 @@ pub async fn run_ci(
                     }
                 };
 
+                let cache_key = if status == TaskStatus::Success {
+                    task_cache::lookup_latest(project_root, &task_name, None)
+                        .filter(|key| task_cache::lookup(key, None).is_some())
+                } else {
+                    None
+                };
+
                 tasks_reports.push(TaskReport {
                     name: task_name,
                     status,
@@ -168,9 +185,9 @@ pub async fn run_ci(
                     } else {
                         Some(1)
                     },
-                    inputs_matched: vec![], // TODO: track inputs matched
-                    cache_key: None,        // TODO: get cache key
-                    outputs: vec![],        // TODO: get outputs
+                    inputs_matched,
+                    cache_key,
+                    outputs,
                 });
             }
 
