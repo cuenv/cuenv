@@ -705,6 +705,130 @@ mod tests {
     }
 
     #[test]
+    fn test_task_script_deserialization() {
+        // Test that script-only tasks (no command) deserialize correctly
+        let json = r#"{
+            "script": "echo hello",
+            "inputs": ["src/main.rs"]
+        }"#;
+
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert!(task.command.is_empty()); // No command
+        assert_eq!(task.script, Some("echo hello".to_string()));
+        assert_eq!(task.inputs.len(), 1);
+    }
+
+    #[test]
+    fn test_task_definition_script_variant() {
+        // Test that TaskDefinition::Single correctly deserializes script-only tasks
+        let json = r#"{
+            "script": "echo hello"
+        }"#;
+
+        let def: TaskDefinition = serde_json::from_str(json).unwrap();
+        assert!(def.is_single());
+    }
+
+    #[test]
+    fn test_task_group_with_script_task() {
+        // Test parallel task group containing a script task (mimics cross.linux)
+        let json = r#"{
+            "linux": {
+                "script": "echo building",
+                "inputs": ["src/main.rs"]
+            }
+        }"#;
+
+        let group: TaskGroup = serde_json::from_str(json).unwrap();
+        assert!(group.is_parallel());
+    }
+
+    #[test]
+    fn test_full_tasks_map_with_script() {
+        // Test deserializing a full tasks map like in Project.tasks
+        // This mimics the structure: tasks: { cross: { linux: { script: ... } } }
+        let json = r#"{
+            "pwd": { "command": "pwd" },
+            "cross": {
+                "linux": {
+                    "script": "echo building",
+                    "inputs": ["src/main.rs"]
+                }
+            }
+        }"#;
+
+        let tasks: HashMap<String, TaskDefinition> = serde_json::from_str(json).unwrap();
+        assert_eq!(tasks.len(), 2);
+        assert!(tasks.contains_key("pwd"));
+        assert!(tasks.contains_key("cross"));
+
+        // pwd should be Single
+        assert!(tasks.get("pwd").unwrap().is_single());
+
+        // cross should be Group (Parallel)
+        assert!(tasks.get("cross").unwrap().is_group());
+    }
+
+    #[test]
+    fn test_complex_nested_tasks_like_cuenv() {
+        // Test a more complex structure mimicking cuenv's actual env.cue tasks
+        let json = r#"{
+            "pwd": { "command": "pwd" },
+            "check": {
+                "command": "nix",
+                "args": ["flake", "check"],
+                "inputs": ["flake.nix"]
+            },
+            "fmt": {
+                "fix": {
+                    "command": "treefmt",
+                    "inputs": [".config"]
+                },
+                "check": {
+                    "command": "treefmt",
+                    "args": ["--fail-on-change"],
+                    "inputs": [".config"]
+                }
+            },
+            "cross": {
+                "linux": {
+                    "script": "echo building",
+                    "inputs": ["Cargo.toml"]
+                }
+            },
+            "docs": {
+                "build": {
+                    "command": "bash",
+                    "args": ["-c", "bun install"],
+                    "inputs": ["docs"],
+                    "outputs": ["docs/dist"]
+                },
+                "deploy": {
+                    "command": "bash",
+                    "args": ["-c", "wrangler deploy"],
+                    "dependsOn": ["docs.build"],
+                    "inputsFrom": [{"task": "docs.build"}]
+                }
+            }
+        }"#;
+
+        let result: Result<HashMap<String, TaskDefinition>, _> = serde_json::from_str(json);
+        match result {
+            Ok(tasks) => {
+                assert_eq!(tasks.len(), 5);
+                assert!(tasks.get("pwd").unwrap().is_single());
+                assert!(tasks.get("check").unwrap().is_single());
+                assert!(tasks.get("fmt").unwrap().is_group());
+                assert!(tasks.get("cross").unwrap().is_group());
+                assert!(tasks.get("docs").unwrap().is_group());
+            }
+            Err(e) => {
+                panic!("Failed to deserialize complex tasks: {}", e);
+            }
+        }
+    }
+
+    #[test]
     fn test_task_group_sequential() {
         let task1 = Task {
             command: "echo".to_string(),

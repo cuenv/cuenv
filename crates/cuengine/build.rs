@@ -11,9 +11,13 @@ fn main() {
         return;
     }
 
+    // Track all Go source files and module files for rebuild detection
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=bridge.go");
+    println!("cargo:rerun-if-changed=bridge_test.go");
     println!("cargo:rerun-if-changed=bridge.h");
+    println!("cargo:rerun-if-changed=go.mod");
+    println!("cargo:rerun-if-changed=go.sum");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set by cargo"));
     let bridge_dir = PathBuf::from(".");
@@ -87,6 +91,21 @@ fn try_use_prebuilt(
     output_path: &PathBuf,
     header_path: &PathBuf,
 ) -> bool {
+    // Get modification times of all Go source files
+    // If any source is newer than a prebuilt library, we must rebuild
+    let go_sources = [
+        bridge_dir.join("bridge.go"),
+        bridge_dir.join("bridge_test.go"),
+        bridge_dir.join("go.mod"),
+        bridge_dir.join("go.sum"),
+    ];
+
+    let newest_source_time = go_sources
+        .iter()
+        .filter_map(|p| p.metadata().ok())
+        .filter_map(|m| m.modified().ok())
+        .max();
+
     let prebuilt_locations = [
         // Nix flake puts prebuilt artifacts in workspace target/
         (
@@ -129,6 +148,22 @@ fn try_use_prebuilt(
             && header_path_candidate.is_file()
             && !lib_path.to_string_lossy().is_empty()
         {
+            // Check if prebuilt is newer than all source files
+            // If sources are newer, skip this prebuilt and rebuild from source
+            if let Some(source_time) = newest_source_time {
+                if let Ok(lib_meta) = lib_path.metadata() {
+                    if let Ok(lib_time) = lib_meta.modified() {
+                        if lib_time < source_time {
+                            println!(
+                                "cargo:warning=Prebuilt {} is older than source files, will rebuild",
+                                lib_path.display()
+                            );
+                            continue; // Skip this prebuilt, try next or fall through to rebuild
+                        }
+                    }
+                }
+            }
+
             // Remove destination files if they exist (might be read-only)
             let _ = std::fs::remove_file(output_path);
             let _ = std::fs::remove_file(header_path);
