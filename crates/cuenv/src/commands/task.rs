@@ -1,8 +1,5 @@
 //! Task execution command implementation
 
-// Some functions are reserved for hermetic execution which is temporarily disabled
-#![allow(dead_code)]
-
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
@@ -32,13 +29,10 @@ fn get_dagger_factory() -> Option<BackendFactory> {
 fn get_dagger_factory() -> Option<BackendFactory> {
     None
 }
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
 use std::fs;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
 
 use super::export::get_environment_with_hooks;
 
@@ -588,17 +582,12 @@ pub async fn execute_task(
     }
 
     // Execute using the appropriate method
-    let results = execute_task_with_strategy_hermetic(
-        path,
-        package,
+    let results = execute_task_with_strategy(
         &executor,
         display_task_name.as_str(),
         &task_def,
         &task_graph,
         &all_tasks,
-        manifest.env.as_ref(),
-        &runtime_env,
-        capture_output,
     )
     .await?;
 
@@ -740,19 +729,13 @@ async fn execute_with_rich_tui(
     ))
 }
 
-/// Execute a task using the appropriate strategy based on task type and dependencies
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-async fn execute_task_with_strategy_hermetic(
-    project_dir: &str,
-    _package: &str,
+/// Execute a task using the appropriate strategy based on task type and dependencies.
+async fn execute_task_with_strategy(
     executor: &TaskExecutor,
     task_name: &str,
     task_def: &TaskDefinition,
     task_graph: &TaskGraph,
     all_tasks: &Tasks,
-    env_base: Option<&cuenv_core::environment::Env>,
-    _hook_env: &Environment,
-    capture_output: bool,
 ) -> Result<Vec<cuenv_core::tasks::TaskResult>> {
     match task_def {
         TaskDefinition::Group(_) => {
@@ -761,16 +744,7 @@ async fn execute_task_with_strategy_hermetic(
                 .execute_definition(task_name, task_def, all_tasks)
                 .await
         }
-        TaskDefinition::Single(t) => {
-            // NOTE: Hermetic execution is temporarily disabled in the core executor
-            // (see executor.rs TODO comment). We must use non-hermetic execution here
-            // to be consistent, otherwise tasks behave differently when run directly
-            // vs via a group.
-            //
-            // TODO: Re-enable hermetic execution when sandbox properly preserves
-            // monorepo structure and handles all edge cases.
-            let _ = (project_dir, env_base, capture_output, t); // Suppress unused warnings
-
+        TaskDefinition::Single(_) => {
             // IMPORTANT:
             // The TaskDefinition passed here may be sourced from the *local* manifest
             // (pre-global-normalization / pre-injection). In global mode, additional
@@ -787,87 +761,6 @@ async fn execute_task_with_strategy_hermetic(
             }
         }
     }
-}
-
-/// Execute a single task hermetically with pre-computed hook environment
-async fn run_task_hermetic(
-    project_dir: &Path,
-    package: &str,
-    name: &str,
-    task: &Task,
-    env_base: Option<&cuenv_core::environment::Env>,
-    hook_env: &Environment,
-    capture_output: bool,
-) -> Result<cuenv_core::tasks::TaskResult> {
-    // Discover git root
-    let git_root = find_git_root(project_dir)?;
-    let project_ref_count = task.iter_project_refs().count();
-    tracing::info!(
-        "Starting task '{}' with {} project references",
-        name,
-        project_ref_count
-    );
-
-    // Prepare hermetic workspace
-    let workspace = create_workspace_dir(name)?;
-
-    // Materialize project references first
-    for reference in task.iter_project_refs() {
-        resolve_and_materialize_project_reference(
-            &git_root,
-            project_dir,
-            package,
-            reference,
-            &workspace,
-            capture_output,
-        )
-        .await?;
-    }
-
-    // Materialize local inputs
-    for input in task.iter_path_inputs() {
-        let src = project_dir.join(input);
-        let dst = workspace.join(input);
-        materialize_path(&src, &dst)?;
-    }
-
-    // Use the pre-computed hook environment
-    let mut env = Environment::new();
-    // First apply hook environment (includes PATH and other Nix-provided variables)
-    for (k, v) in hook_env.iter() {
-        env.set(k.clone(), v.clone());
-    }
-    // Then apply task-specific overrides from env_base
-    if let Some(base) = env_base {
-        let vars = Environment::resolve_for_task(name, &base.base).await?;
-        for (k, v) in vars {
-            env.set(k, v);
-        }
-    }
-
-    // Execute with project_root set to our prepared workspace so that the
-    // executor resolves inputs from there (including external materials).
-    let exec = TaskExecutor::with_dagger_factory(
-        ExecutorConfig {
-            capture_output,
-            max_parallel: 0,
-            environment: env.clone(),
-            working_dir: None,
-            project_root: workspace.clone(),
-            cue_module_root: find_cue_module_root(&workspace),
-            materialize_outputs: None,
-            cache_dir: None,
-            show_cache_path: false,
-            workspaces: None,
-            backend_config: None,
-            cli_backend: None,
-        },
-        get_dagger_factory(),
-    );
-
-    let result = exec.execute_task(name, task).await?;
-
-    Ok(result)
 }
 
 fn format_task_results(
@@ -966,75 +859,6 @@ fn format_label_root(labels: &[String]) -> String {
     format!("__cuenv_labels__{}", sorted.join("+"))
 }
 
-fn find_git_root(start: &Path) -> Result<PathBuf> {
-    let mut current = start;
-    loop {
-        if current.join(".git").exists() {
-            // Canonicalize to resolve platform symlinks (e.g., macOS /var -> /private/var)
-            // so subsequent path containment checks use a stable prefix.
-            let canon = fs::canonicalize(current).unwrap_or_else(|_| current.to_path_buf());
-            return Ok(canon);
-        }
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => {
-                return Err(cuenv_core::Error::configuration(
-                    "Git root not found".to_string(),
-                ));
-            }
-        }
-    }
-}
-
-fn canonicalize_within_root(root: &Path, path: &Path) -> Result<PathBuf> {
-    // Resolve both the root and candidate to canonical paths to avoid issues with
-    // platform-specific symlinks (notably macOS's /var -> /private/var).
-    let root_canon = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let canon = fs::canonicalize(path).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(path.to_path_buf().into_boxed_path()),
-        operation: "canonicalize".to_string(),
-    })?;
-    if canon.starts_with(&root_canon) {
-        Ok(canon)
-    } else {
-        Err(cuenv_core::Error::configuration(format!(
-            "Resolved path '{}' is outside repository root '{}'",
-            canon.display(),
-            root_canon.display()
-        )))
-    }
-}
-
-fn detect_package_name(dir: &Path) -> Result<String> {
-    for entry in fs::read_dir(dir).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(dir.to_path_buf().into_boxed_path()),
-        operation: "read_dir".to_string(),
-    })? {
-        let path = entry
-            .map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: None,
-                operation: "read_dir_entry".to_string(),
-            })?
-            .path();
-        if path.extension().and_then(|s| s.to_str()) == Some("cue")
-            && let Ok(content) = fs::read_to_string(&path)
-            && let Some(line) = content
-                .lines()
-                .find(|l| l.trim_start().starts_with("package "))
-        {
-            let pkg = line.trim_start().trim_start_matches("package ").trim();
-            return Ok(pkg.to_string());
-        }
-    }
-    Err(cuenv_core::Error::configuration(format!(
-        "Could not detect CUE package name in {}",
-        dir.display()
-    )))
-}
-
 /// Evaluate a CUE manifest using module-wide evaluation.
 ///
 /// This function evaluates the entire CUE module once and extracts the Project
@@ -1128,344 +952,6 @@ fn evaluate_manifest(
             ))
         }
     }
-}
-
-#[allow(dead_code)]
-fn task_cache_dir() -> PathBuf {
-    // Use OS temp dir for cache to ensure write access in sandboxed/test environments.
-    // This avoids relying on HOME/XDG locations that may be unavailable in Nix builds.
-    std::env::temp_dir()
-        .join(".cuenv")
-        .join("cache")
-        .join("tasks")
-}
-
-fn create_workspace_dir(task_name: &str) -> Result<PathBuf> {
-    let base = std::env::temp_dir().join("cuenv_workspaces");
-    let _ = fs::create_dir_all(&base);
-    let dir = base.join(format!(
-        "{}-{}",
-        task_name.replace(':', "_"),
-        Uuid::new_v4()
-    ));
-    fs::create_dir_all(&dir).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(dir.clone().into_boxed_path()),
-        operation: "mkdir".to_string(),
-    })?;
-    Ok(dir)
-}
-
-fn materialize_path(src: &Path, dst: &Path) -> Result<()> {
-    if src.is_dir() {
-        // Copy directory recursively
-        for entry in walkdir::WalkDir::new(src) {
-            let entry = entry.map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
-            let rel = entry
-                .path()
-                .strip_prefix(src)
-                .expect("WalkDir entry is under src");
-            let target = dst.join(rel);
-            if entry.file_type().is_dir() {
-                fs::create_dir_all(&target).map_err(|e| cuenv_core::Error::Io {
-                    source: e,
-                    path: Some(target.clone().into_boxed_path()),
-                    operation: "mkdir".to_string(),
-                })?;
-            } else {
-                if let Some(parent) = target.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-                // Try hardlink, fallback to copy
-                if fs::hard_link(entry.path(), &target).is_err() {
-                    fs::copy(entry.path(), &target).map_err(|e| cuenv_core::Error::Io {
-                        source: e,
-                        path: Some(target.clone().into_boxed_path()),
-                        operation: "copy".to_string(),
-                    })?;
-                }
-            }
-        }
-    } else {
-        if let Some(parent) = dst.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if fs::hard_link(src, dst).is_err() {
-            fs::copy(src, dst).map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(dst.to_path_buf().into_boxed_path()),
-                operation: "copy".to_string(),
-            })?;
-        }
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn compute_task_cache_key(
-    task: &Task,
-    env: &Environment,
-    workspace_inputs_root: &Path,
-) -> Result<String> {
-    let mut hasher = Sha256::new();
-    hasher.update(b"v1");
-    hasher.update(task.command.as_bytes());
-    for arg in &task.args {
-        hasher.update(b"\0");
-        hasher.update(arg.as_bytes());
-    }
-    // Env map in sorted order
-    let mut env_btree = BTreeMap::new();
-    for (k, v) in env.iter() {
-        env_btree.insert(k.clone(), v.clone());
-    }
-    for (k, v) in env_btree {
-        hasher.update(b"\0env");
-        hasher.update(k.as_bytes());
-        hasher.update(b"=");
-        hasher.update(v.as_bytes());
-    }
-    // Hash all files in workspace that are inputs/materialized
-    // We use declared inputs plus any paths under workspace that were materialized by project references
-    for input in task.iter_path_inputs() {
-        let path = workspace_inputs_root.join(input);
-        hash_path_recursive(&mut hasher, &path)?;
-    }
-
-    let mut unique_dests: HashSet<PathBuf> = HashSet::new();
-    for reference in task.iter_project_refs() {
-        for mapping in &reference.map {
-            unique_dests.insert(workspace_inputs_root.join(&mapping.to));
-        }
-    }
-    for dst in unique_dests {
-        hash_path_recursive(&mut hasher, &dst)?;
-    }
-
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-#[allow(dead_code)]
-fn hash_path_recursive(hasher: &mut Sha256, path: &Path) -> Result<()> {
-    if path.is_dir() {
-        for entry in walkdir::WalkDir::new(path) {
-            let entry = entry.map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
-            if entry.file_type().is_file() {
-                let mut f = fs::File::open(entry.path()).map_err(|e| cuenv_core::Error::Io {
-                    source: e,
-                    path: Some(entry.path().to_path_buf().into_boxed_path()),
-                    operation: "open".to_string(),
-                })?;
-                let mut buf = Vec::new();
-                f.read_to_end(&mut buf).map_err(|e| cuenv_core::Error::Io {
-                    source: e,
-                    path: Some(entry.path().to_path_buf().into_boxed_path()),
-                    operation: "read".to_string(),
-                })?;
-                hasher.update(&buf);
-            }
-        }
-    } else if path.is_file() {
-        let mut f = fs::File::open(path).map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(path.to_path_buf().into_boxed_path()),
-            operation: "open".to_string(),
-        })?;
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf).map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(path.to_path_buf().into_boxed_path()),
-            operation: "read".to_string(),
-        })?;
-        hasher.update(&buf);
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn store_outputs_in_cache(workspace: &Path, outputs: &[String], outputs_dir: &Path) -> Result<()> {
-    fs::create_dir_all(outputs_dir).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(outputs_dir.to_path_buf().into_boxed_path()),
-        operation: "mkdir".to_string(),
-    })?;
-    for out in outputs {
-        let src = workspace.join(out);
-        let dst = outputs_dir.join(out);
-        materialize_path(&src, &dst)?;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_lines)]
-async fn resolve_and_materialize_project_reference(
-    git_root: &Path,
-    current_project_dir: &Path,
-    _parent_package: &str,
-    reference: &cuenv_core::tasks::ProjectReference,
-    workspace: &Path,
-    capture_output: bool,
-) -> Result<()> {
-    tracing::info!(
-        "Resolving project reference: project='{}' task='{}' mappings={}",
-        reference.project,
-        reference.task,
-        reference.map.len()
-    );
-
-    // Resolve external project path
-    let ext_dir = if reference.project.starts_with('/') {
-        canonicalize_within_root(
-            git_root,
-            &git_root.join(reference.project.trim_start_matches('/')),
-        )?
-    } else {
-        canonicalize_within_root(git_root, &current_project_dir.join(&reference.project))?
-    };
-
-    // Detect package name and evaluate
-    let package = detect_package_name(&ext_dir)?;
-    let manifest: Project = evaluate_manifest(&ext_dir, &package, None)?.with_implicit_tasks();
-
-    // Locate external task
-    let task_def = manifest.tasks.get(&reference.task).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "External task '{}' not found in project {}",
-            reference.task,
-            ext_dir.display()
-        ))
-    })?;
-    let task = match task_def {
-        TaskDefinition::Single(t) => t.as_ref(),
-        TaskDefinition::Group(_) => {
-            return Err(cuenv_core::Error::configuration(
-                "External task must be a single task".to_string(),
-            ));
-        }
-    };
-
-    // Validate mapping 'from' against declared outputs
-    let declared: HashSet<&String> = task.outputs.iter().collect();
-    for m in &reference.map {
-        if !declared.contains(&m.from) {
-            return Err(cuenv_core::Error::configuration(format!(
-                "Mapping refers to non-declared output '{}'; declared outputs: {:?}",
-                m.from, task.outputs
-            )));
-        }
-    }
-
-    // Ensure no destination collisions
-    let mut dests: HashSet<&String> = HashSet::new();
-    for m in &reference.map {
-        if !dests.insert(&m.to) {
-            return Err(cuenv_core::Error::configuration(format!(
-                "Collision in mapping: destination '{}' specified multiple times",
-                m.to
-            )));
-        }
-    }
-
-    // Build environment for external task (isolated)
-    let mut env = Environment::new();
-    if let Some(_base) = manifest.env.as_ref() {
-        // Get base environment with hook-generated vars
-        // Note: External project references use fresh evaluation (no executor caching)
-        // since they may be in different CUE modules
-        let base_env_vars = get_environment_with_hooks(&ext_dir, &manifest, &package, None).await?;
-
-        // Apply base environment (static + hooks)
-        for (k, v) in &base_env_vars {
-            env.set(k.clone(), v.clone());
-        }
-
-        // Note: External tasks use build_for_task which doesn't resolve secrets/policies
-        // This is intentional for hermetic execution
-        let vars = Environment::build_for_task(
-            &reference.task,
-            &manifest
-                .env
-                .as_ref()
-                .expect("manifest.env required for task environment")
-                .base,
-        );
-        for (k, v) in vars {
-            env.set(k, v);
-        }
-    }
-
-    // Compute cache key exactly as core executor does
-    let input_resolver = cuenv_core::tasks::io::InputResolver::new(&ext_dir);
-    let input_patterns = task.collect_path_inputs_with_prefix(None);
-    let resolved_inputs = input_resolver.resolve(&input_patterns)?;
-    let inputs_summary = resolved_inputs.to_summary_map();
-    let mut env_summary = BTreeMap::new();
-    for (k, v) in env.iter() {
-        env_summary.insert(k.clone(), v.clone());
-    }
-    let cuenv_version = cuenv_core::VERSION.to_string();
-    let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-    let shell_json = serde_json::to_value(&task.shell).ok();
-    let envelope = cuenv_core::cache::tasks::CacheKeyEnvelope {
-        inputs: inputs_summary,
-        command: task.command.clone(),
-        args: task.args.clone(),
-        shell: shell_json,
-        env: env_summary,
-        cuenv_version,
-        platform,
-        workspace_lockfile_hashes: None,
-        workspace_package_hashes: None,
-    };
-    let (ext_key, _env_json) = cuenv_core::cache::tasks::compute_cache_key(&envelope)?;
-
-    // Ensure cache exists (run if miss)
-    if cuenv_core::cache::tasks::lookup(&ext_key, None).is_none() {
-        tracing::info!(
-            "Cache miss for external task '{}' (key {})",
-            reference.task,
-            ext_key
-        );
-        let exec = TaskExecutor::with_dagger_factory(
-            ExecutorConfig {
-                capture_output,
-                max_parallel: 0,
-                environment: env.clone(),
-                working_dir: None,
-                project_root: ext_dir.clone(),
-                cue_module_root: find_cue_module_root(&ext_dir),
-                materialize_outputs: None,
-                cache_dir: None,
-                show_cache_path: false,
-                workspaces: None,
-                backend_config: None,
-                cli_backend: None,
-            },
-            get_dagger_factory(),
-        );
-        let res = exec.execute_task(&reference.task, task).await?;
-        if !res.success {
-            return Err(cuenv_core::Error::configuration(format!(
-                "External task '{}' failed",
-                reference.task
-            )));
-        }
-    } else {
-        tracing::info!("Cache hit for external task '{}'", reference.task);
-    }
-
-    // Materialize selected outputs from cache into dependent workspace
-    let mat_dir = std::env::temp_dir().join("cuenv_ext_mat").join(&ext_key);
-    let _ = fs::remove_dir_all(&mat_dir);
-    fs::create_dir_all(&mat_dir).ok();
-    let _ = cuenv_core::cache::tasks::materialize_outputs(&ext_key, &mat_dir, None)?;
-    for m in &reference.map {
-        let src = mat_dir.join(&m.from);
-        let dst = workspace.join(&m.to);
-        materialize_path(&src, &dst)?;
-    }
-
-    Ok(())
 }
 
 fn get_task_cli_help() -> String {
@@ -2726,107 +2212,6 @@ env: {
     }
 
     #[test]
-    fn test_find_git_root_success_and_failure() {
-        let tmp = TempDir::new().expect("write to string");
-        // failure: no .git
-        let err = find_git_root(tmp.path()).expect_err("should fail without .git");
-        let _ = err; // silence unused
-
-        // success: with .git at parent
-        let proj = tmp.path().join("proj");
-        fs::create_dir_all(proj.join("sub")).expect("write to string");
-        fs::create_dir_all(tmp.path().join(".git")).expect("write to string");
-        let root = find_git_root(&proj).expect("should locate git root");
-        // canonicalization should normalize to tmp root
-        assert_eq!(root, std::fs::canonicalize(tmp.path()).unwrap());
-    }
-
-    #[test]
-    fn test_canonicalize_within_root_ok_and_reject_outside() {
-        let tmp = TempDir::new().expect("write to string");
-        let root = tmp.path();
-        fs::create_dir_all(root.join(".git")).expect("write to string");
-        let inside = root.join("a/b");
-        fs::create_dir_all(&inside).expect("write to string");
-        let ok = canonicalize_within_root(root, &inside).expect("inside should be ok");
-        let root_canon = std::fs::canonicalize(root).expect("write to string");
-        assert!(ok.starts_with(&root_canon));
-
-        // outside: a sibling temp dir
-        let other = TempDir::new().expect("write to string");
-        let outside = other.path().join("x");
-        fs::create_dir_all(&outside).expect("write to string");
-        let err = canonicalize_within_root(root, &outside).expect_err("should reject outside");
-        let _ = err; // silence unused
-    }
-
-    #[test]
-    fn test_detect_package_name_ok_and_err() {
-        let tmp = TempDir::new().expect("write to string");
-        let dir = tmp.path();
-
-        // ok
-        fs::write(dir.join("env.cue"), "package mypkg\n// rest").expect("write to string");
-        let pkg = detect_package_name(dir).expect("should detect package");
-        assert_eq!(pkg, "mypkg");
-
-        // err: empty dir
-        let empty = TempDir::new().expect("write to string");
-        let err = detect_package_name(empty.path()).expect_err("no package should error");
-        let _ = err;
-    }
-
-    #[test]
-    fn test_create_workspace_and_materialize_path() {
-        // create workspace
-        let dir = create_workspace_dir("task:name").expect("workspace created");
-        assert!(dir.exists());
-
-        // materialize file
-        let tmp = TempDir::new().expect("write to string");
-        let src_file = tmp.path().join("data.txt");
-        fs::write(&src_file, "hello").expect("write to string");
-        let dst_file = dir.join("copy/data.txt");
-        materialize_path(&src_file, &dst_file).expect("materialize file");
-        assert_eq!(fs::read_to_string(&dst_file).unwrap(), "hello");
-
-        // materialize directory
-        let src_dir = tmp.path().join("tree");
-        fs::create_dir_all(src_dir.join("nested")).expect("write to string");
-        fs::write(src_dir.join("nested/file.txt"), "content").expect("write to string");
-        let dst_dir = dir.join("tree_copy");
-        materialize_path(&src_dir, &dst_dir).expect("materialize dir");
-        assert_eq!(
-            fs::read_to_string(dst_dir.join("nested/file.txt")).unwrap(),
-            "content"
-        );
-    }
-
-    #[test]
-    fn test_compute_task_cache_key_changes_on_input_change() {
-        let tmp = TempDir::new().expect("write to string");
-        // prepare a workspace inputs root
-        let ws = tmp.path().join("ws");
-        fs::create_dir_all(ws.join("inputs")).expect("write to string");
-        fs::write(ws.join("inputs/a.txt"), "A").expect("write to string");
-
-        let mut env = Environment::new();
-        env.set("FOO".into(), "1".into());
-        let task = Task {
-            command: "echo".into(),
-            args: vec!["hi".into()],
-            inputs: vec![Input::Path("inputs".into())],
-            ..Default::default()
-        };
-
-        let k1 = compute_task_cache_key(&task, &env, &ws).expect("key1");
-        // mutate input
-        fs::write(ws.join("inputs/a.txt"), "B").expect("write to string");
-        let k2 = compute_task_cache_key(&task, &env, &ws).expect("key2");
-        assert_ne!(k1, k2, "key should change when input changes");
-    }
-
-    #[test]
     fn test_resolve_task_ref_merges_dependencies() {
         let tmp = TempDir::new().expect("write to string");
         fs::write(tmp.path().join("env.cue"), "package test").expect("write to string");
@@ -2912,87 +2297,6 @@ env: {
         // capture on with empty output -> default completion
         let s3 = format_task_results(vec![], true, "abc");
         assert_eq!(s3, "Task 'abc' completed");
-    }
-
-    #[tokio::test]
-    async fn test_run_task_hermetic_local_inputs_and_outputs() {
-        // project dir with .git and local inputs
-        let tmp = TempDir::new().expect("write to string");
-        let proj = tmp.path().join("proj");
-        fs::create_dir_all(proj.join(".git")).expect("write to string");
-        fs::create_dir_all(proj.join("inputs")).expect("write to string");
-        fs::write(proj.join("inputs/in.txt"), "data").expect("write to string");
-
-        let task = Task {
-            command: "sh".into(),
-            args: vec![
-                "-c".into(),
-                "mkdir -p out; cat inputs/in.txt > out/out.txt; echo done".into(),
-            ],
-            inputs: vec![Input::Path("inputs".into())],
-            outputs: vec!["out/out.txt".into()],
-            ..Default::default()
-        };
-
-        // Execute directly via helper
-        let hook_env = Environment::new();
-        let res = run_task_hermetic(&proj, "test", "mytask", &task, None, &hook_env, true)
-            .await
-            .expect("hermetic run ok");
-        assert!(res.success);
-        assert!(res.stdout.contains("done"));
-    }
-
-    #[ignore = "hermetic execution temporarily disabled - see execute_task_with_strategy_hermetic"]
-    #[tokio::test]
-    async fn test_execute_task_with_strategy_hermetic_single_task() {
-        // Build a single task that declares inputs/outputs to trigger hermetic path
-        let tmp = TempDir::new().expect("write to string");
-        let proj = tmp.path().join("proj");
-        fs::create_dir_all(proj.join(".git")).expect("write to string");
-        fs::create_dir_all(proj.join("inputs")).expect("write to string");
-        fs::write(proj.join("inputs/in.txt"), "x").expect("write to string");
-
-        let exec = TaskExecutor::with_dagger_factory(
-            ExecutorConfig {
-                capture_output: true,
-                workspaces: None,
-                ..Default::default()
-            },
-            get_dagger_factory(),
-        );
-
-        let task = Task {
-            command: "sh".into(),
-            args: vec!["-c".into(), "cp inputs/in.txt out.txt".into()],
-            inputs: vec![Input::Path("inputs".into())],
-            outputs: vec!["out.txt".into()],
-            ..Default::default()
-        };
-        let def = TaskDefinition::Single(Box::new(task.clone()));
-        let mut all = Tasks::new();
-        all.tasks.insert("copy".into(), def.clone());
-        let mut g = TaskGraph::new();
-        g.build_from_definition("copy", &def, &all)
-            .expect("write to string");
-
-        let hook_env = Environment::new();
-        let results = execute_task_with_strategy_hermetic(
-            proj.to_str().unwrap(),
-            "test",
-            &exec,
-            "copy",
-            &def,
-            &g,
-            &all,
-            None,
-            &hook_env,
-            true,
-        )
-        .await
-        .expect("execute hermetic ok");
-        assert_eq!(results.len(), 1);
-        assert!(results[0].success);
     }
 
     #[test]
