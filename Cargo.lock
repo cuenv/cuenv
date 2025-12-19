@@ -898,6 +898,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-buildkite"
+version = "0.15.7"
+dependencies = [
+ "cuenv-ci",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-ci"
 version = "0.15.7"
 dependencies = [

@@ -29,6 +29,9 @@ pub struct CIExecutorConfig {
 
     /// Salt for secret fingerprinting (CUENV_SECRET_SALT)
     pub secret_salt: Option<String>,
+
+    /// Previous salt for secret fingerprinting during rotation (CUENV_SECRET_SALT_PREV)
+    pub secret_salt_prev: Option<String>,
 }
 
 impl Default for CIExecutorConfig {
@@ -41,6 +44,7 @@ impl Default for CIExecutorConfig {
             dry_run: false,
             cache_policy_override: None,
             secret_salt: None,
+            secret_salt_prev: None,
         }
     }
 }
@@ -94,6 +98,13 @@ impl CIExecutorConfig {
     #[must_use]
     pub fn with_secret_salt(mut self, salt: String) -> Self {
         self.secret_salt = Some(salt);
+        self
+    }
+
+    /// Set the previous secret salt for rotation
+    #[must_use]
+    pub fn with_secret_salt_prev(mut self, salt: String) -> Self {
+        self.secret_salt_prev = Some(salt);
         self
     }
 

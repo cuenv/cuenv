@@ -14,6 +14,7 @@ pub mod secrets;
 
 pub use config::CIExecutorConfig;
 pub use runner::TaskOutput;
+pub use secrets::SaltConfig;
 
 use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
 use crate::compiler::Compiler;
@@ -560,11 +561,18 @@ pub async fn run_ci(
                 None
             };
 
-            // Create executor configuration
-            let executor_config = CIExecutorConfig::new(project_root.to_path_buf())
+            // Create executor configuration with salt rotation support
+            let mut executor_config = CIExecutorConfig::new(project_root.to_path_buf())
                 .with_capture_output(true)
                 .with_dry_run(dry_run)
                 .with_secret_salt(std::env::var("CUENV_SECRET_SALT").unwrap_or_default());
+
+            // Add previous salt for rotation support
+            if let Ok(prev_salt) = std::env::var("CUENV_SECRET_SALT_PREV") {
+                if !prev_salt.is_empty() {
+                    executor_config = executor_config.with_secret_salt_prev(prev_salt);
+                }
+            }
 
             let executor_config = if let Some(policy) = cache_policy_override {
                 executor_config.with_cache_policy_override(policy)

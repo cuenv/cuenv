@@ -1,7 +1,8 @@
 //! Secret Resolution for CI Execution
 //!
 //! Resolves secrets from environment variables and computes HMAC fingerprints
-//! for cache key computation.
+//! for cache key computation. Supports graceful salt rotation via
+//! `CUENV_SYSTEM_SALT_PREV` for zero-downtime secret rotation.
 
 use crate::ir::SecretConfig;
 use sha2::{Digest, Sha256};
@@ -22,6 +23,46 @@ pub enum SecretError {
     /// Missing salt when secrets require fingerprinting
     #[error("CUENV_SECRET_SALT required when secrets have cache_key: true")]
     MissingSalt,
+}
+
+/// Salt configuration for secret fingerprinting with rotation support
+#[derive(Debug, Clone, Default)]
+pub struct SaltConfig {
+    /// Current salt (used for writing new fingerprints)
+    pub current: Option<String>,
+    /// Previous salt (accepted for reading during rotation)
+    pub previous: Option<String>,
+}
+
+impl SaltConfig {
+    /// Create a new salt config with only a current salt
+    #[must_use]
+    pub fn new(current: Option<String>) -> Self {
+        Self {
+            current,
+            previous: None,
+        }
+    }
+
+    /// Create a salt config with rotation support
+    #[must_use]
+    pub fn with_rotation(current: Option<String>, previous: Option<String>) -> Self {
+        Self { current, previous }
+    }
+
+    /// Check if any salt is available
+    #[must_use]
+    pub fn has_salt(&self) -> bool {
+        self.current.is_some() || self.previous.is_some()
+    }
+
+    /// Get the current salt for writing (returns current, or previous if current is None)
+    #[must_use]
+    pub fn write_salt(&self) -> Option<&str> {
+        self.current
+            .as_deref()
+            .or(self.previous.as_deref())
+    }
 }
 
 /// Resolved secrets ready for injection
@@ -47,12 +88,33 @@ impl ResolvedSecrets {
         secrets: &HashMap<String, SecretConfig>,
         salt: Option<&str>,
     ) -> Result<Self, SecretError> {
+        let salt_config = SaltConfig::new(salt.map(String::from));
+        Self::from_env_with_salt_config(secrets, &salt_config)
+    }
+
+    /// Resolve secrets with salt rotation support
+    ///
+    /// During salt rotation, fingerprints are computed with the current salt
+    /// for writing to cache. Use `fingerprint_matches` to validate cache entries
+    /// against both current and previous salts.
+    ///
+    /// # Arguments
+    /// * `secrets` - Map of secret names to their configuration
+    /// * `salt_config` - Salt configuration with current and optional previous salt
+    ///
+    /// # Errors
+    /// Returns error if a required secret is not found or if salt is missing
+    /// when secrets have `cache_key: true`
+    pub fn from_env_with_salt_config(
+        secrets: &HashMap<String, SecretConfig>,
+        salt_config: &SaltConfig,
+    ) -> Result<Self, SecretError> {
         let mut values = HashMap::new();
         let mut fingerprints = HashMap::new();
 
         // Check if any secret requires cache key and salt is missing
         let needs_salt = secrets.values().any(|c| c.cache_key);
-        if needs_salt && salt.is_none() {
+        if needs_salt && !salt_config.has_salt() {
             return Err(SecretError::MissingSalt);
         }
 
@@ -74,7 +136,9 @@ impl ResolvedSecrets {
                     );
                 }
 
-                let fingerprint = compute_secret_fingerprint(name, &value, salt.unwrap_or(""));
+                // Use write_salt for computing fingerprints (current salt preferred)
+                let fingerprint =
+                    compute_secret_fingerprint(name, &value, salt_config.write_salt().unwrap_or(""));
                 fingerprints.insert(name.clone(), fingerprint);
             }
 
@@ -97,6 +161,80 @@ impl ResolvedSecrets {
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
         self.values.get(name).map(String::as_str)
+    }
+
+    /// Check if a cached fingerprint matches with salt rotation support
+    ///
+    /// During salt rotation, this checks if the cached fingerprint matches
+    /// using either the current or previous salt. This allows cache hits
+    /// during the rotation window.
+    ///
+    /// # Arguments
+    /// * `name` - Secret name
+    /// * `cached_fingerprint` - Fingerprint from cache
+    /// * `salt_config` - Salt configuration with current and optional previous salt
+    ///
+    /// # Returns
+    /// `true` if the fingerprint matches with either salt, `false` otherwise
+    #[must_use]
+    pub fn fingerprint_matches(
+        &self,
+        name: &str,
+        cached_fingerprint: &str,
+        salt_config: &SaltConfig,
+    ) -> bool {
+        let Some(value) = self.values.get(name) else {
+            return false;
+        };
+
+        // Check against current salt
+        if let Some(current) = &salt_config.current {
+            let current_fp = compute_secret_fingerprint(name, value, current);
+            if current_fp == cached_fingerprint {
+                return true;
+            }
+        }
+
+        // Check against previous salt (for rotation window)
+        if let Some(previous) = &salt_config.previous {
+            let previous_fp = compute_secret_fingerprint(name, value, previous);
+            if previous_fp == cached_fingerprint {
+                tracing::debug!(
+                    secret = %name,
+                    "Cache hit using previous salt - rotation in progress"
+                );
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Compute fingerprints using both current and previous salts
+    ///
+    /// Returns a tuple of (current_fingerprint, previous_fingerprint) for cache validation.
+    /// Either may be None if the corresponding salt is not configured.
+    #[must_use]
+    pub fn compute_fingerprints_for_validation(
+        &self,
+        name: &str,
+        salt_config: &SaltConfig,
+    ) -> (Option<String>, Option<String>) {
+        let Some(value) = self.values.get(name) else {
+            return (None, None);
+        };
+
+        let current_fp = salt_config
+            .current
+            .as_ref()
+            .map(|salt| compute_secret_fingerprint(name, value, salt));
+
+        let previous_fp = salt_config
+            .previous
+            .as_ref()
+            .map(|salt| compute_secret_fingerprint(name, value, salt));
+
+        (current_fp, previous_fp)
     }
 }
 
@@ -234,6 +372,190 @@ mod tests {
         // SAFETY: Tests run single-threaded
         unsafe {
             std::env::remove_var("TEST_SALT_CHECK");
+        }
+    }
+
+    // Salt rotation tests
+
+    #[test]
+    fn test_salt_config_new() {
+        let config = SaltConfig::new(Some("current".to_string()));
+        assert_eq!(config.current, Some("current".to_string()));
+        assert_eq!(config.previous, None);
+        assert!(config.has_salt());
+        assert_eq!(config.write_salt(), Some("current"));
+    }
+
+    #[test]
+    fn test_salt_config_with_rotation() {
+        let config = SaltConfig::with_rotation(
+            Some("new-salt".to_string()),
+            Some("old-salt".to_string()),
+        );
+        assert_eq!(config.current, Some("new-salt".to_string()));
+        assert_eq!(config.previous, Some("old-salt".to_string()));
+        assert!(config.has_salt());
+        assert_eq!(config.write_salt(), Some("new-salt"));
+    }
+
+    #[test]
+    fn test_salt_config_no_current_uses_previous() {
+        let config = SaltConfig::with_rotation(None, Some("old-salt".to_string()));
+        assert!(config.has_salt());
+        assert_eq!(config.write_salt(), Some("old-salt"));
+    }
+
+    #[test]
+    fn test_salt_config_empty() {
+        let config = SaltConfig::default();
+        assert!(!config.has_salt());
+        assert_eq!(config.write_salt(), None);
+    }
+
+    #[test]
+    fn test_fingerprint_matches_current_salt() {
+        // SAFETY: Tests run single-threaded and we clean up after
+        unsafe {
+            std::env::set_var("TEST_FP_MATCH_1", "secret_value");
+        }
+
+        let secrets = HashMap::from([(
+            "api_key".to_string(),
+            make_secret_config("TEST_FP_MATCH_1", true),
+        )]);
+
+        let salt_config = SaltConfig::with_rotation(
+            Some("current-salt".to_string()),
+            Some("old-salt".to_string()),
+        );
+
+        let resolved = ResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
+
+        // Fingerprint computed with current salt should match
+        let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "current-salt");
+        assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
+
+        // SAFETY: Tests run single-threaded
+        unsafe {
+            std::env::remove_var("TEST_FP_MATCH_1");
+        }
+    }
+
+    #[test]
+    fn test_fingerprint_matches_previous_salt() {
+        // SAFETY: Tests run single-threaded and we clean up after
+        unsafe {
+            std::env::set_var("TEST_FP_MATCH_2", "secret_value");
+        }
+
+        let secrets = HashMap::from([(
+            "api_key".to_string(),
+            make_secret_config("TEST_FP_MATCH_2", true),
+        )]);
+
+        let salt_config = SaltConfig::with_rotation(
+            Some("new-salt".to_string()),
+            Some("old-salt".to_string()),
+        );
+
+        let resolved = ResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
+
+        // Fingerprint computed with OLD salt should still match (rotation window)
+        let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "old-salt");
+        assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
+
+        // SAFETY: Tests run single-threaded
+        unsafe {
+            std::env::remove_var("TEST_FP_MATCH_2");
+        }
+    }
+
+    #[test]
+    fn test_fingerprint_no_match_wrong_salt() {
+        // SAFETY: Tests run single-threaded and we clean up after
+        unsafe {
+            std::env::set_var("TEST_FP_MATCH_3", "secret_value");
+        }
+
+        let secrets = HashMap::from([(
+            "api_key".to_string(),
+            make_secret_config("TEST_FP_MATCH_3", true),
+        )]);
+
+        let salt_config = SaltConfig::with_rotation(
+            Some("current-salt".to_string()),
+            Some("old-salt".to_string()),
+        );
+
+        let resolved = ResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
+
+        // Fingerprint with unknown salt should NOT match
+        let wrong_fp = compute_secret_fingerprint("api_key", "secret_value", "wrong-salt");
+        assert!(!resolved.fingerprint_matches("api_key", &wrong_fp, &salt_config));
+
+        // SAFETY: Tests run single-threaded
+        unsafe {
+            std::env::remove_var("TEST_FP_MATCH_3");
+        }
+    }
+
+    #[test]
+    fn test_resolve_with_salt_config_uses_current_for_write() {
+        // SAFETY: Tests run single-threaded and we clean up after
+        unsafe {
+            std::env::set_var("TEST_WRITE_SALT", "secret_value");
+        }
+
+        let secrets = HashMap::from([(
+            "api_key".to_string(),
+            make_secret_config("TEST_WRITE_SALT", true),
+        )]);
+
+        let salt_config = SaltConfig::with_rotation(
+            Some("new-salt".to_string()),
+            Some("old-salt".to_string()),
+        );
+
+        let resolved = ResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
+
+        // Fingerprint stored should use current (new) salt
+        let expected_fp = compute_secret_fingerprint("api_key", "secret_value", "new-salt");
+        assert_eq!(resolved.fingerprints.get("api_key"), Some(&expected_fp));
+
+        // SAFETY: Tests run single-threaded
+        unsafe {
+            std::env::remove_var("TEST_WRITE_SALT");
+        }
+    }
+
+    #[test]
+    fn test_compute_fingerprints_for_validation() {
+        // SAFETY: Tests run single-threaded and we clean up after
+        unsafe {
+            std::env::set_var("TEST_COMPUTE_FP", "secret_value");
+        }
+
+        let secrets = HashMap::from([(
+            "api_key".to_string(),
+            make_secret_config("TEST_COMPUTE_FP", false), // cache_key doesn't matter for this test
+        )]);
+
+        let salt_config = SaltConfig::with_rotation(
+            Some("current".to_string()),
+            Some("previous".to_string()),
+        );
+
+        let resolved = ResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
+        let (current_fp, previous_fp) =
+            resolved.compute_fingerprints_for_validation("api_key", &salt_config);
+
+        assert!(current_fp.is_some());
+        assert!(previous_fp.is_some());
+        assert_ne!(current_fp, previous_fp); // Different salts = different fingerprints
+
+        // SAFETY: Tests run single-threaded
+        unsafe {
+            std::env::remove_var("TEST_COMPUTE_FP");
         }
     }
 }

@@ -1,0 +1,25 @@
+[package]
+name = "cuenv-buildkite"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "development-tools::build-utils"]
+readme = "../../readme.md"
+description = "Buildkite CI emitter for cuenv"
+
+[lints]
+workspace = true
+
+[dependencies]
+cuenv-ci = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

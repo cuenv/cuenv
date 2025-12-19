@@ -4,6 +4,7 @@ pub mod affected;
 pub mod compiler;
 pub mod context;
 pub mod discovery;
+pub mod emitter;
 pub mod executor;
 pub mod flake;
 pub mod ir;
