@@ -5,15 +5,18 @@
 
 pub mod digest;
 
+use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
 use crate::ir::{
     CachePolicy, IntermediateRepresentation, IrValidator, OutputDeclaration, OutputType,
-    PurityMode, ResourceRequirements, Runtime, SecretConfig, Task as IrTask, TriggerCondition,
-    ValidationError,
+    PurityMode, Runtime, SecretConfig, Task as IrTask, TriggerCondition,
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
+use digest::DigestBuilder;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Compiler errors
 #[derive(Debug, Error)]
@@ -26,6 +29,9 @@ pub enum CompilerError {
 
     #[error("Invalid task structure: {0}")]
     InvalidTaskStructure(String),
+
+    #[error("Flake lock error: {0}")]
+    FlakeLock(#[from] FlakeLockError),
 }
 
 /// Compiler for transforming cuenv tasks to IR
@@ -48,6 +54,16 @@ pub struct CompilerOptions {
 
     /// Default cache policy for tasks
     pub default_cache_policy: CachePolicy,
+
+    /// Path to flake.lock file (optional, auto-detected if not set)
+    pub flake_lock_path: Option<PathBuf>,
+
+    /// Project root directory (for locating flake.lock)
+    pub project_root: Option<PathBuf>,
+
+    /// Manual overrides for input digests (for Override mode)
+    /// Maps input name to override digest value
+    pub input_overrides: HashMap<String, String>,
 }
 
 impl Compiler {
@@ -62,6 +78,154 @@ impl Compiler {
     /// Create a compiler with custom options
     pub fn with_options(project: Project, options: CompilerOptions) -> Self {
         Self { project, options }
+    }
+
+    /// Analyze flake.lock for purity and compute runtime digest
+    ///
+    /// If a flake.lock file is found, analyzes it for unlocked inputs
+    /// and computes a deterministic digest based on the locked content.
+    ///
+    /// # Returns
+    /// - `Some(Ok((digest, purity)))` if analysis succeeded
+    /// - `Some(Err(e))` if analysis failed
+    /// - `None` if no flake.lock was found (not a flake-based project)
+    pub fn analyze_flake_purity(&self) -> Option<Result<(String, PurityMode), CompilerError>> {
+        let lock_path = self.resolve_flake_lock_path()?;
+
+        if !lock_path.exists() {
+            return None;
+        }
+
+        Some(self.perform_flake_analysis(&lock_path))
+    }
+
+    /// Resolve the path to flake.lock
+    fn resolve_flake_lock_path(&self) -> Option<PathBuf> {
+        // Use explicit path if provided
+        if let Some(path) = &self.options.flake_lock_path {
+            return Some(path.clone());
+        }
+
+        // Otherwise, look in project root
+        if let Some(root) = &self.options.project_root {
+            return Some(root.join("flake.lock"));
+        }
+
+        // Default: current directory
+        Some(PathBuf::from("flake.lock"))
+    }
+
+    /// Perform flake purity analysis and apply purity mode
+    fn perform_flake_analysis(
+        &self,
+        lock_path: &PathBuf,
+    ) -> Result<(String, PurityMode), CompilerError> {
+        let analyzer = FlakeLockAnalyzer::from_path(lock_path)?;
+        let analysis = analyzer.analyze();
+
+        self.apply_purity_mode(&analysis)
+    }
+
+    /// Apply purity mode enforcement based on analysis results
+    ///
+    /// - **Strict**: Reject unlocked flakes with an error
+    /// - **Warning**: Log warnings and inject UUID into digest (non-deterministic)
+    /// - **Override**: Apply manual input overrides for deterministic builds
+    fn apply_purity_mode(
+        &self,
+        analysis: &PurityAnalysis,
+    ) -> Result<(String, PurityMode), CompilerError> {
+        match self.options.purity_mode {
+            PurityMode::Strict => {
+                if !analysis.is_pure {
+                    let inputs: Vec<String> = analysis
+                        .unlocked_inputs
+                        .iter()
+                        .map(|u| format!("{}: {}", u.name, u.reason))
+                        .collect();
+                    return Err(CompilerError::FlakeLock(FlakeLockError::strict_violation(
+                        inputs,
+                    )));
+                }
+                Ok((analysis.locked_digest.clone(), PurityMode::Strict))
+            }
+
+            PurityMode::Warning => {
+                if !analysis.is_pure {
+                    // Log warnings for each unlocked input
+                    for input in &analysis.unlocked_inputs {
+                        tracing::warn!(
+                            input = %input.name,
+                            reason = %input.reason,
+                            "Unlocked flake input detected - cache key will be non-deterministic"
+                        );
+                    }
+
+                    // Inject UUID v4 into digest to force cache miss
+                    let uuid = Uuid::new_v4().to_string();
+                    let mut digest_builder = DigestBuilder::new();
+                    digest_builder.add_inputs(&[analysis.locked_digest.clone()]);
+                    digest_builder.add_impurity_uuid(&uuid);
+
+                    Ok((digest_builder.finalize(), PurityMode::Warning))
+                } else {
+                    Ok((analysis.locked_digest.clone(), PurityMode::Warning))
+                }
+            }
+
+            PurityMode::Override => {
+                // In override mode, apply manual input overrides
+                let mut effective_digest = analysis.locked_digest.clone();
+
+                if !self.options.input_overrides.is_empty() {
+                    let mut digest_builder = DigestBuilder::new();
+                    digest_builder.add_inputs(&[effective_digest]);
+
+                    // Add overrides to digest in deterministic order
+                    let mut sorted_overrides: Vec<_> =
+                        self.options.input_overrides.iter().collect();
+                    sorted_overrides.sort_by_key(|(k, _)| *k);
+
+                    for (key, value) in sorted_overrides {
+                        digest_builder.add_inputs(&[format!("override:{key}={value}")]);
+                    }
+
+                    effective_digest = digest_builder.finalize();
+                }
+
+                Ok((effective_digest, PurityMode::Override))
+            }
+        }
+    }
+
+    /// Compute a runtime configuration from the flake analysis
+    ///
+    /// This method creates a `Runtime` IR type with the computed digest
+    /// based on flake purity analysis.
+    pub fn compute_runtime(
+        &self,
+        id: impl Into<String>,
+        flake_ref: impl Into<String>,
+        output: impl Into<String>,
+        system: impl Into<String>,
+    ) -> Result<Runtime, CompilerError> {
+        let (digest, purity) = match self.analyze_flake_purity() {
+            Some(result) => result?,
+            None => {
+                // No flake.lock found - use placeholder digest
+                // This handles non-flake projects gracefully
+                ("sha256:no-flake-lock".to_string(), self.options.purity_mode)
+            }
+        };
+
+        Ok(Runtime {
+            id: id.into(),
+            flake: flake_ref.into(),
+            output: output.into(),
+            system: system.into(),
+            digest,
+            purity,
+        })
     }
 
     /// Compile project tasks to IR
@@ -334,5 +498,205 @@ mod tests {
         assert_eq!(ir.tasks[0].shell, true);
         assert_eq!(ir.tasks[0].command[0], "/bin/sh");
         assert_eq!(ir.tasks[0].command[1], "-c");
+    }
+
+    #[test]
+    fn test_purity_analysis_pure_flake() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "locked": {
+                        "type": "github",
+                        "owner": "NixOS",
+                        "repo": "nixpkgs",
+                        "rev": "abc123",
+                        "narHash": "sha256-xxxxxxxxxxxxx"
+                    }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Strict,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let result = compiler.analyze_flake_purity();
+
+        assert!(result.is_some());
+        let (digest, purity) = result.unwrap().unwrap();
+        assert!(digest.starts_with("sha256:"));
+        assert_eq!(purity, PurityMode::Strict);
+    }
+
+    #[test]
+    fn test_purity_strict_mode_rejects_unlocked() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "original": { "type": "github", "owner": "NixOS", "repo": "nixpkgs" }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Strict,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let result = compiler.analyze_flake_purity();
+
+        assert!(result.is_some());
+        assert!(result.unwrap().is_err());
+    }
+
+    #[test]
+    fn test_purity_warning_mode_injects_uuid() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "original": { "type": "github", "owner": "NixOS", "repo": "nixpkgs" }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Warning,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project.clone(), options.clone());
+        let result1 = compiler.analyze_flake_purity().unwrap().unwrap();
+
+        let compiler2 = Compiler::with_options(project, options);
+        let result2 = compiler2.analyze_flake_purity().unwrap().unwrap();
+
+        // Each compile should produce different digests due to UUID injection
+        assert_ne!(result1.0, result2.0);
+        assert_eq!(result1.1, PurityMode::Warning);
+    }
+
+    #[test]
+    fn test_purity_override_mode_uses_overrides() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "locked": {
+                        "type": "github",
+                        "narHash": "sha256-base"
+                    }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let mut input_overrides = HashMap::new();
+        input_overrides.insert("nixpkgs".to_string(), "sha256-custom".to_string());
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Override,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            input_overrides,
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project.clone(), options.clone());
+        let result1 = compiler.analyze_flake_purity().unwrap().unwrap();
+
+        // Same compiler, same overrides = deterministic digest
+        let compiler2 = Compiler::with_options(project, options);
+        let result2 = compiler2.analyze_flake_purity().unwrap().unwrap();
+
+        assert_eq!(result1.0, result2.0);
+        assert_eq!(result1.1, PurityMode::Override);
+    }
+
+    #[test]
+    fn test_compute_runtime() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "locked": {
+                        "type": "github",
+                        "narHash": "sha256-test"
+                    }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Strict,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let runtime = compiler
+            .compute_runtime(
+                "nix-x86_64-linux",
+                "github:NixOS/nixpkgs",
+                "devShells.x86_64-linux.default",
+                "x86_64-linux",
+            )
+            .unwrap();
+
+        assert_eq!(runtime.id, "nix-x86_64-linux");
+        assert_eq!(runtime.flake, "github:NixOS/nixpkgs");
+        assert!(runtime.digest.starts_with("sha256:"));
+        assert_eq!(runtime.purity, PurityMode::Strict);
     }
 }

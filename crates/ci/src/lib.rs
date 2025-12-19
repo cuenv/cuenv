@@ -5,6 +5,7 @@ pub mod compiler;
 pub mod context;
 pub mod discovery;
 pub mod executor;
+pub mod flake;
 pub mod ir;
 pub mod provider;
 pub mod report;

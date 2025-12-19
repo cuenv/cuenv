@@ -9,7 +9,6 @@
 
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::Path;
 
 /// Runtime digest builder for cache key computation
 pub struct DigestBuilder {
@@ -165,7 +164,8 @@ mod tests {
         let env = HashMap::new();
         let inputs = vec![];
 
-        let digest1 = compute_task_digest(&vec!["echo".to_string()], &env, &inputs, None, None, None);
+        let digest1 =
+            compute_task_digest(&vec!["echo".to_string()], &env, &inputs, None, None, None);
         let digest2 = compute_task_digest(&vec!["ls".to_string()], &env, &inputs, None, None, None);
 
         assert_ne!(digest1, digest2);
@@ -210,19 +210,17 @@ mod tests {
         let env = HashMap::new();
         let inputs = vec![];
 
-        let secrets = HashMap::from([
-            ("API_KEY".to_string(), "secret123".to_string()),
-        ]);
+        let secrets = HashMap::from([("API_KEY".to_string(), "secret123".to_string())]);
         let salt = "system-wide-salt";
 
-        let digest1 = compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
+        let digest1 =
+            compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
 
         // Change secret value
-        let secrets2 = HashMap::from([
-            ("API_KEY".to_string(), "secret456".to_string()),
-        ]);
+        let secrets2 = HashMap::from([("API_KEY".to_string(), "secret456".to_string())]);
 
-        let digest2 = compute_task_digest(&command, &env, &inputs, None, Some(&secrets2), Some(salt));
+        let digest2 =
+            compute_task_digest(&command, &env, &inputs, None, Some(&secrets2), Some(salt));
 
         // Digests should differ when secret changes
         assert_ne!(digest1, digest2);
@@ -234,13 +232,13 @@ mod tests {
         let env = HashMap::new();
         let inputs = vec![];
 
-        let secrets = HashMap::from([
-            ("API_KEY".to_string(), "secret123".to_string()),
-        ]);
+        let secrets = HashMap::from([("API_KEY".to_string(), "secret123".to_string())]);
         let salt = "system-wide-salt";
 
-        let digest1 = compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
-        let digest2 = compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
+        let digest1 =
+            compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
+        let digest2 =
+            compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
 
         assert_eq!(digest1, digest2);
     }
