@@ -1117,10 +1117,12 @@ name = "cuenv-remote"
 version = "0.1.0"
 dependencies = [
  "cuenv-core",
+ "hex",
  "miette",
  "prost",
  "prost-types",
  "serde",
+ "sha2",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",

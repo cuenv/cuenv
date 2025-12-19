@@ -9,5 +9,5 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-## [ ] Track: feat: Add Bazel Remote Execution API (REAPI) client support
+## [~] Track: feat: Add Bazel Remote Execution API (REAPI) client support
 *Link: [./conductor/tracks/remote_execution_20251219/](./conductor/tracks/remote_execution_20251219/)*
