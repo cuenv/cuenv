@@ -1,0 +1,51 @@
+[package]
+name = "cuenv-remote"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+
+[dependencies]
+cuenv-core = { workspace = true }
+cuenv-events = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+async-trait = "0.1"
+
+# gRPC and protobuf
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+
+# Error handling and diagnostics
+thiserror.workspace = true
+miette.workspace = true
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Hashing for content-addressed storage
+sha2.workspace = true
+hex = "0.4"
+
+# Logging
+tracing.workspace = true
+
+# Retry logic
+backoff = "0.4"
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-test.workspace = true
+
+[features]
+default = []

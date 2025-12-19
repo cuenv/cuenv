@@ -86,4 +86,16 @@ pub struct BackendOptions {
     /// Optional platform hint for the Dagger backend
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+
+    /// REAPI server endpoint (e.g., "grpcs://buildbarn.example.com:8980")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+
+    /// Instance name for multi-tenant REAPI servers
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_name: Option<String>,
+
+    /// API key for authentication (Bearer token)
+    #[serde(skip_serializing_if = "Option::is_none", rename = "apiKey")]
+    pub api_key: Option<String>,
 }

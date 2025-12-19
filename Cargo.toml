@@ -4,6 +4,7 @@ members = [
     "crates/events",
     "crates/core",
     "crates/dagger",
+    "crates/remote",
     "crates/cuengine",
     "crates/cuenv",
     "crates/workspaces",
@@ -34,6 +35,7 @@ categories = ["config", "development-tools", "parsing"]
 cuenv-events = { path = "crates/events", version = "0.15.0" }
 cuenv-core = { path = "crates/core", version = "0.15.0" }
 cuenv-dagger = { path = "crates/dagger", version = "0.15.0" }
+cuenv-remote = { path = "crates/remote", version = "0.15.0" }
 cuenv-workspaces = { path = "crates/workspaces", version = "0.15.0" }
 cuenv-ci = { path = "crates/ci", version = "0.15.0" }
 cuenv-release = { path = "crates/release", version = "0.15.0" }

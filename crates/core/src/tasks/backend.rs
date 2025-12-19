@@ -170,15 +170,30 @@ pub fn create_backend(
     create_backend_with_factory(config, project_root, cli_backend, None)
 }
 
-/// Create a backend with an optional factory for non-host backends.
+/// Create a backend with optional factories for non-host backends.
 ///
 /// The `dagger_factory` parameter should be `Some(cuenv_dagger::create_dagger_backend)`
 /// when the dagger backend is available.
+/// The `remote_factory` parameter should be `Some(cuenv_remote::create_remote_backend)`
+/// when the remote backend is available.
 pub fn create_backend_with_factory(
     config: Option<&BackendConfig>,
     project_root: std::path::PathBuf,
     cli_backend: Option<&str>,
     dagger_factory: Option<BackendFactory>,
+) -> Arc<dyn TaskBackend> {
+    create_backend_with_factories(config, project_root, cli_backend, dagger_factory, None)
+}
+
+/// Create a backend with multiple optional factories.
+///
+/// This is the most flexible backend creation function, supporting all backend types.
+pub fn create_backend_with_factories(
+    config: Option<&BackendConfig>,
+    project_root: std::path::PathBuf,
+    cli_backend: Option<&str>,
+    dagger_factory: Option<BackendFactory>,
+    remote_factory: Option<BackendFactory>,
 ) -> Arc<dyn TaskBackend> {
     // CLI override takes precedence, then config, then default to host
     let backend_type = if let Some(b) = cli_backend {
@@ -197,6 +212,18 @@ pub fn create_backend_with_factory(
                 tracing::error!(
                     "Dagger backend requested but not available. \
                      Add cuenv-dagger dependency to enable it. \
+                     Falling back to host backend."
+                );
+                Arc::new(HostBackend::new())
+            }
+        }
+        "remote" => {
+            if let Some(factory) = remote_factory {
+                factory(config, project_root)
+            } else {
+                tracing::error!(
+                    "Remote backend requested but not available. \
+                     Add cuenv-remote dependency to enable it. \
                      Falling back to host backend."
                 );
                 Arc::new(HostBackend::new())

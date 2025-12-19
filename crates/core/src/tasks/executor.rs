@@ -4,7 +4,7 @@
 //! - Parallel and sequential execution
 //! - Host execution; isolation/caching is delegated to other backends
 
-use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
+use super::backend::{BackendFactory, TaskBackend, create_backend_with_factories};
 use super::{ParallelGroup, Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
 use crate::config::BackendConfig;
 use crate::environment::Environment;
@@ -98,11 +98,25 @@ impl TaskExecutor {
         config: ExecutorConfig,
         dagger_factory: Option<BackendFactory>,
     ) -> Self {
-        let backend = create_backend_with_factory(
+        Self::with_backend_factories(config, dagger_factory, None)
+    }
+
+    /// Create a new executor with optional backend factories.
+    ///
+    /// Pass factory functions to enable specific backends:
+    /// - `dagger_factory`: `Some(cuenv_dagger::create_dagger_backend)`
+    /// - `remote_factory`: `Some(cuenv_remote::create_remote_backend)`
+    pub fn with_backend_factories(
+        config: ExecutorConfig,
+        dagger_factory: Option<BackendFactory>,
+        remote_factory: Option<BackendFactory>,
+    ) -> Self {
+        let backend = create_backend_with_factories(
             config.backend_config.as_ref(),
             config.project_root.clone(),
             config.cli_backend.as_deref(),
             dagger_factory,
+            remote_factory,
         );
         Self { config, backend }
     }
@@ -117,8 +131,8 @@ impl TaskExecutor {
         // Delegate execution to the configured backend.
         // The backend implementation handles the specific execution details.
 
-        // If using Dagger backend, execute in a containerized context.
-        if self.backend.name() == "dagger" {
+        // If using Dagger or Remote backend, execute via that backend
+        if self.backend.name() == "dagger" || self.backend.name() == "remote" {
             return self
                 .backend
                 .execute(

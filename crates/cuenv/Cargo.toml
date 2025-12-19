@@ -20,8 +20,9 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = ["dagger-backend", "github", "gitlab", "bitbucket"]
+default = ["dagger-backend", "remote-backend", "github", "gitlab", "bitbucket"]
 dagger-backend = ["dep:cuenv-dagger"]
+remote-backend = ["dep:cuenv-remote"]
 # Platform-specific providers
 github = ["dep:cuenv-github"]
 gitlab = ["dep:cuenv-gitlab"]
@@ -38,6 +39,7 @@ cuenv-codeowners = { workspace = true }
 cuenv-core = { workspace = true }
 cuenv-cubes = { workspace = true }
 cuenv-dagger = { workspace = true, optional = true }
+cuenv-remote = { workspace = true, optional = true }
 cuenv-ci = { workspace = true }
 cuenv-events = { workspace = true }
 cuenv-ignore = { workspace = true }
