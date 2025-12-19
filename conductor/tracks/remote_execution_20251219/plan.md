@@ -10,7 +10,7 @@ Set up the crate structure, vendor protos, and implement core data structures.
 - [x] Task: Implement `Digest` newtype and Merkle tree builder <!-- 5cab7b1 -->
     - [ ] Sub-task: Write unit tests for `Digest` and Merkle tree logic
     - [ ] Sub-task: Implement `Digest` and `Directory` tree construction from `ResolvedInputs`
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Foundation' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Foundation' (Protocol in workflow.md) [checkpoint: 2f5bd85]
 
 ## Phase 2: gRPC Clients
 Implement the core gRPC service clients with retry logic.
