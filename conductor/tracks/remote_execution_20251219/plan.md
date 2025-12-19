@@ -7,7 +7,7 @@ Set up the crate structure, vendor protos, and implement core data structures.
 
 - [x] Task: Create `crates/remote/` crate structure and `Cargo.toml` <!-- b53b199 -->
 - [x] Task: Vendor REAPI protos and configure `tonic-build` <!-- 9170999 -->
-- [ ] Task: Implement `Digest` newtype and Merkle tree builder
+- [x] Task: Implement `Digest` newtype and Merkle tree builder <!-- 5cab7b1 -->
     - [ ] Sub-task: Write unit tests for `Digest` and Merkle tree logic
     - [ ] Sub-task: Implement `Digest` and `Directory` tree construction from `ResolvedInputs`
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Foundation' (Protocol in workflow.md)
