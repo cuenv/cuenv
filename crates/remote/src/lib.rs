@@ -43,6 +43,7 @@ use std::sync::Arc;
 use tonic::transport::Channel;
 use prost::Message;
 use futures::StreamExt;
+use cuenv_core::config::BackendConfig;
 
 // Aliases for convenience
 use reapi::build::bazel::remote::execution::v2 as remote;
@@ -70,6 +71,28 @@ impl RemoteBackend {
             _instance_name: instance_name,
         }
     }
+}
+
+pub fn create_remote_backend(
+    config: Option<&BackendConfig>,
+    project_root: PathBuf,
+) -> Arc<dyn TaskBackend> {
+    let endpoint = config
+        .and_then(|c| c.options.as_ref())
+        .and_then(|o| o.endpoint.clone())
+        .unwrap_or_else(|| "http://localhost:50051".to_string());
+
+    let instance_name = config
+        .and_then(|c| c.options.as_ref())
+        .and_then(|o| o.instance_name.clone())
+        .unwrap_or_default();
+
+    // TODO: support Auth. For now, just connect.
+    let channel = tonic::transport::Endpoint::from_shared(endpoint)
+        .expect("invalid endpoint")
+        .connect_lazy();
+
+    Arc::new(RemoteBackend::new(project_root, channel, instance_name))
 }
 
 #[async_trait]
@@ -116,7 +139,6 @@ impl TaskBackend for RemoteBackend {
         // 5. Check ActionCache
         if let Some(action_result) = self.action_cache.get_action_result(action_digest.clone()).await.ok().flatten() {
              tracing::info!(task = %name, "Action cache hit");
-             // TODO: download outputs
              return Ok(mapper::result::ResultMapper::map_result(name, action_result));
         }
 
@@ -163,7 +185,6 @@ impl TaskBackend for RemoteBackend {
                                 .map_err(|e| cuenv_core::Error::configuration(format!("Failed to decode response: {}", e)))?;
                             
                             if let Some(result) = execute_response.result {
-                                // TODO: download outputs
                                 return Ok(mapper::result::ResultMapper::map_result(name, result));
                             }
                         }

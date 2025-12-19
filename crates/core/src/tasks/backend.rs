@@ -160,25 +160,23 @@ pub type BackendFactory = fn(Option<&BackendConfig>, std::path::PathBuf) -> Arc<
 
 /// Create a backend based on configuration.
 ///
-/// This function only handles the `host` backend. For `dagger` backend support,
-/// use `create_backend_with_factory` and provide a factory from `cuenv-dagger`.
+/// This function only handles the `host` backend. For `dagger` or `remote` backend support,
+/// use `create_backend_with_factory` and provide the appropriate factories.
 pub fn create_backend(
     config: Option<&BackendConfig>,
     project_root: std::path::PathBuf,
     cli_backend: Option<&str>,
 ) -> Arc<dyn TaskBackend> {
-    create_backend_with_factory(config, project_root, cli_backend, None)
+    create_backend_with_factory(config, project_root, cli_backend, None, None)
 }
 
-/// Create a backend with an optional factory for non-host backends.
-///
-/// The `dagger_factory` parameter should be `Some(cuenv_dagger::create_dagger_backend)`
-/// when the dagger backend is available.
+/// Create a backend with optional factories for non-host backends.
 pub fn create_backend_with_factory(
     config: Option<&BackendConfig>,
     project_root: std::path::PathBuf,
     cli_backend: Option<&str>,
     dagger_factory: Option<BackendFactory>,
+    remote_factory: Option<BackendFactory>,
 ) -> Arc<dyn TaskBackend> {
     // CLI override takes precedence, then config, then default to host
     let backend_type = if let Some(b) = cli_backend {
@@ -197,6 +195,18 @@ pub fn create_backend_with_factory(
                 tracing::error!(
                     "Dagger backend requested but not available. \
                      Add cuenv-dagger dependency to enable it. \
+                     Falling back to host backend."
+                );
+                Arc::new(HostBackend::new())
+            }
+        }
+        "remote" => {
+            if let Some(factory) = remote_factory {
+                factory(config, project_root)
+            } else {
+                tracing::error!(
+                    "Remote backend requested but not available. \
+                     Add cuenv-remote dependency to enable it. \
                      Falling back to host backend."
                 );
                 Arc::new(HostBackend::new())

@@ -78,6 +78,7 @@ pub struct BackendConfig {
 
 /// Backend-specific options supported by cuenv
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct BackendOptions {
     /// Default container image for the Dagger backend
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,4 +87,16 @@ pub struct BackendOptions {
     /// Optional platform hint for the Dagger backend
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
+
+    /// gRPC endpoint for the Remote backend
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+
+    /// Instance name for the Remote backend
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_name: Option<String>,
+
+    /// API key/token for the Remote backend
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }

@@ -103,6 +103,23 @@ impl TaskExecutor {
             config.project_root.clone(),
             config.cli_backend.as_deref(),
             dagger_factory,
+            None,
+        );
+        Self { config, backend }
+    }
+
+    /// Create a new executor with optional dagger and remote backend support.
+    pub fn with_factories(
+        config: ExecutorConfig,
+        dagger_factory: Option<BackendFactory>,
+        remote_factory: Option<BackendFactory>,
+    ) -> Self {
+        let backend = create_backend_with_factory(
+            config.backend_config.as_ref(),
+            config.project_root.clone(),
+            config.cli_backend.as_deref(),
+            dagger_factory,
+            remote_factory,
         );
         Self { config, backend }
     }
