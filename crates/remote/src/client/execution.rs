@@ -8,7 +8,7 @@ use tonic::Request;
 use futures::stream::{BoxStream, StreamExt};
 
 #[async_trait]
-pub trait Execution {
+pub trait Execution: Send + Sync {
     async fn execute(&self, action_digest: Digest, skip_cache_lookup: bool) -> Result<BoxStream<'static, Result<Operation, RemoteError>>, RemoteError>;
     async fn wait_execution(&self, operation_name: String) -> Result<BoxStream<'static, Result<Operation, RemoteError>>, RemoteError>;
 }

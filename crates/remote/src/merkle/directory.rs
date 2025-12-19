@@ -3,7 +3,7 @@ use crate::reapi::build::bazel::remote::execution::v2 as reapi;
 use cuenv_core::tasks::io::ResolvedInputs;
 use prost::Message;
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Component, Path};
+use std::path::Component;
 
 #[derive(Debug, PartialEq)]
 pub struct MerkleTree {
@@ -97,7 +97,7 @@ impl MerkleTree {
         // 2. Build directories bottom-up
         let mut directories = HashMap::new();
         // We iterate from longest paths (deepest) to shortest (root)
-        let mut paths: Vec<_> = files_by_dir.keys().cloned().collect();
+        
         // Also add intermediate paths that might not have files directly but have subdirectories
         for path in files_by_dir.keys() {
             for i in 0..path.len() {

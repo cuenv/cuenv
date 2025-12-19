@@ -38,6 +38,7 @@ impl CommandMapper {
              }
         };
 
+        #[allow(deprecated)]
         Ok(reapi::Command {
             arguments,
             environment_variables,
@@ -55,7 +56,7 @@ impl CommandMapper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::tasks::{Task, Shell};
+    use cuenv_core::tasks::Task;
 
     #[test]
     fn test_map_simple_command() {

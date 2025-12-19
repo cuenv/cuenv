@@ -6,7 +6,7 @@ use tonic::transport::Channel;
 use tonic::Request;
 
 #[async_trait]
-pub trait ActionCache {
+pub trait ActionCache: Send + Sync {
     async fn get_action_result(&self, digest: Digest) -> Result<Option<reapi::ActionResult>, RemoteError>;
     async fn update_action_result(&self, digest: Digest, result: reapi::ActionResult) -> Result<reapi::ActionResult, RemoteError>;
 }

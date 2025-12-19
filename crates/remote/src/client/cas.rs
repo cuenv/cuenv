@@ -6,7 +6,7 @@ use tonic::transport::Channel;
 use tonic::Request;
 
 #[async_trait]
-pub trait Cas {
+pub trait Cas: Send + Sync {
     async fn find_missing_blobs(&self, digests: Vec<Digest>) -> Result<Vec<Digest>, RemoteError>;
     async fn batch_upload_blobs(&self, blobs: Vec<(Digest, Vec<u8>)>) -> Result<(), RemoteError>;
     async fn batch_read_blobs(&self, digests: Vec<Digest>) -> Result<Vec<Vec<u8>>, RemoteError>;
