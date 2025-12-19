@@ -215,15 +215,33 @@ impl RemoteBackend {
                     _ => nix_path,
                 };
                 rewritten_vars.insert("PATH".to_string(), final_path);
+
+                // Set CC=gcc for Rust compilation - Nix's gcc doesn't provide 'cc' symlink
+                // which is what Rust's linker detection expects by default
+                if !rewritten_vars.contains_key("CC") {
+                    rewritten_vars.insert("CC".to_string(), "gcc".to_string());
+                }
             }
 
             Environment::from_map(rewritten_vars)
         };
 
-        // 4. Map Task to REAPI Command with rewritten environment
-        let mapped_command = CommandMapper::map_task(task, &remote_env, &self.config.secrets)?;
+        // 4. Wrap task if using Nix packages (need /nix symlink for binaries)
+        let wrapped_task = if !nix_inputs.package_roots.is_empty() {
+            info!(
+                task = %name,
+                "Wrapping command with /nix symlink setup for Nix binaries"
+            );
+            self.wrap_task_for_nix(task)
+        } else {
+            task.clone()
+        };
 
-        // 5. Build Merkle tree from task inputs + Nix toolchain
+        // 5. Map Task to REAPI Command with rewritten environment
+        let mapped_command =
+            CommandMapper::map_task(&wrapped_task, &remote_env, &self.config.secrets)?;
+
+        // 6. Build Merkle tree from task inputs + Nix toolchain
         let (dir_builder, file_sources) = self.build_input_tree_with_nix(task, &nix_inputs)?;
         let input_tree = dir_builder.build()?;
 
@@ -367,6 +385,67 @@ impl RemoteBackend {
             "Uploaded missing blobs"
         );
         Ok(())
+    }
+
+    /// Wrap a task's command to create /nix symlink for Nix binaries
+    ///
+    /// Nix binaries have hardcoded absolute paths like `/nix/store/xxx/lib/...`.
+    /// On remote workers, our files are at `<working_dir>/nix/store/...`.
+    /// This wrapper creates a symlink `/nix -> $PWD/nix` before running the command.
+    fn wrap_task_for_nix(&self, task: &Task) -> Task {
+        // Build the wrapper script
+        // Note: We try both `sudo ln` and regular `ln` - BuildBuddy runners
+        // often have passwordless sudo or run as root
+        let original_command = if let Some(ref shell) = task.shell {
+            // Shell mode - the command is already a script
+            task.command.clone()
+        } else {
+            // Direct mode - build command with args
+            let mut cmd = task.command.clone();
+            for arg in &task.args {
+                cmd.push(' ');
+                // Simple quoting - escape single quotes
+                if arg.contains(' ') || arg.contains('\'') || arg.contains('"') {
+                    cmd.push('\'');
+                    cmd.push_str(&arg.replace('\'', "'\"'\"'"));
+                    cmd.push('\'');
+                } else {
+                    cmd.push_str(arg);
+                }
+            }
+            cmd
+        };
+
+        // Wrapper script that:
+        // 1. Creates /nix symlink pointing to $PWD/nix (using system tools, not Nix)
+        // 2. Runs the original command
+        let wrapper_script = format!(
+            r#"set -e
+# Create /nix symlink for Nix store access
+# IMPORTANT: Use absolute paths to system tools, not Nix tools from PATH
+if [ -d "$PWD/nix" ] && [ ! -e "/nix" ]; then
+    /bin/ln -sf "$PWD/nix" /nix 2>/dev/null || /usr/bin/sudo /bin/ln -sf "$PWD/nix" /nix 2>/dev/null || true
+fi
+# Run original command
+{}"#,
+            original_command
+        );
+
+        debug!(
+            original = %original_command,
+            "Wrapped command with /nix symlink setup"
+        );
+
+        Task {
+            command: wrapper_script,
+            shell: Some(cuenv_core::tasks::Shell {
+                // Use absolute path to system bash, not Nix bash from PATH
+                command: Some("/bin/bash".to_string()),
+                flag: Some("-c".to_string()),
+            }),
+            args: Vec::new(), // Args are now in the script
+            ..task.clone()
+        }
     }
 }
 
