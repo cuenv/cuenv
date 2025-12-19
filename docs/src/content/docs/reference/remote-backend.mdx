@@ -1,0 +1,53 @@
+---
+title: Remote Backend
+description: Documentation for the Bazel Remote Execution API (REAPI) backend.
+---
+
+The Remote backend allows `cuenv` to distribute task execution to remote worker farms that implement the [Bazel Remote Execution API v2 (REAPI)](https://github.com/bazelbuild/remote-apis).
+
+## Configuration
+
+To enable the remote backend, update your `env.cue` configuration:
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+config: backend: {
+    type: "remote"
+    options: {
+        // The gRPC endpoint of your REAPI server
+        endpoint: "grpcs://your-remote-execution-server.io"
+        
+        // Optional instance name
+        instanceName: "default"
+        
+        // Optional API key (can be a secret reference)
+        apiKey: schema.#OnePasswordRef & {
+            ref: "op://Private/RemoteExecution/api-key"
+        }
+    }
+}
+```
+
+## Features
+
+- **Distributed Execution:** Run your DAG of tasks across multiple remote workers simultaneously.
+- **Remote Caching:** Automatically skip execution if the results are already present in the remote Action Cache.
+- **Content-Addressed Storage:** Only missing files and inputs are uploaded to the CAS, minimizing bandwidth.
+- **Local Secret Resolution:** All secrets are resolved by the local `cuenv` CLI before being sent to workers, ensuring secret references never leave your machine.
+
+## CLI Usage
+
+You can also force the remote backend using the CLI flag:
+
+```bash
+cuenv task build --backend remote
+```
+
+## Supported Servers
+
+Any REAPI-compatible server should work, including:
+- [BuildBuddy](https://buildbuddy.io)
+- [BuildBarn](https://github.com/buildbarn/bb-remote-execution)
+- [Buildfarm](https://github.com/bazelbuild/bazel-buildfarm)
+- [EngFlow](https://www.engflow.com/)
