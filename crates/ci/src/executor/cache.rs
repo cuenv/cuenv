@@ -1,0 +1,368 @@
+//! CI Cache Operations
+//!
+//! Handles cache lookups and storage for CI task execution based on
+//! content-addressable digests and cache policies.
+
+use crate::ir::{CachePolicy, Task as IRTask};
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+/// Error types for cache operations
+#[derive(Debug, Error)]
+pub enum CacheError {
+    /// IO error during cache operations
+    #[error("Cache IO error: {0}")]
+    Io(#[from] io::Error),
+
+    /// JSON serialization error
+    #[error("Cache serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+}
+
+/// Result of a cache lookup
+#[derive(Debug, Clone)]
+pub struct CacheResult {
+    /// Whether the cache entry was found
+    pub hit: bool,
+    /// The digest used for lookup
+    pub key: String,
+    /// Path to cache entry (if hit)
+    pub path: Option<PathBuf>,
+}
+
+/// Metadata stored with cached task results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheMetadata {
+    /// Task ID
+    pub task_id: String,
+    /// Digest (cache key)
+    pub digest: String,
+    /// Command that was executed
+    pub command: Vec<String>,
+    /// When the cache entry was created
+    pub created_at: DateTime<Utc>,
+    /// Execution duration in milliseconds
+    pub duration_ms: u64,
+    /// Exit code
+    pub exit_code: i32,
+}
+
+/// Task execution logs
+#[derive(Debug, Clone, Default)]
+pub struct TaskLogs {
+    /// Standard output
+    pub stdout: Option<String>,
+    /// Standard error
+    pub stderr: Option<String>,
+}
+
+/// Compute the cache path for a given digest
+///
+/// Uses a two-level directory structure to avoid too many entries in a
+/// single directory: `{root}/{digest[0:2]}/{digest[2:4]}/{digest}/`
+fn cache_path_for_digest(cache_root: &Path, digest: &str) -> PathBuf {
+    // Strip the "sha256:" prefix if present
+    let hash = digest.strip_prefix("sha256:").unwrap_or(digest);
+
+    if hash.len() < 4 {
+        // Fallback for very short hashes (shouldn't happen)
+        return cache_root.join(hash);
+    }
+
+    cache_root.join(&hash[..2]).join(&hash[2..4]).join(hash)
+}
+
+/// Check cache before execution based on policy
+///
+/// # Arguments
+/// * `task` - The IR task definition
+/// * `digest` - Pre-computed digest for this task
+/// * `cache_root` - Root directory for cache storage
+/// * `policy_override` - Optional global policy override
+///
+/// # Returns
+/// `CacheResult` indicating whether a cache hit was found
+pub fn check_cache(
+    task: &IRTask,
+    digest: &str,
+    cache_root: &Path,
+    policy_override: Option<CachePolicy>,
+) -> CacheResult {
+    let effective_policy = policy_override.unwrap_or(task.cache_policy);
+
+    match effective_policy {
+        CachePolicy::Normal | CachePolicy::Readonly => {
+            // Check if cache entry exists
+            let cache_path = cache_path_for_digest(cache_root, digest);
+            let metadata_path = cache_path.join("metadata.json");
+
+            if metadata_path.exists() {
+                tracing::debug!(
+                    task = %task.id,
+                    digest = %digest,
+                    path = %cache_path.display(),
+                    "Cache hit"
+                );
+                return CacheResult {
+                    hit: true,
+                    key: digest.to_string(),
+                    path: Some(cache_path),
+                };
+            }
+
+            tracing::debug!(
+                task = %task.id,
+                digest = %digest,
+                "Cache miss"
+            );
+        }
+        CachePolicy::Writeonly | CachePolicy::Disabled => {
+            // Skip cache lookup
+            tracing::debug!(
+                task = %task.id,
+                policy = ?effective_policy,
+                "Cache lookup skipped due to policy"
+            );
+        }
+    }
+
+    CacheResult {
+        hit: false,
+        key: digest.to_string(),
+        path: None,
+    }
+}
+
+/// Store result after successful execution
+///
+/// # Arguments
+/// * `task` - The IR task definition
+/// * `digest` - Pre-computed digest for this task
+/// * `cache_root` - Root directory for cache storage
+/// * `logs` - Captured stdout/stderr
+/// * `duration_ms` - Execution duration
+/// * `exit_code` - Exit code
+/// * `policy_override` - Optional global policy override
+///
+/// # Errors
+/// Returns error if IO operations fail
+pub fn store_result(
+    task: &IRTask,
+    digest: &str,
+    cache_root: &Path,
+    logs: &TaskLogs,
+    duration_ms: u64,
+    exit_code: i32,
+    policy_override: Option<CachePolicy>,
+) -> Result<(), CacheError> {
+    let effective_policy = policy_override.unwrap_or(task.cache_policy);
+
+    match effective_policy {
+        CachePolicy::Normal | CachePolicy::Writeonly => {
+            let cache_path = cache_path_for_digest(cache_root, digest);
+            fs::create_dir_all(&cache_path)?;
+
+            // Write metadata
+            let meta = CacheMetadata {
+                task_id: task.id.clone(),
+                digest: digest.to_string(),
+                command: task.command.clone(),
+                created_at: Utc::now(),
+                duration_ms,
+                exit_code,
+            };
+            let meta_path = cache_path.join("metadata.json");
+            let meta_json = serde_json::to_string_pretty(&meta)?;
+            fs::write(&meta_path, meta_json)?;
+
+            // Write logs
+            let logs_dir = cache_path.join("logs");
+            fs::create_dir_all(&logs_dir)?;
+
+            if let Some(stdout) = &logs.stdout {
+                fs::write(logs_dir.join("stdout.log"), stdout)?;
+            }
+            if let Some(stderr) = &logs.stderr {
+                fs::write(logs_dir.join("stderr.log"), stderr)?;
+            }
+
+            tracing::debug!(
+                task = %task.id,
+                digest = %digest,
+                path = %cache_path.display(),
+                "Cache entry stored"
+            );
+        }
+        CachePolicy::Readonly | CachePolicy::Disabled => {
+            // Skip cache write
+            tracing::debug!(
+                task = %task.id,
+                policy = ?effective_policy,
+                "Cache write skipped due to policy"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Load cached task metadata
+///
+/// # Errors
+/// Returns error if the cache entry doesn't exist or can't be read
+pub fn load_metadata(cache_path: &Path) -> Result<CacheMetadata, CacheError> {
+    let meta_path = cache_path.join("metadata.json");
+    let content = fs::read_to_string(meta_path)?;
+    let meta: CacheMetadata = serde_json::from_str(&content)?;
+    Ok(meta)
+}
+
+/// Load cached logs
+pub fn load_logs(cache_path: &Path) -> TaskLogs {
+    let logs_dir = cache_path.join("logs");
+
+    let stdout = fs::read_to_string(logs_dir.join("stdout.log")).ok();
+    let stderr = fs::read_to_string(logs_dir.join("stderr.log")).ok();
+
+    TaskLogs { stdout, stderr }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_task(id: &str, policy: CachePolicy) -> IRTask {
+        IRTask {
+            id: id.to_string(),
+            runtime: None,
+            command: vec!["echo".to_string(), "hello".to_string()],
+            shell: false,
+            env: std::collections::HashMap::new(),
+            secrets: std::collections::HashMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: policy,
+            deployment: false,
+            manual_approval: false,
+        }
+    }
+
+    #[test]
+    fn test_cache_path_structure() {
+        let root = Path::new("/cache");
+        let path = cache_path_for_digest(root, "sha256:abcdef123456");
+        assert_eq!(path, PathBuf::from("/cache/ab/cd/abcdef123456"));
+    }
+
+    #[test]
+    fn test_cache_miss() {
+        let tmp = TempDir::new().unwrap();
+        let task = make_task("test", CachePolicy::Normal);
+
+        let result = check_cache(&task, "sha256:nonexistent", tmp.path(), None);
+        assert!(!result.hit);
+        assert!(result.path.is_none());
+    }
+
+    #[test]
+    fn test_cache_hit_after_store() {
+        let tmp = TempDir::new().unwrap();
+        let task = make_task("test", CachePolicy::Normal);
+        let digest = "sha256:testdigest123456";
+
+        // Store result
+        let logs = TaskLogs {
+            stdout: Some("output".to_string()),
+            stderr: None,
+        };
+        store_result(&task, digest, tmp.path(), &logs, 100, 0, None).unwrap();
+
+        // Check cache - should hit
+        let result = check_cache(&task, digest, tmp.path(), None);
+        assert!(result.hit);
+        assert!(result.path.is_some());
+
+        // Load and verify metadata
+        let meta = load_metadata(result.path.as_ref().unwrap()).unwrap();
+        assert_eq!(meta.task_id, "test");
+        assert_eq!(meta.exit_code, 0);
+        assert_eq!(meta.duration_ms, 100);
+    }
+
+    #[test]
+    fn test_readonly_policy_no_write() {
+        let tmp = TempDir::new().unwrap();
+        let task = make_task("test", CachePolicy::Readonly);
+        let digest = "sha256:readonly123";
+
+        // Store with readonly policy - should skip
+        let logs = TaskLogs::default();
+        store_result(&task, digest, tmp.path(), &logs, 100, 0, None).unwrap();
+
+        // Cache should not exist
+        let result = check_cache(&task, digest, tmp.path(), None);
+        assert!(!result.hit);
+    }
+
+    #[test]
+    fn test_writeonly_policy_no_read() {
+        let tmp = TempDir::new().unwrap();
+        let task = make_task("test", CachePolicy::Normal);
+        let digest = "sha256:writeonly123";
+
+        // Store with normal policy
+        let logs = TaskLogs::default();
+        store_result(&task, digest, tmp.path(), &logs, 100, 0, None).unwrap();
+
+        // Check with writeonly override - should not read
+        let result = check_cache(&task, digest, tmp.path(), Some(CachePolicy::Writeonly));
+        assert!(!result.hit);
+    }
+
+    #[test]
+    fn test_disabled_policy_no_cache() {
+        let tmp = TempDir::new().unwrap();
+        let task = make_task("test", CachePolicy::Disabled);
+        let digest = "sha256:disabled123";
+
+        // Store should skip
+        let logs = TaskLogs::default();
+        store_result(&task, digest, tmp.path(), &logs, 100, 0, None).unwrap();
+
+        // Check should also skip
+        let result = check_cache(&task, digest, tmp.path(), None);
+        assert!(!result.hit);
+    }
+
+    #[test]
+    fn test_policy_override() {
+        let tmp = TempDir::new().unwrap();
+        let task = make_task("test", CachePolicy::Normal);
+        let digest = "sha256:override123";
+
+        // Store with disabled override - should skip
+        let logs = TaskLogs::default();
+        store_result(
+            &task,
+            digest,
+            tmp.path(),
+            &logs,
+            100,
+            0,
+            Some(CachePolicy::Disabled),
+        )
+        .unwrap();
+
+        // Cache should not exist
+        let result = check_cache(&task, digest, tmp.path(), None);
+        assert!(!result.hit);
+    }
+}

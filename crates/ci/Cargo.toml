@@ -31,6 +31,7 @@ regex = "1.10"
 sha2 = { workspace = true }
 hex = "0.4"
 uuid = { workspace = true }
+petgraph = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -128,10 +128,7 @@ impl<'a> IrValidator<'a> {
     }
 
     /// Validate task graph has no cycles using DFS
-    fn validate_no_cycles(
-        &self,
-        task_index: &HashMap<&str, &Task>,
-    ) -> Result<(), ValidationError> {
+    fn validate_no_cycles(&self, task_index: &HashMap<&str, &Task>) -> Result<(), ValidationError> {
         let mut visited = HashSet::new();
         let mut rec_stack = HashSet::new();
 
@@ -179,7 +176,7 @@ impl<'a> IrValidator<'a> {
     /// Validate deployment task dependency rules
     fn validate_deployment_dependencies(
         &self,
-        task_index: &HashMap<&str, &Task>,
+        _task_index: &HashMap<&str, &Task>,
     ) -> Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
 
@@ -258,9 +255,11 @@ mod tests {
         assert!(result.is_err());
 
         let errors = result.unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::CyclicDependency(_))));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::CyclicDependency(_)))
+        );
     }
 
     #[test]
@@ -294,10 +293,11 @@ mod tests {
         assert!(result.is_err());
 
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| matches!(
-            e,
-            ValidationError::InvalidDeploymentCachePolicy { .. }
-        )));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::InvalidDeploymentCachePolicy { .. }))
+        );
     }
 
     #[test]
@@ -329,10 +329,11 @@ mod tests {
         assert!(result.is_err());
 
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| matches!(
-            e,
-            ValidationError::InvalidDeploymentDependency { .. }
-        )));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::InvalidDeploymentDependency { .. }))
+        );
     }
 
     #[test]
@@ -365,9 +366,11 @@ mod tests {
         assert!(result.is_err());
 
         let errors = result.unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::EmptyCommand { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::EmptyCommand { .. }))
+        );
     }
 
     #[test]
@@ -382,9 +385,11 @@ mod tests {
         assert!(result.is_err());
 
         let errors = result.unwrap_err();
-        assert!(errors
-            .iter()
-            .any(|e| matches!(e, ValidationError::MissingRuntime { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::MissingRuntime { .. }))
+        );
     }
 
     #[test]

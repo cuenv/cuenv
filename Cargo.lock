@@ -909,6 +909,7 @@ dependencies = [
  "glob",
  "hex",
  "miette",
+ "petgraph",
  "regex",
  "serde",
  "serde_json",
