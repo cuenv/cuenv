@@ -21,7 +21,7 @@ Implement the core gRPC service clients with retry logic.
 - [x] Task: Implement `ActionCacheClient` <!-- cde7a7a -->
     - [ ] Sub-task: Write unit tests for ActionCache (get/update action result)
     - [ ] Sub-task: Implement `ActionCacheClient` logic
-- [ ] Task: Implement `ExecutionClient` and `CapabilitiesClient`
+- [x] Task: Implement `ExecutionClient` and `CapabilitiesClient` <!-- e69a1c2 -->
     - [ ] Sub-task: Write tests for streaming execution operations
     - [ ] Sub-task: Implement `ExecutionClient` with streaming progress support
 - [ ] Task: Implement gRPC retry logic with exponential backoff
