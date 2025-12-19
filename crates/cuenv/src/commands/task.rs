@@ -29,6 +29,18 @@ fn get_dagger_factory() -> Option<BackendFactory> {
 fn get_dagger_factory() -> Option<BackendFactory> {
     None
 }
+
+/// Get the remote backend factory if the feature is enabled
+#[cfg(feature = "remote-backend")]
+#[allow(clippy::unnecessary_wraps)]
+fn get_remote_factory() -> Option<BackendFactory> {
+    Some(cuenv_remote::create_remote_backend)
+}
+
+#[cfg(not(feature = "remote-backend"))]
+fn get_remote_factory() -> Option<BackendFactory> {
+    None
+}
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write;
 use std::fs;
@@ -532,7 +544,7 @@ pub async fn execute_task(
         cli_backend: backend.map(ToString::to_string),
     };
 
-    let executor = TaskExecutor::with_dagger_factory(config, get_dagger_factory());
+    let executor = TaskExecutor::with_factories(config, get_dagger_factory(), get_remote_factory());
 
     // Build task graph for dependency-aware execution
     tracing::debug!("Building task graph for task: {}", task_graph_root_name);
@@ -566,7 +578,7 @@ pub async fn execute_task(
             backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
             cli_backend: backend.map(ToString::to_string),
         };
-        let tui_executor = TaskExecutor::with_dagger_factory(tui_config, get_dagger_factory());
+        let tui_executor = TaskExecutor::with_factories(tui_config, get_dagger_factory(), get_remote_factory());
 
         return execute_with_rich_tui(
             path,
