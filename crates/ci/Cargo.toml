@@ -33,6 +33,12 @@ hex = "0.4"
 uuid = { workspace = true }
 petgraph = { workspace = true }
 
+# Bazel Remote Execution API v2 (Phase 2: Remote Caching)
+bazel-remote-apis = "0.21"
+tonic = { version = "0.14", features = ["channel", "tls-ring", "tls-native-roots"] }
+prost = "0.14"
+backoff = { version = "0.4", features = ["tokio"] }
+
 [dev-dependencies]
 tempfile = "3"
 

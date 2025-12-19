@@ -6,13 +6,20 @@
 // CI executor outputs to stdout/stderr as part of its normal operation
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+pub mod backend;
 pub mod cache;
 pub mod config;
 pub mod graph;
+pub mod metrics;
+pub mod remote;
 pub mod runner;
 pub mod secrets;
 
+pub use backend::{BackendError, BackendResult, CacheBackend, CacheEntry, CacheLookupResult, CacheOutput};
+pub use cache::LocalCacheBackend;
 pub use config::CIExecutorConfig;
+pub use metrics::{CacheMetrics, RestoreErrorType, global_metrics};
+pub use remote::{RemoteCacheBackend, RemoteCacheConfig};
 pub use runner::TaskOutput;
 pub use secrets::SaltConfig;
 

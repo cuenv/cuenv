@@ -2,8 +2,17 @@
 //!
 //! Handles cache lookups and storage for CI task execution based on
 //! content-addressable digests and cache policies.
+//!
+//! This module provides:
+//! - `LocalCacheBackend`: File-based cache for local development
+//! - Legacy helper functions for backward compatibility
 
+use crate::executor::backend::{
+    BackendError, BackendResult, CacheBackend, CacheEntry, CacheLookupResult, CacheOutput,
+    policy_allows_read, policy_allows_write,
+};
 use crate::ir::{CachePolicy, Task as IRTask};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -11,7 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// Error types for cache operations
+/// Error types for cache operations (legacy, for backward compatibility)
 #[derive(Debug, Error)]
 pub enum CacheError {
     /// IO error during cache operations
@@ -21,6 +30,10 @@ pub enum CacheError {
     /// JSON serialization error
     #[error("Cache serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// Backend error
+    #[error("Backend error: {0}")]
+    Backend(#[from] BackendError),
 }
 
 /// Result of a cache lookup
@@ -229,6 +242,273 @@ pub fn load_logs(cache_path: &Path) -> TaskLogs {
     let stderr = fs::read_to_string(logs_dir.join("stderr.log")).ok();
 
     TaskLogs { stdout, stderr }
+}
+
+// ============================================================================
+// LocalCacheBackend - File-based cache implementing CacheBackend trait
+// ============================================================================
+
+/// Local file-based cache backend
+///
+/// Stores cached task results on the local filesystem using a content-addressable
+/// directory structure. Suitable for local development and single-machine CI.
+#[derive(Debug, Clone)]
+pub struct LocalCacheBackend {
+    /// Root directory for cache storage
+    cache_root: PathBuf,
+}
+
+impl LocalCacheBackend {
+    /// Create a new local cache backend
+    #[must_use]
+    pub fn new(cache_root: impl Into<PathBuf>) -> Self {
+        Self {
+            cache_root: cache_root.into(),
+        }
+    }
+
+    /// Get the cache path for a digest
+    fn cache_path(&self, digest: &str) -> PathBuf {
+        cache_path_for_digest(&self.cache_root, digest)
+    }
+
+    /// Store outputs directory path
+    fn outputs_path(&self, digest: &str) -> PathBuf {
+        self.cache_path(digest).join("outputs")
+    }
+}
+
+#[async_trait]
+impl CacheBackend for LocalCacheBackend {
+    async fn check(
+        &self,
+        task: &IRTask,
+        digest: &str,
+        policy: CachePolicy,
+    ) -> BackendResult<CacheLookupResult> {
+        if !policy_allows_read(policy) {
+            tracing::debug!(
+                task = %task.id,
+                policy = ?policy,
+                "Cache lookup skipped due to policy"
+            );
+            return Ok(CacheLookupResult::miss(digest));
+        }
+
+        let cache_path = self.cache_path(digest);
+        let metadata_path = cache_path.join("metadata.json");
+
+        if metadata_path.exists() {
+            // Load metadata to get duration
+            match load_metadata(&cache_path) {
+                Ok(meta) => {
+                    tracing::debug!(
+                        task = %task.id,
+                        digest = %digest,
+                        path = %cache_path.display(),
+                        "Cache hit"
+                    );
+                    return Ok(CacheLookupResult::hit(digest, meta.duration_ms));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        task = %task.id,
+                        error = %e,
+                        "Failed to load cache metadata, treating as miss"
+                    );
+                }
+            }
+        }
+
+        tracing::debug!(
+            task = %task.id,
+            digest = %digest,
+            "Cache miss"
+        );
+        Ok(CacheLookupResult::miss(digest))
+    }
+
+    async fn store(
+        &self,
+        task: &IRTask,
+        digest: &str,
+        entry: &CacheEntry,
+        policy: CachePolicy,
+    ) -> BackendResult<()> {
+        if !policy_allows_write(policy) {
+            tracing::debug!(
+                task = %task.id,
+                policy = ?policy,
+                "Cache write skipped due to policy"
+            );
+            return Ok(());
+        }
+
+        let cache_path = self.cache_path(digest);
+        fs::create_dir_all(&cache_path)?;
+
+        // Write metadata
+        let meta = CacheMetadata {
+            task_id: task.id.clone(),
+            digest: digest.to_string(),
+            command: task.command.clone(),
+            created_at: Utc::now(),
+            duration_ms: entry.duration_ms,
+            exit_code: entry.exit_code,
+        };
+        let meta_path = cache_path.join("metadata.json");
+        let meta_json = serde_json::to_string_pretty(&meta)
+            .map_err(|e| BackendError::Serialization(e.to_string()))?;
+        fs::write(&meta_path, meta_json)?;
+
+        // Write logs
+        let logs_dir = cache_path.join("logs");
+        fs::create_dir_all(&logs_dir)?;
+
+        if let Some(stdout) = &entry.stdout {
+            fs::write(logs_dir.join("stdout.log"), stdout)?;
+        }
+        if let Some(stderr) = &entry.stderr {
+            fs::write(logs_dir.join("stderr.log"), stderr)?;
+        }
+
+        // Write outputs
+        if !entry.outputs.is_empty() {
+            let outputs_dir = self.outputs_path(digest);
+            fs::create_dir_all(&outputs_dir)?;
+
+            for output in &entry.outputs {
+                let output_path = outputs_dir.join(&output.path);
+                if let Some(parent) = output_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&output_path, &output.data)?;
+
+                #[cfg(unix)]
+                if output.is_executable {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(&output_path)?.permissions();
+                    perms.set_mode(perms.mode() | 0o111);
+                    fs::set_permissions(&output_path, perms)?;
+                }
+            }
+        }
+
+        tracing::debug!(
+            task = %task.id,
+            digest = %digest,
+            path = %cache_path.display(),
+            outputs = entry.outputs.len(),
+            "Cache entry stored"
+        );
+
+        Ok(())
+    }
+
+    async fn restore_outputs(
+        &self,
+        task: &IRTask,
+        digest: &str,
+        workspace: &Path,
+    ) -> BackendResult<Vec<CacheOutput>> {
+        let outputs_dir = self.outputs_path(digest);
+        let mut restored = Vec::new();
+
+        if !outputs_dir.exists() {
+            return Ok(restored);
+        }
+
+        // Walk the outputs directory and restore files
+        for entry in walkdir(&outputs_dir)? {
+            let rel_path = entry
+                .strip_prefix(&outputs_dir)
+                .map_err(|e| BackendError::Io(io::Error::other(e.to_string())))?;
+
+            let dest_path = workspace.join(rel_path);
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            let data = fs::read(&entry)?;
+            let is_executable = is_file_executable(&entry);
+
+            fs::write(&dest_path, &data)?;
+
+            #[cfg(unix)]
+            if is_executable {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = fs::metadata(&dest_path)?.permissions();
+                perms.set_mode(perms.mode() | 0o111);
+                fs::set_permissions(&dest_path, perms)?;
+            }
+
+            restored.push(CacheOutput {
+                path: rel_path.to_string_lossy().to_string(),
+                data,
+                is_executable,
+            });
+        }
+
+        tracing::debug!(
+            task = %task.id,
+            digest = %digest,
+            restored = restored.len(),
+            "Restored outputs from cache"
+        );
+
+        Ok(restored)
+    }
+
+    async fn get_logs(
+        &self,
+        _task: &IRTask,
+        digest: &str,
+    ) -> BackendResult<(Option<String>, Option<String>)> {
+        let cache_path = self.cache_path(digest);
+        let logs = load_logs(&cache_path);
+        Ok((logs.stdout, logs.stderr))
+    }
+
+    fn name(&self) -> &'static str {
+        "local"
+    }
+
+    async fn health_check(&self) -> BackendResult<()> {
+        // Local cache is always available if we can create the directory
+        fs::create_dir_all(&self.cache_root)?;
+        Ok(())
+    }
+}
+
+/// Walk a directory recursively and return all file paths
+fn walkdir(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    if dir.is_dir() {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(walkdir(&path)?);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Check if a file is executable
+#[cfg(unix)]
+fn is_file_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_file_executable(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(test)]
