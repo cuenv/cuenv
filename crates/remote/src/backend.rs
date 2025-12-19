@@ -187,17 +187,36 @@ impl RemoteBackend {
             nix::prepare_inputs_parallel(&environment.vars).await?
         };
 
-        // 3. Rewrite environment paths for remote execution (if Nix inputs present)
+        // 3. Build remote environment with Nix package paths
         let remote_env = if nix_inputs.is_empty() {
             environment.clone()
         } else {
             info!(
                 nix_files = nix_inputs.files.len(),
                 nix_size_mb = nix_inputs.total_size / 1_000_000,
+                package_roots = nix_inputs.package_roots.len(),
                 "Including Nix toolchain in remote execution"
             );
+
+            // Start with rewritten environment paths
             let store_paths: HashSet<PathBuf> = nix_inputs.path_mapping.keys().cloned().collect();
-            let rewritten_vars = nix::rewrite_paths(&environment.vars, &store_paths);
+            let mut rewritten_vars = nix::rewrite_paths(&environment.vars, &store_paths);
+
+            // Build PATH from package roots (for packages: nix approach)
+            if !nix_inputs.package_roots.is_empty() {
+                let nix_path = nix_inputs.build_path();
+                debug!(nix_path = %nix_path, "Constructed PATH from package roots");
+
+                // Prepend Nix PATH to existing PATH (or set if none exists)
+                let final_path = match rewritten_vars.get("PATH") {
+                    Some(existing) if !existing.is_empty() => {
+                        format!("{}:{}", nix_path, existing)
+                    }
+                    _ => nix_path,
+                };
+                rewritten_vars.insert("PATH".to_string(), final_path);
+            }
+
             Environment::from_map(rewritten_vars)
         };
 

@@ -53,12 +53,30 @@ pub struct NixInputs {
     pub path_mapping: HashMap<PathBuf, PathBuf>,
     /// Total size in bytes
     pub total_size: u64,
+    /// Top-level package roots (for building PATH)
+    /// These are the direct output paths from `nix build`, not the full closure.
+    pub package_roots: Vec<PathBuf>,
 }
 
 impl NixInputs {
     /// Check if there are any Nix inputs
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
+    }
+
+    /// Build a PATH string from package roots (using relative paths for remote execution)
+    ///
+    /// Returns paths like: nix/store/abc-cargo/bin:nix/store/def-rustc/bin:...
+    pub fn build_path(&self) -> String {
+        self.package_roots
+            .iter()
+            .map(|p| {
+                // Convert /nix/store/xxx to nix/store/xxx/bin
+                let relative = store_path_to_relative(p);
+                relative.join("bin").to_string_lossy().to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(":")
     }
 }
 
@@ -666,6 +684,7 @@ pub async fn prepare_inputs(env: &HashMap<String, String>) -> Result<NixInputs> 
         files,
         path_mapping,
         total_size,
+        package_roots: Vec::new(), // Legacy path-based approach doesn't have explicit package roots
     })
 }
 
@@ -761,6 +780,7 @@ pub async fn prepare_inputs_parallel_with_parallelism(
         files,
         path_mapping,
         total_size,
+        package_roots: Vec::new(), // Legacy path-based approach doesn't have explicit package roots
     })
 }
 
@@ -794,16 +814,28 @@ const CORE_PACKAGES: &[&str] = &[
 /// # Errors
 /// Returns error if no packages could be fetched from binary cache
 ///
+/// Result of fetching Nix packages
+pub struct FetchedPackages {
+    /// The full closure (all dependencies)
+    pub closure: HashSet<PathBuf>,
+    /// Just the top-level package output paths (for building PATH)
+    pub package_roots: Vec<PathBuf>,
+}
+
 /// # Example
 /// ```ignore
 /// let packages = vec!["rustc", "cargo", "gcc"];
-/// let closure = fetch_packages(&packages, "x86_64-linux").await?;
-/// // closure contains all store paths needed for those packages
+/// let result = fetch_packages(&packages, "x86_64-linux").await?;
+/// // result.closure contains all store paths needed
+/// // result.package_roots contains just the top-level package outputs
 /// ```
-pub async fn fetch_packages(packages: &[String], target: &str) -> Result<HashSet<PathBuf>> {
+pub async fn fetch_packages(packages: &[String], target: &str) -> Result<FetchedPackages> {
     if packages.is_empty() {
         debug!("No packages specified, returning empty closure");
-        return Ok(HashSet::new());
+        return Ok(FetchedPackages {
+            closure: HashSet::new(),
+            package_roots: Vec::new(),
+        });
     }
 
     info!(
@@ -812,7 +844,7 @@ pub async fn fetch_packages(packages: &[String], target: &str) -> Result<HashSet
         "Fetching Nix packages for target platform"
     );
 
-    let mut all_paths: HashSet<PathBuf> = HashSet::new();
+    let mut package_roots: Vec<PathBuf> = Vec::new();
 
     for package in packages {
         let pkg_ref = format!("nixpkgs#legacyPackages.{}.{}", target, package);
@@ -840,15 +872,15 @@ pub async fn fetch_packages(packages: &[String], target: &str) -> Result<HashSet
             continue;
         }
 
-        // Collect output paths
+        // Collect output paths (these are the top-level package outputs)
         for line in String::from_utf8_lossy(&output.stdout).lines() {
             if !line.is_empty() && line.starts_with("/nix/store/") {
-                all_paths.insert(PathBuf::from(line));
+                package_roots.push(PathBuf::from(line));
             }
         }
     }
 
-    if all_paths.is_empty() {
+    if package_roots.is_empty() {
         return Err(RemoteError::config_error(format!(
             "No packages could be fetched for target {}. \
              Ensure cache.nixos.org is reachable and packages are cached.",
@@ -858,11 +890,12 @@ pub async fn fetch_packages(packages: &[String], target: &str) -> Result<HashSet
 
     info!(
         target = target,
-        packages_fetched = all_paths.len(),
+        packages_fetched = package_roots.len(),
         "Fetched packages, resolving full closure..."
     );
 
     // Get the full closure of all fetched packages
+    let all_paths: HashSet<PathBuf> = package_roots.iter().cloned().collect();
     let closure = resolve_closure(&all_paths).await?;
 
     info!(
@@ -871,7 +904,10 @@ pub async fn fetch_packages(packages: &[String], target: &str) -> Result<HashSet
         "Fetched package closure"
     );
 
-    Ok(closure)
+    Ok(FetchedPackages {
+        closure,
+        package_roots,
+    })
 }
 
 /// Prepare Nix inputs from explicit package list
@@ -885,7 +921,7 @@ pub async fn fetch_packages(packages: &[String], target: &str) -> Result<HashSet
 /// * `target` - Nix system string (e.g., "x86_64-linux")
 ///
 /// # Returns
-/// `NixInputs` containing files, path mapping, and total size
+/// `NixInputs` containing files, path mapping, total size, and package roots for PATH construction
 pub async fn prepare_inputs_from_packages(packages: &[String], target: &str) -> Result<NixInputs> {
     if packages.is_empty() {
         debug!("No packages specified, returning empty NixInputs");
@@ -899,21 +935,22 @@ pub async fn prepare_inputs_from_packages(packages: &[String], target: &str) -> 
     );
 
     // Fetch the closure for the specified packages
-    let closure = fetch_packages(packages, target).await?;
+    let fetched = fetch_packages(packages, target).await?;
 
-    if closure.is_empty() {
+    if fetched.closure.is_empty() {
         warn!(target = target, "Package closure is empty");
         return Ok(NixInputs::default());
     }
 
     info!(
         target = target,
-        closure_count = closure.len(),
+        closure_count = fetched.closure.len(),
+        package_roots = fetched.package_roots.len(),
         "Collecting files from package closure with parallel hashing..."
     );
 
     // Collect files with parallel hashing
-    let files = collect_files_parallel(&closure, DEFAULT_HASH_PARALLELISM).await?;
+    let files = collect_files_parallel(&fetched.closure, DEFAULT_HASH_PARALLELISM).await?;
 
     // Calculate total size
     let total_size: u64 = files
@@ -943,14 +980,15 @@ pub async fn prepare_inputs_from_packages(packages: &[String], target: &str) -> 
     }
 
     // Build path mapping for environment rewriting
-    let path_mapping: HashMap<PathBuf, PathBuf> = closure
+    let path_mapping: HashMap<PathBuf, PathBuf> = fetched
+        .closure
         .iter()
         .map(|p| (p.clone(), store_path_to_relative(p)))
         .collect();
 
     info!(
         target = target,
-        closure_count = closure.len(),
+        closure_count = fetched.closure.len(),
         file_count = files.len(),
         total_size_mb = total_size / (1024 * 1024),
         "Prepared Nix inputs from explicit packages"
@@ -960,6 +998,7 @@ pub async fn prepare_inputs_from_packages(packages: &[String], target: &str) -> 
         files,
         path_mapping,
         total_size,
+        package_roots: fetched.package_roots,
     })
 }
 
@@ -987,13 +1026,13 @@ pub async fn build_env_from_packages(
     );
 
     // Fetch packages
-    let closure = fetch_packages(packages, target).await?;
+    let fetched = fetch_packages(packages, target).await?;
 
-    // Build PATH from package bin directories
+    // Build PATH from package bin directories (using top-level package roots)
     let mut bin_paths: Vec<String> = Vec::new();
     let mut lib_paths: Vec<String> = Vec::new();
 
-    for path in &closure {
+    for path in &fetched.package_roots {
         let bin_dir = path.join("bin");
         if bin_dir.exists() {
             bin_paths.push(bin_dir.to_string_lossy().into_owned());
@@ -1236,6 +1275,7 @@ pub async fn prepare_inputs_for_platform(
         files,
         path_mapping: combined_mapping,
         total_size,
+        package_roots: Vec::new(), // Legacy platform-based approach doesn't have explicit package roots
     })
 }
 
