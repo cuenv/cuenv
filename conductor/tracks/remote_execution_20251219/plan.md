@@ -32,7 +32,7 @@ Implement the core gRPC service clients with retry logic.
 ## Phase 3: Task Mapping
 Translate `cuenv` internal types to REAPI gRPC messages.
 
-- [ ] Task: Implement `CommandMapper` (cuenv Task → REAPI Command)
+- [x] Task: Implement `CommandMapper` (cuenv Task → REAPI Command) <!-- 8531ca2 -->
     - [ ] Sub-task: Write tests for mapping complex tasks and scripts
     - [ ] Sub-task: Implement mapping logic, ensuring local secret resolution
 - [ ] Task: Implement `ActionBuilder`
