@@ -208,6 +208,7 @@
           llvmPackages.bintools
           bun
           sccache
+          protobuf
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
           patchelf
