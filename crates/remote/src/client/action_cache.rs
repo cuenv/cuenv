@@ -5,8 +5,8 @@ use crate::config::RemoteConfig;
 use crate::error::{RemoteError, Result};
 use crate::merkle::Digest;
 use crate::reapi::{
-    action_cache_client::ActionCacheClient as ProtoActionCacheClient,
     ActionResult as ProtoActionResult, GetActionResultRequest, UpdateActionResultRequest,
+    action_cache_client::ActionCacheClient as ProtoActionCacheClient,
 };
 use std::sync::Arc;
 use tonic::codegen::InterceptedService;
@@ -23,8 +23,7 @@ impl ActionCacheClient {
     /// Create a new ActionCache client from a shared channel
     pub fn from_channel(channel: &GrpcChannel, config: RemoteConfig) -> Self {
         let interceptor = channel.auth_interceptor();
-        let client =
-            ProtoActionCacheClient::with_interceptor(channel.channel(), interceptor);
+        let client = ProtoActionCacheClient::with_interceptor(channel.channel(), interceptor);
         Self {
             client,
             config: Arc::new(config),
@@ -45,7 +44,7 @@ impl ActionCacheClient {
             inline_stdout: true,
             inline_stderr: true,
             inline_output_files: vec![],
-            digest_function: 0, // SHA256
+            digest_function: 1, // SHA256 (REAPI enum value)
         };
 
         let mut client = self.client.clone();
@@ -75,7 +74,7 @@ impl ActionCacheClient {
             action_digest: Some(digest_to_proto(action_digest)),
             action_result: Some(result),
             results_cache_policy: None,
-            digest_function: 0, // SHA256
+            digest_function: 1, // SHA256 (REAPI enum value)
         };
 
         let mut client = self.client.clone();

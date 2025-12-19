@@ -2,7 +2,7 @@
 
 use crate::config::RetryConfig;
 use crate::error::{RemoteError, Result};
-use backoff::{backoff::Backoff, ExponentialBackoff, ExponentialBackoffBuilder};
+use backoff::{ExponentialBackoff, ExponentialBackoffBuilder, backoff::Backoff};
 use std::time::Duration;
 use tracing::{debug, warn};
 
@@ -18,6 +18,9 @@ where
 {
     let mut backoff = create_backoff(config);
     let mut attempts = 0;
+    // Track the last error message for retry exhaustion reporting
+    #[allow(unused_assignments)]
+    let mut last_error = String::new();
 
     loop {
         attempts += 1;
@@ -34,6 +37,9 @@ where
                 return Ok(result);
             }
             Err(err) => {
+                // Capture error message for potential retry exhaustion
+                last_error = err.to_string();
+
                 if attempts >= config.max_attempts {
                     warn!(
                         operation = operation_name,
@@ -41,7 +47,11 @@ where
                         error = %err,
                         "Operation failed after maximum retries"
                     );
-                    return Err(RemoteError::retry_exhausted(operation_name, attempts));
+                    return Err(RemoteError::retry_exhausted(
+                        operation_name,
+                        attempts,
+                        last_error.clone(),
+                    ));
                 }
 
                 // Check if error is retryable
@@ -66,7 +76,11 @@ where
                     tokio::time::sleep(duration).await;
                 } else {
                     // Backoff exhausted
-                    return Err(RemoteError::retry_exhausted(operation_name, attempts));
+                    return Err(RemoteError::retry_exhausted(
+                        operation_name,
+                        attempts,
+                        last_error,
+                    ));
                 }
             }
         }
@@ -108,6 +122,10 @@ fn is_retryable(err: &RemoteError) -> bool {
         // Upload failures are retryable (often network issues)
         RemoteError::UploadFailed { .. } => true,
 
+        // ByteStream errors are retryable (often network issues)
+        RemoteError::ByteStreamWriteFailed { .. } => true,
+        RemoteError::ByteStreamIncomplete { .. } => true,
+
         // These errors are NOT retryable
         RemoteError::ContentNotFound { .. } => false,
         RemoteError::InvalidDigest(_) => false,
@@ -123,8 +141,8 @@ fn is_retryable(err: &RemoteError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn test_retry_success_first_attempt() {
@@ -197,7 +215,10 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
-        assert!(matches!(result.unwrap_err(), RemoteError::RetryExhausted { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            RemoteError::RetryExhausted { .. }
+        ));
     }
 
     #[tokio::test]

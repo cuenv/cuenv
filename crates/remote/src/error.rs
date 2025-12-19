@@ -18,7 +18,7 @@ pub enum RemoteError {
     ConnectionFailed { endpoint: String, message: String },
 
     /// gRPC call failed
-    #[error("gRPC call failed: {operation}")]
+    #[error("gRPC call failed: {operation} (code={}, message={})", source.code(), source.message())]
     #[diagnostic(code(remote::grpc_error))]
     GrpcError {
         operation: String,
@@ -65,10 +65,7 @@ pub enum RemoteError {
 
     /// Authentication failed
     #[error("Authentication failed")]
-    #[diagnostic(
-        code(remote::auth_failed),
-        help("Check your API key or credentials")
-    )]
+    #[diagnostic(code(remote::auth_failed), help("Check your API key or credentials"))]
     AuthenticationFailed {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -98,20 +95,35 @@ pub enum RemoteError {
 
     /// Retry exhausted
     #[error("Operation failed after {attempts} attempts: {operation}")]
-    #[diagnostic(code(remote::retry_exhausted))]
+    #[diagnostic(code(remote::retry_exhausted), help("Last error: {last_error}"))]
     RetryExhausted {
         operation: String,
         attempts: usize,
+        last_error: String,
     },
 
     /// Blob upload failed
     #[error("Failed to upload blob {digest}: {message}")]
     #[diagnostic(code(remote::upload_failed))]
     UploadFailed { digest: String, message: String },
+
+    /// ByteStream write failed
+    #[error("ByteStream write failed for {resource}: {message}")]
+    #[diagnostic(code(remote::bytestream_write_failed))]
+    ByteStreamWriteFailed { resource: String, message: String },
+
+    /// ByteStream incomplete write
+    #[error("ByteStream incomplete: expected {expected} bytes, committed {committed}")]
+    #[diagnostic(
+        code(remote::bytestream_incomplete),
+        help("The server did not commit all bytes. This may indicate a network issue or server problem.")
+    )]
+    ByteStreamIncomplete { expected: i64, committed: i64 },
 }
 
 impl RemoteError {
     /// Create a connection failed error
+    #[must_use]
     pub fn connection_failed(endpoint: impl Into<String>, message: impl Into<String>) -> Self {
         Self::ConnectionFailed {
             endpoint: endpoint.into(),
@@ -120,6 +132,7 @@ impl RemoteError {
     }
 
     /// Create an upload failed error
+    #[must_use]
     pub fn upload_failed(digest: impl Into<String>, message: impl Into<String>) -> Self {
         Self::UploadFailed {
             digest: digest.into(),
@@ -128,6 +141,7 @@ impl RemoteError {
     }
 
     /// Create a gRPC error
+    #[must_use]
     pub fn grpc_error(operation: impl Into<String>, source: tonic::Status) -> Self {
         Self::GrpcError {
             operation: operation.into(),
@@ -136,6 +150,7 @@ impl RemoteError {
     }
 
     /// Create a content not found error
+    #[must_use]
     pub fn content_not_found(digest: impl Into<String>) -> Self {
         Self::ContentNotFound {
             digest: digest.into(),
@@ -143,11 +158,13 @@ impl RemoteError {
     }
 
     /// Create an invalid digest error
+    #[must_use]
     pub fn invalid_digest(msg: impl Into<String>) -> Self {
         Self::InvalidDigest(msg.into())
     }
 
     /// Create a merkle error
+    #[must_use]
     pub fn merkle_error(source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
         Self::MerkleError {
             source: source.into(),
@@ -155,6 +172,7 @@ impl RemoteError {
     }
 
     /// Create an execution failed error
+    #[must_use]
     pub fn execution_failed(message: impl Into<String>) -> Self {
         Self::ExecutionFailed {
             message: message.into(),
@@ -162,6 +180,7 @@ impl RemoteError {
     }
 
     /// Create a timeout error
+    #[must_use]
     pub fn timeout(operation: impl Into<String>, timeout_secs: u64) -> Self {
         Self::Timeout {
             operation: operation.into(),
@@ -170,6 +189,7 @@ impl RemoteError {
     }
 
     /// Create an authentication failed error
+    #[must_use]
     pub fn auth_failed(source: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
         Self::AuthenticationFailed {
             source: source.into(),
@@ -177,11 +197,13 @@ impl RemoteError {
     }
 
     /// Create a config error
+    #[must_use]
     pub fn config_error(msg: impl Into<String>) -> Self {
         Self::ConfigError(msg.into())
     }
 
     /// Create an I/O error
+    #[must_use]
     pub fn io_error(operation: impl Into<String>, source: std::io::Error) -> Self {
         Self::IoError {
             operation: operation.into(),
@@ -190,6 +212,7 @@ impl RemoteError {
     }
 
     /// Create a serialization error
+    #[must_use]
     pub fn serialization_error(
         source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
     ) -> Self {
@@ -198,11 +221,32 @@ impl RemoteError {
         }
     }
 
-    /// Create a retry exhausted error
-    pub fn retry_exhausted(operation: impl Into<String>, attempts: usize) -> Self {
+    /// Create a retry exhausted error with last error context
+    #[must_use]
+    pub fn retry_exhausted(
+        operation: impl Into<String>,
+        attempts: usize,
+        last_error: impl Into<String>,
+    ) -> Self {
         Self::RetryExhausted {
             operation: operation.into(),
             attempts,
+            last_error: last_error.into(),
         }
+    }
+
+    /// Create a ByteStream write failed error
+    #[must_use]
+    pub fn bytestream_write_failed(resource: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::ByteStreamWriteFailed {
+            resource: resource.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create a ByteStream incomplete error
+    #[must_use]
+    pub fn bytestream_incomplete(expected: i64, committed: i64) -> Self {
+        Self::ByteStreamIncomplete { expected, committed }
     }
 }

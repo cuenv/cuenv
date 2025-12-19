@@ -128,7 +128,7 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
                 Level::ERROR => "error",
             };
             EnvFilter::try_new(format!(
-                "cuenv={level_str},cuenv_cli={level_str},cuenv_core={level_str},cuengine={level_str}"
+                "cuenv={level_str},cuenv_cli={level_str},cuenv_core={level_str},cuengine={level_str},cuenv_remote={level_str}"
             ))
         })
     }
@@ -226,7 +226,7 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
             };
             // Always capture cuenv events at info level for the event system
             EnvFilter::try_new(format!(
-                "cuenv=info,cuenv_cli={level_str},cuenv_core={level_str},cuengine={level_str}"
+                "cuenv=info,cuenv_cli={level_str},cuenv_core={level_str},cuengine={level_str},cuenv_remote={level_str}"
             ))
         })
     }

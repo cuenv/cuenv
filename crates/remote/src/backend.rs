@@ -1,16 +1,16 @@
 //! REAPI remote backend implementation
 
-use crate::client::{ActionCacheClient, CasClient, ExecutionClient, GrpcChannel};
+use crate::client::{ActionCacheClient, ByteStreamClient, CasClient, ExecutionClient, GrpcChannel};
 use crate::config::RemoteConfig;
 use crate::error::{RemoteError, Result};
 use crate::mapper::{ActionBuilder, CommandMapper, ResultMapper};
 use crate::merkle::{Digest, DirectoryBuilder};
+use crate::nix::{self, NixInputs};
 use async_trait::async_trait;
 use cuenv_core::environment::Environment;
 use cuenv_core::tasks::io::{InputResolver, ResolvedInputFile};
 use cuenv_core::tasks::{Input, Task, TaskBackend, TaskResult};
-use std::collections::HashMap;
-use std::fs;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
@@ -42,6 +42,7 @@ impl RemoteBackend {
 
                 Ok(RemoteClients {
                     cas: CasClient::from_channel(&channel, self.config.clone()),
+                    bytestream: ByteStreamClient::from_channel(&channel, self.config.clone()),
                     action_cache: ActionCacheClient::from_channel(&channel, self.config.clone()),
                     execution: ExecutionClient::from_channel(&channel, self.config.clone()),
                 })
@@ -78,9 +79,9 @@ impl RemoteBackend {
 
         // Resolve inputs to actual files
         let resolver = InputResolver::new(&self.project_root);
-        let resolved = resolver.resolve(&patterns).map_err(|e| {
-            RemoteError::merkle_error(format!("Failed to resolve inputs: {}", e))
-        })?;
+        let resolved = resolver
+            .resolve(&patterns)
+            .map_err(|e| RemoteError::merkle_error(format!("Failed to resolve inputs: {}", e)))?;
 
         debug!(
             file_count = resolved.files.len(),
@@ -103,6 +104,43 @@ impl RemoteBackend {
         Digest::new(&file.sha256, file.size as i64)
     }
 
+    /// Build Merkle tree from task inputs plus Nix toolchain files
+    fn build_input_tree_with_nix(
+        &self,
+        task: &Task,
+        nix_inputs: &NixInputs,
+    ) -> Result<(DirectoryBuilder, HashMap<Digest, PathBuf>)> {
+        // Start with regular task inputs
+        let (mut builder, mut file_sources) = self.build_input_tree(task)?;
+
+        // Add Nix toolchain files if present
+        if !nix_inputs.is_empty() {
+            debug!(
+                nix_files = nix_inputs.files.len(),
+                "Adding Nix toolchain files to input tree"
+            );
+
+            for nix_file in &nix_inputs.files {
+                if nix_file.is_symlink {
+                    // Add symlink to the directory tree
+                    if let Some(target) = &nix_file.symlink_target {
+                        builder.add_symlink(&nix_file.relative_path, target)?;
+                    }
+                } else {
+                    // Add regular file
+                    file_sources.insert(nix_file.digest.clone(), nix_file.store_path.clone());
+                    builder.add_file_with_permissions(
+                        &nix_file.relative_path,
+                        nix_file.digest.clone(),
+                        nix_file.is_executable,
+                    )?;
+                }
+            }
+        }
+
+        Ok((builder, file_sources))
+    }
+
     /// Execute a task remotely (full implementation)
     async fn execute_remote(
         &self,
@@ -115,36 +153,37 @@ impl RemoteBackend {
         // 1. Get or initialize clients
         let clients = self.get_clients().await?;
 
-        // 2. Map Task to REAPI Command (resolves secrets on coordinator)
-        let mapped_command = CommandMapper::map_task(task, environment, &self.config.secrets)?;
-        debug!(
-            task = %name,
-            command_digest = %mapped_command.command_digest.hash,
-            "Mapped task to REAPI Command"
-        );
+        // 2. Detect and prepare Nix toolchain inputs (if any)
+        // Uses parallel file hashing for performance with large closures
+        let nix_inputs = nix::prepare_inputs_parallel(&environment.vars).await?;
 
-        // 3. Build Merkle tree from task inputs
-        let (dir_builder, file_sources) = self.build_input_tree(task)?;
+        // 3. Rewrite environment paths for remote execution (if Nix inputs present)
+        let remote_env = if nix_inputs.is_empty() {
+            environment.clone()
+        } else {
+            info!(
+                nix_files = nix_inputs.files.len(),
+                nix_size_mb = nix_inputs.total_size / 1_000_000,
+                "Including Nix toolchain in remote execution"
+            );
+            let store_paths: HashSet<PathBuf> = nix_inputs.path_mapping.keys().cloned().collect();
+            let rewritten_vars = nix::rewrite_paths(&environment.vars, &store_paths);
+            Environment::from_map(rewritten_vars)
+        };
+
+        // 4. Map Task to REAPI Command with rewritten environment
+        let mapped_command = CommandMapper::map_task(task, &remote_env, &self.config.secrets)?;
+
+        // 5. Build Merkle tree from task inputs + Nix toolchain
+        let (dir_builder, file_sources) = self.build_input_tree_with_nix(task, &nix_inputs)?;
         let input_tree = dir_builder.build()?;
-        debug!(
-            task = %name,
-            input_root = %input_tree.root_digest.hash,
-            directory_count = input_tree.directories.len(),
-            file_count = file_sources.len(),
-            "Built input Merkle tree"
-        );
 
-        // 4. Build Action with input root + command digest + timeout
+        // 6. Build Action with input root + command digest + timeout
         let mapped_action = ActionBuilder::build_action(
             &mapped_command,
             &input_tree.root_digest,
             Some(self.config.timeout_secs),
         )?;
-        debug!(
-            task = %name,
-            action_digest = %mapped_action.action_digest.hash,
-            "Built REAPI Action"
-        );
 
         // 5. Check ActionCache for hit
         if self.config.remote_cache {
@@ -202,6 +241,8 @@ impl RemoteBackend {
     }
 
     /// Upload all blobs that are missing from CAS
+    ///
+    /// Uses ByteStream for large files to avoid memory issues with big Nix closures.
     async fn upload_missing_blobs(
         &self,
         clients: &RemoteClients,
@@ -230,7 +271,7 @@ impl RemoteBackend {
             digest_to_bytes.insert(digest.hash.clone(), bytes.clone());
         }
 
-        // Add files (we'll read them when uploading)
+        // Add files (we'll upload them via CAS/ByteStream based on size)
         let file_digests: Vec<Digest> = file_sources.keys().cloned().collect();
         all_digests.extend(file_digests);
 
@@ -241,31 +282,41 @@ impl RemoteBackend {
             return Ok(());
         }
 
-        info!(missing_count = missing.len(), "Uploading missing blobs to CAS");
+        info!(
+            missing_count = missing.len(),
+            "Uploading missing blobs to CAS"
+        );
 
-        // Prepare blobs for batch upload
+        // Separate missing blobs into in-memory blobs and file sources
         let mut blobs_to_upload: Vec<(Digest, Vec<u8>)> = Vec::new();
+        let mut missing_file_sources: HashMap<Digest, PathBuf> = HashMap::new();
 
         for digest in &missing {
             // Check if it's a pre-computed blob (command, action, directory)
             if let Some(bytes) = digest_to_bytes.get(&digest.hash) {
                 blobs_to_upload.push((digest.clone(), bytes.clone()));
             } else if let Some(path) = file_sources.get(digest) {
-                // It's a file - read and upload
-                let bytes = fs::read(path).map_err(|e| {
-                    RemoteError::io_error(format!("read file {:?}", path), e)
-                })?;
-                blobs_to_upload.push((digest.clone(), bytes));
+                // It's a file - add to file sources for upload
+                missing_file_sources.insert(digest.clone(), path.clone());
             } else {
-                // This shouldn't happen
-                warn!(hash = %digest.hash, "Missing blob with unknown source");
+                // This is an invariant violation - fail immediately with clear error
+                return Err(RemoteError::merkle_error(format!(
+                    "Internal error: missing blob {} has no known source. This indicates a bug in input tree construction.",
+                    digest.hash
+                )));
             }
         }
 
-        // Upload all missing blobs
-        clients.cas.batch_upload_blobs(&blobs_to_upload).await?;
+        // Upload using CAS + ByteStream (large files stream from disk)
+        clients
+            .cas
+            .upload_with_bytestream(&clients.bytestream, &blobs_to_upload, &missing_file_sources)
+            .await?;
 
-        debug!(uploaded_count = blobs_to_upload.len(), "Uploaded missing blobs");
+        debug!(
+            uploaded_count = missing.len(),
+            "Uploaded missing blobs"
+        );
         Ok(())
     }
 }
@@ -301,6 +352,7 @@ impl TaskBackend for RemoteBackend {
 /// Container for REAPI gRPC clients
 struct RemoteClients {
     cas: CasClient,
+    bytestream: ByteStreamClient,
     action_cache: ActionCacheClient,
     execution: ExecutionClient,
 }

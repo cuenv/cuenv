@@ -4,7 +4,7 @@ use crate::client::channel::{AuthInterceptor, GrpcChannel};
 use crate::config::RemoteConfig;
 use crate::error::{RemoteError, Result};
 use crate::reapi::{
-    capabilities_client::CapabilitiesClient as ProtoCapabilitiesClient, GetCapabilitiesRequest,
+    GetCapabilitiesRequest, capabilities_client::CapabilitiesClient as ProtoCapabilitiesClient,
 };
 use std::sync::Arc;
 use tonic::codegen::InterceptedService;
@@ -36,8 +36,7 @@ impl CapabilitiesClient {
     /// Create a new Capabilities client from a shared channel
     pub fn from_channel(channel: &GrpcChannel, config: RemoteConfig) -> Self {
         let interceptor = channel.auth_interceptor();
-        let client =
-            ProtoCapabilitiesClient::with_interceptor(channel.channel(), interceptor);
+        let client = ProtoCapabilitiesClient::with_interceptor(channel.channel(), interceptor);
         Self {
             client,
             config: Arc::new(config),

@@ -6,8 +6,8 @@ use crate::error::{RemoteError, Result};
 use crate::merkle::Digest;
 use crate::proto::google::longrunning::operation::Result as OperationResult;
 use crate::reapi::{
-    execution_client::ExecutionClient as ProtoExecutionClient, ActionResult as ProtoActionResult,
-    ExecuteOperationMetadata, ExecuteRequest, ExecuteResponse, WaitExecutionRequest,
+    ActionResult as ProtoActionResult, ExecuteOperationMetadata, ExecuteRequest, ExecuteResponse,
+    WaitExecutionRequest, execution_client::ExecutionClient as ProtoExecutionClient,
 };
 use prost::Message;
 use std::sync::Arc;
@@ -43,7 +43,7 @@ impl ExecutionClient {
             skip_cache_lookup: false,
             execution_policy: None,
             results_cache_policy: None,
-            digest_function: 0, // SHA256
+            digest_function: 1, // SHA256 (REAPI enum value)
             inline_stdout: true,
             inline_stderr: true,
             inline_output_files: vec![],
@@ -71,8 +71,7 @@ impl ExecutionClient {
 
             // Log execution progress from metadata
             if let Some(ref metadata_any) = operation.metadata {
-                if let Ok(metadata) =
-                    ExecuteOperationMetadata::decode(metadata_any.value.as_ref())
+                if let Ok(metadata) = ExecuteOperationMetadata::decode(metadata_any.value.as_ref())
                 {
                     log_execution_stage(metadata.stage);
                 }
@@ -82,8 +81,8 @@ impl ExecutionClient {
                 // Extract result from completed operation
                 match operation.result {
                     Some(OperationResult::Response(response_any)) => {
-                        let response =
-                            ExecuteResponse::decode(response_any.value.as_ref()).map_err(|e| {
+                        let response = ExecuteResponse::decode(response_any.value.as_ref())
+                            .map_err(|e| {
                                 RemoteError::serialization_error(format!(
                                     "Failed to decode ExecuteResponse: {}",
                                     e
@@ -157,8 +156,7 @@ impl ExecutionClient {
         {
             // Log execution progress
             if let Some(ref metadata_any) = operation.metadata {
-                if let Ok(metadata) =
-                    ExecuteOperationMetadata::decode(metadata_any.value.as_ref())
+                if let Ok(metadata) = ExecuteOperationMetadata::decode(metadata_any.value.as_ref())
                 {
                     log_execution_stage(metadata.stage);
                 }
@@ -191,9 +189,8 @@ impl ExecutionClient {
             }
         }
 
-        final_result.ok_or_else(|| {
-            RemoteError::execution_failed("Wait stream ended without completion")
-        })
+        final_result
+            .ok_or_else(|| RemoteError::execution_failed("Wait stream ended without completion"))
     }
 }
 

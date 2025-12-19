@@ -87,7 +87,8 @@ mod tests {
         let mapped_command = CommandMapper::map_task(&task, &env, &SecretsMode::Inline).unwrap();
         let input_root = Digest::from_bytes(b"root");
 
-        let mapped_action = ActionBuilder::build_action(&mapped_command, &input_root, Some(60)).unwrap();
+        let mapped_action =
+            ActionBuilder::build_action(&mapped_command, &input_root, Some(60)).unwrap();
 
         // Verify action references correct digests
         assert_eq!(
@@ -95,7 +96,12 @@ mod tests {
             mapped_command.command_digest.hash
         );
         assert_eq!(
-            mapped_action.action.input_root_digest.as_ref().unwrap().hash,
+            mapped_action
+                .action
+                .input_root_digest
+                .as_ref()
+                .unwrap()
+                .hash,
             input_root.hash
         );
 

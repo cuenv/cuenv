@@ -1132,6 +1132,7 @@ dependencies = [
  "backoff",
  "cuenv-core",
  "cuenv-events",
+ "futures",
  "hex",
  "miette",
  "prost",
@@ -1142,10 +1143,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-stream",
  "tokio-test",
  "tonic",
  "tonic-build",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -4,7 +4,7 @@ use crate::config::SecretsMode;
 use crate::error::Result;
 use crate::merkle::Digest;
 use crate::reapi::{
-    command::EnvironmentVariable, platform::Property, Command as ReapiCommand, Platform,
+    Command as ReapiCommand, Platform, command::EnvironmentVariable, platform::Property,
 };
 use cuenv_core::environment::Environment;
 use cuenv_core::tasks::Task;
@@ -55,12 +55,12 @@ impl CommandMapper {
             arguments,
             environment_variables: env_vars,
             output_paths,
-            output_files: vec![],        // deprecated, use output_paths
-            output_directories: vec![],  // deprecated, use output_paths
+            output_files: vec![],       // deprecated, use output_paths
+            output_directories: vec![], // deprecated, use output_paths
             output_node_properties: vec![],
-            platform: Some(platform),    // deprecated but still needed for compatibility
+            platform: Some(platform), // deprecated but still needed for compatibility
             working_directory: String::new(), // Tasks run in root of input tree
-            output_directory_format: 0,  // TREE_ONLY
+            output_directory_format: 0, // TREE_ONLY
         };
 
         // Serialize and compute digest
@@ -148,12 +148,10 @@ impl CommandMapper {
 
     /// Build platform properties for the execution environment
     fn build_platform(task: &Task) -> Platform {
-        let mut properties = vec![
-            Property {
-                name: "OSFamily".to_string(),
-                value: "Linux".to_string(),
-            },
-        ];
+        let mut properties = vec![Property {
+            name: "OSFamily".to_string(),
+            value: "Linux".to_string(),
+        }];
 
         // Add container image if specified in dagger config
         if let Some(ref dagger) = task.dagger {
@@ -232,18 +230,22 @@ mod tests {
 
         // Secret should be in headers, not in command
         assert!(mapped.secrets_headers.contains_key("API_TOKEN"));
-        assert!(!mapped
-            .command
-            .environment_variables
-            .iter()
-            .any(|v| v.name == "API_TOKEN"));
+        assert!(
+            !mapped
+                .command
+                .environment_variables
+                .iter()
+                .any(|v| v.name == "API_TOKEN")
+        );
 
         // Normal var should be in command
-        assert!(mapped
-            .command
-            .environment_variables
-            .iter()
-            .any(|v| v.name == "NORMAL_VAR"));
+        assert!(
+            mapped
+                .command
+                .environment_variables
+                .iter()
+                .any(|v| v.name == "NORMAL_VAR")
+        );
     }
 
     #[test]

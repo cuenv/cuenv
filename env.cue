@@ -9,6 +9,14 @@ schema.#Project
 
 name: "cuenv"
 
+config: backend: {
+    type: "remote"
+    options: {
+        endpoint: "grpcs://rawkode-academy.buildbuddy.io"
+        auth: { type: "buildbuddy", apiKey: schema.#OnePasswordRef & { ref: "op://Private/BuildBuddy/api-key" } }
+    }
+}
+
 hooks: onEnter: nix: schema.#NixFlake
 
 owners: rules: default: {

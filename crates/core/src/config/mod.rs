@@ -2,6 +2,7 @@
 //!
 //! Based on schema/config.cue
 
+use crate::secrets::Secret;
 use serde::{Deserialize, Serialize};
 
 /// Main configuration structure for cuenv
@@ -95,7 +96,55 @@ pub struct BackendOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_name: Option<String>,
 
-    /// API key for authentication (Bearer token)
-    #[serde(skip_serializing_if = "Option::is_none", rename = "apiKey")]
-    pub api_key: Option<String>,
+    /// Authentication configuration for remote backends
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<BackendAuth>,
+}
+
+/// Authentication configuration for backend services
+///
+/// Supports multiple auth types with optional secret resolution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum BackendAuth {
+    /// Bearer token authentication (Authorization: Bearer <token>)
+    Bearer {
+        /// Token value (plain string or secret reference)
+        token: StringOrSecret,
+    },
+
+    /// BuildBuddy API key authentication (x-buildbuddy-api-key: <token>)
+    #[serde(rename = "buildbuddy")]
+    BuildBuddy {
+        /// API key value (plain string or secret reference)
+        #[serde(rename = "apiKey")]
+        api_key: StringOrSecret,
+    },
+
+    /// mTLS authentication
+    #[serde(rename = "mtls")]
+    MTls {
+        /// Path to client certificate
+        #[serde(rename = "certPath")]
+        cert_path: String,
+        /// Path to client private key
+        #[serde(rename = "keyPath")]
+        key_path: String,
+        /// Optional path to CA certificate
+        #[serde(rename = "caPath")]
+        ca_path: Option<String>,
+    },
+}
+
+/// A value that can be either a plain string or a secret reference
+///
+/// When serialized from CUE, a plain string comes as `String` variant,
+/// while a `#Secret` or `#OnePasswordRef` comes as the `Secret` variant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum StringOrSecret {
+    /// Plain string value (no secret resolution needed)
+    Plain(String),
+    /// Secret reference that needs async resolution
+    Secret(Secret),
 }

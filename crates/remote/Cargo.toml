@@ -15,7 +15,9 @@ cuenv-events = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }
+tokio-stream = "0.1"
 async-trait = "0.1"
+futures = "0.3"
 
 # gRPC and protobuf
 tonic = { version = "0.12", features = ["tls", "tls-roots"] }
@@ -33,6 +35,9 @@ serde_json = { workspace = true }
 # Hashing for content-addressed storage
 sha2.workspace = true
 hex = "0.4"
+
+# UUID for ByteStream resource names
+uuid = { version = "1.0", features = ["v4"] }
 
 # Logging
 tracing.workspace = true

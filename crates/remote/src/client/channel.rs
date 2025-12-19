@@ -23,9 +23,10 @@ impl GrpcChannel {
 
         info!(endpoint = %config.endpoint, "Connecting to REAPI server");
 
-        let channel = endpoint.connect().await.map_err(|e| {
-            RemoteError::connection_failed(&config.endpoint, e.to_string())
-        })?;
+        let channel = endpoint
+            .connect()
+            .await
+            .map_err(|e| RemoteError::connection_failed(&config.endpoint, e.to_string()))?;
 
         debug!("Successfully connected to REAPI server");
 
@@ -51,35 +52,86 @@ impl GrpcChannel {
     }
 }
 
+/// The authentication mode for requests
+#[derive(Clone)]
+enum AuthMode {
+    /// Bearer token authentication (Authorization: Bearer <token>)
+    Bearer(AsciiMetadataValue),
+    /// BuildBuddy API key (x-buildbuddy-api-key: <token>)
+    BuildBuddyApiKey(AsciiMetadataValue),
+    /// No authentication
+    None,
+}
+
 /// Interceptor that adds authentication and BuildBuddy headers to requests
 #[derive(Clone)]
 pub struct AuthInterceptor {
-    auth_header: Option<AsciiMetadataValue>,
+    auth_mode: AuthMode,
     instance_name: String,
 }
 
 impl AuthInterceptor {
     /// Create a new auth interceptor from config
     pub fn new(config: &RemoteConfig) -> Self {
-        let auth_header = config.auth.as_ref().and_then(|auth| match auth {
-            AuthConfig::Bearer { token } => {
-                let value = format!("Bearer {}", token);
-                AsciiMetadataValue::try_from(&value).ok()
-            }
-            AuthConfig::MTls { .. } => None, // mTLS is handled at channel level
-            AuthConfig::GoogleCloud => None, // TODO: Implement GCP auth
-        });
+        let auth_mode = config
+            .auth
+            .as_ref()
+            .map(|auth| match auth {
+                AuthConfig::Bearer { token } => {
+                    let value = format!("Bearer {}", token);
+                    match AsciiMetadataValue::try_from(&value) {
+                        Ok(v) => AuthMode::Bearer(v),
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "Bearer token contains invalid characters, proceeding without auth"
+                            );
+                            AuthMode::None
+                        }
+                    }
+                }
+                AuthConfig::BuildBuddy { api_key } => {
+                    match AsciiMetadataValue::try_from(api_key) {
+                        Ok(v) => AuthMode::BuildBuddyApiKey(v),
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "BuildBuddy API key contains invalid characters, proceeding without auth"
+                            );
+                            AuthMode::None
+                        }
+                    }
+                }
+                AuthConfig::MTls { .. } => AuthMode::None, // mTLS is handled at channel level
+                AuthConfig::GoogleCloud => {
+                    // GoogleCloud auth is not yet implemented - log error and continue without auth
+                    // This allows testing connection but will likely fail with permission errors
+                    tracing::error!(
+                        "GoogleCloud authentication is not yet implemented. \
+                         Use 'bearer' or 'buildbuddy' auth instead. \
+                         Proceeding without authentication."
+                    );
+                    AuthMode::None
+                }
+            })
+            .unwrap_or(AuthMode::None);
 
         Self {
-            auth_header,
+            auth_mode,
             instance_name: config.instance_name.clone(),
         }
     }
 
     /// Apply auth headers to a metadata map
     pub fn apply_to_metadata(&self, metadata: &mut MetadataMap) {
-        if let Some(ref header) = self.auth_header {
-            metadata.insert("authorization", header.clone());
+        match &self.auth_mode {
+            AuthMode::Bearer(header) => {
+                metadata.insert("authorization", header.clone());
+            }
+            AuthMode::BuildBuddyApiKey(key) => {
+                metadata.insert("x-buildbuddy-api-key", key.clone());
+            }
+            AuthMode::None => {}
         }
 
         // BuildBuddy-specific: add platform header for routing
@@ -129,9 +181,9 @@ fn create_endpoint(config: &RemoteConfig) -> Result<Endpoint> {
     // Configure TLS for HTTPS endpoints
     if uri.starts_with("https://") {
         let tls = ClientTlsConfig::new().with_native_roots();
-        endpoint = endpoint.tls_config(tls).map_err(|e| {
-            RemoteError::config_error(format!("TLS configuration error: {}", e))
-        })?;
+        endpoint = endpoint
+            .tls_config(tls)
+            .map_err(|e| RemoteError::config_error(format!("TLS configuration error: {}", e)))?;
     }
 
     // Configure keep-alive for long-running connections
@@ -188,7 +240,24 @@ mod tests {
         };
 
         let interceptor = AuthInterceptor::new(&config);
-        assert!(interceptor.auth_header.is_some());
+        assert!(matches!(interceptor.auth_mode, AuthMode::Bearer(_)));
+    }
+
+    #[test]
+    fn test_auth_interceptor_buildbuddy() {
+        let config = RemoteConfig {
+            endpoint: "grpc://localhost:8980".to_string(),
+            auth: Some(AuthConfig::BuildBuddy {
+                api_key: "test-api-key".to_string(),
+            }),
+            ..Default::default()
+        };
+
+        let interceptor = AuthInterceptor::new(&config);
+        assert!(matches!(
+            interceptor.auth_mode,
+            AuthMode::BuildBuddyApiKey(_)
+        ));
     }
 
     #[test]
@@ -200,6 +269,6 @@ mod tests {
         };
 
         let interceptor = AuthInterceptor::new(&config);
-        assert!(interceptor.auth_header.is_none());
+        assert!(matches!(interceptor.auth_mode, AuthMode::None));
     }
 }

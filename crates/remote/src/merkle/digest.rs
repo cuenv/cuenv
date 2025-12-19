@@ -69,6 +69,27 @@ impl Digest {
     pub fn to_string_format(&self) -> String {
         format!("{}/{}", self.hash, self.size_bytes)
     }
+
+    /// Convert to REAPI proto Digest
+    #[must_use]
+    pub fn to_proto(&self) -> crate::reapi::Digest {
+        crate::reapi::Digest {
+            hash: self.hash.clone(),
+            size_bytes: self.size_bytes,
+        }
+    }
+
+    /// Get the hash string
+    #[must_use]
+    pub fn hash(&self) -> &str {
+        &self.hash
+    }
+
+    /// Get the size in bytes
+    #[must_use]
+    pub fn size(&self) -> i64 {
+        self.size_bytes
+    }
 }
 
 impl fmt::Display for Digest {
@@ -78,8 +99,7 @@ impl fmt::Display for Digest {
 }
 
 /// Empty digest constant (SHA256 of empty string)
-pub const EMPTY_DIGEST: &str =
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0";
+pub const EMPTY_DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/0";
 
 impl Default for Digest {
     fn default() -> Self {

@@ -69,10 +69,14 @@ impl Default for RemoteConfig {
 }
 
 impl RemoteConfig {
-    /// Create a RemoteConfig from BackendOptions
-    pub fn from_backend_options(options: &BackendOptions) -> Self {
-        // For now, extract what we can from BackendOptions
-        // In Phase 6, we'll extend BackendOptions to have all REAPI fields
+    /// Create a RemoteConfig from BackendOptions with pre-resolved auth
+    ///
+    /// The `resolved_auth` parameter should contain the resolved authentication
+    /// configuration (secrets already resolved to plain strings).
+    pub fn from_backend_options_with_auth(
+        options: &BackendOptions,
+        resolved_auth: Option<AuthConfig>,
+    ) -> Self {
         Self {
             endpoint: options
                 .endpoint
@@ -82,20 +86,41 @@ impl RemoteConfig {
                 .instance_name
                 .clone()
                 .unwrap_or_else(default_instance_name),
-            auth: options.api_key.as_ref().map(|key| AuthConfig::Bearer {
-                token: key.clone(),
-            }),
+            auth: resolved_auth,
             ..Default::default()
         }
     }
+
+    /// Create a RemoteConfig from BackendOptions (deprecated - use from_backend_options_with_auth)
+    ///
+    /// This method does not support secret resolution. Use `from_backend_options_with_auth`
+    /// with pre-resolved auth for full functionality.
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use from_backend_options_with_auth with resolved auth instead"
+    )]
+    pub fn from_backend_options(options: &BackendOptions) -> Self {
+        Self::from_backend_options_with_auth(options, None)
+    }
 }
 
-/// Authentication configuration
+/// Authentication configuration (resolved, ready to use)
+///
+/// This enum holds resolved authentication values (no secrets - those should
+/// be resolved before constructing this type).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
-    /// Bearer token authentication
+    /// Bearer token authentication (Authorization: Bearer <token>)
     Bearer { token: String },
+
+    /// BuildBuddy API key authentication (x-buildbuddy-api-key: <token>)
+    #[serde(rename = "buildbuddy")]
+    BuildBuddy {
+        /// Resolved API key value
+        #[serde(rename = "apiKey")]
+        api_key: String,
+    },
 
     /// mTLS authentication (future)
     #[serde(rename = "mtls")]
