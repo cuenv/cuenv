@@ -764,6 +764,481 @@ pub async fn prepare_inputs_parallel_with_parallelism(
     })
 }
 
+/// Core packages to fetch for remote execution (fallback when packages: nix not specified)
+/// These are essential tools that should be available on Linux workers
+const CORE_PACKAGES: &[&str] = &[
+    "rustc",
+    "cargo",
+    "clippy",
+    "rustfmt",
+    "gcc", // for linking
+    "coreutils",
+    "bash",
+    "gnumake",
+    "pkg-config",
+];
+
+/// Fetch specific Nix packages for a target platform
+///
+/// This is the main entry point for the `packages: nix` feature.
+/// It fetches each package using `nix build nixpkgs#legacyPackages.{target}.{pkg}`
+/// and returns the full closure of store paths.
+///
+/// # Arguments
+/// * `packages` - Package names from nixpkgs (e.g., "rustc", "cargo", "gcc")
+/// * `target` - Nix system string (e.g., "x86_64-linux", "aarch64-linux")
+///
+/// # Returns
+/// Set of Nix store paths (full closure including all dependencies)
+///
+/// # Errors
+/// Returns error if no packages could be fetched from binary cache
+///
+/// # Example
+/// ```ignore
+/// let packages = vec!["rustc", "cargo", "gcc"];
+/// let closure = fetch_packages(&packages, "x86_64-linux").await?;
+/// // closure contains all store paths needed for those packages
+/// ```
+pub async fn fetch_packages(packages: &[String], target: &str) -> Result<HashSet<PathBuf>> {
+    if packages.is_empty() {
+        debug!("No packages specified, returning empty closure");
+        return Ok(HashSet::new());
+    }
+
+    info!(
+        target = target,
+        package_count = packages.len(),
+        "Fetching Nix packages for target platform"
+    );
+
+    let mut all_paths: HashSet<PathBuf> = HashSet::new();
+
+    for package in packages {
+        let pkg_ref = format!("nixpkgs#legacyPackages.{}.{}", target, package);
+        debug!(package = %pkg_ref, "Fetching package");
+
+        let output = Command::new("nix")
+            .args(["build", "--no-link", "--print-out-paths", &pkg_ref])
+            .output()
+            .await
+            .map_err(|e| {
+                RemoteError::io_error(
+                    format!("running nix build for {}", package),
+                    std::io::Error::new(e.kind(), format!("Failed to run nix build: {}", e)),
+                )
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Some packages may not exist or may not be cached - warn and continue
+            warn!(
+                package = %package,
+                error = %stderr.lines().next().unwrap_or("unknown error"),
+                "Failed to fetch package, continuing without it"
+            );
+            continue;
+        }
+
+        // Collect output paths
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if !line.is_empty() && line.starts_with("/nix/store/") {
+                all_paths.insert(PathBuf::from(line));
+            }
+        }
+    }
+
+    if all_paths.is_empty() {
+        return Err(RemoteError::config_error(format!(
+            "No packages could be fetched for target {}. \
+             Ensure cache.nixos.org is reachable and packages are cached.",
+            target
+        )));
+    }
+
+    info!(
+        target = target,
+        packages_fetched = all_paths.len(),
+        "Fetched packages, resolving full closure..."
+    );
+
+    // Get the full closure of all fetched packages
+    let closure = resolve_closure(&all_paths).await?;
+
+    info!(
+        target = target,
+        closure_count = closure.len(),
+        "Fetched package closure"
+    );
+
+    Ok(closure)
+}
+
+/// Prepare Nix inputs from explicit package list
+///
+/// This is the main entry point for the `packages: nix` feature.
+/// Unlike `prepare_inputs_parallel` which extracts paths from environment variables,
+/// this function fetches packages directly from nixpkgs.
+///
+/// # Arguments
+/// * `packages` - Package names from nixpkgs (e.g., ["rustc", "cargo"])
+/// * `target` - Nix system string (e.g., "x86_64-linux")
+///
+/// # Returns
+/// `NixInputs` containing files, path mapping, and total size
+pub async fn prepare_inputs_from_packages(packages: &[String], target: &str) -> Result<NixInputs> {
+    if packages.is_empty() {
+        debug!("No packages specified, returning empty NixInputs");
+        return Ok(NixInputs::default());
+    }
+
+    info!(
+        target = target,
+        package_count = packages.len(),
+        "Preparing Nix inputs from explicit package list"
+    );
+
+    // Fetch the closure for the specified packages
+    let closure = fetch_packages(packages, target).await?;
+
+    if closure.is_empty() {
+        warn!(target = target, "Package closure is empty");
+        return Ok(NixInputs::default());
+    }
+
+    info!(
+        target = target,
+        closure_count = closure.len(),
+        "Collecting files from package closure with parallel hashing..."
+    );
+
+    // Collect files with parallel hashing
+    let files = collect_files_parallel(&closure, DEFAULT_HASH_PARALLELISM).await?;
+
+    // Calculate total size
+    let total_size: u64 = files
+        .iter()
+        .filter(|f| !f.is_symlink)
+        .map(|f| f.digest.size_bytes as u64)
+        .sum();
+
+    // Check size limits
+    if total_size > MAX_CLOSURE_SIZE_BYTES {
+        warn!(
+            target = target,
+            total_size_gb = total_size / (1024 * 1024 * 1024),
+            max_size_gb = MAX_CLOSURE_SIZE_BYTES / (1024 * 1024 * 1024),
+            "Package closure too large for remote execution"
+        );
+        return Ok(NixInputs::default());
+    }
+
+    if total_size > LARGE_CLOSURE_WARNING_BYTES {
+        info!(
+            target = target,
+            total_size_mb = total_size / (1024 * 1024),
+            file_count = files.len(),
+            "Large package closure will be uploaded"
+        );
+    }
+
+    // Build path mapping for environment rewriting
+    let path_mapping: HashMap<PathBuf, PathBuf> = closure
+        .iter()
+        .map(|p| (p.clone(), store_path_to_relative(p)))
+        .collect();
+
+    info!(
+        target = target,
+        closure_count = closure.len(),
+        file_count = files.len(),
+        total_size_mb = total_size / (1024 * 1024),
+        "Prepared Nix inputs from explicit packages"
+    );
+
+    Ok(NixInputs {
+        files,
+        path_mapping,
+        total_size,
+    })
+}
+
+/// Build environment variables from Nix packages
+///
+/// Returns a HashMap with PATH and other environment variables set to include
+/// the bin directories from the fetched packages. This is used for local execution
+/// when `packages: nix` is specified.
+///
+/// # Arguments
+/// * `packages` - Package names from nixpkgs
+/// * `target` - Target platform (use `current_system()` for host platform)
+pub async fn build_env_from_packages(
+    packages: &[String],
+    target: &str,
+) -> Result<HashMap<String, String>> {
+    if packages.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    info!(
+        target = target,
+        package_count = packages.len(),
+        "Building environment from Nix packages"
+    );
+
+    // Fetch packages
+    let closure = fetch_packages(packages, target).await?;
+
+    // Build PATH from package bin directories
+    let mut bin_paths: Vec<String> = Vec::new();
+    let mut lib_paths: Vec<String> = Vec::new();
+
+    for path in &closure {
+        let bin_dir = path.join("bin");
+        if bin_dir.exists() {
+            bin_paths.push(bin_dir.to_string_lossy().into_owned());
+        }
+
+        let lib_dir = path.join("lib");
+        if lib_dir.exists() {
+            lib_paths.push(lib_dir.to_string_lossy().into_owned());
+        }
+    }
+
+    let mut env = HashMap::new();
+
+    if !bin_paths.is_empty() {
+        env.insert("PATH".to_string(), bin_paths.join(":"));
+    }
+
+    if !lib_paths.is_empty() {
+        env.insert("LD_LIBRARY_PATH".to_string(), lib_paths.join(":"));
+        env.insert("LIBRARY_PATH".to_string(), lib_paths.join(":"));
+    }
+
+    info!(
+        path_entries = bin_paths.len(),
+        lib_entries = lib_paths.len(),
+        "Built environment from Nix packages"
+    );
+
+    Ok(env)
+}
+
+/// Get the current system's Nix platform string
+pub fn current_system() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "aarch64-darwin"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "x86_64-darwin"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "x86_64-linux"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        "aarch64-linux"
+    }
+    #[cfg(not(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+    )))]
+    {
+        "x86_64-linux" // fallback
+    }
+}
+
+/// Get Nix store paths for a target platform by fetching individual packages
+///
+/// This function:
+/// 1. Fetches essential packages (rustc, cargo, etc.) for the target platform
+/// 2. Uses `nix build` with --print-out-paths to get cached binaries
+/// 3. Returns the full closure of store paths
+///
+/// # Arguments
+/// * `target` - Nix system string (e.g., "x86_64-linux", "aarch64-linux")
+///
+/// # Errors
+/// Returns error if:
+/// - Packages are not available in binary cache
+/// - nix build fails
+pub async fn get_platform_closure(target: &str) -> Result<HashSet<PathBuf>> {
+    info!(target = target, "Fetching Nix closure for target platform");
+
+    let mut all_paths: HashSet<PathBuf> = HashSet::new();
+
+    // Fetch each core package for the target platform
+    for package in CORE_PACKAGES {
+        let pkg_ref = format!("nixpkgs#legacyPackages.{}.{}", target, package);
+        debug!(package = %pkg_ref, "Fetching package");
+
+        let output = Command::new("nix")
+            .args([
+                "build",
+                "--no-link",
+                "--print-out-paths",
+                &pkg_ref,
+            ])
+            .output()
+            .await
+            .map_err(|e| {
+                RemoteError::io_error(
+                    format!("running nix build for {}", package),
+                    std::io::Error::new(e.kind(), format!("Failed to run nix build: {}", e)),
+                )
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Some packages may not exist or may require building - warn and continue
+            warn!(
+                package = package,
+                error = %stderr,
+                "Failed to fetch package, continuing without it"
+            );
+            continue;
+        }
+
+        // Collect output paths
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if !line.is_empty() && line.starts_with("/nix/store/") {
+                all_paths.insert(PathBuf::from(line));
+            }
+        }
+    }
+
+    if all_paths.is_empty() {
+        return Err(RemoteError::config_error(format!(
+            "No packages could be fetched for {}. \
+             Ensure cache.nixos.org is reachable and packages are cached.",
+            target
+        )));
+    }
+
+    info!(
+        target = target,
+        packages_fetched = all_paths.len(),
+        "Fetched core packages, resolving full closure..."
+    );
+
+    // Get the full closure of all fetched packages
+    let closure = resolve_closure(&all_paths).await?;
+
+    info!(
+        target = target,
+        closure_count = closure.len(),
+        "Fetched platform closure"
+    );
+
+    Ok(closure)
+}
+
+/// Prepare Nix inputs for a specific target platform
+///
+/// This is the main entry point for cross-platform remote execution.
+/// It fetches the Nix closure for the target platform and prepares it for upload.
+///
+/// # Arguments
+/// * `target` - Nix system string (e.g., "x86_64-linux")
+/// * `env` - Environment variables (used for path rewriting reference)
+///
+/// # Example
+/// ```ignore
+/// let inputs = prepare_inputs_for_platform("x86_64-linux", &env).await?;
+/// // inputs.files contains Linux ELF binaries, not Darwin Mach-O
+/// ```
+pub async fn prepare_inputs_for_platform(
+    target: &str,
+    env: &HashMap<String, String>,
+) -> Result<NixInputs> {
+    info!(
+        target = target,
+        "Preparing Nix inputs for target platform"
+    );
+
+    // Get the closure for the target platform
+    let closure = get_platform_closure(target).await?;
+
+    if closure.is_empty() {
+        warn!(target = target, "Platform closure is empty");
+        return Ok(NixInputs::default());
+    }
+
+    info!(
+        target = target,
+        closure_count = closure.len(),
+        "Collecting files from platform closure with parallel hashing..."
+    );
+
+    // Collect files with parallel hashing (same as host platform)
+    let files = collect_files_parallel(&closure, DEFAULT_HASH_PARALLELISM).await?;
+
+    // Calculate total size
+    let total_size: u64 = files
+        .iter()
+        .filter(|f| !f.is_symlink)
+        .map(|f| f.digest.size_bytes as u64)
+        .sum();
+
+    // Check size limits
+    if total_size > MAX_CLOSURE_SIZE_BYTES {
+        warn!(
+            target = target,
+            total_size_gb = total_size / (1024 * 1024 * 1024),
+            max_size_gb = MAX_CLOSURE_SIZE_BYTES / (1024 * 1024 * 1024),
+            "Platform closure too large for remote execution"
+        );
+        return Ok(NixInputs::default());
+    }
+
+    if total_size > LARGE_CLOSURE_WARNING_BYTES {
+        info!(
+            target = target,
+            total_size_mb = total_size / (1024 * 1024),
+            file_count = files.len(),
+            "Large platform closure will be uploaded"
+        );
+    }
+
+    // Build path mapping for environment rewriting
+    // For cross-platform, we map based on the target closure paths
+    let path_mapping: HashMap<PathBuf, PathBuf> = closure
+        .iter()
+        .map(|p| (p.clone(), store_path_to_relative(p)))
+        .collect();
+
+    // Also add mappings for any host paths in env that match patterns
+    // This ensures PATH=/nix/store/darwin-xxx/bin gets rewritten even though
+    // we're uploading linux-xxx binaries
+    let host_paths = extract_store_paths(env);
+    let mut combined_mapping = path_mapping;
+    for host_path in host_paths {
+        if !combined_mapping.contains_key(&host_path) {
+            combined_mapping.insert(host_path.clone(), store_path_to_relative(&host_path));
+        }
+    }
+
+    info!(
+        target = target,
+        closure_count = closure.len(),
+        file_count = files.len(),
+        total_size_mb = total_size / (1024 * 1024),
+        "Prepared platform-specific Nix inputs"
+    );
+
+    Ok(NixInputs {
+        files,
+        path_mapping: combined_mapping,
+        total_size,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

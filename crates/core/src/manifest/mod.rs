@@ -340,6 +340,19 @@ pub struct Project {
     /// Cube configuration for code generation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cube: Option<CubeConfig>,
+
+    /// Packages to install from package managers (e.g., Nix)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub packages: Option<Packages>,
+}
+
+/// Packages to install from package managers
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Packages {
+    /// Nix packages from nixpkgs (e.g., "rustc", "cargo", "gcc")
+    /// These are fetched from cache.nixos.org and work cross-platform
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nix: Vec<String>,
 }
 
 impl Project {

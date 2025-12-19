@@ -99,6 +99,20 @@ pub struct BackendOptions {
     /// Authentication configuration for remote backends
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<BackendAuth>,
+
+    /// Target platform for Nix toolchain in remote execution (e.g., "x86_64-linux")
+    ///
+    /// When set, fetches the Nix closure for this platform instead of the host.
+    /// This enables cross-platform remote execution (e.g., macOS -> Linux workers).
+    #[serde(skip_serializing_if = "Option::is_none", rename = "targetPlatform")]
+    pub target_platform: Option<String>,
+
+    /// Nix packages for remote execution (populated from project.packages.nix)
+    ///
+    /// This field is not typically set in config, but is populated by the executor
+    /// from the Project's `packages: nix` field before creating the backend.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "nixPackages")]
+    pub nix_packages: Vec<String>,
 }
 
 /// Authentication configuration for backend services

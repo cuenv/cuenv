@@ -110,6 +110,9 @@ async fn resolve_backend_auth(auth: &BackendAuth) -> Result<AuthConfig> {
 ///
 /// This is an async function because it may need to resolve secrets
 /// (e.g., 1Password references) before creating the backend.
+///
+/// Nix packages are read from `config.options.nix_packages`, which should be
+/// populated by the caller from `project.packages.nix` before calling this function.
 pub async fn create_remote_backend_async(
     config: Option<&BackendConfig>,
     project_root: PathBuf,
@@ -132,6 +135,13 @@ pub async fn create_remote_backend_async(
             ..Default::default()
         });
 
+    if !remote_config.nix_packages.is_empty() {
+        debug!(
+            package_count = remote_config.nix_packages.len(),
+            "Remote backend configured with explicit Nix packages"
+        );
+    }
+
     Ok(Arc::new(RemoteBackend::new(remote_config, project_root)))
 }
 
@@ -139,6 +149,9 @@ pub async fn create_remote_backend_async(
 ///
 /// This is the synchronous factory function that matches the `BackendFactory` type.
 /// It uses `block_in_place` to resolve secrets when called from within an async context.
+///
+/// Nix packages are read from `config.options.nix_packages`, which should be
+/// populated by the caller from `project.packages.nix` before calling this function.
 ///
 /// # Panics
 ///

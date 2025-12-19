@@ -25,6 +25,9 @@ pub struct RemoteBackend {
 
 impl RemoteBackend {
     /// Create a new remote backend
+    ///
+    /// Nix packages are read from `config.nix_packages`, which should be
+    /// populated before calling this function (e.g., from `project.packages.nix`).
     pub fn new(config: RemoteConfig, project_root: PathBuf) -> Self {
         Self {
             config,
@@ -153,9 +156,36 @@ impl RemoteBackend {
         // 1. Get or initialize clients
         let clients = self.get_clients().await?;
 
-        // 2. Detect and prepare Nix toolchain inputs (if any)
-        // Uses parallel file hashing for performance with large closures
-        let nix_inputs = nix::prepare_inputs_parallel(&environment.vars).await?;
+        // 2. Detect and prepare Nix toolchain inputs
+        // Priority:
+        // 1. Explicit packages (packages: nix in env.cue) - fetched for target platform
+        // 2. Environment-based detection - fallback for legacy hook approach
+        let nix_inputs = if !self.config.nix_packages.is_empty() {
+            // Use explicit package list from packages: nix
+            let target = self
+                .config
+                .target_platform
+                .as_deref()
+                .unwrap_or("x86_64-linux");
+            info!(
+                task = %name,
+                target = %target,
+                package_count = self.config.nix_packages.len(),
+                "Using explicit Nix packages"
+            );
+            nix::prepare_inputs_from_packages(&self.config.nix_packages, target).await?
+        } else if let Some(ref target) = self.config.target_platform {
+            // Legacy: fetch hardcoded packages for target platform
+            info!(
+                task = %name,
+                target = %target,
+                "Using cross-platform Nix closure (legacy)"
+            );
+            nix::prepare_inputs_for_platform(target, &environment.vars).await?
+        } else {
+            // Legacy: extract paths from environment
+            nix::prepare_inputs_parallel(&environment.vars).await?
+        };
 
         // 3. Rewrite environment paths for remote execution (if Nix inputs present)
         let remote_env = if nix_inputs.is_empty() {

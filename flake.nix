@@ -6,10 +6,6 @@
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     advisory-db = {
       url = "github:rustsec/advisory-db";
       flake = false;
@@ -29,21 +25,28 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, crane, flake-utils, rust-overlay, advisory-db, flake-schemas, ... }:
+  outputs = { self, nixpkgs, nixpkgs-unstable, crane, flake-utils, advisory-db, flake-schemas, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [ rust-overlay.overlays.default ];
         };
 
         pkgs-unstable = import nixpkgs-unstable {
           inherit system;
         };
 
-        rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
-          extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
-          targets = [ "x86_64-unknown-linux-gnu" ];
+        # Use nixpkgs standard Rust toolchain (always cached at cache.nixos.org)
+        # This provides Rust 1.91.x with clippy, rustfmt, and cargo included
+        # Combined into a single derivation for Crane's overrideToolchain
+        rustToolchain = pkgs.symlinkJoin {
+          name = "rust-toolchain-${pkgs.rustc.version}";
+          paths = with pkgs; [
+            rustc
+            cargo
+            clippy
+            rustfmt
+          ];
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
@@ -191,6 +194,7 @@
         devTools = with pkgs; [
           go_1_24
           pkgs-unstable.cue # Use CUE from unstable for latest version
+          rust-analyzer # IDE support for Rust
           antora
           cargo-audit
           cargo-nextest
@@ -257,7 +261,8 @@
           packages = devTools;
 
           RUST_BACKTRACE = "1";
-          RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+          # Use rustPlatform.rustLibSrc for rust-analyzer source navigation
+          RUST_SRC_PATH = pkgs.rustPlatform.rustLibSrc;
           CUE_BRIDGE_PATH = "${cue-bridge}";
 
           shellHook = ''

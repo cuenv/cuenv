@@ -14,10 +14,39 @@ config: backend: {
     options: {
         endpoint: "grpcs://rawkode-academy.buildbuddy.io"
         auth: { type: "buildbuddy", apiKey: schema.#OnePasswordRef & { ref: "op://Private/BuildBuddy/api-key" } }
+        targetPlatform: "x86_64-linux"  // Fetch Linux closure for remote execution
     }
 }
 
-hooks: onEnter: nix: schema.#NixFlake
+// Nix packages for environment setup (both local and remote execution)
+// These packages are fetched from cache.nixos.org and are platform-agnostic.
+// For remote execution, they're automatically fetched for the target platform.
+packages: nix: [
+    // Rust toolchain
+    "rustc",
+    "cargo",
+    "clippy",
+    "rustfmt",
+
+    // Build dependencies
+    "gcc",
+    "pkg-config",
+    "gnumake",
+
+    // Go (for cuengine FFI bridge)
+    "go_1_24",
+
+    // CUE (for schema evaluation)
+    "cue",
+
+    // Protocol buffers (for REAPI proto compilation)
+    "protobuf",
+
+    // Basic utilities
+    "coreutils",
+    "bash",
+    "git",
+]
 
 owners: rules: default: {
 	pattern: "**"

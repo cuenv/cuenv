@@ -45,6 +45,11 @@ package schema
 
 	// Authentication configuration for remote backends
 	auth?: #BackendAuth
+
+	// Target platform for Nix toolchain (e.g., "x86_64-linux")
+	// When set, fetches the Nix closure for this platform instead of the host.
+	// This enables cross-platform remote execution (e.g., macOS -> Linux workers).
+	targetPlatform?: string
 })
 
 // Authentication configuration for backend services

@@ -528,6 +528,29 @@ pub async fn execute_task(
         }
     }
 
+    // Create backend config with packages from manifest.packages.nix
+    let backend_config = {
+        let mut config = manifest.config.as_ref().and_then(|c| c.backend.clone());
+        // Inject nix packages from project.packages.nix into backend options
+        if let Some(ref packages) = manifest.packages {
+            if !packages.nix.is_empty() {
+                tracing::debug!(
+                    package_count = packages.nix.len(),
+                    "Injecting Nix packages into backend config"
+                );
+                if let Some(ref mut cfg) = config {
+                    if cfg.options.is_none() {
+                        cfg.options = Some(Default::default());
+                    }
+                    if let Some(ref mut opts) = cfg.options {
+                        opts.nix_packages = packages.nix.clone();
+                    }
+                }
+            }
+        }
+        config
+    };
+
     // Create executor with environment
     let config = ExecutorConfig {
         capture_output,
@@ -540,7 +563,7 @@ pub async fn execute_task(
         cache_dir: None,
         show_cache_path,
         workspaces: manifest.workspaces.clone(),
-        backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
+        backend_config: backend_config.clone(),
         cli_backend: backend.map(ToString::to_string),
     };
 
@@ -575,7 +598,7 @@ pub async fn execute_task(
             cache_dir: None,
             show_cache_path,
             workspaces: manifest.workspaces.clone(),
-            backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
+            backend_config: backend_config.clone(),
             cli_backend: backend.map(ToString::to_string),
         };
         let tui_executor = TaskExecutor::with_backend_factories(tui_config, get_dagger_factory(), get_remote_factory());

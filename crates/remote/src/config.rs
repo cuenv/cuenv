@@ -48,6 +48,23 @@ pub struct RemoteConfig {
     /// Secrets handling mode
     #[serde(default)]
     pub secrets: SecretsMode,
+
+    /// Target platform for Nix toolchain (e.g., "x86_64-linux")
+    ///
+    /// When set, fetches the Nix closure for this platform instead of the host.
+    /// This enables cross-platform remote execution (e.g., macOS -> Linux workers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_platform: Option<String>,
+
+    /// Explicit Nix packages to fetch for remote execution
+    ///
+    /// When set, these packages are fetched from nixpkgs for the target platform
+    /// instead of extracting paths from the environment. This is the recommended
+    /// approach for remote execution as it guarantees platform-compatible binaries.
+    ///
+    /// Example: ["rustc", "cargo", "gcc", "coreutils", "bash"]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nix_packages: Vec<String>,
 }
 
 impl Default for RemoteConfig {
@@ -64,6 +81,8 @@ impl Default for RemoteConfig {
             timeout_secs: default_timeout_secs(),
             retry: None,
             secrets: SecretsMode::default(),
+            target_platform: None,
+            nix_packages: Vec::new(),
         }
     }
 }
@@ -87,6 +106,8 @@ impl RemoteConfig {
                 .clone()
                 .unwrap_or_else(default_instance_name),
             auth: resolved_auth,
+            target_platform: options.target_platform.clone(),
+            nix_packages: options.nix_packages.clone(),
             ..Default::default()
         }
     }

@@ -12,12 +12,13 @@ package schema
 
 #Project: close({
 	#Base
-	name!:    #ProjectName
-	hooks?:   #Hooks
-	ci?:      #CI
-	release?: #Release
+	name!:     #ProjectName
+	hooks?:    #Hooks
+	ci?:       #CI
+	release?:  #Release
 	tasks?: [string]: #Tasks
-	cube?:   #Cube
+	cube?:     #Cube
+	packages?: #Packages
 })
 
 #Workspaces: [string]: #WorkspaceConfig
