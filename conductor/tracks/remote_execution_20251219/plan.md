@@ -27,7 +27,7 @@ Implement the core gRPC service clients with retry logic.
 - [x] Task: Implement gRPC retry logic with exponential backoff <!-- dd6c280 -->
     - [ ] Sub-task: Write tests for retry scenarios
     - [ ] Sub-task: Implement retry middleware or wrapper
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: gRPC Clients' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: gRPC Clients' (Protocol in workflow.md) [checkpoint: 651641a]
 
 ## Phase 3: Task Mapping
 Translate `cuenv` internal types to REAPI gRPC messages.
