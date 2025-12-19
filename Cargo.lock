@@ -911,6 +911,7 @@ dependencies = [
  "cuenv-gitlab",
  "cuenv-ignore",
  "cuenv-release",
+ "cuenv-remote",
  "dirs 6.0.0",
  "futures",
  "libc",

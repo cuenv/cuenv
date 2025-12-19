@@ -59,5 +59,5 @@ Expose the remote backend through the main `cuenv` CLI and configuration.
 Final touches and user-facing documentation.
 
 - [x] Task: Add comprehensive documentation for remote backend configuration <!-- c269d0d -->
-- [ ] Task: Final verification and cleanup
+- [~] Task: Final verification and cleanup
 - [ ] Task: Conductor - User Manual Verification 'Phase 6: Polish and Documentation' (Protocol in workflow.md)
