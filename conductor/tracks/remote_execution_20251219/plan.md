@@ -43,7 +43,7 @@ Translate `cuenv` internal types to REAPI gRPC messages.
 ## Phase 4: RemoteBackend Implementation
 Implement the `TaskBackend` trait to glue everything together.
 
-- [ ] Task: Implement the `RemoteBackend` struct and `TaskBackend` trait
+- [x] Task: Implement the `RemoteBackend` struct and `TaskBackend` trait <!-- b1342b5 -->
     - [ ] Sub-task: Write integration tests using a mock REAPI server if possible
     - [ ] Sub-task: Implement the full execution flow: secret resolution -> Merkle build -> cache check -> upload -> execute -> download
 - [ ] Task: Conductor - User Manual Verification 'Phase 4: RemoteBackend Implementation' (Protocol in workflow.md)
