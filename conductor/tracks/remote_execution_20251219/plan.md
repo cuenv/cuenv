@@ -15,7 +15,7 @@ Set up the crate structure, vendor protos, and implement core data structures.
 ## Phase 2: gRPC Clients
 Implement the core gRPC service clients with retry logic.
 
-- [ ] Task: Implement `CasClient` for Content-Addressable Storage
+- [x] Task: Implement `CasClient` for Content-Addressable Storage <!-- abdedee -->
     - [ ] Sub-task: Write unit tests for CAS operations (finding missing blobs, batch upload/read)
     - [ ] Sub-task: Implement `CasClient` logic using `tonic`
 - [ ] Task: Implement `ActionCacheClient`
