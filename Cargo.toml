@@ -12,6 +12,7 @@ members = [
     "crates/ignore",
     "crates/codeowners",
     "crates/cubes",
+    "crates/remote",
     # Platform-specific provider crates
     "crates/github",
     "crates/gitlab",
@@ -40,6 +41,7 @@ cuenv-release = { path = "crates/release", version = "0.15.0" }
 cuenv-ignore = { path = "crates/ignore", version = "0.15.0" }
 cuenv-codeowners = { path = "crates/codeowners", version = "0.15.0" }
 cuenv-cubes = { path = "crates/cubes", version = "0.15.0" }
+cuenv-remote = { path = "crates/remote", version = "0.1.0" }
 cuengine = { path = "crates/cuengine", version = "0.15.0" }
 # Platform-specific provider crates
 cuenv-github = { path = "crates/github", version = "0.15.0" }
