@@ -666,10 +666,38 @@ fn sync_cube_files(
                     }
                 } else {
                     // Actually write the file
+                    tracing::debug!(
+                        file_path = %file_path,
+                        output_path = %output_path.display(),
+                        content_len = file_def.content.len(),
+                        "Writing managed cube file"
+                    );
                     if let Some(parent) = output_path.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            tracing::error!(
+                                parent = %parent.display(),
+                                error = %e,
+                                "Failed to create parent directory"
+                            );
+                            cuenv_core::Error::Io {
+                                source: e,
+                                path: Some(parent.to_path_buf().into_boxed_path()),
+                                operation: format!("create parent directory for cube file: {file_path}"),
+                            }
+                        })?;
                     }
-                    std::fs::write(&output_path, &file_def.content)?;
+                    std::fs::write(&output_path, &file_def.content).map_err(|e| {
+                        tracing::error!(
+                            output_path = %output_path.display(),
+                            error = %e,
+                            "Failed to write cube file"
+                        );
+                        cuenv_core::Error::Io {
+                            source: e,
+                            path: Some(output_path.clone().into_boxed_path()),
+                            operation: format!("write cube file: {file_path}"),
+                        }
+                    })?;
                     output_lines.push(format!("  Generated: {file_path}"));
                 }
             }
@@ -692,10 +720,38 @@ fn sync_cube_files(
                     output_lines.push(format!("  Would scaffold: {file_path}"));
                 } else {
                     // Actually write the file
+                    tracing::debug!(
+                        file_path = %file_path,
+                        output_path = %output_path.display(),
+                        content_len = file_def.content.len(),
+                        "Scaffolding cube file"
+                    );
                     if let Some(parent) = output_path.parent() {
-                        std::fs::create_dir_all(parent)?;
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            tracing::error!(
+                                parent = %parent.display(),
+                                error = %e,
+                                "Failed to create parent directory for scaffold"
+                            );
+                            cuenv_core::Error::Io {
+                                source: e,
+                                path: Some(parent.to_path_buf().into_boxed_path()),
+                                operation: format!("create parent directory for scaffold file: {file_path}"),
+                            }
+                        })?;
                     }
-                    std::fs::write(&output_path, &file_def.content)?;
+                    std::fs::write(&output_path, &file_def.content).map_err(|e| {
+                        tracing::error!(
+                            output_path = %output_path.display(),
+                            error = %e,
+                            "Failed to write scaffold file"
+                        );
+                        cuenv_core::Error::Io {
+                            source: e,
+                            path: Some(output_path.clone().into_boxed_path()),
+                            operation: format!("write scaffold file: {file_path}"),
+                        }
+                    })?;
                     output_lines.push(format!("  Scaffolded: {file_path}"));
                 }
             }

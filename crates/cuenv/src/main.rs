@@ -753,8 +753,10 @@ async fn execute_command_safe(
     }
 
     // All other commands go through the executor's event-driven execute() method
+    // Use the proper From conversion to preserve error type semantics
     executor.execute(command).await.map_err(|e| {
-        CliError::eval_with_help(e.to_string(), "Run with --help for usage information")
+        let cli_err: CliError = e.into();
+        cli_err.with_help("Run with --help for usage information")
     })
 }
 
