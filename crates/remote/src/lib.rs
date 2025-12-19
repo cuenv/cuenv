@@ -1,6 +1,7 @@
 pub mod error;
 pub mod merkle;
 pub mod client;
+pub mod mapper;
 pub mod retry;
 
 pub mod reapi {
