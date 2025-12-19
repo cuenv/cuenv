@@ -53,7 +53,7 @@ Expose the remote backend through the main `cuenv` CLI and configuration.
 
 - [x] Task: Update `BackendConfig` and CUE schema in `cuenv-core` <!-- 00ed6c7 -->
 - [x] Task: Update CLI and factory functions to support `--backend remote` <!-- 1162cd5 -->
-- [ ] Task: Conductor - User Manual Verification 'Phase 5: Core Integration' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 5: Core Integration' (Protocol in workflow.md) [checkpoint: 2b3149e]
 
 ## Phase 6: Polish and Documentation
 Final touches and user-facing documentation.
