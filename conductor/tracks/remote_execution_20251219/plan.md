@@ -18,7 +18,7 @@ Implement the core gRPC service clients with retry logic.
 - [x] Task: Implement `CasClient` for Content-Addressable Storage <!-- abdedee -->
     - [ ] Sub-task: Write unit tests for CAS operations (finding missing blobs, batch upload/read)
     - [ ] Sub-task: Implement `CasClient` logic using `tonic`
-- [ ] Task: Implement `ActionCacheClient`
+- [x] Task: Implement `ActionCacheClient` <!-- cde7a7a -->
     - [ ] Sub-task: Write unit tests for ActionCache (get/update action result)
     - [ ] Sub-task: Implement `ActionCacheClient` logic
 - [ ] Task: Implement `ExecutionClient` and `CapabilitiesClient`
