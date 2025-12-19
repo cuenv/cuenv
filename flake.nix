@@ -203,6 +203,7 @@
           jq
           nodePackages.prettier
           nixpkgs-fmt
+          protobuf
           treefmt
           pkg-config
           llvmPackages.bintools

@@ -105,6 +105,9 @@ fn is_retryable(err: &RemoteError) -> bool {
         // I/O errors are retryable
         RemoteError::IoError { .. } => true,
 
+        // Upload failures are retryable (often network issues)
+        RemoteError::UploadFailed { .. } => true,
+
         // These errors are NOT retryable
         RemoteError::ContentNotFound { .. } => false,
         RemoteError::InvalidDigest(_) => false,
@@ -120,21 +123,27 @@ fn is_retryable(err: &RemoteError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn test_retry_success_first_attempt() {
         let config = RetryConfig::default();
-        let mut call_count = 0;
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
 
-        let result = retry_with_backoff(&config, "test", || async {
-            call_count += 1;
-            Ok::<_, RemoteError>(42)
+        let result = retry_with_backoff(&config, "test", move || {
+            let cc = call_count_clone.clone();
+            async move {
+                cc.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, RemoteError>(42)
+            }
         })
         .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
-        assert_eq!(call_count, 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -145,21 +154,25 @@ mod tests {
             max_backoff_ms: 100,
             backoff_multiplier: 2.0,
         };
-        let mut call_count = 0;
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
 
-        let result = retry_with_backoff(&config, "test", || async {
-            call_count += 1;
-            if call_count < 3 {
-                Err(RemoteError::timeout("test", 1))
-            } else {
-                Ok::<_, RemoteError>(42)
+        let result = retry_with_backoff(&config, "test", move || {
+            let cc = call_count_clone.clone();
+            async move {
+                let count = cc.fetch_add(1, Ordering::SeqCst) + 1;
+                if count < 3 {
+                    Err(RemoteError::timeout("test", 1))
+                } else {
+                    Ok::<_, RemoteError>(42)
+                }
             }
         })
         .await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 42);
-        assert_eq!(call_count, 3);
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
@@ -170,31 +183,39 @@ mod tests {
             max_backoff_ms: 100,
             backoff_multiplier: 2.0,
         };
-        let mut call_count = 0;
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
 
-        let result = retry_with_backoff(&config, "test", || async {
-            call_count += 1;
-            Err::<i32, _>(RemoteError::timeout("test", 1))
+        let result = retry_with_backoff(&config, "test", move || {
+            let cc = call_count_clone.clone();
+            async move {
+                cc.fetch_add(1, Ordering::SeqCst);
+                Err::<i32, _>(RemoteError::timeout("test", 1))
+            }
         })
         .await;
 
         assert!(result.is_err());
-        assert_eq!(call_count, 2);
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
         assert!(matches!(result.unwrap_err(), RemoteError::RetryExhausted { .. }));
     }
 
     #[tokio::test]
     async fn test_non_retryable_error() {
         let config = RetryConfig::default();
-        let mut call_count = 0;
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
 
-        let result = retry_with_backoff(&config, "test", || async {
-            call_count += 1;
-            Err::<i32, _>(RemoteError::invalid_digest("bad digest"))
+        let result = retry_with_backoff(&config, "test", move || {
+            let cc = call_count_clone.clone();
+            async move {
+                cc.fetch_add(1, Ordering::SeqCst);
+                Err::<i32, _>(RemoteError::invalid_digest("bad digest"))
+            }
         })
         .await;
 
         assert!(result.is_err());
-        assert_eq!(call_count, 1); // Should not retry
+        assert_eq!(call_count.load(Ordering::SeqCst), 1); // Should not retry
     }
 }

@@ -4,4 +4,4 @@ pub mod digest;
 pub mod directory;
 
 pub use digest::{Digest, EMPTY_DIGEST};
-pub use directory::DirectoryBuilder;
+pub use directory::{DirectoryBuilder, DirectoryTree, FileEntry};

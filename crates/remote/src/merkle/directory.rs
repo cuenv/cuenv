@@ -2,22 +2,40 @@
 
 use super::Digest;
 use crate::error::{RemoteError, Result};
+use crate::reapi::{self, DirectoryNode, FileNode};
+use prost::Message;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Entry representing a file with its metadata
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    /// Content digest of the file
+    pub digest: Digest,
+    /// Whether the file is executable
+    pub is_executable: bool,
+}
+
 /// Builder for constructing Merkle trees from file inputs
 ///
-/// In Phase 2, this will build actual REAPI Directory protos.
-/// For now, it's a placeholder that will hold the structure.
+/// Builds REAPI Directory protos with deterministic ordering for content-addressed caching.
 pub struct DirectoryBuilder {
     /// Root directory path
     root: PathBuf,
 
-    /// Files to include (path -> digest)
-    files: HashMap<PathBuf, Digest>,
+    /// Files to include (name -> entry)
+    files: HashMap<String, FileEntry>,
 
-    /// Subdirectories (path -> DirectoryBuilder)
-    subdirs: HashMap<PathBuf, DirectoryBuilder>,
+    /// Subdirectories (name -> DirectoryBuilder)
+    subdirs: HashMap<String, DirectoryBuilder>,
+}
+
+/// Result of building a directory tree
+pub struct DirectoryTree {
+    /// Root digest of the tree
+    pub root_digest: Digest,
+    /// All directories with their serialized bytes (digest -> bytes)
+    pub directories: Vec<(Digest, Vec<u8>)>,
 }
 
 impl DirectoryBuilder {
@@ -32,6 +50,16 @@ impl DirectoryBuilder {
 
     /// Add a file to the directory
     pub fn add_file(&mut self, path: impl AsRef<Path>, digest: Digest) -> Result<()> {
+        self.add_file_with_permissions(path, digest, false)
+    }
+
+    /// Add a file with executable permission to the directory
+    pub fn add_file_with_permissions(
+        &mut self,
+        path: impl AsRef<Path>,
+        digest: Digest,
+        is_executable: bool,
+    ) -> Result<()> {
         let path = path.as_ref();
 
         // Ensure path is relative to root
@@ -48,36 +76,97 @@ impl DirectoryBuilder {
             path.to_path_buf()
         };
 
-        // If file is in a subdirectory, delegate to subdir builder
-        if let Some(parent) = rel_path.parent() {
-            if parent != Path::new("") {
-                let subdir = self
-                    .subdirs
-                    .entry(parent.to_path_buf())
-                    .or_insert_with(|| DirectoryBuilder::new(self.root.join(parent)));
-                return subdir.add_file(rel_path.file_name().unwrap(), digest);
-            }
+        // Split into components
+        let components: Vec<_> = rel_path.components().collect();
+
+        if components.is_empty() {
+            return Err(RemoteError::merkle_error("Empty file path"));
         }
 
-        // File is directly in this directory
-        self.files.insert(rel_path, digest);
-        Ok(())
+        if components.len() == 1 {
+            // File is directly in this directory
+            let name = components[0].as_os_str().to_string_lossy().to_string();
+            self.files.insert(
+                name,
+                FileEntry {
+                    digest,
+                    is_executable,
+                },
+            );
+            Ok(())
+        } else {
+            // File is in a subdirectory - delegate
+            let subdir_name = components[0].as_os_str().to_string_lossy().to_string();
+            let remaining: PathBuf = components[1..].iter().collect();
+
+            let subdir = self.subdirs.entry(subdir_name.clone()).or_insert_with(|| {
+                DirectoryBuilder::new(self.root.join(&subdir_name))
+            });
+            subdir.add_file_with_permissions(&remaining, digest, is_executable)
+        }
     }
 
-    /// Build the Merkle tree and return the root digest
+    /// Build the Merkle tree and return the root digest with all directory blobs
     ///
-    /// In Phase 2, this will serialize to REAPI Directory proto and compute digest.
-    /// For now, it returns a placeholder.
-    pub fn build(&self) -> Result<Digest> {
-        // TODO: In Phase 2, implement actual proto serialization:
-        // 1. Sort files and directories by name (CRITICAL for determinism)
-        // 2. Build FileNode and DirectoryNode messages
-        // 3. Recursively build subdirectories
-        // 4. Serialize Directory proto to bytes
-        // 5. Compute SHA256 digest
+    /// This serializes to REAPI Directory protos with sorted entries for determinism.
+    pub fn build(&self) -> Result<DirectoryTree> {
+        let mut all_directories = Vec::new();
+        let root_digest = self.build_recursive(&mut all_directories)?;
 
-        // Placeholder: just return empty digest
-        Ok(Digest::default())
+        Ok(DirectoryTree {
+            root_digest,
+            directories: all_directories,
+        })
+    }
+
+    /// Recursively build directories bottom-up
+    fn build_recursive(&self, all_directories: &mut Vec<(Digest, Vec<u8>)>) -> Result<Digest> {
+        // First, recursively build all subdirectories
+        let mut directory_nodes: Vec<DirectoryNode> = Vec::new();
+        let mut subdir_names: Vec<_> = self.subdirs.keys().collect();
+        subdir_names.sort(); // Sort for determinism
+
+        for name in subdir_names {
+            let subdir = &self.subdirs[name];
+            let subdir_digest = subdir.build_recursive(all_directories)?;
+
+            directory_nodes.push(DirectoryNode {
+                name: name.clone(),
+                digest: Some(digest_to_proto(&subdir_digest)),
+            });
+        }
+
+        // Build file nodes (sorted by name)
+        let mut file_nodes: Vec<FileNode> = Vec::new();
+        let mut file_names: Vec<_> = self.files.keys().collect();
+        file_names.sort(); // Sort for determinism
+
+        for name in file_names {
+            let entry = &self.files[name];
+            file_nodes.push(FileNode {
+                name: name.clone(),
+                digest: Some(digest_to_proto(&entry.digest)),
+                is_executable: entry.is_executable,
+                node_properties: None,
+            });
+        }
+
+        // Create the Directory proto
+        let directory = reapi::Directory {
+            files: file_nodes,
+            directories: directory_nodes,
+            symlinks: vec![], // Not supporting symlinks yet
+            node_properties: None,
+        };
+
+        // Serialize and compute digest
+        let bytes = directory.encode_to_vec();
+        let digest = Digest::from_bytes(&bytes);
+
+        // Add to collection
+        all_directories.push((digest.clone(), bytes));
+
+        Ok(digest)
     }
 
     /// Get all file digests (recursively)
@@ -85,14 +174,14 @@ impl DirectoryBuilder {
         let mut files = Vec::new();
 
         // Add files from this directory
-        for (path, digest) in &self.files {
-            files.push((path.clone(), digest.clone()));
+        for (name, entry) in &self.files {
+            files.push((PathBuf::from(name), entry.digest.clone()));
         }
 
         // Add files from subdirectories
-        for (subdir_path, subdir) in &self.subdirs {
+        for (subdir_name, subdir) in &self.subdirs {
             for (file_path, digest) in subdir.get_all_files() {
-                files.push((subdir_path.join(file_path), digest));
+                files.push((PathBuf::from(subdir_name).join(file_path), digest));
             }
         }
 
@@ -106,6 +195,14 @@ impl DirectoryBuilder {
             count += subdir.file_count();
         }
         count
+    }
+}
+
+/// Convert our Digest to proto Digest
+fn digest_to_proto(digest: &Digest) -> reapi::Digest {
+    reapi::Digest {
+        hash: digest.hash.clone(),
+        size_bytes: digest.size_bytes,
     }
 }
 
@@ -149,14 +246,59 @@ mod tests {
     }
 
     #[test]
-    fn test_build_placeholder() {
+    fn test_build_tree() {
         let mut builder = DirectoryBuilder::new("/tmp/test");
         builder
             .add_file("file.txt", Digest::from_bytes(b"hello"))
             .unwrap();
 
-        let digest = builder.build().unwrap();
-        // For now, just check it returns something
-        assert!(digest.hash.len() == 64);
+        let tree = builder.build().unwrap();
+
+        // Check root digest is valid
+        assert!(tree.root_digest.hash.len() == 64);
+
+        // Should have at least one directory (the root)
+        assert!(!tree.directories.is_empty());
+    }
+
+    #[test]
+    fn test_build_nested_tree() {
+        let mut builder = DirectoryBuilder::new("/tmp/test");
+        builder
+            .add_file("a.txt", Digest::from_bytes(b"a"))
+            .unwrap();
+        builder
+            .add_file("subdir/b.txt", Digest::from_bytes(b"b"))
+            .unwrap();
+
+        let tree = builder.build().unwrap();
+
+        // Should have 2 directories: root and subdir
+        assert_eq!(tree.directories.len(), 2);
+    }
+
+    #[test]
+    fn test_deterministic_order() {
+        // Add files in different orders, should get same digest
+        let mut builder1 = DirectoryBuilder::new("/tmp/test");
+        builder1
+            .add_file("z.txt", Digest::from_bytes(b"z"))
+            .unwrap();
+        builder1
+            .add_file("a.txt", Digest::from_bytes(b"a"))
+            .unwrap();
+
+        let mut builder2 = DirectoryBuilder::new("/tmp/test");
+        builder2
+            .add_file("a.txt", Digest::from_bytes(b"a"))
+            .unwrap();
+        builder2
+            .add_file("z.txt", Digest::from_bytes(b"z"))
+            .unwrap();
+
+        let tree1 = builder1.build().unwrap();
+        let tree2 = builder2.build().unwrap();
+
+        assert_eq!(tree1.root_digest.hash, tree2.root_digest.hash);
     }
 }

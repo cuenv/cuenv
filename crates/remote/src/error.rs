@@ -10,16 +10,12 @@ pub type Result<T> = std::result::Result<T, RemoteError>;
 #[derive(Debug, Error, Diagnostic)]
 pub enum RemoteError {
     /// Failed to connect to REAPI server
-    #[error("Failed to connect to REAPI server at {endpoint}")]
+    #[error("Failed to connect to REAPI server at {endpoint}: {message}")]
     #[diagnostic(
         code(remote::connection_failed),
         help("Check that the endpoint is correct and the server is running")
     )]
-    ConnectionFailed {
-        endpoint: String,
-        #[source]
-        source: tonic::transport::Error,
-    },
+    ConnectionFailed { endpoint: String, message: String },
 
     /// gRPC call failed
     #[error("gRPC call failed: {operation}")]
@@ -107,17 +103,27 @@ pub enum RemoteError {
         operation: String,
         attempts: usize,
     },
+
+    /// Blob upload failed
+    #[error("Failed to upload blob {digest}: {message}")]
+    #[diagnostic(code(remote::upload_failed))]
+    UploadFailed { digest: String, message: String },
 }
 
 impl RemoteError {
     /// Create a connection failed error
-    pub fn connection_failed(
-        endpoint: impl Into<String>,
-        source: tonic::transport::Error,
-    ) -> Self {
+    pub fn connection_failed(endpoint: impl Into<String>, message: impl Into<String>) -> Self {
         Self::ConnectionFailed {
             endpoint: endpoint.into(),
-            source,
+            message: message.into(),
+        }
+    }
+
+    /// Create an upload failed error
+    pub fn upload_failed(digest: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::UploadFailed {
+            digest: digest.into(),
+            message: message.into(),
         }
     }
 
