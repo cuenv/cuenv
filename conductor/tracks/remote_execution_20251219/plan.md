@@ -5,7 +5,7 @@ This plan outlines the steps to implement the `cuenv-remote` crate, enabling `cu
 ## Phase 1: Foundation
 Set up the crate structure, vendor protos, and implement core data structures.
 
-- [ ] Task: Create `crates/remote/` crate structure and `Cargo.toml`
+- [x] Task: Create `crates/remote/` crate structure and `Cargo.toml` <!-- b53b199 -->
 - [ ] Task: Vendor REAPI protos and configure `tonic-build`
 - [ ] Task: Implement `Digest` newtype and Merkle tree builder
     - [ ] Sub-task: Write unit tests for `Digest` and Merkle tree logic
