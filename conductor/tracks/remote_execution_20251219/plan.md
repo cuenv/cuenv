@@ -35,7 +35,7 @@ Translate `cuenv` internal types to REAPI gRPC messages.
 - [x] Task: Implement `CommandMapper` (cuenv Task → REAPI Command) <!-- 8531ca2 -->
     - [ ] Sub-task: Write tests for mapping complex tasks and scripts
     - [ ] Sub-task: Implement mapping logic, ensuring local secret resolution
-- [ ] Task: Implement `ActionBuilder`
+- [x] Task: Implement `ActionBuilder` <!-- dfbf9db -->
     - [ ] Sub-task: Write tests for constructing the full REAPI Action message
     - [ ] Sub-task: Implement `ActionBuilder`
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Task Mapping' (Protocol in workflow.md)
