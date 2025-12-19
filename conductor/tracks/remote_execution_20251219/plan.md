@@ -46,7 +46,7 @@ Implement the `TaskBackend` trait to glue everything together.
 - [x] Task: Implement the `RemoteBackend` struct and `TaskBackend` trait <!-- b1342b5 -->
     - [ ] Sub-task: Write integration tests using a mock REAPI server if possible
     - [ ] Sub-task: Implement the full execution flow: secret resolution -> Merkle build -> cache check -> upload -> execute -> download
-- [ ] Task: Conductor - User Manual Verification 'Phase 4: RemoteBackend Implementation' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 4: RemoteBackend Implementation' (Protocol in workflow.md) [checkpoint: e142b7c]
 
 ## Phase 5: Core Integration
 Expose the remote backend through the main `cuenv` CLI and configuration.
