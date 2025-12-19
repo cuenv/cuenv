@@ -24,7 +24,7 @@ Implement the core gRPC service clients with retry logic.
 - [x] Task: Implement `ExecutionClient` and `CapabilitiesClient` <!-- e69a1c2 -->
     - [ ] Sub-task: Write tests for streaming execution operations
     - [ ] Sub-task: Implement `ExecutionClient` with streaming progress support
-- [ ] Task: Implement gRPC retry logic with exponential backoff
+- [x] Task: Implement gRPC retry logic with exponential backoff <!-- dd6c280 -->
     - [ ] Sub-task: Write tests for retry scenarios
     - [ ] Sub-task: Implement retry middleware or wrapper
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: gRPC Clients' (Protocol in workflow.md)
