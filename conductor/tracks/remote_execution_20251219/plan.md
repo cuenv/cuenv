@@ -51,7 +51,7 @@ Implement the `TaskBackend` trait to glue everything together.
 ## Phase 5: Core Integration
 Expose the remote backend through the main `cuenv` CLI and configuration.
 
-- [ ] Task: Update `BackendConfig` and CUE schema in `cuenv-core`
+- [x] Task: Update `BackendConfig` and CUE schema in `cuenv-core` <!-- 00ed6c7 -->
 - [ ] Task: Update CLI and factory functions to support `--backend remote`
 - [ ] Task: Conductor - User Manual Verification 'Phase 5: Core Integration' (Protocol in workflow.md)
 
