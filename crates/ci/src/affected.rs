@@ -206,3 +206,371 @@ fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
 
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::manifest::Project;
+    use cuenv_core::tasks::{Input, Task, TaskDefinition};
+
+    fn create_test_task(inputs: Vec<String>, depends_on: Vec<String>) -> Task {
+        Task {
+            shell: None,
+            command: "echo".to_string(),
+            script: None,
+            args: vec!["test".to_string()],
+            env: std::collections::HashMap::new(),
+            dagger: None,
+            hermetic: true,
+            depends_on,
+            inputs: inputs.into_iter().map(Input::Path).collect(),
+            outputs: vec![],
+            inputs_from: None,
+            workspaces: vec![],
+            description: None,
+            params: None,
+            labels: vec![],
+            task_ref: None,
+            project_root: None,
+            source: None,
+            directory: None,
+        }
+    }
+
+    fn create_test_project(tasks: Vec<(&str, Task)>) -> Project {
+        let mut task_map = std::collections::HashMap::new();
+        for (name, task) in tasks {
+            task_map.insert(name.to_string(), TaskDefinition::Single(Box::new(task)));
+        }
+        Project {
+            config: None,
+            name: "test-project".to_string(),
+            env: None,
+            hooks: None,
+            workspaces: None,
+            ci: None,
+            owners: None,
+            tasks: task_map,
+            ignore: None,
+            cube: None,
+        }
+    }
+
+    // ===== matches_any tests =====
+
+    #[test]
+    fn test_matches_any_exact_path() {
+        let files = vec![PathBuf::from("src/main.rs")];
+        assert!(matches_any(&files, Path::new("."), "src/main.rs"));
+    }
+
+    #[test]
+    fn test_matches_any_prefix_path() {
+        let files = vec![PathBuf::from("src/lib/utils.rs")];
+        assert!(matches_any(&files, Path::new("."), "src"));
+    }
+
+    #[test]
+    fn test_matches_any_glob_wildcard() {
+        let files = vec![PathBuf::from("src/main.rs")];
+        assert!(matches_any(&files, Path::new("."), "src/*.rs"));
+    }
+
+    #[test]
+    fn test_matches_any_glob_double_star() {
+        let files = vec![PathBuf::from("src/nested/deep/file.rs")];
+        assert!(matches_any(&files, Path::new("."), "src/**/*.rs"));
+    }
+
+    #[test]
+    fn test_matches_any_no_match() {
+        let files = vec![PathBuf::from("src/main.rs")];
+        assert!(!matches_any(&files, Path::new("."), "tests"));
+    }
+
+    #[test]
+    fn test_matches_any_with_project_root() {
+        let files = vec![PathBuf::from("/project/src/main.rs")];
+        assert!(matches_any(&files, Path::new("/project"), "src/main.rs"));
+    }
+
+    #[test]
+    fn test_matches_any_file_outside_root() {
+        let files = vec![PathBuf::from("/other/src/main.rs")];
+        assert!(!matches_any(&files, Path::new("/project"), "src"));
+    }
+
+    // ===== compute_affected_tasks tests =====
+
+    #[test]
+    fn test_compute_affected_simple_match() {
+        let task = create_test_task(vec!["src/**/*.rs".to_string()], vec![]);
+        let project = create_test_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("src/main.rs")];
+        let pipeline_tasks = vec!["build".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("."),
+            &project,
+            &HashMap::new(),
+        );
+
+        assert_eq!(affected, vec!["build"]);
+    }
+
+    #[test]
+    fn test_compute_affected_no_match() {
+        let task = create_test_task(vec!["src/**/*.rs".to_string()], vec![]);
+        let project = create_test_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("docs/README.md")];
+        let pipeline_tasks = vec!["build".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("."),
+            &project,
+            &HashMap::new(),
+        );
+
+        assert!(affected.is_empty());
+    }
+
+    #[test]
+    fn test_compute_affected_transitive_dependency() {
+        let build_task = create_test_task(vec!["src/**/*.rs".to_string()], vec![]);
+        let test_task = create_test_task(vec![], vec!["build".to_string()]);
+        let project = create_test_project(vec![("build", build_task), ("test", test_task)]);
+        let changed_files = vec![PathBuf::from("src/main.rs")];
+        let pipeline_tasks = vec!["build".to_string(), "test".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("."),
+            &project,
+            &HashMap::new(),
+        );
+
+        assert_eq!(affected, vec!["build", "test"]);
+    }
+
+    #[test]
+    fn test_compute_affected_preserves_pipeline_order() {
+        let task_a = create_test_task(vec!["src/a.rs".to_string()], vec![]);
+        let task_b = create_test_task(vec!["src/b.rs".to_string()], vec![]);
+        let task_c = create_test_task(vec!["src/c.rs".to_string()], vec![]);
+        let project = create_test_project(vec![("a", task_a), ("b", task_b), ("c", task_c)]);
+        let changed_files = vec![
+            PathBuf::from("src/c.rs"),
+            PathBuf::from("src/a.rs"),
+            PathBuf::from("src/b.rs"),
+        ];
+        let pipeline_tasks = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("."),
+            &project,
+            &HashMap::new(),
+        );
+
+        // Should preserve pipeline order, not file order
+        assert_eq!(affected, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_compute_affected_chain_dependency() {
+        let task_a = create_test_task(vec!["src/**/*.rs".to_string()], vec![]);
+        let task_b = create_test_task(vec![], vec!["a".to_string()]);
+        let task_c = create_test_task(vec![], vec!["b".to_string()]);
+        let project = create_test_project(vec![("a", task_a), ("b", task_b), ("c", task_c)]);
+        let changed_files = vec![PathBuf::from("src/main.rs")];
+        let pipeline_tasks = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("."),
+            &project,
+            &HashMap::new(),
+        );
+
+        assert_eq!(affected, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn test_compute_affected_missing_task_not_in_project() {
+        let project = create_test_project(vec![]);
+        let changed_files = vec![PathBuf::from("src/main.rs")];
+        let pipeline_tasks = vec!["nonexistent".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("."),
+            &project,
+            &HashMap::new(),
+        );
+
+        assert!(affected.is_empty());
+    }
+
+    // ===== matched_inputs_for_task tests =====
+
+    #[test]
+    fn test_matched_inputs_for_task_single_match() {
+        let task = create_test_task(vec!["src/**/*.rs".to_string()], vec![]);
+        let project = create_test_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("src/main.rs")];
+
+        let matched = matched_inputs_for_task("build", &project, &changed_files, Path::new("."));
+
+        assert_eq!(matched, vec!["src/**/*.rs"]);
+    }
+
+    #[test]
+    fn test_matched_inputs_for_task_multiple_inputs() {
+        let task = create_test_task(
+            vec![
+                "src/**/*.rs".to_string(),
+                "tests/**/*.rs".to_string(),
+                "docs/**/*.md".to_string(),
+            ],
+            vec![],
+        );
+        let project = create_test_project(vec![("build", task)]);
+        let changed_files = vec![
+            PathBuf::from("src/main.rs"),
+            PathBuf::from("tests/test.rs"),
+        ];
+
+        let matched = matched_inputs_for_task("build", &project, &changed_files, Path::new("."));
+
+        assert!(matched.contains(&"src/**/*.rs".to_string()));
+        assert!(matched.contains(&"tests/**/*.rs".to_string()));
+        assert!(!matched.contains(&"docs/**/*.md".to_string()));
+    }
+
+    #[test]
+    fn test_matched_inputs_for_task_nonexistent() {
+        let project = create_test_project(vec![]);
+        let changed_files = vec![PathBuf::from("src/main.rs")];
+
+        let matched =
+            matched_inputs_for_task("nonexistent", &project, &changed_files, Path::new("."));
+
+        assert!(matched.is_empty());
+    }
+
+    // ===== Cross-project dependency tests =====
+
+    #[test]
+    fn test_compute_affected_external_dependency() {
+        // Project A has a task that depends on external project B
+        let task_in_a = create_test_task(vec![], vec!["#project-b:build".to_string()]);
+        let project_a = create_test_project(vec![("deploy", task_in_a)]);
+
+        // Project B has a build task with inputs
+        let task_in_b = create_test_task(vec!["src/**/*.rs".to_string()], vec![]);
+        let project_b = create_test_project(vec![("build", task_in_b)]);
+
+        let mut all_projects = HashMap::new();
+        all_projects.insert(
+            "project-b".to_string(),
+            DiscoveredCIProject {
+                path: PathBuf::from("packages/project-b/env.cue"),
+                config: project_b,
+            },
+        );
+
+        // Change in project B should affect project A's deploy task
+        let changed_files = vec![PathBuf::from("packages/project-b/src/lib.rs")];
+        let pipeline_tasks = vec!["deploy".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("packages/project-a"),
+            &project_a,
+            &all_projects,
+        );
+
+        assert_eq!(affected, vec!["deploy"]);
+    }
+
+    #[test]
+    fn test_compute_affected_external_dependency_no_match() {
+        let task_in_a = create_test_task(vec![], vec!["#project-b:build".to_string()]);
+        let project_a = create_test_project(vec![("deploy", task_in_a)]);
+
+        let task_in_b = create_test_task(vec!["src/**/*.rs".to_string()], vec![]);
+        let project_b = create_test_project(vec![("build", task_in_b)]);
+
+        let mut all_projects = HashMap::new();
+        all_projects.insert(
+            "project-b".to_string(),
+            DiscoveredCIProject {
+                path: PathBuf::from("packages/project-b/env.cue"),
+                config: project_b,
+            },
+        );
+
+        // Change in unrelated location should not affect
+        let changed_files = vec![PathBuf::from("packages/project-c/src/lib.rs")];
+        let pipeline_tasks = vec!["deploy".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("packages/project-a"),
+            &project_a,
+            &all_projects,
+        );
+
+        assert!(affected.is_empty());
+    }
+
+    #[test]
+    fn test_compute_affected_missing_external_project() {
+        let task_in_a = create_test_task(vec![], vec!["#nonexistent:build".to_string()]);
+        let project_a = create_test_project(vec![("deploy", task_in_a)]);
+
+        let changed_files = vec![PathBuf::from("src/main.rs")];
+        let pipeline_tasks = vec!["deploy".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("."),
+            &project_a,
+            &HashMap::new(),
+        );
+
+        // Should not crash, just not match
+        assert!(affected.is_empty());
+    }
+
+    #[test]
+    fn test_compute_affected_malformed_external_ref() {
+        // Test that malformed references (missing colon) don't crash
+        let task = create_test_task(vec![], vec!["#invalid".to_string()]);
+        let project = create_test_project(vec![("task", task)]);
+
+        let changed_files = vec![PathBuf::from("src/main.rs")];
+        let pipeline_tasks = vec!["task".to_string()];
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            Path::new("."),
+            &project,
+            &HashMap::new(),
+        );
+
+        assert!(affected.is_empty());
+    }
+}

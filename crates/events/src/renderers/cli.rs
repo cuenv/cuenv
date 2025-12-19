@@ -265,3 +265,327 @@ impl Default for CliRenderer {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{CuenvEvent, EventSource};
+    use uuid::Uuid;
+
+    fn create_test_event(category: EventCategory) -> CuenvEvent {
+        CuenvEvent {
+            id: Uuid::new_v4(),
+            correlation_id: Uuid::new_v4(),
+            timestamp: chrono::Utc::now(),
+            source: EventSource::new("cuenv::test"),
+            category,
+        }
+    }
+
+    #[test]
+    fn test_cli_renderer_config_default() {
+        let config = CliRendererConfig::default();
+        // In test environment, stdout is usually not a terminal
+        assert!(!config.verbose);
+    }
+
+    #[test]
+    fn test_cli_renderer_config_custom() {
+        let config = CliRendererConfig {
+            colors: true,
+            verbose: true,
+        };
+        assert!(config.colors);
+        assert!(config.verbose);
+    }
+
+    #[test]
+    fn test_cli_renderer_new() {
+        let renderer = CliRenderer::new();
+        assert!(!renderer.config.verbose);
+    }
+
+    #[test]
+    fn test_cli_renderer_with_config() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+        };
+        let renderer = CliRenderer::with_config(config);
+        assert!(!renderer.config.colors);
+        assert!(renderer.config.verbose);
+    }
+
+    #[test]
+    fn test_cli_renderer_default_impl() {
+        let renderer = CliRenderer::default();
+        assert!(!renderer.config.verbose);
+    }
+
+    #[test]
+    fn test_render_task_started() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Task(TaskEvent::Started {
+            name: "build".to_string(),
+            command: "cargo build".to_string(),
+            hermetic: true,
+        }));
+        // This test just verifies it doesn't panic
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_started_non_hermetic() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Task(TaskEvent::Started {
+            name: "build".to_string(),
+            command: "cargo build".to_string(),
+            hermetic: false,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_cache_hit() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Task(TaskEvent::CacheHit {
+            name: "build".to_string(),
+            cache_key: "abc123".to_string(),
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_cache_miss_non_verbose() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Task(TaskEvent::CacheMiss {
+            name: "build".to_string(),
+        }));
+        // Should not output in non-verbose mode
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_cache_miss_verbose() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+        };
+        let renderer = CliRenderer::with_config(config);
+        let event = create_test_event(EventCategory::Task(TaskEvent::CacheMiss {
+            name: "build".to_string(),
+        }));
+        // Should output in verbose mode
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_output_stdout() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Task(TaskEvent::Output {
+            name: "build".to_string(),
+            stream: Stream::Stdout,
+            content: "Hello, world!".to_string(),
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_output_stderr() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Task(TaskEvent::Output {
+            name: "build".to_string(),
+            stream: Stream::Stderr,
+            content: "Warning: deprecated".to_string(),
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_completed_verbose() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+        };
+        let renderer = CliRenderer::with_config(config);
+        let event = create_test_event(EventCategory::Task(TaskEvent::Completed {
+            name: "build".to_string(),
+            success: true,
+            exit_code: Some(0),
+            duration_ms: 1500,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_completed_failed() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+        };
+        let renderer = CliRenderer::with_config(config);
+        let event = create_test_event(EventCategory::Task(TaskEvent::Completed {
+            name: "build".to_string(),
+            success: false,
+            exit_code: Some(1),
+            duration_ms: 500,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_group_started_sequential() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Task(TaskEvent::GroupStarted {
+            name: "ci".to_string(),
+            sequential: true,
+            task_count: 3,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_group_started_parallel() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Task(TaskEvent::GroupStarted {
+            name: "ci".to_string(),
+            sequential: false,
+            task_count: 5,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_ci_context_detected() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Ci(CiEvent::ContextDetected {
+            provider: "github".to_string(),
+            event_type: "push".to_string(),
+            ref_name: "main".to_string(),
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_ci_changed_files() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Ci(CiEvent::ChangedFilesFound { count: 42 }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_ci_task_result_success() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Ci(CiEvent::TaskResult {
+            project: "my-project".to_string(),
+            task: "build".to_string(),
+            success: true,
+            error: None,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_ci_task_result_failure() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Ci(CiEvent::TaskResult {
+            project: "my-project".to_string(),
+            task: "test".to_string(),
+            success: false,
+            error: Some("assertion failed".to_string()),
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_ci_task_result_failure_no_error() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Ci(CiEvent::TaskResult {
+            project: "my-project".to_string(),
+            task: "test".to_string(),
+            success: false,
+            error: None,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_command_events_non_verbose() {
+        let renderer = CliRenderer::new();
+
+        // Started - should be silent in non-verbose
+        let event = create_test_event(EventCategory::Command(CommandEvent::Started {
+            command: "build".to_string(),
+            args: vec![],
+        }));
+        renderer.render(&event);
+
+        // Progress - should be silent in non-verbose
+        let event = create_test_event(EventCategory::Command(CommandEvent::Progress {
+            command: "build".to_string(),
+            progress: 0.5,
+            message: "Halfway there".to_string(),
+        }));
+        renderer.render(&event);
+
+        // Completed - should be silent in non-verbose
+        let event = create_test_event(EventCategory::Command(CommandEvent::Completed {
+            command: "build".to_string(),
+            success: true,
+            duration_ms: 1000,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_interactive_prompt() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Interactive(
+            InteractiveEvent::PromptRequested {
+                prompt_id: "choice-1".to_string(),
+                message: "Choose an option:".to_string(),
+                options: vec!["Option A".to_string(), "Option B".to_string()],
+            },
+        ));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_system_supervisor_log() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::System(SystemEvent::SupervisorLog {
+            tag: "INFO".to_string(),
+            message: "Starting up".to_string(),
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_system_shutdown_verbose() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+        };
+        let renderer = CliRenderer::with_config(config);
+        let event = create_test_event(EventCategory::System(SystemEvent::Shutdown));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_output_stdout() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Output(OutputEvent::Stdout {
+            content: "Output line".to_string(),
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_output_stderr() {
+        let renderer = CliRenderer::new();
+        let event = create_test_event(EventCategory::Output(OutputEvent::Stderr {
+            content: "Error line".to_string(),
+        }));
+        renderer.render(&event);
+    }
+}

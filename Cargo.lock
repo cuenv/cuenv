@@ -1016,6 +1016,7 @@ dependencies = [
  "cuenv-core",
  "octocrab",
  "tempfile",
+ "tokio",
  "tracing",
 ]
 

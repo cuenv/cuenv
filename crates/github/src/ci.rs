@@ -340,6 +340,21 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_repo_with_extra_slashes() {
+        let (owner, repo) = GitHubCIProvider::parse_repo("org/repo/extra");
+        // parse_repo expects exactly 2 parts, so this returns empty strings
+        assert_eq!(owner, "");
+        assert_eq!(repo, "");
+    }
+
+    #[test]
+    fn test_parse_repo_empty() {
+        let (owner, repo) = GitHubCIProvider::parse_repo("");
+        assert_eq!(owner, "");
+        assert_eq!(repo, "");
+    }
+
+    #[test]
     fn test_null_sha_constant() {
         assert_eq!(NULL_SHA.len(), 40);
         assert!(NULL_SHA.chars().all(|c| c == '0'));
@@ -357,5 +372,102 @@ mod tests {
         );
         assert_eq!(GitHubCIProvider::parse_pr_number("refs/heads/main"), None);
         assert_eq!(GitHubCIProvider::parse_pr_number("main"), None);
+    }
+
+    #[test]
+    fn test_parse_pr_number_large() {
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/pull/99999/merge"),
+            Some(99999)
+        );
+    }
+
+    #[test]
+    fn test_parse_pr_number_invalid_number() {
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/pull/abc/merge"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_pr_number_empty_number() {
+        assert_eq!(GitHubCIProvider::parse_pr_number("refs/pull//merge"), None);
+    }
+
+    #[test]
+    fn test_detect_not_github_actions() {
+        // Clear environment for test isolation
+        // SAFETY: This test doesn't run in parallel with other tests that depend on this env var
+        unsafe {
+            std::env::remove_var("GITHUB_ACTIONS");
+        }
+        let result = GitHubCIProvider::detect();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_context_accessor() {
+        let provider = GitHubCIProvider {
+            context: CIContext {
+                provider: "github".to_string(),
+                event: "push".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc123".to_string(),
+            },
+            token: String::new(),
+            owner: "test".to_string(),
+            repo: "repo".to_string(),
+            pr_number: None,
+        };
+
+        let ctx = provider.context();
+        assert_eq!(ctx.provider, "github");
+        assert_eq!(ctx.event, "push");
+        assert_eq!(ctx.ref_name, "main");
+        assert_eq!(ctx.sha, "abc123");
+    }
+
+    #[test]
+    fn test_octocrab_requires_token() {
+        let provider = GitHubCIProvider {
+            context: CIContext {
+                provider: "github".to_string(),
+                event: "push".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc123".to_string(),
+            },
+            token: String::new(),
+            owner: "test".to_string(),
+            repo: "repo".to_string(),
+            pr_number: None,
+        };
+
+        let result = provider.octocrab();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("GITHUB_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn test_octocrab_with_token() {
+        let provider = GitHubCIProvider {
+            context: CIContext {
+                provider: "github".to_string(),
+                event: "push".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc123".to_string(),
+            },
+            token: "test-token".to_string(),
+            owner: "test".to_string(),
+            repo: "repo".to_string(),
+            pr_number: None,
+        };
+
+        let result = provider.octocrab();
+        assert!(result.is_ok());
     }
 }

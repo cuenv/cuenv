@@ -293,3 +293,158 @@ pub fn create_dagger_backend(
         .and_then(|o| o.image.clone());
     Arc::new(DaggerBackend::new(image, project_root))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::config::BackendOptions;
+    use cuenv_core::tasks::DaggerTaskConfig;
+    use std::path::PathBuf;
+
+    fn create_test_task(command: &str, dagger_config: Option<DaggerTaskConfig>) -> Task {
+        Task {
+            shell: None,
+            command: command.to_string(),
+            script: None,
+            args: vec![],
+            env: std::collections::HashMap::new(),
+            dagger: dagger_config,
+            hermetic: true,
+            depends_on: vec![],
+            inputs: vec![],
+            outputs: vec![],
+            inputs_from: None,
+            workspaces: vec![],
+            description: None,
+            params: None,
+            labels: vec![],
+            task_ref: None,
+            project_root: None,
+            source: None,
+            directory: None,
+        }
+    }
+
+    #[test]
+    fn test_dagger_backend_new() {
+        let backend = DaggerBackend::new(Some("alpine:latest".to_string()), PathBuf::from("/tmp"));
+        assert_eq!(backend.default_image, Some("alpine:latest".to_string()));
+        assert_eq!(backend.project_root, PathBuf::from("/tmp"));
+    }
+
+    #[test]
+    fn test_dagger_backend_new_no_image() {
+        let backend = DaggerBackend::new(None, PathBuf::from("/workspace"));
+        assert!(backend.default_image.is_none());
+        assert_eq!(backend.project_root, PathBuf::from("/workspace"));
+    }
+
+    #[test]
+    fn test_container_cache_initially_empty() {
+        let backend = DaggerBackend::new(None, PathBuf::from("/tmp"));
+        let cache = backend.container_cache();
+        let guard = cache.lock().unwrap();
+        assert!(guard.is_empty());
+    }
+
+    #[test]
+    fn test_backend_name() {
+        let backend = DaggerBackend::new(None, PathBuf::from("/tmp"));
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_with_image() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: Some("ubuntu:22.04".to_string()),
+                platform: None,
+            }),
+        };
+        let backend = create_dagger_backend(Some(&config), PathBuf::from("/project"));
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_no_config() {
+        let backend = create_dagger_backend(None, PathBuf::from("/project"));
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_empty_options() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+        let backend = create_dagger_backend(Some(&config), PathBuf::from("/project"));
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[tokio::test]
+    async fn test_execute_requires_image_or_from() {
+        let backend = DaggerBackend::new(None, PathBuf::from("/tmp"));
+        let task = create_test_task("echo", None);
+        let env = Environment::new();
+
+        let result = backend
+            .execute("test-task", &task, &env, Path::new("/tmp"), true)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("requires either 'image' or 'from'"));
+    }
+
+    // Note: The empty command check in execute() only catches completely empty vectors,
+    // not vectors with an empty string. Testing this would require changing the validation logic.
+
+    #[tokio::test]
+    async fn test_execute_from_requires_cached_container() {
+        let backend = DaggerBackend::new(None, PathBuf::from("/tmp"));
+        let dagger_config = DaggerTaskConfig {
+            image: None,
+            from: Some("previous-task".to_string()),
+            secrets: None,
+            cache: None,
+        };
+        let task = create_test_task("echo", Some(dagger_config));
+        let env = Environment::new();
+
+        let result = backend
+            .execute("test-task", &task, &env, Path::new("/tmp"), true)
+            .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("references container from task"));
+        assert!(err.to_string().contains("previous-task"));
+    }
+
+    #[tokio::test]
+    async fn test_task_image_overrides_default() {
+        // This test validates that task-level image takes precedence,
+        // but since we can't actually connect to Dagger, we verify the
+        // validation passes (no "requires image" error)
+        let backend = DaggerBackend::new(Some("default:image".to_string()), PathBuf::from("/tmp"));
+        let dagger_config = DaggerTaskConfig {
+            image: Some("task:image".to_string()),
+            from: None,
+            secrets: None,
+            cache: None,
+        };
+        let task = create_test_task("echo", Some(dagger_config));
+        let env = Environment::new();
+
+        let result = backend
+            .execute("test-task", &task, &env, Path::new("/tmp"), true)
+            .await;
+
+        // Will fail due to no Dagger daemon, but should NOT fail on validation
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        // Should fail on Dagger connection, not on config validation
+        assert!(!err.to_string().contains("requires either 'image' or 'from'"));
+    }
+}
