@@ -174,7 +174,7 @@ impl CIExecutor {
         // Step 3: Resolve secrets for all tasks
         tracing::info!("Resolving secrets");
         let all_secrets = self.resolve_all_secrets(&ir)?;
-        let fingerprints = self.extract_fingerprints(&all_secrets);
+        let fingerprints = Self::extract_fingerprints(&all_secrets);
 
         // Step 4: Compute digests with secret fingerprints
         tracing::info!("Computing task digests");
@@ -222,7 +222,7 @@ impl CIExecutor {
         Ok(PipelineResult {
             success: pipeline_success,
             tasks: all_results,
-            duration_ms: duration.as_millis() as u64,
+            duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
         })
     }
 
@@ -391,7 +391,6 @@ impl CIExecutor {
 
     /// Extract fingerprints from resolved secrets
     fn extract_fingerprints(
-        &self,
         all_secrets: &HashMap<String, CIResolvedSecrets>,
     ) -> HashMap<String, HashMap<String, String>> {
         all_secrets
@@ -432,7 +431,7 @@ mod tests {
             concurrency_group: None,
             inputs: vec![],
             outputs: vec![],
-            depends_on: deps.iter().map(|s| s.to_string()).collect(),
+            depends_on: deps.iter().map(|s| (*s).to_string()).collect(),
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,

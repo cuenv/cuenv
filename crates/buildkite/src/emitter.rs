@@ -268,7 +268,7 @@ mod tests {
         Task {
             id: id.to_string(),
             runtime: None,
-            command: command.iter().map(|s| s.to_string()).collect(),
+            command: command.iter().map(|s| (*s).to_string()).collect(),
             shell: false,
             env: HashMap::new(),
             secrets: HashMap::new(),

@@ -62,7 +62,7 @@ impl<'a> IrValidator<'a> {
 
         for task in &self.ir.tasks {
             // Validate command
-            if let Err(e) = self.validate_command(task) {
+            if let Err(e) = Self::validate_command(task) {
                 errors.push(e);
             }
 
@@ -113,7 +113,7 @@ impl<'a> IrValidator<'a> {
     }
 
     /// Validate task command is well-formed
-    fn validate_command(&self, task: &Task) -> Result<(), ValidationError> {
+    fn validate_command(task: &Task) -> Result<(), ValidationError> {
         if task.command.is_empty() {
             return Err(ValidationError::EmptyCommand {
                 task: task.id.clone(),
@@ -134,7 +134,7 @@ impl<'a> IrValidator<'a> {
         for task in &self.ir.tasks {
             if !visited.contains(task.id.as_str())
                 && let Some(cycle) =
-                    self.detect_cycle(task.id.as_str(), task_index, &mut visited, &mut rec_stack)
+                    Self::detect_cycle(task.id.as_str(), task_index, &mut visited, &mut rec_stack)
             {
                 return Err(ValidationError::CyclicDependency(cycle));
             }
@@ -145,7 +145,6 @@ impl<'a> IrValidator<'a> {
 
     /// Detect cycles using DFS, returns path if cycle found
     fn detect_cycle(
-        &self,
         task_id: &str,
         task_index: &HashMap<&str, &Task>,
         visited: &mut HashSet<String>,
@@ -157,7 +156,7 @@ impl<'a> IrValidator<'a> {
         if let Some(task) = task_index.get(task_id) {
             for dep in &task.depends_on {
                 if !visited.contains(dep.as_str()) {
-                    if let Some(cycle) = self.detect_cycle(dep, task_index, visited, rec_stack) {
+                    if let Some(cycle) = Self::detect_cycle(dep, task_index, visited, rec_stack) {
                         return Some(format!("{task_id} -> {cycle}"));
                     }
                 } else if rec_stack.contains(dep.as_str()) {
@@ -226,7 +225,7 @@ mod tests {
             concurrency_group: None,
             inputs: vec![],
             outputs: vec![],
-            depends_on: depends_on.iter().map(|s| s.to_string()).collect(),
+            depends_on: depends_on.iter().map(|s| (*s).to_string()).collect(),
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,

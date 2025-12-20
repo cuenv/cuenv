@@ -361,7 +361,7 @@ impl RemoteCacheBackend {
 
     /// Create exponential backoff config
     #[allow(dead_code)]
-    fn create_backoff(&self) -> ExponentialBackoff {
+    fn create_backoff() -> ExponentialBackoff {
         ExponentialBackoff {
             initial_interval: Duration::from_millis(100),
             max_interval: Duration::from_secs(2),

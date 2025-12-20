@@ -276,6 +276,8 @@ impl CacheMetrics {
     /// Export metrics in Prometheus format
     #[must_use]
     pub fn to_prometheus(&self) -> String {
+        use std::fmt::Write;
+
         let mut output = String::new();
 
         // Cache hits
@@ -289,9 +291,10 @@ impl CacheMetrics {
                 "disabled" => self.hits.disabled.load(Ordering::Relaxed),
                 _ => 0,
             };
-            output.push_str(&format!(
-                "cuenv_cache_hit_total{{policy=\"{policy}\"}} {count}\n"
-            ));
+            let _ = writeln!(
+                output,
+                "cuenv_cache_hit_total{{policy=\"{policy}\"}} {count}"
+            );
         }
 
         // Cache misses
@@ -305,9 +308,10 @@ impl CacheMetrics {
                 "disabled" => self.misses.disabled.load(Ordering::Relaxed),
                 _ => 0,
             };
-            output.push_str(&format!(
-                "cuenv_cache_miss_total{{policy=\"{policy}\"}} {count}\n"
-            ));
+            let _ = writeln!(
+                output,
+                "cuenv_cache_miss_total{{policy=\"{policy}\"}} {count}"
+            );
         }
 
         // Restore failures
@@ -333,9 +337,10 @@ impl CacheMetrics {
                 "other" => self.restore_failures.other.load(Ordering::Relaxed),
                 _ => 0,
             };
-            output.push_str(&format!(
-                "cuenv_cache_restore_failure_total{{error_type=\"{error_type}\"}} {count}\n"
-            ));
+            let _ = writeln!(
+                output,
+                "cuenv_cache_restore_failure_total{{error_type=\"{error_type}\"}} {count}"
+            );
         }
 
         // Bytes transferred
@@ -343,17 +348,19 @@ impl CacheMetrics {
             "# HELP cuenv_cache_bytes_downloaded_total Total bytes downloaded from cache\n",
         );
         output.push_str("# TYPE cuenv_cache_bytes_downloaded_total counter\n");
-        output.push_str(&format!(
-            "cuenv_cache_bytes_downloaded_total {}\n",
+        let _ = writeln!(
+            output,
+            "cuenv_cache_bytes_downloaded_total {}",
             self.bytes_downloaded.load(Ordering::Relaxed)
-        ));
+        );
 
         output.push_str("# HELP cuenv_cache_bytes_uploaded_total Total bytes uploaded to cache\n");
         output.push_str("# TYPE cuenv_cache_bytes_uploaded_total counter\n");
-        output.push_str(&format!(
-            "cuenv_cache_bytes_uploaded_total {}\n",
+        let _ = writeln!(
+            output,
+            "cuenv_cache_bytes_uploaded_total {}",
             self.bytes_uploaded.load(Ordering::Relaxed)
-        ));
+        );
 
         // Task execution metrics
         output.push_str(
@@ -362,34 +369,38 @@ impl CacheMetrics {
         output.push_str("# TYPE cuenv_task_duration_seconds_total counter\n");
         let task_total_secs =
             self.task_durations.total_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
-        output.push_str(&format!(
-            "cuenv_task_duration_seconds_total {task_total_secs:.3}\n"
-        ));
+        let _ = writeln!(
+            output,
+            "cuenv_task_duration_seconds_total {task_total_secs:.3}"
+        );
 
         output.push_str("# HELP cuenv_tasks_executed_total Total number of tasks executed\n");
         output.push_str("# TYPE cuenv_tasks_executed_total counter\n");
-        output.push_str(&format!(
-            "cuenv_tasks_executed_total {}\n",
+        let _ = writeln!(
+            output,
+            "cuenv_tasks_executed_total {}",
             self.task_durations.count.load(Ordering::Relaxed)
-        ));
+        );
 
         // Runtime materialization metrics
         output.push_str("# HELP cuenv_runtime_materialization_seconds_total Total runtime materialization time in seconds\n");
         output.push_str("# TYPE cuenv_runtime_materialization_seconds_total counter\n");
         let runtime_total_secs =
             self.runtime_durations.total_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
-        output.push_str(&format!(
-            "cuenv_runtime_materialization_seconds_total {runtime_total_secs:.3}\n"
-        ));
+        let _ = writeln!(
+            output,
+            "cuenv_runtime_materialization_seconds_total {runtime_total_secs:.3}"
+        );
 
         output.push_str(
             "# HELP cuenv_runtimes_materialized_total Total number of runtimes materialized\n",
         );
         output.push_str("# TYPE cuenv_runtimes_materialized_total counter\n");
-        output.push_str(&format!(
-            "cuenv_runtimes_materialized_total {}\n",
+        let _ = writeln!(
+            output,
+            "cuenv_runtimes_materialized_total {}",
             self.runtime_durations.count.load(Ordering::Relaxed)
-        ));
+        );
 
         output
     }

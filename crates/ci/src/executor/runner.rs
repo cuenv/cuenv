@@ -209,11 +209,12 @@ impl IRTaskRunner {
         let exit_code = output.status.code().unwrap_or(-1);
         let success = output.status.success();
 
+        let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         tracing::info!(
             task = %task.id,
             exit_code = exit_code,
             success = success,
-            duration_ms = duration.as_millis() as u64,
+            duration_ms,
             "Task execution completed"
         );
 
@@ -224,7 +225,7 @@ impl IRTaskRunner {
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
             success,
             from_cache: false,
-            duration_ms: duration.as_millis() as u64,
+            duration_ms,
         })
     }
 }
@@ -239,7 +240,7 @@ mod tests {
         IRTask {
             id: id.to_string(),
             runtime: None,
-            command: command.iter().map(|s| s.to_string()).collect(),
+            command: command.iter().map(|s| (*s).to_string()).collect(),
             shell,
             env: HashMap::new(),
             secrets: HashMap::new(),

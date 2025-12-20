@@ -318,7 +318,7 @@ mod tests {
             concurrency_group: None,
             inputs: vec![],
             outputs: vec![],
-            depends_on: deps.iter().map(|s| s.to_string()).collect(),
+            depends_on: deps.iter().map(|s| (*s).to_string()).collect(),
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,
