@@ -274,7 +274,8 @@ fn draw_filter_input(f: &mut Frame, picker: &TaskPicker, area: Rect) {
     f.render_widget(input, area);
 
     // Show cursor at end of filter
-    let cursor_x = area.x + 1 + picker.filter.len() as u16;
+    let filter_len = u16::try_from(picker.filter.len()).unwrap_or(u16::MAX);
+    let cursor_x = area.x + 1 + filter_len;
     let cursor_y = area.y + 1;
     f.set_cursor_position((cursor_x.min(area.x + area.width - 2), cursor_y));
 }
