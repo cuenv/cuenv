@@ -443,10 +443,7 @@ mod tests {
             vec![],
         );
         let project = create_test_project(vec![("build", task)]);
-        let changed_files = vec![
-            PathBuf::from("src/main.rs"),
-            PathBuf::from("tests/test.rs"),
-        ];
+        let changed_files = vec![PathBuf::from("src/main.rs"), PathBuf::from("tests/test.rs")];
 
         let matched = matched_inputs_for_task("build", &project, &changed_files, Path::new("."));
 

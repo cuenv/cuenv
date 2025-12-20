@@ -394,7 +394,10 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("requires either 'image' or 'from'"));
+        assert!(
+            err.to_string()
+                .contains("requires either 'image' or 'from'")
+        );
     }
 
     // Note: The empty command check in execute() only catches completely empty vectors,
@@ -445,6 +448,9 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         // Should fail on Dagger connection, not on config validation
-        assert!(!err.to_string().contains("requires either 'image' or 'from'"));
+        assert!(
+            !err.to_string()
+                .contains("requires either 'image' or 'from'")
+        );
     }
 }

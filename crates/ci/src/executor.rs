@@ -8,8 +8,8 @@ use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use async_trait::async_trait;
 use chrono::Utc;
-use cuenv_core::cache::tasks as task_cache;
 use cuenv_core::Result;
+use cuenv_core::cache::tasks as task_cache;
 use std::sync::Arc;
 
 #[async_trait]
