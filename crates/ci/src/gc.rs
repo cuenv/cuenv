@@ -304,17 +304,12 @@ impl Default for GarbageCollector {
 
 /// Convenience function to run GC with default settings
 pub fn run_gc(cache_dir: &Path) -> Result<GCStats, GCError> {
-    GarbageCollector::new()
-        .cache_dir(cache_dir)
-        .run()
+    GarbageCollector::new().cache_dir(cache_dir).run()
 }
 
 /// Run GC in dry-run mode to see what would be deleted
 pub fn preview_gc(cache_dir: &Path) -> Result<GCStats, GCError> {
-    GarbageCollector::new()
-        .cache_dir(cache_dir)
-        .dry_run()
-        .run()
+    GarbageCollector::new().cache_dir(cache_dir).dry_run().run()
 }
 
 #[cfg(test)]
@@ -362,9 +357,7 @@ mod tests {
         create_test_file(tmp.path(), "file2.cache", 500);
         create_test_file(tmp.path(), "file3.cache", 500);
 
-        let gc = GarbageCollector::new()
-            .cache_dir(tmp.path())
-            .max_size(1000); // Limit to 1000 bytes
+        let gc = GarbageCollector::new().cache_dir(tmp.path()).max_size(1000); // Limit to 1000 bytes
 
         let stats = gc.run().unwrap();
         assert!(stats.entries_removed > 0);
@@ -392,13 +385,13 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let subdir = tmp.path().join("subdir");
         fs::create_dir(&subdir).unwrap();
-        
+
         create_test_file(tmp.path(), "root.cache", 100);
         create_test_file(&subdir, "nested.cache", 100);
 
         let gc = GarbageCollector::new().cache_dir(tmp.path());
         let stats = gc.run().unwrap();
-        
+
         assert_eq!(stats.entries_scanned, 2);
     }
 

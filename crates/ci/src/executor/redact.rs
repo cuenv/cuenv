@@ -247,12 +247,9 @@ mod tests {
 
     #[test]
     fn test_multiple_secrets() {
-        let (redactor, _) = LogRedactor::new(vec![
-            "password123".to_string(),
-            "api_key_xyz".to_string(),
-        ]);
-        let result =
-            redactor.redact_immediate("password123 and api_key_xyz are both secrets");
+        let (redactor, _) =
+            LogRedactor::new(vec!["password123".to_string(), "api_key_xyz".to_string()]);
+        let result = redactor.redact_immediate("password123 and api_key_xyz are both secrets");
         assert_eq!(result, "[REDACTED] and [REDACTED] are both secrets");
     }
 
@@ -270,7 +267,7 @@ mod tests {
             "abc".to_string(),  // Too short
             "abcd".to_string(), // Just right
         ]);
-        
+
         assert_eq!(warnings.len(), 2);
         assert_eq!(redactor.secret_count(), 1);
     }
@@ -282,7 +279,7 @@ mod tests {
             ("SHORT".to_string(), "ab".to_string()),
         ];
         let (_, warnings) = LogRedactor::with_names(secrets);
-        
+
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].key, "SHORT");
         assert_eq!(warnings[0].length, 2);
@@ -291,15 +288,15 @@ mod tests {
     #[test]
     fn test_streaming_redaction() {
         let (mut redactor, _) = LogRedactor::new(vec!["secretpassword".to_string()]);
-        
+
         // Simulate streaming chunks where secret spans boundary
         let chunk1 = "The password is secret";
         let chunk2 = "password which is bad";
-        
+
         let out1 = redactor.redact(chunk1);
         let out2 = redactor.redact(chunk2);
         let out3 = redactor.flush();
-        
+
         let combined = format!("{}{}{}", out1, out2, out3);
         assert!(combined.contains("[REDACTED]"));
         assert!(!combined.contains("secretpassword"));
@@ -310,7 +307,7 @@ mod tests {
         let (redactor, warnings) = LogRedactor::new(vec![]);
         assert!(warnings.is_empty());
         assert!(!redactor.has_secrets());
-        
+
         let result = redactor.redact_immediate("nothing to redact here");
         assert_eq!(result, "nothing to redact here");
     }
@@ -318,10 +315,7 @@ mod tests {
     #[test]
     fn test_greedy_matching() {
         // Longer secret should be matched first
-        let (redactor, _) = LogRedactor::new(vec![
-            "pass".to_string(),
-            "password".to_string(),
-        ]);
+        let (redactor, _) = LogRedactor::new(vec!["pass".to_string(), "password".to_string()]);
         let result = redactor.redact_immediate("the password is set");
         // Should redact "password" not just "pass"
         assert_eq!(result, "the [REDACTED] is set");
@@ -344,11 +338,11 @@ mod tests {
     #[test]
     fn test_secret_at_boundaries() {
         let (redactor, _) = LogRedactor::new(vec!["secret".to_string()]);
-        
+
         // Secret at start
         let result = redactor.redact_immediate("secret is here");
         assert_eq!(result, "[REDACTED] is here");
-        
+
         // Secret at end
         let result = redactor.redact_immediate("here is secret");
         assert_eq!(result, "here is [REDACTED]");
@@ -361,7 +355,7 @@ mod tests {
             ("KEY2".to_string(), "samevalue".to_string()),
         ];
         let (redactor, _) = LogRedactor::with_names(secrets);
-        
+
         // Should only have one secret after deduplication
         assert_eq!(redactor.secret_count(), 1);
     }

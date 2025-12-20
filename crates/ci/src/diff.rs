@@ -136,10 +136,16 @@ pub fn compare_reports(
     let mut task_diffs = Vec::new();
     let mut summary = DiffSummary::default();
 
-    let tasks_a: HashMap<&str, &TaskReport> =
-        report_a.tasks.iter().map(|t| (t.name.as_str(), t)).collect();
-    let tasks_b: HashMap<&str, &TaskReport> =
-        report_b.tasks.iter().map(|t| (t.name.as_str(), t)).collect();
+    let tasks_a: HashMap<&str, &TaskReport> = report_a
+        .tasks
+        .iter()
+        .map(|t| (t.name.as_str(), t))
+        .collect();
+    let tasks_b: HashMap<&str, &TaskReport> = report_b
+        .tasks
+        .iter()
+        .map(|t| (t.name.as_str(), t))
+        .collect();
 
     let all_tasks: HashSet<&str> = tasks_a.keys().chain(tasks_b.keys()).copied().collect();
     summary.total_tasks = all_tasks.len();
@@ -291,7 +297,10 @@ pub fn format_diff(diff: &DigestDiff) -> String {
     output.push_str(&format!("  Added: {}\n", diff.summary.added_tasks));
     output.push_str(&format!("  Removed: {}\n", diff.summary.removed_tasks));
     if diff.summary.secret_changes > 0 {
-        output.push_str(&format!("  Secret changes: {}\n", diff.summary.secret_changes));
+        output.push_str(&format!(
+            "  Secret changes: {}\n",
+            diff.summary.secret_changes
+        ));
     }
     output.push('\n');
 
@@ -362,25 +371,51 @@ mod tests {
 
     #[test]
     fn test_unchanged_tasks() {
-        let report_a = make_report("abc123", vec![make_task("build", vec!["src/main.rs"], Some("key1"))]);
-        let report_b = make_report("def456", vec![make_task("build", vec!["src/main.rs"], Some("key1"))]);
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
         let diff = compare_reports(&report_a, &report_b).unwrap();
         assert_eq!(diff.task_diffs[0].change_type, ChangeType::Unchanged);
     }
 
     #[test]
     fn test_modified_task() {
-        let report_a = make_report("abc123", vec![make_task("build", vec!["src/main.rs"], Some("key1"))]);
-        let report_b = make_report("def456", vec![make_task("build", vec!["src/main.rs", "src/lib.rs"], Some("key2"))]);
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task(
+                "build",
+                vec!["src/main.rs", "src/lib.rs"],
+                Some("key2"),
+            )],
+        );
         let diff = compare_reports(&report_a, &report_b).unwrap();
         assert_eq!(diff.task_diffs[0].change_type, ChangeType::Modified);
-        assert!(diff.task_diffs[0].changed_files.contains(&"src/lib.rs".to_string()));
+        assert!(
+            diff.task_diffs[0]
+                .changed_files
+                .contains(&"src/lib.rs".to_string())
+        );
     }
 
     #[test]
     fn test_secret_change_detection() {
-        let report_a = make_report("abc123", vec![make_task("deploy", vec!["config.yml"], Some("key1"))]);
-        let report_b = make_report("def456", vec![make_task("deploy", vec!["config.yml"], Some("key2"))]);
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("deploy", vec!["config.yml"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("deploy", vec!["config.yml"], Some("key2"))],
+        );
         let diff = compare_reports(&report_a, &report_b).unwrap();
         assert!(diff.task_diffs[0].secrets_changed);
     }

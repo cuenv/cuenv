@@ -494,7 +494,10 @@ pub enum Commands {
         pipeline: Option<String>,
         #[arg(long, help = "Generate CI workflow file (e.g., 'github')")]
         generate: Option<String>,
-        #[arg(long, help = "Output pipeline in specified format (e.g., 'buildkite') for dynamic pipelines")]
+        #[arg(
+            long,
+            help = "Output pipeline in specified format (e.g., 'buildkite') for dynamic pipelines"
+        )]
         format: Option<String>,
         #[arg(long, help = "Base ref to compare against (branch name or commit SHA)")]
         from: Option<String>,
