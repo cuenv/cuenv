@@ -211,6 +211,7 @@ pub mod ci_cmd {
         let mut github_config = cuenv_core::ci::GitHubConfig::default();
         let mut trigger_condition: Option<cuenv_ci::ir::TriggerCondition> = None;
         let mut project_name: Option<String> = None;
+        let mut pipeline_environment: Option<String> = None;
 
         for project in projects {
             let config = &project.config;
@@ -226,6 +227,7 @@ pub mod ci_cmd {
 
             found_pipeline = true;
             project_name = Some(config.name.clone());
+            pipeline_environment.clone_from(&ci_pipeline.environment);
 
             // Extract GitHub config (merged from CI-level and pipeline-level)
             github_config = ci.github_config_for_pipeline(pipeline_name);
@@ -290,6 +292,7 @@ pub mod ci_cmd {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name.to_string(),
+                environment: pipeline_environment,
                 project_name,
                 trigger: trigger_condition,
             },
@@ -381,53 +384,28 @@ pub mod ci_cmd {
         }
     }
 
-    /// Execute Buildkite format output - outputs pipeline YAML to stdout
+    /// Result of collecting affected tasks from projects
     #[cfg(feature = "buildkite")]
-    #[allow(clippy::print_stdout)]
-    async fn execute_buildkite_format(
-        pipeline: Option<String>,
-        from: Option<String>,
-    ) -> Result<()> {
-        use cuenv_buildkite::BuildkiteEmitter;
-        use std::collections::HashMap;
+    struct CollectedTasks {
+        tasks: Vec<cuenv_ci::ir::Task>,
+        environment: Option<String>,
+    }
 
-        // Detect CI provider for changed files
-        let provider = detect_ci_provider(from);
-        let context = provider.context();
-        let changed_files = provider.changed_files().await?;
-
-        eprintln!(
-            "Context: {} (event: {}, ref: {})",
-            context.provider, context.event, context.ref_name
-        );
-        eprintln!("Changed files: {}", changed_files.len());
-
-        // Discover projects
-        let projects = discover_projects()?;
-        if projects.is_empty() {
-            return Err(cuenv_core::Error::configuration(
-                "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
-            ));
-        }
-        eprintln!("Found {} projects", projects.len());
-
-        // Build project map for cross-project dependency resolution
-        let mut project_map = HashMap::new();
-        for project in &projects {
-            let name = project.config.name.trim();
-            if !name.is_empty() {
-                project_map.insert(name.to_string(), project.clone());
-            }
-        }
-
-        // Collect all affected IR tasks
+    /// Collect affected IR tasks from all projects for a given pipeline
+    #[cfg(feature = "buildkite")]
+    fn collect_affected_tasks_for_pipeline(
+        projects: &[cuenv_ci::discovery::DiscoveredCIProject],
+        project_map: &std::collections::HashMap<String, cuenv_ci::discovery::DiscoveredCIProject>,
+        pipeline_name: &str,
+        changed_files: &[std::path::PathBuf],
+        event: &str,
+    ) -> Result<CollectedTasks> {
         let mut all_ir_tasks = Vec::new();
-        let pipeline_name = pipeline.unwrap_or_else(|| "default".to_string());
+        let mut pipeline_environment: Option<String> = None;
 
-        for project in &projects {
+        for project in projects {
             let config = &project.config;
 
-            // Find pipeline in config
             let Some(ci) = &config.ci else {
                 continue;
             };
@@ -436,7 +414,8 @@ pub mod ci_cmd {
                 continue;
             };
 
-            // Get the directory containing the env.cue file
+            pipeline_environment.clone_from(&ci_pipeline.environment);
+
             let project_root = project.path.parent().map_or_else(
                 || std::path::Path::new("."),
                 |p| {
@@ -448,16 +427,15 @@ pub mod ci_cmd {
                 },
             );
 
-            // For release events, run all tasks unconditionally
-            let tasks_to_run = if context.event == "release" {
+            let tasks_to_run = if event == "release" {
                 ci_pipeline.tasks.clone()
             } else {
                 compute_affected_tasks(
-                    &changed_files,
+                    changed_files,
                     &ci_pipeline.tasks,
                     project_root,
                     config,
-                    &project_map,
+                    project_map,
                 )
             };
 
@@ -472,13 +450,11 @@ pub mod ci_cmd {
                 tasks_to_run
             );
 
-            // Compile project to IR and filter to affected tasks
             let compiler = Compiler::new(config.clone());
             let ir = compiler.compile().map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
             })?;
 
-            // Filter IR tasks to only affected ones
             let affected_tasks: Vec<_> = ir
                 .tasks
                 .into_iter()
@@ -488,34 +464,81 @@ pub mod ci_cmd {
             all_ir_tasks.extend(affected_tasks);
         }
 
-        if all_ir_tasks.is_empty() {
+        Ok(CollectedTasks {
+            tasks: all_ir_tasks,
+            environment: pipeline_environment,
+        })
+    }
+
+    /// Execute Buildkite format output - outputs pipeline YAML to stdout
+    #[cfg(feature = "buildkite")]
+    #[allow(clippy::print_stdout)]
+    async fn execute_buildkite_format(
+        pipeline: Option<String>,
+        from: Option<String>,
+    ) -> Result<()> {
+        use cuenv_buildkite::BuildkiteEmitter;
+        use std::collections::HashMap;
+
+        let provider = detect_ci_provider(from);
+        let context = provider.context();
+        let changed_files = provider.changed_files().await?;
+
+        eprintln!(
+            "Context: {} (event: {}, ref: {})",
+            context.provider, context.event, context.ref_name
+        );
+        eprintln!("Changed files: {}", changed_files.len());
+
+        let projects = discover_projects()?;
+        if projects.is_empty() {
+            return Err(cuenv_core::Error::configuration(
+                "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
+            ));
+        }
+        eprintln!("Found {} projects", projects.len());
+
+        let mut project_map = HashMap::new();
+        for project in &projects {
+            let name = project.config.name.trim();
+            if !name.is_empty() {
+                project_map.insert(name.to_string(), project.clone());
+            }
+        }
+
+        let pipeline_name = pipeline.unwrap_or_else(|| "default".to_string());
+        let collected = collect_affected_tasks_for_pipeline(
+            &projects,
+            &project_map,
+            &pipeline_name,
+            &changed_files,
+            &context.event,
+        )?;
+
+        if collected.tasks.is_empty() {
             eprintln!("No affected tasks to run");
-            // Output empty pipeline
             println!("steps: []");
             return Ok(());
         }
 
-        // Build combined IR
         let combined_ir = IntermediateRepresentation {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name,
-                project_name: None, // Buildkite doesn't use project prefix yet
+                environment: collected.environment,
+                project_name: None,
                 trigger: None,
             },
             runtimes: vec![],
-            tasks: all_ir_tasks,
+            tasks: collected.tasks,
         };
 
-        // Emit Buildkite YAML
         let emitter = BuildkiteEmitter::new().with_emojis();
         let yaml = emitter.emit(&combined_ir).map_err(|e| {
             cuenv_core::Error::configuration(format!("Failed to emit Buildkite pipeline: {e}"))
         })?;
 
-        // Output to stdout for buildkite-agent pipeline upload
         println!("{yaml}");
-
         Ok(())
     }
 

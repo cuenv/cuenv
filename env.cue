@@ -118,7 +118,8 @@ ci: {
 		},
 		// Docs deployment - on main push
 		{
-			name: "deploy"
+			name:        "deploy"
+			environment: "production"
 			when: branch: "main"
 			tasks: ["docs.deploy"]
 		},
