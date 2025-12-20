@@ -14,7 +14,7 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
 use digest::DigestBuilder;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -93,7 +93,7 @@ impl Compiler {
     /// - `None` if no flake.lock was found (not a flake-based project)
     #[must_use]
     pub fn analyze_flake_purity(&self) -> Option<Result<(String, PurityMode), CompilerError>> {
-        let lock_path = self.resolve_flake_lock_path()?;
+        let lock_path = self.resolve_flake_lock_path();
 
         if !lock_path.exists() {
             return None;
@@ -103,25 +103,25 @@ impl Compiler {
     }
 
     /// Resolve the path to flake.lock
-    fn resolve_flake_lock_path(&self) -> Option<PathBuf> {
+    fn resolve_flake_lock_path(&self) -> PathBuf {
         // Use explicit path if provided
         if let Some(path) = &self.options.flake_lock_path {
-            return Some(path.clone());
+            return path.clone();
         }
 
         // Otherwise, look in project root
         if let Some(root) = &self.options.project_root {
-            return Some(root.join("flake.lock"));
+            return root.join("flake.lock");
         }
 
         // Default: current directory
-        Some(PathBuf::from("flake.lock"))
+        PathBuf::from("flake.lock")
     }
 
     /// Perform flake purity analysis and apply purity mode
     fn perform_flake_analysis(
         &self,
-        lock_path: &PathBuf,
+        lock_path: &Path,
     ) -> Result<(String, PurityMode), CompilerError> {
         let analyzer = FlakeLockAnalyzer::from_path(lock_path)?;
         let analysis = analyzer.analyze();
@@ -169,7 +169,7 @@ impl Compiler {
                     // Inject UUID v4 into digest to force cache miss
                     let uuid = Uuid::new_v4().to_string();
                     let mut digest_builder = DigestBuilder::new();
-                    digest_builder.add_inputs(&[analysis.locked_digest.clone()]);
+                    digest_builder.add_inputs(std::slice::from_ref(&analysis.locked_digest));
                     digest_builder.add_impurity_uuid(&uuid);
 
                     Ok((digest_builder.finalize(), PurityMode::Warning))

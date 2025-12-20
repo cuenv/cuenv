@@ -130,40 +130,40 @@ impl CacheMetrics {
     }
 
     /// Record task execution duration
-    pub fn record_task_duration(&self, task_id: &str, duration_ms: u64) {
-        let duration_us = duration_ms * 1000;
+    pub fn record_task_duration(&self, task_id: &str, millis: u64) {
+        let micros = millis * 1000;
         self.task_durations
             .total_us
-            .fetch_add(duration_us, Ordering::Relaxed);
+            .fetch_add(micros, Ordering::Relaxed);
         self.task_durations.count.fetch_add(1, Ordering::Relaxed);
 
         if let Ok(mut map) = self.task_durations.per_task.write() {
-            map.insert(task_id.to_string(), duration_us);
+            map.insert(task_id.to_string(), micros);
         }
 
         tracing::debug!(
             task = %task_id,
-            duration_ms = duration_ms,
+            duration_ms = millis,
             metric = "cuenv_task_duration_seconds",
             "Task duration recorded"
         );
     }
 
     /// Record runtime materialization duration
-    pub fn record_runtime_materialization(&self, runtime_id: &str, duration_ms: u64) {
-        let duration_us = duration_ms * 1000;
+    pub fn record_runtime_materialization(&self, runtime_id: &str, millis: u64) {
+        let micros = millis * 1000;
         self.runtime_durations
             .total_us
-            .fetch_add(duration_us, Ordering::Relaxed);
+            .fetch_add(micros, Ordering::Relaxed);
         self.runtime_durations.count.fetch_add(1, Ordering::Relaxed);
 
         if let Ok(mut map) = self.runtime_durations.per_runtime.write() {
-            map.insert(runtime_id.to_string(), duration_us);
+            map.insert(runtime_id.to_string(), micros);
         }
 
         tracing::debug!(
             runtime = %runtime_id,
-            duration_ms = duration_ms,
+            duration_ms = millis,
             metric = "cuenv_runtime_materialization_seconds",
             "Runtime materialization recorded"
         );
