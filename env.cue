@@ -32,23 +32,44 @@ ignore: {
 	]
 }
 
-ci: pipelines: [
-	{
-		name: "ci"
-		tasks: ["check"]
-	},
-	{
-		name: "release"
-		tasks: [
-			"release.publish-cue",
-			"docs.deploy",
+ci: {
+	provider: github: {
+		runner: "blacksmith-8vcpu-ubuntu-2404"
+		cachix: {
+			name:       "cuenv"
+			pushFilter: "(-source$|nixpkgs\\.tar\\.gz$)"
+		}
+		pathsIgnore: [
+			"docs/**",
+			"examples/**",
+			"*.md",
+			"LICENSE",
+			".vscode/**",
 		]
-	},
-	{
-		name: "release-pr"
-		tasks: ["release.generate-pr"]
-	},
-]
+		artifacts: {
+			paths: [".cuenv/reports/"]
+			ifNoFilesFound: "ignore"
+		}
+	}
+
+	pipelines: [
+		{
+			name: "ci"
+			tasks: ["check"]
+		},
+		{
+			name: "release"
+			tasks: [
+				"release.publish-cue",
+				"docs.deploy",
+			]
+		},
+		{
+			name: "release-pr"
+			tasks: ["release.generate-pr"]
+		},
+	]
+}
 
 tasks: {
 	// Common inputs for Rust/Cargo tasks

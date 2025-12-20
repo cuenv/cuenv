@@ -78,6 +78,44 @@ impl GitHubActionsEmitter {
         Self::default()
     }
 
+    /// Create an emitter from a `GitHubConfig` manifest configuration.
+    ///
+    /// This applies all configuration from the CUE manifest to the emitter.
+    #[must_use]
+    pub fn from_config(config: &cuenv_core::ci::GitHubConfig) -> Self {
+        let mut emitter = Self::default();
+
+        // Apply runner configuration
+        if let Some(runner) = &config.runner {
+            emitter.runner = runner
+                .as_single()
+                .unwrap_or("ubuntu-latest")
+                .to_string();
+        }
+
+        // Apply Cachix configuration
+        if let Some(cachix) = &config.cachix {
+            emitter.use_cachix = true;
+            emitter.cachix_name = Some(cachix.name.clone());
+            if let Some(auth_token) = &cachix.auth_token {
+                emitter.cachix_auth_token_secret.clone_from(auth_token);
+            }
+        }
+
+        // Apply paths ignore
+        if let Some(paths_ignore) = &config.paths_ignore {
+            emitter.default_paths_ignore.clone_from(paths_ignore);
+        }
+
+        emitter
+    }
+
+    /// Get the configured runner as a `RunsOn` value
+    #[must_use]
+    pub fn runner_as_runs_on(&self) -> RunsOn {
+        RunsOn::Label(self.runner.clone())
+    }
+
     /// Set the default runner for jobs
     #[must_use]
     pub fn with_runner(mut self, runner: impl Into<String>) -> Self {
