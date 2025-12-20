@@ -13,8 +13,8 @@ pub mod ir;
 pub mod provider;
 pub mod report;
 
-pub use diff::{compare_runs, compare_by_sha, DigestDiff, DiffError};
-pub use gc::{GarbageCollector, GCConfig, GCStats, GCError};
+pub use diff::{DiffError, DigestDiff, compare_by_sha, compare_runs};
+pub use gc::{GCConfig, GCError, GCStats, GarbageCollector};
 
 use cuenv_core::Error;
 pub type Result<T> = std::result::Result<T, Error>;

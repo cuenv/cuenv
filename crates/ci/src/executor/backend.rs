@@ -266,10 +266,12 @@ mod tests {
         // Transient failures should allow graceful degradation
         assert!(BackendError::Unavailable("test".to_string()).is_gracefully_degradable());
         assert!(BackendError::Connection("test".to_string()).is_gracefully_degradable());
-        assert!(BackendError::ActionNotFound {
-            digest: "test".to_string()
-        }
-        .is_gracefully_degradable());
+        assert!(
+            BackendError::ActionNotFound {
+                digest: "test".to_string()
+            }
+            .is_gracefully_degradable()
+        );
 
         // Hard failures should not allow graceful degradation
         assert!(!BackendError::Io(std::io::Error::other("test")).is_gracefully_degradable());
@@ -282,11 +284,13 @@ mod tests {
             .is_gracefully_degradable()
         );
         assert!(!BackendError::Serialization("test".to_string()).is_gracefully_degradable());
-        assert!(!BackendError::DigestMismatch {
-            expected: "a".to_string(),
-            actual: "b".to_string()
-        }
-        .is_gracefully_degradable());
+        assert!(
+            !BackendError::DigestMismatch {
+                expected: "a".to_string(),
+                actual: "b".to_string()
+            }
+            .is_gracefully_degradable()
+        );
         assert!(
             !BackendError::BlobNotFound {
                 digest: "test".to_string()

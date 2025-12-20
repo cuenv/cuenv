@@ -200,10 +200,7 @@ impl Default for TreeBuilder {
 }
 
 // Convert TreeBuilder to TaskNode
-fn convert(
-    builders: BTreeMap<String, TreeBuilder>,
-    stats: &mut TaskListStats,
-) -> Vec<TaskNode> {
+fn convert(builders: BTreeMap<String, TreeBuilder>, stats: &mut TaskListStats) -> Vec<TaskNode> {
     builders
         .into_iter()
         .map(|(_, builder)| {
@@ -603,41 +600,50 @@ mod cache_tests {
     fn test_group_cache_propagation() {
         let mut stats = TaskListStats::default();
         let mut children = BTreeMap::new();
-        
+
         // Child 1: Cached
-        children.insert("child1".to_string(), super::TreeBuilder {
-            name: "child1".to_string(),
-            is_task: true,
-            is_cached: true,
-            ..Default::default()
-        });
-        
+        children.insert(
+            "child1".to_string(),
+            super::TreeBuilder {
+                name: "child1".to_string(),
+                is_task: true,
+                is_cached: true,
+                ..Default::default()
+            },
+        );
+
         // Child 2: Not cached
-        children.insert("child2".to_string(), super::TreeBuilder {
-            name: "child2".to_string(),
-            is_task: true,
-            is_cached: false,
-            ..Default::default()
-        });
+        children.insert(
+            "child2".to_string(),
+            super::TreeBuilder {
+                name: "child2".to_string(),
+                is_task: true,
+                is_cached: false,
+                ..Default::default()
+            },
+        );
 
         let mut root_builder = BTreeMap::new();
-        root_builder.insert("group".to_string(), super::TreeBuilder {
-            name: "group".to_string(),
-            is_task: false, // It's a group
-            is_cached: false, // Initially false
-            children,
-            ..Default::default()
-        });
+        root_builder.insert(
+            "group".to_string(),
+            super::TreeBuilder {
+                name: "group".to_string(),
+                is_task: false,   // It's a group
+                is_cached: false, // Initially false
+                children,
+                ..Default::default()
+            },
+        );
 
         let nodes = super::convert(root_builder, &mut stats);
-        
+
         assert_eq!(nodes.len(), 1);
         let group = &nodes[0];
         assert_eq!(group.name, "group");
         assert!(group.is_group);
         // Should be true because child1 is cached
-        assert!(group.is_cached); 
-        
+        assert!(group.is_cached);
+
         assert_eq!(group.children.len(), 2);
         let c1 = group.children.iter().find(|c| c.name == "child1").unwrap();
         assert!(c1.is_cached);

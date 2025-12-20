@@ -5,8 +5,8 @@
 //! support for cache key fingerprinting and salt rotation.
 
 mod fingerprint;
-pub mod resolvers;
 mod resolved;
+pub mod resolvers;
 mod salt;
 
 pub use fingerprint::compute_secret_fingerprint;

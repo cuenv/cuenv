@@ -419,8 +419,9 @@ impl CacheBackend for LocalCacheBackend {
             for output in &entry.outputs {
                 let output_path = outputs_dir.join(&output.path);
                 if let Some(parent) = output_path.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|e| BackendError::io_with_context("create directory", parent, e))?;
+                    fs::create_dir_all(parent).map_err(|e| {
+                        BackendError::io_with_context("create directory", parent, e)
+                    })?;
                 }
                 fs::write(&output_path, &output.data)
                     .map_err(|e| BackendError::io_with_context("write", &output_path, e))?;
@@ -429,11 +430,14 @@ impl CacheBackend for LocalCacheBackend {
                 if output.is_executable {
                     use std::os::unix::fs::PermissionsExt;
                     let mut perms = fs::metadata(&output_path)
-                        .map_err(|e| BackendError::io_with_context("read metadata", &output_path, e))?
+                        .map_err(|e| {
+                            BackendError::io_with_context("read metadata", &output_path, e)
+                        })?
                         .permissions();
                     perms.set_mode(perms.mode() | 0o111);
-                    fs::set_permissions(&output_path, perms)
-                        .map_err(|e| BackendError::io_with_context("set permissions", &output_path, e))?;
+                    fs::set_permissions(&output_path, perms).map_err(|e| {
+                        BackendError::io_with_context("set permissions", &output_path, e)
+                    })?;
                 }
             }
         }
@@ -476,8 +480,8 @@ impl CacheBackend for LocalCacheBackend {
                     .map_err(|e| BackendError::io_with_context("create directory", parent, e))?;
             }
 
-            let data = fs::read(&entry)
-                .map_err(|e| BackendError::io_with_context("read", &entry, e))?;
+            let data =
+                fs::read(&entry).map_err(|e| BackendError::io_with_context("read", &entry, e))?;
             let is_executable = is_file_executable(&entry);
 
             fs::write(&dest_path, &data)

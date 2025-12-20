@@ -682,7 +682,9 @@ fn sync_cube_files(
                             cuenv_core::Error::Io {
                                 source: e,
                                 path: Some(parent.to_path_buf().into_boxed_path()),
-                                operation: format!("create parent directory for cube file: {file_path}"),
+                                operation: format!(
+                                    "create parent directory for cube file: {file_path}"
+                                ),
                             }
                         })?;
                     }
@@ -709,13 +711,7 @@ fn sync_cube_files(
                     output_lines.push(format!("  Skipped (exists): {file_path}"));
                 } else if check || diff {
                     output_lines.push(format!("  Missing scaffold: {file_path}"));
-                    maybe_push_diff(
-                        &mut output_lines,
-                        diff,
-                        file_path,
-                        None,
-                        &file_def.content,
-                    );
+                    maybe_push_diff(&mut output_lines, diff, file_path, None, &file_def.content);
                 } else if dry_run {
                     output_lines.push(format!("  Would scaffold: {file_path}"));
                 } else {
@@ -736,7 +732,9 @@ fn sync_cube_files(
                             cuenv_core::Error::Io {
                                 source: e,
                                 path: Some(parent.to_path_buf().into_boxed_path()),
-                                operation: format!("create parent directory for scaffold file: {file_path}"),
+                                operation: format!(
+                                    "create parent directory for scaffold file: {file_path}"
+                                ),
                             }
                         })?;
                     }
@@ -788,9 +786,7 @@ fn format_unified_diff(path: &str, current: &str, expected: &str) -> String {
     let diff = TextDiff::from_lines(current, expected);
     let from = format!("a/{path}");
     let to = format!("b/{path}");
-    diff.unified_diff()
-        .header(&from, &to)
-        .to_string()
+    diff.unified_diff().header(&from, &to).to_string()
 }
 
 /// Detect the CUE package name from env.cue

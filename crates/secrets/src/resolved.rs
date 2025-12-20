@@ -1,6 +1,6 @@
 //! Resolved secrets with fingerprinting support
 
-use crate::{compute_secret_fingerprint, SaltConfig, SecretError, SecretResolver, SecretSpec};
+use crate::{SaltConfig, SecretError, SecretResolver, SecretSpec, compute_secret_fingerprint};
 use std::collections::HashMap;
 
 /// Resolved secrets ready for injection
@@ -58,8 +58,11 @@ impl ResolvedSecrets {
                 }
 
                 // Use write_salt for computing fingerprints (current salt preferred)
-                let fingerprint =
-                    compute_secret_fingerprint(name, &value, salt_config.write_salt().unwrap_or(""));
+                let fingerprint = compute_secret_fingerprint(
+                    name,
+                    &value,
+                    salt_config.write_salt().unwrap_or(""),
+                );
                 fingerprints.insert(name.clone(), fingerprint);
             }
 
