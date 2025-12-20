@@ -27,15 +27,17 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
         .join("wasm");
 
     // Create cache directory if it doesn't exist
-    std::fs::create_dir_all(&cache_dir).map_err(|e| {
-        CliError::config(format!("Failed to create cache directory: {e}"))
-    })?;
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|e| CliError::config(format!("Failed to create cache directory: {e}")))?;
 
     let wasm_path = cache_dir.join("onepassword-core.wasm");
 
     // Check if already downloaded
     if wasm_path.exists() {
-        println!("1Password WASM SDK already downloaded at: {}", wasm_path.display());
+        println!(
+            "1Password WASM SDK already downloaded at: {}",
+            wasm_path.display()
+        );
         println!("To re-download, delete the file and run this command again.");
         return Ok(());
     }
@@ -44,9 +46,8 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     println!("Source: {url}");
 
     // Download the WASM file
-    let response = reqwest::blocking::get(url).map_err(|e| {
-        CliError::config(format!("Failed to download WASM: {e}"))
-    })?;
+    let response = reqwest::blocking::get(url)
+        .map_err(|e| CliError::config(format!("Failed to download WASM: {e}")))?;
 
     if !response.status().is_success() {
         return Err(CliError::config(format!(
@@ -55,15 +56,15 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
         )));
     }
 
-    let bytes = response.bytes().map_err(|e| {
-        CliError::config(format!("Failed to read response: {e}"))
-    })?;
+    let bytes = response
+        .bytes()
+        .map_err(|e| CliError::config(format!("Failed to read response: {e}")))?;
 
     // Write to cache
-    std::fs::write(&wasm_path, &bytes).map_err(|e| {
-        CliError::config(format!("Failed to write WASM file: {e}"))
-    })?;
+    std::fs::write(&wasm_path, &bytes)
+        .map_err(|e| CliError::config(format!("Failed to write WASM file: {e}")))?;
 
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for display
     let size_mb = bytes.len() as f64 / (1024.0 * 1024.0);
     println!("Downloaded {size_mb:.2} MB to: {}", wasm_path.display());
     println!();
