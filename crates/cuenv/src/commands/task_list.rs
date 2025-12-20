@@ -175,6 +175,7 @@ fn collect_cached_tasks(tasks: &[&IndexedTask], project_root: &Path) -> HashSet<
 }
 
 // Intermediate structure for building the tree
+#[derive(Default)]
 struct TreeBuilder {
     name: String,
     full_name: Option<String>,
@@ -185,25 +186,11 @@ struct TreeBuilder {
     children: BTreeMap<String, TreeBuilder>,
 }
 
-impl Default for TreeBuilder {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            full_name: None,
-            description: None,
-            is_task: false,
-            is_cached: false,
-            dep_count: 0,
-            children: BTreeMap::new(),
-        }
-    }
-}
-
 // Convert TreeBuilder to TaskNode
 fn convert(builders: BTreeMap<String, TreeBuilder>, stats: &mut TaskListStats) -> Vec<TaskNode> {
     builders
-        .into_iter()
-        .map(|(_, builder)| {
+        .into_values()
+        .map(|builder| {
             let is_group = !builder.is_task;
             if is_group {
                 stats.total_groups += 1;
@@ -280,15 +267,10 @@ fn get_dep_count(def: &TaskDefinition) -> usize {
     match def {
         TaskDefinition::Single(t) => t.depends_on.len(),
         TaskDefinition::Group(g) => match g {
-            TaskGroup::Sequential(tasks) => tasks.first().map(get_dep_count).unwrap_or(0),
+            TaskGroup::Sequential(tasks) => tasks.first().map_or(0, get_dep_count),
             TaskGroup::Parallel(parallel) => {
                 // Get first task from parallel group
-                parallel
-                    .tasks
-                    .values()
-                    .next()
-                    .map(get_dep_count)
-                    .unwrap_or(0)
+                parallel.tasks.values().next().map_or(0, get_dep_count)
             }
         },
     }

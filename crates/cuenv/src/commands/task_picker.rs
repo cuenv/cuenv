@@ -181,43 +181,43 @@ fn run_event_loop(
         terminal.draw(|f| draw_ui(f, picker))?;
 
         // Handle events
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                // Only handle key press events (not release)
-                if key.kind != KeyEventKind::Press {
-                    continue;
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            // Only handle key press events (not release)
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                // Cancel
+                KeyCode::Esc => return Ok(PickerResult::Cancelled),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(PickerResult::Cancelled);
                 }
 
-                match key.code {
-                    // Cancel
-                    KeyCode::Esc => return Ok(PickerResult::Cancelled),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(PickerResult::Cancelled);
+                // Select
+                KeyCode::Enter => {
+                    if let Some(task) = picker.selected_task() {
+                        return Ok(PickerResult::Selected(task));
                     }
-
-                    // Select
-                    KeyCode::Enter => {
-                        if let Some(task) = picker.selected_task() {
-                            return Ok(PickerResult::Selected(task));
-                        }
-                    }
-
-                    // Navigation
-                    KeyCode::Up | KeyCode::Char('k') => picker.select_previous(),
-                    KeyCode::Down | KeyCode::Char('j') => picker.select_next(),
-
-                    // Filter input
-                    KeyCode::Char(c) => {
-                        picker.filter.push(c);
-                        picker.update_filter();
-                    }
-                    KeyCode::Backspace => {
-                        picker.filter.pop();
-                        picker.update_filter();
-                    }
-
-                    _ => {}
                 }
+
+                // Navigation
+                KeyCode::Up | KeyCode::Char('k') => picker.select_previous(),
+                KeyCode::Down | KeyCode::Char('j') => picker.select_next(),
+
+                // Filter input
+                KeyCode::Char(c) => {
+                    picker.filter.push(c);
+                    picker.update_filter();
+                }
+                KeyCode::Backspace => {
+                    picker.filter.pop();
+                    picker.update_filter();
+                }
+
+                _ => {}
             }
         }
     }

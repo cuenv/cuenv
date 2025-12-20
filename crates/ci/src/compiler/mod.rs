@@ -68,6 +68,7 @@ pub struct CompilerOptions {
 
 impl Compiler {
     /// Create a new compiler for the given project
+    #[must_use]
     pub fn new(project: Project) -> Self {
         Self {
             project,
@@ -76,6 +77,7 @@ impl Compiler {
     }
 
     /// Create a compiler with custom options
+    #[must_use]
     pub fn with_options(project: Project, options: CompilerOptions) -> Self {
         Self { project, options }
     }
@@ -89,6 +91,7 @@ impl Compiler {
     /// - `Some(Ok((digest, purity)))` if analysis succeeded
     /// - `Some(Err(e))` if analysis failed
     /// - `None` if no flake.lock was found (not a flake-based project)
+    #[must_use]
     pub fn analyze_flake_purity(&self) -> Option<Result<(String, PurityMode), CompilerError>> {
         let lock_path = self.resolve_flake_lock_path()?;
 
@@ -151,7 +154,9 @@ impl Compiler {
             }
 
             PurityMode::Warning => {
-                if !analysis.is_pure {
+                if analysis.is_pure {
+                    Ok((analysis.locked_digest.clone(), PurityMode::Warning))
+                } else {
                     // Log warnings for each unlocked input
                     for input in &analysis.unlocked_inputs {
                         tracing::warn!(
@@ -168,8 +173,6 @@ impl Compiler {
                     digest_builder.add_impurity_uuid(&uuid);
 
                     Ok((digest_builder.finalize(), PurityMode::Warning))
-                } else {
-                    Ok((analysis.locked_digest.clone(), PurityMode::Warning))
                 }
             }
 
@@ -233,17 +236,16 @@ impl Compiler {
         let mut ir = IntermediateRepresentation::new(&self.project.name);
 
         // Set up trigger conditions from CI configuration
-        if let Some(ci_config) = &self.project.ci {
-            if let Some(first_pipeline) = ci_config.pipelines.first() {
-                if let Some(when_condition) = &first_pipeline.when {
-                    ir.pipeline.trigger = Some(TriggerCondition {
-                        branch: when_condition.branch.as_ref().and_then(|b| match b {
-                            cuenv_core::ci::StringOrVec::String(s) => Some(s.clone()),
-                            cuenv_core::ci::StringOrVec::Vec(v) => v.first().cloned(),
-                        }),
-                    });
-                }
-            }
+        if let Some(ci_config) = &self.project.ci
+            && let Some(first_pipeline) = ci_config.pipelines.first()
+            && let Some(when_condition) = &first_pipeline.when
+        {
+            ir.pipeline.trigger = Some(TriggerCondition {
+                branch: when_condition.branch.as_ref().and_then(|b| match b {
+                    cuenv_core::ci::StringOrVec::String(s) => Some(s.clone()),
+                    cuenv_core::ci::StringOrVec::Vec(v) => v.first().cloned(),
+                }),
+            });
         }
 
         // Compile tasks
@@ -252,7 +254,10 @@ impl Compiler {
         // Validate the IR
         let validator = IrValidator::new(&ir);
         validator.validate().map_err(|errors| {
-            let error_messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+            let error_messages: Vec<String> = errors
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             CompilerError::ValidationFailed(error_messages.join(", "))
         })?;
 
@@ -300,13 +305,13 @@ impl Compiler {
         match group {
             TaskGroup::Sequential(tasks) => {
                 for (idx, task_def) in tasks.iter().enumerate() {
-                    let task_name = format!("{}.{}", prefix, idx);
+                    let task_name = format!("{prefix}.{idx}");
                     self.compile_task_definition(&task_name, task_def, ir)?;
                 }
             }
             TaskGroup::Parallel(parallel) => {
                 for (name, task_def) in &parallel.tasks {
-                    let task_name = format!("{}.{}", prefix, name);
+                    let task_name = format!("{prefix}.{name}");
                     self.compile_task_definition(&task_name, task_def, ir)?;
                 }
             }
@@ -328,8 +333,7 @@ impl Compiler {
             vec!["/bin/sh".to_string(), "-c".to_string(), script.clone()]
         } else {
             return Err(CompilerError::InvalidTaskStructure(format!(
-                "Task '{}' has neither command nor script",
-                id
+                "Task '{id}' has neither command nor script"
             )));
         };
 
@@ -340,14 +344,7 @@ impl Compiler {
         let env: HashMap<String, String> = task
             .env
             .iter()
-            .filter_map(|(k, v)| {
-                if let Some(s) = v.as_str() {
-                    Some((k.clone(), s.to_string()))
-                } else {
-                    // Skip complex values for now (would need secret resolution)
-                    None
-                }
-            })
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
             .collect();
 
         // Extract secrets (simplified - would integrate with secret resolver)

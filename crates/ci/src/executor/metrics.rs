@@ -38,7 +38,7 @@ struct TaskDurations {
     total_us: AtomicU64,
     /// Number of tasks executed
     count: AtomicU64,
-    /// Per-task durations (task_id -> duration_us)
+    /// Per-task durations (`task_id` -> `duration_us`)
     per_task: RwLock<HashMap<String, u64>>,
 }
 
@@ -49,7 +49,7 @@ struct RuntimeDurations {
     total_us: AtomicU64,
     /// Number of runtimes materialized
     count: AtomicU64,
-    /// Per-runtime durations (runtime_id -> duration_us)
+    /// Per-runtime durations (`runtime_id` -> `duration_us`)
     per_runtime: RwLock<HashMap<String, u64>>,
 }
 

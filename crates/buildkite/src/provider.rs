@@ -28,10 +28,11 @@ impl BuildkiteCIProvider {
     /// For regular builds, attempts to use the default branch.
     fn get_base_ref() -> Option<String> {
         // For PRs, use the base branch
-        if let Ok(base) = std::env::var("BUILDKITE_PULL_REQUEST_BASE_BRANCH") {
-            if !base.is_empty() && base != "false" {
-                return Some(base);
-            }
+        if let Ok(base) = std::env::var("BUILDKITE_PULL_REQUEST_BASE_BRANCH")
+            && !base.is_empty()
+            && base != "false"
+        {
+            return Some(base);
         }
 
         // Fall back to pipeline default branch if available
@@ -138,18 +139,19 @@ impl CIProvider for BuildkiteCIProvider {
         );
 
         // Strategy 1: Pull Request - use base_ref (but not if same as current branch)
-        if let Some(base) = &self.context.base_ref {
-            if !base.is_empty() && base != &self.context.ref_name {
-                info!("PR detected, comparing against base_ref: {base}");
+        if let Some(base) = &self.context.base_ref
+            && !base.is_empty()
+            && base != &self.context.ref_name
+        {
+            info!("PR detected, comparing against base_ref: {base}");
 
-                if is_shallow {
-                    Self::fetch_ref(base);
-                }
+            if is_shallow {
+                Self::fetch_ref(base);
+            }
 
-                if let Some(files) = Self::try_git_diff(&format!("origin/{base}...HEAD")) {
-                    info!("Found {} changed files via PR comparison", files.len());
-                    return Ok(files);
-                }
+            if let Some(files) = Self::try_git_diff(&format!("origin/{base}...HEAD")) {
+                info!("Found {} changed files via PR comparison", files.len());
+                return Ok(files);
             }
         }
 

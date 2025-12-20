@@ -266,6 +266,7 @@ pub fn load_metadata(cache_path: &Path) -> Result<CacheMetadata, CacheError> {
 }
 
 /// Load cached logs
+#[must_use]
 pub fn load_logs(cache_path: &Path) -> TaskLogs {
     let logs_dir = cache_path.join("logs");
 

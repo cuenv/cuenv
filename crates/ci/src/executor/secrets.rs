@@ -220,7 +220,7 @@ impl std::ops::Deref for CIResolvedSecrets {
 
 /// Resolve secrets for all tasks in an IR
 ///
-/// Returns a map of task_id -> CIResolvedSecrets
+/// Returns a map of `task_id` -> `CIResolvedSecrets`
 pub fn resolve_all_task_secrets(
     tasks: &[crate::ir::Task],
     salt: Option<&str>,

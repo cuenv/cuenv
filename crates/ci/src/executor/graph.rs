@@ -167,7 +167,7 @@ impl CITaskGraph {
     ///
     /// # Arguments
     /// * `ir` - The IR document (for runtime lookups)
-    /// * `secret_fingerprints` - Map of task_id -> (secret_name -> fingerprint)
+    /// * `secret_fingerprints` - Map of `task_id` -> (`secret_name` -> fingerprint)
     /// * `system_salt` - Optional system salt for secret HMAC
     pub fn compute_digests(
         &mut self,
@@ -218,10 +218,10 @@ impl CITaskGraph {
             .collect()
     }
 
-    /// Propagate cache_policy: disabled to tasks that transitively depend on deployment tasks
+    /// Propagate `cache_policy`: disabled to tasks that transitively depend on deployment tasks
     ///
     /// According to PRD v1.3, tasks depending on deployments should inherit
-    /// cache_policy: disabled for that execution to ensure deployment ordering
+    /// `cache_policy`: disabled for that execution to ensure deployment ordering
     /// is always respected.
     ///
     /// # Returns
@@ -289,10 +289,11 @@ impl CITaskGraph {
 
         // Check if there's a path from any deployment task to this task
         for node_idx in self.graph.node_indices() {
-            if self.graph[node_idx].task.deployment && node_idx != task_idx {
-                if has_path_connecting(&self.graph, node_idx, task_idx, None) {
-                    return true;
-                }
+            if self.graph[node_idx].task.deployment
+                && node_idx != task_idx
+                && has_path_connecting(&self.graph, node_idx, task_idx, None)
+            {
+                return true;
             }
         }
 

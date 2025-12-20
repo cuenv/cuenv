@@ -2,7 +2,7 @@
 //!
 //! Validates IR documents for correctness according to PRD v1.3 rules.
 
-use super::schema::*;
+use super::schema::{CachePolicy, IntermediateRepresentation, Task};
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -44,6 +44,7 @@ pub struct IrValidator<'a> {
 
 impl<'a> IrValidator<'a> {
     /// Create a new validator for the given IR
+    #[must_use]
     pub fn new(ir: &'a IntermediateRepresentation) -> Self {
         Self { ir }
     }
@@ -66,13 +67,13 @@ impl<'a> IrValidator<'a> {
             }
 
             // Validate runtime reference
-            if let Some(runtime) = &task.runtime {
-                if !runtime_ids.contains(runtime.as_str()) {
-                    errors.push(ValidationError::MissingRuntime {
-                        task: task.id.clone(),
-                        runtime: runtime.clone(),
-                    });
-                }
+            if let Some(runtime) = &task.runtime
+                && !runtime_ids.contains(runtime.as_str())
+            {
+                errors.push(ValidationError::MissingRuntime {
+                    task: task.id.clone(),
+                    runtime: runtime.clone(),
+                });
             }
 
             // Validate dependencies exist
@@ -86,13 +87,11 @@ impl<'a> IrValidator<'a> {
             }
 
             // Validate deployment task constraints
-            if task.deployment {
-                if task.cache_policy != CachePolicy::Disabled {
-                    errors.push(ValidationError::InvalidDeploymentCachePolicy {
-                        task: task.id.clone(),
-                        policy: task.cache_policy,
-                    });
-                }
+            if task.deployment && task.cache_policy != CachePolicy::Disabled {
+                errors.push(ValidationError::InvalidDeploymentCachePolicy {
+                    task: task.id.clone(),
+                    policy: task.cache_policy,
+                });
             }
         }
 
@@ -133,12 +132,11 @@ impl<'a> IrValidator<'a> {
         let mut rec_stack = HashSet::new();
 
         for task in &self.ir.tasks {
-            if !visited.contains(task.id.as_str()) {
-                if let Some(cycle) =
+            if !visited.contains(task.id.as_str())
+                && let Some(cycle) =
                     self.detect_cycle(task.id.as_str(), task_index, &mut visited, &mut rec_stack)
-                {
-                    return Err(ValidationError::CyclicDependency(cycle));
-                }
+            {
+                return Err(ValidationError::CyclicDependency(cycle));
             }
         }
 
@@ -160,11 +158,11 @@ impl<'a> IrValidator<'a> {
             for dep in &task.depends_on {
                 if !visited.contains(dep.as_str()) {
                     if let Some(cycle) = self.detect_cycle(dep, task_index, visited, rec_stack) {
-                        return Some(format!("{} -> {}", task_id, cycle));
+                        return Some(format!("{task_id} -> {cycle}"));
                     }
                 } else if rec_stack.contains(dep.as_str()) {
                     // Found a cycle
-                    return Some(format!("{} -> {}", task_id, dep));
+                    return Some(format!("{task_id} -> {dep}"));
                 }
             }
         }
@@ -214,6 +212,7 @@ impl<'a> IrValidator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::{PurityMode, Runtime};
 
     fn create_test_task(id: &str, depends_on: Vec<&str>) -> Task {
         Task {
