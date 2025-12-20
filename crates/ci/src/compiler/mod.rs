@@ -405,7 +405,11 @@ impl Compiler {
         tasks: &HashMap<String, TaskDefinition>,
         ir: &mut IntermediateRepresentation,
     ) -> Result<(), CompilerError> {
-        for (name, task_def) in tasks {
+        // Sort keys for deterministic output
+        let mut sorted_keys: Vec<_> = tasks.keys().collect();
+        sorted_keys.sort();
+        for name in sorted_keys {
+            let task_def = &tasks[name];
             self.compile_task_definition(name, task_def, ir)?;
         }
         Ok(())
@@ -445,7 +449,11 @@ impl Compiler {
                 }
             }
             TaskGroup::Parallel(parallel) => {
-                for (name, task_def) in &parallel.tasks {
+                // Sort keys for deterministic output
+                let mut sorted_keys: Vec<_> = parallel.tasks.keys().collect();
+                sorted_keys.sort();
+                for name in sorted_keys {
+                    let task_def = &parallel.tasks[name];
                     let task_name = format!("{prefix}.{name}");
                     self.compile_task_definition(&task_name, task_def, ir)?;
                 }

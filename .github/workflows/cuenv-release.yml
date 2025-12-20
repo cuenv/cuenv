@@ -20,8 +20,8 @@ permissions:
   checks: write
   pull-requests: write
 jobs:
-  release-publish-cue:
-    name: release.publish-cue
+  docs-build:
+    name: docs.build
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
     - name: Checkout
@@ -35,15 +35,15 @@ jobs:
     - name: Setup Cachix
       uses: cachix/cachix-action@v15
       with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         name: cuenv
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         pushFilter: (-source$|nixpkgs\.tar\.gz$)
     - name: Build cuenv
       run: |-
         nix build .#cuenv
         echo "$(pwd)/result/bin" >> $GITHUB_PATH
-    - name: release.publish-cue
-      run: cuenv task release.publish-cue
+    - name: docs.build
+      run: cuenv task docs.build
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   docs-deploy:
@@ -64,8 +64,8 @@ jobs:
       uses: cachix/cachix-action@v15
       with:
         name: cuenv
-        pushFilter: (-source$|nixpkgs\.tar\.gz$)
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        pushFilter: (-source$|nixpkgs\.tar\.gz$)
     - name: Build cuenv
       run: |-
         nix build .#cuenv
@@ -74,8 +74,8 @@ jobs:
       run: cuenv task docs.deploy
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  docs-build:
-    name: docs.build
+  release-publish-cue:
+    name: release.publish-cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
     - name: Checkout
@@ -89,14 +89,14 @@ jobs:
     - name: Setup Cachix
       uses: cachix/cachix-action@v15
       with:
+        name: cuenv
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         pushFilter: (-source$|nixpkgs\.tar\.gz$)
-        name: cuenv
     - name: Build cuenv
       run: |-
         nix build .#cuenv
         echo "$(pwd)/result/bin" >> $GITHUB_PATH
-    - name: docs.build
-      run: cuenv task docs.build
+    - name: release.publish-cue
+      run: cuenv task release.publish-cue
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

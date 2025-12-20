@@ -65,6 +65,15 @@ ci: {
 	}
 
 	pipelines: [
+		// Sync check pipeline - verifies generated workflows are in sync
+		{
+			name: "sync-check"
+			when: {
+				branch:      "main"
+				pullRequest: true
+			}
+			tasks: ["ci.sync-check"]
+		},
 		// CI pipeline - runs on PRs and main branch pushes
 		{
 			name: "ci"
@@ -138,6 +147,14 @@ tasks: {
 	]
 
 	pwd: command: "pwd"
+
+	// CI sync check - verifies generated workflows match committed files
+	ci: "sync-check": {
+		command: "./result/bin/cuenv"
+		args: ["ci", "--format", "github", "--check"]
+		description: "Verify CI workflows are in sync with CUE configuration"
+		inputs: ["env.cue", "schema", "cue.mod"]
+	}
 
 	// CI check task - delegates to nix flake check for optimal caching
 	check: {
