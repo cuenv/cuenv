@@ -184,23 +184,34 @@ impl GitHubActionsEmitter {
     ) -> EmitterResult<HashMap<String, String>> {
         let mut workflows = HashMap::new();
 
+        // Build workflow name with optional project prefix for monorepo support
+        let workflow_name = Self::build_workflow_name(ir);
+
         // Generate a single workflow with all tasks as jobs
-        let workflow = self.build_workflow(ir);
-        let filename = format!("{}.yml", sanitize_filename(&ir.pipeline.name));
+        let workflow = self.build_workflow(ir, &workflow_name);
+        let filename = format!("{}.yml", sanitize_filename(&workflow_name));
         let yaml = Self::serialize_workflow(&workflow)?;
         workflows.insert(filename, yaml);
 
         Ok(workflows)
     }
 
+    /// Build the workflow name, prefixing with project name if available (for monorepo support)
+    fn build_workflow_name(ir: &IntermediateRepresentation) -> String {
+        match &ir.pipeline.project_name {
+            Some(project) => format!("{}-{}", project, ir.pipeline.name),
+            None => ir.pipeline.name.clone(),
+        }
+    }
+
     /// Build a workflow from the IR
-    fn build_workflow(&self, ir: &IntermediateRepresentation) -> Workflow {
+    fn build_workflow(&self, ir: &IntermediateRepresentation, workflow_name: &str) -> Workflow {
         let triggers = self.build_triggers(ir);
         let permissions = Self::build_permissions(ir);
         let jobs = self.build_jobs(ir);
 
         Workflow {
-            name: ir.pipeline.name.clone(),
+            name: workflow_name.to_string(),
             on: triggers,
             concurrency: Some(Concurrency {
                 group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
@@ -514,7 +525,8 @@ impl GitHubActionsEmitter {
 
 impl Emitter for GitHubActionsEmitter {
     fn emit(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
-        let workflow = self.build_workflow(ir);
+        let workflow_name = Self::build_workflow_name(ir);
+        let workflow = self.build_workflow(ir, &workflow_name);
         Self::serialize_workflow(&workflow)
     }
 
@@ -590,7 +602,8 @@ impl ReleaseWorkflowBuilder {
     /// Build a release workflow from IR
     #[must_use]
     pub fn build(&self, ir: &IntermediateRepresentation) -> Workflow {
-        let mut workflow = self.emitter.build_workflow(ir);
+        let workflow_name = GitHubActionsEmitter::build_workflow_name(ir);
+        let mut workflow = self.emitter.build_workflow(ir, &workflow_name);
 
         // Override triggers for release workflows
         workflow.on = WorkflowTriggers {
@@ -637,6 +650,7 @@ mod tests {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
+                project_name: None,
                 trigger: None,
             },
             runtimes: vec![],

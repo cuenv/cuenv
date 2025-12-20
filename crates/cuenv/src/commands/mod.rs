@@ -110,6 +110,7 @@ pub mod ci_cmd {
         let mut found_pipeline = false;
         let mut github_config = cuenv_core::ci::GitHubConfig::default();
         let mut trigger_condition: Option<cuenv_ci::ir::TriggerCondition> = None;
+        let mut project_name: Option<String> = None;
 
         for project in &projects {
             let config = &project.config;
@@ -124,6 +125,7 @@ pub mod ci_cmd {
             };
 
             found_pipeline = true;
+            project_name = Some(config.name.clone());
 
             // Extract GitHub config (merged from CI-level and pipeline-level)
             github_config = ci.github_config_for_pipeline(&pipeline_name);
@@ -188,6 +190,7 @@ pub mod ci_cmd {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name.clone(),
+                project_name,
                 trigger: trigger_condition,
             },
             runtimes: vec![],
@@ -417,6 +420,7 @@ pub mod ci_cmd {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name,
+                project_name: None, // Buildkite doesn't use project prefix yet
                 trigger: None,
             },
             runtimes: vec![],
