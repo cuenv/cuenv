@@ -29,6 +29,7 @@ async-recursion = "1.1"
 async-trait = "0.1"
 futures = "0.3"
 fs4 = { version = "0.13", features = ["tokio"] }
+cuenv-secrets = { workspace = true }
 
 # Dependencies for hook execution system
 dirs = { workspace = true }

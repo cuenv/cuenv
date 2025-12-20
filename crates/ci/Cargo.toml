@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 cuenv-core = { workspace = true }
+cuenv-secrets = { workspace = true }
 cuengine = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -28,6 +29,22 @@ chrono = { workspace = true }
 cuenv-events = { workspace = true }
 glob = "0.3"
 regex = "1.10"
+sha2 = { workspace = true }
+hex = "0.4"
+uuid = { workspace = true }
+petgraph = { workspace = true }
+
+# Bazel Remote Execution API v2 (Phase 2: Remote Caching)
+bazel-remote-apis = "0.21"
+tonic = { version = "0.14", features = ["channel", "tls-ring", "tls-native-roots"] }
+prost = "0.14"
+backoff = { version = "0.4", features = ["tokio"] }
+
+[dev-dependencies]
+tempfile = "3"
+temp-env = "0.3"
+proptest = "1.4"
+
 # We'll stick to shelling out to git for now as per spec preference for "native reporting"
 # but we might need git2 later if we want tighter integration.
 # For now, standard process execution is safer/simpler for "git diff" logic.

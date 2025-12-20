@@ -1,0 +1,5 @@
+# Buildkite bootstrap pipeline for cuenv
+# This generates a dynamic pipeline based on affected tasks
+steps:
+  - label: ":pipeline: Generate Pipeline"
+    command: cuenv ci --format buildkite | buildkite-agent pipeline upload
