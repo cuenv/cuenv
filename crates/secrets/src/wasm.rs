@@ -14,15 +14,16 @@ pub fn onepassword_wasm_path() -> Result<PathBuf, SecretError> {
         message: "Could not determine cache directory".to_string(),
     })?;
 
-    Ok(cache_dir.join("cuenv").join("wasm").join("onepassword-core.wasm"))
+    Ok(cache_dir
+        .join("cuenv")
+        .join("wasm")
+        .join("onepassword-core.wasm"))
 }
 
 /// Check if the 1Password WASM SDK is available in the cache
 #[cfg(feature = "onepassword")]
 pub fn onepassword_wasm_available() -> bool {
-    onepassword_wasm_path()
-        .map(|p| p.exists())
-        .unwrap_or(false)
+    onepassword_wasm_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 /// Load the 1Password WASM SDK from the cache

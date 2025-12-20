@@ -35,21 +35,25 @@ impl SharedCore {
     /// On first call, loads the WASM from disk and initializes the plugin.
     /// Subsequent calls return the cached instance.
     pub fn get_or_init() -> Result<&'static Mutex<Option<SharedCore>>, SecretError> {
-        let mut guard = SHARED_CORE.lock().map_err(|_| SecretError::ResolutionFailed {
-            name: "onepassword".to_string(),
-            message: "Failed to acquire shared core lock".to_string(),
-        })?;
+        let mut guard = SHARED_CORE
+            .lock()
+            .map_err(|_| SecretError::ResolutionFailed {
+                name: "onepassword".to_string(),
+                message: "Failed to acquire shared core lock".to_string(),
+            })?;
 
         if guard.is_none() {
             let wasm_bytes = crate::wasm::load_onepassword_wasm()?;
 
-            let manifest = Manifest::new([Wasm::data(wasm_bytes)])
-                .with_allowed_hosts(["*.1password.com".to_string(), "*.b5dev.com".to_string()].into_iter());
+            let manifest = Manifest::new([Wasm::data(wasm_bytes)]).with_allowed_hosts(
+                ["*.1password.com".to_string(), "*.b5dev.com".to_string()].into_iter(),
+            );
 
-            let plugin = Plugin::new(&manifest, [], true).map_err(|e| SecretError::ResolutionFailed {
-                name: "onepassword".to_string(),
-                message: format!("Failed to initialize WASM plugin: {e}"),
-            })?;
+            let plugin =
+                Plugin::new(&manifest, [], true).map_err(|e| SecretError::ResolutionFailed {
+                    name: "onepassword".to_string(),
+                    message: format!("Failed to initialize WASM plugin: {e}"),
+                })?;
 
             *guard = Some(SharedCore { plugin });
         }
@@ -80,12 +84,11 @@ impl SharedCore {
             })?;
 
         // Parse the response to check for errors
-        let response: serde_json::Value = serde_json::from_str(&result).map_err(|e| {
-            SecretError::ResolutionFailed {
+        let response: serde_json::Value =
+            serde_json::from_str(&result).map_err(|e| SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
                 message: format!("Failed to parse init_client response: {e}"),
-            }
-        })?;
+            })?;
 
         // Check for error in response
         if let Some(error) = response.get("error") {
@@ -132,12 +135,11 @@ impl SharedCore {
             })?;
 
         // Parse response to check for errors
-        let response: serde_json::Value = serde_json::from_str(&result).map_err(|e| {
-            SecretError::ResolutionFailed {
+        let response: serde_json::Value =
+            serde_json::from_str(&result).map_err(|e| SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
                 message: format!("Failed to parse invoke response: {e}"),
-            }
-        })?;
+            })?;
 
         if let Some(error) = response.get("error") {
             return Err(SecretError::ResolutionFailed {

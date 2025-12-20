@@ -6,7 +6,7 @@
 //! - [`ExecSecretResolver`] - Command execution
 //! - [`AwsResolver`] - AWS Secrets Manager (HTTP + CLI modes)
 //! - [`GcpResolver`] - GCP Secret Manager (HTTP + CLI modes)
-//! - [`VaultResolver`] - HashiCorp Vault (HTTP + CLI modes)
+//! - [`VaultResolver`] - `HashiCorp` Vault (HTTP + CLI modes)
 //! - [`OnePasswordResolver`] - 1Password (HTTP via SDK + CLI modes)
 
 mod aws;

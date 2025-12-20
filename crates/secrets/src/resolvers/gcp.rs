@@ -72,22 +72,30 @@ impl GcpResolver {
     ///
     /// If GCP credentials are available in environment, uses HTTP mode.
     /// Otherwise, CLI mode will be used.
-    pub async fn new() -> Result<Self, SecretError> {
-        #[cfg(feature = "gcp")]
+    #[cfg(feature = "gcp")]
+    pub fn new() -> Result<Self, SecretError> {
         let use_http = Self::http_credentials_available();
+        Ok(Self { use_http })
+    }
 
-        Ok(Self {
-            #[cfg(feature = "gcp")]
-            use_http,
-        })
+    /// Create a new GCP resolver (CLI mode only)
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible when the `gcp` feature is disabled.
+    #[cfg(not(feature = "gcp"))]
+    pub fn new() -> Result<Self, SecretError> {
+        Ok(Self {})
     }
 
     /// Check if HTTP credentials are available in environment
+    #[cfg(feature = "gcp")]
     fn http_credentials_available() -> bool {
         std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok()
     }
 
     /// Check if this resolver can use HTTP mode
+    #[allow(clippy::unused_self)] // self is used when feature is enabled
     fn can_use_http(&self) -> bool {
         #[cfg(feature = "gcp")]
         {
@@ -188,6 +196,10 @@ impl GcpResolver {
 
 #[async_trait]
 impl SecretResolver for GcpResolver {
+    fn provider_name(&self) -> &'static str {
+        "gcp"
+    }
+
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
         // Try to parse source as JSON GcpSecretConfig
         if let Ok(config) = serde_json::from_str::<GcpSecretConfig>(&spec.source) {
@@ -251,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "gcp")]
     fn test_http_credentials_check() {
         // This test just ensures the function exists and doesn't panic
         let _ = GcpResolver::http_credentials_available();
