@@ -183,7 +183,7 @@ impl GarbageCollector {
                         "[dry-run] Would remove"
                     );
                 } else {
-                    match self.remove_entry(&entry.path) {
+                    match Self::remove_entry(&entry.path) {
                         Ok(()) => {
                             tracing::debug!(
                                 path = %entry.path.display(),
@@ -216,12 +216,12 @@ impl GarbageCollector {
         // Run Nix GC if configured
         if self.config.run_nix_gc
             && !self.config.dry_run
-            && let Err(e) = self.run_nix_gc()
+            && let Err(e) = Self::run_nix_gc()
         {
             tracing::warn!(error = %e, "Nix garbage collection failed");
         }
 
-        stats.duration_ms = start.elapsed().as_millis() as u64;
+        stats.duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         tracing::info!(
             removed = stats.entries_removed,
@@ -236,20 +236,20 @@ impl GarbageCollector {
 
     fn scan_cache(&self, dir: &Path) -> Result<Vec<CacheEntry>, GCError> {
         let mut entries = Vec::new();
-        self.scan_dir_recursive(dir, &mut entries)?;
+        Self::scan_dir_recursive(dir, &mut entries)?;
         Ok(entries)
     }
 
-    fn scan_dir_recursive(&self, dir: &Path, entries: &mut Vec<CacheEntry>) -> Result<(), GCError> {
+    fn scan_dir_recursive(dir: &Path, entries: &mut Vec<CacheEntry>) -> Result<(), GCError> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             let metadata = entry.metadata()?;
 
             if metadata.is_dir() {
-                self.scan_dir_recursive(&path, entries)?;
+                Self::scan_dir_recursive(&path, entries)?;
             } else if metadata.is_file()
-                && let Some(cache_entry) = self.create_entry(&path, &metadata)
+                && let Some(cache_entry) = Self::create_entry(&path, &metadata)
             {
                 entries.push(cache_entry);
             }
@@ -257,7 +257,7 @@ impl GarbageCollector {
         Ok(())
     }
 
-    fn create_entry(&self, path: &Path, metadata: &Metadata) -> Option<CacheEntry> {
+    fn create_entry(path: &Path, metadata: &Metadata) -> Option<CacheEntry> {
         let size = metadata.len();
         let last_accessed = metadata.accessed().or_else(|_| metadata.modified()).ok()?;
 
@@ -268,7 +268,7 @@ impl GarbageCollector {
         })
     }
 
-    fn remove_entry(&self, path: &Path) -> Result<(), GCError> {
+    fn remove_entry(path: &Path) -> Result<(), GCError> {
         if path.is_dir() {
             fs::remove_dir_all(path)?;
         } else {
@@ -277,7 +277,7 @@ impl GarbageCollector {
         Ok(())
     }
 
-    fn run_nix_gc(&self) -> Result<(), GCError> {
+    fn run_nix_gc() -> Result<(), GCError> {
         tracing::info!("Running Nix garbage collection...");
 
         let output = std::process::Command::new("nix-collect-garbage")

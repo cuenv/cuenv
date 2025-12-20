@@ -80,7 +80,7 @@ impl LogRedactor {
         }
 
         // Sort by length descending for greedy matching (longer secrets first)
-        valid_secrets.sort_by(|a, b| b.len().cmp(&a.len()));
+        valid_secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
 
         let max_secret_len = valid_secrets.iter().map(String::len).max().unwrap_or(0);
 
@@ -117,12 +117,12 @@ impl LogRedactor {
         }
 
         // Sort by length descending for greedy matching
-        valid_secrets.sort_by(|a, b| b.len().cmp(&a.len()));
+        valid_secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
 
         // Deduplicate secrets (same value may appear under different names)
         let unique: HashSet<String> = valid_secrets.into_iter().collect();
         let mut valid_secrets: Vec<String> = unique.into_iter().collect();
-        valid_secrets.sort_by(|a, b| b.len().cmp(&a.len()));
+        valid_secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
 
         let max_secret_len = valid_secrets.iter().map(String::len).max().unwrap_or(0);
 
@@ -223,7 +223,7 @@ pub fn redact_secrets(input: &str, secrets: &[String]) -> String {
 
     // Sort by length descending for greedy matching
     let mut sorted_secrets: Vec<&String> = secrets.iter().collect();
-    sorted_secrets.sort_by(|a, b| b.len().cmp(&a.len()));
+    sorted_secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
 
     for secret in sorted_secrets {
         if secret.len() >= MIN_SECRET_LENGTH {
@@ -297,7 +297,7 @@ mod tests {
         let out2 = redactor.redact(chunk2);
         let out3 = redactor.flush();
 
-        let combined = format!("{}{}{}", out1, out2, out3);
+        let combined = format!("{out1}{out2}{out3}");
         assert!(combined.contains("[REDACTED]"));
         assert!(!combined.contains("secretpassword"));
     }

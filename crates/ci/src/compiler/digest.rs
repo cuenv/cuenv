@@ -167,9 +167,8 @@ mod tests {
         let env = HashMap::new();
         let inputs = vec![];
 
-        let digest1 =
-            compute_task_digest(&vec!["echo".to_string()], &env, &inputs, None, None, None);
-        let digest2 = compute_task_digest(&vec!["ls".to_string()], &env, &inputs, None, None, None);
+        let digest1 = compute_task_digest(&["echo".to_string()], &env, &inputs, None, None, None);
+        let digest2 = compute_task_digest(&["ls".to_string()], &env, &inputs, None, None, None);
 
         assert_ne!(digest1, digest2);
     }
@@ -249,12 +248,12 @@ mod tests {
     #[test]
     fn test_impurity_uuid() {
         let mut builder = DigestBuilder::new();
-        builder.add_command(&vec!["echo".to_string()]);
+        builder.add_command(&["echo".to_string()]);
         builder.add_impurity_uuid("550e8400-e29b-41d4-a716-446655440000");
         let digest1 = builder.finalize();
 
         let mut builder = DigestBuilder::new();
-        builder.add_command(&vec!["echo".to_string()]);
+        builder.add_command(&["echo".to_string()]);
         builder.add_impurity_uuid("550e8400-e29b-41d4-a716-446655440001");
         let digest2 = builder.finalize();
 
@@ -295,8 +294,8 @@ mod proptest_tests {
             let env = HashMap::new();
             let inputs: Vec<String> = vec![];
 
-            let digest1 = compute_task_digest(&vec![cmd1], &env, &inputs, None, None, None);
-            let digest2 = compute_task_digest(&vec![cmd2], &env, &inputs, None, None, None);
+            let digest1 = compute_task_digest(&[cmd1], &env, &inputs, None, None, None);
+            let digest2 = compute_task_digest(&[cmd2], &env, &inputs, None, None, None);
 
             prop_assert_ne!(digest1, digest2);
         }

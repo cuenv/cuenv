@@ -472,7 +472,7 @@ mod tests {
         let ir = compiler.compile().unwrap();
 
         assert_eq!(ir.tasks.len(), 1);
-        assert_eq!(ir.tasks[0].deployment, true);
+        assert!(ir.tasks[0].deployment);
         assert_eq!(ir.tasks[0].cache_policy, CachePolicy::Disabled);
     }
 
@@ -492,7 +492,7 @@ mod tests {
         let ir = compiler.compile().unwrap();
 
         assert_eq!(ir.tasks.len(), 1);
-        assert_eq!(ir.tasks[0].shell, true);
+        assert!(ir.tasks[0].shell);
         assert_eq!(ir.tasks[0].command[0], "/bin/sh");
         assert_eq!(ir.tasks[0].command[1], "-c");
     }

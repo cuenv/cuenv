@@ -2170,7 +2170,7 @@ fn build_global_tasks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::tasks::Input;
+
     use std::fs;
     use tempfile::TempDir;
 
