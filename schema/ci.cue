@@ -67,6 +67,7 @@ package schema
 
 #Pipeline: close({
 	name:         string
+	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
 	tasks:        [...string]
 	derivePaths?: bool // whether to derive trigger paths from task inputs

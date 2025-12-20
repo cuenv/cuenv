@@ -88,7 +88,11 @@ impl BuildkiteEmitter {
         let label = self.format_label(&task.id, task.deployment);
 
         // Build the command, wrapping with Nix setup if task has a runtime
-        let base_command = format!("cuenv task {}", task.id);
+        let base_command = if let Some(ref env) = ir.pipeline.environment {
+            format!("cuenv task {} -e {}", task.id, env)
+        } else {
+            format!("cuenv task {}", task.id)
+        };
         let command = if let Some(runtime_id) = &task.runtime {
             // Look up the runtime definition in the IR
             if let Some(runtime) = ir.runtimes.iter().find(|r| r.id == *runtime_id) {
@@ -280,6 +284,7 @@ mod tests {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
+                environment: None,
                 project_name: None,
                 trigger: None,
             },
