@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.15.7"
+version = "0.16.0"
 edition = "2024"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
@@ -33,22 +33,22 @@ keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
-cuenv-events = { path = "crates/events", version = "0.15.0" }
-cuenv-secrets = { path = "crates/secrets", version = "0.15.0" }
-cuenv-core = { path = "crates/core", version = "0.15.0" }
-cuenv-dagger = { path = "crates/dagger", version = "0.15.0" }
-cuenv-workspaces = { path = "crates/workspaces", version = "0.15.0" }
-cuenv-ci = { path = "crates/ci", version = "0.15.0" }
-cuenv-release = { path = "crates/release", version = "0.15.0" }
-cuenv-ignore = { path = "crates/ignore", version = "0.15.0" }
-cuenv-codeowners = { path = "crates/codeowners", version = "0.15.0" }
-cuenv-cubes = { path = "crates/cubes", version = "0.15.0" }
-cuengine = { path = "crates/cuengine", version = "0.15.0" }
+cuenv-events = { path = "crates/events", version = "0.16.0" }
+cuenv-secrets = { path = "crates/secrets", version = "0.16.0" }
+cuenv-core = { path = "crates/core", version = "0.16.0" }
+cuenv-dagger = { path = "crates/dagger", version = "0.16.0" }
+cuenv-workspaces = { path = "crates/workspaces", version = "0.16.0" }
+cuenv-ci = { path = "crates/ci", version = "0.16.0" }
+cuenv-release = { path = "crates/release", version = "0.16.0" }
+cuenv-ignore = { path = "crates/ignore", version = "0.16.0" }
+cuenv-codeowners = { path = "crates/codeowners", version = "0.16.0" }
+cuenv-cubes = { path = "crates/cubes", version = "0.16.0" }
+cuengine = { path = "crates/cuengine", version = "0.16.0" }
 # Platform-specific provider crates
-cuenv-github = { path = "crates/github", version = "0.15.0" }
-cuenv-gitlab = { path = "crates/gitlab", version = "0.15.0" }
-cuenv-bitbucket = { path = "crates/bitbucket", version = "0.15.0" }
-cuenv-buildkite = { path = "crates/buildkite", version = "0.15.0" }
+cuenv-github = { path = "crates/github", version = "0.16.0" }
+cuenv-gitlab = { path = "crates/gitlab", version = "0.16.0" }
+cuenv-bitbucket = { path = "crates/bitbucket", version = "0.16.0" }
+cuenv-buildkite = { path = "crates/buildkite", version = "0.16.0" }
 schemars = "1.0.4"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }

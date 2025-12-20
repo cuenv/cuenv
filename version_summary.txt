@@ -1,0 +1,21 @@
+Dry run - no changes will be made.
+
+Version changes:
+
+  cuenv-events: 0.15.7 -> 0.16.0
+  cuenv-ci: 0.15.7 -> 0.16.0
+  cuenv: 0.15.7 -> 0.16.0
+  cuenv-gitlab: 0.15.7 -> 0.16.0
+  cuenv-cubes: 0.15.7 -> 0.16.0
+  cuenv-dagger: 0.15.7 -> 0.16.0
+  cuenv-release: 0.15.7 -> 0.16.0
+  cuenv-github: 0.15.7 -> 0.16.0
+  cuenv-core: 0.15.7 -> 0.16.0
+  cuenv-secrets: 0.15.7 -> 0.16.0
+  cuengine: 0.15.7 -> 0.16.0
+  cuenv-workspaces: 0.15.7 -> 0.16.0
+  cuenv-ignore: 0.15.7 -> 0.16.0
+  cuenv-codeowners: 0.15.7 -> 0.16.0
+  cuenv-bitbucket: 0.15.7 -> 0.16.0
+  cuenv-buildkite: 0.15.7 -> 0.16.0
+
