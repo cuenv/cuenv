@@ -342,8 +342,8 @@ fn read_lock_metadata(path: &Path) -> Option<LockMetadata> {
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .expect("System time is before UNIX epoch")
+        .as_secs()
 }
 
 #[cfg(test)]

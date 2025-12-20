@@ -42,6 +42,7 @@ backoff = { version = "0.4", features = ["tokio"] }
 
 [dev-dependencies]
 tempfile = "3"
+temp-env = "0.3"
 
 # We'll stick to shelling out to git for now as per spec preference for "native reporting"
 # but we might need git2 later if we want tighter integration.

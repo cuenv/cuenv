@@ -204,35 +204,31 @@ mod tests {
 
     #[test]
     fn test_resolve_from_env() {
-        // SAFETY: Tests run single-threaded and we clean up after
-        unsafe {
-            std::env::set_var("TEST_SECRET_1", "value1");
-            std::env::set_var("TEST_SECRET_2", "value2");
-        }
+        temp_env::with_vars(
+            [
+                ("TEST_SECRET_1", Some("value1")),
+                ("TEST_SECRET_2", Some("value2")),
+            ],
+            || {
+                let secrets = HashMap::from([
+                    (
+                        "secret1".to_string(),
+                        make_secret_config("TEST_SECRET_1", true),
+                    ),
+                    (
+                        "secret2".to_string(),
+                        make_secret_config("TEST_SECRET_2", false),
+                    ),
+                ]);
 
-        let secrets = HashMap::from([
-            (
-                "secret1".to_string(),
-                make_secret_config("TEST_SECRET_1", true),
-            ),
-            (
-                "secret2".to_string(),
-                make_secret_config("TEST_SECRET_2", false),
-            ),
-        ]);
+                let resolved = CIResolvedSecrets::from_env(&secrets, Some("test-salt")).unwrap();
 
-        let resolved = CIResolvedSecrets::from_env(&secrets, Some("test-salt")).unwrap();
-
-        assert_eq!(resolved.values().get("secret1"), Some(&"value1".to_string()));
-        assert_eq!(resolved.values().get("secret2"), Some(&"value2".to_string()));
-        assert!(resolved.fingerprints().contains_key("secret1"));
-        assert!(!resolved.fingerprints().contains_key("secret2")); // cache_key: false
-
-        // Cleanup
-        unsafe {
-            std::env::remove_var("TEST_SECRET_1");
-            std::env::remove_var("TEST_SECRET_2");
-        }
+                assert_eq!(resolved.values().get("secret1"), Some(&"value1".to_string()));
+                assert_eq!(resolved.values().get("secret2"), Some(&"value2".to_string()));
+                assert!(resolved.fingerprints().contains_key("secret1"));
+                assert!(!resolved.fingerprints().contains_key("secret2")); // cache_key: false
+            },
+        );
     }
 
     #[test]
@@ -248,22 +244,15 @@ mod tests {
 
     #[test]
     fn test_missing_salt_with_cache_key() {
-        // SAFETY: Tests run single-threaded and we clean up after
-        unsafe {
-            std::env::set_var("TEST_SALT_CHECK", "value");
-        }
+        temp_env::with_var("TEST_SALT_CHECK", Some("value"), || {
+            let secrets = HashMap::from([(
+                "secret".to_string(),
+                make_secret_config("TEST_SALT_CHECK", true),
+            )]);
 
-        let secrets = HashMap::from([(
-            "secret".to_string(),
-            make_secret_config("TEST_SALT_CHECK", true),
-        )]);
-
-        let result = CIResolvedSecrets::from_env(&secrets, None);
-        assert!(matches!(result, Err(SecretError::MissingSalt)));
-
-        unsafe {
-            std::env::remove_var("TEST_SALT_CHECK");
-        }
+            let result = CIResolvedSecrets::from_env(&secrets, None);
+            assert!(matches!(result, Err(SecretError::MissingSalt)));
+        });
     }
 
     #[test]
@@ -287,51 +276,43 @@ mod tests {
 
     #[test]
     fn test_fingerprint_matches_current_salt() {
-        // SAFETY: Tests run single-threaded and we clean up after
-        unsafe {
-            std::env::set_var("TEST_FP_MATCH_1", "secret_value");
-        }
+        temp_env::with_var("TEST_FP_MATCH_1", Some("secret_value"), || {
+            let secrets = HashMap::from([(
+                "api_key".to_string(),
+                make_secret_config("TEST_FP_MATCH_1", true),
+            )]);
 
-        let secrets = HashMap::from([(
-            "api_key".to_string(),
-            make_secret_config("TEST_FP_MATCH_1", true),
-        )]);
+            let salt_config = SaltConfig::with_rotation(
+                Some("current-salt".to_string()),
+                Some("old-salt".to_string()),
+            );
 
-        let salt_config =
-            SaltConfig::with_rotation(Some("current-salt".to_string()), Some("old-salt".to_string()));
+            let resolved =
+                CIResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
 
-        let resolved = CIResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
-
-        let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "current-salt");
-        assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
-
-        unsafe {
-            std::env::remove_var("TEST_FP_MATCH_1");
-        }
+            let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "current-salt");
+            assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
+        });
     }
 
     #[test]
     fn test_fingerprint_matches_previous_salt() {
-        // SAFETY: Tests run single-threaded and we clean up after
-        unsafe {
-            std::env::set_var("TEST_FP_MATCH_2", "secret_value");
-        }
+        temp_env::with_var("TEST_FP_MATCH_2", Some("secret_value"), || {
+            let secrets = HashMap::from([(
+                "api_key".to_string(),
+                make_secret_config("TEST_FP_MATCH_2", true),
+            )]);
 
-        let secrets = HashMap::from([(
-            "api_key".to_string(),
-            make_secret_config("TEST_FP_MATCH_2", true),
-        )]);
+            let salt_config = SaltConfig::with_rotation(
+                Some("new-salt".to_string()),
+                Some("old-salt".to_string()),
+            );
 
-        let salt_config =
-            SaltConfig::with_rotation(Some("new-salt".to_string()), Some("old-salt".to_string()));
+            let resolved =
+                CIResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
 
-        let resolved = CIResolvedSecrets::from_env_with_salt_config(&secrets, &salt_config).unwrap();
-
-        let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "old-salt");
-        assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
-
-        unsafe {
-            std::env::remove_var("TEST_FP_MATCH_2");
-        }
+            let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "old-salt");
+            assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
+        });
     }
 }

@@ -737,13 +737,10 @@ mod tests {
 
     #[test]
     fn test_config_from_env_empty() {
-        // Clear any existing env vars
-        // SAFETY: Test isolation - no other threads should be reading this env var
-        unsafe {
-            std::env::remove_var("CUENV_REMOTE_CACHE_URL");
-        }
-        let config = RemoteCacheConfig::from_env();
-        assert!(config.is_none());
+        temp_env::with_var_unset("CUENV_REMOTE_CACHE_URL", || {
+            let config = RemoteCacheConfig::from_env();
+            assert!(config.is_none());
+        });
     }
 
     #[test]
