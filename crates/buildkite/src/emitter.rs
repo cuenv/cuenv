@@ -287,7 +287,7 @@ mod tests {
         }
     }
 
-    fn make_task(id: &str, command: Vec<&str>) -> Task {
+    fn make_task(id: &str, command: &[&str]) -> Task {
         Task {
             id: id.to_string(),
             runtime: None,
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn test_simple_pipeline() {
         let emitter = BuildkiteEmitter::new();
-        let ir = make_ir(vec![make_task("build", vec!["cargo", "build"])]);
+        let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
 
         let yaml = emitter.emit(&ir).unwrap();
 
@@ -322,10 +322,10 @@ mod tests {
     #[test]
     fn test_with_dependencies() {
         let emitter = BuildkiteEmitter::new();
-        let mut test_task = make_task("test", vec!["cargo", "test"]);
+        let mut test_task = make_task("test", &["cargo", "test"]);
         test_task.depends_on = vec!["build".to_string()];
 
-        let ir = make_ir(vec![make_task("build", vec!["cargo", "build"]), test_task]);
+        let ir = make_ir(vec![make_task("build", &["cargo", "build"]), test_task]);
 
         let yaml = emitter.emit(&ir).unwrap();
 
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn test_with_manual_approval() {
         let emitter = BuildkiteEmitter::new().with_emojis();
-        let mut deploy_task = make_task("deploy", vec!["./deploy.sh"]);
+        let mut deploy_task = make_task("deploy", &["./deploy.sh"]);
         deploy_task.manual_approval = true;
         deploy_task.deployment = true;
 
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn test_with_concurrency_group() {
         let emitter = BuildkiteEmitter::new();
-        let mut deploy_task = make_task("deploy", vec!["./deploy.sh"]);
+        let mut deploy_task = make_task("deploy", &["./deploy.sh"]);
         deploy_task.concurrency_group = Some("production".to_string());
 
         let ir = make_ir(vec![deploy_task]);
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn test_with_agent_queue() {
         let emitter = BuildkiteEmitter::new();
-        let mut task = make_task("build", vec!["cargo", "build"]);
+        let mut task = make_task("build", &["cargo", "build"]);
         task.resources = Some(ResourceRequirements {
             cpu: None,
             memory: None,
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn test_with_secrets() {
         let emitter = BuildkiteEmitter::new();
-        let mut task = make_task("deploy", vec!["./deploy.sh"]);
+        let mut task = make_task("deploy", &["./deploy.sh"]);
         task.secrets.insert(
             "API_KEY".to_string(),
             SecretConfig {
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn test_with_artifacts() {
         let emitter = BuildkiteEmitter::new();
-        let mut task = make_task("build", vec!["cargo", "build"]);
+        let mut task = make_task("build", &["cargo", "build"]);
         task.outputs = vec![OutputDeclaration {
             path: "target/release/binary".to_string(),
             output_type: OutputType::Orchestrator,
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn test_default_queue() {
         let emitter = BuildkiteEmitter::new().with_default_queue("default");
-        let ir = make_ir(vec![make_task("build", vec!["cargo", "build"])]);
+        let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
 
         let yaml = emitter.emit(&ir).unwrap();
 
@@ -432,7 +432,7 @@ mod tests {
     #[test]
     fn test_emojis() {
         let emitter = BuildkiteEmitter::new().with_emojis();
-        let ir = make_ir(vec![make_task("build", vec!["cargo", "build"])]);
+        let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
 
         let yaml = emitter.emit(&ir).unwrap();
 
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn test_validation_invalid_id() {
         let emitter = BuildkiteEmitter::new();
-        let ir = make_ir(vec![make_task("invalid task", vec!["echo"])]);
+        let ir = make_ir(vec![make_task("invalid task", &["echo"])]);
 
         let result = emitter.validate(&ir);
         assert!(result.is_err());
@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn test_validation_missing_dependency() {
         let emitter = BuildkiteEmitter::new();
-        let mut task = make_task("test", vec!["cargo", "test"]);
+        let mut task = make_task("test", &["cargo", "test"]);
         task.depends_on = vec!["nonexistent".to_string()];
 
         let ir = make_ir(vec![task]);
@@ -472,7 +472,7 @@ mod tests {
         let emitter = BuildkiteEmitter::new();
 
         // Create a task that references a Nix runtime
-        let mut task = make_task("build", vec!["cargo", "build"]);
+        let mut task = make_task("build", &["cargo", "build"]);
         task.runtime = Some("nix-rust".to_string());
 
         // Create IR with runtime definition
@@ -506,7 +506,7 @@ mod tests {
         let emitter = BuildkiteEmitter::new();
 
         // Task without runtime
-        let task = make_task("build", vec!["cargo", "build"]);
+        let task = make_task("build", &["cargo", "build"]);
         let ir = make_ir(vec![task]);
 
         let yaml = emitter.emit(&ir).unwrap();

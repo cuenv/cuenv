@@ -153,8 +153,13 @@ pub struct Task {
     pub env: HashMap<String, serde_json::Value>,
 
     /// Dagger-specific configuration for running this task in a container
+    /// DEPRECATED: Use runtime field with Dagger variant instead
     #[serde(default)]
     pub dagger: Option<DaggerTaskConfig>,
+
+    /// Runtime override for this task (inherits from project if not set)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<crate::manifest::Runtime>,
 
     /// When true (default), task runs in isolated hermetic directory.
     /// When false, task runs directly in workspace/project root.
@@ -238,6 +243,8 @@ impl<'de> serde::Deserialize<'de> for Task {
             env: HashMap<String, serde_json::Value>,
             #[serde(default)]
             dagger: Option<DaggerTaskConfig>,
+            #[serde(default)]
+            runtime: Option<crate::manifest::Runtime>,
             #[serde(default = "default_hermetic")]
             hermetic: bool,
             #[serde(default, rename = "dependsOn")]
@@ -286,6 +293,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             args: helper.args,
             env: helper.env,
             dagger: helper.dagger,
+            runtime: helper.runtime,
             hermetic: helper.hermetic,
             depends_on: helper.depends_on,
             inputs: helper.inputs,
@@ -452,6 +460,7 @@ impl Default for Task {
             args: vec![],
             env: HashMap::new(),
             dagger: None,
+            runtime: None,
             hermetic: true, // Default to hermetic execution
             depends_on: vec![],
             inputs: vec![],

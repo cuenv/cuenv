@@ -361,7 +361,11 @@ impl Step {
 
     /// Add a with input
     #[must_use]
-    pub fn with_input(mut self, key: impl Into<String>, value: impl Into<serde_yaml::Value>) -> Self {
+    pub fn with_input(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<serde_yaml::Value>,
+    ) -> Self {
         self.with_inputs.insert(key.into(), value.into());
         self
     }

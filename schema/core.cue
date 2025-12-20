@@ -13,6 +13,7 @@ package schema
 #Project: close({
 	#Base
 	name!:    #ProjectName
+	runtime?: #Runtime
 	hooks?:   #Hooks
 	ci?:      #CI
 	release?: #Release
