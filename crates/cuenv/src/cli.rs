@@ -503,6 +503,8 @@ pub enum Commands {
         from: Option<String>,
         #[arg(long, help = "Overwrite existing workflow file")]
         force: bool,
+        #[arg(long, help = "Check if CI workflows are in sync without writing")]
+        check: bool,
     },
     #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
     Tui,
@@ -1069,6 +1071,7 @@ impl Commands {
                 format,
                 from,
                 force,
+                check,
             } => Command::Ci {
                 dry_run,
                 pipeline,
@@ -1076,6 +1079,7 @@ impl Commands {
                 format,
                 from,
                 force,
+                check,
             },
             Commands::Tui => Command::Tui,
             Commands::Web { port, host } => Command::Web { port, host },
