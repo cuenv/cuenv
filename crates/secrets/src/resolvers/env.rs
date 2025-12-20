@@ -34,21 +34,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_from_env() {
-        // SAFETY: Tests run single-threaded and we clean up after
-        unsafe {
-            std::env::set_var("TEST_SECRET_ENV_1", "value1");
-        }
+        temp_env::async_with_vars([("TEST_SECRET_ENV_1", Some("value1"))], async {
+            let resolver = EnvSecretResolver::new();
+            let spec = SecretSpec::new("TEST_SECRET_ENV_1");
+            let result = resolver.resolve("secret1", &spec).await;
 
-        let resolver = EnvSecretResolver::new();
-        let spec = SecretSpec::new("TEST_SECRET_ENV_1");
-        let result = resolver.resolve("secret1", &spec).await;
-
-        assert_eq!(result.unwrap(), "value1");
-
-        // Cleanup
-        unsafe {
-            std::env::remove_var("TEST_SECRET_ENV_1");
-        }
+            assert_eq!(result.unwrap(), "value1");
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -62,27 +55,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_all() {
-        // SAFETY: Tests run single-threaded and we clean up after
-        unsafe {
-            std::env::set_var("TEST_SECRET_ENV_2", "value2");
-            std::env::set_var("TEST_SECRET_ENV_3", "value3");
-        }
+        temp_env::async_with_vars(
+            [
+                ("TEST_SECRET_ENV_2", Some("value2")),
+                ("TEST_SECRET_ENV_3", Some("value3")),
+            ],
+            async {
+                let resolver = EnvSecretResolver::new();
+                let secrets = HashMap::from([
+                    ("secret2".to_string(), SecretSpec::new("TEST_SECRET_ENV_2")),
+                    ("secret3".to_string(), SecretSpec::new("TEST_SECRET_ENV_3")),
+                ]);
 
-        let resolver = EnvSecretResolver::new();
-        let secrets = HashMap::from([
-            ("secret2".to_string(), SecretSpec::new("TEST_SECRET_ENV_2")),
-            ("secret3".to_string(), SecretSpec::new("TEST_SECRET_ENV_3")),
-        ]);
+                let result = resolver.resolve_all(&secrets).await.unwrap();
 
-        let result = resolver.resolve_all(&secrets).await.unwrap();
-
-        assert_eq!(result.get("secret2"), Some(&"value2".to_string()));
-        assert_eq!(result.get("secret3"), Some(&"value3".to_string()));
-
-        // Cleanup
-        unsafe {
-            std::env::remove_var("TEST_SECRET_ENV_2");
-            std::env::remove_var("TEST_SECRET_ENV_3");
-        }
+                assert_eq!(result.get("secret2"), Some(&"value2".to_string()));
+                assert_eq!(result.get("secret3"), Some(&"value3".to_string()));
+            },
+        )
+        .await;
     }
 }

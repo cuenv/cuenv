@@ -23,6 +23,28 @@ pub struct ShortSecretWarning {
 /// Log redactor that replaces secret values with placeholders
 ///
 /// Uses a sliding window buffer to handle secrets that span chunk boundaries.
+///
+/// # Streaming Usage
+///
+/// When processing streaming input via [`redact`], the redactor buffers content
+/// to detect secrets that span chunk boundaries. **Callers must call [`flush`]
+/// when the stream ends** to retrieve any remaining buffered content.
+///
+/// ```ignore
+/// let (mut redactor, _) = LogRedactor::new(secrets);
+/// for chunk in stream {
+///     let redacted = redactor.redact(&chunk);
+///     output.push_str(&redacted);
+/// }
+/// // IMPORTANT: Don't forget to flush!
+/// output.push_str(&redactor.flush());
+/// ```
+///
+/// For complete strings where buffering isn't needed, use [`redact_immediate`] instead.
+///
+/// [`redact`]: LogRedactor::redact
+/// [`flush`]: LogRedactor::flush
+/// [`redact_immediate`]: LogRedactor::redact_immediate
 #[derive(Debug)]
 pub struct LogRedactor {
     /// Secret values to redact (sorted by length descending for greedy matching)

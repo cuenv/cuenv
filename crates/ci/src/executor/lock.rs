@@ -96,6 +96,18 @@ impl Default for LockConfig {
 ///
 /// Provides file-based locking for concurrency groups. Locks are automatically
 /// released when the guard is dropped.
+///
+/// # Stale Lock Detection
+///
+/// Locks are considered stale if their age (based on the `acquired_at` timestamp
+/// stored in the lock file) exceeds the configured `stale_threshold`. This approach
+/// has a limitation: if the lock holder process crashes without releasing the lock,
+/// the staleness is determined by the original acquisition time, not by process
+/// liveness. This means a lock may be held longer than expected if the holder
+/// process hangs but doesn't crash.
+///
+/// For truly distributed scenarios, consider integrating with a proper distributed
+/// lock service (e.g., etcd, Redis, or cloud-native locking APIs).
 #[derive(Debug)]
 pub struct ConcurrencyLock {
     config: LockConfig,
