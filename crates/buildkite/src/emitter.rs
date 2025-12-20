@@ -4,7 +4,7 @@
 
 use crate::schema::{AgentRules, BlockStep, CommandStep, CommandValue, DependsOn, Pipeline, Step};
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
-use cuenv_ci::ir::{IntermediateRepresentation, OutputType, Task};
+use cuenv_ci::ir::{IntermediateRepresentation, OutputType, Runtime, Task};
 use std::collections::HashMap;
 
 /// Buildkite pipeline emitter
@@ -68,7 +68,7 @@ impl BuildkiteEmitter {
                 approval_keys.insert(task.id.clone(), approval_key);
             }
 
-            let command_step = self.build_command_step(task, &approval_keys);
+            let command_step = self.build_command_step(task, ir, &approval_keys);
             steps.push(Step::Command(Box::new(command_step)));
         }
 
@@ -82,13 +82,30 @@ impl BuildkiteEmitter {
     fn build_command_step(
         &self,
         task: &Task,
+        ir: &IntermediateRepresentation,
         approval_keys: &HashMap<String, String>,
     ) -> CommandStep {
         let label = self.format_label(&task.id, task.deployment);
 
-        // Wrap command with cuenv task - this handles environment setup,
-        // secret resolution, and runtime activation internally
-        let command = Some(CommandValue::Single(format!("cuenv task {}", task.id)));
+        // Build the command, wrapping with Nix setup if task has a runtime
+        let base_command = format!("cuenv task {}", task.id);
+        let command = if let Some(runtime_id) = &task.runtime {
+            // Look up the runtime definition in the IR
+            if let Some(runtime) = ir.runtimes.iter().find(|r| r.id == *runtime_id) {
+                // Generate Nix-wrapped command with bootstrap
+                let setup = Self::generate_nix_setup(runtime);
+                Some(CommandValue::Single(format!(
+                    "{}\nnix develop {}#{} --command {}",
+                    setup, runtime.flake, runtime.output, base_command
+                )))
+            } else {
+                // Runtime not found - fall back to plain command
+                Some(CommandValue::Single(base_command))
+            }
+        } else {
+            // No runtime - assume cuenv is available on the agent
+            Some(CommandValue::Single(base_command))
+        };
 
         // Environment variables are handled by cuenv task, but we still pass
         // through any orchestrator-level env vars that might be needed
@@ -188,6 +205,19 @@ impl BuildkiteEmitter {
             task_id.to_string()
         }
     }
+
+    /// Generate Nix bootstrap script for a runtime
+    ///
+    /// This script ensures Nix is installed and available. With proper Cachix
+    /// configuration, subsequent `nix develop` commands will be fast cache hits.
+    fn generate_nix_setup(_runtime: &Runtime) -> String {
+        r"# Nix bootstrap (fast with cachix)
+if ! command -v nix &> /dev/null; then
+  curl -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none
+  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+fi"
+        .to_string()
+    }
 }
 
 impl Emitter for BuildkiteEmitter {
@@ -241,7 +271,8 @@ impl Emitter for BuildkiteEmitter {
 mod tests {
     use super::*;
     use cuenv_ci::ir::{
-        CachePolicy, OutputDeclaration, PipelineMetadata, ResourceRequirements, SecretConfig,
+        CachePolicy, OutputDeclaration, PipelineMetadata, PurityMode, ResourceRequirements,
+        Runtime, SecretConfig,
     };
 
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
@@ -434,5 +465,57 @@ mod tests {
         let emitter = BuildkiteEmitter::new();
         assert_eq!(emitter.format_name(), "buildkite");
         assert_eq!(emitter.file_extension(), "yml");
+    }
+
+    #[test]
+    fn test_with_nix_runtime() {
+        let emitter = BuildkiteEmitter::new();
+
+        // Create a task that references a Nix runtime
+        let mut task = make_task("build", vec!["cargo", "build"]);
+        task.runtime = Some("nix-rust".to_string());
+
+        // Create IR with runtime definition
+        let mut ir = make_ir(vec![task]);
+        ir.runtimes.push(Runtime {
+            id: "nix-rust".to_string(),
+            flake: "github:NixOS/nixpkgs/nixos-unstable".to_string(),
+            output: "devShells.x86_64-linux.default".to_string(),
+            system: "x86_64-linux".to_string(),
+            digest: "sha256:abc123".to_string(),
+            purity: PurityMode::Strict,
+        });
+
+        let yaml = emitter.emit(&ir).unwrap();
+
+        // Should contain Nix bootstrap
+        assert!(yaml.contains("install.determinate.systems/nix"));
+        assert!(yaml.contains("nix-daemon.sh"));
+
+        // Should contain nix develop command with flake reference
+        assert!(yaml.contains("nix develop"));
+        assert!(yaml.contains("github:NixOS/nixpkgs/nixos-unstable"));
+        assert!(yaml.contains("devShells.x86_64-linux.default"));
+
+        // Should wrap cuenv task
+        assert!(yaml.contains("cuenv task build"));
+    }
+
+    #[test]
+    fn test_without_runtime_no_nix_setup() {
+        let emitter = BuildkiteEmitter::new();
+
+        // Task without runtime
+        let task = make_task("build", vec!["cargo", "build"]);
+        let ir = make_ir(vec![task]);
+
+        let yaml = emitter.emit(&ir).unwrap();
+
+        // Should NOT contain Nix bootstrap
+        assert!(!yaml.contains("install.determinate.systems/nix"));
+        assert!(!yaml.contains("nix develop"));
+
+        // Should just have plain cuenv task
+        assert!(yaml.contains("cuenv task build"));
     }
 }
