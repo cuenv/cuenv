@@ -2,4 +2,6 @@
 # This generates a dynamic pipeline based on affected tasks
 steps:
   - label: ":pipeline: Generate Pipeline"
-    command: cuenv ci --format buildkite | buildkite-agent pipeline upload
+    command: |
+      nix build .#cuenv
+      ./result/bin/cuenv ci --format buildkite | buildkite-agent pipeline upload
