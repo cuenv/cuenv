@@ -80,6 +80,10 @@ impl ExecSecretResolver {
 
 #[async_trait]
 impl SecretResolver for ExecSecretResolver {
+    fn provider_name(&self) -> &'static str {
+        "exec"
+    }
+
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
         // Try to parse source as JSON ExecSecretConfig
         if let Ok(config) = serde_json::from_str::<ExecSecretConfig>(&spec.source) {
