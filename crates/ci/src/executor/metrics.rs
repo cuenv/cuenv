@@ -1,11 +1,12 @@
 //! Cache Metrics
 //!
-//! Provides metrics collection for cache operations.
-//! Metrics are exposed in a format compatible with Prometheus/OpenTelemetry.
+//! Provides metrics collection for cache operations and task execution.
+//! Metrics are exposed in formats compatible with Prometheus and OpenTelemetry.
 
 use crate::ir::CachePolicy;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Cache metrics collector
 #[derive(Debug, Default)]
@@ -24,6 +25,32 @@ pub struct CacheMetrics {
     check_latency_us: AtomicU64,
     /// Total cache checks
     check_count: AtomicU64,
+    /// Task execution durations (microseconds)
+    task_durations: TaskDurations,
+    /// Runtime materialization durations (microseconds)
+    runtime_durations: RuntimeDurations,
+}
+
+/// Task execution duration tracking
+#[derive(Debug, Default)]
+struct TaskDurations {
+    /// Total execution time across all tasks (microseconds)
+    total_us: AtomicU64,
+    /// Number of tasks executed
+    count: AtomicU64,
+    /// Per-task durations (task_id -> duration_us)
+    per_task: RwLock<HashMap<String, u64>>,
+}
+
+/// Runtime materialization duration tracking
+#[derive(Debug, Default)]
+struct RuntimeDurations {
+    /// Total materialization time (microseconds)
+    total_us: AtomicU64,
+    /// Number of runtimes materialized
+    count: AtomicU64,
+    /// Per-runtime durations (runtime_id -> duration_us)
+    per_runtime: RwLock<HashMap<String, u64>>,
 }
 
 /// Counters by cache policy
@@ -99,6 +126,76 @@ impl CacheMetrics {
     pub fn record_check_latency(&self, latency_us: u64) {
         self.check_latency_us.fetch_add(latency_us, Ordering::Relaxed);
         self.check_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record task execution duration
+    pub fn record_task_duration(&self, task_id: &str, duration_ms: u64) {
+        let duration_us = duration_ms * 1000;
+        self.task_durations.total_us.fetch_add(duration_us, Ordering::Relaxed);
+        self.task_durations.count.fetch_add(1, Ordering::Relaxed);
+
+        if let Ok(mut map) = self.task_durations.per_task.write() {
+            map.insert(task_id.to_string(), duration_us);
+        }
+
+        tracing::debug!(
+            task = %task_id,
+            duration_ms = duration_ms,
+            metric = "cuenv_task_duration_seconds",
+            "Task duration recorded"
+        );
+    }
+
+    /// Record runtime materialization duration
+    pub fn record_runtime_materialization(&self, runtime_id: &str, duration_ms: u64) {
+        let duration_us = duration_ms * 1000;
+        self.runtime_durations.total_us.fetch_add(duration_us, Ordering::Relaxed);
+        self.runtime_durations.count.fetch_add(1, Ordering::Relaxed);
+
+        if let Ok(mut map) = self.runtime_durations.per_runtime.write() {
+            map.insert(runtime_id.to_string(), duration_us);
+        }
+
+        tracing::debug!(
+            runtime = %runtime_id,
+            duration_ms = duration_ms,
+            metric = "cuenv_runtime_materialization_seconds",
+            "Runtime materialization recorded"
+        );
+    }
+
+    /// Get total task execution time in milliseconds
+    #[must_use]
+    pub fn total_task_time_ms(&self) -> u64 {
+        self.task_durations.total_us.load(Ordering::Relaxed) / 1000
+    }
+
+    /// Get number of tasks executed
+    #[must_use]
+    pub fn task_count(&self) -> u64 {
+        self.task_durations.count.load(Ordering::Relaxed)
+    }
+
+    /// Get average task duration in milliseconds
+    #[must_use]
+    pub fn avg_task_duration_ms(&self) -> u64 {
+        let count = self.task_durations.count.load(Ordering::Relaxed);
+        if count == 0 {
+            return 0;
+        }
+        self.task_durations.total_us.load(Ordering::Relaxed) / count / 1000
+    }
+
+    /// Get total runtime materialization time in milliseconds
+    #[must_use]
+    pub fn total_runtime_time_ms(&self) -> u64 {
+        self.runtime_durations.total_us.load(Ordering::Relaxed) / 1000
+    }
+
+    /// Get number of runtimes materialized
+    #[must_use]
+    pub fn runtime_count(&self) -> u64 {
+        self.runtime_durations.count.load(Ordering::Relaxed)
     }
 
     /// Get total hits for a policy
@@ -240,6 +337,32 @@ impl CacheMetrics {
         output.push_str(&format!(
             "cuenv_cache_bytes_uploaded_total {}\n",
             self.bytes_uploaded.load(Ordering::Relaxed)
+        ));
+
+        // Task execution metrics
+        output.push_str("# HELP cuenv_task_duration_seconds_total Total task execution time in seconds\n");
+        output.push_str("# TYPE cuenv_task_duration_seconds_total counter\n");
+        let task_total_secs = self.task_durations.total_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        output.push_str(&format!("cuenv_task_duration_seconds_total {task_total_secs:.3}\n"));
+
+        output.push_str("# HELP cuenv_tasks_executed_total Total number of tasks executed\n");
+        output.push_str("# TYPE cuenv_tasks_executed_total counter\n");
+        output.push_str(&format!(
+            "cuenv_tasks_executed_total {}\n",
+            self.task_durations.count.load(Ordering::Relaxed)
+        ));
+
+        // Runtime materialization metrics
+        output.push_str("# HELP cuenv_runtime_materialization_seconds_total Total runtime materialization time in seconds\n");
+        output.push_str("# TYPE cuenv_runtime_materialization_seconds_total counter\n");
+        let runtime_total_secs = self.runtime_durations.total_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        output.push_str(&format!("cuenv_runtime_materialization_seconds_total {runtime_total_secs:.3}\n"));
+
+        output.push_str("# HELP cuenv_runtimes_materialized_total Total number of runtimes materialized\n");
+        output.push_str("# TYPE cuenv_runtimes_materialized_total counter\n");
+        output.push_str(&format!(
+            "cuenv_runtimes_materialized_total {}\n",
+            self.runtime_durations.count.load(Ordering::Relaxed)
         ));
 
         output

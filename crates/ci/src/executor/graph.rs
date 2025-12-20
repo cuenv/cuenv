@@ -217,6 +217,87 @@ impl CITaskGraph {
             .map(|(_, n)| n.id.as_str())
             .collect()
     }
+
+    /// Propagate cache_policy: disabled to tasks that transitively depend on deployment tasks
+    ///
+    /// According to PRD v1.3, tasks depending on deployments should inherit
+    /// cache_policy: disabled for that execution to ensure deployment ordering
+    /// is always respected.
+    ///
+    /// # Returns
+    /// List of task IDs that had their cache policy changed
+    pub fn propagate_deployment_cache_policy(&mut self) -> Vec<String> {
+        use crate::ir::CachePolicy;
+        use petgraph::visit::Dfs;
+
+        let mut changed = Vec::new();
+
+        // Find all deployment task indices
+        let deployment_indices: Vec<NodeIndex> = self
+            .graph
+            .node_indices()
+            .filter(|&idx| self.graph[idx].task.deployment)
+            .collect();
+
+        // For each deployment task, traverse all descendants and mark them as disabled
+        for deploy_idx in deployment_indices {
+            // Use DFS to find all tasks that depend on this deployment
+            // We need to traverse in reverse direction (dependents of deployment)
+            let mut dfs = Dfs::new(&self.graph, deploy_idx);
+            while let Some(node_idx) = dfs.next(&self.graph) {
+                // Skip the deployment task itself (already marked disabled by validation)
+                if node_idx == deploy_idx {
+                    continue;
+                }
+
+                let node = &mut self.graph[node_idx];
+                if node.task.cache_policy != CachePolicy::Disabled {
+                    tracing::debug!(
+                        task = %node.id,
+                        reason = "depends on deployment task",
+                        "Setting cache_policy to disabled"
+                    );
+                    node.task.cache_policy = CachePolicy::Disabled;
+                    changed.push(node.id.clone());
+                }
+            }
+        }
+
+        // Deduplicate (task may depend on multiple deployment tasks)
+        changed.sort();
+        changed.dedup();
+
+        if !changed.is_empty() {
+            tracing::info!(
+                count = changed.len(),
+                tasks = ?changed,
+                "Disabled caching for tasks depending on deployments"
+            );
+        }
+
+        changed
+    }
+
+    /// Check if a task transitively depends on any deployment task
+    #[must_use]
+    pub fn depends_on_deployment(&self, task_id: &str) -> bool {
+        use petgraph::algo::has_path_connecting;
+
+        let Some(&task_idx) = self.id_to_index.get(task_id) else {
+            return false;
+        };
+
+        // Check if there's a path from any deployment task to this task
+        for node_idx in self.graph.node_indices() {
+            if self.graph[node_idx].task.deployment && node_idx != task_idx {
+                if has_path_connecting(&self.graph, node_idx, task_idx, None) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
 }
 
 #[cfg(test)]
