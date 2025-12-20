@@ -22,8 +22,9 @@ pub trait SecretResolver: Send + Sync {
     /// * `name` - The logical name of the secret
     /// * `config` - Configuration specifying the source
     ///
-    /// # Returns
-    /// The secret value, or an error if resolution fails
+    /// # Errors
+    ///
+    /// Returns `SecretError` if the secret cannot be resolved.
     fn resolve(&self, name: &str, config: &SecretConfig) -> Result<String, SecretError>;
 }
 
@@ -98,6 +99,10 @@ impl CIResolvedSecrets {
     }
 
     /// Resolve secrets with salt rotation support using CI IR types
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecretError` if any secret cannot be resolved.
     pub fn from_env_with_salt_config(
         secrets: &HashMap<String, SecretConfig>,
         salt_config: &SaltConfig,
@@ -221,6 +226,10 @@ impl std::ops::Deref for CIResolvedSecrets {
 /// Resolve secrets for all tasks in an IR
 ///
 /// Returns a map of `task_id` -> `CIResolvedSecrets`
+///
+/// # Errors
+///
+/// Returns `SecretError` if any secret cannot be resolved.
 pub fn resolve_all_task_secrets(
     tasks: &[crate::ir::Task],
     salt: Option<&str>,
@@ -398,7 +407,7 @@ mod tests {
 
     #[test]
     fn test_mock_resolver() {
-        let resolver = MockSecretResolver::new()
+        let mock_resolver = MockSecretResolver::new()
             .with_secret("API_KEY_SOURCE", "mock_api_key_value")
             .with_secret("DB_PASSWORD_SOURCE", "mock_db_password");
 
@@ -414,19 +423,20 @@ mod tests {
         ]);
 
         let salt_config = SaltConfig::new(Some("test-salt".to_string()));
-        let resolved =
-            CIResolvedSecrets::resolve_with_resolver(&resolver, &secrets, &salt_config).unwrap();
+        let result =
+            CIResolvedSecrets::resolve_with_resolver(&mock_resolver, &secrets, &salt_config)
+                .unwrap();
 
         assert_eq!(
-            resolved.values().get("api_key"),
+            result.values().get("api_key"),
             Some(&"mock_api_key_value".to_string())
         );
         assert_eq!(
-            resolved.values().get("db_password"),
+            result.values().get("db_password"),
             Some(&"mock_db_password".to_string())
         );
-        assert!(resolved.fingerprints().contains_key("api_key"));
-        assert!(!resolved.fingerprints().contains_key("db_password"));
+        assert!(result.fingerprints().contains_key("api_key"));
+        assert!(!result.fingerprints().contains_key("db_password"));
     }
 
     #[test]

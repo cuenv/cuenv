@@ -217,8 +217,9 @@ impl ConcurrencyLock {
 
     /// Try to acquire lock without blocking
     ///
-    /// # Returns
-    /// Ok if lock acquired, Err with details if not
+    /// # Errors
+    ///
+    /// Returns `LockError` if lock cannot be acquired or lock directory cannot be created.
     pub fn try_acquire_sync(&self, group: &str, task_id: &str) -> Result<LockGuard, LockError> {
         fs::create_dir_all(&self.config.lock_dir).map_err(LockError::DirectoryCreation)?;
 

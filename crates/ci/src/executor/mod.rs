@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    fn make_task(id: &str, deps: Vec<&str>) -> IRTask {
+    fn make_task(id: &str, deps: &[&str]) -> IRTask {
         IRTask {
             id: id.to_string(),
             runtime: None,
@@ -466,7 +466,8 @@ mod tests {
             let resolved = CIResolvedSecrets::from_env(&secret_configs, Some("test-salt")).unwrap();
             secrets.insert("task1".to_string(), resolved);
 
-            let fingerprints = executor.extract_fingerprints(&secrets);
+            let _ = executor; // silence unused warning
+            let fingerprints = CIExecutor::extract_fingerprints(&secrets);
 
             assert!(fingerprints.contains_key("task1"));
             assert!(fingerprints["task1"].contains_key("api_key"));

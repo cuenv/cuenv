@@ -135,6 +135,10 @@ impl GarbageCollector {
     }
 
     /// Run garbage collection
+    ///
+    /// # Errors
+    ///
+    /// Returns `GCError` if garbage collection fails.
     pub fn run(&self) -> Result<GCStats, GCError> {
         let start = std::time::Instant::now();
         let mut stats = GCStats::default();
@@ -304,11 +308,19 @@ impl Default for GarbageCollector {
 }
 
 /// Convenience function to run GC with default settings
+///
+/// # Errors
+///
+/// Returns `GCError` if garbage collection fails.
 pub fn run_gc(cache_dir: &Path) -> Result<GCStats, GCError> {
     GarbageCollector::new().cache_dir(cache_dir).run()
 }
 
 /// Run GC in dry-run mode to see what would be deleted
+///
+/// # Errors
+///
+/// Returns `GCError` if garbage collection preview fails.
 pub fn preview_gc(cache_dir: &Path) -> Result<GCStats, GCError> {
     GarbageCollector::new().cache_dir(cache_dir).dry_run().run()
 }

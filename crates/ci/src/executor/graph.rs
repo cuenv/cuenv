@@ -306,7 +306,7 @@ mod tests {
     use super::*;
     use crate::ir::{CachePolicy, Task};
 
-    fn make_task(id: &str, deps: Vec<&str>) -> Task {
+    fn make_task(id: &str, deps: &[&str]) -> Task {
         Task {
             id: id.to_string(),
             runtime: None,
@@ -339,10 +339,7 @@ mod tests {
 
     #[test]
     fn test_simple_graph() {
-        let ir = make_ir(vec![
-            make_task("build", vec![]),
-            make_task("test", vec!["build"]),
-        ]);
+        let ir = make_ir(vec![make_task("build", &[]), make_task("test", &["build"])]);
 
         let graph = CITaskGraph::from_ir(&ir).unwrap();
         assert_eq!(graph.task_count(), 2);
@@ -353,9 +350,9 @@ mod tests {
     fn test_parallel_groups_linear() {
         // build -> test -> deploy (all sequential)
         let ir = make_ir(vec![
-            make_task("build", vec![]),
-            make_task("test", vec!["build"]),
-            make_task("deploy", vec!["test"]),
+            make_task("build", &[]),
+            make_task("test", &["build"]),
+            make_task("deploy", &["test"]),
         ]);
 
         let graph = CITaskGraph::from_ir(&ir).unwrap();
@@ -372,10 +369,10 @@ mod tests {
         // build -> test1 -\
         //       -> test2 -/-> deploy
         let ir = make_ir(vec![
-            make_task("build", vec![]),
-            make_task("test1", vec!["build"]),
-            make_task("test2", vec!["build"]),
-            make_task("deploy", vec!["test1", "test2"]),
+            make_task("build", &[]),
+            make_task("test1", &["build"]),
+            make_task("test2", &["build"]),
+            make_task("deploy", &["test1", "test2"]),
         ]);
 
         let graph = CITaskGraph::from_ir(&ir).unwrap();
@@ -390,9 +387,9 @@ mod tests {
     #[test]
     fn test_cycle_detection() {
         let ir = make_ir(vec![
-            make_task("a", vec!["c"]),
-            make_task("b", vec!["a"]),
-            make_task("c", vec!["b"]),
+            make_task("a", &["c"]),
+            make_task("b", &["a"]),
+            make_task("c", &["b"]),
         ]);
 
         let result = CITaskGraph::from_ir(&ir);
@@ -401,7 +398,7 @@ mod tests {
 
     #[test]
     fn test_missing_dependency() {
-        let ir = make_ir(vec![make_task("test", vec!["nonexistent"])]);
+        let ir = make_ir(vec![make_task("test", &["nonexistent"])]);
 
         let result = CITaskGraph::from_ir(&ir);
         assert!(matches!(result, Err(GraphError::MissingDependency { .. })));
@@ -409,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_digest_computation() {
-        let ir = make_ir(vec![make_task("build", vec![])]);
+        let ir = make_ir(vec![make_task("build", &[])]);
 
         let mut graph = CITaskGraph::from_ir(&ir).unwrap();
         graph.compute_digests(&ir, &HashMap::new(), None);
@@ -423,9 +420,9 @@ mod tests {
     fn test_independent_tasks_same_group() {
         // Three independent tasks should all be in level 0
         let ir = make_ir(vec![
-            make_task("task1", vec![]),
-            make_task("task2", vec![]),
-            make_task("task3", vec![]),
+            make_task("task1", &[]),
+            make_task("task2", &[]),
+            make_task("task3", &[]),
         ]);
 
         let graph = CITaskGraph::from_ir(&ir).unwrap();

@@ -245,6 +245,7 @@ impl CacheMetrics {
 
     /// Calculate cache hit rate (0.0 - 1.0)
     #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for hit rate calculation
     pub fn hit_rate(&self) -> f64 {
         let total_hits: u64 = [
             CachePolicy::Normal,
@@ -275,6 +276,8 @@ impl CacheMetrics {
 
     /// Export metrics in Prometheus format
     #[must_use]
+    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for metrics export
+    #[allow(clippy::too_many_lines)] // Prometheus format requires many lines
     pub fn to_prometheus(&self) -> String {
         use std::fmt::Write;
 
@@ -517,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // Comparing to exact 0.0 literal is safe
     fn test_hit_rate_zero() {
         let metrics = CacheMetrics::new();
         assert_eq!(metrics.hit_rate(), 0.0);
