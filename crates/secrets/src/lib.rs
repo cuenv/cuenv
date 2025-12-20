@@ -13,6 +13,12 @@ pub use fingerprint::compute_secret_fingerprint;
 pub use resolved::ResolvedSecrets;
 pub use salt::SaltConfig;
 
+// Re-export resolvers for convenience
+pub use resolvers::{
+    AwsResolver, AwsSecretConfig, EnvSecretResolver, ExecSecretResolver, GcpResolver,
+    GcpSecretConfig, OnePasswordConfig, OnePasswordResolver, VaultResolver, VaultSecretConfig,
+};
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
