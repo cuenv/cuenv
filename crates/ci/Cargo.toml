@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 cuenv-core = { workspace = true }
+cuenv-secrets = { workspace = true }
 cuengine = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

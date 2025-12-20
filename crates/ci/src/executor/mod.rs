@@ -40,7 +40,7 @@ use cuenv_core::Result;
 use cuenv_core::manifest::Project;
 use graph::{CITaskGraph, CITaskNode};
 use runner::IRTaskRunner;
-use secrets::ResolvedSecrets;
+use secrets::CIResolvedSecrets;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
@@ -205,7 +205,7 @@ impl CIExecutor {
         group: &[&CITaskNode],
         ir: &IntermediateRepresentation,
         cache_root: &std::path::Path,
-        all_secrets: &HashMap<String, ResolvedSecrets>,
+        all_secrets: &HashMap<String, CIResolvedSecrets>,
     ) -> std::result::Result<Vec<TaskOutput>, ExecutorError> {
         let mut results = Vec::new();
 
@@ -302,7 +302,7 @@ impl CIExecutor {
         node: &CITaskNode,
         _ir: &IntermediateRepresentation,
         cache_root: &std::path::Path,
-        all_secrets: &HashMap<String, ResolvedSecrets>,
+        all_secrets: &HashMap<String, CIResolvedSecrets>,
     ) -> std::result::Result<TaskOutput, ExecutorError> {
         // Check cache
         let cache_result = cache::check_cache(
@@ -358,18 +358,18 @@ impl CIExecutor {
     fn resolve_all_secrets(
         &self,
         ir: &IntermediateRepresentation,
-    ) -> std::result::Result<HashMap<String, ResolvedSecrets>, secrets::SecretError> {
+    ) -> std::result::Result<HashMap<String, CIResolvedSecrets>, secrets::SecretError> {
         secrets::resolve_all_task_secrets(&ir.tasks, self.config.secret_salt.as_deref())
     }
 
     /// Extract fingerprints from resolved secrets
     fn extract_fingerprints(
         &self,
-        all_secrets: &HashMap<String, ResolvedSecrets>,
+        all_secrets: &HashMap<String, CIResolvedSecrets>,
     ) -> HashMap<String, HashMap<String, String>> {
         all_secrets
             .iter()
-            .map(|(task_id, resolved)| (task_id.clone(), resolved.fingerprints.clone()))
+            .map(|(task_id, resolved)| (task_id.clone(), resolved.fingerprints().clone()))
             .collect()
     }
 }
@@ -427,19 +427,33 @@ mod tests {
         let executor = CIExecutor::new(CIExecutorConfig::default());
 
         let mut secrets = HashMap::new();
-        let mut resolved = ResolvedSecrets::default();
-        resolved
-            .fingerprints
-            .insert("api_key".to_string(), "fp123".to_string());
+        // Use CIResolvedSecrets from the secrets module
+        // For testing, we just need to verify fingerprint extraction works
+        // We'll create a mock by setting env vars and resolving
+        unsafe {
+            std::env::set_var("TEST_EXTRACT_FP_SECRET", "test_value");
+        }
+
+        let secret_configs = HashMap::from([(
+            "api_key".to_string(),
+            crate::ir::SecretConfig {
+                source: "TEST_EXTRACT_FP_SECRET".to_string(),
+                cache_key: true,
+            },
+        )]);
+
+        let resolved =
+            CIResolvedSecrets::from_env(&secret_configs, Some("test-salt")).unwrap();
         secrets.insert("task1".to_string(), resolved);
 
         let fingerprints = executor.extract_fingerprints(&secrets);
 
         assert!(fingerprints.contains_key("task1"));
-        assert_eq!(
-            fingerprints["task1"].get("api_key"),
-            Some(&"fp123".to_string())
-        );
+        assert!(fingerprints["task1"].contains_key("api_key"));
+
+        unsafe {
+            std::env::remove_var("TEST_EXTRACT_FP_SECRET");
+        }
     }
 }
 

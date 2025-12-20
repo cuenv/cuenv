@@ -988,6 +988,7 @@ dependencies = [
  "cuengine",
  "cuenv-core",
  "cuenv-events",
+ "cuenv-secrets",
  "glob",
  "hex",
  "miette",
@@ -1024,6 +1025,7 @@ dependencies = [
  "cucumber",
  "cuenv-codeowners",
  "cuenv-events",
+ "cuenv-secrets",
  "cuenv-workspaces",
  "dirs 6.0.0",
  "eyre",
@@ -1152,6 +1154,22 @@ dependencies = [
  "toml_edit",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "cuenv-secrets"
+version = "0.15.7"
+dependencies = [
+ "async-trait",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
 ]
 
 [[package]]

@@ -1,0 +1,88 @@
+//! Environment variable secret resolver
+
+use crate::{SecretError, SecretResolver, SecretSpec};
+use async_trait::async_trait;
+
+/// Resolves secrets from environment variables
+///
+/// The `source` field in [`SecretSpec`] is interpreted as the environment variable name.
+#[derive(Debug, Clone, Default)]
+pub struct EnvSecretResolver;
+
+impl EnvSecretResolver {
+    /// Create a new environment variable resolver
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl SecretResolver for EnvSecretResolver {
+    async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
+        std::env::var(&spec.source).map_err(|_| SecretError::NotFound {
+            name: name.to_string(),
+            secret_source: spec.source.clone(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn test_resolve_from_env() {
+        // SAFETY: Tests run single-threaded and we clean up after
+        unsafe {
+            std::env::set_var("TEST_SECRET_ENV_1", "value1");
+        }
+
+        let resolver = EnvSecretResolver::new();
+        let spec = SecretSpec::new("TEST_SECRET_ENV_1");
+        let result = resolver.resolve("secret1", &spec).await;
+
+        assert_eq!(result.unwrap(), "value1");
+
+        // Cleanup
+        unsafe {
+            std::env::remove_var("TEST_SECRET_ENV_1");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_missing_env_var() {
+        let resolver = EnvSecretResolver::new();
+        let spec = SecretSpec::new("NONEXISTENT_ENV_VAR_12345");
+        let result = resolver.resolve("missing", &spec).await;
+
+        assert!(matches!(result, Err(SecretError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_all() {
+        // SAFETY: Tests run single-threaded and we clean up after
+        unsafe {
+            std::env::set_var("TEST_SECRET_ENV_2", "value2");
+            std::env::set_var("TEST_SECRET_ENV_3", "value3");
+        }
+
+        let resolver = EnvSecretResolver::new();
+        let secrets = HashMap::from([
+            ("secret2".to_string(), SecretSpec::new("TEST_SECRET_ENV_2")),
+            ("secret3".to_string(), SecretSpec::new("TEST_SECRET_ENV_3")),
+        ]);
+
+        let result = resolver.resolve_all(&secrets).await.unwrap();
+
+        assert_eq!(result.get("secret2"), Some(&"value2".to_string()));
+        assert_eq!(result.get("secret3"), Some(&"value3".to_string()));
+
+        // Cleanup
+        unsafe {
+            std::env::remove_var("TEST_SECRET_ENV_2");
+            std::env::remove_var("TEST_SECRET_ENV_3");
+        }
+    }
+}

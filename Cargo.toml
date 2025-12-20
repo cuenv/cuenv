@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/events",
+    "crates/secrets",
     "crates/core",
     "crates/dagger",
     "crates/cuengine",
@@ -33,6 +34,7 @@ categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
 cuenv-events = { path = "crates/events", version = "0.15.0" }
+cuenv-secrets = { path = "crates/secrets", version = "0.15.0" }
 cuenv-core = { path = "crates/core", version = "0.15.0" }
 cuenv-dagger = { path = "crates/dagger", version = "0.15.0" }
 cuenv-workspaces = { path = "crates/workspaces", version = "0.15.0" }
