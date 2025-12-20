@@ -11,9 +11,17 @@ use thiserror::Error;
 /// Error types for cache backend operations
 #[derive(Debug, Error)]
 pub enum BackendError {
-    /// IO error during cache operations
+    /// IO error during cache operations (generic, for #[from] compatibility)
     #[error("Cache IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// IO error with path context for better diagnostics
+    #[error("Failed to {operation} '{path}': {source}")]
+    IoWithContext {
+        operation: &'static str,
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
 
     /// Serialization error
     #[error("Serialization error: {0}")]
@@ -24,6 +32,9 @@ pub enum BackendError {
     Connection(String),
 
     /// Remote cache unavailable (gracefully degradable)
+    ///
+    /// This error indicates the cache is temporarily unavailable but execution
+    /// should continue without caching. Callers should handle this gracefully.
     #[error("Remote cache unavailable: {0}")]
     Unavailable(String),
 
@@ -38,6 +49,33 @@ pub enum BackendError {
     /// Action result not found
     #[error("Action result not found for digest: {digest}")]
     ActionNotFound { digest: String },
+}
+
+impl BackendError {
+    /// Returns true if this error indicates the cache is unavailable but
+    /// execution should continue without caching (graceful degradation).
+    #[must_use]
+    pub fn is_gracefully_degradable(&self) -> bool {
+        matches!(
+            self,
+            BackendError::Unavailable(_)
+                | BackendError::Connection(_)
+                | BackendError::ActionNotFound { .. }
+        )
+    }
+
+    /// Create an IO error with path context
+    pub fn io_with_context(
+        operation: &'static str,
+        path: impl Into<std::path::PathBuf>,
+        source: std::io::Error,
+    ) -> Self {
+        BackendError::IoWithContext {
+            operation,
+            path: path.into(),
+            source,
+        }
+    }
 }
 
 /// Result type for cache backend operations
@@ -221,5 +259,52 @@ mod tests {
         assert!(!policy_allows_write(CachePolicy::Readonly));
         assert!(policy_allows_write(CachePolicy::Writeonly));
         assert!(!policy_allows_write(CachePolicy::Disabled));
+    }
+
+    #[test]
+    fn test_is_gracefully_degradable() {
+        // Transient failures should allow graceful degradation
+        assert!(BackendError::Unavailable("test".to_string()).is_gracefully_degradable());
+        assert!(BackendError::Connection("test".to_string()).is_gracefully_degradable());
+        assert!(BackendError::ActionNotFound {
+            digest: "test".to_string()
+        }
+        .is_gracefully_degradable());
+
+        // Hard failures should not allow graceful degradation
+        assert!(!BackendError::Io(std::io::Error::other("test")).is_gracefully_degradable());
+        assert!(
+            !BackendError::IoWithContext {
+                operation: "write",
+                path: std::path::PathBuf::from("/test"),
+                source: std::io::Error::other("test"),
+            }
+            .is_gracefully_degradable()
+        );
+        assert!(!BackendError::Serialization("test".to_string()).is_gracefully_degradable());
+        assert!(!BackendError::DigestMismatch {
+            expected: "a".to_string(),
+            actual: "b".to_string()
+        }
+        .is_gracefully_degradable());
+        assert!(
+            !BackendError::BlobNotFound {
+                digest: "test".to_string()
+            }
+            .is_gracefully_degradable()
+        );
+    }
+
+    #[test]
+    fn test_io_with_context() {
+        let error = BackendError::io_with_context(
+            "write",
+            "/test/path",
+            std::io::Error::other("disk full"),
+        );
+        let msg = error.to_string();
+        assert!(msg.contains("write"));
+        assert!(msg.contains("/test/path"));
+        assert!(msg.contains("disk full"));
     }
 }

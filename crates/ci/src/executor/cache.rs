@@ -23,9 +23,17 @@ use thiserror::Error;
 /// Error types for cache operations (legacy, for backward compatibility)
 #[derive(Debug, Error)]
 pub enum CacheError {
-    /// IO error during cache operations
+    /// IO error during cache operations (generic)
     #[error("Cache IO error: {0}")]
     Io(#[from] io::Error),
+
+    /// IO error with path context for better diagnostics
+    #[error("Failed to {operation} '{path}': {source}")]
+    IoWithContext {
+        operation: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
 
     /// JSON serialization error
     #[error("Cache serialization error: {0}")]
@@ -34,6 +42,21 @@ pub enum CacheError {
     /// Backend error
     #[error("Backend error: {0}")]
     Backend(#[from] BackendError),
+}
+
+impl CacheError {
+    /// Create an IO error with path context
+    pub fn io_with_context(
+        operation: &'static str,
+        path: impl Into<PathBuf>,
+        source: io::Error,
+    ) -> Self {
+        CacheError::IoWithContext {
+            operation,
+            path: path.into(),
+            source,
+        }
+    }
 }
 
 /// Result of a cache lookup
@@ -177,7 +200,8 @@ pub fn store_result(
     match effective_policy {
         CachePolicy::Normal | CachePolicy::Writeonly => {
             let cache_path = cache_path_for_digest(cache_root, digest);
-            fs::create_dir_all(&cache_path)?;
+            fs::create_dir_all(&cache_path)
+                .map_err(|e| CacheError::io_with_context("create directory", &cache_path, e))?;
 
             // Write metadata
             let meta = CacheMetadata {
@@ -190,17 +214,23 @@ pub fn store_result(
             };
             let meta_path = cache_path.join("metadata.json");
             let meta_json = serde_json::to_string_pretty(&meta)?;
-            fs::write(&meta_path, meta_json)?;
+            fs::write(&meta_path, &meta_json)
+                .map_err(|e| CacheError::io_with_context("write", &meta_path, e))?;
 
             // Write logs
             let logs_dir = cache_path.join("logs");
-            fs::create_dir_all(&logs_dir)?;
+            fs::create_dir_all(&logs_dir)
+                .map_err(|e| CacheError::io_with_context("create directory", &logs_dir, e))?;
 
             if let Some(stdout) = &logs.stdout {
-                fs::write(logs_dir.join("stdout.log"), stdout)?;
+                let stdout_path = logs_dir.join("stdout.log");
+                fs::write(&stdout_path, stdout)
+                    .map_err(|e| CacheError::io_with_context("write", &stdout_path, e))?;
             }
             if let Some(stderr) = &logs.stderr {
-                fs::write(logs_dir.join("stderr.log"), stderr)?;
+                let stderr_path = logs_dir.join("stderr.log");
+                fs::write(&stderr_path, stderr)
+                    .map_err(|e| CacheError::io_with_context("write", &stderr_path, e))?;
             }
 
             tracing::debug!(
@@ -229,7 +259,8 @@ pub fn store_result(
 /// Returns error if the cache entry doesn't exist or can't be read
 pub fn load_metadata(cache_path: &Path) -> Result<CacheMetadata, CacheError> {
     let meta_path = cache_path.join("metadata.json");
-    let content = fs::read_to_string(meta_path)?;
+    let content = fs::read_to_string(&meta_path)
+        .map_err(|e| CacheError::io_with_context("read", &meta_path, e))?;
     let meta: CacheMetadata = serde_json::from_str(&content)?;
     Ok(meta)
 }
@@ -345,7 +376,8 @@ impl CacheBackend for LocalCacheBackend {
         }
 
         let cache_path = self.cache_path(digest);
-        fs::create_dir_all(&cache_path)?;
+        fs::create_dir_all(&cache_path)
+            .map_err(|e| BackendError::io_with_context("create directory", &cache_path, e))?;
 
         // Write metadata
         let meta = CacheMetadata {
@@ -359,37 +391,49 @@ impl CacheBackend for LocalCacheBackend {
         let meta_path = cache_path.join("metadata.json");
         let meta_json = serde_json::to_string_pretty(&meta)
             .map_err(|e| BackendError::Serialization(e.to_string()))?;
-        fs::write(&meta_path, meta_json)?;
+        fs::write(&meta_path, &meta_json)
+            .map_err(|e| BackendError::io_with_context("write", &meta_path, e))?;
 
         // Write logs
         let logs_dir = cache_path.join("logs");
-        fs::create_dir_all(&logs_dir)?;
+        fs::create_dir_all(&logs_dir)
+            .map_err(|e| BackendError::io_with_context("create directory", &logs_dir, e))?;
 
         if let Some(stdout) = &entry.stdout {
-            fs::write(logs_dir.join("stdout.log"), stdout)?;
+            let stdout_path = logs_dir.join("stdout.log");
+            fs::write(&stdout_path, stdout)
+                .map_err(|e| BackendError::io_with_context("write", &stdout_path, e))?;
         }
         if let Some(stderr) = &entry.stderr {
-            fs::write(logs_dir.join("stderr.log"), stderr)?;
+            let stderr_path = logs_dir.join("stderr.log");
+            fs::write(&stderr_path, stderr)
+                .map_err(|e| BackendError::io_with_context("write", &stderr_path, e))?;
         }
 
         // Write outputs
         if !entry.outputs.is_empty() {
             let outputs_dir = self.outputs_path(digest);
-            fs::create_dir_all(&outputs_dir)?;
+            fs::create_dir_all(&outputs_dir)
+                .map_err(|e| BackendError::io_with_context("create directory", &outputs_dir, e))?;
 
             for output in &entry.outputs {
                 let output_path = outputs_dir.join(&output.path);
                 if let Some(parent) = output_path.parent() {
-                    fs::create_dir_all(parent)?;
+                    fs::create_dir_all(parent)
+                        .map_err(|e| BackendError::io_with_context("create directory", parent, e))?;
                 }
-                fs::write(&output_path, &output.data)?;
+                fs::write(&output_path, &output.data)
+                    .map_err(|e| BackendError::io_with_context("write", &output_path, e))?;
 
                 #[cfg(unix)]
                 if output.is_executable {
                     use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&output_path)?.permissions();
+                    let mut perms = fs::metadata(&output_path)
+                        .map_err(|e| BackendError::io_with_context("read metadata", &output_path, e))?
+                        .permissions();
                     perms.set_mode(perms.mode() | 0o111);
-                    fs::set_permissions(&output_path, perms)?;
+                    fs::set_permissions(&output_path, perms)
+                        .map_err(|e| BackendError::io_with_context("set permissions", &output_path, e))?;
                 }
             }
         }
@@ -419,27 +463,35 @@ impl CacheBackend for LocalCacheBackend {
         }
 
         // Walk the outputs directory and restore files
-        for entry in walkdir(&outputs_dir)? {
+        for entry in walkdir(&outputs_dir)
+            .map_err(|e| BackendError::io_with_context("read directory", &outputs_dir, e))?
+        {
             let rel_path = entry
                 .strip_prefix(&outputs_dir)
                 .map_err(|e| BackendError::Io(io::Error::other(e.to_string())))?;
 
             let dest_path = workspace.join(rel_path);
             if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent)?;
+                fs::create_dir_all(parent)
+                    .map_err(|e| BackendError::io_with_context("create directory", parent, e))?;
             }
 
-            let data = fs::read(&entry)?;
+            let data = fs::read(&entry)
+                .map_err(|e| BackendError::io_with_context("read", &entry, e))?;
             let is_executable = is_file_executable(&entry);
 
-            fs::write(&dest_path, &data)?;
+            fs::write(&dest_path, &data)
+                .map_err(|e| BackendError::io_with_context("write", &dest_path, e))?;
 
             #[cfg(unix)]
             if is_executable {
                 use std::os::unix::fs::PermissionsExt;
-                let mut perms = fs::metadata(&dest_path)?.permissions();
+                let mut perms = fs::metadata(&dest_path)
+                    .map_err(|e| BackendError::io_with_context("read metadata", &dest_path, e))?
+                    .permissions();
                 perms.set_mode(perms.mode() | 0o111);
-                fs::set_permissions(&dest_path, perms)?;
+                fs::set_permissions(&dest_path, perms)
+                    .map_err(|e| BackendError::io_with_context("set permissions", &dest_path, e))?;
             }
 
             restored.push(CacheOutput {
@@ -475,7 +527,8 @@ impl CacheBackend for LocalCacheBackend {
 
     async fn health_check(&self) -> BackendResult<()> {
         // Local cache is always available if we can create the directory
-        fs::create_dir_all(&self.cache_root)?;
+        fs::create_dir_all(&self.cache_root)
+            .map_err(|e| BackendError::io_with_context("create directory", &self.cache_root, e))?;
         Ok(())
     }
 }

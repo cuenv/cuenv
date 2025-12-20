@@ -271,6 +271,7 @@ impl RemoteCacheBackend {
                 Ok(()) => return Ok(()),
                 Err(e) => {
                     if !is_retryable(&e) {
+                        // Non-retryable errors are hard failures (auth, permission, etc.)
                         return Err(BackendError::Connection(e.to_string()));
                     }
                     last_error = Some(e);
@@ -282,10 +283,11 @@ impl RemoteCacheBackend {
             }
         }
 
-        Err(BackendError::Connection(
+        // Retries exhausted - this is a transient failure, allow graceful degradation
+        Err(BackendError::Unavailable(
             last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "Unknown error".to_string()),
+                .map(|e| format!("retries exhausted: {e}"))
+                .unwrap_or_else(|| "retries exhausted".to_string()),
         ))
     }
 
@@ -301,6 +303,7 @@ impl RemoteCacheBackend {
                 Ok(response) => return Ok(response.into_inner()),
                 Err(e) => {
                     if !is_retryable(&e) {
+                        // Non-retryable errors are hard failures (auth, permission, etc.)
                         return Err(BackendError::Connection(e.to_string()));
                     }
                     last_error = Some(e);
@@ -312,10 +315,11 @@ impl RemoteCacheBackend {
             }
         }
 
-        Err(BackendError::Connection(
+        // Retries exhausted - this is a transient failure, allow graceful degradation
+        Err(BackendError::Unavailable(
             last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "Unknown error".to_string()),
+                .map(|e| format!("retries exhausted: {e}"))
+                .unwrap_or_else(|| "retries exhausted".to_string()),
         ))
     }
 
@@ -340,6 +344,7 @@ impl RemoteCacheBackend {
                         });
                     }
                     if !is_retryable(&e) {
+                        // Non-retryable errors are hard failures (auth, permission, etc.)
                         return Err(BackendError::Connection(e.to_string()));
                     }
                     last_error = Some(e);
@@ -351,10 +356,11 @@ impl RemoteCacheBackend {
             }
         }
 
-        Err(BackendError::Connection(
+        // Retries exhausted - this is a transient failure, allow graceful degradation
+        Err(BackendError::Unavailable(
             last_error
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "Unknown error".to_string()),
+                .map(|e| format!("retries exhausted: {e}"))
+                .unwrap_or_else(|| "retries exhausted".to_string()),
         ))
     }
 
