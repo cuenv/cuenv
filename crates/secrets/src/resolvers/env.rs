@@ -19,6 +19,10 @@ impl EnvSecretResolver {
 
 #[async_trait]
 impl SecretResolver for EnvSecretResolver {
+    fn provider_name(&self) -> &'static str {
+        "env"
+    }
+
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
         std::env::var(&spec.source).map_err(|_| SecretError::NotFound {
             name: name.to_string(),

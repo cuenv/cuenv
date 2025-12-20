@@ -1,6 +1,8 @@
 //! Resolved secrets with fingerprinting support
 
-use crate::{SaltConfig, SecretError, SecretResolver, SecretSpec, compute_secret_fingerprint};
+use crate::{
+    BatchSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec, compute_secret_fingerprint,
+};
 use std::collections::HashMap;
 
 /// Resolved secrets ready for injection
@@ -73,6 +75,38 @@ impl ResolvedSecrets {
             values,
             fingerprints,
         })
+    }
+
+    /// Create from a `BatchSecrets` instance.
+    ///
+    /// This consumes the batch and converts it to the legacy format.
+    /// Note that this exposes the secret values from the secure storage.
+    #[must_use]
+    pub fn from_batch(batch: BatchSecrets) -> Self {
+        batch.into_resolved_secrets()
+    }
+
+    /// Resolve secrets using batch resolution with a resolver.
+    ///
+    /// This is the preferred method for resolving multiple secrets efficiently.
+    /// It uses the resolver's batch resolution method which may use native
+    /// batch APIs (e.g., AWS `BatchGetSecretValue`, 1Password `Secrets.ResolveAll`).
+    ///
+    /// # Arguments
+    /// * `resolver` - The secret resolver to use
+    /// * `secrets` - Map of secret names to their configuration
+    /// * `salt_config` - Salt configuration for fingerprinting
+    ///
+    /// # Errors
+    /// Returns error if a secret cannot be resolved or if salt is missing
+    /// when secrets have `cache_key: true`
+    pub async fn resolve_batch<R: SecretResolver>(
+        resolver: &R,
+        secrets: &HashMap<String, SecretSpec>,
+        salt_config: &SaltConfig,
+    ) -> Result<Self, SecretError> {
+        let batch = crate::batch::resolve_batch(resolver, secrets, salt_config).await?;
+        Ok(Self::from_batch(batch))
     }
 
     /// Check if any secrets were resolved

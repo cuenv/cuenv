@@ -1,8 +1,9 @@
 //! AWS Secrets Manager secret resolver with auto-negotiating dual-mode (HTTP + CLI)
 
-use crate::{SecretError, SecretResolver, SecretSpec};
+use crate::{SecretError, SecretResolver, SecretSpec, SecureSecret};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tokio::process::Command;
 
 #[cfg(feature = "aws")]
@@ -68,8 +69,8 @@ impl AwsResolver {
     ///
     /// If AWS credentials are available in environment, initializes HTTP client.
     /// Otherwise, CLI mode will be used.
+    #[cfg(feature = "aws")]
     pub async fn new() -> Result<Self, SecretError> {
-        #[cfg(feature = "aws")]
         let http_client = if Self::http_credentials_available() {
             let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
                 .load()
@@ -79,19 +80,27 @@ impl AwsResolver {
             None
         };
 
-        Ok(Self {
-            #[cfg(feature = "aws")]
-            http_client,
-        })
+        Ok(Self { http_client })
+    }
+
+    /// Create a new AWS resolver (CLI mode only)
+    ///
+    /// # Errors
+    ///
+    /// This function is infallible when the `aws` feature is disabled.
+    #[cfg(not(feature = "aws"))]
+    pub fn new() -> Result<Self, SecretError> {
+        Ok(Self {})
     }
 
     /// Check if HTTP credentials are available in environment
+    #[cfg(feature = "aws")]
     fn http_credentials_available() -> bool {
-        std::env::var("AWS_ACCESS_KEY_ID").is_ok()
-            && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok()
+        std::env::var("AWS_ACCESS_KEY_ID").is_ok() && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok()
     }
 
     /// Check if this resolver can use HTTP mode
+    #[allow(clippy::unused_self)] // self is used when feature is enabled
     fn can_use_http(&self) -> bool {
         #[cfg(feature = "aws")]
         {
@@ -110,10 +119,13 @@ impl AwsResolver {
         name: &str,
         config: &AwsSecretConfig,
     ) -> Result<String, SecretError> {
-        let client = self.http_client.as_ref().ok_or_else(|| SecretError::ResolutionFailed {
-            name: name.to_string(),
-            message: "HTTP client not available".to_string(),
-        })?;
+        let client = self
+            .http_client
+            .as_ref()
+            .ok_or_else(|| SecretError::ResolutionFailed {
+                name: name.to_string(),
+                message: "HTTP client not available".to_string(),
+            })?;
 
         let mut request = client.get_secret_value().secret_id(&config.secret_id);
 
@@ -125,19 +137,23 @@ impl AwsResolver {
             request = request.version_stage(version_stage);
         }
 
-        let response = request.send().await.map_err(|e| SecretError::ResolutionFailed {
-            name: name.to_string(),
-            message: format!("AWS Secrets Manager error: {e}"),
-        })?;
-
-        let secret_string = response
-            .secret_string()
-            .ok_or_else(|| SecretError::ResolutionFailed {
+        let response = request
+            .send()
+            .await
+            .map_err(|e| SecretError::ResolutionFailed {
                 name: name.to_string(),
-                message: "Secret has no string value (may be binary)".to_string(),
+                message: format!("AWS Secrets Manager error: {e}"),
             })?;
 
-        self.extract_json_key(name, secret_string, &config.json_key)
+        let secret_string =
+            response
+                .secret_string()
+                .ok_or_else(|| SecretError::ResolutionFailed {
+                    name: name.to_string(),
+                    message: "Secret has no string value (may be binary)".to_string(),
+                })?;
+
+        Self::extract_json_key(name, secret_string, config.json_key.as_ref())
     }
 
     /// Resolve using the AWS CLI
@@ -185,15 +201,14 @@ impl AwsResolver {
         }
 
         let secret_string = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        self.extract_json_key(name, &secret_string, &config.json_key)
+        Self::extract_json_key(name, &secret_string, config.json_key.as_ref())
     }
 
     /// Extract a specific key from JSON secret value
     fn extract_json_key(
-        &self,
         name: &str,
         secret_string: &str,
-        json_key: &Option<String>,
+        json_key: Option<&String>,
     ) -> Result<String, SecretError> {
         if let Some(key) = json_key {
             let parsed: serde_json::Value =
@@ -202,10 +217,12 @@ impl AwsResolver {
                     message: format!("Secret is not valid JSON: {e}"),
                 })?;
 
-            let value = parsed.get(key).ok_or_else(|| SecretError::ResolutionFailed {
-                name: name.to_string(),
-                message: format!("JSON key '{key}' not found in secret"),
-            })?;
+            let value = parsed
+                .get(key)
+                .ok_or_else(|| SecretError::ResolutionFailed {
+                    name: name.to_string(),
+                    message: format!("JSON key '{key}' not found in secret"),
+                })?;
 
             return match value {
                 serde_json::Value::String(s) => Ok(s.clone()),
@@ -231,10 +248,148 @@ impl AwsResolver {
         // Fallback to CLI
         self.resolve_cli(name, config).await
     }
+
+    /// Resolve multiple secrets using BatchGetSecretValue (HTTP mode only)
+    #[cfg(feature = "aws")]
+    async fn resolve_batch_http(
+        &self,
+        secrets: &HashMap<String, SecretSpec>,
+    ) -> Result<HashMap<String, SecureSecret>, SecretError> {
+        use futures::future::try_join_all;
+
+        let client = self
+            .http_client
+            .as_ref()
+            .ok_or_else(|| SecretError::ResolutionFailed {
+                name: "batch".to_string(),
+                message: "HTTP client not available".to_string(),
+            })?;
+
+        // Parse all configs and group by secret_id
+        // Build mapping: secret_id -> Vec<(name, config)>
+        let mut id_to_names: HashMap<String, Vec<(String, AwsSecretConfig)>> = HashMap::new();
+        for (name, spec) in secrets {
+            let config = serde_json::from_str::<AwsSecretConfig>(&spec.source)
+                .unwrap_or_else(|_| AwsSecretConfig::new(&spec.source));
+            id_to_names
+                .entry(config.secret_id.clone())
+                .or_default()
+                .push((name.clone(), config));
+        }
+
+        // Extract unique secret IDs
+        let secret_ids: Vec<String> = id_to_names.keys().cloned().collect();
+
+        // AWS BatchGetSecretValue can fetch up to 20 secrets per call
+        let mut all_values: HashMap<String, String> = HashMap::new();
+
+        for chunk in secret_ids.chunks(20) {
+            let response = client
+                .batch_get_secret_value()
+                .set_secret_id_list(Some(chunk.to_vec()))
+                .send()
+                .await
+                .map_err(|e| SecretError::ResolutionFailed {
+                    name: "batch".to_string(),
+                    message: format!("AWS BatchGetSecretValue failed: {e}"),
+                })?;
+
+            // Process successful responses
+            if let Some(values) = response.secret_values() {
+                for sv in values {
+                    if let Some(secret_string) = sv.secret_string() {
+                        // Use name or ARN as key
+                        if let Some(secret_name) = sv.name() {
+                            all_values.insert(secret_name.to_string(), secret_string.to_string());
+                        }
+                        if let Some(arn) = sv.arn() {
+                            all_values.insert(arn.to_string(), secret_string.to_string());
+                        }
+                    }
+                }
+            }
+
+            // Log any errors
+            if let Some(errors) = response.errors() {
+                for err in errors {
+                    tracing::warn!(
+                        secret_id = ?err.secret_id(),
+                        error_code = ?err.error_code(),
+                        message = ?err.message(),
+                        "Failed to retrieve secret in batch"
+                    );
+                }
+            }
+        }
+
+        // Map batch results back to original names with JSON key extraction
+        let extract_futures: Vec<_> = secrets
+            .iter()
+            .map(|(name, spec)| {
+                let name = name.clone();
+                let all_values = &all_values;
+                async move {
+                    let config = serde_json::from_str::<AwsSecretConfig>(&spec.source)
+                        .unwrap_or_else(|_| AwsSecretConfig::new(&spec.source));
+
+                    // Find the secret value by ID
+                    let secret_string = all_values.get(&config.secret_id).ok_or_else(|| {
+                        SecretError::ResolutionFailed {
+                            name: name.clone(),
+                            message: format!(
+                                "Secret '{}' not found in batch response",
+                                config.secret_id
+                            ),
+                        }
+                    })?;
+
+                    // Extract JSON key if specified
+                    let value =
+                        Self::extract_json_key(&name, secret_string, config.json_key.as_ref())?;
+                    Ok::<_, SecretError>((name, SecureSecret::new(value)))
+                }
+            })
+            .collect();
+
+        try_join_all(extract_futures)
+            .await
+            .map(|v| v.into_iter().collect())
+    }
+
+    /// Resolve multiple secrets using CLI (fallback, concurrent)
+    async fn resolve_batch_cli(
+        &self,
+        secrets: &HashMap<String, SecretSpec>,
+    ) -> Result<HashMap<String, SecureSecret>, SecretError> {
+        use futures::future::try_join_all;
+
+        let futures: Vec<_> = secrets
+            .iter()
+            .map(|(name, spec)| {
+                let name = name.clone();
+                let spec = spec.clone();
+                async move {
+                    let value = self.resolve(&name, &spec).await?;
+                    Ok::<_, SecretError>((name, SecureSecret::new(value)))
+                }
+            })
+            .collect();
+
+        try_join_all(futures).await.map(|v| v.into_iter().collect())
+    }
 }
 
 #[async_trait]
 impl SecretResolver for AwsResolver {
+    fn provider_name(&self) -> &'static str {
+        "aws"
+    }
+
+    fn supports_native_batch(&self) -> bool {
+        // AWS Secrets Manager supports BatchGetSecretValue
+        true
+    }
+
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
         // Try to parse source as JSON AwsSecretConfig
         if let Ok(config) = serde_json::from_str::<AwsSecretConfig>(&spec.source) {
@@ -244,6 +399,24 @@ impl SecretResolver for AwsResolver {
         // Fallback: treat source as a simple secret ID
         let config = AwsSecretConfig::new(&spec.source);
         self.resolve_with_config(name, &config).await
+    }
+
+    async fn resolve_batch(
+        &self,
+        secrets: &HashMap<String, SecretSpec>,
+    ) -> Result<HashMap<String, SecureSecret>, SecretError> {
+        if secrets.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Use BatchGetSecretValue if HTTP mode is available
+        #[cfg(feature = "aws")]
+        if self.http_client.is_some() {
+            return self.resolve_batch_http(secrets).await;
+        }
+
+        // Fallback to concurrent CLI calls
+        self.resolve_batch_cli(secrets).await
     }
 }
 
@@ -277,6 +450,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "aws")]
     fn test_http_credentials_check() {
         // This test just ensures the function exists and doesn't panic
         let _ = AwsResolver::http_credentials_available();

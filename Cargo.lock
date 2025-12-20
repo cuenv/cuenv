@@ -1845,11 +1845,13 @@ dependencies = [
  "aws-sdk-secretsmanager",
  "dirs 6.0.0",
  "extism",
+ "futures",
  "google-secretmanager1",
  "hex",
  "hyper-rustls 0.27.7",
  "hyper-util",
  "once_cell",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2",
@@ -6028,6 +6030,7 @@ version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
 dependencies = [
+ "serde",
  "zeroize",
 ]
 

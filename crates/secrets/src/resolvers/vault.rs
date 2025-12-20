@@ -1,11 +1,11 @@
-//! HashiCorp Vault secret resolver with auto-negotiating dual-mode (HTTP + CLI)
+//! `HashiCorp` Vault secret resolver with auto-negotiating dual-mode (HTTP + CLI)
 
 use crate::{SecretError, SecretResolver, SecretSpec};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-/// Configuration for HashiCorp Vault resolution
+/// Configuration for `HashiCorp` Vault resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultSecretConfig {
@@ -47,7 +47,7 @@ impl VaultSecretConfig {
     }
 }
 
-/// Resolves secrets from HashiCorp Vault
+/// Resolves secrets from `HashiCorp` Vault
 ///
 /// Mode is auto-negotiated based on environment:
 /// - If `VAULT_TOKEN` and `VAULT_ADDR` are set → HTTP mode
@@ -73,15 +73,20 @@ impl VaultResolver {
     ///
     /// If Vault credentials are available in environment, uses HTTP mode.
     /// Otherwise, CLI mode will be used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Vault HTTP client cannot be initialized.
     pub fn new() -> Result<Self, SecretError> {
         #[cfg(feature = "vault")]
         let client = if Self::http_credentials_available() {
             let addr =
                 std::env::var("VAULT_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8200".to_string());
-            let token = std::env::var("VAULT_TOKEN").map_err(|_| SecretError::ResolutionFailed {
-                name: "vault".to_string(),
-                message: "VAULT_TOKEN environment variable not set".to_string(),
-            })?;
+            let token =
+                std::env::var("VAULT_TOKEN").map_err(|_| SecretError::ResolutionFailed {
+                    name: "vault".to_string(),
+                    message: "VAULT_TOKEN environment variable not set".to_string(),
+                })?;
 
             Some(
                 vaultrs::client::VaultClient::new(
@@ -110,11 +115,13 @@ impl VaultResolver {
     }
 
     /// Check if HTTP credentials are available in environment
+    #[cfg(feature = "vault")]
     fn http_credentials_available() -> bool {
         std::env::var("VAULT_TOKEN").is_ok() && std::env::var("VAULT_ADDR").is_ok()
     }
 
     /// Check if this resolver can use HTTP mode
+    #[allow(clippy::unused_self)] // self is used when feature is enabled
     fn can_use_http(&self) -> bool {
         #[cfg(feature = "vault")]
         {
@@ -133,27 +140,30 @@ impl VaultResolver {
         name: &str,
         config: &VaultSecretConfig,
     ) -> Result<String, SecretError> {
-        let client = self.client.as_ref().ok_or_else(|| SecretError::ResolutionFailed {
-            name: name.to_string(),
-            message: "Vault HTTP client not initialized".to_string(),
-        })?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| SecretError::ResolutionFailed {
+                name: name.to_string(),
+                message: "Vault HTTP client not initialized".to_string(),
+            })?;
 
         // Read secret from KV v2
-        let secret: std::collections::HashMap<String, String> = vaultrs::kv2::read(
-            client,
-            &config.mount,
-            &config.path,
-        )
-        .await
-        .map_err(|e| SecretError::ResolutionFailed {
-            name: name.to_string(),
-            message: format!("Vault read error: {e}"),
-        })?;
+        let secret: std::collections::HashMap<String, String> =
+            vaultrs::kv2::read(client, &config.mount, &config.path)
+                .await
+                .map_err(|e| SecretError::ResolutionFailed {
+                    name: name.to_string(),
+                    message: format!("Vault read error: {e}"),
+                })?;
 
-        secret.get(&config.key).cloned().ok_or_else(|| SecretError::ResolutionFailed {
-            name: name.to_string(),
-            message: format!("Key '{}' not found in secret", config.key),
-        })
+        secret
+            .get(&config.key)
+            .cloned()
+            .ok_or_else(|| SecretError::ResolutionFailed {
+                name: name.to_string(),
+                message: format!("Key '{}' not found in secret", config.key),
+            })
     }
 
     /// Resolve using the vault CLI
@@ -209,6 +219,10 @@ impl VaultResolver {
 
 #[async_trait]
 impl SecretResolver for VaultResolver {
+    fn provider_name(&self) -> &'static str {
+        "vault"
+    }
+
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
         // Parse source as JSON VaultSecretConfig
         let config: VaultSecretConfig =
@@ -255,6 +269,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "vault")]
     fn test_http_credentials_check() {
         // This test just ensures the function exists and doesn't panic
         let _ = VaultResolver::http_credentials_available();
