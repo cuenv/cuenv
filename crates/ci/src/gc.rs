@@ -148,7 +148,7 @@ impl GarbageCollector {
         }
 
         // Collect all cache entries
-        let mut entries = self.scan_cache(&self.config.cache_dir)?;
+        let mut entries = Self::scan_cache(&self.config.cache_dir)?;
         stats.entries_scanned = entries.len();
 
         // Calculate current size
@@ -234,7 +234,7 @@ impl GarbageCollector {
         Ok(stats)
     }
 
-    fn scan_cache(&self, dir: &Path) -> Result<Vec<CacheEntry>, GCError> {
+    fn scan_cache(dir: &Path) -> Result<Vec<CacheEntry>, GCError> {
         let mut entries = Vec::new();
         Self::scan_dir_recursive(dir, &mut entries)?;
         Ok(entries)
