@@ -2,9 +2,7 @@
 //!
 //! Transforms cuenv IR into Buildkite pipeline YAML format.
 
-use crate::schema::{
-    AgentRules, BlockStep, CommandStep, CommandValue, DependsOn, Pipeline, Step,
-};
+use crate::schema::{AgentRules, BlockStep, CommandStep, CommandValue, DependsOn, Pipeline, Step};
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
 use cuenv_ci::ir::{IntermediateRepresentation, OutputType, Task};
 use std::collections::HashMap;
@@ -109,11 +107,7 @@ impl BuildkiteEmitter {
             .resources
             .as_ref()
             .and_then(|r| AgentRules::from_tags(r.tags.clone()))
-            .or_else(|| {
-                self.default_queue
-                    .as_ref()
-                    .map(AgentRules::with_queue)
-            });
+            .or_else(|| self.default_queue.as_ref().map(AgentRules::with_queue));
 
         // Build artifact paths from orchestrator outputs
         let artifact_paths: Vec<String> = task

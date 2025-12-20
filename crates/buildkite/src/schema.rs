@@ -83,8 +83,6 @@ pub struct CommandStep {
     pub soft_fail: Option<bool>,
 }
 
-
-
 /// Command value can be a single string or an array
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]

@@ -922,6 +922,7 @@ dependencies = [
  "cucumber",
  "cuengine",
  "cuenv-bitbucket",
+ "cuenv-buildkite",
  "cuenv-ci",
  "cuenv-codeowners",
  "cuenv-core",
@@ -969,9 +970,13 @@ dependencies = [
 name = "cuenv-buildkite"
 version = "0.15.7"
 dependencies = [
+ "async-trait",
  "cuenv-ci",
+ "cuenv-core",
  "serde",
+ "serde_json",
  "serde_yaml",
+ "temp-env",
  "tempfile",
  "thiserror 2.0.17",
  "tracing",

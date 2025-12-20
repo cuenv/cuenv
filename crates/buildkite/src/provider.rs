@@ -169,7 +169,10 @@ impl CIProvider for BuildkiteCIProvider {
         // Create an annotation with the check name
         let annotation_context = format!("cuenv-{}", name.replace(' ', "-").to_lowercase());
 
-        info!("Creating Buildkite check annotation: {}", annotation_context);
+        info!(
+            "Creating Buildkite check annotation: {}",
+            annotation_context
+        );
 
         Ok(CheckHandle {
             id: annotation_context,
@@ -253,8 +256,9 @@ mod tests {
     #[test]
     fn test_detect_not_buildkite() {
         // Without BUILDKITE env var, should return None
-        std::env::remove_var("BUILDKITE");
-        assert!(BuildkiteCIProvider::detect().is_none());
+        temp_env::with_var_unset("BUILDKITE", || {
+            assert!(BuildkiteCIProvider::detect().is_none());
+        });
     }
 
     #[test]

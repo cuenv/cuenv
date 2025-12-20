@@ -9,17 +9,21 @@ homepage.workspace = true
 keywords.workspace = true
 categories = ["development-tools", "development-tools::build-utils"]
 readme = "../../readme.md"
-description = "Buildkite CI emitter for cuenv"
+description = "Buildkite CI emitter and provider for cuenv"
 
 [lints]
 workspace = true
 
 [dependencies]
 cuenv-ci = { workspace = true }
+cuenv-core = { workspace = true }
+async-trait = "0.1"
 serde = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+temp-env = "0.3"
