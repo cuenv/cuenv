@@ -1,11 +1,12 @@
 package schema
 
-#GcpSecret: close({
+// GCP Secret Manager secret
+#GcpSecret: #Secret & {
+	resolver: "gcp"
 	project:  string
 	secret:   string
 	version:  string | *"latest"
-	ref:      "gcp://\(project)/\(secret)/\(version)"
-	resolver: "exec"
-	command:  "gcloud"
-	args: ["secrets", "versions", "access", version, "--secret", secret, "--project", project]
-})
+
+	// Computed fields for reference
+	_ref: "projects/\(project)/secrets/\(secret)/versions/\(version)"
+}
