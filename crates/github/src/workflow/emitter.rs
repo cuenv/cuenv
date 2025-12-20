@@ -218,7 +218,7 @@ impl GitHubActionsEmitter {
                 cancel_in_progress: Some(true),
             }),
             permissions: Some(permissions),
-            env: HashMap::new(),
+            env: IndexMap::new(),
             jobs,
         }
     }
@@ -503,7 +503,7 @@ impl GitHubActionsEmitter {
             needs,
             if_condition: None,
             environment,
-            env: HashMap::new(),
+            env: IndexMap::new(),
             concurrency,
             continue_on_error: None,
             timeout_minutes: None,
@@ -612,7 +612,7 @@ impl ReleaseWorkflowBuilder {
             }),
             workflow_dispatch: Some(WorkflowDispatchTrigger {
                 inputs: {
-                    let mut inputs = HashMap::new();
+                    let mut inputs = IndexMap::new();
                     inputs.insert(
                         "tag_name".to_string(),
                         WorkflowInput {

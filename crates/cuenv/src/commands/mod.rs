@@ -48,10 +48,11 @@ pub mod ci_cmd {
         format: Option<String>,
         from: Option<String>,
         force: bool,
+        check: bool,
     ) -> Result<()> {
         // Handle --format option for dynamic pipeline output
         if let Some(fmt) = format {
-            return execute_format_output(&fmt, pipeline, from).await;
+            return execute_format_output(&fmt, pipeline, from, check).await;
         }
 
         // Handle --generate option for static workflow file generation
@@ -70,6 +71,7 @@ pub mod ci_cmd {
         fmt: &str,
         pipeline: Option<String>,
         from: Option<String>,
+        check: bool,
     ) -> Result<()> {
         match fmt {
             "buildkite" => {
@@ -85,7 +87,7 @@ pub mod ci_cmd {
                     ))
                 }
             }
-            "github" => execute_github_format(pipeline),
+            "github" => execute_github_format(pipeline, check),
             _ => Err(cuenv_core::Error::configuration(format!(
                 "Unsupported format: {fmt}. Supported formats: buildkite, github"
             ))),
@@ -93,10 +95,9 @@ pub mod ci_cmd {
     }
 
     /// Execute GitHub Actions format output - generates workflow files
+    /// When check=true without --pipeline, checks ALL pipelines are in sync.
     #[allow(clippy::print_stdout)]
-    fn execute_github_format(pipeline: Option<String>) -> Result<()> {
-        use cuenv_github::workflow::GitHubActionsEmitter;
-
+    fn execute_github_format(pipeline: Option<String>, check: bool) -> Result<()> {
         // Discover projects
         let projects = discover_projects()?;
         if projects.is_empty() {
@@ -106,14 +107,113 @@ pub mod ci_cmd {
         }
         eprintln!("Found {} projects", projects.len());
 
-        let pipeline_name = pipeline.unwrap_or_else(|| "ci".to_string());
+        // Determine which pipelines to process
+        // When no --pipeline is specified, process ALL pipelines
+        let pipelines_to_process: Vec<String> = if let Some(ref p) = pipeline {
+            vec![p.clone()]
+        } else {
+            // No --pipeline specified: process all pipelines
+            collect_all_pipeline_names(&projects)
+        };
+
+        if pipelines_to_process.is_empty() {
+            return Err(cuenv_core::Error::configuration(
+                "No pipelines found in any project's CI configuration",
+            ));
+        }
+
+        // Generate workflows for all pipelines
+        let mut all_workflows: Vec<(String, String)> = Vec::new();
+        for pipeline_name in &pipelines_to_process {
+            let workflows = generate_workflow_for_pipeline(pipeline_name, &projects)?;
+            all_workflows.extend(workflows);
+        }
+
+        let workflows_dir = std::path::Path::new(".github/workflows");
+
+        // Check mode: compare generated content with existing files
+        if check {
+            let mut out_of_sync = Vec::new();
+            for (filename, content) in &all_workflows {
+                let path = workflows_dir.join(filename);
+                if !path.exists() {
+                    out_of_sync.push(format!("{} (missing)", filename));
+                } else {
+                    let existing = std::fs::read_to_string(&path).map_err(|e| {
+                        cuenv_core::Error::Io {
+                            source: e,
+                            path: Some(path.clone().into_boxed_path()),
+                            operation: "read workflow file".to_string(),
+                        }
+                    })?;
+                    if existing != *content {
+                        out_of_sync.push(filename.clone());
+                    }
+                }
+            }
+            if !out_of_sync.is_empty() {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Workflows out of sync: {}. Run 'cuenv ci --format github' to update.",
+                    out_of_sync.join(", ")
+                )));
+            }
+            eprintln!("All {} workflow(s) are in sync.", all_workflows.len());
+            return Ok(());
+        }
+
+        // Normal mode: write workflow files
+        if !workflows_dir.exists() {
+            std::fs::create_dir_all(workflows_dir).map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(workflows_dir.to_path_buf().into_boxed_path()),
+                operation: "create directory".to_string(),
+            })?;
+        }
+
+        for (filename, content) in all_workflows {
+            let workflow_path = workflows_dir.join(&filename);
+            std::fs::write(&workflow_path, &content).map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(workflow_path.clone().into_boxed_path()),
+                operation: "write workflow file".to_string(),
+            })?;
+            println!("Generated: {}", workflow_path.display());
+        }
+
+        Ok(())
+    }
+
+    /// Collect all pipeline names from discovered projects
+    fn collect_all_pipeline_names(
+        projects: &[cuenv_ci::discovery::DiscoveredCIProject],
+    ) -> Vec<String> {
+        let mut names = std::collections::HashSet::new();
+        for project in projects {
+            if let Some(ci) = &project.config.ci {
+                for pipeline in &ci.pipelines {
+                    names.insert(pipeline.name.clone());
+                }
+            }
+        }
+        let mut sorted: Vec<_> = names.into_iter().collect();
+        sorted.sort();
+        sorted
+    }
+
+    /// Generate workflow files for a single pipeline
+    fn generate_workflow_for_pipeline(
+        pipeline_name: &str,
+        projects: &[cuenv_ci::discovery::DiscoveredCIProject],
+    ) -> Result<Vec<(String, String)>> {
+        use cuenv_github::workflow::GitHubActionsEmitter;
+
         let mut all_ir_tasks = Vec::new();
         let mut found_pipeline = false;
         let mut github_config = cuenv_core::ci::GitHubConfig::default();
         let mut trigger_condition: Option<cuenv_ci::ir::TriggerCondition> = None;
         let mut project_name: Option<String> = None;
 
-        for project in &projects {
+        for project in projects {
             let config = &project.config;
 
             // Find pipeline in config
@@ -129,7 +229,7 @@ pub mod ci_cmd {
             project_name = Some(config.name.clone());
 
             // Extract GitHub config (merged from CI-level and pipeline-level)
-            github_config = ci.github_config_for_pipeline(&pipeline_name);
+            github_config = ci.github_config_for_pipeline(pipeline_name);
 
             // Compile project to IR (this builds trigger conditions for the FIRST pipeline)
             let compiler = Compiler::new(config.clone());
@@ -182,15 +282,15 @@ pub mod ci_cmd {
         }
 
         if all_ir_tasks.is_empty() {
-            eprintln!("No tasks found in pipeline '{pipeline_name}'");
-            return Ok(());
+            // No tasks in this pipeline - return empty workflows list
+            return Ok(Vec::new());
         }
 
         // Build combined IR with trigger conditions from the pipeline
         let combined_ir = IntermediateRepresentation {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
-                name: pipeline_name.clone(),
+                name: pipeline_name.to_string(),
                 project_name,
                 trigger: trigger_condition,
             },
@@ -206,28 +306,8 @@ pub mod ci_cmd {
             cuenv_core::Error::configuration(format!("Failed to emit GitHub workflow: {e}"))
         })?;
 
-        // Ensure .github/workflows directory exists
-        let workflows_dir = std::path::Path::new(".github/workflows");
-        if !workflows_dir.exists() {
-            std::fs::create_dir_all(workflows_dir).map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(workflows_dir.to_path_buf().into_boxed_path()),
-                operation: "create directory".to_string(),
-            })?;
-        }
-
-        // Write workflow files
-        for (filename, content) in workflows {
-            let workflow_path = workflows_dir.join(&filename);
-            std::fs::write(&workflow_path, &content).map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(workflow_path.clone().into_boxed_path()),
-                operation: "write workflow file".to_string(),
-            })?;
-            println!("Generated: {}", workflow_path.display());
-        }
-
-        Ok(())
+        // Convert HashMap to Vec of tuples
+        Ok(workflows.into_iter().collect())
     }
 
     /// Build trigger condition for a specific pipeline
@@ -690,6 +770,7 @@ pub enum Command {
         format: Option<String>,
         from: Option<String>,
         force: bool,
+        check: bool,
     },
     Tui,
     Web {
@@ -948,8 +1029,9 @@ impl CommandExecutor {
                 format,
                 from,
                 force,
+                check,
             } => {
-                self.execute_ci(dry_run, pipeline, generate, format, from, force)
+                self.execute_ci(dry_run, pipeline, generate, format, from, force, check)
                     .await
             }
             Command::Sync {
@@ -1551,13 +1633,14 @@ impl CommandExecutor {
         format: Option<String>,
         from: Option<String>,
         force: bool,
+        check: bool,
     ) -> Result<()> {
         let command_name = "ci";
         self.send_event(Event::CommandStart {
             command: command_name.to_string(),
         });
 
-        match ci_cmd::execute_ci(dry_run, pipeline, generate, format, from, force).await {
+        match ci_cmd::execute_ci(dry_run, pipeline, generate, format, from, force, check).await {
             Ok(()) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),

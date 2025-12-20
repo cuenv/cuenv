@@ -5,7 +5,6 @@
 
 use indexmap::IndexMap;
 use serde::Serialize;
-use std::collections::HashMap;
 
 /// A GitHub Actions workflow definition.
 ///
@@ -29,8 +28,8 @@ pub struct Workflow {
     pub permissions: Option<Permissions>,
 
     /// Environment variables available to all jobs
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
+    #[serde(skip_serializing_if = "IndexMap::is_empty")]
+    pub env: IndexMap<String, String>,
 
     /// Job definitions (order preserved via `IndexMap`)
     pub jobs: IndexMap<String, Job>,
@@ -116,8 +115,8 @@ pub struct ReleaseTrigger {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct WorkflowDispatchTrigger {
     /// Input parameters for manual trigger
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub inputs: HashMap<String, WorkflowInput>,
+    #[serde(skip_serializing_if = "IndexMap::is_empty")]
+    pub inputs: IndexMap<String, WorkflowInput>,
 }
 
 /// Input definition for `workflow_dispatch` triggers.
@@ -235,8 +234,8 @@ pub struct Job {
     pub environment: Option<Environment>,
 
     /// Job-level environment variables
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
+    #[serde(skip_serializing_if = "IndexMap::is_empty")]
+    pub env: IndexMap<String, String>,
 
     /// Job concurrency settings
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -316,12 +315,12 @@ pub struct Step {
     pub shell: Option<String>,
 
     /// Action inputs (for `uses` steps)
-    #[serde(rename = "with", skip_serializing_if = "HashMap::is_empty")]
-    pub with_inputs: HashMap<String, serde_yaml::Value>,
+    #[serde(rename = "with", skip_serializing_if = "IndexMap::is_empty")]
+    pub with_inputs: IndexMap<String, serde_yaml::Value>,
 
     /// Step environment variables
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
+    #[serde(skip_serializing_if = "IndexMap::is_empty")]
+    pub env: IndexMap<String, String>,
 
     /// Continue on error (don't fail the job)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -430,7 +429,7 @@ mod tests {
                 contents: Some(PermissionLevel::Read),
                 ..Default::default()
             }),
-            env: HashMap::new(),
+            env: IndexMap::new(),
             jobs: IndexMap::new(),
         };
 
@@ -449,7 +448,7 @@ mod tests {
             needs: vec!["build".to_string()],
             if_condition: None,
             environment: None,
-            env: HashMap::new(),
+            env: IndexMap::new(),
             concurrency: None,
             continue_on_error: None,
             timeout_minutes: None,
