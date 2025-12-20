@@ -167,6 +167,8 @@ pub async fn run_ci(
 }
 
 /// Execute a project's pipeline and handle reporting
+#[allow(clippy::too_many_arguments)] // Pipeline execution requires many context params
+#[allow(clippy::too_many_lines)] // Complex orchestration logic
 async fn execute_project_pipeline(
     project: &crate::discovery::DiscoveredCIProject,
     config: &Project,
@@ -293,7 +295,7 @@ async fn execute_project_pipeline(
     };
 
     // Write reports and notify provider
-    write_pipeline_report(&report, context, project)?;
+    write_pipeline_report(&report, context, project);
     notify_provider(provider, &report, pipeline_name).await;
 
     Ok(pipeline_status)
@@ -304,12 +306,12 @@ fn write_pipeline_report(
     report: &PipelineReport,
     context: &crate::context::CIContext,
     project: &crate::discovery::DiscoveredCIProject,
-) -> Result<()> {
+) {
     // Ensure report directory exists
     let report_dir = std::path::Path::new(".cuenv/reports");
     if let Err(e) = std::fs::create_dir_all(report_dir) {
         println!("Failed to create report directory: {e}");
-        return Ok(());
+        return;
     }
 
     let sha_dir = report_dir.join(&context.sha);
@@ -328,8 +330,6 @@ fn write_pipeline_report(
     if let Err(e) = crate::report::markdown::write_job_summary(report) {
         eprintln!("Warning: Failed to write job summary: {e}");
     }
-
-    Ok(())
 }
 
 /// Notify CI provider about pipeline results

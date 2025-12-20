@@ -205,6 +205,10 @@ impl Compiler {
     ///
     /// This method creates a `Runtime` IR type with the computed digest
     /// based on flake purity analysis.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilerError` if flake purity analysis fails.
     pub fn compute_runtime(
         &self,
         id: impl Into<String>,
@@ -232,6 +236,10 @@ impl Compiler {
     }
 
     /// Compile project tasks to IR
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilerError` if task compilation fails.
     pub fn compile(&self) -> Result<IntermediateRepresentation, CompilerError> {
         let mut ir = IntermediateRepresentation::new(&self.project.name);
 

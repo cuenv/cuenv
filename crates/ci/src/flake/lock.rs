@@ -75,7 +75,7 @@ pub enum InputRef {
     /// Direct reference to another node by name
     Direct(String),
     /// Follows path - inherits input from another node
-    /// e.g., ["nixpkgs"] means follow root's nixpkgs
+    /// e.g., `["nixpkgs"]` means follow root's nixpkgs
     Follows(Vec<String>),
 }
 

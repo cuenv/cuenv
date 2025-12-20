@@ -118,6 +118,7 @@ impl Default for DigestBuilder {
 
 /// Compute task runtime digest
 #[must_use]
+#[allow(clippy::implicit_hasher)] // Standard HashMap is fine for digest computation
 pub fn compute_task_digest(
     command: &[String],
     env: &HashMap<String, String>,

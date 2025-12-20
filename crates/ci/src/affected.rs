@@ -176,9 +176,15 @@ fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
     let is_simple_path = !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[');
 
     for file in files {
-        // Get relative path - if root is "." or empty, use file as-is
-        // Otherwise strip the prefix
+        // Get relative path for matching:
+        // - If root is "." or empty, use file as-is
+        // - If file is already relative (doesn't start with root), use it as-is
+        //   (git returns relative paths, project_root may be absolute)
+        // - Otherwise strip the root prefix
         let relative_path = if root == Path::new(".") || root.as_os_str().is_empty() {
+            file.as_path()
+        } else if file.is_relative() {
+            // File is already relative (e.g., from git diff), use as-is
             file.as_path()
         } else {
             match file.strip_prefix(root) {
