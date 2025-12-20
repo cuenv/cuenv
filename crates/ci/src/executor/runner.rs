@@ -329,6 +329,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires /bin/bash which may not exist in sandboxed builds"]
     async fn test_custom_shell() {
         let tmp = TempDir::new().unwrap();
         // Use /bin/bash (available on most Unix systems)
