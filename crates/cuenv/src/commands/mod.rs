@@ -108,6 +108,7 @@ pub mod ci_cmd {
         let pipeline_name = pipeline.unwrap_or_else(|| "ci".to_string());
         let mut all_ir_tasks = Vec::new();
         let mut found_pipeline = false;
+        let mut github_config = cuenv_core::ci::GitHubConfig::default();
 
         for project in &projects {
             let config = &project.config;
@@ -122,6 +123,9 @@ pub mod ci_cmd {
             };
 
             found_pipeline = true;
+
+            // Extract GitHub config (merged from CI-level and pipeline-level)
+            github_config = ci.github_config_for_pipeline(&pipeline_name);
 
             // Compile project to IR
             let compiler = Compiler::new(config.clone());
@@ -161,11 +165,8 @@ pub mod ci_cmd {
             tasks: all_ir_tasks,
         };
 
-        // Create emitter with sensible defaults
-        let emitter = GitHubActionsEmitter::new()
-            .with_runner("ubuntu-latest")
-            .with_nix()
-            .with_cachix("cuenv");
+        // Create emitter from config (applies runner, cachix, paths_ignore from manifest)
+        let emitter = GitHubActionsEmitter::from_config(&github_config).with_nix();
 
         // Emit workflow files
         let workflows = emitter.emit_workflows(&combined_ir).map_err(|e| {
