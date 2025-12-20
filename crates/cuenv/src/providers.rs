@@ -8,6 +8,8 @@ use std::path::Path;
 
 #[cfg(feature = "bitbucket")]
 use cuenv_bitbucket::BitbucketCodeownersProvider;
+#[cfg(feature = "buildkite")]
+use cuenv_buildkite::BuildkiteCIProvider;
 #[cfg(feature = "github")]
 use cuenv_github::GitHubCodeownersProvider;
 #[cfg(feature = "gitlab")]
@@ -62,8 +64,9 @@ pub fn detect_codeowners_provider(repo_root: &Path) -> Box<dyn CodeownersProvide
 /// Detect the appropriate CI provider.
 ///
 /// Tries to detect the CI environment in order:
-/// 1. GitHub Actions (if github feature is enabled)
-/// 2. Falls back to `LocalProvider` (always available in cuenv-ci)
+/// 1. Buildkite (if buildkite feature is enabled)
+/// 2. GitHub Actions (if github feature is enabled)
+/// 3. Falls back to `LocalProvider` (always available in cuenv-ci)
 ///
 /// # Arguments
 ///
@@ -75,7 +78,13 @@ pub fn detect_ci_provider(
     use cuenv_ci::provider::CIProvider;
     use std::sync::Arc;
 
-    // Try GitHub first
+    // Try Buildkite first (most specific)
+    #[cfg(feature = "buildkite")]
+    if let Some(provider) = BuildkiteCIProvider::detect() {
+        return Arc::new(provider);
+    }
+
+    // Try GitHub
     if let Some(provider) = cuenv_github::GitHubCIProvider::detect() {
         return Arc::new(provider);
     }
@@ -103,7 +112,13 @@ pub fn detect_ci_provider(
     use cuenv_ci::provider::CIProvider;
     use std::sync::Arc;
 
-    // Only local provider available
+    // Try Buildkite first
+    #[cfg(feature = "buildkite")]
+    if let Some(provider) = BuildkiteCIProvider::detect() {
+        return Arc::new(provider);
+    }
+
+    // Fall back to local provider
     if let Some(base_ref) = from_ref {
         Arc::new(cuenv_ci::provider::LocalProvider::with_base_ref(base_ref))
     } else {

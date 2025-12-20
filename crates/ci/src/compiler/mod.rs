@@ -1,0 +1,702 @@
+//! Compiler from cuenv task definitions to IR v1.3
+//!
+//! Transforms a cuenv `Project` with tasks into an intermediate representation
+//! suitable for emitting orchestrator-native CI configurations.
+
+pub mod digest;
+
+use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
+use crate::ir::{
+    CachePolicy, IntermediateRepresentation, IrValidator, OutputDeclaration, OutputType,
+    PurityMode, Runtime, SecretConfig, Task as IrTask, TriggerCondition,
+};
+use cuenv_core::manifest::Project;
+use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
+use digest::DigestBuilder;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use thiserror::Error;
+use uuid::Uuid;
+
+/// Compiler errors
+#[derive(Debug, Error)]
+pub enum CompilerError {
+    #[error("Task graph validation failed: {0}")]
+    ValidationFailed(String),
+
+    #[error("Task '{0}' uses shell script but IR requires command array")]
+    ShellScriptNotSupported(String),
+
+    #[error("Invalid task structure: {0}")]
+    InvalidTaskStructure(String),
+
+    #[error("Flake lock error: {0}")]
+    FlakeLock(#[from] FlakeLockError),
+}
+
+/// Compiler for transforming cuenv tasks to IR
+pub struct Compiler {
+    /// Project being compiled
+    project: Project,
+
+    /// Compiler options
+    options: CompilerOptions,
+}
+
+/// Compiler configuration options
+#[derive(Debug, Clone, Default)]
+pub struct CompilerOptions {
+    /// Default purity mode for runtimes
+    pub purity_mode: PurityMode,
+
+    /// Whether to validate inputs exist at compile time
+    pub validate_inputs: bool,
+
+    /// Default cache policy for tasks
+    pub default_cache_policy: CachePolicy,
+
+    /// Path to flake.lock file (optional, auto-detected if not set)
+    pub flake_lock_path: Option<PathBuf>,
+
+    /// Project root directory (for locating flake.lock)
+    pub project_root: Option<PathBuf>,
+
+    /// Manual overrides for input digests (for Override mode)
+    /// Maps input name to override digest value
+    pub input_overrides: HashMap<String, String>,
+}
+
+impl Compiler {
+    /// Create a new compiler for the given project
+    pub fn new(project: Project) -> Self {
+        Self {
+            project,
+            options: CompilerOptions::default(),
+        }
+    }
+
+    /// Create a compiler with custom options
+    pub fn with_options(project: Project, options: CompilerOptions) -> Self {
+        Self { project, options }
+    }
+
+    /// Analyze flake.lock for purity and compute runtime digest
+    ///
+    /// If a flake.lock file is found, analyzes it for unlocked inputs
+    /// and computes a deterministic digest based on the locked content.
+    ///
+    /// # Returns
+    /// - `Some(Ok((digest, purity)))` if analysis succeeded
+    /// - `Some(Err(e))` if analysis failed
+    /// - `None` if no flake.lock was found (not a flake-based project)
+    pub fn analyze_flake_purity(&self) -> Option<Result<(String, PurityMode), CompilerError>> {
+        let lock_path = self.resolve_flake_lock_path()?;
+
+        if !lock_path.exists() {
+            return None;
+        }
+
+        Some(self.perform_flake_analysis(&lock_path))
+    }
+
+    /// Resolve the path to flake.lock
+    fn resolve_flake_lock_path(&self) -> Option<PathBuf> {
+        // Use explicit path if provided
+        if let Some(path) = &self.options.flake_lock_path {
+            return Some(path.clone());
+        }
+
+        // Otherwise, look in project root
+        if let Some(root) = &self.options.project_root {
+            return Some(root.join("flake.lock"));
+        }
+
+        // Default: current directory
+        Some(PathBuf::from("flake.lock"))
+    }
+
+    /// Perform flake purity analysis and apply purity mode
+    fn perform_flake_analysis(
+        &self,
+        lock_path: &PathBuf,
+    ) -> Result<(String, PurityMode), CompilerError> {
+        let analyzer = FlakeLockAnalyzer::from_path(lock_path)?;
+        let analysis = analyzer.analyze();
+
+        self.apply_purity_mode(&analysis)
+    }
+
+    /// Apply purity mode enforcement based on analysis results
+    ///
+    /// - **Strict**: Reject unlocked flakes with an error
+    /// - **Warning**: Log warnings and inject UUID into digest (non-deterministic)
+    /// - **Override**: Apply manual input overrides for deterministic builds
+    fn apply_purity_mode(
+        &self,
+        analysis: &PurityAnalysis,
+    ) -> Result<(String, PurityMode), CompilerError> {
+        match self.options.purity_mode {
+            PurityMode::Strict => {
+                if !analysis.is_pure {
+                    let inputs: Vec<String> = analysis
+                        .unlocked_inputs
+                        .iter()
+                        .map(|u| format!("{}: {}", u.name, u.reason))
+                        .collect();
+                    return Err(CompilerError::FlakeLock(FlakeLockError::strict_violation(
+                        inputs,
+                    )));
+                }
+                Ok((analysis.locked_digest.clone(), PurityMode::Strict))
+            }
+
+            PurityMode::Warning => {
+                if !analysis.is_pure {
+                    // Log warnings for each unlocked input
+                    for input in &analysis.unlocked_inputs {
+                        tracing::warn!(
+                            input = %input.name,
+                            reason = %input.reason,
+                            "Unlocked flake input detected - cache key will be non-deterministic"
+                        );
+                    }
+
+                    // Inject UUID v4 into digest to force cache miss
+                    let uuid = Uuid::new_v4().to_string();
+                    let mut digest_builder = DigestBuilder::new();
+                    digest_builder.add_inputs(&[analysis.locked_digest.clone()]);
+                    digest_builder.add_impurity_uuid(&uuid);
+
+                    Ok((digest_builder.finalize(), PurityMode::Warning))
+                } else {
+                    Ok((analysis.locked_digest.clone(), PurityMode::Warning))
+                }
+            }
+
+            PurityMode::Override => {
+                // In override mode, apply manual input overrides
+                let mut effective_digest = analysis.locked_digest.clone();
+
+                if !self.options.input_overrides.is_empty() {
+                    let mut digest_builder = DigestBuilder::new();
+                    digest_builder.add_inputs(&[effective_digest]);
+
+                    // Add overrides to digest in deterministic order
+                    let mut sorted_overrides: Vec<_> =
+                        self.options.input_overrides.iter().collect();
+                    sorted_overrides.sort_by_key(|(k, _)| *k);
+
+                    for (key, value) in sorted_overrides {
+                        digest_builder.add_inputs(&[format!("override:{key}={value}")]);
+                    }
+
+                    effective_digest = digest_builder.finalize();
+                }
+
+                Ok((effective_digest, PurityMode::Override))
+            }
+        }
+    }
+
+    /// Compute a runtime configuration from the flake analysis
+    ///
+    /// This method creates a `Runtime` IR type with the computed digest
+    /// based on flake purity analysis.
+    pub fn compute_runtime(
+        &self,
+        id: impl Into<String>,
+        flake_ref: impl Into<String>,
+        output: impl Into<String>,
+        system: impl Into<String>,
+    ) -> Result<Runtime, CompilerError> {
+        let (digest, purity) = match self.analyze_flake_purity() {
+            Some(result) => result?,
+            None => {
+                // No flake.lock found - use placeholder digest
+                // This handles non-flake projects gracefully
+                ("sha256:no-flake-lock".to_string(), self.options.purity_mode)
+            }
+        };
+
+        Ok(Runtime {
+            id: id.into(),
+            flake: flake_ref.into(),
+            output: output.into(),
+            system: system.into(),
+            digest,
+            purity,
+        })
+    }
+
+    /// Compile project tasks to IR
+    pub fn compile(&self) -> Result<IntermediateRepresentation, CompilerError> {
+        let mut ir = IntermediateRepresentation::new(&self.project.name);
+
+        // Set up trigger conditions from CI configuration
+        if let Some(ci_config) = &self.project.ci {
+            if let Some(first_pipeline) = ci_config.pipelines.first() {
+                if let Some(when_condition) = &first_pipeline.when {
+                    ir.pipeline.trigger = Some(TriggerCondition {
+                        branch: when_condition.branch.as_ref().and_then(|b| match b {
+                            cuenv_core::ci::StringOrVec::String(s) => Some(s.clone()),
+                            cuenv_core::ci::StringOrVec::Vec(v) => v.first().cloned(),
+                        }),
+                    });
+                }
+            }
+        }
+
+        // Compile tasks
+        self.compile_tasks(&self.project.tasks, &mut ir)?;
+
+        // Validate the IR
+        let validator = IrValidator::new(&ir);
+        validator.validate().map_err(|errors| {
+            let error_messages: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+            CompilerError::ValidationFailed(error_messages.join(", "))
+        })?;
+
+        Ok(ir)
+    }
+
+    /// Compile task definitions into IR tasks
+    fn compile_tasks(
+        &self,
+        tasks: &HashMap<String, TaskDefinition>,
+        ir: &mut IntermediateRepresentation,
+    ) -> Result<(), CompilerError> {
+        for (name, task_def) in tasks {
+            self.compile_task_definition(name, task_def, ir)?;
+        }
+        Ok(())
+    }
+
+    /// Compile a single task definition (handles groups and single tasks)
+    fn compile_task_definition(
+        &self,
+        name: &str,
+        task_def: &TaskDefinition,
+        ir: &mut IntermediateRepresentation,
+    ) -> Result<(), CompilerError> {
+        match task_def {
+            TaskDefinition::Single(task) => {
+                let ir_task = self.compile_single_task(name, task)?;
+                ir.tasks.push(ir_task);
+            }
+            TaskDefinition::Group(group) => {
+                self.compile_task_group(name, group, ir)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Compile a task group (sequential or parallel)
+    fn compile_task_group(
+        &self,
+        prefix: &str,
+        group: &TaskGroup,
+        ir: &mut IntermediateRepresentation,
+    ) -> Result<(), CompilerError> {
+        match group {
+            TaskGroup::Sequential(tasks) => {
+                for (idx, task_def) in tasks.iter().enumerate() {
+                    let task_name = format!("{}.{}", prefix, idx);
+                    self.compile_task_definition(&task_name, task_def, ir)?;
+                }
+            }
+            TaskGroup::Parallel(parallel) => {
+                for (name, task_def) in &parallel.tasks {
+                    let task_name = format!("{}.{}", prefix, name);
+                    self.compile_task_definition(&task_name, task_def, ir)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Compile a single task to IR format
+    fn compile_single_task(&self, id: &str, task: &Task) -> Result<IrTask, CompilerError> {
+        // Convert command and args to array format
+        let command = if !task.command.is_empty() {
+            let mut cmd = vec![task.command.clone()];
+            cmd.extend(task.args.clone());
+            cmd
+        } else if let Some(script) = &task.script {
+            // For scripts, we need to use shell mode
+            // Note: This is a simplified approach; full implementation would
+            // need to handle shebang parsing for polyglot scripts
+            vec!["/bin/sh".to_string(), "-c".to_string(), script.clone()]
+        } else {
+            return Err(CompilerError::InvalidTaskStructure(format!(
+                "Task '{}' has neither command nor script",
+                id
+            )));
+        };
+
+        // Determine shell mode
+        let shell = task.shell.is_some() || task.script.is_some();
+
+        // Convert environment variables (filter out complex JSON values)
+        let env: HashMap<String, String> = task
+            .env
+            .iter()
+            .filter_map(|(k, v)| {
+                if let Some(s) = v.as_str() {
+                    Some((k.clone(), s.to_string()))
+                } else {
+                    // Skip complex values for now (would need secret resolution)
+                    None
+                }
+            })
+            .collect();
+
+        // Extract secrets (simplified - would integrate with secret resolver)
+        let secrets: HashMap<String, SecretConfig> = HashMap::new();
+
+        // Convert inputs (path globs only for now)
+        let inputs: Vec<String> = task.iter_path_inputs().cloned().collect();
+
+        // Convert outputs
+        let outputs: Vec<OutputDeclaration> = task
+            .outputs
+            .iter()
+            .map(|path| OutputDeclaration {
+                path: path.clone(),
+                output_type: OutputType::Cas, // Default to CAS
+            })
+            .collect();
+
+        // Determine cache policy
+        let cache_policy = if task.labels.contains(&"deployment".to_string()) {
+            CachePolicy::Disabled
+        } else {
+            self.options.default_cache_policy
+        };
+
+        // Determine if this is a deployment task
+        let deployment = task.labels.contains(&"deployment".to_string());
+
+        Ok(IrTask {
+            id: id.to_string(),
+            runtime: None, // Would be set based on Nix flake configuration
+            command,
+            shell,
+            env,
+            secrets,
+            resources: None, // Would extract from task metadata if available
+            concurrency_group: None,
+            inputs,
+            outputs,
+            depends_on: task.depends_on.clone(),
+            cache_policy,
+            deployment,
+            manual_approval: false, // Would come from task metadata
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::tasks::Task;
+
+    #[test]
+    fn test_compile_simple_task() {
+        let mut project = Project::new("test-project");
+        project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["build".to_string()],
+                inputs: vec![cuenv_core::tasks::Input::Path("src/**/*.rs".to_string())],
+                outputs: vec!["target/debug/binary".to_string()],
+                ..Default::default()
+            })),
+        );
+
+        let compiler = Compiler::new(project);
+        let ir = compiler.compile().unwrap();
+
+        assert_eq!(ir.version, "1.3");
+        assert_eq!(ir.pipeline.name, "test-project");
+        assert_eq!(ir.tasks.len(), 1);
+        assert_eq!(ir.tasks[0].id, "build");
+        assert_eq!(ir.tasks[0].command, vec!["cargo", "build"]);
+        assert_eq!(ir.tasks[0].inputs, vec!["src/**/*.rs"]);
+    }
+
+    #[test]
+    fn test_compile_task_with_dependencies() {
+        let mut project = Project::new("test-project");
+
+        project.tasks.insert(
+            "test".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["test".to_string()],
+                depends_on: vec!["build".to_string()],
+                ..Default::default()
+            })),
+        );
+
+        project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["build".to_string()],
+                ..Default::default()
+            })),
+        );
+
+        let compiler = Compiler::new(project);
+        let ir = compiler.compile().unwrap();
+
+        assert_eq!(ir.tasks.len(), 2);
+
+        let test_task = ir.tasks.iter().find(|t| t.id == "test").unwrap();
+        assert_eq!(test_task.depends_on, vec!["build"]);
+    }
+
+    #[test]
+    fn test_compile_deployment_task() {
+        let mut project = Project::new("test-project");
+
+        project.tasks.insert(
+            "deploy".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "kubectl".to_string(),
+                args: vec!["apply".to_string()],
+                labels: vec!["deployment".to_string()],
+                ..Default::default()
+            })),
+        );
+
+        let compiler = Compiler::new(project);
+        let ir = compiler.compile().unwrap();
+
+        assert_eq!(ir.tasks.len(), 1);
+        assert_eq!(ir.tasks[0].deployment, true);
+        assert_eq!(ir.tasks[0].cache_policy, CachePolicy::Disabled);
+    }
+
+    #[test]
+    fn test_compile_script_task() {
+        let mut project = Project::new("test-project");
+
+        project.tasks.insert(
+            "script-task".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                script: Some("echo 'Running script'\nls -la".to_string()),
+                ..Default::default()
+            })),
+        );
+
+        let compiler = Compiler::new(project);
+        let ir = compiler.compile().unwrap();
+
+        assert_eq!(ir.tasks.len(), 1);
+        assert_eq!(ir.tasks[0].shell, true);
+        assert_eq!(ir.tasks[0].command[0], "/bin/sh");
+        assert_eq!(ir.tasks[0].command[1], "-c");
+    }
+
+    #[test]
+    fn test_purity_analysis_pure_flake() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "locked": {
+                        "type": "github",
+                        "owner": "NixOS",
+                        "repo": "nixpkgs",
+                        "rev": "abc123",
+                        "narHash": "sha256-xxxxxxxxxxxxx"
+                    }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Strict,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let result = compiler.analyze_flake_purity();
+
+        assert!(result.is_some());
+        let (digest, purity) = result.unwrap().unwrap();
+        assert!(digest.starts_with("sha256:"));
+        assert_eq!(purity, PurityMode::Strict);
+    }
+
+    #[test]
+    fn test_purity_strict_mode_rejects_unlocked() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "original": { "type": "github", "owner": "NixOS", "repo": "nixpkgs" }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Strict,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let result = compiler.analyze_flake_purity();
+
+        assert!(result.is_some());
+        assert!(result.unwrap().is_err());
+    }
+
+    #[test]
+    fn test_purity_warning_mode_injects_uuid() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "original": { "type": "github", "owner": "NixOS", "repo": "nixpkgs" }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Warning,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project.clone(), options.clone());
+        let result1 = compiler.analyze_flake_purity().unwrap().unwrap();
+
+        let compiler2 = Compiler::with_options(project, options);
+        let result2 = compiler2.analyze_flake_purity().unwrap().unwrap();
+
+        // Each compile should produce different digests due to UUID injection
+        assert_ne!(result1.0, result2.0);
+        assert_eq!(result1.1, PurityMode::Warning);
+    }
+
+    #[test]
+    fn test_purity_override_mode_uses_overrides() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "locked": {
+                        "type": "github",
+                        "narHash": "sha256-base"
+                    }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let mut input_overrides = HashMap::new();
+        input_overrides.insert("nixpkgs".to_string(), "sha256-custom".to_string());
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Override,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            input_overrides,
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project.clone(), options.clone());
+        let result1 = compiler.analyze_flake_purity().unwrap().unwrap();
+
+        // Same compiler, same overrides = deterministic digest
+        let compiler2 = Compiler::with_options(project, options);
+        let result2 = compiler2.analyze_flake_purity().unwrap().unwrap();
+
+        assert_eq!(result1.0, result2.0);
+        assert_eq!(result1.1, PurityMode::Override);
+    }
+
+    #[test]
+    fn test_compute_runtime() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let json = r#"{
+            "nodes": {
+                "nixpkgs": {
+                    "locked": {
+                        "type": "github",
+                        "narHash": "sha256-test"
+                    }
+                },
+                "root": { "inputs": { "nixpkgs": "nixpkgs" } }
+            },
+            "root": "root",
+            "version": 7
+        }"#;
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(json.as_bytes()).unwrap();
+
+        let project = Project::new("test-project");
+        let options = CompilerOptions {
+            purity_mode: PurityMode::Strict,
+            flake_lock_path: Some(temp_file.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let runtime = compiler
+            .compute_runtime(
+                "nix-x86_64-linux",
+                "github:NixOS/nixpkgs",
+                "devShells.x86_64-linux.default",
+                "x86_64-linux",
+            )
+            .unwrap();
+
+        assert_eq!(runtime.id, "nix-x86_64-linux");
+        assert_eq!(runtime.flake, "github:NixOS/nixpkgs");
+        assert!(runtime.digest.starts_with("sha256:"));
+        assert_eq!(runtime.purity, PurityMode::Strict);
+    }
+}
