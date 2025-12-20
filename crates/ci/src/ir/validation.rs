@@ -50,6 +50,10 @@ impl<'a> IrValidator<'a> {
     }
 
     /// Validate the entire IR document
+    ///
+    /// # Errors
+    ///
+    /// Returns a list of `ValidationError`s if validation fails.
     pub fn validate(&self) -> Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
 
@@ -213,7 +217,7 @@ mod tests {
     use super::*;
     use crate::ir::{PurityMode, Runtime};
 
-    fn create_test_task(id: &str, depends_on: Vec<&str>) -> Task {
+    fn create_test_task(id: &str, depends_on: &[&str]) -> Task {
         Task {
             id: id.to_string(),
             runtime: None,
@@ -235,8 +239,8 @@ mod tests {
     #[test]
     fn test_valid_ir() {
         let mut ir = IntermediateRepresentation::new("test");
-        ir.tasks.push(create_test_task("task1", vec![]));
-        ir.tasks.push(create_test_task("task2", vec!["task1"]));
+        ir.tasks.push(create_test_task("task1", &[]));
+        ir.tasks.push(create_test_task("task2", &["task1"]));
 
         let validator = IrValidator::new(&ir);
         assert!(validator.validate().is_ok());
@@ -245,8 +249,8 @@ mod tests {
     #[test]
     fn test_cyclic_dependency() {
         let mut ir = IntermediateRepresentation::new("test");
-        ir.tasks.push(create_test_task("task1", vec!["task2"]));
-        ir.tasks.push(create_test_task("task2", vec!["task1"]));
+        ir.tasks.push(create_test_task("task1", &["task2"]));
+        ir.tasks.push(create_test_task("task2", &["task1"]));
 
         let validator = IrValidator::new(&ir);
         let result = validator.validate();
@@ -263,8 +267,7 @@ mod tests {
     #[test]
     fn test_missing_dependency() {
         let mut ir = IntermediateRepresentation::new("test");
-        ir.tasks
-            .push(create_test_task("task1", vec!["nonexistent"]));
+        ir.tasks.push(create_test_task("task1", &["nonexistent"]));
 
         let validator = IrValidator::new(&ir);
         let result = validator.validate();
@@ -281,7 +284,7 @@ mod tests {
     #[test]
     fn test_deployment_task_must_have_disabled_cache() {
         let mut ir = IntermediateRepresentation::new("test");
-        let mut deploy_task = create_test_task("deploy", vec![]);
+        let mut deploy_task = create_test_task("deploy", &[]);
         deploy_task.deployment = true;
         deploy_task.cache_policy = CachePolicy::Normal; // Invalid!
         ir.tasks.push(deploy_task);
@@ -301,7 +304,7 @@ mod tests {
     #[test]
     fn test_deployment_task_valid_with_disabled_cache() {
         let mut ir = IntermediateRepresentation::new("test");
-        let mut deploy_task = create_test_task("deploy", vec![]);
+        let mut deploy_task = create_test_task("deploy", &[]);
         deploy_task.deployment = true;
         deploy_task.cache_policy = CachePolicy::Disabled;
         ir.tasks.push(deploy_task);
@@ -314,12 +317,12 @@ mod tests {
     fn test_non_deployment_cannot_depend_on_deployment() {
         let mut ir = IntermediateRepresentation::new("test");
 
-        let mut deploy_task = create_test_task("deploy", vec![]);
+        let mut deploy_task = create_test_task("deploy", &[]);
         deploy_task.deployment = true;
         deploy_task.cache_policy = CachePolicy::Disabled;
         ir.tasks.push(deploy_task);
 
-        let build_task = create_test_task("build", vec!["deploy"]);
+        let build_task = create_test_task("build", &["deploy"]);
         ir.tasks.push(build_task);
 
         let validator = IrValidator::new(&ir);
@@ -338,12 +341,12 @@ mod tests {
     fn test_deployment_can_depend_on_deployment() {
         let mut ir = IntermediateRepresentation::new("test");
 
-        let mut deploy1 = create_test_task("deploy-staging", vec![]);
+        let mut deploy1 = create_test_task("deploy-staging", &[]);
         deploy1.deployment = true;
         deploy1.cache_policy = CachePolicy::Disabled;
         ir.tasks.push(deploy1);
 
-        let mut deploy2 = create_test_task("deploy-prod", vec!["deploy-staging"]);
+        let mut deploy2 = create_test_task("deploy-prod", &["deploy-staging"]);
         deploy2.deployment = true;
         deploy2.cache_policy = CachePolicy::Disabled;
         ir.tasks.push(deploy2);
@@ -355,7 +358,7 @@ mod tests {
     #[test]
     fn test_empty_command() {
         let mut ir = IntermediateRepresentation::new("test");
-        let mut task = create_test_task("task1", vec![]);
+        let mut task = create_test_task("task1", &[]);
         task.command = vec![];
         ir.tasks.push(task);
 
@@ -374,7 +377,7 @@ mod tests {
     #[test]
     fn test_missing_runtime() {
         let mut ir = IntermediateRepresentation::new("test");
-        let mut task = create_test_task("task1", vec![]);
+        let mut task = create_test_task("task1", &[]);
         task.runtime = Some("nonexistent".to_string());
         ir.tasks.push(task);
 
@@ -402,7 +405,7 @@ mod tests {
             purity: PurityMode::Strict,
         });
 
-        let mut task = create_test_task("task1", vec![]);
+        let mut task = create_test_task("task1", &[]);
         task.runtime = Some("nix".to_string());
         ir.tasks.push(task);
 

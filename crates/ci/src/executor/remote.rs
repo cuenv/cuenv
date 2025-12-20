@@ -188,6 +188,7 @@ impl RemoteCacheBackend {
         let hash = hex::encode(hasher.finalize());
         Digest {
             hash,
+            #[allow(clippy::cast_possible_wrap)] // Blob sizes won't exceed i64::MAX
             size_bytes: data.len() as i64,
         }
     }
@@ -419,7 +420,8 @@ impl CacheBackend for RemoteCacheBackend {
                         let end = m.execution_completed_timestamp.as_ref()?;
                         let start_nanos = start.seconds * 1_000_000_000 + i64::from(start.nanos);
                         let end_nanos = end.seconds * 1_000_000_000 + i64::from(end.nanos);
-                        Some(((end_nanos - start_nanos) / 1_000_000) as u64)
+                        let duration_nanos = end_nanos.saturating_sub(start_nanos);
+                        Some(u64::try_from(duration_nanos / 1_000_000).unwrap_or(0))
                     })
                     .unwrap_or(0);
 
@@ -717,12 +719,13 @@ fn is_retryable(status: &tonic::Status) -> bool {
     )
 }
 
-// Silence unused warning for debug impl
+// Custom Debug impl to avoid printing channel internals
+#[allow(clippy::missing_fields_in_debug)] // Channel is internal implementation detail
 impl std::fmt::Debug for RemoteCacheBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RemoteCacheBackend")
             .field("config", &self.config)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

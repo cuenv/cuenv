@@ -236,7 +236,7 @@ mod tests {
     use crate::ir::CachePolicy;
     use tempfile::TempDir;
 
-    fn make_task(id: &str, command: Vec<&str>, shell: bool) -> IRTask {
+    fn make_task(id: &str, command: &[&str], shell: bool) -> IRTask {
         IRTask {
             id: id.to_string(),
             runtime: None,
@@ -259,7 +259,7 @@ mod tests {
     async fn test_simple_command() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
-        let task = make_task("test", vec!["echo", "hello"], false);
+        let task = make_task("test", &["echo", "hello"], false);
 
         let result = runner.execute(&task, HashMap::new()).await.unwrap();
 
@@ -273,7 +273,7 @@ mod tests {
     async fn test_shell_mode() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
-        let task = make_task("test", vec!["echo", "hello", "&&", "echo", "world"], true);
+        let task = make_task("test", &["echo", "hello", "&&", "echo", "world"], true);
 
         let result = runner.execute(&task, HashMap::new()).await.unwrap();
 
@@ -286,7 +286,7 @@ mod tests {
     async fn test_env_injection() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
-        let task = make_task("test", vec!["printenv", "MY_VAR"], false);
+        let task = make_task("test", &["printenv", "MY_VAR"], false);
 
         let env = HashMap::from([("MY_VAR".to_string(), "test_value".to_string())]);
         let result = runner.execute(&task, env).await.unwrap();
@@ -299,7 +299,7 @@ mod tests {
     async fn test_failing_command() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
-        let task = make_task("test", vec!["false"], false);
+        let task = make_task("test", &["false"], false);
 
         let result = runner.execute(&task, HashMap::new()).await.unwrap();
 
@@ -311,7 +311,7 @@ mod tests {
     async fn test_empty_command_error() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
-        let task = make_task("test", vec![], false);
+        let task = make_task("test", &[], false);
 
         let result = runner.execute(&task, HashMap::new()).await;
         assert!(matches!(result, Err(RunnerError::EmptyCommand { .. })));
@@ -339,7 +339,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // Use /bin/bash (available on most Unix systems)
         let runner = IRTaskRunner::with_shell(tmp.path().to_path_buf(), true, "/bin/bash");
-        let task = make_task("test", vec!["echo", "$BASH_VERSION"], true);
+        let task = make_task("test", &["echo", "$BASH_VERSION"], true);
 
         let result = runner.execute(&task, HashMap::new()).await.unwrap();
 

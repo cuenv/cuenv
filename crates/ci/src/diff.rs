@@ -109,6 +109,10 @@ pub struct DiffSummary {
 }
 
 /// Compare two CI runs by their report files
+///
+/// # Errors
+///
+/// Returns `DiffError` if report files cannot be loaded.
 pub fn compare_runs(run_a: &Path, run_b: &Path) -> Result<DigestDiff, DiffError> {
     let report_a = load_report(run_a)?;
     let report_b = load_report(run_b)?;
@@ -116,6 +120,10 @@ pub fn compare_runs(run_a: &Path, run_b: &Path) -> Result<DigestDiff, DiffError>
 }
 
 /// Compare two CI runs by commit SHA
+///
+/// # Errors
+///
+/// Returns `DiffError` if reports cannot be found or compared.
 pub fn compare_by_sha(
     sha_a: &str,
     sha_b: &str,
@@ -129,6 +137,10 @@ pub fn compare_by_sha(
 }
 
 /// Compare two pipeline reports
+///
+/// # Errors
+///
+/// Returns `DiffError` if report comparison fails.
 pub fn compare_reports(
     report_a: &PipelineReport,
     report_b: &PipelineReport,
