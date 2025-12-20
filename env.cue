@@ -11,6 +11,18 @@ name: "cuenv"
 
 hooks: onEnter: nix: schema.#NixFlake
 
+env: {
+    CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
+
+    environment: production: {
+        CACHIX_AUTH_TOKEN: "op://cuenv-github/cachix/password"
+        CLOUDFLARE_API_TOKEN: "op://cuenv-github/cloudflare/password"
+        CODECOV_TOKEN: "op://cuenv-github/codcov/password"
+        CUE_REGISTRY_TOKEN: "op://cuenv-github/cue/password"
+        VSCE_PAT: "op://cuenv-github/visual-studio-code/password"
+    }
+}
+
 owners: rules: default: {
 	pattern: "**"
 	owners: ["@rawkode"]
