@@ -86,21 +86,13 @@ impl BuildkiteEmitter {
     ) -> CommandStep {
         let label = self.format_label(&task.id, task.deployment);
 
-        // Build command
-        let command = if task.command.len() == 1 {
-            Some(CommandValue::Single(task.command[0].clone()))
-        } else if !task.command.is_empty() {
-            Some(CommandValue::Array(task.command.clone()))
-        } else {
-            None
-        };
+        // Wrap command with cuenv task - this handles environment setup,
+        // secret resolution, and runtime activation internally
+        let command = Some(CommandValue::Single(format!("cuenv task {}", task.id)));
 
-        // Build environment (including secrets as variable references)
-        let mut env = task.env.clone();
-        for (name, config) in &task.secrets {
-            // Reference the secret from CI environment
-            env.insert(name.clone(), format!("${{{}}}", config.source));
-        }
+        // Environment variables are handled by cuenv task, but we still pass
+        // through any orchestrator-level env vars that might be needed
+        let env = task.env.clone();
 
         // Build agent rules from resource tags
         let agents = task
@@ -292,8 +284,8 @@ mod tests {
 
         assert!(yaml.contains("steps:"));
         assert!(yaml.contains("key: build"));
-        assert!(yaml.contains("- cargo"));
-        assert!(yaml.contains("- build"));
+        // Commands are wrapped with cuenv task
+        assert!(yaml.contains("cuenv task build"));
     }
 
     #[test]
@@ -374,8 +366,8 @@ mod tests {
 
         let yaml = emitter.emit(&ir).unwrap();
 
-        assert!(yaml.contains("API_KEY:"));
-        assert!(yaml.contains("${BUILDKITE_SECRET_API_KEY}"));
+        // Secrets are now handled by cuenv task internally, not mapped to env vars
+        assert!(yaml.contains("cuenv task deploy"));
     }
 
     #[test]
