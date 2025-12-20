@@ -14,6 +14,8 @@ mod env;
 mod exec;
 mod gcp;
 mod onepassword;
+#[cfg(feature = "onepassword")]
+mod onepassword_core;
 mod vault;
 
 pub use aws::{AwsResolver, AwsSecretConfig};
