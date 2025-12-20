@@ -132,36 +132,48 @@ impl CIProvider for BuildkiteCIProvider {
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
         let is_shallow = Self::is_shallow_clone();
-        debug!("Shallow clone detected: {is_shallow}");
+        info!(
+            "Shallow clone: {is_shallow}, base_ref: {:?}",
+            self.context.base_ref
+        );
 
-        // Strategy 1: Pull Request - use base_ref
+        // Strategy 1: Pull Request - use base_ref (but not if same as current branch)
         if let Some(base) = &self.context.base_ref {
-            if !base.is_empty() {
-                debug!("PR detected, base_ref: {base}");
+            if !base.is_empty() && base != &self.context.ref_name {
+                info!("PR detected, comparing against base_ref: {base}");
 
                 if is_shallow {
                     Self::fetch_ref(base);
                 }
 
                 if let Some(files) = Self::try_git_diff(&format!("origin/{base}...HEAD")) {
+                    info!("Found {} changed files via PR comparison", files.len());
                     return Ok(files);
                 }
             }
         }
 
-        // Strategy 2: Compare against parent commit
+        // Strategy 2: For shallow clones, fetch one more commit to enable HEAD^ comparison
+        if is_shallow {
+            info!("Shallow clone detected, fetching additional history for HEAD^ comparison");
+            let _ = Command::new("git").args(["fetch", "--deepen=1"]).output();
+        }
+
+        // Strategy 3: Compare against parent commit
         if let Some(files) = Self::try_git_diff("HEAD^..HEAD") {
-            debug!("Using HEAD^ comparison");
+            info!("Found {} changed files via HEAD^ comparison", files.len());
             return Ok(files);
         }
 
-        // Strategy 3: Fall back to all tracked files
+        // Strategy 4: Fall back to all tracked files
         warn!(
             "Could not determine changed files (shallow clone: {is_shallow}). \
              Running all tasks. For better performance, ensure fetch-depth > 1."
         );
 
-        Ok(Self::get_all_tracked_files())
+        let files = Self::get_all_tracked_files();
+        info!("Falling back to all {} tracked files", files.len());
+        Ok(files)
     }
 
     async fn create_check(&self, name: &str) -> Result<CheckHandle> {
