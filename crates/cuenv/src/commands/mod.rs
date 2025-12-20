@@ -30,62 +30,218 @@ pub(crate) fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core:
 }
 
 pub mod ci_cmd {
-    use crate::commands::task;
     use crate::providers::detect_ci_provider;
-    use async_trait::async_trait;
-    use cuenv_ci::executor::{TaskRunner, run_ci};
+    use cuenv_ci::affected::compute_affected_tasks;
+    use cuenv_ci::compiler::Compiler;
+    use cuenv_ci::discovery::discover_projects;
+    use cuenv_ci::emitter::Emitter;
+    use cuenv_ci::executor::run_ci;
+    use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
     use cuenv_core::Result;
-    use std::sync::Arc;
 
-    struct CliTaskRunner;
-
-    #[async_trait]
-    impl TaskRunner for CliTaskRunner {
-        async fn run_task(&self, project_root: &std::path::Path, task_name: &str) -> Result<()> {
-            let path_str = project_root.to_string_lossy().to_string();
-            // We call execute_task. Note that execute_task expects path to folder with CUE files.
-            // It handles loading the config itself.
-            // We pass 'cuenv' as package name, matching what we used in discovery.
-            // The runner should probably reuse the loaded config if possible, but execute_task loads it again.
-            // For now this is fine.
-            task::execute_task(
-                &path_str,
-                "cuenv", // package
-                Some(task_name),
-                &[],      // labels
-                None,     // environment
-                "simple", // format
-                false,    // capture_output
-                None,     // materialize_outputs
-                false,    // show_cache_path
-                None,     // backend
-                false,    // tui
-                false,    // interactive
-                false,    // help
-                false,    // all
-                &[],      // task_args
-                None,     // executor - CI runner doesn't have access to executor
-            )
-            .await
-            .map(|_| ())
-        }
-    }
-
+    #[allow(clippy::print_stdout)]
     pub async fn execute_ci(
         dry_run: bool,
         pipeline: Option<String>,
         generate: Option<String>,
+        format: Option<String>,
         from: Option<String>,
         force: bool,
     ) -> Result<()> {
+        // Handle --format option for dynamic pipeline output
+        if let Some(fmt) = format {
+            return execute_format_output(&fmt, pipeline, from).await;
+        }
+
+        // Handle --generate option for static workflow file generation
         if let Some(provider) = generate {
-            if provider != "github" {
-                return Err(cuenv_core::Error::configuration(format!(
-                    "Unsupported CI provider: {provider}. Currently only 'github' is supported."
-                )));
+            return execute_generate(&provider, force);
+        }
+
+        // Default: run CI pipelines
+        let provider = detect_ci_provider(from);
+        run_ci(provider, dry_run, pipeline).await
+    }
+
+    /// Output pipeline in the specified format (e.g., buildkite) for dynamic pipelines
+    #[allow(clippy::print_stdout)]
+    async fn execute_format_output(
+        fmt: &str,
+        pipeline: Option<String>,
+        from: Option<String>,
+    ) -> Result<()> {
+        match fmt {
+            "buildkite" => {
+                #[cfg(feature = "buildkite")]
+                {
+                    execute_buildkite_format(pipeline, from).await
+                }
+                #[cfg(not(feature = "buildkite"))]
+                {
+                    let _ = (pipeline, from);
+                    Err(cuenv_core::Error::configuration(
+                        "Buildkite support is not enabled. Rebuild with --features buildkite",
+                    ))
+                }
+            }
+            _ => Err(cuenv_core::Error::configuration(format!(
+                "Unsupported format: {fmt}. Supported formats: buildkite"
+            ))),
+        }
+    }
+
+    /// Execute Buildkite format output - outputs pipeline YAML to stdout
+    #[cfg(feature = "buildkite")]
+    #[allow(clippy::print_stdout)]
+    async fn execute_buildkite_format(
+        pipeline: Option<String>,
+        from: Option<String>,
+    ) -> Result<()> {
+        use cuenv_buildkite::BuildkiteEmitter;
+        use std::collections::HashMap;
+
+        // Detect CI provider for changed files
+        let provider = detect_ci_provider(from);
+        let context = provider.context();
+        let changed_files = provider.changed_files().await?;
+
+        eprintln!(
+            "Context: {} (event: {}, ref: {})",
+            context.provider, context.event, context.ref_name
+        );
+        eprintln!("Changed files: {}", changed_files.len());
+
+        // Discover projects
+        let projects = discover_projects()?;
+        if projects.is_empty() {
+            return Err(cuenv_core::Error::configuration(
+                "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
+            ));
+        }
+        eprintln!("Found {} projects", projects.len());
+
+        // Build project map for cross-project dependency resolution
+        let mut project_map = HashMap::new();
+        for project in &projects {
+            let name = project.config.name.trim();
+            if !name.is_empty() {
+                project_map.insert(name.to_string(), project.clone());
+            }
+        }
+
+        // Collect all affected IR tasks
+        let mut all_ir_tasks = Vec::new();
+        let pipeline_name = pipeline.unwrap_or_else(|| "default".to_string());
+
+        for project in &projects {
+            let config = &project.config;
+
+            // Find pipeline in config
+            let Some(ci) = &config.ci else {
+                continue;
+            };
+
+            let Some(ci_pipeline) = ci.pipelines.iter().find(|p| p.name == pipeline_name) else {
+                continue;
+            };
+
+            // Get the directory containing the env.cue file
+            let project_root = project.path.parent().map_or_else(
+                || std::path::Path::new("."),
+                |p| {
+                    if p.as_os_str().is_empty() {
+                        std::path::Path::new(".")
+                    } else {
+                        p
+                    }
+                },
+            );
+
+            // For release events, run all tasks unconditionally
+            let tasks_to_run = if context.event == "release" {
+                ci_pipeline.tasks.clone()
+            } else {
+                compute_affected_tasks(
+                    &changed_files,
+                    &ci_pipeline.tasks,
+                    project_root,
+                    config,
+                    &project_map,
+                )
+            };
+
+            if tasks_to_run.is_empty() {
+                eprintln!("Project {}: No affected tasks", project.path.display());
+                continue;
             }
 
-            let workflow_content = r#"name: CI
+            eprintln!(
+                "Project {}: Affected tasks {:?}",
+                project.path.display(),
+                tasks_to_run
+            );
+
+            // Compile project to IR and filter to affected tasks
+            let compiler = Compiler::new(config.clone());
+            let ir = compiler.compile().map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
+            })?;
+
+            // Filter IR tasks to only affected ones
+            let affected_tasks: Vec<_> = ir
+                .tasks
+                .into_iter()
+                .filter(|t| tasks_to_run.contains(&t.id))
+                .collect();
+
+            all_ir_tasks.extend(affected_tasks);
+        }
+
+        if all_ir_tasks.is_empty() {
+            eprintln!("No affected tasks to run");
+            // Output empty pipeline
+            println!("steps: []");
+            return Ok(());
+        }
+
+        // Build combined IR
+        let combined_ir = IntermediateRepresentation {
+            version: "1.3".to_string(),
+            pipeline: PipelineMetadata {
+                name: pipeline_name,
+                trigger: None,
+            },
+            runtimes: vec![],
+            tasks: all_ir_tasks,
+        };
+
+        // Emit Buildkite YAML
+        let emitter = BuildkiteEmitter::new().with_emojis();
+        let yaml = emitter.emit(&combined_ir).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to emit Buildkite pipeline: {e}"))
+        })?;
+
+        // Output to stdout for buildkite-agent pipeline upload
+        println!("{yaml}");
+
+        Ok(())
+    }
+
+    /// Generate static workflow file (e.g., GitHub Actions)
+    #[allow(clippy::print_stdout)]
+    fn execute_generate(provider: &str, force: bool) -> Result<()> {
+        match provider {
+            "github" => generate_github_workflow(force),
+            "buildkite" => generate_buildkite_bootstrap(force),
+            _ => Err(cuenv_core::Error::configuration(format!(
+                "Unsupported CI provider for --generate: {provider}. Supported: github, buildkite"
+            ))),
+        }
+    }
+
+    #[allow(clippy::print_stdout)]
+    fn generate_github_workflow(force: bool) -> Result<()> {
+        let workflow_content = r#"name: CI
 
 on:
   push:
@@ -112,46 +268,75 @@ jobs:
         run: cuenv ci
 "#;
 
-            let workflows_dir = std::path::Path::new(".github/workflows");
-            if !workflows_dir.exists() {
-                std::fs::create_dir_all(workflows_dir).map_err(|e| cuenv_core::Error::Io {
-                    source: e,
-                    path: Some(workflows_dir.to_path_buf().into_boxed_path()),
-                    operation: "create directory".to_string(),
-                })?;
-            }
-
-            let workflow_path = workflows_dir.join("ci.yml");
-
-            // Check if file exists and force not specified
-            if workflow_path.exists() && !force {
-                return Err(cuenv_core::Error::configuration(format!(
-                    "Workflow file already exists at: {}. Use --force to overwrite.",
-                    workflow_path.display()
-                )));
-            }
-
-            std::fs::write(&workflow_path, workflow_content).map_err(|e| {
-                cuenv_core::Error::Io {
-                    source: e,
-                    path: Some(workflow_path.clone().into_boxed_path()),
-                    operation: "write workflow file".to_string(),
-                }
+        let workflows_dir = std::path::Path::new(".github/workflows");
+        if !workflows_dir.exists() {
+            std::fs::create_dir_all(workflows_dir).map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(workflows_dir.to_path_buf().into_boxed_path()),
+                operation: "create directory".to_string(),
             })?;
-
-            println!(
-                "Generated GitHub Actions workflow at: {}",
-                workflow_path.display()
-            );
-            return Ok(());
         }
 
-        let runner = Arc::new(CliTaskRunner);
+        let workflow_path = workflows_dir.join("ci.yml");
 
-        // Detect CI provider (with optional base_ref for local provider)
-        let provider = detect_ci_provider(from);
+        if workflow_path.exists() && !force {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Workflow file already exists at: {}. Use --force to overwrite.",
+                workflow_path.display()
+            )));
+        }
 
-        run_ci(provider, dry_run, pipeline, runner).await
+        std::fs::write(&workflow_path, workflow_content).map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(workflow_path.clone().into_boxed_path()),
+            operation: "write workflow file".to_string(),
+        })?;
+
+        println!(
+            "Generated GitHub Actions workflow at: {}",
+            workflow_path.display()
+        );
+        Ok(())
+    }
+
+    #[allow(clippy::print_stdout)]
+    fn generate_buildkite_bootstrap(force: bool) -> Result<()> {
+        let pipeline_content = r#"# Buildkite bootstrap pipeline for cuenv
+# This generates a dynamic pipeline based on affected tasks
+steps:
+  - label: ":pipeline: Generate Pipeline"
+    command: cuenv ci --format buildkite | buildkite-agent pipeline upload
+"#;
+
+        let buildkite_dir = std::path::Path::new(".buildkite");
+        if !buildkite_dir.exists() {
+            std::fs::create_dir_all(buildkite_dir).map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(buildkite_dir.to_path_buf().into_boxed_path()),
+                operation: "create directory".to_string(),
+            })?;
+        }
+
+        let pipeline_path = buildkite_dir.join("pipeline.yml");
+
+        if pipeline_path.exists() && !force {
+            return Err(cuenv_core::Error::configuration(format!(
+                "Pipeline file already exists at: {}. Use --force to overwrite.",
+                pipeline_path.display()
+            )));
+        }
+
+        std::fs::write(&pipeline_path, pipeline_content).map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(pipeline_path.clone().into_boxed_path()),
+            operation: "write pipeline file".to_string(),
+        })?;
+
+        println!(
+            "Generated Buildkite bootstrap pipeline at: {}",
+            pipeline_path.display()
+        );
+        Ok(())
     }
 }
 
@@ -289,6 +474,7 @@ pub enum Command {
         dry_run: bool,
         pipeline: Option<String>,
         generate: Option<String>,
+        format: Option<String>,
         from: Option<String>,
         force: bool,
     },
@@ -542,10 +728,11 @@ impl CommandExecutor {
                 dry_run,
                 pipeline,
                 generate,
+                format,
                 from,
                 force,
             } => {
-                self.execute_ci(dry_run, pipeline, generate, from, force)
+                self.execute_ci(dry_run, pipeline, generate, format, from, force)
                     .await
             }
             Command::Sync {
@@ -1143,6 +1330,7 @@ impl CommandExecutor {
         dry_run: bool,
         pipeline: Option<String>,
         generate: Option<String>,
+        format: Option<String>,
         from: Option<String>,
         force: bool,
     ) -> Result<()> {
@@ -1151,7 +1339,7 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        match ci_cmd::execute_ci(dry_run, pipeline, generate, from, force).await {
+        match ci_cmd::execute_ci(dry_run, pipeline, generate, format, from, force).await {
             Ok(()) => {
                 self.send_event(Event::CommandComplete {
                     command: command_name.to_string(),
