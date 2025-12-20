@@ -52,7 +52,7 @@ jobs:
         nix build .#cuenv
         echo "$(pwd)/result/bin" >> $GITHUB_PATH
     - name: docs.build
-      run: cuenv task docs.build
+      run: cuenv task docs.build -e production
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   docs-deploy:
@@ -80,6 +80,6 @@ jobs:
         nix build .#cuenv
         echo "$(pwd)/result/bin" >> $GITHUB_PATH
     - name: docs.deploy
-      run: cuenv task docs.deploy
+      run: cuenv task docs.deploy -e production
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

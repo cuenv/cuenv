@@ -159,6 +159,8 @@ pub struct ProviderConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
     pub name: String,
+    /// Environment for secret resolution (e.g., "production")
+    pub environment: Option<String>,
     pub when: Option<PipelineCondition>,
     pub tasks: Vec<String>,
     /// Whether to derive trigger paths from task inputs.
@@ -253,6 +255,7 @@ mod tests {
             pipelines: vec![
                 Pipeline {
                     name: "ci".to_string(),
+                    environment: None,
                     when: None,
                     tasks: vec!["test".to_string()],
                     derive_paths: None,
@@ -266,6 +269,7 @@ mod tests {
                 },
                 Pipeline {
                     name: "release".to_string(),
+                    environment: None,
                     when: None,
                     tasks: vec!["deploy".to_string()],
                     derive_paths: None,

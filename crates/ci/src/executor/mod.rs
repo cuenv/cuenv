@@ -411,6 +411,7 @@ mod tests {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
+                environment: None,
                 project_name: None,
                 trigger: None,
             },

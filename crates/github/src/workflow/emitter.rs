@@ -370,9 +370,10 @@ impl GitHubActionsEmitter {
     /// Build jobs from IR tasks
     fn build_jobs(&self, ir: &IntermediateRepresentation) -> IndexMap<String, Job> {
         let mut jobs = IndexMap::new();
+        let environment = ir.pipeline.environment.as_deref();
 
         for task in &ir.tasks {
-            let job = self.build_job(task);
+            let job = self.build_job(task, environment);
             jobs.insert(sanitize_job_id(&task.id), job);
         }
 
@@ -381,7 +382,7 @@ impl GitHubActionsEmitter {
 
     /// Build a job from an IR task
     #[allow(clippy::too_many_lines)]
-    fn build_job(&self, task: &Task) -> Job {
+    fn build_job(&self, task: &Task, environment: Option<&str>) -> Job {
         let mut steps = Vec::new();
 
         // Checkout step
@@ -433,7 +434,12 @@ impl GitHubActionsEmitter {
         }
 
         // Run the task
-        let mut task_step = Step::run(format!("cuenv task {}", task.id))
+        let task_command = if let Some(env) = environment {
+            format!("cuenv task {} -e {}", task.id, env)
+        } else {
+            format!("cuenv task {}", task.id)
+        };
+        let mut task_step = Step::run(task_command)
             .with_name(task.id.clone())
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
 
@@ -650,6 +656,7 @@ mod tests {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
+                environment: None,
                 project_name: None,
                 trigger: None,
             },
