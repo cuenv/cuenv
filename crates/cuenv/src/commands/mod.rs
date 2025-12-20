@@ -87,7 +87,7 @@ pub mod ci_cmd {
                     ))
                 }
             }
-            "github" => execute_github_format(pipeline, check),
+            "github" => execute_github_format(pipeline.as_deref(), check),
             _ => Err(cuenv_core::Error::configuration(format!(
                 "Unsupported format: {fmt}. Supported formats: buildkite, github"
             ))),
@@ -97,7 +97,7 @@ pub mod ci_cmd {
     /// Execute GitHub Actions format output - generates workflow files
     /// When check=true without --pipeline, checks ALL pipelines are in sync.
     #[allow(clippy::print_stdout)]
-    fn execute_github_format(pipeline: Option<String>, check: bool) -> Result<()> {
+    fn execute_github_format(pipeline: Option<&str>, check: bool) -> Result<()> {
         // Discover projects
         let projects = discover_projects()?;
         if projects.is_empty() {
@@ -109,8 +109,8 @@ pub mod ci_cmd {
 
         // Determine which pipelines to process
         // When no --pipeline is specified, process ALL pipelines
-        let pipelines_to_process: Vec<String> = if let Some(ref p) = pipeline {
-            vec![p.clone()]
+        let pipelines_to_process: Vec<String> = if let Some(p) = pipeline {
+            vec![p.to_string()]
         } else {
             // No --pipeline specified: process all pipelines
             collect_all_pipeline_names(&projects)
@@ -136,19 +136,18 @@ pub mod ci_cmd {
             let mut out_of_sync = Vec::new();
             for (filename, content) in &all_workflows {
                 let path = workflows_dir.join(filename);
-                if !path.exists() {
-                    out_of_sync.push(format!("{} (missing)", filename));
-                } else {
-                    let existing = std::fs::read_to_string(&path).map_err(|e| {
-                        cuenv_core::Error::Io {
+                if path.exists() {
+                    let existing =
+                        std::fs::read_to_string(&path).map_err(|e| cuenv_core::Error::Io {
                             source: e,
                             path: Some(path.clone().into_boxed_path()),
                             operation: "read workflow file".to_string(),
-                        }
-                    })?;
+                        })?;
                     if existing != *content {
                         out_of_sync.push(filename.clone());
                     }
+                } else {
+                    out_of_sync.push(format!("{filename} (missing)"));
                 }
             }
             if !out_of_sync.is_empty() {
@@ -1625,6 +1624,7 @@ impl CommandExecutor {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn execute_ci(
         &self,
         dry_run: bool,

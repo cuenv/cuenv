@@ -1214,10 +1214,9 @@ impl Commands {
                 }
             }
             Commands::Secrets { subcommand } => match subcommand {
-                SecretsCommands::Setup { provider, wasm_url } => Command::SecretsSetup {
-                    provider,
-                    wasm_url,
-                },
+                SecretsCommands::Setup { provider, wasm_url } => {
+                    Command::SecretsSetup { provider, wasm_url }
+                }
             },
         }
     }
