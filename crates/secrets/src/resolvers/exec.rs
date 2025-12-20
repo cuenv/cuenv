@@ -83,7 +83,9 @@ impl SecretResolver for ExecSecretResolver {
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
         // Try to parse source as JSON ExecSecretConfig
         if let Ok(config) = serde_json::from_str::<ExecSecretConfig>(&spec.source) {
-            return self.execute_command(name, &config.command, &config.args).await;
+            return self
+                .execute_command(name, &config.command, &config.args)
+                .await;
         }
 
         // Fallback: treat source as a simple command (shell expansion)

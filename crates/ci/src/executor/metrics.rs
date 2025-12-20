@@ -124,14 +124,17 @@ impl CacheMetrics {
 
     /// Record cache check latency
     pub fn record_check_latency(&self, latency_us: u64) {
-        self.check_latency_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.check_latency_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.check_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record task execution duration
     pub fn record_task_duration(&self, task_id: &str, duration_ms: u64) {
         let duration_us = duration_ms * 1000;
-        self.task_durations.total_us.fetch_add(duration_us, Ordering::Relaxed);
+        self.task_durations
+            .total_us
+            .fetch_add(duration_us, Ordering::Relaxed);
         self.task_durations.count.fetch_add(1, Ordering::Relaxed);
 
         if let Ok(mut map) = self.task_durations.per_task.write() {
@@ -149,7 +152,9 @@ impl CacheMetrics {
     /// Record runtime materialization duration
     pub fn record_runtime_materialization(&self, runtime_id: &str, duration_ms: u64) {
         let duration_us = duration_ms * 1000;
-        self.runtime_durations.total_us.fetch_add(duration_us, Ordering::Relaxed);
+        self.runtime_durations
+            .total_us
+            .fetch_add(duration_us, Ordering::Relaxed);
         self.runtime_durations.count.fetch_add(1, Ordering::Relaxed);
 
         if let Ok(mut map) = self.runtime_durations.per_runtime.write() {
@@ -310,12 +315,21 @@ impl CacheMetrics {
             "# HELP cuenv_cache_restore_failure_total Total number of cache restore failures\n",
         );
         output.push_str("# TYPE cuenv_cache_restore_failure_total counter\n");
-        for error_type in &["connection", "timeout", "not_found", "digest_mismatch", "other"] {
+        for error_type in &[
+            "connection",
+            "timeout",
+            "not_found",
+            "digest_mismatch",
+            "other",
+        ] {
             let count = match *error_type {
                 "connection" => self.restore_failures.connection.load(Ordering::Relaxed),
                 "timeout" => self.restore_failures.timeout.load(Ordering::Relaxed),
                 "not_found" => self.restore_failures.not_found.load(Ordering::Relaxed),
-                "digest_mismatch" => self.restore_failures.digest_mismatch.load(Ordering::Relaxed),
+                "digest_mismatch" => self
+                    .restore_failures
+                    .digest_mismatch
+                    .load(Ordering::Relaxed),
                 "other" => self.restore_failures.other.load(Ordering::Relaxed),
                 _ => 0,
             };
@@ -325,7 +339,9 @@ impl CacheMetrics {
         }
 
         // Bytes transferred
-        output.push_str("# HELP cuenv_cache_bytes_downloaded_total Total bytes downloaded from cache\n");
+        output.push_str(
+            "# HELP cuenv_cache_bytes_downloaded_total Total bytes downloaded from cache\n",
+        );
         output.push_str("# TYPE cuenv_cache_bytes_downloaded_total counter\n");
         output.push_str(&format!(
             "cuenv_cache_bytes_downloaded_total {}\n",
@@ -340,10 +356,15 @@ impl CacheMetrics {
         ));
 
         // Task execution metrics
-        output.push_str("# HELP cuenv_task_duration_seconds_total Total task execution time in seconds\n");
+        output.push_str(
+            "# HELP cuenv_task_duration_seconds_total Total task execution time in seconds\n",
+        );
         output.push_str("# TYPE cuenv_task_duration_seconds_total counter\n");
-        let task_total_secs = self.task_durations.total_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
-        output.push_str(&format!("cuenv_task_duration_seconds_total {task_total_secs:.3}\n"));
+        let task_total_secs =
+            self.task_durations.total_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        output.push_str(&format!(
+            "cuenv_task_duration_seconds_total {task_total_secs:.3}\n"
+        ));
 
         output.push_str("# HELP cuenv_tasks_executed_total Total number of tasks executed\n");
         output.push_str("# TYPE cuenv_tasks_executed_total counter\n");
@@ -355,10 +376,15 @@ impl CacheMetrics {
         // Runtime materialization metrics
         output.push_str("# HELP cuenv_runtime_materialization_seconds_total Total runtime materialization time in seconds\n");
         output.push_str("# TYPE cuenv_runtime_materialization_seconds_total counter\n");
-        let runtime_total_secs = self.runtime_durations.total_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
-        output.push_str(&format!("cuenv_runtime_materialization_seconds_total {runtime_total_secs:.3}\n"));
+        let runtime_total_secs =
+            self.runtime_durations.total_us.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        output.push_str(&format!(
+            "cuenv_runtime_materialization_seconds_total {runtime_total_secs:.3}\n"
+        ));
 
-        output.push_str("# HELP cuenv_runtimes_materialized_total Total number of runtimes materialized\n");
+        output.push_str(
+            "# HELP cuenv_runtimes_materialized_total Total number of runtimes materialized\n",
+        );
         output.push_str("# TYPE cuenv_runtimes_materialized_total counter\n");
         output.push_str(&format!(
             "cuenv_runtimes_materialized_total {}\n",
@@ -410,7 +436,9 @@ impl ErrorCounters {
             RestoreErrorType::Connection => self.connection.fetch_add(1, Ordering::Relaxed),
             RestoreErrorType::Timeout => self.timeout.fetch_add(1, Ordering::Relaxed),
             RestoreErrorType::NotFound => self.not_found.fetch_add(1, Ordering::Relaxed),
-            RestoreErrorType::DigestMismatch => self.digest_mismatch.fetch_add(1, Ordering::Relaxed),
+            RestoreErrorType::DigestMismatch => {
+                self.digest_mismatch.fetch_add(1, Ordering::Relaxed)
+            }
             RestoreErrorType::Other => self.other.fetch_add(1, Ordering::Relaxed),
         };
     }

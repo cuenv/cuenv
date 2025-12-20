@@ -109,7 +109,11 @@ impl IRTaskRunner {
 
     /// Create a new task runner with custom shell path
     #[must_use]
-    pub fn with_shell(project_root: PathBuf, capture_output: bool, shell_path: impl Into<String>) -> Self {
+    pub fn with_shell(
+        project_root: PathBuf,
+        capture_output: bool,
+        shell_path: impl Into<String>,
+    ) -> Self {
         Self {
             project_root,
             capture_output,

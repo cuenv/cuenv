@@ -338,8 +338,8 @@ pub fn get_project_cache_keys(
         path: Some(path.clone().into()),
         operation: "read".into(),
     })?;
-    let index: TaskLatestIndex =
-        serde_json::from_str(&content).map_err(|e| Error::configuration(format!("Failed to parse task index: {e}")))?;
+    let index: TaskLatestIndex = serde_json::from_str(&content)
+        .map_err(|e| Error::configuration(format!("Failed to parse task index: {e}")))?;
     let proj_hash = project_hash(project_root);
     Ok(index.entries.get(&proj_hash).cloned())
 }

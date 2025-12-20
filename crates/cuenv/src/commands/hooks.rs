@@ -147,9 +147,7 @@ fn get_config_hash(
     } else {
         // If not approved, compute it from current config
         let config = evaluate_config(directory, package, executor)?;
-        Ok(cuenv_core::hooks::approval::compute_approval_hash(
-            &config,
-        ))
+        Ok(cuenv_core::hooks::approval::compute_approval_hash(&config))
     }
 }
 

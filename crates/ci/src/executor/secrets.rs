@@ -9,9 +9,7 @@ use crate::ir::SecretConfig;
 use std::collections::HashMap;
 
 // Re-export core types from cuenv-secrets
-pub use cuenv_secrets::{
-    compute_secret_fingerprint, ResolvedSecrets, SaltConfig, SecretError,
-};
+pub use cuenv_secrets::{ResolvedSecrets, SaltConfig, SecretError, compute_secret_fingerprint};
 
 /// Trait for resolving secrets from various sources
 ///
@@ -299,8 +297,14 @@ mod tests {
 
                 let resolved = CIResolvedSecrets::from_env(&secrets, Some("test-salt")).unwrap();
 
-                assert_eq!(resolved.values().get("secret1"), Some(&"value1".to_string()));
-                assert_eq!(resolved.values().get("secret2"), Some(&"value2".to_string()));
+                assert_eq!(
+                    resolved.values().get("secret1"),
+                    Some(&"value1".to_string())
+                );
+                assert_eq!(
+                    resolved.values().get("secret2"),
+                    Some(&"value2".to_string())
+                );
                 assert!(resolved.fingerprints().contains_key("secret1"));
                 assert!(!resolved.fingerprints().contains_key("secret2")); // cache_key: false
             },

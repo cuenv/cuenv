@@ -180,8 +180,7 @@ mod tests {
 
     #[test]
     fn test_shell_path_custom() {
-        let config = CIExecutorConfig::new(PathBuf::from("/project"))
-            .with_shell_path("/bin/bash");
+        let config = CIExecutorConfig::new(PathBuf::from("/project")).with_shell_path("/bin/bash");
         assert_eq!(config.shell_path, "/bin/bash");
     }
 }

@@ -623,10 +623,7 @@ mod tests {
 
         let mut config1 = base_project();
         config1.env = Some(Env {
-            base: HashMap::from([(
-                "TEST".to_string(),
-                EnvValue::String("value1".to_string()),
-            )]),
+            base: HashMap::from([("TEST".to_string(), EnvValue::String("value1".to_string()))]),
             environment: None,
         });
         config1.hooks = Some(hooks.clone());
@@ -634,14 +631,8 @@ mod tests {
         let mut config2 = base_project();
         config2.env = Some(Env {
             base: HashMap::from([
-                (
-                    "TEST".to_string(),
-                    EnvValue::String("value2".to_string()),
-                ),
-                (
-                    "NEW_VAR".to_string(),
-                    EnvValue::String("new".to_string()),
-                ),
+                ("TEST".to_string(), EnvValue::String("value2".to_string())),
+                ("NEW_VAR".to_string(), EnvValue::String("new".to_string())),
             ]),
             environment: None,
         });
@@ -676,9 +667,7 @@ mod tests {
             on_enter: Some(hooks_map.clone()),
             on_exit: None,
         });
-        config1
-            .tasks
-            .insert("build".to_string(), make_task("npm"));
+        config1.tasks.insert("build".to_string(), make_task("npm"));
 
         let mut config2 = base_project();
         config2.hooks = Some(Hooks {
@@ -696,10 +685,7 @@ mod tests {
         // Configs without hooks should produce same consistent hash
         let mut config1 = base_project();
         config1.env = Some(Env {
-            base: HashMap::from([(
-                "TEST".to_string(),
-                EnvValue::String("value".to_string()),
-            )]),
+            base: HashMap::from([("TEST".to_string(), EnvValue::String("value".to_string()))]),
             environment: None,
         });
 
@@ -771,10 +757,7 @@ mod tests {
         let directory = Path::new("/test/dir");
         let mut config = base_project();
         config.env = Some(Env {
-            base: HashMap::from([(
-                "TEST".to_string(),
-                EnvValue::String("value".to_string()),
-            )]),
+            base: HashMap::from([("TEST".to_string(), EnvValue::String("value".to_string()))]),
             environment: None,
         });
 

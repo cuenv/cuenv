@@ -11,11 +11,10 @@ use crate::ir::{CachePolicy, OutputType, Task as IRTask};
 use async_trait::async_trait;
 use backoff::ExponentialBackoff;
 use bazel_remote_apis::build::bazel::remote::execution::v2::{
-    action_cache_client::ActionCacheClient,
+    ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest, Digest,
+    GetActionResultRequest, OutputFile, UpdateActionResultRequest,
+    action_cache_client::ActionCacheClient, batch_update_blobs_request,
     content_addressable_storage_client::ContentAddressableStorageClient,
-    ActionResult, BatchReadBlobsRequest, BatchReadBlobsResponse, BatchUpdateBlobsRequest,
-    batch_update_blobs_request, Digest, GetActionResultRequest, OutputFile,
-    UpdateActionResultRequest,
 };
 
 use sha2::{Digest as Sha2Digest, Sha256};
@@ -143,9 +142,9 @@ impl RemoteCacheBackend {
         if self.config.tls_enabled {
             let mut tls_config = ClientTlsConfig::new();
             if let Some(cert_path) = &self.config.tls_cert_path {
-                let cert = tokio::fs::read(cert_path)
-                    .await
-                    .map_err(|e| BackendError::Connection(format!("Failed to read TLS cert: {e}")))?;
+                let cert = tokio::fs::read(cert_path).await.map_err(|e| {
+                    BackendError::Connection(format!("Failed to read TLS cert: {e}"))
+                })?;
                 let cert = tonic::transport::Certificate::from_pem(cert);
                 tls_config = tls_config.ca_certificate(cert);
             }
@@ -229,7 +228,10 @@ impl RemoteCacheBackend {
     }
 
     /// Download blobs from CAS with retry
-    async fn download_blobs(&self, digests: Vec<Digest>) -> BackendResult<HashMap<String, Vec<u8>>> {
+    async fn download_blobs(
+        &self,
+        digests: Vec<Digest>,
+    ) -> BackendResult<HashMap<String, Vec<u8>>> {
         if digests.is_empty() {
             return Ok(HashMap::new());
         }
@@ -241,9 +243,7 @@ impl RemoteCacheBackend {
             digest_function: 0,
         };
 
-        let response = self
-            .retry_cas_read(request)
-            .await?;
+        let response = self.retry_cas_read(request).await?;
 
         let mut blobs = HashMap::new();
         for resp in response.responses {
@@ -292,7 +292,10 @@ impl RemoteCacheBackend {
     }
 
     /// Retry helper for CAS read operations
-    async fn retry_cas_read(&self, request: BatchReadBlobsRequest) -> BackendResult<BatchReadBlobsResponse> {
+    async fn retry_cas_read(
+        &self,
+        request: BatchReadBlobsRequest,
+    ) -> BackendResult<BatchReadBlobsResponse> {
         let mut last_error = None;
         let mut delay = Duration::from_millis(100);
 

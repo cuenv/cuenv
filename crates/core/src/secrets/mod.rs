@@ -14,8 +14,8 @@ use tokio::process::Command;
 
 // Re-export core secret resolution types from cuenv-secrets
 pub use cuenv_secrets::{
-    compute_secret_fingerprint, ResolvedSecrets, SaltConfig, SecretError, SecretResolver,
-    SecretSpec,
+    ResolvedSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec,
+    compute_secret_fingerprint,
 };
 
 // Re-export resolver implementations

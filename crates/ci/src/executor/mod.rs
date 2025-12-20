@@ -18,7 +18,9 @@ pub mod remote;
 pub mod runner;
 pub mod secrets;
 
-pub use backend::{BackendError, BackendResult, CacheBackend, CacheEntry, CacheLookupResult, CacheOutput};
+pub use backend::{
+    BackendError, BackendResult, CacheBackend, CacheEntry, CacheLookupResult, CacheOutput,
+};
 pub use cache::LocalCacheBackend;
 pub use config::CIExecutorConfig;
 pub use lock::{ConcurrencyLock, LockConfig, LockError, LockGuard};
@@ -133,9 +135,7 @@ impl CIExecutor {
     /// Get the cache backend name (for logging/metrics)
     #[must_use]
     pub fn cache_backend_name(&self) -> &'static str {
-        self.cache_backend
-            .as_ref()
-            .map_or("local", |b| b.name())
+        self.cache_backend.as_ref().map_or("local", |b| b.name())
     }
 
     /// Execute a pipeline from a project configuration
@@ -464,8 +464,7 @@ mod tests {
                 },
             )]);
 
-            let resolved =
-                CIResolvedSecrets::from_env(&secret_configs, Some("test-salt")).unwrap();
+            let resolved = CIResolvedSecrets::from_env(&secret_configs, Some("test-salt")).unwrap();
             secrets.insert("task1".to_string(), resolved);
 
             let fingerprints = executor.extract_fingerprints(&secrets);

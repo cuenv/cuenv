@@ -254,7 +254,13 @@ impl ConcurrencyLock {
         // Sanitize group name for filesystem
         let safe_name: String = group
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         self.config.lock_dir.join(format!("{}.lock", safe_name))
     }

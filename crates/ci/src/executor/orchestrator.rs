@@ -13,14 +13,14 @@ use crate::provider::CIProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
-use cuenv_core::manifest::Project;
 use cuenv_core::Result;
+use cuenv_core::manifest::Project;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::ExecutorError;
 use super::config::CIExecutorConfig;
 use super::runner::{IRTaskRunner, TaskOutput};
-use super::ExecutorError;
 
 /// Run the CI pipeline logic
 ///
@@ -315,8 +315,7 @@ fn write_pipeline_report(
     let sha_dir = report_dir.join(&context.sha);
     let _ = std::fs::create_dir_all(&sha_dir);
 
-    let project_filename =
-        project.path.display().to_string().replace(['/', '\\'], "-") + ".json";
+    let project_filename = project.path.display().to_string().replace(['/', '\\'], "-") + ".json";
     let report_path = sha_dir.join(project_filename);
 
     if let Err(e) = write_report(report, &report_path) {
