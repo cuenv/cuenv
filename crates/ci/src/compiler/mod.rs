@@ -7,13 +7,15 @@ pub mod digest;
 
 use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
 use crate::ir::{
-    CachePolicy, IntermediateRepresentation, IrValidator, OutputDeclaration, OutputType,
-    PurityMode, Runtime, SecretConfig, Task as IrTask, TriggerCondition,
+    CachePolicy, IntermediateRepresentation, IrValidator, ManualTriggerConfig, OutputDeclaration,
+    OutputType, PurityMode, Runtime, SecretConfig, Task as IrTask, TriggerCondition,
+    WorkflowDispatchInputDef,
 };
+use cuenv_core::ci::{CI, ManualTrigger, Pipeline};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
 use digest::DigestBuilder;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
@@ -246,14 +248,8 @@ impl Compiler {
         // Set up trigger conditions from CI configuration
         if let Some(ci_config) = &self.project.ci
             && let Some(first_pipeline) = ci_config.pipelines.first()
-            && let Some(when_condition) = &first_pipeline.when
         {
-            ir.pipeline.trigger = Some(TriggerCondition {
-                branch: when_condition.branch.as_ref().and_then(|b| match b {
-                    cuenv_core::ci::StringOrVec::String(s) => Some(s.clone()),
-                    cuenv_core::ci::StringOrVec::Vec(v) => v.first().cloned(),
-                }),
-            });
+            ir.pipeline.trigger = Some(self.build_trigger_condition(first_pipeline, ci_config));
         }
 
         // Compile tasks
@@ -270,6 +266,137 @@ impl Compiler {
         })?;
 
         Ok(ir)
+    }
+
+    /// Build trigger condition for a pipeline from its configuration
+    fn build_trigger_condition(&self, pipeline: &Pipeline, ci_config: &CI) -> TriggerCondition {
+        let when = pipeline.when.as_ref();
+
+        // Extract branch patterns
+        let branches = when
+            .and_then(|w| w.branch.as_ref())
+            .map(cuenv_core::ci::StringOrVec::to_vec)
+            .unwrap_or_default();
+
+        // Extract pull_request setting
+        let pull_request = when.and_then(|w| w.pull_request);
+
+        // Extract scheduled cron expressions
+        let scheduled = when
+            .and_then(|w| w.scheduled.as_ref())
+            .map(cuenv_core::ci::StringOrVec::to_vec)
+            .unwrap_or_default();
+
+        // Extract release types
+        let release = when.and_then(|w| w.release.clone()).unwrap_or_default();
+
+        // Build manual trigger config
+        let manual = when.and_then(|w| w.manual.as_ref()).map(|m| match m {
+            ManualTrigger::Enabled(enabled) => ManualTriggerConfig {
+                enabled: *enabled,
+                inputs: HashMap::new(),
+            },
+            ManualTrigger::WithInputs(inputs) => ManualTriggerConfig {
+                enabled: true,
+                inputs: inputs
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            WorkflowDispatchInputDef {
+                                description: v.description.clone(),
+                                required: v.required.unwrap_or(false),
+                                default: v.default.clone(),
+                                input_type: v.input_type.clone(),
+                                options: v.options.clone().unwrap_or_default(),
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        });
+
+        // Determine whether to derive paths from task inputs
+        let should_derive_paths = pipeline.derive_paths.unwrap_or_else(|| {
+            // Default: derive paths if we have branch/PR triggers (not scheduled-only)
+            !branches.is_empty() || pull_request.is_some()
+        });
+
+        // Derive paths from task inputs
+        let paths = if should_derive_paths {
+            self.derive_trigger_paths(pipeline)
+        } else {
+            Vec::new()
+        };
+
+        // Get paths_ignore from provider config
+        let paths_ignore = ci_config
+            .github_config_for_pipeline(&pipeline.name)
+            .paths_ignore
+            .unwrap_or_default();
+
+        TriggerCondition {
+            branches,
+            pull_request,
+            scheduled,
+            release,
+            manual,
+            paths,
+            paths_ignore,
+        }
+    }
+
+    /// Derive trigger paths from task inputs
+    fn derive_trigger_paths(&self, pipeline: &Pipeline) -> Vec<String> {
+        let mut paths = HashSet::new();
+
+        // Collect inputs from all pipeline tasks (including transitive deps)
+        for task_name in &pipeline.tasks {
+            self.collect_task_inputs(task_name, &mut paths);
+        }
+
+        // Add implicit CUE inputs (changes here should always trigger)
+        paths.insert("env.cue".to_string());
+        paths.insert("schema/**".to_string());
+        paths.insert("cue.mod/**".to_string());
+
+        // Sort for deterministic output
+        let mut result: Vec<_> = paths.into_iter().collect();
+        result.sort();
+        result
+    }
+
+    /// Recursively collect task inputs including dependencies
+    fn collect_task_inputs(&self, task_name: &str, paths: &mut HashSet<String>) {
+        if let Some(task) = self.find_task(task_name) {
+            // Add direct inputs
+            for input in task.iter_path_inputs() {
+                paths.insert(input.clone());
+            }
+            // Recurse into dependencies
+            for dep in &task.depends_on {
+                self.collect_task_inputs(dep, paths);
+            }
+        }
+    }
+
+    /// Find a task by name (handles dotted paths for nested tasks)
+    fn find_task(&self, name: &str) -> Option<&Task> {
+        let parts: Vec<&str> = name.split('.').collect();
+        let mut current_tasks = &self.project.tasks;
+
+        for (i, part) in parts.iter().enumerate() {
+            match current_tasks.get(*part) {
+                Some(TaskDefinition::Single(task)) if i == parts.len() - 1 => {
+                    return Some(task);
+                }
+                Some(TaskDefinition::Group(TaskGroup::Parallel(parallel))) => {
+                    current_tasks = &parallel.tasks;
+                }
+                _ => return None,
+            }
+        }
+        None
     }
 
     /// Compile task definitions into IR tasks

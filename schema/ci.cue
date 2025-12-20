@@ -1,12 +1,25 @@
 package schema
 
+// Workflow dispatch input definition for manual triggers
+#WorkflowDispatchInput: close({
+	description!: string
+	required?:    bool
+	default?:     string
+	type?:        "string" | "boolean" | "choice" | "environment"
+	options?: [...string] // only valid when type is "choice"
+})
+
+// Workflow dispatch inputs map
+#WorkflowDispatchInputs: [string]: #WorkflowDispatchInput
+
 #PipelineCondition: close({
 	pullRequest?:   bool
 	branch?:        string | [...string]
 	tag?:           string | [...string]
 	defaultBranch?: bool
-	scheduled?:     bool
-	manual?:        bool
+	scheduled?:     string | [...string]           // cron expression(s)
+	manual?:        bool | #WorkflowDispatchInputs // simple bool OR with inputs
+	release?: [...string]                          // release event types e.g. ["published"]
 })
 
 // GitHub Actions provider configuration
@@ -53,10 +66,11 @@ package schema
 })
 
 #Pipeline: close({
-	name:      string
-	when?:     #PipelineCondition
-	tasks:     [...string]
-	provider?: #ProviderConfig
+	name:         string
+	when?:        #PipelineCondition
+	tasks:        [...string]
+	derivePaths?: bool // whether to derive trigger paths from task inputs
+	provider?:    #ProviderConfig
 })
 
 #CI: close({

@@ -4,11 +4,11 @@
 
 use crate::workflow::schema::{
     Concurrency, Environment, Job, PermissionLevel, Permissions, PullRequestTrigger, PushTrigger,
-    ReleaseTrigger, RunsOn, Step, Workflow, WorkflowDispatchTrigger, WorkflowInput,
-    WorkflowTriggers,
+    ReleaseTrigger, RunsOn, ScheduleTrigger, Step, Workflow, WorkflowDispatchTrigger,
+    WorkflowInput, WorkflowTriggers,
 };
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
-use cuenv_ci::ir::{IntermediateRepresentation, OutputType, Task};
+use cuenv_ci::ir::{IntermediateRepresentation, OutputType, Task, TriggerCondition};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
@@ -214,26 +214,120 @@ impl GitHubActionsEmitter {
 
     /// Build workflow triggers from IR
     fn build_triggers(&self, ir: &IntermediateRepresentation) -> WorkflowTriggers {
-        let branches = ir
-            .pipeline
-            .trigger
-            .as_ref()
-            .and_then(|t| t.branch.clone())
-            .map_or_else(|| vec!["main".to_string()], |b| vec![b]);
+        let trigger = ir.pipeline.trigger.as_ref();
 
         WorkflowTriggers {
-            push: Some(PushTrigger {
-                branches: branches.clone(),
-                paths_ignore: self.default_paths_ignore.clone(),
-                ..Default::default()
-            }),
-            pull_request: Some(PullRequestTrigger {
-                branches,
-                paths_ignore: self.default_paths_ignore.clone(),
-                ..Default::default()
-            }),
-            ..Default::default()
+            push: self.build_push_trigger(trigger),
+            pull_request: self.build_pr_trigger(trigger),
+            release: Self::build_release_trigger(trigger),
+            workflow_dispatch: Self::build_manual_trigger(trigger),
+            schedule: Self::build_schedule_trigger(trigger),
         }
+    }
+
+    /// Build push trigger from IR trigger condition
+    fn build_push_trigger(&self, trigger: Option<&TriggerCondition>) -> Option<PushTrigger> {
+        let trigger = trigger?;
+
+        // Only emit push trigger if we have branch conditions
+        if trigger.branches.is_empty() {
+            return None;
+        }
+
+        Some(PushTrigger {
+            branches: trigger.branches.clone(),
+            paths: trigger.paths.clone(),
+            paths_ignore: if trigger.paths_ignore.is_empty() {
+                self.default_paths_ignore.clone()
+            } else {
+                trigger.paths_ignore.clone()
+            },
+            ..Default::default()
+        })
+    }
+
+    /// Build pull request trigger from IR trigger condition
+    fn build_pr_trigger(&self, trigger: Option<&TriggerCondition>) -> Option<PullRequestTrigger> {
+        let trigger = trigger?;
+
+        // Emit PR trigger if explicitly enabled or if we have branch conditions
+        if !trigger.branches.is_empty() || trigger.pull_request == Some(true) {
+            Some(PullRequestTrigger {
+                branches: trigger.branches.clone(),
+                paths: trigger.paths.clone(),
+                paths_ignore: if trigger.paths_ignore.is_empty() {
+                    self.default_paths_ignore.clone()
+                } else {
+                    trigger.paths_ignore.clone()
+                },
+                ..Default::default()
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Build release trigger from IR trigger condition
+    fn build_release_trigger(trigger: Option<&TriggerCondition>) -> Option<ReleaseTrigger> {
+        let trigger = trigger?;
+
+        if trigger.release.is_empty() {
+            return None;
+        }
+
+        Some(ReleaseTrigger {
+            types: trigger.release.clone(),
+        })
+    }
+
+    /// Build schedule trigger from IR trigger condition
+    fn build_schedule_trigger(trigger: Option<&TriggerCondition>) -> Option<Vec<ScheduleTrigger>> {
+        let trigger = trigger?;
+
+        if trigger.scheduled.is_empty() {
+            return None;
+        }
+
+        Some(
+            trigger
+                .scheduled
+                .iter()
+                .map(|cron| ScheduleTrigger { cron: cron.clone() })
+                .collect(),
+        )
+    }
+
+    /// Build manual (`workflow_dispatch`) trigger from IR trigger condition
+    fn build_manual_trigger(trigger: Option<&TriggerCondition>) -> Option<WorkflowDispatchTrigger> {
+        let trigger = trigger?;
+        let manual = trigger.manual.as_ref()?;
+
+        if !manual.enabled && manual.inputs.is_empty() {
+            return None;
+        }
+
+        Some(WorkflowDispatchTrigger {
+            inputs: manual
+                .inputs
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        WorkflowInput {
+                            description: v.description.clone(),
+                            required: Some(v.required),
+                            default: v.default.clone(),
+                            input_type: v.input_type.clone(),
+                            options: if v.options.is_empty() {
+                                None
+                            } else {
+                                Some(v.options.clone())
+                            },
+                        },
+                    )
+                })
+                .collect(),
+        })
     }
 
     /// Build permissions based on task requirements
@@ -513,6 +607,7 @@ impl ReleaseWorkflowBuilder {
                             required: Some(true),
                             default: None,
                             input_type: Some("string".to_string()),
+                            options: None,
                         },
                     );
                     inputs

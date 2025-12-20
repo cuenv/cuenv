@@ -1,6 +1,51 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Workflow dispatch input definition for manual triggers
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowDispatchInput {
+    /// Description shown in the GitHub UI
+    pub description: String,
+    /// Whether this input is required
+    pub required: Option<bool>,
+    /// Default value for the input
+    pub default: Option<String>,
+    /// Input type: "string", "boolean", "choice", or "environment"
+    #[serde(rename = "type")]
+    pub input_type: Option<String>,
+    /// Options for choice-type inputs
+    pub options: Option<Vec<String>>,
+}
+
+/// Manual trigger configuration - can be a simple bool or include inputs
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ManualTrigger {
+    /// Simple enabled/disabled flag
+    Enabled(bool),
+    /// Workflow dispatch with input definitions
+    WithInputs(HashMap<String, WorkflowDispatchInput>),
+}
+
+impl ManualTrigger {
+    /// Check if manual trigger is enabled (either directly or via inputs)
+    pub fn is_enabled(&self) -> bool {
+        match self {
+            ManualTrigger::Enabled(enabled) => *enabled,
+            ManualTrigger::WithInputs(inputs) => !inputs.is_empty(),
+        }
+    }
+
+    /// Get the inputs if configured
+    pub fn inputs(&self) -> Option<&HashMap<String, WorkflowDispatchInput>> {
+        match self {
+            ManualTrigger::Enabled(_) => None,
+            ManualTrigger::WithInputs(inputs) => Some(inputs),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineCondition {
@@ -10,8 +55,13 @@ pub struct PipelineCondition {
     #[serde(default)]
     pub tag: Option<StringOrVec>,
     pub default_branch: Option<bool>,
-    pub scheduled: Option<bool>,
-    pub manual: Option<bool>,
+    /// Cron expression(s) for scheduled runs
+    #[serde(default)]
+    pub scheduled: Option<StringOrVec>,
+    /// Manual trigger configuration (bool or with inputs)
+    pub manual: Option<ManualTrigger>,
+    /// Release event types (e.g., ["published"])
+    pub release: Option<Vec<String>>,
 }
 
 /// GitHub Actions provider configuration
@@ -106,10 +156,14 @@ pub struct ProviderConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Pipeline {
     pub name: String,
     pub when: Option<PipelineCondition>,
     pub tasks: Vec<String>,
+    /// Whether to derive trigger paths from task inputs.
+    /// Defaults to true for branch/PR triggers, false for scheduled-only.
+    pub derive_paths: Option<bool>,
     /// Pipeline-specific provider configuration (overrides CI-level defaults)
     pub provider: Option<ProviderConfig>,
 }
@@ -201,6 +255,7 @@ mod tests {
                     name: "ci".to_string(),
                     when: None,
                     tasks: vec!["test".to_string()],
+                    derive_paths: None,
                     provider: Some(ProviderConfig {
                         github: Some(GitHubConfig {
                             runner: Some(StringOrVec::String("self-hosted".to_string())),
@@ -213,6 +268,7 @@ mod tests {
                     name: "release".to_string(),
                     when: None,
                     tasks: vec!["deploy".to_string()],
+                    derive_paths: None,
                     provider: None,
                 },
             ],
@@ -243,5 +299,106 @@ mod tests {
         let multi = StringOrVec::Vec(vec!["a".to_string(), "b".to_string()]);
         assert_eq!(multi.to_vec(), vec!["a", "b"]);
         assert_eq!(multi.as_single(), Some("a"));
+    }
+
+    #[test]
+    fn test_manual_trigger_bool() {
+        let json = r#"{"manual": true}"#;
+        let cond: PipelineCondition = serde_json::from_str(json).unwrap();
+        assert!(matches!(cond.manual, Some(ManualTrigger::Enabled(true))));
+
+        let json = r#"{"manual": false}"#;
+        let cond: PipelineCondition = serde_json::from_str(json).unwrap();
+        assert!(matches!(cond.manual, Some(ManualTrigger::Enabled(false))));
+    }
+
+    #[test]
+    fn test_manual_trigger_with_inputs() {
+        let json =
+            r#"{"manual": {"tag_name": {"description": "Tag to release", "required": true}}}"#;
+        let cond: PipelineCondition = serde_json::from_str(json).unwrap();
+
+        match &cond.manual {
+            Some(ManualTrigger::WithInputs(inputs)) => {
+                assert!(inputs.contains_key("tag_name"));
+                let input = inputs.get("tag_name").unwrap();
+                assert_eq!(input.description, "Tag to release");
+                assert_eq!(input.required, Some(true));
+            }
+            _ => panic!("Expected WithInputs variant"),
+        }
+    }
+
+    #[test]
+    fn test_manual_trigger_helpers() {
+        let enabled = ManualTrigger::Enabled(true);
+        assert!(enabled.is_enabled());
+        assert!(enabled.inputs().is_none());
+
+        let disabled = ManualTrigger::Enabled(false);
+        assert!(!disabled.is_enabled());
+
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "tag".to_string(),
+            WorkflowDispatchInput {
+                description: "Tag name".to_string(),
+                required: Some(true),
+                default: None,
+                input_type: None,
+                options: None,
+            },
+        );
+        let with_inputs = ManualTrigger::WithInputs(inputs);
+        assert!(with_inputs.is_enabled());
+        assert!(with_inputs.inputs().is_some());
+    }
+
+    #[test]
+    fn test_scheduled_cron_expressions() {
+        // Single cron expression
+        let json = r#"{"scheduled": "0 0 * * 0"}"#;
+        let cond: PipelineCondition = serde_json::from_str(json).unwrap();
+        match &cond.scheduled {
+            Some(StringOrVec::String(s)) => assert_eq!(s, "0 0 * * 0"),
+            _ => panic!("Expected single string"),
+        }
+
+        // Multiple cron expressions
+        let json = r#"{"scheduled": ["0 0 * * 0", "0 12 * * *"]}"#;
+        let cond: PipelineCondition = serde_json::from_str(json).unwrap();
+        match &cond.scheduled {
+            Some(StringOrVec::Vec(v)) => {
+                assert_eq!(v.len(), 2);
+                assert_eq!(v[0], "0 0 * * 0");
+                assert_eq!(v[1], "0 12 * * *");
+            }
+            _ => panic!("Expected vec"),
+        }
+    }
+
+    #[test]
+    fn test_release_trigger() {
+        let json = r#"{"release": ["published", "created"]}"#;
+        let cond: PipelineCondition = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            cond.release,
+            Some(vec!["published".to_string(), "created".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_pipeline_derive_paths() {
+        let json = r#"{"name": "ci", "tasks": ["test"], "derivePaths": true}"#;
+        let pipeline: Pipeline = serde_json::from_str(json).unwrap();
+        assert_eq!(pipeline.derive_paths, Some(true));
+
+        let json = r#"{"name": "scheduled", "tasks": ["sync"], "derivePaths": false}"#;
+        let pipeline: Pipeline = serde_json::from_str(json).unwrap();
+        assert_eq!(pipeline.derive_paths, Some(false));
+
+        let json = r#"{"name": "default", "tasks": ["build"]}"#;
+        let pipeline: Pipeline = serde_json::from_str(json).unwrap();
+        assert_eq!(pipeline.derive_paths, None);
     }
 }
