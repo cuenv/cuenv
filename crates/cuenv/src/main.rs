@@ -95,7 +95,8 @@ fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
             | crate::cli::Commands::Info { .. }
             | crate::cli::Commands::Completions { .. }
             | crate::cli::Commands::Changeset { .. }
-            | crate::cli::Commands::Release { .. } => false,
+            | crate::cli::Commands::Release { .. }
+            | crate::cli::Commands::Secrets { .. } => false,
             crate::cli::Commands::Shell { subcommand } => match subcommand {
                 crate::cli::ShellCommands::Init { .. } => false,
             },
@@ -430,6 +431,10 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             Ok(())
         }
 
+        Command::SecretsSetup { provider, wasm_url } => {
+            commands::secrets::execute_secrets_setup(provider, wasm_url.as_deref())
+        }
+
         // All other commands should have been routed to async path
         _ => Err(CliError::other(
             "Internal error: async command reached sync path",
@@ -701,6 +706,10 @@ async fn execute_command_safe(
             // Completions are handled early in real_main, this is just for exhaustiveness
             crate::cli::generate_completions(*shell);
             return Ok(());
+        }
+        Command::SecretsSetup { provider, wasm_url } => {
+            // Secrets setup is handled early in real_main, this is just for exhaustiveness
+            return commands::secrets::execute_secrets_setup(*provider, wasm_url.as_deref());
         }
         // Info command needs special handling for json_mode and output
         Command::Info {

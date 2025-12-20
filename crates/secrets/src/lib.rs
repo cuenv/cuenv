@@ -8,6 +8,8 @@ mod fingerprint;
 mod resolved;
 pub mod resolvers;
 mod salt;
+#[cfg(feature = "onepassword")]
+pub(crate) mod wasm;
 
 pub use fingerprint::compute_secret_fingerprint;
 pub use resolved::ResolvedSecrets;

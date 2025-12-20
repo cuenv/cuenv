@@ -552,6 +552,11 @@ pub enum Commands {
         #[arg(long = "all", short = 'A', help = "Sync all projects in the workspace")]
         all: bool,
     },
+    #[command(about = "Secret provider management")]
+    Secrets {
+        #[command(subcommand)]
+        subcommand: SecretsCommands,
+    },
 }
 
 /// Sync subcommands for generating different types of files
@@ -641,6 +646,29 @@ pub enum SyncCommands {
         )]
         all: bool,
     },
+}
+
+/// Secrets subcommands for managing secret providers
+#[derive(Subcommand, Debug, Clone)]
+pub enum SecretsCommands {
+    #[command(about = "Set up a secret provider (download required components)")]
+    Setup {
+        #[arg(help = "Provider to set up", value_enum)]
+        provider: SecretsProvider,
+        #[arg(
+            long,
+            help = "Override the default WASM URL (for 1Password)",
+            value_name = "URL"
+        )]
+        wasm_url: Option<String>,
+    },
+}
+
+/// Supported secret providers that require setup
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum SecretsProvider {
+    /// 1Password (downloads WASM SDK for HTTP mode)
+    Onepassword,
 }
 
 /// Output format for status command
@@ -908,7 +936,8 @@ impl Commands {
             | Commands::Tui
             | Commands::Web { .. }
             | Commands::Changeset { .. }
-            | Commands::Release { .. } => "cuenv",
+            | Commands::Release { .. }
+            | Commands::Secrets { .. } => "cuenv",
         }
     }
 
@@ -1180,6 +1209,12 @@ impl Commands {
                     all: effective_all,
                 }
             }
+            Commands::Secrets { subcommand } => match subcommand {
+                SecretsCommands::Setup { provider, wasm_url } => Command::SecretsSetup {
+                    provider,
+                    wasm_url,
+                },
+            },
         }
     }
 }

@@ -6,6 +6,7 @@ pub mod hooks;
 pub mod info;
 pub mod owners;
 pub mod release;
+pub mod secrets;
 pub mod sync;
 pub mod task;
 pub mod task_list;
@@ -728,6 +729,10 @@ pub enum Command {
         check: bool,
         all: bool,
     },
+    SecretsSetup {
+        provider: crate::cli::SecretsProvider,
+        wasm_url: Option<String>,
+    },
 }
 
 /// Executes CLI commands with centralized module evaluation and event handling.
@@ -958,7 +963,7 @@ impl CommandExecutor {
                 self.execute_sync(subcommand, path, package, dry_run, check)
                     .await
             }
-            // Tui, Web, Completions, Info, and release commands are handled directly in main.rs
+            // Tui, Web, Completions, Info, Secrets, and release commands are handled directly in main.rs
             Command::Tui
             | Command::Web { .. }
             | Command::Completions { .. }
@@ -967,7 +972,8 @@ impl CommandExecutor {
             | Command::ChangesetStatus { .. }
             | Command::ChangesetFromCommits { .. }
             | Command::ReleaseVersion { .. }
-            | Command::ReleasePublish { .. } => Ok(()),
+            | Command::ReleasePublish { .. }
+            | Command::SecretsSetup { .. } => Ok(()),
         }
     }
 

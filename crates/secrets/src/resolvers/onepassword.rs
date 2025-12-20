@@ -5,6 +5,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
+#[cfg(feature = "onepassword")]
+use super::onepassword_core::SharedCore;
+
 /// Configuration for 1Password secret resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -27,15 +30,18 @@ impl OnePasswordConfig {
 /// Resolves secrets from 1Password
 ///
 /// Mode is auto-negotiated based on environment:
-/// - If `OP_SERVICE_ACCOUNT_TOKEN` is set → HTTP mode (via WASM SDK)
+/// - If `OP_SERVICE_ACCOUNT_TOKEN` is set AND WASM SDK is installed → HTTP mode
 /// - Otherwise → CLI mode (uses `op` CLI)
+///
+/// To enable HTTP mode, run: `cuenv secrets setup onepassword`
 ///
 /// The `source` field in [`SecretSpec`] can be:
 /// - A JSON-encoded [`OnePasswordConfig`]
 /// - A simple reference string (e.g., "op://vault/item/field")
 pub struct OnePasswordResolver {
+    /// Client ID for WASM SDK (when using HTTP mode)
     #[cfg(feature = "onepassword")]
-    use_http: bool,
+    client_id: Option<String>,
 }
 
 impl std::fmt::Debug for OnePasswordResolver {
@@ -49,28 +55,69 @@ impl std::fmt::Debug for OnePasswordResolver {
 impl OnePasswordResolver {
     /// Create a new 1Password resolver with auto-detected mode
     ///
-    /// If 1Password service account token is available, uses HTTP mode.
-    /// Otherwise, CLI mode will be used.
+    /// If 1Password service account token is available AND the WASM SDK is installed,
+    /// uses HTTP mode. Otherwise, CLI mode will be used.
     pub fn new() -> Result<Self, SecretError> {
         #[cfg(feature = "onepassword")]
-        let use_http = Self::http_credentials_available();
+        let client_id = if Self::http_mode_available() {
+            match Self::init_wasm_client() {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    tracing::warn!("Failed to initialize 1Password WASM client, falling back to CLI: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         Ok(Self {
             #[cfg(feature = "onepassword")]
-            use_http,
+            client_id,
         })
     }
 
+    /// Check if HTTP mode is available (token set + WASM installed)
+    #[cfg(feature = "onepassword")]
+    fn http_mode_available() -> bool {
+        std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok() && crate::wasm::onepassword_wasm_available()
+    }
+
     /// Check if HTTP credentials are available in environment
+    #[allow(dead_code)]
     fn http_credentials_available() -> bool {
         std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok()
+    }
+
+    /// Initialize the WASM client and return the client ID
+    #[cfg(feature = "onepassword")]
+    fn init_wasm_client() -> Result<String, SecretError> {
+        let token = std::env::var("OP_SERVICE_ACCOUNT_TOKEN").map_err(|_| {
+            SecretError::ResolutionFailed {
+                name: "onepassword".to_string(),
+                message: "OP_SERVICE_ACCOUNT_TOKEN not set".to_string(),
+            }
+        })?;
+
+        let core_mutex = SharedCore::get_or_init()?;
+        let mut guard = core_mutex.lock().map_err(|_| SecretError::ResolutionFailed {
+            name: "onepassword".to_string(),
+            message: "Failed to acquire shared core lock".to_string(),
+        })?;
+
+        let core = guard.as_mut().ok_or_else(|| SecretError::ResolutionFailed {
+            name: "onepassword".to_string(),
+            message: "SharedCore not initialized".to_string(),
+        })?;
+
+        core.init_client(&token)
     }
 
     /// Check if this resolver can use HTTP mode
     fn can_use_http(&self) -> bool {
         #[cfg(feature = "onepassword")]
         {
-            self.use_http
+            self.client_id.is_some()
         }
         #[cfg(not(feature = "onepassword"))]
         {
@@ -79,21 +126,51 @@ impl OnePasswordResolver {
     }
 
     /// Resolve using the 1Password WASM SDK (HTTP mode)
-    ///
-    /// This uses the 1Password WASM core directly via extism.
     #[cfg(feature = "onepassword")]
     async fn resolve_http(
         &self,
         name: &str,
         config: &OnePasswordConfig,
     ) -> Result<String, SecretError> {
-        // TODO: Implement using extism to load 1Password WASM core
-        // For now, fall back to CLI mode until the WASM integration is implemented.
-        tracing::warn!(
-            "1Password HTTP mode not yet implemented, falling back to CLI for secret '{}'",
-            name
-        );
-        self.resolve_cli(name, config).await
+        let client_id = self.client_id.as_ref().ok_or_else(|| SecretError::ResolutionFailed {
+            name: name.to_string(),
+            message: "HTTP client not initialized".to_string(),
+        })?;
+
+        let core_mutex = SharedCore::get_or_init()?;
+        let mut guard = core_mutex.lock().map_err(|_| SecretError::ResolutionFailed {
+            name: name.to_string(),
+            message: "Failed to acquire shared core lock".to_string(),
+        })?;
+
+        let core = guard.as_mut().ok_or_else(|| SecretError::ResolutionFailed {
+            name: name.to_string(),
+            message: "SharedCore not initialized".to_string(),
+        })?;
+
+        // Invoke the Secrets.Resolve method
+        let params = serde_json::json!({
+            "secret_reference": config.reference
+        });
+
+        let result = core.invoke(client_id, "Secrets.Resolve", &params.to_string())?;
+
+        // Parse the response to extract the secret value
+        let response: serde_json::Value = serde_json::from_str(&result).map_err(|e| {
+            SecretError::ResolutionFailed {
+                name: name.to_string(),
+                message: format!("Failed to parse resolve response: {e}"),
+            }
+        })?;
+
+        // The response format from 1Password SDK
+        response["result"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| SecretError::ResolutionFailed {
+                name: name.to_string(),
+                message: "No result in response".to_string(),
+            })
     }
 
     /// Resolve using the op CLI
@@ -130,12 +207,27 @@ impl OnePasswordResolver {
     ) -> Result<String, SecretError> {
         // Try HTTP mode if available
         #[cfg(feature = "onepassword")]
-        if self.use_http {
+        if self.client_id.is_some() {
             return self.resolve_http(name, config).await;
         }
 
         // Fallback to CLI
         self.resolve_cli(name, config).await
+    }
+}
+
+#[cfg(feature = "onepassword")]
+impl Drop for OnePasswordResolver {
+    fn drop(&mut self) {
+        if let Some(client_id) = &self.client_id {
+            if let Ok(core_mutex) = SharedCore::get_or_init() {
+                if let Ok(mut guard) = core_mutex.lock() {
+                    if let Some(core) = guard.as_mut() {
+                        core.release_client(client_id);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -148,14 +240,7 @@ impl SecretResolver for OnePasswordResolver {
         }
 
         // Fallback: treat source as a simple reference string
-        // Accept both "op://..." format and plain reference
-        let reference = if spec.source.starts_with("op://") {
-            spec.source.clone()
-        } else {
-            spec.source.clone()
-        };
-
-        let config = OnePasswordConfig::new(reference);
+        let config = OnePasswordConfig::new(spec.source.clone());
         self.resolve_with_config(name, &config).await
     }
 }
