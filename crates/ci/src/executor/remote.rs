@@ -28,7 +28,7 @@ use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 /// Configuration for the remote cache backend
 #[derive(Debug, Clone)]
 pub struct RemoteCacheConfig {
-    /// Remote cache URL (e.g., "grpc://cache.example.com:9092")
+    /// Remote cache URL (e.g., "<grpc://cache.example.com:9092>")
     pub url: String,
     /// Instance name for the cache (namespace)
     pub instance_name: String,
@@ -93,6 +93,7 @@ pub struct RemoteCacheBackend {
 
 impl RemoteCacheBackend {
     /// Create a new remote cache backend
+    #[must_use]
     pub fn new(config: RemoteCacheConfig) -> Self {
         Self {
             config,
@@ -214,13 +215,7 @@ impl RemoteCacheBackend {
 
         self.retry_with_backoff(|mut client| {
             let req = request.clone();
-            async move {
-                client
-                    .batch_update_blobs(req)
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| e)
-            }
+            async move { client.batch_update_blobs(req).await.map(|_| ()) }
         })
         .await?;
 
@@ -284,11 +279,10 @@ impl RemoteCacheBackend {
         }
 
         // Retries exhausted - this is a transient failure, allow graceful degradation
-        Err(BackendError::Unavailable(
-            last_error
-                .map(|e| format!("retries exhausted: {e}"))
-                .unwrap_or_else(|| "retries exhausted".to_string()),
-        ))
+        Err(BackendError::Unavailable(last_error.map_or_else(
+            || "retries exhausted".to_string(),
+            |e| format!("retries exhausted: {e}"),
+        )))
     }
 
     /// Retry helper for CAS read operations
@@ -319,11 +313,10 @@ impl RemoteCacheBackend {
         }
 
         // Retries exhausted - this is a transient failure, allow graceful degradation
-        Err(BackendError::Unavailable(
-            last_error
-                .map(|e| format!("retries exhausted: {e}"))
-                .unwrap_or_else(|| "retries exhausted".to_string()),
-        ))
+        Err(BackendError::Unavailable(last_error.map_or_else(
+            || "retries exhausted".to_string(),
+            |e| format!("retries exhausted: {e}"),
+        )))
     }
 
     /// Retry helper for action cache get operations
@@ -360,11 +353,10 @@ impl RemoteCacheBackend {
         }
 
         // Retries exhausted - this is a transient failure, allow graceful degradation
-        Err(BackendError::Unavailable(
-            last_error
-                .map(|e| format!("retries exhausted: {e}"))
-                .unwrap_or_else(|| "retries exhausted".to_string()),
-        ))
+        Err(BackendError::Unavailable(last_error.map_or_else(
+            || "retries exhausted".to_string(),
+            |e| format!("retries exhausted: {e}"),
+        )))
     }
 
     /// Create exponential backoff config

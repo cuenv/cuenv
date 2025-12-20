@@ -142,7 +142,7 @@ pub async fn run_ci(
                 &pipeline.name,
                 &tasks_to_run,
                 project_root,
-                &context,
+                context,
                 &changed_files,
                 provider.as_ref(),
             )
@@ -195,10 +195,10 @@ async fn execute_project_pipeline(
         .with_secret_salt(std::env::var("CUENV_SECRET_SALT").unwrap_or_default());
 
     // Add previous salt for rotation support
-    if let Ok(prev_salt) = std::env::var("CUENV_SECRET_SALT_PREV") {
-        if !prev_salt.is_empty() {
-            executor_config = executor_config.with_secret_salt_prev(prev_salt);
-        }
+    if let Ok(prev_salt) = std::env::var("CUENV_SECRET_SALT_PREV")
+        && !prev_salt.is_empty()
+    {
+        executor_config = executor_config.with_secret_salt_prev(prev_salt);
     }
 
     let _executor_config = if let Some(policy) = cache_policy_override {
@@ -362,8 +362,8 @@ fn is_fork_pr(context: &crate::context::CIContext) -> bool {
 
 /// Execute a single task by name using the existing project config
 ///
-/// This bridges the gap between the task name-based execution in run_ci
-/// and the IR-based execution in CIExecutor.
+/// This bridges the gap between the task name-based execution in `run_ci`
+/// and the IR-based execution in `CIExecutor`.
 async fn execute_single_task_by_name(
     config: &Project,
     task_name: &str,
@@ -373,15 +373,13 @@ async fn execute_single_task_by_name(
     // Get task definition
     let Some(task_def) = config.tasks.get(task_name) else {
         return Err(ExecutorError::Compilation(format!(
-            "Task '{}' not found in project config",
-            task_name
+            "Task '{task_name}' not found in project config"
         )));
     };
 
     let Some(task) = task_def.as_single() else {
         return Err(ExecutorError::Compilation(format!(
-            "Task '{}' is a group, not a single task",
-            task_name
+            "Task '{task_name}' is a group, not a single task"
         )));
     };
 

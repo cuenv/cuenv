@@ -11,4 +11,4 @@ steps:
       nix-env -iA cachix -f https://cachix.org/api/v1/install
       cachix use cuenv
       nix build .#cuenv --accept-flake-config
-      ./result/bin/cuenv ci --format buildkite | buildkite-agent pipeline upload
+      ./result/bin/cuenv ci --format buildkite --pipeline ci | buildkite-agent pipeline upload

@@ -30,10 +30,10 @@ pub struct CIExecutorConfig {
     /// Global cache policy override (for fork PRs -> Readonly)
     pub cache_policy_override: Option<CachePolicy>,
 
-    /// Salt for secret fingerprinting (CUENV_SECRET_SALT)
+    /// Salt for secret fingerprinting (`CUENV_SECRET_SALT`)
     pub secret_salt: Option<String>,
 
-    /// Previous salt for secret fingerprinting during rotation (CUENV_SECRET_SALT_PREV)
+    /// Previous salt for secret fingerprinting during rotation (`CUENV_SECRET_SALT_PREV`)
     pub secret_salt_prev: Option<String>,
 
     /// Shell path for shell-mode task execution (default: /bin/sh)

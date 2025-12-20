@@ -150,18 +150,16 @@ fn try_use_prebuilt(
         {
             // Check if prebuilt is newer than all source files
             // If sources are newer, skip this prebuilt and rebuild from source
-            if let Some(source_time) = newest_source_time {
-                if let Ok(lib_meta) = lib_path.metadata() {
-                    if let Ok(lib_time) = lib_meta.modified() {
-                        if lib_time < source_time {
-                            println!(
-                                "cargo:warning=Prebuilt {} is older than source files, will rebuild",
-                                lib_path.display()
-                            );
-                            continue; // Skip this prebuilt, try next or fall through to rebuild
-                        }
-                    }
-                }
+            if let Some(source_time) = newest_source_time
+                && let Ok(lib_meta) = lib_path.metadata()
+                && let Ok(lib_time) = lib_meta.modified()
+                && lib_time < source_time
+            {
+                println!(
+                    "cargo:warning=Prebuilt {} is older than source files, will rebuild",
+                    lib_path.display()
+                );
+                continue; // Skip this prebuilt, try next or fall through to rebuild
             }
 
             // Remove destination files if they exist (might be read-only)

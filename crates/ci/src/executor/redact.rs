@@ -71,7 +71,7 @@ impl LogRedactor {
         for (idx, secret) in secrets.into_iter().enumerate() {
             if secret.len() < MIN_SECRET_LENGTH {
                 warnings.push(ShortSecretWarning {
-                    key: format!("secret_{}", idx),
+                    key: format!("secret_{idx}"),
                     length: secret.len(),
                 });
             } else {

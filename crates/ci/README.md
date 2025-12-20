@@ -5,11 +5,13 @@ CI pipeline compiler that transforms cuenv task definitions into orchestrator-na
 ## Overview
 
 cuenv CI owns:
+
 - **Task graph semantics**: Dependency resolution, cycle detection, deployment constraints
 - **Environment materialization**: Nix runtime digest computation with purity enforcement
 - **Cache correctness**: Content-addressable caching with secret rotation support
 
 It delegates to orchestrators:
+
 - **Scheduling**: Job concurrency and resource allocation
 - **Approvals**: Manual intervention steps
 - **Secret storage**: Credential management systems
@@ -34,6 +36,7 @@ It delegates to orchestrators:
 ### ✅ Phase 1.1: IR Schema & Compiler
 
 **Completed:**
+
 - IR v1.3 JSON schema with full type definitions (`ir/schema.rs`)
 - Task graph validation (cycles, deployment dependencies) (`ir/validation.rs`)
 - Compiler from cuenv tasks to IR (`compiler/mod.rs`)
@@ -41,6 +44,7 @@ It delegates to orchestrators:
 - Deployment task semantics enforcement
 
 **Files:**
+
 - `src/ir/schema.rs` - IR types (IntermediateRepresentation, Task, Runtime, etc.)
 - `src/ir/validation.rs` - Graph validation with cycle detection
 - `src/compiler/mod.rs` - Task-to-IR compiler with group handling
@@ -48,6 +52,7 @@ It delegates to orchestrators:
 ### ✅ Phase 1.2: Runtime Digest Computation
 
 **Completed:**
+
 - Content-addressable digest builder (`compiler/digest.rs`)
 - SHA-256 based cache key computation
 - Deterministic hashing (env vars sorted, reproducible output)
@@ -55,6 +60,7 @@ It delegates to orchestrators:
 - Runtime configuration fingerprinting
 
 **Features:**
+
 - `DigestBuilder` API for incremental digest construction
 - Separate inputs: command, env, inputs, runtime, secrets
 - Hex-encoded SHA-256 output (`sha256:abc123...`)
@@ -62,12 +68,14 @@ It delegates to orchestrators:
 ### 🚧 Phase 1.3: Secret Fingerprinting (Partial)
 
 **Completed:**
+
 - HMAC-SHA256 implementation for secret fingerprints
 - Salt-based keying (reads `CUENV_SYSTEM_SALT`)
 - Deterministic secret ordering
 - Secret rotation support (digest changes when secrets change)
 
 **Remaining:**
+
 - Integration with cuenv secret resolvers
 - `CUENV_SYSTEM_SALT_PREV` for graceful rotation
 - Compile-time validation when `cache_key: true` but no salt
@@ -75,10 +83,12 @@ It delegates to orchestrators:
 ### ⏳ Phase 1.4: Impure Flake Handling
 
 **Completed:**
+
 - UUID injection for unlocked flakes
 - `PurityMode` enum (strict, warning, override)
 
 **Remaining:**
+
 - Flake.lock detection and parsing
 - Warning emission for impure flakes
 - UUID propagation to downstream tasks
@@ -86,6 +96,7 @@ It delegates to orchestrators:
 ### ⏳ Phase 1.5: Local Execution
 
 **Remaining:**
+
 - Task executor with digest computation
 - Local file-based cache
 - Secret injection from environment
@@ -93,6 +104,7 @@ It delegates to orchestrators:
 ### ⏳ Phase 2: Caching Infrastructure
 
 **Remaining:**
+
 - Bazel Remote Execution v2 integration
 - Action Cache + CAS connections
 - Cache policies (normal, readonly, writeonly, disabled)
@@ -101,6 +113,7 @@ It delegates to orchestrators:
 ### ⏳ Phase 3: Emitters
 
 **Remaining:**
+
 - GitLab CI emitter (`.gitlab-ci.yml`)
 - Buildkite emitter (pipeline YAML)
 - Tekton emitter (PipelineRun/TaskRun)
@@ -108,6 +121,7 @@ It delegates to orchestrators:
 ### ⏳ Phase 4: Observability & Hardening
 
 **Remaining:**
+
 - Log redaction (secret value replacement)
 - `cuenv ci diff` command
 - Metrics export (OpenTelemetry)
@@ -116,6 +130,7 @@ It delegates to orchestrators:
 ### ⏳ Phase 5: Deployment Safety
 
 **Remaining:**
+
 - Concurrency control enforcement
 - Lock timeout handling
 

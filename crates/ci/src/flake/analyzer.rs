@@ -74,7 +74,7 @@ pub struct FlakeLockAnalyzer {
 }
 
 impl FlakeLockAnalyzer {
-    /// Create analyzer from parsed FlakeLock
+    /// Create analyzer from parsed `FlakeLock`
     #[must_use]
     pub fn new(lock: FlakeLock) -> Self {
         Self { lock }
@@ -165,17 +165,17 @@ impl FlakeLockAnalyzer {
             InputRef::Follows(path) => {
                 // Follows references inherit from another input
                 // Resolve the target and check if it's locked
-                if let Some(target_name) = path.first() {
-                    if let Some(target) = self.lock.nodes.get(target_name) {
-                        // Check if the target is unlocked (has no locked section)
-                        if target.is_input() && target.locked.is_none() {
-                            unlocked.push(UnlockedInput {
-                                name: name.to_string(),
-                                reason: UnlockReason::FollowsUnlocked {
-                                    target: target_name.clone(),
-                                },
-                            });
-                        }
+                if let Some(target_name) = path.first()
+                    && let Some(target) = self.lock.nodes.get(target_name)
+                {
+                    // Check if the target is unlocked (has no locked section)
+                    if target.is_input() && target.locked.is_none() {
+                        unlocked.push(UnlockedInput {
+                            name: name.to_string(),
+                            reason: UnlockReason::FollowsUnlocked {
+                                target: target_name.clone(),
+                            },
+                        });
                     }
                 }
             }
@@ -212,11 +212,12 @@ impl FlakeLockAnalyzer {
         // Check 3: Has ref but no rev (unpinned branch reference)
         // This is actually OK in Nix - if narHash exists, it's pinned
         // But we warn if original.ref exists without locked.rev for transparency
-        if let Some(original) = &input.original {
-            if original.reference.is_some() && locked.rev.is_none() {
-                // Only warn if narHash is also missing - if narHash exists, it's still pure
-                // Actually, with narHash present, this is fine. Skip this check.
-            }
+        if let Some(original) = &input.original
+            && original.reference.is_some()
+            && locked.rev.is_none()
+        {
+            // Only warn if narHash is also missing - if narHash exists, it's still pure
+            // Actually, with narHash present, this is fine. Skip this check.
         }
 
         // Input is properly locked - add hash to list
@@ -239,13 +240,13 @@ impl FlakeLockAnalyzer {
 
         for hash in sorted_hashes {
             hasher.update(hash.as_bytes());
-            hasher.update(&[0u8]); // separator
+            hasher.update([0u8]); // separator
         }
 
         format!("sha256:{}", hex::encode(hasher.finalize()))
     }
 
-    /// Get the underlying FlakeLock
+    /// Get the underlying `FlakeLock`
     #[must_use]
     pub fn lock(&self) -> &FlakeLock {
         &self.lock
