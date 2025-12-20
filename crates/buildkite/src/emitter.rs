@@ -280,6 +280,7 @@ mod tests {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
+                project_name: None,
                 trigger: None,
             },
             runtimes: vec![],

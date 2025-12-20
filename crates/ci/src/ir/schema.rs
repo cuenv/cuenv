@@ -32,6 +32,7 @@ impl IntermediateRepresentation {
             version: IR_VERSION.to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name.into(),
+                project_name: None,
                 trigger: None,
             },
             runtimes: Vec::new(),
@@ -45,6 +46,10 @@ impl IntermediateRepresentation {
 pub struct PipelineMetadata {
     /// Pipeline name
     pub name: String,
+
+    /// Project name (for monorepo prefixing)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
 
     /// Trigger conditions
     #[serde(skip_serializing_if = "Option::is_none")]
