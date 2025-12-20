@@ -35,6 +35,8 @@
 //! | `task.outputs` (orchestrator) | `artifact_paths` |
 
 pub mod emitter;
+pub mod provider;
 pub mod schema;
 
 pub use emitter::BuildkiteEmitter;
+pub use provider::BuildkiteCIProvider;

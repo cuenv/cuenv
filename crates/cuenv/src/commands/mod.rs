@@ -30,46 +30,9 @@ pub(crate) fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core:
 }
 
 pub mod ci_cmd {
-    use crate::commands::task;
     use crate::providers::detect_ci_provider;
-    use async_trait::async_trait;
-    use cuenv_ci::executor::{TaskRunner, run_ci};
+    use cuenv_ci::executor::run_ci;
     use cuenv_core::Result;
-    use std::sync::Arc;
-
-    struct CliTaskRunner;
-
-    #[async_trait]
-    impl TaskRunner for CliTaskRunner {
-        async fn run_task(&self, project_root: &std::path::Path, task_name: &str) -> Result<()> {
-            let path_str = project_root.to_string_lossy().to_string();
-            // We call execute_task. Note that execute_task expects path to folder with CUE files.
-            // It handles loading the config itself.
-            // We pass 'cuenv' as package name, matching what we used in discovery.
-            // The runner should probably reuse the loaded config if possible, but execute_task loads it again.
-            // For now this is fine.
-            task::execute_task(
-                &path_str,
-                "cuenv", // package
-                Some(task_name),
-                &[],      // labels
-                None,     // environment
-                "simple", // format
-                false,    // capture_output
-                None,     // materialize_outputs
-                false,    // show_cache_path
-                None,     // backend
-                false,    // tui
-                false,    // interactive
-                false,    // help
-                false,    // all
-                &[],      // task_args
-                None,     // executor - CI runner doesn't have access to executor
-            )
-            .await
-            .map(|_| ())
-        }
-    }
 
     pub async fn execute_ci(
         dry_run: bool,
@@ -146,12 +109,10 @@ jobs:
             return Ok(());
         }
 
-        let runner = Arc::new(CliTaskRunner);
-
         // Detect CI provider (with optional base_ref for local provider)
         let provider = detect_ci_provider(from);
 
-        run_ci(provider, dry_run, pipeline, runner).await
+        run_ci(provider, dry_run, pipeline).await
     }
 }
 
