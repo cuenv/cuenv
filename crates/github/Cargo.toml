@@ -24,7 +24,7 @@ workflow = ["dep:cuenv-ci", "dep:serde", "dep:serde_yaml", "dep:indexmap"]
 cuenv-core = { workspace = true }
 cuenv-codeowners = { workspace = true, optional = true }
 cuenv-ci = { workspace = true, optional = true }
-octocrab = { version = "0.48", optional = true }
+octocrab = { version = "0.48", optional = true, default-features = false, features = ["rustls", "rustls-ring", "default-client", "timeout", "retry"] }
 async-trait = { version = "0.1", optional = true }
 serde = { workspace = true, optional = true }
 serde_yaml = { workspace = true, optional = true }

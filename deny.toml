@@ -16,6 +16,7 @@ allow = [
     "Zlib",               # Used by foldhash dependency
     "Unicode-3.0",        # Used by unicode-ident
     "MPL-2.0",            # Mozilla Public License 2.0
+    "CDLA-Permissive-2.0", # Community Data License Agreement - used by webpki-roots for root cert data
 ]
 # Some crates don't have (easily) machine readable licensing information,
 # adding a clarification or exception can help
