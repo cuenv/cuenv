@@ -842,6 +842,7 @@ mod tests {
             ignore: None,
             owners: None,
             cube: None,
+            runtime: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -885,6 +886,7 @@ mod tests {
             ignore: None,
             owners: None,
             cube: None,
+            runtime: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -908,6 +910,7 @@ mod tests {
             ignore: None,
             owners: None,
             cube: None,
+            runtime: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
