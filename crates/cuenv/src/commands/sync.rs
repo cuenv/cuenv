@@ -633,125 +633,26 @@ fn sync_cube_files(
 
         match file_def.mode {
             FileMode::Managed => {
-                if check || diff {
-                    if output_path.exists() {
-                        let contents = std::fs::read_to_string(&output_path).unwrap_or_default();
-                        if contents == file_def.content {
-                            output_lines.push(format!("  OK: {file_path}"));
-                        } else {
-                            output_lines.push(format!("  Out of sync: {file_path}"));
-                            maybe_push_diff(
-                                &mut output_lines,
-                                diff,
-                                file_path,
-                                Some(&contents),
-                                &file_def.content,
-                            );
-                        }
-                    } else {
-                        output_lines.push(format!("  Missing: {file_path}"));
-                        maybe_push_diff(
-                            &mut output_lines,
-                            diff,
-                            file_path,
-                            None,
-                            &file_def.content,
-                        );
-                    }
-                } else if dry_run {
-                    if output_path.exists() {
-                        output_lines.push(format!("  Would update: {file_path}"));
-                    } else {
-                        output_lines.push(format!("  Would create: {file_path}"));
-                    }
-                } else {
-                    // Actually write the file
-                    tracing::debug!(
-                        file_path = %file_path,
-                        output_path = %output_path.display(),
-                        content_len = file_def.content.len(),
-                        "Writing managed cube file"
-                    );
-                    if let Some(parent) = output_path.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            tracing::error!(
-                                parent = %parent.display(),
-                                error = %e,
-                                "Failed to create parent directory"
-                            );
-                            cuenv_core::Error::Io {
-                                source: e,
-                                path: Some(parent.to_path_buf().into_boxed_path()),
-                                operation: format!(
-                                    "create parent directory for cube file: {file_path}"
-                                ),
-                            }
-                        })?;
-                    }
-                    std::fs::write(&output_path, &file_def.content).map_err(|e| {
-                        tracing::error!(
-                            output_path = %output_path.display(),
-                            error = %e,
-                            "Failed to write cube file"
-                        );
-                        cuenv_core::Error::Io {
-                            source: e,
-                            path: Some(output_path.clone().into_boxed_path()),
-                            operation: format!("write cube file: {file_path}"),
-                        }
-                    })?;
-                    output_lines.push(format!("  Generated: {file_path}"));
-                }
+                sync_managed_file(
+                    &mut output_lines,
+                    &output_path,
+                    file_path,
+                    &file_def.content,
+                    dry_run,
+                    check,
+                    diff,
+                )?;
             }
             FileMode::Scaffold => {
-                if output_path.exists() {
-                    if !dry_run && !check {
-                        tracing::debug!("Skipping {} (scaffold mode, file exists)", file_path);
-                    }
-                    output_lines.push(format!("  Skipped (exists): {file_path}"));
-                } else if check || diff {
-                    output_lines.push(format!("  Missing scaffold: {file_path}"));
-                    maybe_push_diff(&mut output_lines, diff, file_path, None, &file_def.content);
-                } else if dry_run {
-                    output_lines.push(format!("  Would scaffold: {file_path}"));
-                } else {
-                    // Actually write the file
-                    tracing::debug!(
-                        file_path = %file_path,
-                        output_path = %output_path.display(),
-                        content_len = file_def.content.len(),
-                        "Scaffolding cube file"
-                    );
-                    if let Some(parent) = output_path.parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| {
-                            tracing::error!(
-                                parent = %parent.display(),
-                                error = %e,
-                                "Failed to create parent directory for scaffold"
-                            );
-                            cuenv_core::Error::Io {
-                                source: e,
-                                path: Some(parent.to_path_buf().into_boxed_path()),
-                                operation: format!(
-                                    "create parent directory for scaffold file: {file_path}"
-                                ),
-                            }
-                        })?;
-                    }
-                    std::fs::write(&output_path, &file_def.content).map_err(|e| {
-                        tracing::error!(
-                            output_path = %output_path.display(),
-                            error = %e,
-                            "Failed to write scaffold file"
-                        );
-                        cuenv_core::Error::Io {
-                            source: e,
-                            path: Some(output_path.clone().into_boxed_path()),
-                            operation: format!("write scaffold file: {file_path}"),
-                        }
-                    })?;
-                    output_lines.push(format!("  Scaffolded: {file_path}"));
-                }
+                sync_scaffold_file(
+                    &mut output_lines,
+                    &output_path,
+                    file_path,
+                    &file_def.content,
+                    dry_run,
+                    check,
+                    diff,
+                )?;
             }
         }
     }
@@ -763,6 +664,106 @@ fn sync_cube_files(
     );
 
     Ok(output_lines.join("\n"))
+}
+
+/// Sync a managed cube file (always overwritten to match expected content)
+fn sync_managed_file(
+    output_lines: &mut Vec<String>,
+    output_path: &Path,
+    file_path: &str,
+    content: &str,
+    dry_run: bool,
+    check: bool,
+    diff: bool,
+) -> Result<()> {
+    if check || diff {
+        if output_path.exists() {
+            let contents = std::fs::read_to_string(output_path).unwrap_or_default();
+            if contents == content {
+                output_lines.push(format!("  OK: {file_path}"));
+            } else {
+                output_lines.push(format!("  Out of sync: {file_path}"));
+                maybe_push_diff(output_lines, diff, file_path, Some(&contents), content);
+            }
+        } else {
+            output_lines.push(format!("  Missing: {file_path}"));
+            maybe_push_diff(output_lines, diff, file_path, None, content);
+        }
+    } else if dry_run {
+        if output_path.exists() {
+            output_lines.push(format!("  Would update: {file_path}"));
+        } else {
+            output_lines.push(format!("  Would create: {file_path}"));
+        }
+    } else {
+        write_cube_file(output_path, file_path, content, "managed")?;
+        output_lines.push(format!("  Generated: {file_path}"));
+    }
+    Ok(())
+}
+
+/// Sync a scaffold cube file (only created if it doesn't exist)
+fn sync_scaffold_file(
+    output_lines: &mut Vec<String>,
+    output_path: &Path,
+    file_path: &str,
+    content: &str,
+    dry_run: bool,
+    check: bool,
+    diff: bool,
+) -> Result<()> {
+    if output_path.exists() {
+        if !dry_run && !check {
+            tracing::debug!("Skipping {file_path} (scaffold mode, file exists)");
+        }
+        output_lines.push(format!("  Skipped (exists): {file_path}"));
+    } else if check || diff {
+        output_lines.push(format!("  Missing scaffold: {file_path}"));
+        maybe_push_diff(output_lines, diff, file_path, None, content);
+    } else if dry_run {
+        output_lines.push(format!("  Would scaffold: {file_path}"));
+    } else {
+        write_cube_file(output_path, file_path, content, "scaffold")?;
+        output_lines.push(format!("  Scaffolded: {file_path}"));
+    }
+    Ok(())
+}
+
+/// Write a cube file to disk, creating parent directories as needed
+fn write_cube_file(output_path: &Path, file_path: &str, content: &str, mode: &str) -> Result<()> {
+    tracing::debug!(
+        file_path = %file_path,
+        output_path = %output_path.display(),
+        content_len = content.len(),
+        "Writing {mode} cube file"
+    );
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            tracing::error!(
+                parent = %parent.display(),
+                error = %e,
+                "Failed to create parent directory"
+            );
+            cuenv_core::Error::Io {
+                source: e,
+                path: Some(parent.to_path_buf().into_boxed_path()),
+                operation: format!("create parent directory for {mode} file: {file_path}"),
+            }
+        })?;
+    }
+    std::fs::write(output_path, content).map_err(|e| {
+        tracing::error!(
+            output_path = %output_path.display(),
+            error = %e,
+            "Failed to write {mode} file"
+        );
+        cuenv_core::Error::Io {
+            source: e,
+            path: Some(output_path.to_path_buf().into_boxed_path()),
+            operation: format!("write {mode} file: {file_path}"),
+        }
+    })?;
+    Ok(())
 }
 
 fn maybe_push_diff(

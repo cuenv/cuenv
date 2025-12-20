@@ -63,7 +63,7 @@ pub mod ci_cmd {
         run_ci(provider, dry_run, pipeline).await
     }
 
-    /// Output pipeline in the specified format (e.g., buildkite) for dynamic pipelines
+    /// Output pipeline in the specified format (e.g., buildkite, github) for dynamic pipelines
     #[allow(clippy::print_stdout)]
     async fn execute_format_output(
         fmt: &str,
@@ -84,10 +84,116 @@ pub mod ci_cmd {
                     ))
                 }
             }
+            "github" => execute_github_format(pipeline),
             _ => Err(cuenv_core::Error::configuration(format!(
-                "Unsupported format: {fmt}. Supported formats: buildkite"
+                "Unsupported format: {fmt}. Supported formats: buildkite, github"
             ))),
         }
+    }
+
+    /// Execute GitHub Actions format output - generates workflow files
+    #[allow(clippy::print_stdout)]
+    fn execute_github_format(pipeline: Option<String>) -> Result<()> {
+        use cuenv_github::workflow::GitHubActionsEmitter;
+
+        // Discover projects
+        let projects = discover_projects()?;
+        if projects.is_empty() {
+            return Err(cuenv_core::Error::configuration(
+                "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
+            ));
+        }
+        eprintln!("Found {} projects", projects.len());
+
+        let pipeline_name = pipeline.unwrap_or_else(|| "ci".to_string());
+        let mut all_ir_tasks = Vec::new();
+        let mut found_pipeline = false;
+
+        for project in &projects {
+            let config = &project.config;
+
+            // Find pipeline in config
+            let Some(ci) = &config.ci else {
+                continue;
+            };
+
+            let Some(ci_pipeline) = ci.pipelines.iter().find(|p| p.name == pipeline_name) else {
+                continue;
+            };
+
+            found_pipeline = true;
+
+            // Compile project to IR
+            let compiler = Compiler::new(config.clone());
+            let ir = compiler.compile().map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
+            })?;
+
+            // Filter IR tasks to pipeline tasks
+            let pipeline_tasks: Vec<_> = ir
+                .tasks
+                .into_iter()
+                .filter(|t| ci_pipeline.tasks.contains(&t.id))
+                .collect();
+
+            all_ir_tasks.extend(pipeline_tasks);
+        }
+
+        if !found_pipeline {
+            return Err(cuenv_core::Error::configuration(format!(
+                "No pipeline named '{pipeline_name}' found in any project's CI configuration"
+            )));
+        }
+
+        if all_ir_tasks.is_empty() {
+            eprintln!("No tasks found in pipeline '{pipeline_name}'");
+            return Ok(());
+        }
+
+        // Build combined IR
+        let combined_ir = IntermediateRepresentation {
+            version: "1.3".to_string(),
+            pipeline: PipelineMetadata {
+                name: pipeline_name.clone(),
+                trigger: None,
+            },
+            runtimes: vec![],
+            tasks: all_ir_tasks,
+        };
+
+        // Create emitter with sensible defaults
+        let emitter = GitHubActionsEmitter::new()
+            .with_runner("ubuntu-latest")
+            .with_nix()
+            .with_cachix("cuenv");
+
+        // Emit workflow files
+        let workflows = emitter.emit_workflows(&combined_ir).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to emit GitHub workflow: {e}"))
+        })?;
+
+        // Ensure .github/workflows directory exists
+        let workflows_dir = std::path::Path::new(".github/workflows");
+        if !workflows_dir.exists() {
+            std::fs::create_dir_all(workflows_dir).map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(workflows_dir.to_path_buf().into_boxed_path()),
+                operation: "create directory".to_string(),
+            })?;
+        }
+
+        // Write workflow files
+        for (filename, content) in workflows {
+            let workflow_path = workflows_dir.join(&filename);
+            std::fs::write(&workflow_path, &content).map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(workflow_path.clone().into_boxed_path()),
+                operation: "write workflow file".to_string(),
+            })?;
+            println!("Generated: {}", workflow_path.display());
+        }
+
+        Ok(())
     }
 
     /// Execute Buildkite format output - outputs pipeline YAML to stdout

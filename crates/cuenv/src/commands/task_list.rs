@@ -68,9 +68,6 @@ pub struct TaskListStats {
 pub trait TaskListFormatter {
     /// Format the task list data into a displayable string
     fn format(&self, data: &TaskListData) -> String;
-
-    /// Human-readable name of this formatter
-    fn name(&self) -> &'static str;
 }
 
 // ============================================================================
@@ -327,6 +324,7 @@ pub struct TextFormatter;
 
 impl TaskListFormatter for TextFormatter {
     fn format(&self, data: &TaskListData) -> String {
+        use std::fmt::Write;
         let mut output = String::new();
 
         for (i, group) in data.sources.iter().enumerate() {
@@ -334,8 +332,12 @@ impl TaskListFormatter for TextFormatter {
                 output.push('\n');
             }
 
-            use std::fmt::Write;
-            writeln!(output, "{}:", group.header).expect("write to string");
+            // Use source in header if available, otherwise just the header
+            if group.source.is_empty() {
+                writeln!(output, "{}:", group.header).expect("write to string");
+            } else {
+                writeln!(output, "{} ({}):", group.header, group.source).expect("write to string");
+            }
 
             let max_width = calculate_max_width(&group.nodes, 0);
             format_text_nodes(&group.nodes, &mut output, max_width, "");
@@ -343,13 +345,17 @@ impl TaskListFormatter for TextFormatter {
 
         if output.is_empty() {
             output = "No tasks defined in the configuration".to_string();
+        } else {
+            // Append stats summary
+            writeln!(
+                output,
+                "\n({} tasks, {} groups, {} cached)",
+                data.stats.total_tasks, data.stats.total_groups, data.stats.cached_count
+            )
+            .expect("write to string");
         }
 
         output
-    }
-
-    fn name(&self) -> &'static str {
-        "text"
     }
 }
 
@@ -378,10 +384,21 @@ fn format_text_nodes(nodes: &[TaskNode], output: &mut String, max_width: usize, 
         let is_last = i == count - 1;
         let marker = if is_last { "└─ " } else { "├─ " };
 
+        // For executable tasks, show the full_name (e.g., "bun.install"); for groups just the name
+        let display_name = if node.is_group {
+            &node.name
+        } else {
+            node.full_name.as_deref().unwrap_or(&node.name)
+        };
         let current_len =
-            prefix.chars().count() + marker.chars().count() + node.name.chars().count();
+            prefix.chars().count() + marker.chars().count() + display_name.chars().count();
 
-        write!(output, "{prefix}{marker}{}", node.name).expect("write to string");
+        write!(output, "{prefix}{marker}{display_name}").expect("write to string");
+
+        // Show dependency count if there are dependencies
+        if node.dep_count > 0 {
+            write!(output, " [{}]", node.dep_count).expect("write to string");
+        }
 
         if let Some(desc) = &node.description {
             let padding = max_width.saturating_sub(current_len);
@@ -450,6 +467,7 @@ impl RichFormatter {
 
 impl TaskListFormatter for RichFormatter {
     fn format(&self, data: &TaskListData) -> String {
+        use std::fmt::Write;
         let mut output = String::new();
 
         for (i, group) in data.sources.iter().enumerate() {
@@ -457,7 +475,6 @@ impl TaskListFormatter for RichFormatter {
                 output.push('\n');
             }
 
-            use std::fmt::Write;
             // Simple bold header, no box
             writeln!(output, "{}:", self.bold(&group.header)).expect("write to string");
 
@@ -470,10 +487,6 @@ impl TaskListFormatter for RichFormatter {
         }
 
         output
-    }
-
-    fn name(&self) -> &'static str {
-        "rich"
     }
 }
 
@@ -542,18 +555,6 @@ mod tests {
         assert_eq!(stats.total_tasks, 0);
         assert_eq!(stats.total_groups, 0);
         assert_eq!(stats.cached_count, 0);
-    }
-
-    #[test]
-    fn test_text_formatter_name() {
-        let formatter = TextFormatter;
-        assert_eq!(formatter.name(), "text");
-    }
-
-    #[test]
-    fn test_rich_formatter_name() {
-        let formatter = RichFormatter::default();
-        assert_eq!(formatter.name(), "rich");
     }
 
     #[test]
