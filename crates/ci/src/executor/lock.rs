@@ -167,7 +167,7 @@ impl ConcurrencyLock {
 
         loop {
             // Try to acquire the lock
-            match self.try_acquire(&lock_path, &metadata) {
+            match Self::try_acquire(&lock_path, &metadata) {
                 Ok(()) => {
                     tracing::info!(
                         group = %group,
@@ -229,7 +229,7 @@ impl ConcurrencyLock {
             task_id: task_id.to_string(),
         };
 
-        self.try_acquire(&lock_path, &metadata)?;
+        Self::try_acquire(&lock_path, &metadata)?;
 
         Ok(LockGuard {
             lock_path,
@@ -266,7 +266,7 @@ impl ConcurrencyLock {
         self.config.lock_dir.join(format!("{safe_name}.lock"))
     }
 
-    fn try_acquire(&self, lock_path: &Path, metadata: &LockMetadata) -> Result<(), LockError> {
+    fn try_acquire(lock_path: &Path, metadata: &LockMetadata) -> Result<(), LockError> {
         // Try to create lock file exclusively
         match OpenOptions::new()
             .write(true)
@@ -374,7 +374,7 @@ mod tests {
     fn test_lock_metadata_serialization() {
         let metadata = LockMetadata {
             pid: 12345,
-            acquired_at: 1234567890,
+            acquired_at: 1_234_567_890,
             task_id: "test-task".to_string(),
         };
 
@@ -382,7 +382,7 @@ mod tests {
         let deserialized = LockMetadata::deserialize(&serialized).unwrap();
 
         assert_eq!(deserialized.pid, 12345);
-        assert_eq!(deserialized.acquired_at, 1234567890);
+        assert_eq!(deserialized.acquired_at, 1_234_567_890);
         assert_eq!(deserialized.task_id, "test-task");
     }
 

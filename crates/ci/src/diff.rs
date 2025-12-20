@@ -286,22 +286,22 @@ fn find_first_report(dir: &Path) -> Result<PathBuf, DiffError> {
 /// Format a diff for human-readable output
 #[must_use]
 pub fn format_diff(diff: &DigestDiff) -> String {
+    use std::fmt::Write;
+
     let mut output = String::new();
-    output.push_str(&format!(
-        "Comparing runs: {} -> {}\n\n",
+    let _ = writeln!(
+        output,
+        "Comparing runs: {} -> {}\n",
         &diff.run_a[..7.min(diff.run_a.len())],
         &diff.run_b[..7.min(diff.run_b.len())]
-    ));
+    );
     output.push_str("Summary:\n");
-    output.push_str(&format!("  Total tasks: {}\n", diff.summary.total_tasks));
-    output.push_str(&format!("  Changed: {}\n", diff.summary.changed_tasks));
-    output.push_str(&format!("  Added: {}\n", diff.summary.added_tasks));
-    output.push_str(&format!("  Removed: {}\n", diff.summary.removed_tasks));
+    let _ = writeln!(output, "  Total tasks: {}", diff.summary.total_tasks);
+    let _ = writeln!(output, "  Changed: {}", diff.summary.changed_tasks);
+    let _ = writeln!(output, "  Added: {}", diff.summary.added_tasks);
+    let _ = writeln!(output, "  Removed: {}", diff.summary.removed_tasks);
     if diff.summary.secret_changes > 0 {
-        output.push_str(&format!(
-            "  Secret changes: {}\n",
-            diff.summary.secret_changes
-        ));
+        let _ = writeln!(output, "  Secret changes: {}", diff.summary.secret_changes);
     }
     output.push('\n');
 
@@ -316,11 +316,11 @@ pub fn format_diff(diff: &DigestDiff) -> String {
             ChangeType::Removed => "-",
             ChangeType::Unchanged => " ",
         };
-        output.push_str(&format!("{} {}\n", symbol, task.name));
+        let _ = writeln!(output, "{} {}", symbol, task.name);
         if !task.changed_files.is_empty() {
             output.push_str("  Changed files:\n");
             for file in &task.changed_files {
-                output.push_str(&format!("    - {file}\n"));
+                let _ = writeln!(output, "    - {file}");
             }
         }
         if task.secrets_changed {
