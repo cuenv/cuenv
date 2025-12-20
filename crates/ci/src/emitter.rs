@@ -131,6 +131,7 @@ mod tests {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: "my-pipeline".to_string(),
+                project_name: None,
                 trigger: None,
             },
             runtimes: vec![],
@@ -150,6 +151,7 @@ mod tests {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
+                project_name: None,
                 trigger: None,
             },
             runtimes: vec![],
