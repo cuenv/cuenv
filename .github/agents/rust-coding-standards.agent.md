@@ -110,11 +110,11 @@ pub struct Config {
     /// Optional field - omit from JSON when None
     #[serde(skip_serializing_if = "Option::is_none")]
     pub optional_field: Option<String>,
-    
+
     /// Collection with default empty value
     #[serde(default)]
     pub items: Vec<String>,
-    
+
     /// Field with custom serialization name
     #[serde(rename = "specialName")]
     pub special: String,
@@ -122,6 +122,7 @@ pub struct Config {
 ```
 
 **Common rename conventions**:
+
 - `camelCase` - Most common for API types
 - `kebab-case` - Used for CLI/config file formats
 - `lowercase` - Used for simple enums
@@ -301,6 +302,7 @@ eprintln!("Error: {}", error);
 ```
 
 Available event macros:
+
 - `emit_task_started!` - Task execution started
 - `emit_task_completed!` - Task execution completed
 - `emit_task_cache_hit!` - Task cache hit
@@ -354,6 +356,7 @@ impl Drop for CStringPtr {
 ```
 
 **FFI Safety Guidelines**:
+
 1. Always use RAII wrappers for foreign memory
 2. Document `// SAFETY:` comments for all `unsafe` blocks
 3. Never expose raw pointers in public APIs
@@ -542,7 +545,7 @@ async fn then_output_contains(world: &mut TestWorld, expected: String) {
 
 Follow Rust documentation conventions:
 
-```rust
+````rust
 //! Module-level documentation
 //!
 //! This module provides X functionality for Y purpose.
@@ -577,13 +580,13 @@ Follow Rust documentation conventions:
 pub fn evaluate(path: &Path, package: &str) -> Result<Config> {
     // Implementation
 }
-```
+````
 
 ## License Compliance
 
 - Project license: **AGPL-3.0-or-later**
 - Use `cargo-deny` for dependency license checking
-- Allowed licenses: MIT, Apache-2.0, BSD-*
+- Allowed licenses: MIT, Apache-2.0, BSD-\*
 - Run `cargo audit` for security advisories
 
 ## Common Pitfalls to Avoid
@@ -600,6 +603,7 @@ pub fn evaluate(path: &Path, package: &str) -> Result<Config> {
 ## Quick Reference
 
 **Error Creation**:
+
 ```rust
 Error::configuration("message")
 Error::validation("message")
@@ -607,12 +611,14 @@ Error::ffi("function_name", "message")
 ```
 
 **Event Emission**:
+
 ```rust
 emit_task_started!("task", "command", false);
 emit_info!("Message: {}", value);
 ```
 
 **Validation Pattern**:
+
 ```rust
 pub struct ValidatedType(String);
 
@@ -625,6 +631,7 @@ impl TryFrom<&str> for ValidatedType {
 ```
 
 **Builder Pattern**:
+
 ```rust
 let config = Config::builder()
     .field1(value1)
@@ -635,6 +642,7 @@ let config = Config::builder()
 ## When to Use This Agent
 
 This agent should be invoked for:
+
 - Writing new Rust code in the cuenv codebase
 - Refactoring existing Rust code to follow project conventions
 - Reviewing Rust code for adherence to project standards

@@ -214,10 +214,11 @@ impl GarbageCollector {
         stats.current_size = current_size;
 
         // Run Nix GC if configured
-        if self.config.run_nix_gc && !self.config.dry_run {
-            if let Err(e) = self.run_nix_gc() {
-                tracing::warn!(error = %e, "Nix garbage collection failed");
-            }
+        if self.config.run_nix_gc
+            && !self.config.dry_run
+            && let Err(e) = self.run_nix_gc()
+        {
+            tracing::warn!(error = %e, "Nix garbage collection failed");
         }
 
         stats.duration_ms = start.elapsed().as_millis() as u64;
@@ -247,10 +248,10 @@ impl GarbageCollector {
 
             if metadata.is_dir() {
                 self.scan_dir_recursive(&path, entries)?;
-            } else if metadata.is_file() {
-                if let Some(cache_entry) = self.create_entry(&path, &metadata) {
-                    entries.push(cache_entry);
-                }
+            } else if metadata.is_file()
+                && let Some(cache_entry) = self.create_entry(&path, &metadata)
+            {
+                entries.push(cache_entry);
             }
         }
         Ok(())

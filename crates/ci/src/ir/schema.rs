@@ -146,7 +146,7 @@ pub struct Task {
     #[serde(default)]
     pub cache_policy: CachePolicy,
 
-    /// Deployment flag (if true, cache_policy is forced to disabled)
+    /// Deployment flag (if true, `cache_policy` is forced to disabled)
     #[serde(default)]
     pub deployment: bool,
 

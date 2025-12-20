@@ -284,6 +284,7 @@ fn find_first_report(dir: &Path) -> Result<PathBuf, DiffError> {
 }
 
 /// Format a diff for human-readable output
+#[must_use]
 pub fn format_diff(diff: &DigestDiff) -> String {
     let mut output = String::new();
     output.push_str(&format!(
@@ -319,7 +320,7 @@ pub fn format_diff(diff: &DigestDiff) -> String {
         if !task.changed_files.is_empty() {
             output.push_str("  Changed files:\n");
             for file in &task.changed_files {
-                output.push_str(&format!("    - {}\n", file));
+                output.push_str(&format!("    - {file}\n"));
             }
         }
         if task.secrets_changed {

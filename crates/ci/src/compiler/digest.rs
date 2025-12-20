@@ -17,6 +17,7 @@ pub struct DigestBuilder {
 
 impl DigestBuilder {
     /// Create a new digest builder
+    #[must_use]
     pub fn new() -> Self {
         Self {
             hasher: Sha256::new(),
@@ -27,7 +28,7 @@ impl DigestBuilder {
     pub fn add_command(&mut self, command: &[String]) -> &mut Self {
         for arg in command {
             self.hasher.update(arg.as_bytes());
-            self.hasher.update(&[0u8]); // separator
+            self.hasher.update([0u8]); // separator
         }
         self
     }
@@ -39,9 +40,9 @@ impl DigestBuilder {
 
         for (key, value) in sorted {
             self.hasher.update(key.as_bytes());
-            self.hasher.update(&[b'=']);
+            self.hasher.update([b'=']);
             self.hasher.update(value.as_bytes());
-            self.hasher.update(&[0u8]); // separator
+            self.hasher.update([0u8]); // separator
         }
         self
     }
@@ -50,7 +51,7 @@ impl DigestBuilder {
     pub fn add_inputs(&mut self, inputs: &[String]) -> &mut Self {
         for input in inputs {
             self.hasher.update(input.as_bytes());
-            self.hasher.update(&[0u8]); // separator
+            self.hasher.update([0u8]); // separator
         }
         self
     }
@@ -58,11 +59,11 @@ impl DigestBuilder {
     /// Add runtime configuration to digest
     pub fn add_runtime(&mut self, flake: &str, output: &str, system: &str) -> &mut Self {
         self.hasher.update(flake.as_bytes());
-        self.hasher.update(&[0u8]);
+        self.hasher.update([0u8]);
         self.hasher.update(output.as_bytes());
-        self.hasher.update(&[0u8]);
+        self.hasher.update([0u8]);
         self.hasher.update(system.as_bytes());
-        self.hasher.update(&[0u8]);
+        self.hasher.update([0u8]);
         self
     }
 
@@ -88,7 +89,7 @@ impl DigestBuilder {
             let fingerprint = hmac.finalize();
 
             // Add fingerprint to overall digest
-            self.hasher.update(&fingerprint);
+            self.hasher.update(fingerprint);
         }
         self
     }
@@ -97,11 +98,12 @@ impl DigestBuilder {
     pub fn add_impurity_uuid(&mut self, uuid: &str) -> &mut Self {
         self.hasher.update(b"IMPURE:");
         self.hasher.update(uuid.as_bytes());
-        self.hasher.update(&[0u8]);
+        self.hasher.update([0u8]);
         self
     }
 
     /// Finalize and return hex-encoded digest
+    #[must_use]
     pub fn finalize(self) -> String {
         let result = self.hasher.finalize();
         format!("sha256:{}", hex::encode(result))
@@ -115,6 +117,7 @@ impl Default for DigestBuilder {
 }
 
 /// Compute task runtime digest
+#[must_use]
 pub fn compute_task_digest(
     command: &[String],
     env: &HashMap<String, String>,
@@ -133,10 +136,10 @@ pub fn compute_task_digest(
         builder.hasher.update(runtime.as_bytes());
     }
 
-    if let Some(secrets) = secret_fingerprints {
-        if let Some(salt) = system_salt {
-            builder.add_secret_fingerprints(secrets, salt);
-        }
+    if let Some(secrets) = secret_fingerprints
+        && let Some(salt) = system_salt
+    {
+        builder.add_secret_fingerprints(secrets, salt);
     }
 
     builder.finalize()

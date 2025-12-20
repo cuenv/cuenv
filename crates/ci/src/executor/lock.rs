@@ -245,6 +245,7 @@ impl ConcurrencyLock {
     }
 
     /// Get information about current lock holder
+    #[must_use]
     pub fn lock_info(&self, group: &str) -> Option<LockMetadata> {
         let lock_path = self.lock_path(group);
         read_lock_metadata(&lock_path)
@@ -262,7 +263,7 @@ impl ConcurrencyLock {
                 }
             })
             .collect();
-        self.config.lock_dir.join(format!("{}.lock", safe_name))
+        self.config.lock_dir.join(format!("{safe_name}.lock"))
     }
 
     fn try_acquire(&self, lock_path: &Path, metadata: &LockMetadata) -> Result<(), LockError> {
