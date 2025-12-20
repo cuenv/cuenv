@@ -136,25 +136,25 @@ pub fn compare_reports(
     let mut task_diffs = Vec::new();
     let mut summary = DiffSummary::default();
 
-    let tasks_a: HashMap<&str, &TaskReport> = report_a
+    let old_tasks: HashMap<&str, &TaskReport> = report_a
         .tasks
         .iter()
         .map(|t| (t.name.as_str(), t))
         .collect();
-    let tasks_b: HashMap<&str, &TaskReport> = report_b
+    let new_tasks: HashMap<&str, &TaskReport> = report_b
         .tasks
         .iter()
         .map(|t| (t.name.as_str(), t))
         .collect();
 
-    let all_tasks: HashSet<&str> = tasks_a.keys().chain(tasks_b.keys()).copied().collect();
+    let all_tasks: HashSet<&str> = old_tasks.keys().chain(new_tasks.keys()).copied().collect();
     summary.total_tasks = all_tasks.len();
 
     for name in all_tasks {
-        let task_a = tasks_a.get(name);
-        let task_b = tasks_b.get(name);
+        let old_task = old_tasks.get(name);
+        let new_task = new_tasks.get(name);
 
-        let diff = match (task_a, task_b) {
+        let diff = match (old_task, new_task) {
             (Some(a), Some(b)) => compare_tasks(name, a, b),
             (Some(_), None) => TaskDiff {
                 name: name.to_string(),
@@ -163,7 +163,7 @@ pub fn compare_reports(
                 changed_env_vars: vec![],
                 changed_upstream: vec![],
                 secrets_changed: false,
-                cache_key_a: task_a.and_then(|t| t.cache_key.clone()),
+                cache_key_a: old_task.and_then(|t| t.cache_key.clone()),
                 cache_key_b: None,
             },
             (None, Some(_)) => TaskDiff {
@@ -174,7 +174,7 @@ pub fn compare_reports(
                 changed_upstream: vec![],
                 secrets_changed: false,
                 cache_key_a: None,
-                cache_key_b: task_b.and_then(|t| t.cache_key.clone()),
+                cache_key_b: new_task.and_then(|t| t.cache_key.clone()),
             },
             (None, None) => unreachable!(),
         };

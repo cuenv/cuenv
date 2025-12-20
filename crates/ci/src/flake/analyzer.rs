@@ -231,19 +231,19 @@ impl FlakeLockAnalyzer {
     }
 
     /// Compute a deterministic digest from all locked hashes
-    fn compute_locked_digest(hashes: &[String]) -> String {
-        let mut hasher = Sha256::new();
+    fn compute_locked_digest(input_hashes: &[String]) -> String {
+        let mut sha_hasher = Sha256::new();
 
         // Sort hashes for deterministic ordering
-        let mut sorted_hashes = hashes.to_vec();
+        let mut sorted_hashes = input_hashes.to_vec();
         sorted_hashes.sort();
 
         for hash in sorted_hashes {
-            hasher.update(hash.as_bytes());
-            hasher.update([0u8]); // separator
+            sha_hasher.update(hash.as_bytes());
+            sha_hasher.update([0u8]); // separator
         }
 
-        format!("sha256:{}", hex::encode(hasher.finalize()))
+        format!("sha256:{}", hex::encode(sha_hasher.finalize()))
     }
 
     /// Get the underlying `FlakeLock`
