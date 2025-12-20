@@ -548,9 +548,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn base_project() -> Project {
-        let mut project = Project::default();
-        project.name = "test".to_string();
-        project
+        Project {
+            name: "test".to_string(),
+            ..Default::default()
+        }
     }
 
     fn make_hook(command: &str, args: &[&str]) -> Hook {

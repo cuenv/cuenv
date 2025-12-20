@@ -984,6 +984,7 @@ mod tests {
             ignore: None,
             owners: None,
             cube: None,
+            runtime: None,
         };
 
         let vars = extract_static_env_vars(&cfg);
@@ -1017,6 +1018,7 @@ mod tests {
             ignore: None,
             owners: None,
             cube: None,
+            runtime: None,
         };
 
         let hook_env = HashMap::from([

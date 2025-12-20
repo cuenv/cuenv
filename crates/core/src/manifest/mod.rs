@@ -299,6 +299,109 @@ impl IgnoreValue {
     }
 }
 
+// ============================================================================
+// Runtime Types
+// ============================================================================
+
+/// Runtime declares where/how a task executes.
+/// Set at project level as the default, override per-task as needed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Runtime {
+    /// Activate Nix devShell before execution
+    Nix(NixRuntime),
+    /// Activate devenv shell before execution
+    Devenv(DevenvRuntime),
+    /// Simple container execution
+    Container(ContainerRuntime),
+    /// Advanced container with caching, secrets, chaining
+    Dagger(DaggerRuntime),
+}
+
+/// Nix runtime configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NixRuntime {
+    /// Flake reference (default: "." for local flake.nix)
+    #[serde(default = "default_flake")]
+    pub flake: String,
+    /// Output attribute path (default: devShells.${system}.default)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
+impl Default for NixRuntime {
+    fn default() -> Self {
+        Self {
+            flake: default_flake(),
+            output: None,
+        }
+    }
+}
+
+fn default_flake() -> String {
+    ".".to_string()
+}
+
+/// Devenv runtime configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct DevenvRuntime {
+    /// Path to devenv config directory (default: ".")
+    #[serde(default = "default_flake")]
+    pub path: String,
+}
+
+/// Simple container runtime configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContainerRuntime {
+    /// Container image (e.g., "node:20-alpine", "rust:1.75-slim")
+    pub image: String,
+}
+
+/// Dagger runtime configuration (advanced container orchestration)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct DaggerRuntime {
+    /// Base container image (required unless 'from' is specified)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// Use container from a previous task as base
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Secrets to mount or expose as environment variables
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<DaggerSecret>,
+    /// Cache volumes for persistent build caching
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache: Vec<DaggerCacheMount>,
+}
+
+/// Secret configuration for Dagger containers
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DaggerSecret {
+    /// Name identifier for the secret
+    pub name: String,
+    /// Mount secret as a file at this path
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Expose secret as an environment variable with this name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_var: Option<String>,
+    /// Secret resolver configuration
+    pub resolver: serde_json::Value,
+}
+
+/// Cache volume mount configuration for Dagger
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DaggerCacheMount {
+    /// Path inside the container to mount the cache
+    pub path: String,
+    /// Unique name for the cache volume
+    pub name: String,
+}
+
+// ============================================================================
+// Project Type
+// ============================================================================
+
 /// Root Project configuration structure (leaf node - cannot unify with other projects)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Project {
@@ -340,6 +443,10 @@ pub struct Project {
     /// Cube configuration for code generation
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cube: Option<CubeConfig>,
+
+    /// Runtime configuration (project-level default for all tasks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
 }
 
 impl Project {

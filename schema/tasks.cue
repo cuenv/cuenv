@@ -47,6 +47,11 @@ package schema
 
 	description?: string
 
+	// Runtime override for this task (inherits from project if not set)
+	// See #Runtime in runtime.cue for available options: nix, devenv, container, dagger
+	runtime?: #Runtime
+
+	// DEPRECATED: Use runtime: dagger: { ... } instead
 	// Dagger-specific configuration for running this task in a container
 	dagger?: #DaggerConfig
 
