@@ -213,11 +213,15 @@ Several public functions lack documentation (e.g., `compute_task_digest`, `polic
 - [x] Fix `current_timestamp()` silent failure (Phase 3.2 - completed)
 
 ### Medium Priority (maintainability)
-- [ ] Extract `SecretResolver` trait
+- [x] Extract `SecretResolver` trait (Phase 4.1 - completed)
 - [x] Split `executor/mod.rs` (Phase 5.1 - completed, extracted orchestrator.rs)
 - [ ] Add feature flags for remote cache
 
 ### Low Priority (nice-to-have)
 - [ ] State machine for pipeline execution
 - [ ] Standardize builder patterns
-- [ ] Property-based tests for digests
+- [x] Property-based tests for digests (Phase 6 - completed with proptest)
+
+### Additional Improvements (completed)
+- [x] Make shell path configurable in runner.rs (Phase 4.2)
+- [x] Add cache backend injection to CIExecutor (Phase 4.3)

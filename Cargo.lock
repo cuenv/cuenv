@@ -993,6 +993,7 @@ dependencies = [
  "hex",
  "miette",
  "petgraph",
+ "proptest",
  "prost",
  "regex",
  "serde",

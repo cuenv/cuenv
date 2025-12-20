@@ -1,7 +1,9 @@
 //! Secret Resolution for CI Execution
 //!
-//! Thin wrapper over `cuenv_secrets` providing CI-specific helpers for
-//! resolving secrets from environment variables with HMAC fingerprinting.
+//! Provides trait-based secret resolution for CI tasks, enabling:
+//! - Environment variable resolution (default)
+//! - Mock resolvers for testing
+//! - Custom provider integration (Vault, 1Password, etc.)
 
 use crate::ir::SecretConfig;
 use std::collections::HashMap;
@@ -10,6 +12,68 @@ use std::collections::HashMap;
 pub use cuenv_secrets::{
     compute_secret_fingerprint, ResolvedSecrets, SaltConfig, SecretError,
 };
+
+/// Trait for resolving secrets from various sources
+///
+/// Implement this trait to support custom secret providers like Vault,
+/// AWS Secrets Manager, 1Password, etc.
+pub trait SecretResolver: Send + Sync {
+    /// Resolve a single secret by name and configuration
+    ///
+    /// # Arguments
+    /// * `name` - The logical name of the secret
+    /// * `config` - Configuration specifying the source
+    ///
+    /// # Returns
+    /// The secret value, or an error if resolution fails
+    fn resolve(&self, name: &str, config: &SecretConfig) -> Result<String, SecretError>;
+}
+
+/// Default resolver that reads secrets from environment variables
+#[derive(Debug, Clone, Default)]
+pub struct EnvSecretResolver;
+
+impl SecretResolver for EnvSecretResolver {
+    fn resolve(&self, name: &str, config: &SecretConfig) -> Result<String, SecretError> {
+        std::env::var(&config.source).map_err(|_| SecretError::NotFound {
+            name: name.to_string(),
+            secret_source: config.source.clone(),
+        })
+    }
+}
+
+/// Mock resolver for testing that returns predefined values
+#[derive(Debug, Clone, Default)]
+pub struct MockSecretResolver {
+    secrets: HashMap<String, String>,
+}
+
+impl MockSecretResolver {
+    /// Create a new mock resolver
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a secret to the mock resolver
+    #[must_use]
+    pub fn with_secret(mut self, source: impl Into<String>, value: impl Into<String>) -> Self {
+        self.secrets.insert(source.into(), value.into());
+        self
+    }
+}
+
+impl SecretResolver for MockSecretResolver {
+    fn resolve(&self, name: &str, config: &SecretConfig) -> Result<String, SecretError> {
+        self.secrets
+            .get(&config.source)
+            .cloned()
+            .ok_or_else(|| SecretError::NotFound {
+                name: name.to_string(),
+                secret_source: config.source.clone(),
+            })
+    }
+}
 
 /// CI-specific resolved secrets with convenience methods for IR types
 #[derive(Debug, Clone, Default)]
@@ -40,7 +104,23 @@ impl CIResolvedSecrets {
         secrets: &HashMap<String, SecretConfig>,
         salt_config: &SaltConfig,
     ) -> Result<Self, SecretError> {
-        // Since we're in a sync context, resolve manually from env vars
+        Self::resolve_with_resolver(&EnvSecretResolver, secrets, salt_config)
+    }
+
+    /// Resolve secrets using a custom resolver
+    ///
+    /// # Arguments
+    /// * `resolver` - The secret resolver implementation
+    /// * `secrets` - Map of secret names to their CI configuration
+    /// * `salt_config` - Salt configuration for fingerprinting
+    ///
+    /// # Errors
+    /// Returns error if resolution fails or salt is missing for cache keys
+    pub fn resolve_with_resolver(
+        resolver: &impl SecretResolver,
+        secrets: &HashMap<String, SecretConfig>,
+        salt_config: &SaltConfig,
+    ) -> Result<Self, SecretError> {
         let mut values = HashMap::new();
         let mut fingerprints = HashMap::new();
 
@@ -51,11 +131,7 @@ impl CIResolvedSecrets {
         }
 
         for (name, config) in secrets {
-            // Source is the env var name
-            let value = std::env::var(&config.source).map_err(|_| SecretError::NotFound {
-                name: name.clone(),
-                secret_source: config.source.clone(),
-            })?;
+            let value = resolver.resolve(name, config)?;
 
             // Compute fingerprint if secret affects cache
             if config.cache_key {
@@ -314,5 +390,52 @@ mod tests {
             let cached_fp = compute_secret_fingerprint("api_key", "secret_value", "old-salt");
             assert!(resolved.fingerprint_matches("api_key", &cached_fp, &salt_config));
         });
+    }
+
+    #[test]
+    fn test_mock_resolver() {
+        let resolver = MockSecretResolver::new()
+            .with_secret("API_KEY_SOURCE", "mock_api_key_value")
+            .with_secret("DB_PASSWORD_SOURCE", "mock_db_password");
+
+        let secrets = HashMap::from([
+            (
+                "api_key".to_string(),
+                make_secret_config("API_KEY_SOURCE", true),
+            ),
+            (
+                "db_password".to_string(),
+                make_secret_config("DB_PASSWORD_SOURCE", false),
+            ),
+        ]);
+
+        let salt_config = SaltConfig::new(Some("test-salt".to_string()));
+        let resolved =
+            CIResolvedSecrets::resolve_with_resolver(&resolver, &secrets, &salt_config).unwrap();
+
+        assert_eq!(
+            resolved.values().get("api_key"),
+            Some(&"mock_api_key_value".to_string())
+        );
+        assert_eq!(
+            resolved.values().get("db_password"),
+            Some(&"mock_db_password".to_string())
+        );
+        assert!(resolved.fingerprints().contains_key("api_key"));
+        assert!(!resolved.fingerprints().contains_key("db_password"));
+    }
+
+    #[test]
+    fn test_mock_resolver_missing_secret() {
+        let resolver = MockSecretResolver::new();
+
+        let secrets = HashMap::from([(
+            "missing".to_string(),
+            make_secret_config("NONEXISTENT_SOURCE", false),
+        )]);
+
+        let salt_config = SaltConfig::new(None);
+        let result = CIResolvedSecrets::resolve_with_resolver(&resolver, &secrets, &salt_config);
+        assert!(matches!(result, Err(SecretError::NotFound { .. })));
     }
 }

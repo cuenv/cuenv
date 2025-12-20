@@ -83,21 +83,37 @@ impl TaskOutput {
     }
 }
 
+/// Default shell path for task execution
+pub const DEFAULT_SHELL: &str = "/bin/sh";
+
 /// Runner for executing IR tasks
 pub struct IRTaskRunner {
     /// Working directory for task execution
     project_root: PathBuf,
     /// Whether to capture output
     capture_output: bool,
+    /// Shell path for shell-mode execution
+    shell_path: String,
 }
 
 impl IRTaskRunner {
-    /// Create a new task runner
+    /// Create a new task runner with default shell
     #[must_use]
     pub fn new(project_root: PathBuf, capture_output: bool) -> Self {
         Self {
             project_root,
             capture_output,
+            shell_path: DEFAULT_SHELL.to_string(),
+        }
+    }
+
+    /// Create a new task runner with custom shell path
+    #[must_use]
+    pub fn with_shell(project_root: PathBuf, capture_output: bool, shell_path: impl Into<String>) -> Self {
+        Self {
+            project_root,
+            capture_output,
+            shell_path: shell_path.into(),
         }
     }
 
@@ -129,11 +145,11 @@ impl IRTaskRunner {
 
         // Build command based on shell mode
         let mut cmd = if task.shell {
-            // Shell mode: wrap command in /bin/sh -c
+            // Shell mode: wrap command in shell -c
             let shell_cmd = task.command.join(" ");
-            tracing::debug!(shell_cmd = %shell_cmd, "Running in shell mode");
+            tracing::debug!(shell_cmd = %shell_cmd, shell = %self.shell_path, "Running in shell mode");
 
-            let mut c = Command::new("/bin/sh");
+            let mut c = Command::new(&self.shell_path);
             c.arg("-c");
             c.arg(&shell_cmd);
             c
@@ -310,5 +326,25 @@ mod tests {
         assert!(output.success);
         assert!(!output.from_cache);
         assert_eq!(output.duration_ms, 0);
+    }
+
+    #[tokio::test]
+    async fn test_custom_shell() {
+        let tmp = TempDir::new().unwrap();
+        // Use /bin/bash (available on most Unix systems)
+        let runner = IRTaskRunner::with_shell(tmp.path().to_path_buf(), true, "/bin/bash");
+        let task = make_task("test", vec!["echo", "$BASH_VERSION"], true);
+
+        let result = runner.execute(&task, HashMap::new()).await.unwrap();
+
+        // On systems with bash, this should succeed and output something
+        assert!(result.success);
+    }
+
+    #[test]
+    fn test_runner_default_shell() {
+        let tmp = TempDir::new().unwrap();
+        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
+        assert_eq!(runner.shell_path, "/bin/sh");
     }
 }

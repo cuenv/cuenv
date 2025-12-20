@@ -258,3 +258,104 @@ mod tests {
         assert_ne!(digest1, digest2);
     }
 }
+
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Property: Same inputs always produce the same digest
+        #[test]
+        fn digest_is_deterministic(
+            cmd in prop::collection::vec("[a-z]+", 1..5),
+            key in "[A-Z_]+",
+            value in "[a-zA-Z0-9]+",
+        ) {
+            let env = HashMap::from([(key.clone(), value.clone())]);
+            let inputs: Vec<String> = vec![];
+
+            let digest1 = compute_task_digest(&cmd, &env, &inputs, None, None, None);
+            let digest2 = compute_task_digest(&cmd, &env, &inputs, None, None, None);
+
+            prop_assert_eq!(digest1, digest2);
+        }
+
+        /// Property: Different commands produce different digests
+        #[test]
+        fn different_commands_produce_different_digests(
+            cmd1 in "[a-z]+",
+            cmd2 in "[a-z]+",
+        ) {
+            prop_assume!(cmd1 != cmd2);
+
+            let env = HashMap::new();
+            let inputs: Vec<String> = vec![];
+
+            let digest1 = compute_task_digest(&vec![cmd1], &env, &inputs, None, None, None);
+            let digest2 = compute_task_digest(&vec![cmd2], &env, &inputs, None, None, None);
+
+            prop_assert_ne!(digest1, digest2);
+        }
+
+        /// Property: Different env values produce different digests
+        #[test]
+        fn different_env_values_produce_different_digests(
+            key in "[A-Z]+",
+            value1 in "[a-z]+",
+            value2 in "[a-z]+",
+        ) {
+            prop_assume!(value1 != value2);
+
+            let cmd = vec!["test".to_string()];
+            let env1 = HashMap::from([(key.clone(), value1)]);
+            let env2 = HashMap::from([(key, value2)]);
+            let inputs: Vec<String> = vec![];
+
+            let digest1 = compute_task_digest(&cmd, &env1, &inputs, None, None, None);
+            let digest2 = compute_task_digest(&cmd, &env2, &inputs, None, None, None);
+
+            prop_assert_ne!(digest1, digest2);
+        }
+
+        /// Property: Env order doesn't matter (digest is order-independent)
+        #[test]
+        fn env_order_is_irrelevant(
+            pairs in prop::collection::vec(("[A-Z]+", "[a-z]+"), 2..5),
+        ) {
+            let cmd = vec!["test".to_string()];
+            let inputs: Vec<String> = vec![];
+
+            // Create env in original order
+            let env1: HashMap<String, String> = pairs.iter()
+                .cloned()
+                .collect();
+
+            // Create env in reverse order
+            let env2: HashMap<String, String> = pairs.iter()
+                .rev()
+                .cloned()
+                .collect();
+
+            let digest1 = compute_task_digest(&cmd, &env1, &inputs, None, None, None);
+            let digest2 = compute_task_digest(&cmd, &env2, &inputs, None, None, None);
+
+            prop_assert_eq!(digest1, digest2);
+        }
+
+        /// Property: Digests always have the sha256: prefix
+        #[test]
+        fn digest_has_correct_format(
+            cmd in prop::collection::vec("[a-z]+", 1..3),
+        ) {
+            let env = HashMap::new();
+            let inputs: Vec<String> = vec![];
+
+            let digest = compute_task_digest(&cmd, &env, &inputs, None, None, None);
+
+            prop_assert!(digest.starts_with("sha256:"));
+            // SHA256 produces 64 hex characters
+            prop_assert_eq!(digest.len(), 7 + 64); // "sha256:" + 64 hex chars
+        }
+    }
+}

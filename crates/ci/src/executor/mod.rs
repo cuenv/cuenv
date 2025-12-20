@@ -27,7 +27,7 @@ pub use orchestrator::run_ci;
 pub use redact::{LogRedactor, ShortSecretWarning, redact_secrets};
 pub use remote::{RemoteCacheBackend, RemoteCacheConfig};
 pub use runner::TaskOutput;
-pub use secrets::SaltConfig;
+pub use secrets::{EnvSecretResolver, MockSecretResolver, SaltConfig, SecretResolver};
 
 use crate::compiler::Compiler;
 use crate::ir::IntermediateRepresentation;
@@ -87,22 +87,55 @@ pub struct PipelineResult {
     pub duration_ms: u64,
 }
 
+use std::sync::Arc;
+
 /// CI Pipeline Executor
 ///
 /// Executes CI pipelines with:
 /// - IR compilation and validation
 /// - Dependency-ordered parallel execution
-/// - Content-addressable caching
+/// - Content-addressable caching (pluggable backends)
 /// - Secret resolution and injection
 pub struct CIExecutor {
     config: CIExecutorConfig,
+    /// Optional injected cache backend (uses local cache if None)
+    cache_backend: Option<Arc<dyn CacheBackend>>,
 }
 
 impl CIExecutor {
     /// Create a new executor with the given configuration
     #[must_use]
     pub fn new(config: CIExecutorConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            cache_backend: None,
+        }
+    }
+
+    /// Create an executor with an injected cache backend
+    ///
+    /// This enables using custom cache backends (e.g., remote cache) or
+    /// mock backends for testing.
+    #[must_use]
+    pub fn with_cache_backend(config: CIExecutorConfig, backend: Arc<dyn CacheBackend>) -> Self {
+        Self {
+            config,
+            cache_backend: Some(backend),
+        }
+    }
+
+    /// Check if a custom cache backend is configured
+    #[must_use]
+    pub fn has_custom_cache_backend(&self) -> bool {
+        self.cache_backend.is_some()
+    }
+
+    /// Get the cache backend name (for logging/metrics)
+    #[must_use]
+    pub fn cache_backend_name(&self) -> &'static str {
+        self.cache_backend
+            .as_ref()
+            .map_or("local", |b| b.name())
     }
 
     /// Execute a pipeline from a project configuration

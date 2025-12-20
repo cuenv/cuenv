@@ -6,6 +6,9 @@
 use crate::ir::CachePolicy;
 use std::path::PathBuf;
 
+/// Default shell path for task execution
+pub const DEFAULT_SHELL: &str = "/bin/sh";
+
 /// Configuration for the CI executor
 #[derive(Debug, Clone)]
 pub struct CIExecutorConfig {
@@ -32,6 +35,9 @@ pub struct CIExecutorConfig {
 
     /// Previous salt for secret fingerprinting during rotation (CUENV_SECRET_SALT_PREV)
     pub secret_salt_prev: Option<String>,
+
+    /// Shell path for shell-mode task execution (default: /bin/sh)
+    pub shell_path: String,
 }
 
 impl Default for CIExecutorConfig {
@@ -45,6 +51,7 @@ impl Default for CIExecutorConfig {
             cache_policy_override: None,
             secret_salt: None,
             secret_salt_prev: None,
+            shell_path: DEFAULT_SHELL.to_string(),
         }
     }
 }
@@ -108,6 +115,13 @@ impl CIExecutorConfig {
         self
     }
 
+    /// Set the shell path for shell-mode execution
+    #[must_use]
+    pub fn with_shell_path(mut self, shell_path: impl Into<String>) -> Self {
+        self.shell_path = shell_path.into();
+        self
+    }
+
     /// Get the effective cache root path
     #[must_use]
     pub fn effective_cache_root(&self) -> PathBuf {
@@ -156,5 +170,18 @@ mod tests {
             config_with_override.effective_cache_root(),
             PathBuf::from("/tmp/cache")
         );
+    }
+
+    #[test]
+    fn test_shell_path_default() {
+        let config = CIExecutorConfig::default();
+        assert_eq!(config.shell_path, "/bin/sh");
+    }
+
+    #[test]
+    fn test_shell_path_custom() {
+        let config = CIExecutorConfig::new(PathBuf::from("/project"))
+            .with_shell_path("/bin/bash");
+        assert_eq!(config.shell_path, "/bin/bash");
     }
 }
