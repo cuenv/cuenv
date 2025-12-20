@@ -109,6 +109,7 @@ pub mod ci_cmd {
         let mut all_ir_tasks = Vec::new();
         let mut found_pipeline = false;
         let mut github_config = cuenv_core::ci::GitHubConfig::default();
+        let mut trigger_condition: Option<cuenv_ci::ir::TriggerCondition> = None;
 
         for project in &projects {
             let config = &project.config;
@@ -127,17 +128,45 @@ pub mod ci_cmd {
             // Extract GitHub config (merged from CI-level and pipeline-level)
             github_config = ci.github_config_for_pipeline(&pipeline_name);
 
-            // Compile project to IR
+            // Compile project to IR (this builds trigger conditions for the FIRST pipeline)
             let compiler = Compiler::new(config.clone());
             let ir = compiler.compile().map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
             })?;
 
-            // Filter IR tasks to pipeline tasks
+            // Build trigger condition for the specific pipeline we're generating
+            // (compiler.compile() only builds trigger for first pipeline, so we need to rebuild)
+            trigger_condition = Some(build_pipeline_trigger_condition(ci_pipeline, ci));
+
+            // Filter IR tasks to pipeline tasks AND their dependencies
+            // First, collect all task IDs we need (including transitive deps)
+            let mut needed_tasks: std::collections::HashSet<String> =
+                ci_pipeline.tasks.iter().cloned().collect();
+
+            // Build a map of task id -> depends_on for the IR tasks
+            let task_deps: std::collections::HashMap<String, Vec<String>> = ir
+                .tasks
+                .iter()
+                .map(|t| (t.id.clone(), t.depends_on.clone()))
+                .collect();
+
+            // Recursively add dependencies
+            let mut to_process: Vec<String> = ci_pipeline.tasks.clone();
+            while let Some(task_id) = to_process.pop() {
+                if let Some(deps) = task_deps.get(&task_id) {
+                    for dep in deps {
+                        if needed_tasks.insert(dep.clone()) {
+                            to_process.push(dep.clone());
+                        }
+                    }
+                }
+            }
+
+            // Filter IR tasks to needed tasks (pipeline tasks + their dependencies)
             let pipeline_tasks: Vec<_> = ir
                 .tasks
                 .into_iter()
-                .filter(|t| ci_pipeline.tasks.contains(&t.id))
+                .filter(|t| needed_tasks.contains(&t.id))
                 .collect();
 
             all_ir_tasks.extend(pipeline_tasks);
@@ -154,12 +183,12 @@ pub mod ci_cmd {
             return Ok(());
         }
 
-        // Build combined IR
+        // Build combined IR with trigger conditions from the pipeline
         let combined_ir = IntermediateRepresentation {
             version: "1.3".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name.clone(),
-                trigger: None,
+                trigger: trigger_condition,
             },
             runtimes: vec![],
             tasks: all_ir_tasks,
@@ -195,6 +224,78 @@ pub mod ci_cmd {
         }
 
         Ok(())
+    }
+
+    /// Build trigger condition for a specific pipeline
+    fn build_pipeline_trigger_condition(
+        pipeline: &cuenv_core::ci::Pipeline,
+        ci_config: &cuenv_core::ci::CI,
+    ) -> cuenv_ci::ir::TriggerCondition {
+        use cuenv_ci::ir::{ManualTriggerConfig, TriggerCondition, WorkflowDispatchInputDef};
+        use cuenv_core::ci::ManualTrigger;
+        use std::collections::HashMap;
+
+        let when = pipeline.when.as_ref();
+
+        // Extract branch patterns
+        let branches = when
+            .and_then(|w| w.branch.as_ref())
+            .map(cuenv_core::ci::StringOrVec::to_vec)
+            .unwrap_or_default();
+
+        // Extract pull_request setting
+        let pull_request = when.and_then(|w| w.pull_request);
+
+        // Extract scheduled cron expressions
+        let scheduled = when
+            .and_then(|w| w.scheduled.as_ref())
+            .map(cuenv_core::ci::StringOrVec::to_vec)
+            .unwrap_or_default();
+
+        // Extract release types
+        let release = when.and_then(|w| w.release.clone()).unwrap_or_default();
+
+        // Build manual trigger config
+        let manual = when.and_then(|w| w.manual.as_ref()).map(|m| match m {
+            ManualTrigger::Enabled(enabled) => ManualTriggerConfig {
+                enabled: *enabled,
+                inputs: HashMap::new(),
+            },
+            ManualTrigger::WithInputs(inputs) => ManualTriggerConfig {
+                enabled: true,
+                inputs: inputs
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            WorkflowDispatchInputDef {
+                                description: v.description.clone(),
+                                required: v.required.unwrap_or(false),
+                                default: v.default.clone(),
+                                input_type: v.input_type.clone(),
+                                options: v.options.clone().unwrap_or_default(),
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+        });
+
+        // Get paths_ignore from provider config
+        let paths_ignore = ci_config
+            .github_config_for_pipeline(&pipeline.name)
+            .paths_ignore
+            .unwrap_or_default();
+
+        TriggerCondition {
+            branches,
+            pull_request,
+            scheduled,
+            release,
+            manual,
+            paths: Vec::new(), // Path derivation would require project access
+            paths_ignore,
+        }
     }
 
     /// Execute Buildkite format output - outputs pipeline YAML to stdout

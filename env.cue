@@ -53,20 +53,66 @@ ci: {
 	}
 
 	pipelines: [
+		// CI pipeline - runs on PRs and main branch pushes
 		{
 			name: "ci"
+			when: {
+				branch:      "main"
+				pullRequest: true
+			}
 			tasks: ["check"]
 		},
+		// Release pipeline - runs on GitHub release or manual trigger
 		{
 			name: "release"
+			when: {
+				release: ["published"]
+				manual: {
+					tag_name: {
+						description: "Tag to release (e.g., v0.6.0)"
+						required:    true
+						type:        "string"
+					}
+				}
+			}
+			derivePaths: false // Release runs regardless of file changes
 			tasks: [
 				"release.publish-cue",
 				"docs.deploy",
 			]
+			provider: github: permissions: {
+				contents:   "write"
+				"id-token": "write"
+			}
 		},
+		// Release PR pipeline - creates release PRs from changesets
 		{
 			name: "release-pr"
+			when: branch: "main"
 			tasks: ["release.generate-pr"]
+			provider: github: permissions: {
+				contents:       "write"
+				"pull-requests": "write"
+			}
+		},
+		// Docs deployment - on main push
+		{
+			name: "deploy"
+			when: branch: "main"
+			tasks: ["docs.deploy"]
+		},
+		// LLM evaluation - on changes to prompts/schema, weekly scheduled
+		{
+			name: "llms-eval"
+			when: {
+				branch:      "main"
+				pullRequest: true
+				scheduled:   "0 0 * * 0" // Weekly Sunday midnight UTC
+			}
+			tasks: ["eval.task-gen", "eval.env-gen", "eval.qa"]
+			provider: github: permissions: {
+				models: "read"
+			}
 		},
 	]
 }

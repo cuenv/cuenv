@@ -53,10 +53,70 @@ pub struct PipelineMetadata {
 
 /// Trigger conditions for pipeline execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
 pub struct TriggerCondition {
-    /// Branch name or pattern
+    /// Branch patterns to trigger on
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<String>,
+
+    /// Enable pull request triggers
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
+    pub pull_request: Option<bool>,
+
+    /// Cron expressions for scheduled runs
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scheduled: Vec<String>,
+
+    /// Release event types (e.g., `["published"]`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release: Vec<String>,
+
+    /// Manual trigger configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manual: Option<ManualTriggerConfig>,
+
+    /// Path patterns derived from task inputs (triggers on these paths)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+
+    /// Path patterns to ignore (from provider config)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths_ignore: Vec<String>,
+}
+
+/// Manual trigger (`workflow_dispatch`) configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ManualTriggerConfig {
+    /// Whether manual trigger is enabled
+    pub enabled: bool,
+
+    /// Input definitions for `workflow_dispatch`
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub inputs: HashMap<String, WorkflowDispatchInputDef>,
+}
+
+/// Workflow dispatch input definition
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct WorkflowDispatchInputDef {
+    /// Human-readable description
+    pub description: String,
+
+    /// Whether the input is required
+    #[serde(default)]
+    pub required: bool,
+
+    /// Default value
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+
+    /// Input type (string, boolean, choice, environment)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+
+    /// Options for choice-type inputs
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
 }
 
 /// Runtime environment definition (Nix flake-based)
@@ -361,7 +421,8 @@ mod tests {
     fn test_full_ir_serialization() {
         let mut ir = IntermediateRepresentation::new("my-pipeline");
         ir.pipeline.trigger = Some(TriggerCondition {
-            branch: Some("main".to_string()),
+            branches: vec!["main".to_string()],
+            ..Default::default()
         });
 
         ir.runtimes.push(Runtime {

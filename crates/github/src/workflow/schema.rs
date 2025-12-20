@@ -137,6 +137,10 @@ pub struct WorkflowInput {
     /// Input type (string, boolean, choice, environment)
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
+
+    /// Options for choice-type inputs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
 }
 
 /// Schedule trigger using cron expressions.
