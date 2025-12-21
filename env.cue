@@ -13,6 +13,8 @@ runtime: schema.#NixRuntime
 
 hooks: onEnter: nix: schema.#NixFlake
 
+config: ci: cuenv: source: "build"
+
 env: {
     CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
 
