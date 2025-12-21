@@ -72,6 +72,13 @@ pub struct CompilerOptions {
     /// Manual overrides for input digests (for Override mode)
     /// Maps input name to override digest value
     pub input_overrides: HashMap<String, String>,
+
+    /// Pipeline being compiled (for environment-aware compilation)
+    ///
+    /// When set, the compiler will set `ir.pipeline.environment` from
+    /// the pipeline's environment, enabling contributors to self-detect
+    /// their requirements.
+    pub pipeline: Option<Pipeline>,
 }
 
 impl Compiler {
@@ -251,6 +258,11 @@ impl Compiler {
     pub fn compile(&self) -> Result<IntermediateRepresentation, CompilerError> {
         let mut ir = IntermediateRepresentation::new(&self.project.name);
 
+        // Set pipeline context from options (enables environment-aware contributors)
+        if let Some(ref pipeline) = self.options.pipeline {
+            ir.pipeline.environment.clone_from(&pipeline.environment);
+        }
+
         // Set up trigger conditions from CI configuration
         if let Some(ci_config) = &self.project.ci
             && let Some(first_pipeline) = ci_config.pipelines.first()
@@ -261,16 +273,26 @@ impl Compiler {
         // Compile tasks
         self.compile_tasks(&self.project.tasks, &mut ir)?;
 
-        // Apply stage contributors (Nix, 1Password, Cachix, etc.)
+        // Apply stage contributors with fixed-point iteration
+        // Contributors self-detect their requirements and report modifications.
+        // Loop continues until no contributor reports changes (stable state).
         let contributors = stages::default_contributors();
-        for contributor in &contributors {
-            if contributor.is_active(&ir, &self.project) {
-                for (stage, task) in contributor.contribute(&ir, &self.project) {
-                    ir.stages.add(stage, task);
+        loop {
+            let mut any_modified = false;
+            for contributor in &contributors {
+                if contributor.is_active(&ir, &self.project) {
+                    let (contributions, modified) = contributor.contribute(&ir, &self.project);
+                    for (stage, task) in contributions {
+                        ir.stages.add(stage, task);
+                    }
+                    any_modified |= modified;
                 }
             }
+            ir.stages.sort_by_priority();
+            if !any_modified {
+                break;
+            }
         }
-        ir.stages.sort_by_priority();
 
         // Validate the IR
         let validator = IrValidator::new(&ir);

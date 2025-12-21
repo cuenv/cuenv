@@ -49,11 +49,16 @@ impl StageContributor for CachixContributor {
 
     fn contribute(
         &self,
-        _ir: &IntermediateRepresentation,
+        ir: &IntermediateRepresentation,
         project: &Project,
-    ) -> Vec<(BuildStage, StageTask)> {
+    ) -> (Vec<(BuildStage, StageTask)>, bool) {
+        // Idempotency: check if already contributed
+        if ir.stages.setup.iter().any(|t| t.id == "setup-cachix") {
+            return (vec![], false);
+        }
+
         let Some(config) = Self::get_cachix_config(project) else {
-            return vec![];
+            return (vec![], false);
         };
 
         let mut env = HashMap::new();
@@ -62,28 +67,31 @@ impl StageContributor for CachixContributor {
             format!("${{{}}}", config.auth_token_secret),
         );
 
-        vec![(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-cachix".to_string(),
-                provider: "cachix".to_string(),
-                label: Some("Setup Cachix".to_string()),
-                command: vec![format!(
-                    concat!(
-                        ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && ",
-                        "nix-env -iA cachix -f https://cachix.org/api/v1/install && ",
-                        "cachix use {}"
-                    ),
-                    config.name
-                )],
-                shell: true,
-                env,
-                depends_on: vec!["install-nix".to_string()],
-                // Priority 5: after Nix install (0), before cuenv build (10)
-                priority: 5,
-                ..Default::default()
-            },
-        )]
+        (
+            vec![(
+                BuildStage::Setup,
+                StageTask {
+                    id: "setup-cachix".to_string(),
+                    provider: "cachix".to_string(),
+                    label: Some("Setup Cachix".to_string()),
+                    command: vec![format!(
+                        concat!(
+                            ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && ",
+                            "nix-env -iA cachix -f https://cachix.org/api/v1/install && ",
+                            "cachix use {}"
+                        ),
+                        config.name
+                    )],
+                    shell: true,
+                    env,
+                    depends_on: vec!["install-nix".to_string()],
+                    // Priority 5: after Nix install (0), before cuenv build (10)
+                    priority: 5,
+                    ..Default::default()
+                },
+            )],
+            true,
+        )
     }
 }
 
@@ -183,8 +191,9 @@ mod tests {
         let ir = make_ir();
         let project = make_project_with_cachix();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, modified) = contributor.contribute(&ir, &project);
 
+        assert!(modified);
         assert_eq!(contributions.len(), 1);
 
         let (stage, task) = &contributions[0];
@@ -200,7 +209,7 @@ mod tests {
         let ir = make_ir();
         let project = make_project_with_cachix();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert!(task.command[0].contains("cachix use my-cache"));
@@ -212,7 +221,7 @@ mod tests {
         let ir = make_ir();
         let project = make_project_with_cachix();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert_eq!(
@@ -227,7 +236,7 @@ mod tests {
         let ir = make_ir();
         let project = make_project_with_custom_token();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert_eq!(
@@ -242,7 +251,7 @@ mod tests {
         let ir = make_ir();
         let project = make_project_with_cachix();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert!(task.depends_on.contains(&"install-nix".to_string()));
@@ -254,8 +263,31 @@ mod tests {
         let ir = make_ir();
         let project = make_project_without_cachix();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, modified) = contributor.contribute(&ir, &project);
 
+        assert!(!modified);
+        assert!(contributions.is_empty());
+    }
+
+    #[test]
+    fn test_contribute_is_idempotent() {
+        let contributor = CachixContributor;
+        let mut ir = make_ir();
+        let project = make_project_with_cachix();
+
+        // First contribution should modify
+        let (contributions, modified) = contributor.contribute(&ir, &project);
+        assert!(modified);
+        assert_eq!(contributions.len(), 1);
+
+        // Add the task to IR
+        for (stage, task) in contributions {
+            ir.stages.add(stage, task);
+        }
+
+        // Second contribution should not modify
+        let (contributions, modified) = contributor.contribute(&ir, &project);
+        assert!(!modified);
         assert!(contributions.is_empty());
     }
 }

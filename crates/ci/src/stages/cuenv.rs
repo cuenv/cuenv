@@ -65,9 +65,14 @@ impl StageContributor for CuenvContributor {
 
     fn contribute(
         &self,
-        _ir: &IntermediateRepresentation,
+        ir: &IntermediateRepresentation,
         project: &Project,
-    ) -> Vec<(BuildStage, StageTask)> {
+    ) -> (Vec<(BuildStage, StageTask)>, bool) {
+        // Idempotency: check if already contributed
+        if ir.stages.setup.iter().any(|t| t.id == "setup-cuenv") {
+            return (vec![], false);
+        }
+
         let source = Self::get_source(project);
 
         let (command, label) = match source {
@@ -75,19 +80,22 @@ impl StageContributor for CuenvContributor {
             CuenvSource::Build => (Self::build_command(), "Build cuenv"),
         };
 
-        vec![(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-cuenv".to_string(),
-                provider: "cuenv".to_string(),
-                label: Some(label.to_string()),
-                command: vec![command],
-                shell: true,
-                depends_on: vec!["install-nix".to_string()],
-                priority: 10,
-                ..Default::default()
-            },
-        )]
+        (
+            vec![(
+                BuildStage::Setup,
+                StageTask {
+                    id: "setup-cuenv".to_string(),
+                    provider: "cuenv".to_string(),
+                    label: Some(label.to_string()),
+                    command: vec![command],
+                    shell: true,
+                    depends_on: vec!["install-nix".to_string()],
+                    priority: 10,
+                    ..Default::default()
+                },
+            )],
+            true,
+        )
     }
 }
 
@@ -165,7 +173,8 @@ mod tests {
         let ir = make_ir();
         let project = make_project(); // No config
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, modified) = contributor.contribute(&ir, &project);
+        assert!(modified);
         assert_eq!(contributions.len(), 1);
 
         let (stage, task) = &contributions[0];
@@ -181,7 +190,7 @@ mod tests {
         let ir = make_ir();
         let project = make_project_with_release_source();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert_eq!(task.label, Some("Setup cuenv".to_string()));
@@ -194,7 +203,7 @@ mod tests {
         let ir = make_ir();
         let project = make_project_with_build_source();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert_eq!(task.label, Some("Build cuenv".to_string()));
@@ -207,7 +216,7 @@ mod tests {
         let ir = make_ir();
         let project = make_project();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert!(task.depends_on.contains(&"install-nix".to_string()));
@@ -219,9 +228,31 @@ mod tests {
         let ir = make_ir();
         let project = make_project();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert_eq!(task.priority, 10);
+    }
+
+    #[test]
+    fn test_contribute_is_idempotent() {
+        let contributor = CuenvContributor;
+        let mut ir = make_ir();
+        let project = make_project();
+
+        // First contribution should modify
+        let (contributions, modified) = contributor.contribute(&ir, &project);
+        assert!(modified);
+        assert_eq!(contributions.len(), 1);
+
+        // Add the task to IR
+        for (stage, task) in contributions {
+            ir.stages.add(stage, task);
+        }
+
+        // Second contribution should not modify
+        let (contributions, modified) = contributor.contribute(&ir, &project);
+        assert!(!modified);
+        assert!(contributions.is_empty());
     }
 }
