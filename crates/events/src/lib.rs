@@ -40,6 +40,7 @@ pub mod bus;
 pub mod event;
 pub mod layer;
 pub mod metadata;
+pub mod redaction;
 pub mod renderers;
 
 // Re-exports for convenience
@@ -50,6 +51,7 @@ pub use event::{
 };
 pub use layer::CuenvEventLayer;
 pub use metadata::{MetadataContext, correlation_id, set_correlation_id};
+pub use redaction::{redact, register_secret, register_secrets};
 pub use renderers::{CliRenderer, JsonRenderer};
 
 // ============================================================================

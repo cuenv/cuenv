@@ -44,6 +44,12 @@ fn main() {
         eprintln!("Internal error occurred. Run with RUST_LOG=debug for more information.");
     }));
 
+    // Register known credential environment variables for redaction.
+    // This ensures any output containing these values is automatically redacted.
+    if let Ok(token) = std::env::var("OP_SERVICE_ACCOUNT_TOKEN") {
+        cuenv_events::register_secret(token);
+    }
+
     // Handle shell completion requests first (before any other processing)
     if crate::cli::try_complete() {
         std::process::exit(EXIT_OK);

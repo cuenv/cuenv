@@ -15,6 +15,7 @@ use crate::event::{
     Stream, SystemEvent, TaskEvent,
 };
 use crate::metadata::correlation_id;
+use crate::redaction::redact;
 use tokio::sync::mpsc;
 use tracing::Subscriber;
 use tracing::field::{Field, Visit};
@@ -147,6 +148,11 @@ impl CuenvEventVisitor {
         let source = EventSource::new(&self.target);
         let correlation = correlation_id();
 
+        // Apply secret redaction to content fields before building events
+        let content = self.content.map(|c| redact(&c));
+        let message = self.message.map(|m| redact(&m));
+        let error = self.error.map(|e| redact(&e));
+
         let category = match event_type {
             // Task events
             "task.started" => EventCategory::Task(TaskEvent::Started {
@@ -164,7 +170,7 @@ impl CuenvEventVisitor {
             "task.output" => EventCategory::Task(TaskEvent::Output {
                 name: self.task_name?,
                 stream: self.stream.unwrap_or(Stream::Stdout),
-                content: self.content?,
+                content: content?,
             }),
             "task.completed" => EventCategory::Task(TaskEvent::Completed {
                 name: self.task_name?,
@@ -207,7 +213,7 @@ impl CuenvEventVisitor {
                 project: self.project?,
                 task: self.task?,
                 success: self.success?,
-                error: self.error,
+                error,
             }),
             "ci.report_generated" => {
                 EventCategory::Ci(CiEvent::ReportGenerated { path: self.path? })
@@ -221,7 +227,7 @@ impl CuenvEventVisitor {
             "command.progress" => EventCategory::Command(CommandEvent::Progress {
                 command: self.command?,
                 progress: self.progress?,
-                message: self.message?,
+                message: message.clone()?,
             }),
             "command.completed" => EventCategory::Command(CommandEvent::Completed {
                 command: self.command?,
@@ -233,7 +239,7 @@ impl CuenvEventVisitor {
             "interactive.prompt_requested" => {
                 EventCategory::Interactive(InteractiveEvent::PromptRequested {
                     prompt_id: self.prompt_id?,
-                    message: self.message?,
+                    message: message.clone()?,
                     options: self.options.unwrap_or_default(),
                 })
             }
@@ -253,17 +259,15 @@ impl CuenvEventVisitor {
             // System events
             "system.supervisor_log" => EventCategory::System(SystemEvent::SupervisorLog {
                 tag: self.tag?,
-                message: self.message?,
+                message: message?,
             }),
             "system.shutdown" => EventCategory::System(SystemEvent::Shutdown),
 
             // Output events
             "output.stdout" => EventCategory::Output(OutputEvent::Stdout {
-                content: self.content?,
+                content: content.clone()?,
             }),
-            "output.stderr" => EventCategory::Output(OutputEvent::Stderr {
-                content: self.content?,
-            }),
+            "output.stderr" => EventCategory::Output(OutputEvent::Stderr { content: content? }),
 
             _ => return None,
         };

@@ -174,6 +174,10 @@ pub async fn execute_exec(
                 .await?;
         secrets_for_redaction = secrets;
 
+        // Register resolved secrets for global redaction in the events system.
+        // This ensures they're redacted from ALL output, not just this command's output.
+        cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
+
         for (key, value) in exec_env_vars {
             runtime_env.set(key, value);
         }
