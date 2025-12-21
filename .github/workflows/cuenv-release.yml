@@ -41,7 +41,7 @@ jobs:
     - name: Build cuenv
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
     - name: docs.build
-      run: cuenv task docs.build
+      run: cuenv task docs.build -e production
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   docs-deploy:
@@ -67,7 +67,7 @@ jobs:
     - name: Build cuenv
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
     - name: docs.deploy
-      run: cuenv task docs.deploy
+      run: cuenv task docs.deploy -e production
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   release-publish-cue:
@@ -91,6 +91,6 @@ jobs:
     - name: Build cuenv
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
     - name: release.publish-cue
-      run: cuenv task release.publish-cue
+      run: cuenv task release.publish-cue -e production
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
