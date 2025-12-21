@@ -152,11 +152,17 @@ pub async fn execute_env_print(
         env.base.clone()
     };
 
+    // Resolve all environment variables including secrets
+    let (resolved_vars, secrets) = resolve_env_vars_with_secrets(&env_vars).await?;
+
+    // Register resolved secrets for global redaction
+    cuenv_events::register_secrets(secrets.into_iter());
+
     // Format and return the output
     let output = match format {
-        "json" => serde_json::to_string_pretty(&env_vars)
+        "json" => serde_json::to_string_pretty(&resolved_vars)
             .map_err(|e| cuenv_core::Error::configuration(format!("Failed to format JSON: {e}")))?,
-        "env" | "simple" => format_as_env_vars_from_map(&env_vars),
+        "env" | "simple" => format_as_env_vars(&resolved_vars),
         other => {
             return Err(cuenv_core::Error::configuration(format!(
                 "Unsupported format: '{other}'. Supported formats are 'json', 'env', and 'simple'."
@@ -168,9 +174,25 @@ pub async fn execute_env_print(
     Ok(output)
 }
 
-fn format_as_env_vars_from_map(
+/// Resolve all environment variables, returning resolved values and secret values separately
+async fn resolve_env_vars_with_secrets(
     env_map: &std::collections::HashMap<String, cuenv_core::environment::EnvValue>,
-) -> String {
+) -> Result<(std::collections::HashMap<String, String>, Vec<String>)> {
+    let mut resolved = std::collections::HashMap::new();
+    let mut secrets = Vec::new();
+
+    for (key, value) in env_map {
+        let resolved_value = value.resolve().await?;
+        if value.is_secret() {
+            secrets.push(resolved_value.clone());
+        }
+        resolved.insert(key.clone(), resolved_value);
+    }
+
+    Ok((resolved, secrets))
+}
+
+fn format_as_env_vars(env_map: &std::collections::HashMap<String, String>) -> String {
     let mut lines = Vec::new();
 
     // Sort keys for consistent output
@@ -179,13 +201,7 @@ fn format_as_env_vars_from_map(
 
     for key in keys {
         let value = &env_map[key];
-        // Use to_string_value for consistent handling
-        let formatted_value = value.to_string_value();
-        if formatted_value == "[SECRET]" {
-            // Skip secrets in env output
-            continue;
-        }
-        lines.push(format!("{key}={formatted_value}"));
+        lines.push(format!("{key}={value}"));
     }
 
     lines.join("\n")
@@ -194,7 +210,6 @@ fn format_as_env_vars_from_map(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::environment::EnvValue;
     use std::collections::HashMap;
 
     #[test]
@@ -202,12 +217,12 @@ mod tests {
         let mut env_map = HashMap::new();
         env_map.insert(
             "DATABASE_URL".to_string(),
-            EnvValue::String("postgres://localhost/mydb".to_string()),
+            "postgres://localhost/mydb".to_string(),
         );
-        env_map.insert("DEBUG".to_string(), EnvValue::Bool(true));
-        env_map.insert("PORT".to_string(), EnvValue::Int(3000));
+        env_map.insert("DEBUG".to_string(), "true".to_string());
+        env_map.insert("PORT".to_string(), "3000".to_string());
 
-        let result = format_as_env_vars_from_map(&env_map);
+        let result = format_as_env_vars(&env_map);
         let lines: Vec<&str> = result.split('\n').collect();
 
         // Should be sorted alphabetically
@@ -219,8 +234,8 @@ mod tests {
 
     #[test]
     fn test_format_as_env_vars_empty() {
-        let env_map: HashMap<String, EnvValue> = HashMap::new();
-        let result = format_as_env_vars_from_map(&env_map);
+        let env_map: HashMap<String, String> = HashMap::new();
+        let result = format_as_env_vars(&env_map);
         assert_eq!(result, "");
     }
 }

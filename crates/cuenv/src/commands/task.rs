@@ -501,11 +501,17 @@ pub async fn execute_task(
         };
 
         // Then apply task-specific overrides with policies and secret resolution
-        let task_env_vars = cuenv_core::environment::Environment::resolve_for_task(
-            display_task_name.as_str(),
-            &env_vars,
-        )
-        .await?;
+        let (task_env_vars, secrets) =
+            cuenv_core::environment::Environment::resolve_for_task_with_secrets(
+                display_task_name.as_str(),
+                &env_vars,
+            )
+            .await?;
+
+        // Register resolved secrets for global redaction in the events system.
+        // This ensures they're redacted from ALL output, not just this task's output.
+        cuenv_events::register_secrets(secrets.into_iter());
+
         for (key, value) in task_env_vars {
             runtime_env.set(key, value);
         }
