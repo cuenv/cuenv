@@ -10,7 +10,6 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "CUE Cubes - code generation and project scaffolding from CUE templates"
-publish = false
 
 [features]
 default = []
