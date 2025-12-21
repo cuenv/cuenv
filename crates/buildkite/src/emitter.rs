@@ -4,7 +4,7 @@
 
 use crate::schema::{AgentRules, BlockStep, CommandStep, CommandValue, DependsOn, Pipeline, Step};
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
-use cuenv_ci::ir::{IntermediateRepresentation, OutputType, Runtime, Task};
+use cuenv_ci::ir::{IntermediateRepresentation, OutputType, StageTask, Task};
 use std::collections::HashMap;
 
 /// Buildkite pipeline emitter
@@ -56,7 +56,22 @@ impl BuildkiteEmitter {
 
     /// Convert IR tasks to Buildkite pipeline
     fn build_pipeline(&self, ir: &IntermediateRepresentation) -> Pipeline {
-        // Build approval keys map first for tasks that need manual approval
+        let mut steps: Vec<Step> = Vec::new();
+
+        // Emit bootstrap stage steps (e.g., install-nix)
+        for stage_task in &ir.stages.bootstrap {
+            steps.push(Step::Command(Box::new(self.stage_task_to_step(stage_task))));
+        }
+
+        // Emit setup stage steps (e.g., cachix, setup-cuenv, 1password)
+        for stage_task in &ir.stages.setup {
+            steps.push(Step::Command(Box::new(self.stage_task_to_step(stage_task))));
+        }
+
+        // Collect all setup step IDs for task dependencies
+        let setup_keys: Vec<String> = ir.stages.setup_task_ids();
+
+        // Build approval keys map for tasks that need manual approval
         let approval_keys: HashMap<String, String> = ir
             .tasks
             .iter()
@@ -64,23 +79,59 @@ impl BuildkiteEmitter {
             .map(|task| (task.id.clone(), format!("{}-approval", task.id)))
             .collect();
 
-        // Build steps: block steps for approvals, then command steps for all tasks
-        let steps: Vec<Step> = ir
-            .tasks
-            .iter()
-            .flat_map(|task| {
-                let block_step = approval_keys
-                    .get(&task.id)
-                    .map(|approval_key| Step::Block(self.build_block_step(task, approval_key)));
-                let command_step =
-                    Step::Command(Box::new(self.build_command_step(task, ir, &approval_keys)));
-                block_step.into_iter().chain(std::iter::once(command_step))
-            })
-            .collect();
+        // Build task steps: block steps for approvals, then command steps
+        for task in &ir.tasks {
+            // Add block step if task requires manual approval
+            if let Some(approval_key) = approval_keys.get(&task.id) {
+                steps.push(Step::Block(self.build_block_step(task, approval_key)));
+            }
+
+            // Add command step for the task
+            steps.push(Step::Command(Box::new(self.build_command_step(
+                task,
+                ir,
+                &approval_keys,
+                &setup_keys,
+            ))));
+        }
 
         Pipeline {
             steps,
             env: HashMap::new(),
+        }
+    }
+
+    /// Convert a stage task to a Buildkite command step
+    fn stage_task_to_step(&self, task: &StageTask) -> CommandStep {
+        let label = task.label.as_ref().map(|l| self.format_label(l, false));
+
+        // Build command - use shell wrapper if needed
+        let command = if task.shell {
+            Some(CommandValue::Single(task.command.join(" ")))
+        } else {
+            Some(CommandValue::Array(task.command.clone()))
+        };
+
+        // Build dependencies
+        let depends_on: Vec<DependsOn> = task
+            .depends_on
+            .iter()
+            .map(|dep| DependsOn::Key(dep.clone()))
+            .collect();
+
+        CommandStep {
+            label,
+            key: Some(task.id.clone()),
+            command,
+            env: task.env.clone(),
+            agents: None,
+            artifact_paths: vec![],
+            depends_on,
+            concurrency_group: None,
+            concurrency: None,
+            retry: None,
+            timeout_in_minutes: None,
+            soft_fail: None,
         }
     }
 
@@ -90,46 +141,34 @@ impl BuildkiteEmitter {
         task: &Task,
         ir: &IntermediateRepresentation,
         approval_keys: &HashMap<String, String>,
+        setup_keys: &[String],
     ) -> CommandStep {
         let label = self.format_label(&task.id, task.deployment);
 
-        // Build the command, wrapping with Nix setup if task has a runtime
+        // Build the command - Nix setup is handled by stage tasks
         let base_command = if let Some(ref env) = ir.pipeline.environment {
             format!("cuenv task {} -e {}", task.id, env)
         } else {
             format!("cuenv task {}", task.id)
         };
+
+        // Wrap with nix develop if task has a runtime
         let command = if let Some(runtime_id) = &task.runtime {
-            // Look up the runtime definition in the IR
             if let Some(runtime) = ir.runtimes.iter().find(|r| r.id == *runtime_id) {
-                // Generate Nix-wrapped command with bootstrap
-                let setup = Self::generate_nix_setup(runtime);
+                // Source nix profile and run in nix develop
                 Some(CommandValue::Single(format!(
-                    "{}\nnix develop {}#{} --command {}",
-                    setup, runtime.flake, runtime.output, base_command
+                    ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix develop {}#{} --command {}",
+                    runtime.flake, runtime.output, base_command
                 )))
             } else {
-                // Runtime not found - fall back to plain command
                 Some(CommandValue::Single(base_command))
             }
         } else {
-            // No runtime - assume cuenv is available on the agent
             Some(CommandValue::Single(base_command))
         };
 
-        // Environment variables are handled by cuenv task, but we still pass
-        // through any orchestrator-level env vars that might be needed
-        let mut env = task.env.clone();
-
-        // Add 1Password service account token if needed
-        if ir.pipeline.requires_onepassword {
-            // In Buildkite, secrets are typically accessed via environment variables
-            // The actual secret value should be configured in the Buildkite agent
-            env.insert(
-                "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
-                "${OP_SERVICE_ACCOUNT_TOKEN}".to_string(),
-            );
-        }
+        // Environment variables - secrets are handled by stage tasks
+        let env = task.env.clone();
 
         // Build agent rules from resource tags
         let agents = task
@@ -146,19 +185,24 @@ impl BuildkiteEmitter {
             .map(|o| o.path.clone())
             .collect();
 
-        // Build dependencies
-        let mut depends_on: Vec<DependsOn> = task
-            .depends_on
-            .iter()
-            .map(|dep| {
-                // Check if the dependency has an approval step
-                if let Some(approval_key) = approval_keys.get(dep) {
-                    DependsOn::Key(approval_key.clone())
-                } else {
-                    DependsOn::Key(dep.clone())
-                }
-            })
-            .collect();
+        // Build dependencies: task depends on setup stages + explicit dependencies
+        let mut depends_on: Vec<DependsOn> = Vec::new();
+
+        // Add setup stage dependencies if task has a runtime or needs 1Password
+        if task.runtime.is_some() || ir.pipeline.requires_onepassword {
+            for setup_key in setup_keys {
+                depends_on.push(DependsOn::Key(setup_key.clone()));
+            }
+        }
+
+        // Add explicit task dependencies
+        for dep in &task.depends_on {
+            if let Some(approval_key) = approval_keys.get(dep) {
+                depends_on.push(DependsOn::Key(approval_key.clone()));
+            } else {
+                depends_on.push(DependsOn::Key(dep.clone()));
+            }
+        }
 
         // If this task has manual approval, depend on its own approval step
         if let Some(approval_key) = approval_keys.get(&task.id) {
@@ -225,19 +269,6 @@ impl BuildkiteEmitter {
             task_id.to_string()
         }
     }
-
-    /// Generate Nix bootstrap script for a runtime
-    ///
-    /// This script ensures Nix is installed and available. With proper Cachix
-    /// configuration, subsequent `nix develop` commands will be fast cache hits.
-    fn generate_nix_setup(_runtime: &Runtime) -> String {
-        r"# Nix bootstrap (fast with cachix)
-if ! command -v nix &> /dev/null; then
-  curl -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none
-  . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-fi"
-        .to_string()
-    }
 }
 
 impl Emitter for BuildkiteEmitter {
@@ -292,12 +323,12 @@ mod tests {
     use super::*;
     use cuenv_ci::ir::{
         CachePolicy, OutputDeclaration, PipelineMetadata, PurityMode, ResourceRequirements,
-        Runtime, SecretConfig,
+        Runtime, SecretConfig, StageConfiguration,
     };
 
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
         IntermediateRepresentation {
-            version: "1.3".to_string(),
+            version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
                 environment: None,
@@ -306,6 +337,7 @@ mod tests {
                 trigger: None,
             },
             runtimes: vec![],
+            stages: StageConfiguration::default(),
             tasks,
         }
     }
@@ -498,7 +530,7 @@ mod tests {
         let mut task = make_task("build", &["cargo", "build"]);
         task.runtime = Some("nix-rust".to_string());
 
-        // Create IR with runtime definition
+        // Create IR with runtime definition and stages
         let mut ir = make_ir(vec![task]);
         ir.runtimes.push(Runtime {
             id: "nix-rust".to_string(),
@@ -509,9 +541,34 @@ mod tests {
             purity: PurityMode::Strict,
         });
 
+        // Add stage tasks that would be contributed by NixContributor
+        ir.stages.bootstrap.push(StageTask {
+            id: "install-nix".to_string(),
+            provider: "nix".to_string(),
+            label: Some("Install Nix".to_string()),
+            command: vec![
+                "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none".to_string()
+            ],
+            shell: true,
+            priority: 0,
+            ..Default::default()
+        });
+        ir.stages.setup.push(StageTask {
+            id: "setup-cuenv".to_string(),
+            provider: "cuenv".to_string(),
+            label: Some("Setup cuenv".to_string()),
+            command: vec![
+                ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config".to_string()
+            ],
+            shell: true,
+            depends_on: vec!["install-nix".to_string()],
+            priority: 10,
+            ..Default::default()
+        });
+
         let yaml = emitter.emit(&ir).unwrap();
 
-        // Should contain Nix bootstrap
+        // Should contain Nix bootstrap from stages
         assert!(yaml.contains("install.determinate.systems/nix"));
         assert!(yaml.contains("nix-daemon.sh"));
 

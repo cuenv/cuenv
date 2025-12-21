@@ -306,7 +306,7 @@ impl IgnoreValue {
 /// Runtime declares where/how a task executes.
 /// Set at project level as the default, override per-task as needed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(tag = "type", rename_all = "lowercase")]
 pub enum Runtime {
     /// Activate Nix devShell before execution
     Nix(NixRuntime),

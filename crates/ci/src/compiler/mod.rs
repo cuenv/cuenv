@@ -1,7 +1,12 @@
-//! Compiler from cuenv task definitions to IR v1.3
+//! Compiler from cuenv task definitions to IR v1.4
 //!
 //! Transforms a cuenv `Project` with tasks into an intermediate representation
 //! suitable for emitting orchestrator-native CI configurations.
+//!
+//! ## Stage Contributors
+//!
+//! The compiler applies stage contributors (Nix, 1Password, Cachix) during
+//! compilation to inject setup/teardown tasks into the IR stages.
 
 pub mod digest;
 
@@ -11,6 +16,7 @@ use crate::ir::{
     OutputType, PurityMode, Runtime, SecretConfig, Task as IrTask, TriggerCondition,
     WorkflowDispatchInputDef,
 };
+use crate::stages;
 use cuenv_core::ci::{CI, ManualTrigger, Pipeline};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
@@ -254,6 +260,17 @@ impl Compiler {
 
         // Compile tasks
         self.compile_tasks(&self.project.tasks, &mut ir)?;
+
+        // Apply stage contributors (Nix, 1Password, Cachix, etc.)
+        let contributors = stages::default_contributors();
+        for contributor in &contributors {
+            if contributor.is_active(&ir, &self.project) {
+                for (stage, task) in contributor.contribute(&ir, &self.project) {
+                    ir.stages.add(stage, task);
+                }
+            }
+        }
+        ir.stages.sort_by_priority();
 
         // Validate the IR
         let validator = IrValidator::new(&ir);
@@ -557,7 +574,7 @@ mod tests {
         let compiler = Compiler::new(project);
         let ir = compiler.compile().unwrap();
 
-        assert_eq!(ir.version, "1.3");
+        assert_eq!(ir.version, "1.4");
         assert_eq!(ir.pipeline.name, "test-project");
         assert_eq!(ir.tasks.len(), 1);
         assert_eq!(ir.tasks[0].id, "build");

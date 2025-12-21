@@ -403,12 +403,12 @@ impl CIExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CachePolicy, PipelineMetadata, Task as IRTask};
+    use crate::ir::{CachePolicy, PipelineMetadata, StageConfiguration, Task as IRTask};
 
     #[allow(dead_code)]
     fn make_simple_ir(tasks: Vec<IRTask>) -> IntermediateRepresentation {
         IntermediateRepresentation {
-            version: "1.3".to_string(),
+            version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
                 environment: None,
@@ -417,6 +417,7 @@ mod tests {
                 trigger: None,
             },
             runtimes: vec![],
+            stages: StageConfiguration::default(),
             tasks,
         }
     }

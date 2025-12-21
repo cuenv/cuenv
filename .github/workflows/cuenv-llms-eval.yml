@@ -49,10 +49,8 @@ jobs:
         name: cuenv
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Build cuenv
-      run: |-
-        nix build .#cuenv
-        echo "$(pwd)/result/bin" >> $GITHUB_PATH
+    - name: Setup cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && curl -sSL https://github.com/cuenv/cuenv/releases/latest/download/cuenv-x86_64-linux.tar.gz | tar -xzf - -C /usr/local/bin && chmod +x /usr/local/bin/cuenv
     - name: eval.env-gen
       run: cuenv task eval.env-gen
       env:
@@ -75,10 +73,8 @@ jobs:
         name: cuenv
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Build cuenv
-      run: |-
-        nix build .#cuenv
-        echo "$(pwd)/result/bin" >> $GITHUB_PATH
+    - name: Setup cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && curl -sSL https://github.com/cuenv/cuenv/releases/latest/download/cuenv-x86_64-linux.tar.gz | tar -xzf - -C /usr/local/bin && chmod +x /usr/local/bin/cuenv
     - name: eval.qa
       run: cuenv task eval.qa
       env:
@@ -101,10 +97,8 @@ jobs:
         name: cuenv
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Build cuenv
-      run: |-
-        nix build .#cuenv
-        echo "$(pwd)/result/bin" >> $GITHUB_PATH
+    - name: Setup cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && curl -sSL https://github.com/cuenv/cuenv/releases/latest/download/cuenv-x86_64-linux.tar.gz | tar -xzf - -C /usr/local/bin && chmod +x /usr/local/bin/cuenv
     - name: eval.task-gen
       run: cuenv task eval.task-gen
       env:

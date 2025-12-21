@@ -37,7 +37,7 @@ pub mod ci_cmd {
     use cuenv_ci::discovery::discover_projects;
     use cuenv_ci::emitter::Emitter;
     use cuenv_ci::executor::run_ci;
-    use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
+    use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata, StageConfiguration};
     use cuenv_core::Result;
 
     #[allow(clippy::print_stdout)]
@@ -213,6 +213,8 @@ pub mod ci_cmd {
         let mut project_name: Option<String> = None;
         let mut pipeline_environment: Option<String> = None;
         let mut requires_onepassword = false;
+        let mut compiled_stages = StageConfiguration::default();
+        let mut compiled_runtimes = Vec::new();
 
         for project in projects {
             let config = &project.config;
@@ -281,6 +283,10 @@ pub mod ci_cmd {
                 .filter(|t| needed_tasks.contains(&t.id))
                 .collect();
 
+            // Capture stages and runtimes from compiled IR
+            compiled_stages = ir.stages;
+            compiled_runtimes = ir.runtimes;
+
             all_ir_tasks.extend(pipeline_tasks);
         }
 
@@ -297,7 +303,7 @@ pub mod ci_cmd {
 
         // Build combined IR with trigger conditions from the pipeline
         let combined_ir = IntermediateRepresentation {
-            version: "1.3".to_string(),
+            version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name.to_string(),
                 environment: pipeline_environment,
@@ -305,7 +311,8 @@ pub mod ci_cmd {
                 project_name,
                 trigger: trigger_condition,
             },
-            runtimes: vec![],
+            runtimes: compiled_runtimes,
+            stages: compiled_stages,
             tasks: all_ir_tasks,
         };
 
@@ -417,6 +424,8 @@ pub mod ci_cmd {
     #[cfg(feature = "buildkite")]
     struct CollectedTasks {
         tasks: Vec<cuenv_ci::ir::Task>,
+        stages: StageConfiguration,
+        runtimes: Vec<cuenv_ci::ir::Runtime>,
         environment: Option<String>,
         requires_onepassword: bool,
     }
@@ -433,6 +442,8 @@ pub mod ci_cmd {
         let mut all_ir_tasks = Vec::new();
         let mut pipeline_environment: Option<String> = None;
         let mut requires_onepassword = false;
+        let mut compiled_stages = StageConfiguration::default();
+        let mut compiled_runtimes = Vec::new();
 
         for project in projects {
             let config = &project.config;
@@ -499,11 +510,17 @@ pub mod ci_cmd {
                 .filter(|t| tasks_to_run.contains(&t.id))
                 .collect();
 
+            // Capture stages and runtimes from compiled IR
+            compiled_stages = ir.stages;
+            compiled_runtimes = ir.runtimes;
+
             all_ir_tasks.extend(affected_tasks);
         }
 
         Ok(CollectedTasks {
             tasks: all_ir_tasks,
+            stages: compiled_stages,
+            runtimes: compiled_runtimes,
             environment: pipeline_environment,
             requires_onepassword,
         })
@@ -561,7 +578,7 @@ pub mod ci_cmd {
         }
 
         let combined_ir = IntermediateRepresentation {
-            version: "1.3".to_string(),
+            version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name,
                 environment: collected.environment,
@@ -569,7 +586,8 @@ pub mod ci_cmd {
                 project_name: None,
                 trigger: None,
             },
-            runtimes: vec![],
+            runtimes: collected.runtimes,
+            stages: collected.stages,
             tasks: collected.tasks,
         };
 
