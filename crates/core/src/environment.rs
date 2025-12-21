@@ -351,13 +351,31 @@ impl Environment {
         task_name: &str,
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<HashMap<String, String>> {
+        let (resolved, _secrets) = Self::resolve_for_task_with_secrets(task_name, env_vars).await?;
+        Ok(resolved)
+    }
+
+    /// Build and resolve environment for a task, also returning secret values
+    ///
+    /// Returns `(resolved_env_vars, secret_values)` where `secret_values` contains
+    /// the resolved values of any secrets, for use in output redaction.
+    pub async fn resolve_for_task_with_secrets(
+        task_name: &str,
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
         let mut resolved = HashMap::new();
+        let mut secrets = Vec::new();
+
         for (key, value) in env_vars {
             if value.is_accessible_by_task(task_name) {
-                resolved.insert(key.clone(), value.resolve().await?);
+                let resolved_value = value.resolve().await?;
+                if value.is_secret() {
+                    secrets.push(resolved_value.clone());
+                }
+                resolved.insert(key.clone(), resolved_value);
             }
         }
-        Ok(resolved)
+        Ok((resolved, secrets))
     }
 
     /// Build environment for exec command, filtering based on policies

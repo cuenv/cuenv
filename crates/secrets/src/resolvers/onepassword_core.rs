@@ -36,7 +36,7 @@ fn create_host_functions() -> Vec<Function> {
         [ValType::I64],
         UserData::new(()),
         |plugin: &mut CurrentPlugin, inputs: &[Val], outputs: &mut [Val], _: UserData<()>| {
-            let length = inputs[0].unwrap_i32() as usize;
+            let length = usize::try_from(inputs[0].unwrap_i32()).unwrap_or(0);
 
             // Generate cryptographically secure random bytes using getrandom (same as Go's crypto/rand)
             let mut bytes = vec![0u8; length];
@@ -48,7 +48,10 @@ fn create_host_functions() -> Vec<Function> {
                 .memory_new(&bytes)
                 .map_err(|e| extism::Error::msg(format!("Failed to write bytes: {e}")))?;
 
-            outputs[0] = Val::I64(handle.offset() as i64);
+            // WASM memory offsets are always < i64::MAX
+            #[expect(clippy::cast_possible_wrap)]
+            let offset = handle.offset() as i64;
+            outputs[0] = Val::I64(offset);
             Ok(())
         },
     )
@@ -63,6 +66,8 @@ fn create_host_functions() -> Vec<Function> {
         [ValType::I64],
         UserData::new(()),
         |_plugin: &mut CurrentPlugin, _inputs: &[Val], outputs: &mut [Val], _: UserData<()>| {
+            // Milliseconds since Unix epoch fits in i64 for foreseeable future
+            #[expect(clippy::cast_possible_truncation)]
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -80,6 +85,8 @@ fn create_host_functions() -> Vec<Function> {
         [ValType::I64],
         UserData::new(()),
         |_plugin: &mut CurrentPlugin, _inputs: &[Val], outputs: &mut [Val], _: UserData<()>| {
+            // Milliseconds since Unix epoch fits in i64 for foreseeable future
+            #[expect(clippy::cast_possible_truncation)]
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -100,7 +107,7 @@ fn create_host_functions() -> Vec<Function> {
         UserData::new(()),
         |_plugin: &mut CurrentPlugin, _inputs: &[Val], outputs: &mut [Val], _: UserData<()>| {
             // Get local timezone offset using chrono
-            let offset_seconds = chrono::Local::now().offset().local_minus_utc() as i64;
+            let offset_seconds = i64::from(chrono::Local::now().offset().local_minus_utc());
             outputs[0] = Val::I64(offset_seconds);
             Ok(())
         },
@@ -219,7 +226,7 @@ impl SharedCore {
                 .unwrap_or("unknown error");
             return Err(SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
-                message: format!("1Password error ({}): {}", error_name, message),
+                message: format!("1Password error ({error_name}): {message}"),
             });
         }
 
@@ -228,7 +235,7 @@ impl SharedCore {
             .as_u64()
             .ok_or_else(|| SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
-                message: format!("Expected client ID number, got: {}", result),
+                message: format!("Expected client ID number, got: {result}"),
             })?;
 
         tracing::debug!(client_id, "1Password client initialized");
@@ -238,12 +245,12 @@ impl SharedCore {
     /// Invoke a method on the 1Password client.
     ///
     /// The method name and parameters depend on the specific operation.
-    /// For resolving secrets, use method "SecretsResolve" with the secret reference.
+    /// For resolving secrets, use method `SecretsResolve` with the secret reference.
     pub fn invoke(
         &mut self,
         client_id: u64,
         method: &str,
-        params: serde_json::Map<String, serde_json::Value>,
+        params: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<String, SecretError> {
         // Structure matches Go SDK's InvokeConfig exactly:
         // InvokeConfig { Invocation { ClientID, Parameters { MethodName, SerializedParams } } }
@@ -286,7 +293,7 @@ impl SharedCore {
                 .unwrap_or("unknown error");
             return Err(SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
-                message: format!("1Password error ({}): {}", error_name, message),
+                message: format!("1Password error ({error_name}): {message}"),
             });
         }
 

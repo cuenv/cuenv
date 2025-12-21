@@ -180,7 +180,7 @@ impl OnePasswordResolver {
             serde_json::Value::String(config.reference.clone()),
         );
 
-        let result = core.invoke(client_id, "SecretsResolve", params)?;
+        let result = core.invoke(client_id, "SecretsResolve", &params)?;
 
         // Parse the response - the Go SDK returns a JSON-encoded string
         // The invoke response is the raw string from WASM, which is a JSON-quoted secret value
@@ -293,7 +293,7 @@ impl OnePasswordResolver {
             ),
         );
 
-        let result = core.invoke(client_id, "SecretsResolveAll", params)?;
+        let result = core.invoke(client_id, "SecretsResolveAll", &params)?;
 
         // Parse the response
         let response: serde_json::Value =

@@ -395,9 +395,10 @@ fn test_env_print_command_json_format() {
             let parsed: serde_json::Value =
                 serde_json::from_str(&stdout).expect("Output should be valid JSON");
 
+            // All values are now strings after resolution
             assert_eq!(parsed["DATABASE_URL"], "postgres://localhost/mydb");
-            assert_eq!(parsed["DEBUG"], true);
-            assert_eq!(parsed["PORT"], 3000);
+            assert_eq!(parsed["DEBUG"], "true");
+            assert_eq!(parsed["PORT"], "3000");
             assert_eq!(parsed["BASE_URL"], "https://api.example.com");
             assert_eq!(parsed["API_ENDPOINT"], "https://api.example.com/v1");
         }
