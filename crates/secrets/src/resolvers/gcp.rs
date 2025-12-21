@@ -72,6 +72,9 @@ impl GcpResolver {
     ///
     /// If GCP credentials are available in environment, uses HTTP mode.
     /// Otherwise, CLI mode will be used.
+    ///
+    /// # Errors
+    /// Returns error if GCP credentials cannot be loaded.
     #[cfg(feature = "gcp")]
     pub fn new() -> Result<Self, SecretError> {
         let use_http = Self::http_credentials_available();

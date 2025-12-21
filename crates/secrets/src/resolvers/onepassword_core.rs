@@ -1,4 +1,4 @@
-//! 1Password WASM SDK SharedCore wrapper
+//! 1Password WASM SDK `SharedCore` wrapper
 //!
 //! This module provides a thread-safe wrapper around the 1Password WASM SDK,
 //! following the same pattern as the official Go SDK.
@@ -10,16 +10,13 @@ use crate::SecretError;
 use extism::{Manifest, Plugin, Wasm};
 
 #[cfg(feature = "onepassword")]
-use once_cell::sync::Lazy;
+use std::sync::{LazyLock, Mutex};
 
+/// Global `SharedCore` instance, lazily initialized
 #[cfg(feature = "onepassword")]
-use std::sync::Mutex;
+static SHARED_CORE: LazyLock<Mutex<Option<SharedCore>>> = LazyLock::new(|| Mutex::new(None));
 
-/// Global SharedCore instance, lazily initialized
-#[cfg(feature = "onepassword")]
-static SHARED_CORE: Lazy<Mutex<Option<SharedCore>>> = Lazy::new(|| Mutex::new(None));
-
-/// SharedCore wraps the 1Password WASM plugin for thread-safe access.
+/// `SharedCore` wraps the 1Password WASM plugin for thread-safe access.
 ///
 /// The WASM runtime is single-threaded, so we use a mutex to serialize access.
 /// This follows the same pattern as the official 1Password Go SDK.
@@ -101,7 +98,7 @@ impl SharedCore {
         // Extract client ID
         response["clientId"]
             .as_str()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .ok_or_else(|| SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
                 message: "No clientId in response".to_string(),
