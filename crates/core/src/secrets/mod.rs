@@ -13,12 +13,15 @@ use std::collections::HashMap;
 
 // Re-export core secret resolution types from cuenv-secrets
 pub use cuenv_secrets::{
-    BatchResolver, OnePasswordResolver, ResolvedSecrets, SaltConfig, SecretError, SecretResolver,
-    SecretSpec, compute_secret_fingerprint,
+    BatchResolver, ResolvedSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec,
+    compute_secret_fingerprint,
 };
 
 // Re-export resolver implementations
 pub use cuenv_secrets::resolvers::{EnvSecretResolver, ExecSecretResolver};
+
+// Re-export 1Password resolver from its dedicated crate
+pub use cuenv_1password::secrets::{OnePasswordConfig, OnePasswordResolver};
 
 /// Resolver for executing commands to retrieve secret values
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

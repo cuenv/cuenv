@@ -29,8 +29,6 @@ mod resolved;
 pub mod resolvers;
 mod salt;
 mod types;
-#[cfg(feature = "onepassword")]
-pub(crate) mod wasm;
 
 pub use batch::{BatchConfig, BatchResolver, resolve_batch};
 pub use fingerprint::compute_secret_fingerprint;
@@ -38,11 +36,14 @@ pub use resolved::ResolvedSecrets;
 pub use salt::SaltConfig;
 pub use types::{BatchSecrets, SecureSecret};
 
-// Re-export resolvers for convenience
-pub use resolvers::{
-    AwsResolver, AwsSecretConfig, EnvSecretResolver, ExecSecretResolver, GcpResolver,
-    GcpSecretConfig, OnePasswordConfig, OnePasswordResolver, VaultResolver, VaultSecretConfig,
-};
+// Re-export built-in resolvers (no external dependencies)
+pub use resolvers::{EnvSecretResolver, ExecSecretResolver};
+
+// Provider implementations are in separate crates:
+// - cuenv-aws: AwsResolver, AwsSecretConfig
+// - cuenv-gcp: GcpResolver, GcpSecretConfig
+// - cuenv-vault: VaultResolver, VaultSecretConfig
+// - cuenv-1password: OnePasswordResolver, OnePasswordConfig
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
