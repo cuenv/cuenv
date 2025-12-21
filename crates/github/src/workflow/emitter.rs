@@ -261,8 +261,8 @@ impl GitHubActionsEmitter {
     fn build_pr_trigger(&self, trigger: Option<&TriggerCondition>) -> Option<PullRequestTrigger> {
         let trigger = trigger?;
 
-        // Emit PR trigger if explicitly enabled or if we have branch conditions
-        if !trigger.branches.is_empty() || trigger.pull_request == Some(true) {
+        // Only emit PR trigger if explicitly enabled - never default to running on PRs
+        if trigger.pull_request == Some(true) {
             Some(PullRequestTrigger {
                 branches: trigger.branches.clone(),
                 paths: trigger.paths.clone(),
