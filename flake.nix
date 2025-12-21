@@ -43,6 +43,10 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
+        # Read version from Cargo.toml
+        cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+        version = cargoToml.workspace.package.version;
+
         # Platform-specific build inputs
         # Note: darwin frameworks (CoreFoundation, Security, etc.) are now provided
         # automatically by the default SDK - no explicit references needed
@@ -52,7 +56,7 @@
         # CUE bridge builder
         cue-bridge = pkgs.buildGoModule {
           pname = "libcue-bridge";
-          version = "0.1.1";
+          inherit version;
           src = ./crates/cuengine;
           vendorHash = "sha256-tHAcwRsNWNwPUkTlQT8mw3GNKsMFCMCKwdSq3KNad80=";
           go = pkgs.go_1_24;
@@ -179,7 +183,7 @@
         cuenv = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           pname = "cuenv";
-          version = "0.1.1";
+          inherit version;
         });
 
         # Development tools configuration

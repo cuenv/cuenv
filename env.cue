@@ -9,6 +9,8 @@ schema.#Project
 
 name: "cuenv"
 
+runtime: schema.#NixRuntime
+
 hooks: onEnter: nix: schema.#NixFlake
 
 env: {

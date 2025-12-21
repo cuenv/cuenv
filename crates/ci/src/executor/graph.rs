@@ -304,7 +304,7 @@ impl CITaskGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CachePolicy, Task};
+    use crate::ir::{CachePolicy, StageConfiguration, Task};
 
     fn make_task(id: &str, deps: &[&str]) -> Task {
         Task {
@@ -327,7 +327,7 @@ mod tests {
 
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
         IntermediateRepresentation {
-            version: "1.3".to_string(),
+            version: "1.4".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "test".to_string(),
                 environment: None,
@@ -336,6 +336,7 @@ mod tests {
                 trigger: None,
             },
             runtimes: vec![],
+            stages: StageConfiguration::default(),
             tasks,
         }
     }

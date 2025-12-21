@@ -370,11 +370,9 @@ impl GitHubActionsEmitter {
     /// Build jobs from IR tasks
     fn build_jobs(&self, ir: &IntermediateRepresentation) -> IndexMap<String, Job> {
         let mut jobs = IndexMap::new();
-        let environment = ir.pipeline.environment.as_deref();
-        let requires_onepassword = ir.pipeline.requires_onepassword;
 
         for task in &ir.tasks {
-            let job = self.build_job(task, environment, requires_onepassword);
+            let job = self.build_job(task, ir);
             jobs.insert(sanitize_job_id(&task.id), job);
         }
 
@@ -383,7 +381,7 @@ impl GitHubActionsEmitter {
 
     /// Build a job from an IR task
     #[allow(clippy::too_many_lines)]
-    fn build_job(&self, task: &Task, environment: Option<&str>, requires_onepassword: bool) -> Job {
+    fn build_job(&self, task: &Task, ir: &IntermediateRepresentation) -> Job {
         let mut steps = Vec::new();
 
         // Checkout step
@@ -393,8 +391,13 @@ impl GitHubActionsEmitter {
                 .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
         );
 
-        // Nix installation
-        if self.use_nix {
+        // Check IR stages for what setup is needed
+        let has_install_nix = ir.stages.bootstrap.iter().any(|t| t.id == "install-nix");
+        let has_cachix = ir.stages.setup.iter().any(|t| t.id == "setup-cachix");
+        let has_1password = ir.stages.setup.iter().any(|t| t.id == "setup-1password");
+
+        // Nix installation (from install-nix stage task)
+        if has_install_nix {
             steps.push(
                 Step::uses("DeterminateSystems/nix-installer-action@v16")
                     .with_name("Install Nix")
@@ -405,41 +408,62 @@ impl GitHubActionsEmitter {
             );
         }
 
-        // Cachix setup
-        if self.use_cachix
-            && let Some(cache_name) = &self.cachix_name
-        {
-            let mut cachix_step = Step::uses("cachix/cachix-action@v15")
-                .with_name("Setup Cachix")
-                .with_input("name", serde_yaml::Value::String(cache_name.clone()))
-                .with_input(
-                    "authToken",
-                    serde_yaml::Value::String(format!(
-                        "${{{{ secrets.{} }}}}",
-                        self.cachix_auth_token_secret
-                    )),
+        // Cachix setup (from setup-cachix stage task)
+        if has_cachix {
+            // Get cachix config from the stage task
+            if let Some(cachix_task) = ir.stages.setup.iter().find(|t| t.id == "setup-cachix") {
+                // Extract cache name from the task command
+                // Command format: ". /nix/... && nix-env -iA cachix... && cachix use {name}"
+                let cache_name = cachix_task
+                    .command
+                    .first()
+                    .and_then(|cmd| cmd.split("cachix use ").nth(1))
+                    .unwrap_or("cuenv");
+
+                // Get auth token secret name from env
+                let auth_token_secret = cachix_task
+                    .env
+                    .get("CACHIX_AUTH_TOKEN")
+                    .and_then(|v| {
+                        // Extract secret name from ${SECRET_NAME}
+                        v.strip_prefix("${").and_then(|s| s.strip_suffix("}"))
+                    })
+                    .unwrap_or("CACHIX_AUTH_TOKEN");
+
+                let mut cachix_step = Step::uses("cachix/cachix-action@v15")
+                    .with_name("Setup Cachix")
+                    .with_input("name", serde_yaml::Value::String(cache_name.to_string()))
+                    .with_input(
+                        "authToken",
+                        serde_yaml::Value::String(format!(
+                            "${{{{ secrets.{auth_token_secret} }}}}"
+                        )),
+                    );
+                cachix_step.with_inputs.insert(
+                    "pushFilter".to_string(),
+                    serde_yaml::Value::String("(-source$|nixpkgs\\.tar\\.gz$)".to_string()),
                 );
-            cachix_step.with_inputs.insert(
-                "pushFilter".to_string(),
-                serde_yaml::Value::String("(-source$|nixpkgs\\.tar\\.gz$)".to_string()),
-            );
-            steps.push(cachix_step);
+                steps.push(cachix_step);
+            }
         }
 
-        // Build cuenv
-        if self.build_cuenv && self.use_nix {
-            steps.push(
-                Step::run("nix build .#cuenv\necho \"$(pwd)/result/bin\" >> $GITHUB_PATH")
-                    .with_name("Build cuenv"),
-            );
+        // Setup cuenv (from setup-cuenv stage task)
+        if let Some(cuenv_task) = ir.stages.setup.iter().find(|t| t.id == "setup-cuenv") {
+            let command = cuenv_task.command.first().cloned().unwrap_or_default();
+            let name = cuenv_task
+                .label
+                .clone()
+                .unwrap_or_else(|| "Setup cuenv".to_string());
+            steps.push(Step::run(&command).with_name(&name));
         }
 
-        // Setup 1Password WASM SDK if needed
-        if requires_onepassword {
+        // Setup 1Password (from setup-1password stage task)
+        if has_1password {
             steps.push(Step::run("cuenv secrets setup onepassword").with_name("Setup 1Password"));
         }
 
         // Run the task
+        let environment = ir.pipeline.environment.as_deref();
         let task_command = if let Some(env) = environment {
             format!("cuenv task {} -e {}", task.id, env)
         } else {
@@ -455,7 +479,7 @@ impl GitHubActionsEmitter {
         }
 
         // Add 1Password service account token if needed
-        if requires_onepassword {
+        if has_1password {
             task_step.env.insert(
                 "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
                 "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}".to_string(),
@@ -663,11 +687,13 @@ impl ReleaseWorkflowBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_ci::ir::{CachePolicy, PipelineMetadata, ResourceRequirements};
+    use cuenv_ci::ir::{
+        CachePolicy, PipelineMetadata, ResourceRequirements, StageConfiguration, StageTask,
+    };
 
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
         IntermediateRepresentation {
-            version: "1.3".to_string(),
+            version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
                 environment: None,
@@ -676,6 +702,7 @@ mod tests {
                 trigger: None,
             },
             runtimes: vec![],
+            stages: StageConfiguration::default(),
             tasks,
         }
     }
@@ -717,7 +744,28 @@ mod tests {
     #[test]
     fn test_workflow_with_nix() {
         let emitter = GitHubActionsEmitter::new().with_nix();
-        let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+
+        // Add stage tasks that would be contributed by NixContributor
+        ir.stages.bootstrap.push(StageTask {
+            id: "install-nix".to_string(),
+            provider: "nix".to_string(),
+            label: Some("Install Nix".to_string()),
+            command: vec!["curl ... | sh".to_string()],
+            shell: true,
+            priority: 0,
+            ..Default::default()
+        });
+        ir.stages.setup.push(StageTask {
+            id: "setup-cuenv".to_string(),
+            provider: "cuenv".to_string(),
+            label: Some("Setup cuenv".to_string()),
+            command: vec!["nix build .#cuenv".to_string()],
+            shell: true,
+            depends_on: vec!["install-nix".to_string()],
+            priority: 10,
+            ..Default::default()
+        });
 
         let yaml = emitter.emit(&ir).unwrap();
 
@@ -730,7 +778,34 @@ mod tests {
         let emitter = GitHubActionsEmitter::new()
             .with_nix()
             .with_cachix("my-cache");
-        let ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+
+        // Add stage tasks for Cachix
+        ir.stages.bootstrap.push(StageTask {
+            id: "install-nix".to_string(),
+            provider: "nix".to_string(),
+            label: Some("Install Nix".to_string()),
+            command: vec!["curl ... | sh".to_string()],
+            shell: true,
+            priority: 0,
+            ..Default::default()
+        });
+        let mut env = HashMap::new();
+        env.insert(
+            "CACHIX_AUTH_TOKEN".to_string(),
+            "${CACHIX_AUTH_TOKEN}".to_string(),
+        );
+        ir.stages.setup.push(StageTask {
+            id: "setup-cachix".to_string(),
+            provider: "cachix".to_string(),
+            label: Some("Setup Cachix".to_string()),
+            command: vec!["nix-env -iA cachix && cachix use my-cache".to_string()],
+            shell: true,
+            env,
+            depends_on: vec!["install-nix".to_string()],
+            priority: 5,
+            ..Default::default()
+        });
 
         let yaml = emitter.emit(&ir).unwrap();
 
