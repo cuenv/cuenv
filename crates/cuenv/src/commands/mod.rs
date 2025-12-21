@@ -105,7 +105,7 @@ pub mod ci_cmd {
                 "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
             ));
         }
-        eprintln!("Found {} projects", projects.len());
+        cuenv_events::emit_ci_projects_discovered!(projects.len());
 
         // Determine which pipelines to process
         // When no --pipeline is specified, process ALL pipelines
