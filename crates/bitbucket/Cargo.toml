@@ -10,6 +10,7 @@ keywords.workspace = true
 categories = ["development-tools", "development-tools::build-utils"]
 readme = "../../readme.md"
 description = "Bitbucket provider implementations for cuenv"
+publish = false
 
 [lints]
 workspace = true
