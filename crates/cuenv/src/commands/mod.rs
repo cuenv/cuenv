@@ -321,17 +321,22 @@ pub mod ci_cmd {
         Ok(workflows.into_iter().collect())
     }
 
-    /// Check if environment contains 1Password secret references (op://...)
+    /// Check if environment contains 1Password secret references
     fn environment_has_onepassword_refs(
         env: &cuenv_core::environment::Env,
         environment_name: &str,
     ) -> bool {
-        use cuenv_core::environment::EnvValue;
+        use cuenv_core::environment::{EnvValue, EnvValueSimple};
 
         let env_vars = env.for_environment(environment_name);
         env_vars.values().any(|value| match value {
             EnvValue::String(s) => s.starts_with("op://"),
-            // Other variants don't contain raw op:// refs
+            EnvValue::Secret(secret) => secret.resolver == "onepassword",
+            EnvValue::WithPolicies(with_policies) => match &with_policies.value {
+                EnvValueSimple::Secret(secret) => secret.resolver == "onepassword",
+                EnvValueSimple::String(s) => s.starts_with("op://"),
+                _ => false,
+            },
             _ => false,
         })
     }
