@@ -26,6 +26,8 @@ pub struct TaskGraph {
     graph: DiGraph<TaskNode, ()>,
     /// Map from task names to node indices
     name_to_node: HashMap<String, NodeIndex>,
+    /// Map from group prefix to child task names (for dependency expansion)
+    group_children: HashMap<String, Vec<String>>,
 }
 
 impl TaskGraph {
@@ -34,6 +36,7 @@ impl TaskGraph {
         Self {
             graph: DiGraph::new(),
             name_to_node: HashMap::new(),
+            group_children: HashMap::new(),
         }
     }
 
@@ -76,6 +79,11 @@ impl TaskGraph {
         let mut nodes = Vec::new();
         let mut previous: Option<NodeIndex> = None;
 
+        // Track child names for group dependency expansion
+        let child_names: Vec<String> = (0..tasks.len())
+            .map(|i| format!("{}[{}]", prefix, i))
+            .collect();
+
         for (i, task_def) in tasks.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
             let task_nodes = self.build_from_definition(&task_name, task_def, all_tasks)?;
@@ -94,6 +102,11 @@ impl TaskGraph {
             nodes.extend(task_nodes);
         }
 
+        // Register this group for dependency expansion
+        if !child_names.is_empty() {
+            self.group_children.insert(prefix.to_string(), child_names);
+        }
+
         Ok(nodes)
     }
 
@@ -105,6 +118,13 @@ impl TaskGraph {
         all_tasks: &Tasks,
     ) -> Result<Vec<NodeIndex>> {
         let mut nodes = Vec::new();
+
+        // Track child names for group dependency expansion
+        let child_names: Vec<String> = group
+            .tasks
+            .keys()
+            .map(|name| format!("{}.{}", prefix, name))
+            .collect();
 
         for (name, task_def) in &group.tasks {
             let task_name = format!("{}.{}", prefix, name);
@@ -123,6 +143,11 @@ impl TaskGraph {
             }
 
             nodes.extend(task_nodes);
+        }
+
+        // Register this group for dependency expansion
+        if !child_names.is_empty() {
+            self.group_children.insert(prefix.to_string(), child_names);
         }
 
         Ok(nodes)
@@ -147,6 +172,26 @@ impl TaskGraph {
         Ok(node_index)
     }
 
+    /// Expand a dependency name to leaf task names
+    ///
+    /// If the dependency is a direct task, returns it as-is.
+    /// If it's a group name, recursively expands to all leaf tasks in that group.
+    fn expand_dep_to_leaf_tasks(&self, dep_name: &str) -> Vec<String> {
+        if self.name_to_node.contains_key(dep_name) {
+            // It's a leaf task (exists directly in the graph)
+            vec![dep_name.to_string()]
+        } else if let Some(children) = self.group_children.get(dep_name) {
+            // It's a group - recursively expand children
+            children
+                .iter()
+                .flat_map(|child| self.expand_dep_to_leaf_tasks(child))
+                .collect()
+        } else {
+            // Not found - will be caught as missing dependency later
+            vec![dep_name.to_string()]
+        }
+    }
+
     /// Add dependency edges after all tasks have been added
     /// This ensures proper cycle detection and missing dependency validation
     fn add_dependency_edges(&mut self) -> Result<()> {
@@ -156,11 +201,16 @@ impl TaskGraph {
         // Collect all dependency relationships
         for (node_index, node) in self.graph.node_references() {
             for dep_name in &node.task.depends_on {
-                if let Some(&dep_node_index) = self.name_to_node.get(dep_name as &str) {
-                    // Record edge to add later
-                    edges_to_add.push((dep_node_index, node_index));
-                } else {
-                    missing_deps.push((node.name.clone(), dep_name.clone()));
+                // Expand group references to leaf tasks
+                let expanded_deps = self.expand_dep_to_leaf_tasks(dep_name);
+
+                for expanded_dep in expanded_deps {
+                    if let Some(&dep_node_index) = self.name_to_node.get(&expanded_dep) {
+                        // Record edge to add later
+                        edges_to_add.push((dep_node_index, node_index));
+                    } else {
+                        missing_deps.push((node.name.clone(), expanded_dep));
+                    }
                 }
             }
         }
@@ -641,5 +691,248 @@ mod tests {
         for group in &groups {
             assert_eq!(group.len(), 1);
         }
+    }
+
+    #[test]
+    fn test_group_as_dependency_parallel() {
+        let mut graph = TaskGraph::new();
+        let tasks = Tasks::new();
+
+        // Create a parallel group "build" with two children
+        let deps_task = create_task("deps", vec![], vec![]);
+        let compile_task = create_task("compile", vec![], vec![]);
+
+        let mut parallel_tasks = HashMap::new();
+        parallel_tasks.insert(
+            "deps".to_string(),
+            TaskDefinition::Single(Box::new(deps_task)),
+        );
+        parallel_tasks.insert(
+            "compile".to_string(),
+            TaskDefinition::Single(Box::new(compile_task)),
+        );
+
+        let build_group = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
+
+        // Build the group first
+        graph
+            .build_from_group("build", &build_group, &tasks)
+            .unwrap();
+
+        // Add a task that depends on the group name "build"
+        let test_task = create_task("test", vec!["build"], vec![]);
+        graph.add_task("test", test_task).unwrap();
+
+        // This should succeed - "build" should expand to ["build.deps", "build.compile"]
+        graph.add_dependency_edges().unwrap();
+
+        assert!(!graph.has_cycles());
+        assert_eq!(graph.task_count(), 3);
+
+        // test should come after both build.deps and build.compile
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.name.clone(), i))
+            .collect();
+
+        assert!(positions["build.deps"] < positions["test"]);
+        assert!(positions["build.compile"] < positions["test"]);
+    }
+
+    #[test]
+    fn test_group_as_dependency_sequential() {
+        let mut graph = TaskGraph::new();
+        let tasks = Tasks::new();
+
+        // Create a sequential group "setup" with two children
+        let task1 = create_task("s1", vec![], vec![]);
+        let task2 = create_task("s2", vec![], vec![]);
+
+        let setup_group = TaskGroup::Sequential(vec![
+            TaskDefinition::Single(Box::new(task1)),
+            TaskDefinition::Single(Box::new(task2)),
+        ]);
+
+        // Build the group first
+        graph
+            .build_from_group("setup", &setup_group, &tasks)
+            .unwrap();
+
+        // Add a task that depends on the group name "setup"
+        let run_task = create_task("run", vec!["setup"], vec![]);
+        graph.add_task("run", run_task).unwrap();
+
+        // This should succeed - "setup" should expand to ["setup[0]", "setup[1]"]
+        graph.add_dependency_edges().unwrap();
+
+        assert!(!graph.has_cycles());
+        assert_eq!(graph.task_count(), 3);
+
+        // run should come after both setup[0] and setup[1]
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.name.clone(), i))
+            .collect();
+
+        assert!(positions["setup[0]"] < positions["run"]);
+        assert!(positions["setup[1]"] < positions["run"]);
+    }
+
+    #[test]
+    fn test_nested_group_as_dependency() {
+        let mut graph = TaskGraph::new();
+        let tasks = Tasks::new();
+
+        // Create a nested structure:
+        // build (parallel)
+        //   ├── frontend (sequential)
+        //   │   ├── frontend[0]
+        //   │   └── frontend[1]
+        //   └── backend (single task)
+
+        let frontend_t1 = create_task("fe1", vec![], vec![]);
+        let frontend_t2 = create_task("fe2", vec![], vec![]);
+        let frontend_group = TaskGroup::Sequential(vec![
+            TaskDefinition::Single(Box::new(frontend_t1)),
+            TaskDefinition::Single(Box::new(frontend_t2)),
+        ]);
+
+        let backend_task = create_task("be", vec![], vec![]);
+
+        let mut parallel_tasks = HashMap::new();
+        parallel_tasks.insert(
+            "frontend".to_string(),
+            TaskDefinition::Group(frontend_group),
+        );
+        parallel_tasks.insert(
+            "backend".to_string(),
+            TaskDefinition::Single(Box::new(backend_task)),
+        );
+
+        let build_group = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
+
+        // Build the nested group
+        graph
+            .build_from_group("build", &build_group, &tasks)
+            .unwrap();
+
+        // Add a task that depends on "build"
+        let deploy_task = create_task("deploy", vec!["build"], vec![]);
+        graph.add_task("deploy", deploy_task).unwrap();
+
+        // This should expand "build" -> ["build.frontend", "build.backend"]
+        // And further expand "build.frontend" -> ["build.frontend[0]", "build.frontend[1]"]
+        graph.add_dependency_edges().unwrap();
+
+        assert!(!graph.has_cycles());
+        assert_eq!(graph.task_count(), 4); // frontend[0], frontend[1], backend, deploy
+
+        // deploy should come after all leaf tasks
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.name.clone(), i))
+            .collect();
+
+        assert!(positions["build.frontend[0]"] < positions["deploy"]);
+        assert!(positions["build.frontend[1]"] < positions["deploy"]);
+        assert!(positions["build.backend"] < positions["deploy"]);
+    }
+
+    #[test]
+    fn test_mixed_exact_and_group_dependencies() {
+        let mut graph = TaskGraph::new();
+        let tasks = Tasks::new();
+
+        // Add a standalone task
+        let lint_task = create_task("lint", vec![], vec![]);
+        graph.add_task("lint", lint_task).unwrap();
+
+        // Create a parallel group
+        let deps_task = create_task("deps", vec![], vec![]);
+        let compile_task = create_task("compile", vec![], vec![]);
+
+        let mut parallel_tasks = HashMap::new();
+        parallel_tasks.insert(
+            "deps".to_string(),
+            TaskDefinition::Single(Box::new(deps_task)),
+        );
+        parallel_tasks.insert(
+            "compile".to_string(),
+            TaskDefinition::Single(Box::new(compile_task)),
+        );
+
+        let build_group = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
+
+        graph
+            .build_from_group("build", &build_group, &tasks)
+            .unwrap();
+
+        // Add a task that depends on both an exact task and a group
+        let test_task = create_task("test", vec!["lint", "build"], vec![]);
+        graph.add_task("test", test_task).unwrap();
+
+        graph.add_dependency_edges().unwrap();
+
+        assert!(!graph.has_cycles());
+        assert_eq!(graph.task_count(), 4);
+
+        // test should come after lint, build.deps, and build.compile
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.name.clone(), i))
+            .collect();
+
+        assert!(positions["lint"] < positions["test"]);
+        assert!(positions["build.deps"] < positions["test"]);
+        assert!(positions["build.compile"] < positions["test"]);
+    }
+
+    #[test]
+    fn test_cycle_with_group_expansion() {
+        let mut graph = TaskGraph::new();
+        let tasks = Tasks::new();
+
+        // Create a group where a child depends on a task that depends on the group
+        // This creates a cycle: setup[0] -> test, test -> setup (expands to setup[0], setup[1])
+
+        // First, add the task that will depend on the group
+        let test_task = create_task("test", vec!["setup"], vec![]);
+        graph.add_task("test", test_task).unwrap();
+
+        // Create the group where one child depends on test
+        let task1 = create_task("s1", vec!["test"], vec![]);
+        let task2 = create_task("s2", vec![], vec![]);
+
+        let setup_group = TaskGroup::Sequential(vec![
+            TaskDefinition::Single(Box::new(task1)),
+            TaskDefinition::Single(Box::new(task2)),
+        ]);
+
+        graph
+            .build_from_group("setup", &setup_group, &tasks)
+            .unwrap();
+
+        graph.add_dependency_edges().unwrap();
+
+        // This creates a cycle: test -> setup[0] -> test
+        assert!(graph.has_cycles());
+        assert!(graph.topological_sort().is_err());
     }
 }
