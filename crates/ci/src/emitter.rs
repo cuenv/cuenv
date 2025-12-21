@@ -106,7 +106,7 @@ pub trait Emitter: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{IntermediateRepresentation, PipelineMetadata};
+    use crate::ir::{IntermediateRepresentation, PipelineMetadata, StageConfiguration};
 
     struct TestEmitter;
 
@@ -128,7 +128,7 @@ mod tests {
     fn test_emitter_trait() {
         let emitter = TestEmitter;
         let ir = IntermediateRepresentation {
-            version: "1.3".to_string(),
+            version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "my-pipeline".to_string(),
                 environment: None,
@@ -137,6 +137,7 @@ mod tests {
                 trigger: None,
             },
             runtimes: vec![],
+            stages: StageConfiguration::default(),
             tasks: vec![],
         };
 
@@ -150,7 +151,7 @@ mod tests {
     fn test_default_validation() {
         let emitter = TestEmitter;
         let ir = IntermediateRepresentation {
-            version: "1.3".to_string(),
+            version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
                 environment: None,
@@ -159,6 +160,7 @@ mod tests {
                 trigger: None,
             },
             runtimes: vec![],
+            stages: StageConfiguration::default(),
             tasks: vec![],
         };
 

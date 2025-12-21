@@ -1,17 +1,21 @@
-//! IR v1.3 Schema Types
+//! IR v1.4 Schema Types
 //!
 //! JSON schema for the intermediate representation used by the CI pipeline compiler.
+//!
+//! ## Version History
+//! - v1.4: Added `stages` field for provider-injected setup tasks
+//! - v1.3: Initial stable version
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// IR version identifier
-pub const IR_VERSION: &str = "1.3";
+pub const IR_VERSION: &str = "1.4";
 
 /// Root IR document
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IntermediateRepresentation {
-    /// IR version (always "1.3")
+    /// IR version (always "1.4")
     pub version: String,
 
     /// Pipeline metadata
@@ -20,6 +24,10 @@ pub struct IntermediateRepresentation {
     /// Runtime environment definitions
     #[serde(default)]
     pub runtimes: Vec<Runtime>,
+
+    /// Stage configuration for provider-injected tasks (bootstrap, setup, etc.)
+    #[serde(default, skip_serializing_if = "StageConfiguration::is_empty")]
+    pub stages: StageConfiguration,
 
     /// Task definitions
     pub tasks: Vec<Task>,
@@ -38,6 +46,7 @@ impl IntermediateRepresentation {
                 trigger: None,
             },
             runtimes: Vec::new(),
+            stages: StageConfiguration::default(),
             tasks: Vec::new(),
         }
     }
@@ -298,6 +307,132 @@ pub enum CachePolicy {
     Disabled,
 }
 
+// =============================================================================
+// Stage Configuration (v1.4)
+// =============================================================================
+
+/// Build stages that providers can inject tasks into
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildStage {
+    /// Environment bootstrap (e.g., install Nix)
+    Bootstrap,
+
+    /// Provider setup (e.g., 1Password, Cachix, AWS credentials)
+    Setup,
+
+    /// Post-success actions (e.g., notifications, cache push)
+    Success,
+
+    /// Post-failure actions (e.g., alerts, debugging)
+    Failure,
+}
+
+/// A task contributed by a stage provider
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[derive(Default)]
+pub struct StageTask {
+    /// Unique task identifier within the stage
+    pub id: String,
+
+    /// Provider that contributed this task (e.g., "nix", "1password", "cachix")
+    pub provider: String,
+
+    /// Human-readable label for display
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+
+    /// Command to execute
+    pub command: Vec<String>,
+
+    /// Shell execution mode (false = direct execve, true = wrap in /bin/sh -c)
+    #[serde(default)]
+    pub shell: bool,
+
+    /// Environment variables
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+
+    /// Secret configurations
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub secrets: HashMap<String, SecretConfig>,
+
+    /// Dependencies on other stage tasks (by ID)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+
+    /// Priority within the stage (lower = earlier, default 0)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub priority: i32,
+}
+
+/// Helper to skip serializing zero priority
+/// Serde's `skip_serializing_if` requires a reference parameter
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(v: &i32) -> bool {
+    *v == 0
+}
+
+/// Stage configuration containing all provider-injected tasks
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct StageConfiguration {
+    /// Bootstrap tasks (environment setup, runs first)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bootstrap: Vec<StageTask>,
+
+    /// Setup tasks (provider configuration, runs after bootstrap)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<StageTask>,
+
+    /// Success tasks (post-success actions)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub success: Vec<StageTask>,
+
+    /// Failure tasks (post-failure actions)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure: Vec<StageTask>,
+}
+
+impl StageConfiguration {
+    /// Check if all stages are empty
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bootstrap.is_empty()
+            && self.setup.is_empty()
+            && self.success.is_empty()
+            && self.failure.is_empty()
+    }
+
+    /// Add a task to the appropriate stage
+    pub fn add(&mut self, stage: BuildStage, task: StageTask) {
+        match stage {
+            BuildStage::Bootstrap => self.bootstrap.push(task),
+            BuildStage::Setup => self.setup.push(task),
+            BuildStage::Success => self.success.push(task),
+            BuildStage::Failure => self.failure.push(task),
+        }
+    }
+
+    /// Sort all stages by priority (lower priority = earlier)
+    pub fn sort_by_priority(&mut self) {
+        self.bootstrap.sort_by_key(|t| t.priority);
+        self.setup.sort_by_key(|t| t.priority);
+        self.success.sort_by_key(|t| t.priority);
+        self.failure.sort_by_key(|t| t.priority);
+    }
+
+    /// Get all task IDs from bootstrap and setup stages (for task dependencies)
+    #[must_use]
+    pub fn setup_task_ids(&self) -> Vec<String> {
+        self.bootstrap
+            .iter()
+            .chain(self.setup.iter())
+            .map(|t| t.id.clone())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,9 +440,10 @@ mod tests {
     #[test]
     fn test_ir_version() {
         let ir = IntermediateRepresentation::new("test-pipeline");
-        assert_eq!(ir.version, "1.3");
+        assert_eq!(ir.version, "1.4");
         assert_eq!(ir.pipeline.name, "test-pipeline");
         assert!(ir.runtimes.is_empty());
+        assert!(ir.stages.is_empty());
         assert!(ir.tasks.is_empty());
     }
 
@@ -474,8 +610,217 @@ mod tests {
         });
 
         let json = serde_json::to_string_pretty(&ir).unwrap();
-        assert!(json.contains(r#""version": "1.3""#));
+        assert!(json.contains(r#""version": "1.4""#));
         assert!(json.contains(r#""name": "my-pipeline""#));
         assert!(json.contains(r#""id": "build""#));
+    }
+
+    // =============================================================================
+    // Stage Configuration Tests (v1.4)
+    // =============================================================================
+
+    #[test]
+    fn test_build_stage_serialization() {
+        assert_eq!(
+            serde_json::to_string(&BuildStage::Bootstrap).unwrap(),
+            r#""bootstrap""#
+        );
+        assert_eq!(
+            serde_json::to_string(&BuildStage::Setup).unwrap(),
+            r#""setup""#
+        );
+        assert_eq!(
+            serde_json::to_string(&BuildStage::Success).unwrap(),
+            r#""success""#
+        );
+        assert_eq!(
+            serde_json::to_string(&BuildStage::Failure).unwrap(),
+            r#""failure""#
+        );
+    }
+
+    #[test]
+    fn test_stage_task_serialization() {
+        let task = StageTask {
+            id: "install-nix".to_string(),
+            provider: "nix".to_string(),
+            label: Some("Install Nix".to_string()),
+            command: vec!["curl -sSf https://install.determinate.systems/nix | sh".to_string()],
+            shell: true,
+            env: [(
+                "NIX_INSTALLER_DIAGNOSTIC_ENDPOINT".to_string(),
+                String::new(),
+            )]
+            .into_iter()
+            .collect(),
+            secrets: HashMap::new(),
+            depends_on: vec![],
+            priority: 0,
+        };
+
+        let json = serde_json::to_value(&task).unwrap();
+        assert_eq!(json["id"], "install-nix");
+        assert_eq!(json["provider"], "nix");
+        assert_eq!(json["label"], "Install Nix");
+        assert_eq!(json["shell"], true);
+    }
+
+    #[test]
+    fn test_stage_task_default() {
+        let task = StageTask::default();
+        assert!(task.id.is_empty());
+        assert!(task.provider.is_empty());
+        assert!(task.label.is_none());
+        assert!(task.command.is_empty());
+        assert!(!task.shell);
+        assert!(task.env.is_empty());
+        assert!(task.depends_on.is_empty());
+        assert_eq!(task.priority, 0);
+    }
+
+    #[test]
+    fn test_stage_configuration_empty() {
+        let config = StageConfiguration::default();
+        assert!(config.is_empty());
+        assert!(config.bootstrap.is_empty());
+        assert!(config.setup.is_empty());
+        assert!(config.success.is_empty());
+        assert!(config.failure.is_empty());
+    }
+
+    #[test]
+    fn test_stage_configuration_add() {
+        let mut config = StageConfiguration::default();
+
+        config.add(
+            BuildStage::Bootstrap,
+            StageTask {
+                id: "install-nix".to_string(),
+                provider: "nix".to_string(),
+                ..Default::default()
+            },
+        );
+
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-1password".to_string(),
+                provider: "1password".to_string(),
+                ..Default::default()
+            },
+        );
+
+        assert!(!config.is_empty());
+        assert_eq!(config.bootstrap.len(), 1);
+        assert_eq!(config.setup.len(), 1);
+        assert_eq!(config.bootstrap[0].id, "install-nix");
+        assert_eq!(config.setup[0].id, "setup-1password");
+    }
+
+    #[test]
+    fn test_stage_configuration_sort_by_priority() {
+        let mut config = StageConfiguration::default();
+
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-1password".to_string(),
+                priority: 20,
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-cachix".to_string(),
+                priority: 5,
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-cuenv".to_string(),
+                priority: 10,
+                ..Default::default()
+            },
+        );
+
+        config.sort_by_priority();
+
+        assert_eq!(config.setup[0].id, "setup-cachix");
+        assert_eq!(config.setup[1].id, "setup-cuenv");
+        assert_eq!(config.setup[2].id, "setup-1password");
+    }
+
+    #[test]
+    fn test_stage_configuration_setup_task_ids() {
+        let mut config = StageConfiguration::default();
+
+        config.add(
+            BuildStage::Bootstrap,
+            StageTask {
+                id: "install-nix".to_string(),
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-cuenv".to_string(),
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Success,
+            StageTask {
+                id: "notify".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let ids = config.setup_task_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"install-nix".to_string()));
+        assert!(ids.contains(&"setup-cuenv".to_string()));
+        // Success stage should not be included
+        assert!(!ids.contains(&"notify".to_string()));
+    }
+
+    #[test]
+    fn test_ir_with_stages() {
+        let mut ir = IntermediateRepresentation::new("ci-pipeline");
+
+        ir.stages.add(
+            BuildStage::Bootstrap,
+            StageTask {
+                id: "install-nix".to_string(),
+                provider: "nix".to_string(),
+                label: Some("Install Nix".to_string()),
+                command: vec!["curl -sSf https://install.determinate.systems/nix | sh".to_string()],
+                shell: true,
+                priority: 0,
+                ..Default::default()
+            },
+        );
+
+        ir.stages.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-1password".to_string(),
+                provider: "1password".to_string(),
+                label: Some("Setup 1Password".to_string()),
+                command: vec!["cuenv secrets setup onepassword".to_string()],
+                depends_on: vec!["install-nix".to_string()],
+                priority: 20,
+                ..Default::default()
+            },
+        );
+
+        let json = serde_json::to_string_pretty(&ir).unwrap();
+        assert!(json.contains(r#""version": "1.4""#));
+        assert!(json.contains("install-nix"));
+        assert!(json.contains("setup-1password"));
+        assert!(json.contains("1password"));
     }
 }

@@ -37,6 +37,47 @@ pub struct Config {
     /// Task backend configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendConfig>,
+
+    /// CI-specific configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ci: Option<CIConfig>,
+}
+
+/// CI-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CIConfig {
+    /// Cuenv installation configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cuenv: Option<CuenvConfig>,
+}
+
+/// Configuration for cuenv installation in CI
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CuenvConfig {
+    /// Source for cuenv binary
+    #[serde(default)]
+    pub source: CuenvSource,
+}
+
+impl Default for CuenvConfig {
+    fn default() -> Self {
+        Self {
+            source: CuenvSource::Release,
+        }
+    }
+}
+
+/// Source for cuenv binary in CI environments
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CuenvSource {
+    /// Download from GitHub Releases (default)
+    #[default]
+    Release,
+    /// Build from source via nix build
+    Build,
 }
 
 /// Task output format options
