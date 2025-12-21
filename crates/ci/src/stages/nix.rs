@@ -20,10 +20,7 @@ impl StageContributor for NixContributor {
 
     fn is_active(&self, _ir: &IntermediateRepresentation, project: &Project) -> bool {
         // Active if project uses a Nix-based runtime (Nix or Devenv)
-        matches!(
-            project.runtime,
-            Some(Runtime::Nix(_) | Runtime::Devenv(_))
-        )
+        matches!(project.runtime, Some(Runtime::Nix(_) | Runtime::Devenv(_)))
     }
 
     fn contribute(

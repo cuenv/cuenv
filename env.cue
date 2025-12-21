@@ -278,11 +278,6 @@ tasks: {
 	}
 
 	security: {
-		audit: {
-			command: "cargo"
-			args: ["audit"]
-			inputs: ["Cargo.lock"]
-		}
 		deny: {
 			command: "cargo"
 			args: ["deny", "check", "bans", "licenses", "advisories"]
