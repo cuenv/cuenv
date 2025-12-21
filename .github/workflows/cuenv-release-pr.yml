@@ -38,8 +38,8 @@ jobs:
         name: cuenv
         authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
         pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Setup cuenv
-      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && curl -sSL https://github.com/cuenv/cuenv/releases/latest/download/cuenv-x86_64-linux.tar.gz | tar -xzf - -C /usr/local/bin && chmod +x /usr/local/bin/cuenv
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
     - name: release.generate-pr
       run: cuenv task release.generate-pr
       env:
