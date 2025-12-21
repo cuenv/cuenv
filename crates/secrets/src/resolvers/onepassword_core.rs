@@ -25,7 +25,6 @@ static SHARED_CORE: LazyLock<Mutex<Option<SharedCore>>> = LazyLock::new(|| Mutex
 /// - `utc_offset_seconds` (op-time): Returns local timezone offset in seconds
 #[cfg(feature = "onepassword")]
 fn create_host_functions() -> Vec<Function> {
-    use rand::RngCore;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // random_fill_imported: Generate random bytes and return pointer to them in WASM memory
@@ -39,9 +38,10 @@ fn create_host_functions() -> Vec<Function> {
         |plugin: &mut CurrentPlugin, inputs: &[Val], outputs: &mut [Val], _: UserData<()>| {
             let length = inputs[0].unwrap_i32() as usize;
 
-            // Generate cryptographically secure random bytes
+            // Generate cryptographically secure random bytes using getrandom (same as Go's crypto/rand)
             let mut bytes = vec![0u8; length];
-            rand::rng().fill_bytes(&mut bytes);
+            getrandom::fill(&mut bytes)
+                .map_err(|e| extism::Error::msg(format!("Failed to generate random bytes: {e}")))?;
 
             // Write bytes to WASM memory using memory_new (equivalent to Go's WriteBytes)
             let handle = plugin
@@ -137,7 +137,9 @@ impl SharedCore {
             let wasm_bytes = crate::wasm::load_onepassword_wasm()?;
 
             let manifest = Manifest::new([Wasm::data(wasm_bytes)]).with_allowed_hosts(
-                ["*.1password.com".to_string(), "*.b5dev.com".to_string()].into_iter(),
+                ["*.1password.com", "*.1password.ca", "*.1password.eu"]
+                    .into_iter()
+                    .map(String::from),
             );
 
             let host_functions = create_host_functions();
@@ -149,6 +151,7 @@ impl SharedCore {
             })?;
 
             *guard = Some(SharedCore { plugin });
+            tracing::debug!("1Password WASM plugin initialized");
         }
 
         // Drop guard before returning static reference
@@ -159,69 +162,110 @@ impl SharedCore {
     /// Initialize a new 1Password client.
     ///
     /// Returns a client ID that can be used for subsequent `invoke` calls.
-    pub fn init_client(&mut self, token: &str) -> Result<String, SecretError> {
+    pub fn init_client(&mut self, token: &str) -> Result<u64, SecretError> {
+        // Map Rust OS/arch names to Go equivalents (what 1Password SDK expects)
+        let os = match std::env::consts::OS {
+            "macos" => "darwin",
+            other => other,
+        };
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "amd64",
+            other => other,
+        };
+
+        // Note: Go SDK uses "0030101" from version-build file
         let config = serde_json::json!({
             "serviceAccountToken": token,
-            "programmingLanguage": "Rust",
-            "sdkVersion": env!("CARGO_PKG_VERSION"),
+            "programmingLanguage": "Go",  // WASM was compiled from Go SDK
+            "sdkVersion": "0030101",  // Must match WASM SDK version file exactly
             "integrationName": "cuenv",
             "integrationVersion": env!("CARGO_PKG_VERSION"),
+            "requestLibraryName": "net/http",
+            "requestLibraryVersion": "go1.23.0",
+            "os": os,
+            "osVersion": "0.0.0",
+            "architecture": arch,
         });
+
+        let config_bytes =
+            serde_json::to_vec(&config).map_err(|e| SecretError::ResolutionFailed {
+                name: "onepassword".to_string(),
+                message: format!("Failed to serialize config: {e}"),
+            })?;
 
         let result = self
             .plugin
-            .call::<_, String>("init_client", config.to_string())
+            .call::<_, String>("init_client", config_bytes)
             .map_err(|e| SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
                 message: format!("Failed to initialize client: {e}"),
             })?;
 
-        // Parse the response to check for errors
+        // Parse the response - Go SDK expects either:
+        // - On success: a JSON number (uint64 client ID)
+        // - On error: a JSON object like {"name": "Auth", "message": "..."}
         let response: serde_json::Value =
             serde_json::from_str(&result).map_err(|e| SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
                 message: format!("Failed to parse init_client response: {e}"),
             })?;
 
-        // Check for error in response
-        if let Some(error) = response.get("error") {
+        // Check if response is an error object
+        if let Some(error_name) = response.get("name") {
+            let message = response
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
             return Err(SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
-                message: format!("1Password client init failed: {error}"),
+                message: format!("1Password error ({}): {}", error_name, message),
             });
         }
 
-        // Extract client ID
-        response["clientId"]
-            .as_str()
-            .map(ToString::to_string)
+        // On success, response is just the client ID as a number
+        let client_id = response
+            .as_u64()
             .ok_or_else(|| SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
-                message: "No clientId in response".to_string(),
-            })
+                message: format!("Expected client ID number, got: {}", result),
+            })?;
+
+        tracing::debug!(client_id, "1Password client initialized");
+        Ok(client_id)
     }
 
     /// Invoke a method on the 1Password client.
     ///
     /// The method name and parameters depend on the specific operation.
-    /// For resolving secrets, use method "Secrets.Resolve" with the secret reference.
+    /// For resolving secrets, use method "SecretsResolve" with the secret reference.
     pub fn invoke(
         &mut self,
-        client_id: &str,
+        client_id: u64,
         method: &str,
-        params: &str,
+        params: serde_json::Map<String, serde_json::Value>,
     ) -> Result<String, SecretError> {
+        // Structure matches Go SDK's InvokeConfig exactly:
+        // InvokeConfig { Invocation { ClientID, Parameters { MethodName, SerializedParams } } }
         let request = serde_json::json!({
-            "clientId": client_id,
             "invocation": {
-                "methodName": method,
-                "parameters": params
+                "clientId": client_id,
+                "parameters": {
+                    "name": method,
+                    "parameters": params
+                }
             }
         });
 
+        let request_bytes =
+            serde_json::to_vec(&request).map_err(|e| SecretError::ResolutionFailed {
+                name: "onepassword".to_string(),
+                message: format!("Failed to serialize invoke request: {e}"),
+            })?;
+
         let result = self
             .plugin
-            .call::<_, String>("invoke", request.to_string())
+            .call::<_, String>("invoke", request_bytes)
             .map_err(|e| SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
                 message: format!("Invoke failed: {e}"),
@@ -234,10 +278,15 @@ impl SharedCore {
                 message: format!("Failed to parse invoke response: {e}"),
             })?;
 
-        if let Some(error) = response.get("error") {
+        // Check if response is an error object
+        if let Some(error_name) = response.get("name") {
+            let message = response
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
             return Err(SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
-                message: format!("1Password invoke failed: {error}"),
+                message: format!("1Password error ({}): {}", error_name, message),
             });
         }
 
@@ -247,8 +296,13 @@ impl SharedCore {
     /// Release a 1Password client.
     ///
     /// This should be called when the client is no longer needed.
-    pub fn release_client(&mut self, client_id: &str) {
-        let _ = self.plugin.call::<_, String>("release_client", client_id);
+    pub fn release_client(&mut self, client_id: u64) {
+        // Go SDK marshals the client ID to JSON (produces a number like "0")
+        if let Ok(client_id_bytes) = serde_json::to_vec(&client_id) {
+            let _ = self
+                .plugin
+                .call::<_, String>("release_client", client_id_bytes);
+        }
     }
 }
 

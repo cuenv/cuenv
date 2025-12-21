@@ -72,10 +72,16 @@ fn main() {
 
 /// Create tokio runtime and run async path
 fn run_with_tokio() -> i32 {
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .expect("Failed to create tokio runtime");
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("Fatal error: Failed to create tokio runtime: {e}");
+            return 1;
+        }
+    };
 
     rt.block_on(run())
 }

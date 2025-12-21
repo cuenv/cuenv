@@ -184,6 +184,13 @@ pub async fn execute_exec(
         }
     }
 
+    // Add OP_SERVICE_ACCOUNT_TOKEN to redaction list if set (it's a credential, not a secret from resolver)
+    if let Ok(token) = std::env::var("OP_SERVICE_ACCOUNT_TOKEN")
+        && !token.is_empty()
+    {
+        secrets_for_redaction.push(token);
+    }
+
     // Execute the command with the environment, redacting any secrets from output
     let exit_code =
         execute_command_with_redaction(command, args, &runtime_env, &secrets_for_redaction).await?;
