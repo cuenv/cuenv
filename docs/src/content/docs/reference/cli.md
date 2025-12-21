@@ -9,9 +9,13 @@ The `cuenv` CLI provides tools for managing environments, executing tasks, and i
 
 | Option              | Description                                         | Default |
 | ------------------- | --------------------------------------------------- | ------- |
-| `--level, -l`       | Set logging level (trace, debug, info, warn, error) | warn    |
+| `--level, -L`       | Set logging level (trace, debug, info, warn, error) | warn    |
 | `--json`            | Emit JSON envelope regardless of format             | false   |
 | `--environment, -e` | Apply environment-specific overrides                | none    |
+
+:::caution[Breaking Change in 0.16.0]
+The short flag for `--level` changed from `-l` to `-L`. The `-l` short flag is now used for `--label` in task execution. Update any scripts using `cuenv -l debug` to `cuenv -L debug`.
+:::
 
 ## Commands
 
@@ -89,11 +93,26 @@ cuenv task [NAME] [OPTIONS] [-- TASK_ARGS...]
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `-l, --label <LABEL>`: Execute all tasks matching given labels (repeatable, AND semantics).
 - `--output-format <FORMAT>`: Output format when listing tasks (simple, json). Default: `simple`
 - `--materialize-outputs <DIR>`: Materialize cached outputs to this directory on cache hit.
 - `--show-cache-path`: Print the cache path for this task key.
 - `--backend <BACKEND>`: Force specific execution backend (`host` or `dagger`).
 - `--help`: Print task-specific help (when task name is provided).
+
+**Label-based execution:**
+
+You can execute multiple tasks at once using labels:
+
+```bash
+# Execute all tasks with the 'test' label
+cuenv task -l test
+
+# Execute tasks matching both 'test' AND 'unit' labels
+cuenv task -l test -l unit
+```
+
+Labels are defined in your CUE task configuration and allow grouping related tasks across projects.
 
 :::tip
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production task build`
@@ -187,7 +206,11 @@ cuenv ci [OPTIONS]
 
 - `--dry-run`: Show what would be executed without running it.
 - `--pipeline <NAME>`: Force a specific pipeline to run.
-- `--generate <PROVIDER>`: Generate CI workflow file (currently only `github` is supported).
+- `--generate <PROVIDER>`: Generate static CI workflow files (e.g., `github`, `buildkite`).
+- `--format <FORMAT>`: Output dynamic pipeline in specified format (`buildkite`, `github`).
+- `--from <REF>`: Base ref to compare against (branch name or commit SHA) for affected detection.
+- `--force`: Overwrite existing workflow files when generating.
+- `--check`: Check if CI workflows are in sync without writing files.
 
 **Example:**
 
@@ -198,9 +221,30 @@ cuenv ci
 # See what would run without executing
 cuenv ci --dry-run
 
-# Generate GitHub Actions workflow
-cuenv ci --generate github
+# Generate GitHub Actions workflow files
+cuenv ci --format github
+
+# Check if workflows are in sync (useful for CI validation)
+cuenv ci --format github --check
+
+# Generate static Buildkite bootstrap pipeline
+cuenv ci --generate buildkite
+
+# Output dynamic Buildkite pipeline (pipe to buildkite-agent)
+cuenv ci --format buildkite | buildkite-agent pipeline upload
+
+# Compare against a specific base ref
+cuenv ci --from main
 ```
+
+**Workflow Generation:**
+
+cuenv can generate CI workflow files for different providers:
+
+- **GitHub Actions**: Creates `.github/workflows/*.yml` files with monorepo-aware naming
+- **Buildkite**: Creates `.buildkite/pipeline.yml` bootstrap or outputs dynamic YAML
+
+The `--check` flag validates that generated workflows match existing files, exiting with an error if they differ. This is useful for enforcing workflow consistency in CI.
 
 ### `cuenv sync`
 
@@ -215,15 +259,19 @@ cuenv sync [OPTIONS] [SUBCOMMAND]
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--dry-run`: Show what would be generated without creating files.
+- `--check`: Check if files are in sync without making changes (exits with error if out of sync).
+- `-A, --all`: Sync all projects in the workspace.
 
 **Subcommands:**
 
 - `ignore`: Generate ignore files only (.gitignore, .dockerignore, etc.)
+- `codeowners`: Sync CODEOWNERS file from CUE configuration
+- `cubes`: Sync files from CUE cube configurations
 
 **Example:**
 
 ```bash
-# Run all sync operations (currently just ignore files)
+# Run all sync operations
 cuenv sync
 
 # Generate only ignore files
@@ -232,8 +280,20 @@ cuenv sync ignore
 # Preview what would be generated
 cuenv sync --dry-run
 
+# Check if all files are in sync (for CI)
+cuenv sync --check
+
+# Sync CODEOWNERS file
+cuenv sync codeowners
+
+# Sync cubes with diff output
+cuenv sync cubes --diff
+
 # Sync from a specific directory
 cuenv sync --path ./project
+
+# Sync all projects in the workspace
+cuenv sync --all
 ```
 
 **Output Status:**
@@ -362,6 +422,37 @@ cuenv release publish [OPTIONS]
 
 - `-p, --path <PATH>`: Path to project root. Default: `.`
 - `--dry-run`: Show what would be published without publishing.
+
+### `cuenv secrets`
+
+Manage secret provider integrations.
+
+#### `cuenv secrets setup`
+
+Set up a secret provider by downloading required components.
+
+```bash
+cuenv secrets setup <PROVIDER> [OPTIONS]
+```
+
+**Arguments:**
+
+- `<PROVIDER>`: Provider to set up. Currently supported: `onepassword`
+
+**Options:**
+
+- `--wasm-url <URL>`: Override the default WASM URL (for 1Password).
+
+**Example:**
+
+```bash
+# Set up 1Password WASM SDK for HTTP mode
+cuenv secrets setup onepassword
+```
+
+This downloads the 1Password WASM SDK to enable HTTP-based secret resolution. When `OP_SERVICE_ACCOUNT_TOKEN` is set, cuenv uses this for faster, batched secret resolution instead of the `op` CLI.
+
+See the [Secrets Guide](/how-to/secrets/) for more details on secret management.
 
 ### Security Commands
 

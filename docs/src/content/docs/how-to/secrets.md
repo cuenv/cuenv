@@ -68,16 +68,46 @@ env: {
 
 **Prerequisites:**
 
-- Install the [1Password CLI](https://developer.1password.com/docs/cli/)
-- Sign in with `op signin` or use a service account
+- Install the [1Password CLI](https://developer.1password.com/docs/cli/), OR
+- Set up the 1Password WASM SDK for HTTP mode (see below)
 
 **How it works:**
-The `#OnePasswordRef` expands to:
+
+cuenv supports two modes for 1Password secret resolution:
+
+1. **CLI mode** (default): Uses the `op` CLI to read secrets
+2. **HTTP mode**: Uses the 1Password SDK via WebAssembly for faster, batched resolution
+
+The `#OnePasswordRef` automatically selects the appropriate resolver based on your environment.
+
+### HTTP Mode Setup (Recommended for CI)
+
+For CI environments or when you need faster secret resolution, use HTTP mode with a service account:
+
+```bash
+# Download the 1Password WASM SDK
+cuenv secrets setup onepassword
+
+# Set your service account token
+export OP_SERVICE_ACCOUNT_TOKEN="ops_..."
+```
+
+When `OP_SERVICE_ACCOUNT_TOKEN` is set and the WASM SDK is available, cuenv automatically uses HTTP mode for:
+
+- **Batch resolution**: All secrets are resolved in a single request
+- **No CLI dependency**: Works without the `op` CLI installed
+- **Secure memory**: Secrets are held in secure memory during resolution
+
+### CLI Mode
+
+When the WASM SDK isn't available or for local development, cuenv falls back to CLI mode:
 
 ```cue
 command: "op"
 args: ["read", "op://vault-name/item-name/password"]
 ```
+
+Sign in with `op signin` before using CLI mode.
 
 ### Google Cloud Secret Manager
 
@@ -219,6 +249,31 @@ env: {
     }
 }
 ```
+
+## CI Integration
+
+cuenv automatically handles secrets in CI environments:
+
+### GitHub Actions
+
+When generating GitHub workflows with `cuenv ci --format github`, cuenv:
+
+1. **Auto-injects 1Password setup**: Adds steps to download the WASM SDK
+2. **Configures secrets**: Sets up `OP_SERVICE_ACCOUNT_TOKEN` from GitHub secrets
+3. **Uses HTTP mode**: Leverages batch resolution for efficiency
+
+Example generated workflow step:
+
+```yaml
+- name: Setup 1Password
+  run: cuenv secrets setup onepassword
+  env:
+    OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+```
+
+### Secret Redaction
+
+cuenv automatically redacts secret values from command output. When running tasks that use secrets, the actual values are replaced with `[REDACTED]` in logs and terminal output.
 
 ## Best Practices
 
