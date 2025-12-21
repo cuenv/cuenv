@@ -90,6 +90,7 @@ ci: {
 		// Release pipeline - runs on GitHub release or manual trigger
 		{
 			name: "release"
+			environment: "production"
 			when: {
 				release: ["published"]
 				manual: {
