@@ -1,13 +1,12 @@
 //! 1Password secret resolver with auto-negotiating dual-mode (HTTP via WASM SDK + CLI)
 
-use crate::{SecretError, SecretResolver, SecretSpec, SecureSecret};
+use super::core::SharedCore;
+use super::wasm;
 use async_trait::async_trait;
+use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::process::Command;
-
-#[cfg(feature = "onepassword")]
-use super::onepassword_core::SharedCore;
 
 /// Configuration for 1Password secret resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -41,7 +40,6 @@ impl OnePasswordConfig {
 /// - A simple reference string (e.g., `op://vault/item/field`)
 pub struct OnePasswordResolver {
     /// Client ID for WASM SDK (when using HTTP mode)
-    #[cfg(feature = "onepassword")]
     client_id: Option<u64>,
 }
 
@@ -63,7 +61,6 @@ impl OnePasswordResolver {
     ///
     /// Returns an error if the 1Password WASM client cannot be initialized.
     pub fn new() -> Result<Self, SecretError> {
-        #[cfg(feature = "onepassword")]
         let client_id = if Self::http_mode_available() {
             match Self::init_wasm_client() {
                 Ok(id) => {
@@ -82,17 +79,13 @@ impl OnePasswordResolver {
             None
         };
 
-        Ok(Self {
-            #[cfg(feature = "onepassword")]
-            client_id,
-        })
+        Ok(Self { client_id })
     }
 
     /// Check if HTTP mode is available (token set + WASM installed)
-    #[cfg(feature = "onepassword")]
     fn http_mode_available() -> bool {
         let token_set = std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok();
-        let wasm_available = crate::wasm::onepassword_wasm_available();
+        let wasm_available = wasm::onepassword_wasm_available();
         tracing::trace!(
             token_set,
             wasm_available,
@@ -108,7 +101,6 @@ impl OnePasswordResolver {
     }
 
     /// Initialize the WASM client and return the client ID
-    #[cfg(feature = "onepassword")]
     fn init_wasm_client() -> Result<u64, SecretError> {
         let token = std::env::var("OP_SERVICE_ACCOUNT_TOKEN").map_err(|_| {
             SecretError::ResolutionFailed {
@@ -136,20 +128,11 @@ impl OnePasswordResolver {
     }
 
     /// Check if this resolver can use HTTP mode
-    #[allow(clippy::unused_self)] // self is used when feature is enabled
     fn can_use_http(&self) -> bool {
-        #[cfg(feature = "onepassword")]
-        {
-            self.client_id.is_some()
-        }
-        #[cfg(not(feature = "onepassword"))]
-        {
-            false
-        }
+        self.client_id.is_some()
     }
 
     /// Resolve using the 1Password WASM SDK (HTTP mode)
-    #[cfg(feature = "onepassword")]
     fn resolve_http(&self, name: &str, config: &OnePasswordConfig) -> Result<String, SecretError> {
         let client_id = self
             .client_id
@@ -226,7 +209,6 @@ impl OnePasswordResolver {
         config: &OnePasswordConfig,
     ) -> Result<String, SecretError> {
         // Try HTTP mode if available
-        #[cfg(feature = "onepassword")]
         if self.client_id.is_some() {
             return self.resolve_http(name, config);
         }
@@ -236,7 +218,6 @@ impl OnePasswordResolver {
     }
 
     /// Resolve multiple secrets using Secrets.ResolveAll (HTTP mode)
-    #[cfg(feature = "onepassword")]
     fn resolve_batch_http(
         &self,
         secrets: &HashMap<String, SecretSpec>,
@@ -379,7 +360,6 @@ impl OnePasswordResolver {
     }
 }
 
-#[cfg(feature = "onepassword")]
 impl Drop for OnePasswordResolver {
     fn drop(&mut self) {
         if let Some(client_id) = self.client_id
@@ -423,7 +403,6 @@ impl SecretResolver for OnePasswordResolver {
         }
 
         // Use Secrets.ResolveAll if HTTP mode is available
-        #[cfg(feature = "onepassword")]
         if self.client_id.is_some() {
             return self.resolve_batch_http(secrets);
         }

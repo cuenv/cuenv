@@ -1,7 +1,7 @@
 //! GCP Secret Manager secret resolver with auto-negotiating dual-mode (HTTP + CLI)
 
-use crate::{SecretError, SecretResolver, SecretSpec};
 use async_trait::async_trait;
+use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -55,7 +55,6 @@ impl GcpSecretConfig {
 /// - A JSON-encoded [`GcpSecretConfig`]
 /// - A resource name like "projects/PROJECT/secrets/SECRET/versions/VERSION"
 pub struct GcpResolver {
-    #[cfg(feature = "gcp")]
     use_http: bool,
 }
 
@@ -75,43 +74,22 @@ impl GcpResolver {
     ///
     /// # Errors
     /// Returns error if GCP credentials cannot be loaded.
-    #[cfg(feature = "gcp")]
     pub fn new() -> Result<Self, SecretError> {
         let use_http = Self::http_credentials_available();
         Ok(Self { use_http })
     }
 
-    /// Create a new GCP resolver (CLI mode only)
-    ///
-    /// # Errors
-    ///
-    /// This function is infallible when the `gcp` feature is disabled.
-    #[cfg(not(feature = "gcp"))]
-    pub fn new() -> Result<Self, SecretError> {
-        Ok(Self {})
-    }
-
     /// Check if HTTP credentials are available in environment
-    #[cfg(feature = "gcp")]
     fn http_credentials_available() -> bool {
         std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok()
     }
 
     /// Check if this resolver can use HTTP mode
-    #[allow(clippy::unused_self)] // self is used when feature is enabled
     fn can_use_http(&self) -> bool {
-        #[cfg(feature = "gcp")]
-        {
-            self.use_http
-        }
-        #[cfg(not(feature = "gcp"))]
-        {
-            false
-        }
+        self.use_http
     }
 
     /// Resolve using the GCP Secret Manager API (HTTP mode)
-    #[cfg(feature = "gcp")]
     async fn resolve_http(
         &self,
         name: &str,
@@ -187,7 +165,6 @@ impl GcpResolver {
         config: &GcpSecretConfig,
     ) -> Result<String, SecretError> {
         // Try HTTP mode if available
-        #[cfg(feature = "gcp")]
         if self.use_http {
             return self.resolve_http(name, config).await;
         }
@@ -266,7 +243,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "gcp")]
     fn test_http_credentials_check() {
         // This test just ensures the function exists and doesn't panic
         let _ = GcpResolver::http_credentials_available();

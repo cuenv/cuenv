@@ -18,6 +18,11 @@ members = [
     "crates/gitlab",
     "crates/bitbucket",
     "crates/buildkite",
+    # Secret provider crates
+    "crates/aws",
+    "crates/gcp",
+    "crates/vault",
+    "crates/1password",
 ]
 
 [workspace.package]
@@ -34,7 +39,7 @@ categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
 cuenv-events = { path = "crates/events", version = "0.15.0" }
-cuenv-secrets = { path = "crates/secrets", version = "0.15.0", features = ["onepassword"] }
+cuenv-secrets = { path = "crates/secrets", version = "0.15.0" }
 cuenv-core = { path = "crates/core", version = "0.15.0" }
 cuenv-dagger = { path = "crates/dagger", version = "0.15.0" }
 cuenv-workspaces = { path = "crates/workspaces", version = "0.15.0" }
@@ -49,6 +54,11 @@ cuenv-github = { path = "crates/github", version = "0.15.0" }
 cuenv-gitlab = { path = "crates/gitlab", version = "0.15.0" }
 cuenv-bitbucket = { path = "crates/bitbucket", version = "0.15.0" }
 cuenv-buildkite = { path = "crates/buildkite", version = "0.15.0" }
+# Secret provider crates
+cuenv-aws = { path = "crates/aws", version = "0.15.0" }
+cuenv-gcp = { path = "crates/gcp", version = "0.15.0" }
+cuenv-vault = { path = "crates/vault", version = "0.15.0" }
+cuenv-1password = { path = "crates/1password", version = "0.15.0" }
 schemars = "1.0.4"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }

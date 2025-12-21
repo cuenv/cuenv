@@ -1,5 +1,5 @@
 [package]
-name = "cuenv-secrets"
+name = "cuenv-aws"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,24 +9,23 @@ homepage.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Secret resolution and management for the cuenv ecosystem"
+description = "AWS integration for the cuenv ecosystem"
 
 [lints]
 workspace = true
 
 [dependencies]
-sha2 = { workspace = true }
-hex = "0.4"
-thiserror = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
+cuenv-secrets = { workspace = true }
 async-trait = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
-secrecy = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 futures = { workspace = true }
 
+# AWS SDK
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+
 [dev-dependencies]
-tempfile = { workspace = true }
 tokio-test = { workspace = true }
-temp-env = { version = "0.3", features = ["async_closure"] }

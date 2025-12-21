@@ -1,9 +1,10 @@
 //! `HashiCorp` Vault secret resolver with auto-negotiating dual-mode (HTTP + CLI)
 
-use crate::{SecretError, SecretResolver, SecretSpec};
 use async_trait::async_trait;
+use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
+use vaultrs::client::VaultClient;
 
 /// Configuration for `HashiCorp` Vault resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,8 +57,7 @@ impl VaultSecretConfig {
 /// The `source` field in [`SecretSpec`] can be:
 /// - A JSON-encoded [`VaultSecretConfig`]
 pub struct VaultResolver {
-    #[cfg(feature = "vault")]
-    client: Option<vaultrs::client::VaultClient>,
+    client: Option<VaultClient>,
 }
 
 impl std::fmt::Debug for VaultResolver {
@@ -78,7 +78,6 @@ impl VaultResolver {
     ///
     /// Returns an error if the Vault HTTP client cannot be initialized.
     pub fn new() -> Result<Self, SecretError> {
-        #[cfg(feature = "vault")]
         let client = if Self::http_credentials_available() {
             let addr =
                 std::env::var("VAULT_ADDR").unwrap_or_else(|_| "http://127.0.0.1:8200".to_string());
@@ -89,7 +88,7 @@ impl VaultResolver {
                 })?;
 
             Some(
-                vaultrs::client::VaultClient::new(
+                VaultClient::new(
                     vaultrs::client::VaultClientSettingsBuilder::default()
                         .address(addr)
                         .token(token)
@@ -108,33 +107,20 @@ impl VaultResolver {
             None
         };
 
-        Ok(Self {
-            #[cfg(feature = "vault")]
-            client,
-        })
+        Ok(Self { client })
     }
 
     /// Check if HTTP credentials are available in environment
-    #[cfg(feature = "vault")]
     fn http_credentials_available() -> bool {
         std::env::var("VAULT_TOKEN").is_ok() && std::env::var("VAULT_ADDR").is_ok()
     }
 
     /// Check if this resolver can use HTTP mode
-    #[allow(clippy::unused_self)] // self is used when feature is enabled
     fn can_use_http(&self) -> bool {
-        #[cfg(feature = "vault")]
-        {
-            self.client.is_some()
-        }
-        #[cfg(not(feature = "vault"))]
-        {
-            false
-        }
+        self.client.is_some()
     }
 
     /// Resolve using the Vault HTTP API
-    #[cfg(feature = "vault")]
     async fn resolve_http(
         &self,
         name: &str,
@@ -207,7 +193,6 @@ impl VaultResolver {
         config: &VaultSecretConfig,
     ) -> Result<String, SecretError> {
         // Try HTTP mode if available
-        #[cfg(feature = "vault")]
         if self.client.is_some() {
             return self.resolve_http(name, config).await;
         }
@@ -269,7 +254,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "vault")]
     fn test_http_credentials_check() {
         // This test just ensures the function exists and doesn't panic
         let _ = VaultResolver::http_credentials_available();

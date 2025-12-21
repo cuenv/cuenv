@@ -3,17 +3,12 @@
 //! This module provides a thread-safe wrapper around the 1Password WASM SDK,
 //! following the same pattern as the official Go SDK.
 
-#[cfg(feature = "onepassword")]
-use crate::SecretError;
-
-#[cfg(feature = "onepassword")]
+use super::wasm;
+use cuenv_secrets::SecretError;
 use extism::{CurrentPlugin, Function, Manifest, Plugin, UserData, Val, ValType, Wasm};
-
-#[cfg(feature = "onepassword")]
 use std::sync::{LazyLock, Mutex};
 
 /// Global `SharedCore` instance, lazily initialized
-#[cfg(feature = "onepassword")]
 static SHARED_CORE: LazyLock<Mutex<Option<SharedCore>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Create host functions required by the 1Password WASM SDK.
@@ -23,7 +18,6 @@ static SHARED_CORE: LazyLock<Mutex<Option<SharedCore>>> = LazyLock::new(|| Mutex
 /// - `unix_time_milliseconds_imported` (op-now): Returns current Unix time in milliseconds
 /// - `unix_time_milliseconds_imported` (zxcvbn): Same as above, for password strength checking
 /// - `utc_offset_seconds` (op-time): Returns local timezone offset in seconds
-#[cfg(feature = "onepassword")]
 fn create_host_functions() -> Vec<Function> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -121,12 +115,10 @@ fn create_host_functions() -> Vec<Function> {
 ///
 /// The WASM runtime is single-threaded, so we use a mutex to serialize access.
 /// This follows the same pattern as the official 1Password Go SDK.
-#[cfg(feature = "onepassword")]
 pub struct SharedCore {
     plugin: Plugin,
 }
 
-#[cfg(feature = "onepassword")]
 impl SharedCore {
     /// Get or initialize the shared core.
     ///
@@ -141,7 +133,7 @@ impl SharedCore {
             })?;
 
         if guard.is_none() {
-            let wasm_bytes = crate::wasm::load_onepassword_wasm()?;
+            let wasm_bytes = wasm::load_onepassword_wasm()?;
 
             let manifest = Manifest::new([Wasm::data(wasm_bytes)]).with_allowed_hosts(
                 ["*.1password.com", "*.1password.ca", "*.1password.eu"]
@@ -315,11 +307,9 @@ impl SharedCore {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "onepassword")]
     use super::*;
 
     #[test]
-    #[cfg(feature = "onepassword")]
     fn test_shared_core_lazy_init() {
         // This test just verifies the lazy static compiles
         // Actual WASM loading requires the file to exist
