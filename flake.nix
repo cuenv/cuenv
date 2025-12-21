@@ -9,10 +9,6 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    advisory-db = {
-      url = "github:rustsec/advisory-db";
-      flake = false;
-    };
     flake-schemas.url = "https://flakehub.com/f/DeterminateSystems/flake-schemas/0.2.0";
   };
 
@@ -28,7 +24,7 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, rust-overlay, advisory-db, flake-schemas, ... }:
+  outputs = { self, nixpkgs, crane, flake-utils, rust-overlay, flake-schemas, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -191,7 +187,6 @@
           go_1_24
           cue
           antora
-          cargo-audit
           cargo-nextest
           cargo-deny
           cargo-cyclonedx
@@ -240,11 +235,6 @@
             partitionType = "count";
           });
 
-          cuenv-audit = craneLib.cargoAudit {
-            inherit src advisory-db;
-            cargoAuditExtraArgs = "--ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2023-0071";
-          };
-
           cuenv-deny = craneLib.cargoDeny {
             inherit src;
           };
@@ -274,10 +264,7 @@
             ''}
             
             cd ..
-            
-            # Run cargo audit to check for vulnerabilities, ignoring specific advisories
-            cargo audit --ignore RUSTSEC-2024-0436 --ignore RUSTSEC-2023-0071
-            
+
             echo "🦀 cuenv development environment ready!"
             echo "📦 Prebuilt CUE bridge available at: ${cue-bridge}"
             echo "🚀 Crane-based build system active"
