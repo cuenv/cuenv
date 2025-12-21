@@ -10,7 +10,6 @@ keywords.workspace = true
 categories = ["development-tools", "development-tools::build-utils"]
 readme = "../../readme.md"
 description = "Context-aware CI pipeline execution for cuenv"
-publish = false
 
 [lints]
 workspace = true

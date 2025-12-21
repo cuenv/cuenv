@@ -10,7 +10,6 @@ keywords.workspace = true
 categories = ["development-tools", "command-line-utilities"]
 readme = "../../readme.md"
 description = "Native release management for cuenv - versioning, changelogs, and publishing"
-publish = false
 
 [lints]
 workspace = true

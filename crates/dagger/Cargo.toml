@@ -10,7 +10,6 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Dagger backend for cuenv task execution"
-publish = false
 
 [dependencies]
 cuenv-core = { workspace = true }
