@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+use tokio::process::Command;
 
 /// Policy for controlling environment variable access
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -153,17 +154,49 @@ impl EnvValue {
     /// Resolve the environment variable value, executing secrets if necessary
     pub async fn resolve(&self) -> crate::Result<String> {
         match self {
-            EnvValue::String(s) => Ok(s.clone()),
+            EnvValue::String(s) => Self::resolve_string(s).await,
             EnvValue::Int(i) => Ok(i.to_string()),
             EnvValue::Bool(b) => Ok(b.to_string()),
             EnvValue::Secret(s) => s.resolve().await,
             EnvValue::WithPolicies(var) => match &var.value {
-                EnvValueSimple::String(s) => Ok(s.clone()),
+                EnvValueSimple::String(s) => Self::resolve_string(s).await,
                 EnvValueSimple::Int(i) => Ok(i.to_string()),
                 EnvValueSimple::Bool(b) => Ok(b.to_string()),
                 EnvValueSimple::Secret(s) => s.resolve().await,
             },
         }
+    }
+
+    /// Resolve a string value, handling 1Password references (op://...) automatically
+    ///
+    /// Uses the `op` CLI to resolve 1Password secrets. Requires the 1Password CLI
+    /// to be installed and authenticated (via `OP_SERVICE_ACCOUNT_TOKEN` or desktop app).
+    async fn resolve_string(s: &str) -> crate::Result<String> {
+        // Detect 1Password secret references and resolve them via op CLI
+        if s.starts_with("op://") {
+            let output = Command::new("op")
+                .args(["read", s])
+                .output()
+                .await
+                .map_err(|e| {
+                    crate::Error::configuration(format!(
+                        "Failed to execute 'op read' for 1Password secret: {e}"
+                    ))
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(crate::Error::configuration(format!(
+                    "1Password secret resolution failed for '{}': {}",
+                    s, stderr
+                )));
+            }
+
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        }
+
+        // Plain string, return as-is
+        Ok(s.to_string())
     }
 }
 
