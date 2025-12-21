@@ -116,12 +116,15 @@ ci: {
 				"pull-requests": "write"
 			}
 		},
-		// Docs deployment - on main push
+		// Docs deployment - on main push only (not PRs)
 		{
 			name:        "deploy"
 			environment: "production"
-			when: branch: "main"
-			tasks: ["docs.deploy"]
+			when: {
+				branch:      "main"
+				pullRequest: false
+			}
+			tasks: ["docs.build", "docs.deploy"]
 		},
 		// LLM evaluation - on changes to prompts/schema, weekly scheduled
 		{
