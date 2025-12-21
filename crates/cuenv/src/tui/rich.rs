@@ -32,10 +32,10 @@ impl Drop for TerminalGuard {
         // Attempt to restore terminal state. Log errors since Drop can't propagate them.
         // Users may need to run `reset` if these fail.
         if let Err(e) = disable_raw_mode() {
-            eprintln!("Warning: Failed to disable raw mode: {e}");
+            tracing::warn!(error = %e, "Failed to disable raw mode");
         }
         if let Err(e) = execute!(io::stdout(), LeaveAlternateScreen) {
-            eprintln!("Warning: Failed to leave alternate screen: {e}");
+            tracing::warn!(error = %e, "Failed to leave alternate screen");
         }
     }
 }

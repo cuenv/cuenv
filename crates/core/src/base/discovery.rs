@@ -23,7 +23,7 @@ pub struct DiscoveredBase {
 }
 
 /// Function type for evaluating env.cue files as Base schema
-pub type BaseEvalFn = Box<dyn Fn(&Path) -> Result<Base, String> + Send + Sync>;
+pub type BaseEvalFn = Box<dyn Fn(&Path) -> Result<Base, crate::Error> + Send + Sync>;
 
 /// Discovers Base configurations across a monorepo workspace
 ///
@@ -208,8 +208,8 @@ pub enum DiscoveryError {
     #[error("Invalid path: {0}")]
     InvalidPath(PathBuf),
 
-    #[error("Failed to evaluate {0}: {1}")]
-    EvalError(PathBuf, String),
+    #[error("Failed to evaluate {}: {}", .0.display(), .1)]
+    EvalError(PathBuf, #[source] crate::Error),
 
     #[error("No evaluation function provided - use with_eval_fn()")]
     NoEvalFunction,

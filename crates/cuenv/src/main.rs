@@ -39,6 +39,9 @@ const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt
 /// Main entry point - determines sync vs async execution path
 fn main() {
     // Set up error handling first
+    // NOTE: Using eprintln! in panic hook is intentional - tracing infrastructure
+    // may be corrupted during a panic, so we use the most reliable output method.
+    #[allow(clippy::print_stderr)]
     std::panic::set_hook(Box::new(|panic_info| {
         eprintln!("Application panicked: {panic_info}");
         eprintln!("Internal error occurred. Run with RUST_LOG=debug for more information.");
@@ -84,7 +87,12 @@ fn run_with_tokio() -> i32 {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("Fatal error: Failed to create tokio runtime: {e}");
+            // NOTE: Using eprintln! here is intentional - tracing/event system
+            // is not yet initialized at this point in startup.
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("Fatal error: Failed to create tokio runtime: {e}");
+            }
             return 1;
         }
     };

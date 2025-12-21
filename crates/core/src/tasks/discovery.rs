@@ -37,7 +37,7 @@ pub struct MatchedTask {
 }
 
 /// Function type for evaluating env.cue files
-pub type EvalFn = Box<dyn Fn(&Path) -> Result<Project, String> + Send + Sync>;
+pub type EvalFn = Box<dyn Fn(&Path) -> Result<Project, crate::Error> + Send + Sync>;
 
 /// Discovers tasks across a monorepo workspace
 pub struct TaskDiscovery {
@@ -378,8 +378,8 @@ pub enum DiscoveryError {
     #[error("Invalid path: {0}")]
     InvalidPath(PathBuf),
 
-    #[error("Failed to evaluate {0}: {1}")]
-    EvalError(PathBuf, String),
+    #[error("Failed to evaluate {}: {}", .0.display(), .1)]
+    EvalError(PathBuf, #[source] crate::Error),
 
     #[error("Invalid TaskRef format: {0}")]
     InvalidTaskRef(String),

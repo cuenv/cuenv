@@ -3,9 +3,6 @@
 //! Main entry point for CI pipeline execution, integrating with the provider
 //! system for context detection, file change tracking, and reporting.
 
-// CI orchestrator outputs to stdout/stderr as part of its normal operation
-#![allow(clippy::print_stdout, clippy::print_stderr)]
-
 use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
 use crate::discovery::discover_projects;
 use crate::ir::CachePolicy;
@@ -42,14 +39,11 @@ pub async fn run_ci(
     specific_pipeline: Option<String>,
 ) -> Result<()> {
     let context = provider.context();
-    println!(
-        "Context: {} (event: {}, ref: {})",
-        context.provider, context.event, context.ref_name
-    );
+    cuenv_events::emit_ci_context!(&context.provider, &context.event, &context.ref_name);
 
     // Get changed files
     let changed_files = provider.changed_files().await?;
-    println!("Changed files: {}", changed_files.len());
+    cuenv_events::emit_ci_changed_files!(changed_files.len());
 
     // Discover projects
     let projects = discover_projects()?;
@@ -58,7 +52,7 @@ pub async fn run_ci(
             "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
         ));
     }
-    println!("Found {} projects", projects.len());
+    cuenv_events::emit_ci_projects_discovered!(projects.len());
 
     // Build project map for cross-project dependency resolution
     let mut project_map = std::collections::HashMap::new();
@@ -125,14 +119,14 @@ pub async fn run_ci(
         };
 
         if tasks_to_run.is_empty() {
-            println!("Project {}: No affected tasks", project.path.display());
+            cuenv_events::emit_ci_project_skipped!(project.path.display(), "No affected tasks");
             continue;
         }
 
-        println!(
-            "Project {}: Running tasks {:?}",
-            project.path.display(),
-            tasks_to_run
+        tracing::info!(
+            project = %project.path.display(),
+            tasks = ?tasks_to_run,
+            "Running tasks for project"
         );
 
         if !dry_run {
@@ -149,7 +143,7 @@ pub async fn run_ci(
             .await;
 
             if let Err(e) = result {
-                eprintln!("Pipeline execution error: {e}");
+                tracing::error!(error = %e, "Pipeline execution error");
                 any_failed = true;
             } else if result.is_ok_and(|status| status == PipelineStatus::Failed) {
                 any_failed = true;
@@ -220,7 +214,8 @@ async fn execute_project_pipeline(
             .map(|task| task.outputs.clone())
             .unwrap_or_default();
 
-        println!("  -> Executing {task_name}");
+        let project_display = project.path.display().to_string();
+        cuenv_events::emit_ci_task_executing!(&project_display, task_name);
         let task_start = std::time::Instant::now();
 
         // Execute the task using the runner
@@ -233,7 +228,7 @@ async fn execute_project_pipeline(
         let (status, exit_code, cache_key) = match result {
             Ok(output) => {
                 if output.success {
-                    println!("  -> {task_name} passed");
+                    cuenv_events::emit_ci_task_result!(&project_display, task_name, true);
                     (
                         TaskStatus::Success,
                         Some(output.exit_code),
@@ -244,13 +239,13 @@ async fn execute_project_pipeline(
                         },
                     )
                 } else {
-                    println!("  -> {task_name} failed (exit code {})", output.exit_code);
+                    cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
                     pipeline_status = PipelineStatus::Failed;
                     (TaskStatus::Failed, Some(output.exit_code), None)
                 }
             }
             Err(e) => {
-                println!("  -> {task_name} failed: {e}");
+                cuenv_events::emit_ci_task_result!(&project_display, task_name, false, e.to_string());
                 pipeline_status = PipelineStatus::Failed;
                 (TaskStatus::Failed, Some(1), None)
             }
@@ -310,7 +305,7 @@ fn write_pipeline_report(
     // Ensure report directory exists
     let report_dir = std::path::Path::new(".cuenv/reports");
     if let Err(e) = std::fs::create_dir_all(report_dir) {
-        println!("Failed to create report directory: {e}");
+        tracing::warn!(error = %e, "Failed to create report directory");
         return;
     }
 
@@ -321,14 +316,14 @@ fn write_pipeline_report(
     let report_path = sha_dir.join(project_filename);
 
     if let Err(e) = write_report(report, &report_path) {
-        println!("Failed to write report: {e}");
+        tracing::warn!(error = %e, "Failed to write report");
     } else {
-        println!("Report written to: {}", report_path.display());
+        cuenv_events::emit_ci_report!(report_path.display());
     }
 
     // Write GitHub Job Summary
     if let Err(e) = crate::report::markdown::write_job_summary(report) {
-        eprintln!("Warning: Failed to write job summary: {e}");
+        tracing::warn!(error = %e, "Failed to write job summary");
     }
 }
 
@@ -339,17 +334,17 @@ async fn notify_provider(provider: &dyn CIProvider, report: &PipelineReport, pip
     match provider.create_check(&check_name).await {
         Ok(handle) => {
             if let Err(e) = provider.complete_check(&handle, report).await {
-                eprintln!("Warning: Failed to complete check run: {e}");
+                tracing::warn!(error = %e, "Failed to complete check run");
             }
         }
         Err(e) => {
-            eprintln!("Warning: Failed to create check run: {e}");
+            tracing::warn!(error = %e, "Failed to create check run");
         }
     }
 
     // Post PR comment with report summary
     if let Err(e) = provider.upload_report(report).await {
-        eprintln!("Warning: Failed to post PR comment: {e}");
+        tracing::warn!(error = %e, "Failed to post PR comment");
     }
 }
 

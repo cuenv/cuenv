@@ -139,9 +139,7 @@ pub async fn execute_task(
             // Legacy path: use EvalFn for per-project evaluation
             tracing::debug!("Using legacy EvalFn for workspace task discovery");
             let pkg = package.to_string();
-            let eval_fn: EvalFn = Box::new(move |p: &Path| {
-                evaluate_manifest(p, &pkg, None).map_err(|e| e.to_string())
-            });
+            let eval_fn: EvalFn = Box::new(move |p: &Path| evaluate_manifest(p, &pkg, None));
 
             discovery = discovery.with_eval_fn(eval_fn);
             if let Err(e) = discovery.discover() {
@@ -315,7 +313,9 @@ pub async fn execute_task(
 
     if normalized_labels.is_empty() {
         // Execute a named task
-        let requested_task = task_name.expect("task_name required when no labels provided");
+        let requested_task = task_name.ok_or_else(|| {
+            cuenv_core::Error::configuration("task name required when no labels provided")
+        })?;
         tracing::debug!("Looking for specific task: {}", requested_task);
 
         // If help requested for specific task/group
@@ -472,10 +472,9 @@ pub async fn execute_task(
         );
 
         // Safety: We just inserted the synthetic task above, so it will always exist.
-        task_def = tasks_in_scope
-            .get(&display_task_name)
-            .cloned()
-            .expect("synthetic task missing after insertion");
+        task_def = tasks_in_scope.get(&display_task_name).cloned().ok_or_else(|| {
+            cuenv_core::Error::execution("synthetic task missing after insertion")
+        })?;
         task_graph_root_name = display_task_name.clone();
         all_tasks = tasks_in_scope;
     }
@@ -710,14 +709,14 @@ async fn execute_with_rich_tui(
         Ok(Err(e)) => {
             // TUI returned an error - log it but don't fail the task execution
             // since the tasks themselves may have succeeded
-            tracing::warn!("TUI error (task execution may have succeeded): {e}");
-            eprintln!("Warning: TUI encountered an error: {e}");
-            eprintln!("Task output may not have been fully displayed. Check logs for details.");
+            tracing::warn!(error = %e, "TUI error (task execution may have succeeded)");
+            cuenv_events::emit_stderr!(format!("Warning: TUI encountered an error: {e}"));
+            cuenv_events::emit_stderr!("Task output may not have been fully displayed. Check logs for details.");
         }
         Err(e) => {
             // TUI task panicked or was cancelled
-            tracing::error!("TUI task failed: {e}");
-            eprintln!("Warning: TUI terminated unexpectedly: {e}");
+            tracing::error!(error = %e, "TUI task failed");
+            cuenv_events::emit_stderr!(format!("Warning: TUI terminated unexpectedly: {e}"));
         }
     }
 
@@ -2072,9 +2071,8 @@ fn build_global_tasks(
     } else {
         // Legacy path: use EvalFn for per-project evaluation (when no executor available)
         tracing::debug!("Using legacy EvalFn for global task registry build");
-        let eval_fn: EvalFn = Box::new(move |project_path: &Path| {
-            evaluate_manifest(project_path, "cuenv", None).map_err(|e| e.to_string())
-        });
+        let eval_fn: EvalFn =
+            Box::new(move |project_path: &Path| evaluate_manifest(project_path, "cuenv", None));
 
         discovery = discovery.with_eval_fn(eval_fn);
         discovery.discover().map_err(|e| {
