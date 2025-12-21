@@ -58,26 +58,24 @@ pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
         raw_result.projects,
     );
 
-    let mut projects = Vec::new();
-
     // Iterate through all Project instances (schema-verified)
-    for instance in module.projects() {
-        let mut config: Project = match instance.deserialize() {
-            Ok(c) => c,
-            Err(_) => continue, // Skip instances that can't be deserialized
-        };
+    let projects: Vec<DiscoveredCIProject> = module
+        .projects()
+        .filter_map(|instance| {
+            instance.deserialize().ok().map(|mut config: Project| {
+                // Expand cross-project references and implicit dependencies
+                config.expand_cross_project_references();
 
-        // Expand cross-project references and implicit dependencies
-        config.expand_cross_project_references();
+                // Build the path to the env.cue file
+                let env_cue_path = module_root.join(&instance.path).join("env.cue");
 
-        // Build the path to the env.cue file
-        let env_cue_path = module_root.join(&instance.path).join("env.cue");
-
-        projects.push(DiscoveredCIProject {
-            path: env_cue_path,
-            config,
-        });
-    }
+                DiscoveredCIProject {
+                    path: env_cue_path,
+                    config,
+                }
+            })
+        })
+        .collect();
 
     Ok(projects)
 }

@@ -334,9 +334,9 @@ impl TaskListFormatter for TextFormatter {
 
             // Use source in header if available, otherwise just the header
             if group.source.is_empty() {
-                writeln!(output, "{}:", group.header).expect("write to string");
+                let _ = writeln!(output, "{}:", group.header);
             } else {
-                writeln!(output, "{} ({}):", group.header, group.source).expect("write to string");
+                let _ = writeln!(output, "{} ({}):", group.header, group.source);
             }
 
             let max_width = calculate_max_width(&group.nodes, 0);
@@ -347,12 +347,11 @@ impl TaskListFormatter for TextFormatter {
             output = "No tasks defined in the configuration".to_string();
         } else {
             // Append stats summary
-            writeln!(
+            let _ = writeln!(
                 output,
                 "\n({} tasks, {} groups, {} cached)",
                 data.stats.total_tasks, data.stats.total_groups, data.stats.cached_count
-            )
-            .expect("write to string");
+            );
         }
 
         output
@@ -393,19 +392,19 @@ fn format_text_nodes(nodes: &[TaskNode], output: &mut String, max_width: usize, 
         let current_len =
             prefix.chars().count() + marker.chars().count() + display_name.chars().count();
 
-        write!(output, "{prefix}{marker}{display_name}").expect("write to string");
+        let _ = write!(output, "{prefix}{marker}{display_name}");
 
         // Show dependency count if there are dependencies
         if node.dep_count > 0 {
-            write!(output, " [{}]", node.dep_count).expect("write to string");
+            let _ = write!(output, " [{}]", node.dep_count);
         }
 
         if let Some(desc) = &node.description {
             let padding = max_width.saturating_sub(current_len);
             let dots = ".".repeat(padding + 4);
-            write!(output, " {dots} {desc}").expect("write to string");
+            let _ = write!(output, " {dots} {desc}");
         }
-        writeln!(output).expect("write to string");
+        let _ = writeln!(output);
 
         let child_prefix = if is_last { "   " } else { "│  " };
         let new_prefix = format!("{prefix}{child_prefix}");
@@ -476,7 +475,7 @@ impl TaskListFormatter for RichFormatter {
             }
 
             // Simple bold header, no box
-            writeln!(output, "{}:", self.bold(&group.header)).expect("write to string");
+            let _ = writeln!(output, "{}:", self.bold(&group.header));
 
             let max_width = calculate_max_width(&group.nodes, 0);
             format_rich_nodes(self, &group.nodes, &mut output, max_width, "");
@@ -509,7 +508,7 @@ fn format_rich_nodes(
             prefix.chars().count() + marker.chars().count() + node.name.chars().count();
 
         // Dim tree connectors
-        write!(output, "{prefix}{}", formatter.dim(marker)).expect("write to string");
+        let _ = write!(output, "{prefix}{}", formatter.dim(marker));
 
         // Colored name: cyan for tasks, dim for groups
         let colored_name = if node.is_group {
@@ -517,14 +516,14 @@ fn format_rich_nodes(
         } else {
             formatter.cyan(&node.name)
         };
-        write!(output, "{colored_name}").expect("write to string");
+        let _ = write!(output, "{colored_name}");
 
         if let Some(desc) = &node.description {
             let padding = max_width.saturating_sub(current_len);
             let dots = formatter.dim(&".".repeat(padding + 4));
-            write!(output, " {dots} {desc}").expect("write to string");
+            let _ = write!(output, " {dots} {desc}");
         }
-        writeln!(output).expect("write to string");
+        let _ = writeln!(output);
 
         let child_prefix = if is_last {
             format!("{prefix}   ")

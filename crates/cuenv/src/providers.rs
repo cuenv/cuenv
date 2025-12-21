@@ -93,9 +93,12 @@ pub fn detect_ci_provider(
     if let Some(base_ref) = from_ref {
         Arc::new(cuenv_ci::provider::LocalProvider::with_base_ref(base_ref))
     } else {
+        // LocalProvider::detect() should always succeed for local environments,
+        // but fall back to a default with "main" as base ref if it somehow fails
         Arc::new(
-            cuenv_ci::provider::LocalProvider::detect()
-                .expect("LocalProvider should always be available"),
+            cuenv_ci::provider::LocalProvider::detect().unwrap_or_else(|| {
+                cuenv_ci::provider::LocalProvider::with_base_ref("main".to_string())
+            }),
         )
     }
 }
@@ -122,9 +125,12 @@ pub fn detect_ci_provider(
     if let Some(base_ref) = from_ref {
         Arc::new(cuenv_ci::provider::LocalProvider::with_base_ref(base_ref))
     } else {
+        // LocalProvider::detect() should always succeed for local environments,
+        // but fall back to a default with "main" as base ref if it somehow fails
         Arc::new(
-            cuenv_ci::provider::LocalProvider::detect()
-                .expect("LocalProvider should always be available"),
+            cuenv_ci::provider::LocalProvider::detect().unwrap_or_else(|| {
+                cuenv_ci::provider::LocalProvider::with_base_ref("main".to_string())
+            }),
         )
     }
 }

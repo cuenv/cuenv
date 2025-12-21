@@ -245,7 +245,12 @@ async fn execute_project_pipeline(
                 }
             }
             Err(e) => {
-                cuenv_events::emit_ci_task_result!(&project_display, task_name, false, e.to_string());
+                cuenv_events::emit_ci_task_result!(
+                    &project_display,
+                    task_name,
+                    false,
+                    e.to_string()
+                );
                 pipeline_status = PipelineStatus::Failed;
                 (TaskStatus::Failed, Some(1), None)
             }

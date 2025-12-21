@@ -174,19 +174,20 @@ fn get_task_params(
     };
 
     let params = task.params.as_ref()?;
-    let mut completions = Vec::new();
 
-    // Add named parameters
-    for (name, param_def) in &params.named {
-        let flag = format!("--{name}");
-        let description = param_def.description.clone();
-        completions.push((flag, description));
-
-        // Add short flag if available
-        if let Some(short) = &param_def.short {
-            completions.push((format!("-{short}"), param_def.description.clone()));
-        }
-    }
+    // Add named parameters, including short flags if available
+    let completions: Vec<_> = params
+        .named
+        .iter()
+        .flat_map(|(name, param_def)| {
+            let main_flag = (format!("--{name}"), param_def.description.clone());
+            let short_flag = param_def
+                .short
+                .as_ref()
+                .map(|short| (format!("-{short}"), param_def.description.clone()));
+            std::iter::once(main_flag).chain(short_flag)
+        })
+        .collect();
 
     Some(completions)
 }

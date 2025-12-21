@@ -182,7 +182,7 @@ impl TaskDiscovery {
 
         // Use provided eval function to evaluate the env.cue file
         let manifest = eval_fn(&project_root)
-            .map_err(|e| DiscoveryError::EvalError(env_cue_path.to_path_buf(), e))?;
+            .map_err(|e| DiscoveryError::EvalError(env_cue_path.to_path_buf(), Box::new(e)))?;
 
         Ok(DiscoveredProject {
             env_cue_path: env_cue_path.to_path_buf(),
@@ -379,7 +379,7 @@ pub enum DiscoveryError {
     InvalidPath(PathBuf),
 
     #[error("Failed to evaluate {}: {}", .0.display(), .1)]
-    EvalError(PathBuf, #[source] crate::Error),
+    EvalError(PathBuf, #[source] Box<crate::Error>),
 
     #[error("Invalid TaskRef format: {0}")]
     InvalidTaskRef(String),

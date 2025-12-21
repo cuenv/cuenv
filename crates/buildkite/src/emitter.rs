@@ -56,21 +56,27 @@ impl BuildkiteEmitter {
 
     /// Convert IR tasks to Buildkite pipeline
     fn build_pipeline(&self, ir: &IntermediateRepresentation) -> Pipeline {
-        let mut steps = Vec::new();
-        let mut approval_keys: HashMap<String, String> = HashMap::new();
+        // Build approval keys map first for tasks that need manual approval
+        let approval_keys: HashMap<String, String> = ir
+            .tasks
+            .iter()
+            .filter(|task| task.manual_approval)
+            .map(|task| (task.id.clone(), format!("{}-approval", task.id)))
+            .collect();
 
-        for task in &ir.tasks {
-            // If task requires manual approval, insert a block step first
-            if task.manual_approval {
-                let approval_key = format!("{}-approval", task.id);
-                let block_step = self.build_block_step(task, &approval_key);
-                steps.push(Step::Block(block_step));
-                approval_keys.insert(task.id.clone(), approval_key);
-            }
-
-            let command_step = self.build_command_step(task, ir, &approval_keys);
-            steps.push(Step::Command(Box::new(command_step)));
-        }
+        // Build steps: block steps for approvals, then command steps for all tasks
+        let steps: Vec<Step> = ir
+            .tasks
+            .iter()
+            .flat_map(|task| {
+                let block_step = approval_keys
+                    .get(&task.id)
+                    .map(|approval_key| Step::Block(self.build_block_step(task, approval_key)));
+                let command_step =
+                    Step::Command(Box::new(self.build_command_step(task, ir, &approval_keys)));
+                block_step.into_iter().chain(std::iter::once(command_step))
+            })
+            .collect();
 
         Pipeline {
             steps,

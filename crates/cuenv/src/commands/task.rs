@@ -472,9 +472,12 @@ pub async fn execute_task(
         );
 
         // Safety: We just inserted the synthetic task above, so it will always exist.
-        task_def = tasks_in_scope.get(&display_task_name).cloned().ok_or_else(|| {
-            cuenv_core::Error::execution("synthetic task missing after insertion")
-        })?;
+        task_def = tasks_in_scope
+            .get(&display_task_name)
+            .cloned()
+            .ok_or_else(|| {
+                cuenv_core::Error::execution("synthetic task missing after insertion")
+            })?;
         task_graph_root_name = display_task_name.clone();
         all_tasks = tasks_in_scope;
     }
@@ -711,7 +714,9 @@ async fn execute_with_rich_tui(
             // since the tasks themselves may have succeeded
             tracing::warn!(error = %e, "TUI error (task execution may have succeeded)");
             cuenv_events::emit_stderr!(format!("Warning: TUI encountered an error: {e}"));
-            cuenv_events::emit_stderr!("Task output may not have been fully displayed. Check logs for details.");
+            cuenv_events::emit_stderr!(
+                "Task output may not have been fully displayed. Check logs for details."
+            );
         }
         Err(e) => {
             // TUI task panicked or was cancelled
