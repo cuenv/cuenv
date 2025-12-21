@@ -56,7 +56,6 @@ jobs:
       - name: docs.build
         run: cuenv task docs.build -e production
         env:
-          RUST_LOG: cuenv_secrets=warn
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
@@ -88,6 +87,5 @@ jobs:
       - name: docs.deploy
         run: cuenv task docs.deploy -e production
         env:
-          RUST_LOG: cuenv_secrets=warn
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
