@@ -5,24 +5,24 @@ name: cuenv-llms-eval
 on:
   push:
     branches:
-    - main
+      - main
     paths-ignore:
-    - docs/**
-    - examples/**
-    - '*.md'
-    - LICENSE
-    - .vscode/**
+      - docs/**
+      - examples/**
+      - "*.md"
+      - LICENSE
+      - .vscode/**
   pull_request:
     branches:
-    - main
+      - main
     paths-ignore:
-    - docs/**
-    - examples/**
-    - '*.md'
-    - LICENSE
-    - .vscode/**
+      - docs/**
+      - examples/**
+      - "*.md"
+      - LICENSE
+      - .vscode/**
   schedule:
-  - cron: 0 0 * * 0
+    - cron: 0 0 * * 0
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -35,77 +35,77 @@ jobs:
     name: eval.env-gen
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v15
-      with:
-        name: cuenv
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Build cuenv
-      run: |-
-        nix build .#cuenv
-        echo "$(pwd)/result/bin" >> $GITHUB_PATH
-    - name: eval.env-gen
-      run: cuenv task eval.env-gen
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          pushFilter: (-source$|nixpkgs\.tar\.gz$)
+      - name: Build cuenv
+        run: |-
+          nix build .#cuenv
+          echo "$(pwd)/result/bin" >> $GITHUB_PATH
+      - name: eval.env-gen
+        run: cuenv task eval.env-gen
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   eval-qa:
     name: eval.qa
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v15
-      with:
-        name: cuenv
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Build cuenv
-      run: |-
-        nix build .#cuenv
-        echo "$(pwd)/result/bin" >> $GITHUB_PATH
-    - name: eval.qa
-      run: cuenv task eval.qa
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          pushFilter: (-source$|nixpkgs\.tar\.gz$)
+      - name: Build cuenv
+        run: |-
+          nix build .#cuenv
+          echo "$(pwd)/result/bin" >> $GITHUB_PATH
+      - name: eval.qa
+        run: cuenv task eval.qa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   eval-task-gen:
     name: eval.task-gen
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v15
-      with:
-        name: cuenv
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Build cuenv
-      run: |-
-        nix build .#cuenv
-        echo "$(pwd)/result/bin" >> $GITHUB_PATH
-    - name: eval.task-gen
-      run: cuenv task eval.task-gen
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          pushFilter: (-source$|nixpkgs\.tar\.gz$)
+      - name: Build cuenv
+        run: |-
+          nix build .#cuenv
+          echo "$(pwd)/result/bin" >> $GITHUB_PATH
+      - name: eval.task-gen
+        run: cuenv task eval.task-gen
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
