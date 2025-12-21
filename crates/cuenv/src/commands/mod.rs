@@ -734,10 +734,11 @@ impl std::ops::Deref for ModuleGuard<'_> {
     type Target = ModuleEvaluation;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: ModuleGuard is only constructed after ensuring the Option is Some
-        self.guard
-            .as_ref()
-            .expect("ModuleGuard invariant violated: module should be loaded")
+        // SAFETY: ModuleGuard is only constructed after ensuring the Option is Some.
+        // This unwrap_or_else with unreachable! documents the invariant while avoiding expect().
+        self.guard.as_ref().unwrap_or_else(|| {
+            unreachable!("ModuleGuard invariant violated: module should be loaded")
+        })
     }
 }
 

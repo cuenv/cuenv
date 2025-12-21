@@ -248,9 +248,7 @@ impl TaskExecutor {
             let resolved_command = self.config.environment.resolve_command(&task.command);
 
             if let Some(shell) = &task.shell {
-                if let (Some(shell_command), Some(shell_flag)) =
-                    (&shell.command, &shell.flag)
-                {
+                if let (Some(shell_command), Some(shell_flag)) = (&shell.command, &shell.flag) {
                     let resolved_shell = self.config.environment.resolve_command(shell_command);
                     let mut cmd = Command::new(&resolved_shell);
                     cmd.arg(shell_flag);
