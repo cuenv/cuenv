@@ -5,22 +5,22 @@ name: cuenv-deploy
 on:
   push:
     branches:
-    - main
+      - main
     paths-ignore:
-    - docs/**
-    - examples/**
-    - '*.md'
-    - LICENSE
-    - .vscode/**
+      - docs/**
+      - examples/**
+      - "*.md"
+      - LICENSE
+      - .vscode/**
   pull_request:
     branches:
-    - main
+      - main
     paths-ignore:
-    - docs/**
-    - examples/**
-    - '*.md'
-    - LICENSE
-    - .vscode/**
+      - docs/**
+      - examples/**
+      - "*.md"
+      - LICENSE
+      - .vscode/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -33,59 +33,61 @@ jobs:
     name: docs.build
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v15
-      with:
-        name: cuenv
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Build cuenv
-      run: |-
-        nix build .#cuenv
-        echo "$(pwd)/result/bin" >> $GITHUB_PATH
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-    - name: docs.build
-      run: cuenv task docs.build -e production
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          pushFilter: (-source$|nixpkgs\.tar\.gz$)
+      - name: Build cuenv
+        run: |-
+          nix build .#cuenv
+          echo "$(pwd)/result/bin" >> $GITHUB_PATH
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+      - name: docs.build
+        run: cuenv task docs.build -e production
+        env:
+          RUST_LOG: cuenv_secrets=warn
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
     name: docs.deploy
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-    - docs-build
+      - docs-build
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v15
-      with:
-        name: cuenv
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        pushFilter: (-source$|nixpkgs\.tar\.gz$)
-    - name: Build cuenv
-      run: |-
-        nix build .#cuenv
-        echo "$(pwd)/result/bin" >> $GITHUB_PATH
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-    - name: docs.deploy
-      run: cuenv task docs.deploy -e production
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v15
+        with:
+          name: cuenv
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          pushFilter: (-source$|nixpkgs\.tar\.gz$)
+      - name: Build cuenv
+        run: |-
+          nix build .#cuenv
+          echo "$(pwd)/result/bin" >> $GITHUB_PATH
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+      - name: docs.deploy
+        run: cuenv task docs.deploy -e production
+        env:
+          RUST_LOG: cuenv_secrets=warn
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
