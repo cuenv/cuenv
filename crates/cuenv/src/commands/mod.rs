@@ -33,7 +33,7 @@ pub(crate) fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core:
 pub mod ci_cmd {
     use crate::providers::detect_ci_provider;
     use cuenv_ci::affected::compute_affected_tasks;
-    use cuenv_ci::compiler::Compiler;
+    use cuenv_ci::compiler::{Compiler, CompilerOptions};
     use cuenv_ci::discovery::discover_projects;
     use cuenv_ci::emitter::Emitter;
     use cuenv_ci::executor::run_ci;
@@ -212,7 +212,6 @@ pub mod ci_cmd {
         let mut trigger_condition: Option<cuenv_ci::ir::TriggerCondition> = None;
         let mut project_name: Option<String> = None;
         let mut pipeline_environment: Option<String> = None;
-        let mut requires_onepassword = false;
         let mut compiled_stages = StageConfiguration::default();
         let mut compiled_runtimes = Vec::new();
 
@@ -232,18 +231,17 @@ pub mod ci_cmd {
             project_name = Some(config.name.clone());
             pipeline_environment.clone_from(&ci_pipeline.environment);
 
-            // Detect if environment has 1Password secrets
-            if let Some(env_name) = &ci_pipeline.environment
-                && let Some(env) = &config.env
-            {
-                requires_onepassword = environment_has_onepassword_refs(env, env_name);
-            }
-
             // Extract GitHub config (merged from CI-level and pipeline-level)
             github_config = ci.github_config_for_pipeline(pipeline_name);
 
-            // Compile project to IR (this builds trigger conditions for the FIRST pipeline)
-            let compiler = Compiler::new(config.clone());
+            // Compile project to IR with pipeline context
+            // The Compiler will set ir.pipeline.environment from the pipeline,
+            // enabling contributors to self-detect their requirements.
+            let options = CompilerOptions {
+                pipeline: Some(ci_pipeline.clone()),
+                ..Default::default()
+            };
+            let compiler = Compiler::with_options(config.clone(), options);
             let ir = compiler.compile().map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
             })?;
@@ -302,12 +300,13 @@ pub mod ci_cmd {
         }
 
         // Build combined IR with trigger conditions from the pipeline
+        // Note: requires_onepassword is now derived from stages (1Password contributor)
         let combined_ir = IntermediateRepresentation {
             version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name.to_string(),
                 environment: pipeline_environment,
-                requires_onepassword,
+                requires_onepassword: false, // Derived from stages, not stored
                 project_name,
                 trigger: trigger_condition,
             },
@@ -326,26 +325,6 @@ pub mod ci_cmd {
 
         // Convert HashMap to Vec of tuples
         Ok(workflows.into_iter().collect())
-    }
-
-    /// Check if environment contains 1Password secret references
-    fn environment_has_onepassword_refs(
-        env: &cuenv_core::environment::Env,
-        environment_name: &str,
-    ) -> bool {
-        use cuenv_core::environment::{EnvValue, EnvValueSimple};
-
-        let env_vars = env.for_environment(environment_name);
-        env_vars.values().any(|value| match value {
-            EnvValue::String(s) => s.starts_with("op://"),
-            EnvValue::Secret(secret) => secret.resolver == "onepassword",
-            EnvValue::WithPolicies(with_policies) => match &with_policies.value {
-                EnvValueSimple::Secret(secret) => secret.resolver == "onepassword",
-                EnvValueSimple::String(s) => s.starts_with("op://"),
-                _ => false,
-            },
-            _ => false,
-        })
     }
 
     /// Build trigger condition for a specific pipeline
@@ -427,7 +406,6 @@ pub mod ci_cmd {
         stages: StageConfiguration,
         runtimes: Vec<cuenv_ci::ir::Runtime>,
         environment: Option<String>,
-        requires_onepassword: bool,
     }
 
     /// Collect affected IR tasks from all projects for a given pipeline
@@ -441,7 +419,6 @@ pub mod ci_cmd {
     ) -> Result<CollectedTasks> {
         let mut all_ir_tasks = Vec::new();
         let mut pipeline_environment: Option<String> = None;
-        let mut requires_onepassword = false;
         let mut compiled_stages = StageConfiguration::default();
         let mut compiled_runtimes = Vec::new();
 
@@ -457,13 +434,6 @@ pub mod ci_cmd {
             };
 
             pipeline_environment.clone_from(&ci_pipeline.environment);
-
-            // Detect if environment has 1Password secrets
-            if let Some(env_name) = &ci_pipeline.environment
-                && let Some(env) = &config.env
-            {
-                requires_onepassword = environment_has_onepassword_refs(env, env_name);
-            }
 
             let project_root = project.path.parent().map_or_else(
                 || std::path::Path::new("."),
@@ -499,7 +469,12 @@ pub mod ci_cmd {
                 tasks_to_run
             );
 
-            let compiler = Compiler::new(config.clone());
+            // Compile with pipeline context for environment-aware contributors
+            let options = CompilerOptions {
+                pipeline: Some(ci_pipeline.clone()),
+                ..Default::default()
+            };
+            let compiler = Compiler::with_options(config.clone(), options);
             let ir = compiler.compile().map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
             })?;
@@ -522,7 +497,6 @@ pub mod ci_cmd {
             stages: compiled_stages,
             runtimes: compiled_runtimes,
             environment: pipeline_environment,
-            requires_onepassword,
         })
     }
 
@@ -577,12 +551,13 @@ pub mod ci_cmd {
             return Ok(());
         }
 
+        // Note: requires_onepassword is now derived from stages (1Password contributor)
         let combined_ir = IntermediateRepresentation {
             version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name,
                 environment: collected.environment,
-                requires_onepassword: collected.requires_onepassword,
+                requires_onepassword: false, // Derived from stages, not stored
                 project_name: None,
                 trigger: None,
             },

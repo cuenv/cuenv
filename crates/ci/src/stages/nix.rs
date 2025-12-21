@@ -25,31 +25,39 @@ impl StageContributor for NixContributor {
 
     fn contribute(
         &self,
-        _ir: &IntermediateRepresentation,
+        ir: &IntermediateRepresentation,
         _project: &Project,
-    ) -> Vec<(BuildStage, StageTask)> {
-        vec![
-            // Bootstrap: Install Nix
-            (
-                BuildStage::Bootstrap,
-                StageTask {
-                    id: "install-nix".to_string(),
-                    provider: "nix".to_string(),
-                    label: Some("Install Nix".to_string()),
-                    command: vec![
-                        concat!(
-                            "curl --proto '=https' --tlsv1.2 -sSf -L ",
-                            "https://install.determinate.systems/nix | ",
-                            "sh -s -- install linux --no-confirm --init none"
-                        )
-                        .to_string(),
-                    ],
-                    shell: true,
-                    priority: 0,
-                    ..Default::default()
-                },
-            ),
-        ]
+    ) -> (Vec<(BuildStage, StageTask)>, bool) {
+        // Idempotency: check if already contributed
+        if ir.stages.bootstrap.iter().any(|t| t.id == "install-nix") {
+            return (vec![], false);
+        }
+
+        (
+            vec![
+                // Bootstrap: Install Nix
+                (
+                    BuildStage::Bootstrap,
+                    StageTask {
+                        id: "install-nix".to_string(),
+                        provider: "nix".to_string(),
+                        label: Some("Install Nix".to_string()),
+                        command: vec![
+                            concat!(
+                                "curl --proto '=https' --tlsv1.2 -sSf -L ",
+                                "https://install.determinate.systems/nix | ",
+                                "sh -s -- install linux --no-confirm --init none"
+                            )
+                            .to_string(),
+                        ],
+                        shell: true,
+                        priority: 0,
+                        ..Default::default()
+                    },
+                ),
+            ],
+            true,
+        )
     }
 }
 
@@ -138,8 +146,9 @@ mod tests {
         let ir = make_ir_with_runtime();
         let project = make_project_with_nix_runtime();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, modified) = contributor.contribute(&ir, &project);
 
+        assert!(modified);
         assert_eq!(contributions.len(), 1);
 
         // Should be bootstrap (install-nix)
@@ -156,9 +165,31 @@ mod tests {
         let ir = make_ir_with_runtime();
         let project = make_project_with_nix_runtime();
 
-        let contributions = contributor.contribute(&ir, &project);
+        let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, install_task) = &contributions[0];
 
         assert!(install_task.command[0].contains("install.determinate.systems"));
+    }
+
+    #[test]
+    fn test_contribute_is_idempotent() {
+        let contributor = NixContributor;
+        let mut ir = make_ir_with_runtime();
+        let project = make_project_with_nix_runtime();
+
+        // First contribution should modify
+        let (contributions, modified) = contributor.contribute(&ir, &project);
+        assert!(modified);
+        assert_eq!(contributions.len(), 1);
+
+        // Add the task to IR
+        for (stage, task) in contributions {
+            ir.stages.add(stage, task);
+        }
+
+        // Second contribution should not modify
+        let (contributions, modified) = contributor.contribute(&ir, &project);
+        assert!(!modified);
+        assert!(contributions.is_empty());
     }
 }

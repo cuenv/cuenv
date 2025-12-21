@@ -38,6 +38,10 @@ use cuenv_core::manifest::Project;
 /// Implementors of this trait can inject setup/teardown tasks into the CI pipeline
 /// at well-defined stages (bootstrap, setup, success, failure).
 ///
+/// Contributors are applied with fixed-point iteration: the compilation loop
+/// continues until no contributor reports modifications. This allows contributors
+/// to self-detect their requirements based on the current IR state.
+///
 /// # Example
 ///
 /// ```ignore
@@ -47,18 +51,23 @@ use cuenv_core::manifest::Project;
 ///     fn id(&self) -> &'static str { "my-provider" }
 ///
 ///     fn is_active(&self, ir: &IntermediateRepresentation, _: &Project) -> bool {
-///         // Check if this contributor should be active
-///         ir.pipeline.requires_my_feature
+///         // Self-detect based on IR state (e.g., environment, existing stages)
+///         ir.pipeline.environment.as_ref().is_some_and(|e| e == "production")
 ///     }
 ///
-///     fn contribute(&self, ir: &IntermediateRepresentation, _: &Project) -> Vec<(BuildStage, StageTask)> {
-///         vec![(BuildStage::Setup, StageTask {
+///     fn contribute(&self, ir: &IntermediateRepresentation, _: &Project) -> (Vec<(BuildStage, StageTask)>, bool) {
+///         // Check if already contributed (idempotency)
+///         if ir.stages.setup.iter().any(|t| t.id == "setup-my-provider") {
+///             return (vec![], false);
+///         }
+///
+///         (vec![(BuildStage::Setup, StageTask {
 ///             id: "setup-my-provider".into(),
 ///             provider: "my-provider".into(),
 ///             command: vec!["my-setup-command".into()],
 ///             priority: 15,
 ///             ..Default::default()
-///         })]
+///         })], true)
 ///     }
 /// }
 /// ```
@@ -70,17 +79,25 @@ pub trait StageContributor: Send + Sync {
     ///
     /// Return `true` if the contributor should inject tasks, `false` otherwise.
     /// This is called before `contribute` to avoid unnecessary work.
+    ///
+    /// Contributors should self-detect their requirements based on IR state
+    /// (e.g., `ir.pipeline.environment`) and project configuration.
     fn is_active(&self, ir: &IntermediateRepresentation, project: &Project) -> bool;
 
     /// Generate stage tasks for this provider
     ///
-    /// Returns a list of (stage, task) pairs. Each task will be added to the
-    /// corresponding stage in the IR.
+    /// Returns a tuple of:
+    /// - A list of (stage, task) pairs to add to the IR
+    /// - A boolean indicating whether any modifications were made
+    ///
+    /// The `modified` flag enables fixed-point iteration: compilation loops
+    /// until no contributor reports modifications. Contributors must be
+    /// idempotent - if already contributed, return `(vec![], false)`.
     fn contribute(
         &self,
         ir: &IntermediateRepresentation,
         project: &Project,
-    ) -> Vec<(BuildStage, StageTask)>;
+    ) -> (Vec<(BuildStage, StageTask)>, bool);
 }
 
 /// Returns the default set of stage contributors
