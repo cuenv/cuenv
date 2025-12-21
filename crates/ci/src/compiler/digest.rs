@@ -324,21 +324,19 @@ mod proptest_tests {
         /// Property: Env order doesn't matter (digest is order-independent)
         #[test]
         fn env_order_is_irrelevant(
-            pairs in prop::collection::vec(("[A-Z]+", "[a-z]+"), 2..5),
+            env in prop::collection::hash_map("[A-Z]+", "[a-z]+", 2..5),
         ) {
             let cmd = vec!["test".to_string()];
             let inputs: Vec<String> = vec![];
 
+            // Convert to vec and create envs in different iteration orders
+            let pairs: Vec<_> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
             // Create env in original order
-            let env1: HashMap<String, String> = pairs.iter()
-                .cloned()
-                .collect();
+            let env1: HashMap<String, String> = pairs.iter().cloned().collect();
 
             // Create env in reverse order
-            let env2: HashMap<String, String> = pairs.iter()
-                .rev()
-                .cloned()
-                .collect();
+            let env2: HashMap<String, String> = pairs.iter().rev().cloned().collect();
 
             let digest1 = compute_task_digest(&cmd, &env1, &inputs, None, None, None);
             let digest2 = compute_task_digest(&cmd, &env2, &inputs, None, None, None);
