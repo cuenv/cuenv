@@ -212,6 +212,7 @@ pub mod ci_cmd {
         let mut trigger_condition: Option<cuenv_ci::ir::TriggerCondition> = None;
         let mut project_name: Option<String> = None;
         let mut pipeline_environment: Option<String> = None;
+        let mut requires_onepassword = false;
 
         for project in projects {
             let config = &project.config;
@@ -228,6 +229,13 @@ pub mod ci_cmd {
             found_pipeline = true;
             project_name = Some(config.name.clone());
             pipeline_environment.clone_from(&ci_pipeline.environment);
+
+            // Detect if environment has 1Password secrets
+            if let Some(env_name) = &ci_pipeline.environment
+                && let Some(env) = &config.env
+            {
+                requires_onepassword = environment_has_onepassword_refs(env, env_name);
+            }
 
             // Extract GitHub config (merged from CI-level and pipeline-level)
             github_config = ci.github_config_for_pipeline(pipeline_name);
@@ -293,6 +301,7 @@ pub mod ci_cmd {
             pipeline: PipelineMetadata {
                 name: pipeline_name.to_string(),
                 environment: pipeline_environment,
+                requires_onepassword,
                 project_name,
                 trigger: trigger_condition,
             },
@@ -310,6 +319,21 @@ pub mod ci_cmd {
 
         // Convert HashMap to Vec of tuples
         Ok(workflows.into_iter().collect())
+    }
+
+    /// Check if environment contains 1Password secret references (op://...)
+    fn environment_has_onepassword_refs(
+        env: &cuenv_core::environment::Env,
+        environment_name: &str,
+    ) -> bool {
+        use cuenv_core::environment::EnvValue;
+
+        let env_vars = env.for_environment(environment_name);
+        env_vars.values().any(|value| match value {
+            EnvValue::String(s) => s.starts_with("op://"),
+            // Other variants don't contain raw op:// refs
+            _ => false,
+        })
     }
 
     /// Build trigger condition for a specific pipeline
@@ -389,6 +413,7 @@ pub mod ci_cmd {
     struct CollectedTasks {
         tasks: Vec<cuenv_ci::ir::Task>,
         environment: Option<String>,
+        requires_onepassword: bool,
     }
 
     /// Collect affected IR tasks from all projects for a given pipeline
@@ -402,6 +427,7 @@ pub mod ci_cmd {
     ) -> Result<CollectedTasks> {
         let mut all_ir_tasks = Vec::new();
         let mut pipeline_environment: Option<String> = None;
+        let mut requires_onepassword = false;
 
         for project in projects {
             let config = &project.config;
@@ -415,6 +441,13 @@ pub mod ci_cmd {
             };
 
             pipeline_environment.clone_from(&ci_pipeline.environment);
+
+            // Detect if environment has 1Password secrets
+            if let Some(env_name) = &ci_pipeline.environment
+                && let Some(env) = &config.env
+            {
+                requires_onepassword = environment_has_onepassword_refs(env, env_name);
+            }
 
             let project_root = project.path.parent().map_or_else(
                 || std::path::Path::new("."),
@@ -467,6 +500,7 @@ pub mod ci_cmd {
         Ok(CollectedTasks {
             tasks: all_ir_tasks,
             environment: pipeline_environment,
+            requires_onepassword,
         })
     }
 
@@ -526,6 +560,7 @@ pub mod ci_cmd {
             pipeline: PipelineMetadata {
                 name: pipeline_name,
                 environment: collected.environment,
+                requires_onepassword: collected.requires_onepassword,
                 project_name: None,
                 trigger: None,
             },

@@ -132,6 +132,7 @@ mod tests {
             pipeline: PipelineMetadata {
                 name: "my-pipeline".to_string(),
                 environment: None,
+                requires_onepassword: false,
                 project_name: None,
                 trigger: None,
             },
@@ -153,6 +154,7 @@ mod tests {
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
                 environment: None,
+                requires_onepassword: false,
                 project_name: None,
                 trigger: None,
             },
