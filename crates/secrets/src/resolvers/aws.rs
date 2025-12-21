@@ -69,6 +69,9 @@ impl AwsResolver {
     ///
     /// If AWS credentials are available in environment, initializes HTTP client.
     /// Otherwise, CLI mode will be used.
+    ///
+    /// # Errors
+    /// Returns error if AWS configuration cannot be loaded.
     #[cfg(feature = "aws")]
     pub async fn new() -> Result<Self, SecretError> {
         let http_client = if Self::http_credentials_available() {
@@ -249,7 +252,7 @@ impl AwsResolver {
         self.resolve_cli(name, config).await
     }
 
-    /// Resolve multiple secrets using BatchGetSecretValue (HTTP mode only)
+    /// Resolve multiple secrets using `BatchGetSecretValue` (HTTP mode only)
     #[cfg(feature = "aws")]
     async fn resolve_batch_http(
         &self,
@@ -295,30 +298,26 @@ impl AwsResolver {
                 })?;
 
             // Process successful responses
-            if let Some(values) = response.secret_values() {
-                for sv in values {
-                    if let Some(secret_string) = sv.secret_string() {
-                        // Use name or ARN as key
-                        if let Some(secret_name) = sv.name() {
-                            all_values.insert(secret_name.to_string(), secret_string.to_string());
-                        }
-                        if let Some(arn) = sv.arn() {
-                            all_values.insert(arn.to_string(), secret_string.to_string());
-                        }
+            for sv in response.secret_values() {
+                if let Some(secret_string) = sv.secret_string() {
+                    // Use name or ARN as key
+                    if let Some(secret_name) = sv.name() {
+                        all_values.insert(secret_name.to_string(), secret_string.to_string());
+                    }
+                    if let Some(arn) = sv.arn() {
+                        all_values.insert(arn.to_string(), secret_string.to_string());
                     }
                 }
             }
 
             // Log any errors
-            if let Some(errors) = response.errors() {
-                for err in errors {
-                    tracing::warn!(
-                        secret_id = ?err.secret_id(),
-                        error_code = ?err.error_code(),
-                        message = ?err.message(),
-                        "Failed to retrieve secret in batch"
-                    );
-                }
+            for err in response.errors() {
+                tracing::warn!(
+                    secret_id = ?err.secret_id(),
+                    error_code = ?err.error_code(),
+                    message = ?err.message(),
+                    "Failed to retrieve secret in batch"
+                );
             }
         }
 

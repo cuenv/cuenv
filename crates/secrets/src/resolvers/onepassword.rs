@@ -140,7 +140,7 @@ impl OnePasswordResolver {
 
     /// Resolve using the 1Password WASM SDK (HTTP mode)
     #[cfg(feature = "onepassword")]
-    async fn resolve_http(
+    fn resolve_http(
         &self,
         name: &str,
         config: &OnePasswordConfig,
@@ -185,7 +185,7 @@ impl OnePasswordResolver {
         // The response format from 1Password SDK
         response["result"]
             .as_str()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .ok_or_else(|| SecretError::ResolutionFailed {
                 name: name.to_string(),
                 message: "No result in response".to_string(),
@@ -227,7 +227,7 @@ impl OnePasswordResolver {
         // Try HTTP mode if available
         #[cfg(feature = "onepassword")]
         if self.client_id.is_some() {
-            return self.resolve_http(name, config).await;
+            return self.resolve_http(name, config);
         }
 
         // Fallback to CLI
@@ -315,18 +315,18 @@ impl OnePasswordResolver {
                 })?;
 
             // Check for errors
-            if let Some(error) = resp.get("error") {
-                if !error.is_null() {
-                    let error_type = error["type"].as_str().unwrap_or("Unknown");
-                    let error_msg = error["message"].as_str().unwrap_or("Unknown error");
-                    tracing::warn!(
-                        reference = %reference,
-                        error_type = %error_type,
-                        message = %error_msg,
-                        "Failed to resolve secret in batch"
-                    );
-                    continue;
-                }
+            if let Some(error) = resp.get("error")
+                && !error.is_null()
+            {
+                let error_type = error["type"].as_str().unwrap_or("Unknown");
+                let error_msg = error["message"].as_str().unwrap_or("Unknown error");
+                tracing::warn!(
+                    reference = %reference,
+                    error_type = %error_type,
+                    message = %error_msg,
+                    "Failed to resolve secret in batch"
+                );
+                continue;
             }
 
             // Extract secret value
@@ -375,14 +375,12 @@ impl OnePasswordResolver {
 #[cfg(feature = "onepassword")]
 impl Drop for OnePasswordResolver {
     fn drop(&mut self) {
-        if let Some(client_id) = &self.client_id {
-            if let Ok(core_mutex) = SharedCore::get_or_init() {
-                if let Ok(mut guard) = core_mutex.lock() {
-                    if let Some(core) = guard.as_mut() {
-                        core.release_client(client_id);
-                    }
-                }
-            }
+        if let Some(client_id) = &self.client_id
+            && let Ok(core_mutex) = SharedCore::get_or_init()
+            && let Ok(mut guard) = core_mutex.lock()
+            && let Some(core) = guard.as_mut()
+        {
+            core.release_client(client_id);
         }
     }
 }
