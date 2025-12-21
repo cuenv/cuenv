@@ -33,6 +33,7 @@ impl IntermediateRepresentation {
             pipeline: PipelineMetadata {
                 name: pipeline_name.into(),
                 environment: None,
+                requires_onepassword: false,
                 project_name: None,
                 trigger: None,
             },
@@ -51,6 +52,10 @@ pub struct PipelineMetadata {
     /// Environment for secret resolution (e.g., "production")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub environment: Option<String>,
+
+    /// Whether this pipeline requires 1Password for secret resolution
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requires_onepassword: bool,
 
     /// Project name (for monorepo prefixing)
     #[serde(skip_serializing_if = "Option::is_none")]

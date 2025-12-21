@@ -371,9 +371,10 @@ impl GitHubActionsEmitter {
     fn build_jobs(&self, ir: &IntermediateRepresentation) -> IndexMap<String, Job> {
         let mut jobs = IndexMap::new();
         let environment = ir.pipeline.environment.as_deref();
+        let requires_onepassword = ir.pipeline.requires_onepassword;
 
         for task in &ir.tasks {
-            let job = self.build_job(task, environment);
+            let job = self.build_job(task, environment, requires_onepassword);
             jobs.insert(sanitize_job_id(&task.id), job);
         }
 
@@ -382,7 +383,7 @@ impl GitHubActionsEmitter {
 
     /// Build a job from an IR task
     #[allow(clippy::too_many_lines)]
-    fn build_job(&self, task: &Task, environment: Option<&str>) -> Job {
+    fn build_job(&self, task: &Task, environment: Option<&str>, requires_onepassword: bool) -> Job {
         let mut steps = Vec::new();
 
         // Checkout step
@@ -446,6 +447,14 @@ impl GitHubActionsEmitter {
         // Add task environment variables
         for (key, value) in &task.env {
             task_step.env.insert(key.clone(), value.clone());
+        }
+
+        // Add 1Password service account token if needed
+        if requires_onepassword {
+            task_step.env.insert(
+                "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
+                "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}".to_string(),
+            );
         }
 
         steps.push(task_step);
@@ -657,6 +666,7 @@ mod tests {
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
                 environment: None,
+                requires_onepassword: false,
                 project_name: None,
                 trigger: None,
             },

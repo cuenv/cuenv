@@ -113,7 +113,17 @@ impl BuildkiteEmitter {
 
         // Environment variables are handled by cuenv task, but we still pass
         // through any orchestrator-level env vars that might be needed
-        let env = task.env.clone();
+        let mut env = task.env.clone();
+
+        // Add 1Password service account token if needed
+        if ir.pipeline.requires_onepassword {
+            // In Buildkite, secrets are typically accessed via environment variables
+            // The actual secret value should be configured in the Buildkite agent
+            env.insert(
+                "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
+                "${OP_SERVICE_ACCOUNT_TOKEN}".to_string(),
+            );
+        }
 
         // Build agent rules from resource tags
         let agents = task
@@ -285,6 +295,7 @@ mod tests {
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
                 environment: None,
+                requires_onepassword: false,
                 project_name: None,
                 trigger: None,
             },

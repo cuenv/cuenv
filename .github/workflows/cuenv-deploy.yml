@@ -55,6 +55,7 @@ jobs:
       run: cuenv task docs.build -e production
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
     name: docs.deploy
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -83,3 +84,4 @@ jobs:
       run: cuenv task docs.deploy -e production
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}

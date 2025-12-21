@@ -331,6 +331,7 @@ mod tests {
             pipeline: crate::ir::PipelineMetadata {
                 name: "test".to_string(),
                 environment: None,
+                requires_onepassword: false,
                 project_name: None,
                 trigger: None,
             },
