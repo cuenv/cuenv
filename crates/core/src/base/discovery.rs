@@ -152,7 +152,7 @@ impl BaseDiscovery {
 
         // Use provided eval function to evaluate the env.cue file as Base
         let manifest = eval_fn(&project_root)
-            .map_err(|e| DiscoveryError::EvalError(env_cue_path.to_path_buf(), e))?;
+            .map_err(|e| DiscoveryError::EvalError(env_cue_path.to_path_buf(), Box::new(e)))?;
 
         // Generate synthetic name from directory path
         let synthetic_name = derive_synthetic_name(&self.workspace_root, &project_root);
@@ -209,7 +209,7 @@ pub enum DiscoveryError {
     InvalidPath(PathBuf),
 
     #[error("Failed to evaluate {}: {}", .0.display(), .1)]
-    EvalError(PathBuf, #[source] crate::Error),
+    EvalError(PathBuf, #[source] Box<crate::Error>),
 
     #[error("No evaluation function provided - use with_eval_fn()")]
     NoEvalFunction,

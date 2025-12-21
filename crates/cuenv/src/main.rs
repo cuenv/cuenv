@@ -958,9 +958,11 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     std::fs::remove_file(&config_file).ok();
 
     // Write PID file
-    let state_dir = config.state_dir.clone().unwrap_or_else(|| {
-        StateManager::default_state_dir().expect("failed to get default state dir")
-    });
+    let state_dir = match config.state_dir.clone() {
+        Some(dir) => dir,
+        None => StateManager::default_state_dir()
+            .map_err(|e| CliError::other(format!("failed to get default state dir: {e}")))?,
+    };
     cuenv_events::emit_supervisor_log!(
         "supervisor",
         format!("Using state dir: {}", state_dir.display())

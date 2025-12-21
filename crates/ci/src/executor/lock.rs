@@ -360,10 +360,12 @@ fn read_lock_metadata(path: &Path) -> Option<LockMetadata> {
 }
 
 fn current_timestamp() -> u64 {
+    // System time before UNIX epoch is practically impossible on modern systems,
+    // but we handle it gracefully by returning 0 in that case
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("System time is before UNIX epoch")
-        .as_secs()
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

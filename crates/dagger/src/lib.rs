@@ -111,12 +111,13 @@ impl TaskBackend for DaggerBackend {
         };
 
         // Validate that referenced task exists in cache when using 'from'
-        if from_task.is_some() && cached_container_id.is_none() {
+        if let Some(ref from_name) = from_task
+            && cached_container_id.is_none()
+        {
             return Err(Error::configuration(format!(
                 "Task '{}' references container from task '{}', but no container was found. \
                  Ensure the referenced task runs first (use dependsOn).",
-                name,
-                from_task.as_ref().expect("checked is_some above")
+                name, from_name
             )));
         }
 

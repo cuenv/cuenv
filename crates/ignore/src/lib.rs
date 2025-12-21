@@ -162,15 +162,16 @@ impl IgnoreFile {
     /// ```
     #[must_use]
     pub fn generate(&self) -> String {
-        let mut lines = Vec::new();
-
-        // Add header if present
-        if let Some(ref header) = self.header {
-            for line in header.lines() {
-                lines.push(format!("# {line}"));
-            }
-            lines.push(String::new());
-        }
+        let mut lines: Vec<String> = self
+            .header
+            .iter()
+            .flat_map(|header| {
+                header
+                    .lines()
+                    .map(|line| format!("# {line}"))
+                    .chain(std::iter::once(String::new()))
+            })
+            .collect();
 
         // Add patterns
         lines.extend(self.patterns.iter().cloned());
