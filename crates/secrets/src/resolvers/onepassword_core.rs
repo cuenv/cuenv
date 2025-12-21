@@ -43,16 +43,10 @@ fn create_host_functions() -> Vec<Function> {
             let mut bytes = vec![0u8; length];
             rand::rng().fill_bytes(&mut bytes);
 
-            // Write bytes to WASM memory and get the pointer
+            // Write bytes to WASM memory using memory_new (equivalent to Go's WriteBytes)
             let handle = plugin
-                .memory_alloc(length as u64)
-                .map_err(|e| extism::Error::msg(format!("Failed to allocate memory: {e}")))?;
-
-            // Get mutable access to memory and write bytes
-            let memory = plugin
-                .memory_bytes_mut(handle)
-                .map_err(|e| extism::Error::msg(format!("Failed to get memory: {e}")))?;
-            memory[..length].copy_from_slice(&bytes);
+                .memory_new(&bytes)
+                .map_err(|e| extism::Error::msg(format!("Failed to write bytes: {e}")))?;
 
             outputs[0] = Val::I64(handle.offset() as i64);
             Ok(())
