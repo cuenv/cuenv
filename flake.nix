@@ -3,9 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
-    crane.url = "github:ipetkov/crane";
-    flake-utils.url = "github:numtide/flake-utils";
+    crane.url = "github:ipetkov/crane/v0.21.1";
+    flake-utils.url = "github:numtide/flake-utils/v1.0.0";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -14,7 +13,7 @@
       url = "github:rustsec/advisory-db";
       flake = false;
     };
-    flake-schemas.url = "https://flakehub.com/f/DeterminateSystems/flake-schemas/*";
+    flake-schemas.url = "https://flakehub.com/f/DeterminateSystems/flake-schemas/0.2.0";
   };
 
   nixConfig = {
@@ -29,16 +28,12 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, nixpkgs-unstable, crane, flake-utils, rust-overlay, advisory-db, flake-schemas, ... }:
+  outputs = { self, nixpkgs, crane, flake-utils, rust-overlay, advisory-db, flake-schemas, ... }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
           overlays = [ rust-overlay.overlays.default ];
-        };
-
-        pkgs-unstable = import nixpkgs-unstable {
-          inherit system;
         };
 
         rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
@@ -165,7 +160,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config pkgs-unstable.cue git ];
+          nativeBuildInputs = with pkgs; [ go pkg-config cue git ];
           buildInputs = platformBuildInputs;
           preBuild = ''
             ${setupBridge}
@@ -190,7 +185,7 @@
         # Development tools configuration
         devTools = with pkgs; [
           go_1_24
-          pkgs-unstable.cue # Use CUE from unstable for latest version
+          cue
           antora
           cargo-audit
           cargo-nextest
