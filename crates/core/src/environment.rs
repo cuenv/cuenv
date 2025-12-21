@@ -3,10 +3,10 @@
 //! This module handles environment variables from CUE configurations,
 //! including extraction, propagation, and environment-specific overrides.
 
+use cuenv_secrets::{OnePasswordResolver, SecretResolver, SecretSpec};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
-use tokio::process::Command;
 
 /// Policy for controlling environment variable access
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -152,14 +152,17 @@ impl EnvValue {
     }
 
     /// Resolve the environment variable value, executing secrets if necessary
+    ///
+    /// Note: This resolves Secret types but does NOT resolve op:// references.
+    /// Use `RuntimeEnv::resolve_for_task()` for full resolution including 1Password.
     pub async fn resolve(&self) -> crate::Result<String> {
         match self {
-            EnvValue::String(s) => Self::resolve_string(s).await,
+            EnvValue::String(s) => Ok(s.clone()),
             EnvValue::Int(i) => Ok(i.to_string()),
             EnvValue::Bool(b) => Ok(b.to_string()),
             EnvValue::Secret(s) => s.resolve().await,
             EnvValue::WithPolicies(var) => match &var.value {
-                EnvValueSimple::String(s) => Self::resolve_string(s).await,
+                EnvValueSimple::String(s) => Ok(s.clone()),
                 EnvValueSimple::Int(i) => Ok(i.to_string()),
                 EnvValueSimple::Bool(b) => Ok(b.to_string()),
                 EnvValueSimple::Secret(s) => s.resolve().await,
@@ -167,36 +170,16 @@ impl EnvValue {
         }
     }
 
-    /// Resolve a string value, handling 1Password references (op://...) automatically
-    ///
-    /// Uses the `op` CLI to resolve 1Password secrets. Requires the 1Password CLI
-    /// to be installed and authenticated (via `OP_SERVICE_ACCOUNT_TOKEN` or desktop app).
-    async fn resolve_string(s: &str) -> crate::Result<String> {
-        // Detect 1Password secret references and resolve them via op CLI
-        if s.starts_with("op://") {
-            let output = Command::new("op")
-                .args(["read", s])
-                .output()
-                .await
-                .map_err(|e| {
-                    crate::Error::configuration(format!(
-                        "Failed to execute 'op read' for 1Password secret: {e}"
-                    ))
-                })?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(crate::Error::configuration(format!(
-                    "1Password secret resolution failed for '{}': {}",
-                    s, stderr
-                )));
-            }
-
-            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    /// Get the 1Password reference if this value is an op:// string
+    pub fn get_op_ref(&self) -> Option<&str> {
+        match self {
+            EnvValue::String(s) if s.starts_with("op://") => Some(s),
+            EnvValue::WithPolicies(var) => match &var.value {
+                EnvValueSimple::String(s) if s.starts_with("op://") => Some(s),
+                _ => None,
+            },
+            _ => None,
         }
-
-        // Plain string, return as-is
-        Ok(s.to_string())
     }
 }
 
@@ -364,16 +347,35 @@ impl Environment {
     }
 
     /// Build and resolve environment for a task, filtering based on policies
+    ///
+    /// Resolves all environment variables including 1Password op:// references
+    /// using batch resolution for efficiency.
     pub async fn resolve_for_task(
         task_name: &str,
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<HashMap<String, String>> {
         let mut resolved = HashMap::new();
+        let mut op_refs: HashMap<String, String> = HashMap::new();
+
+        // First pass: resolve non-op:// values and collect op:// refs
         for (key, value) in env_vars {
-            if value.is_accessible_by_task(task_name) {
+            if !value.is_accessible_by_task(task_name) {
+                continue;
+            }
+
+            if let Some(op_ref) = value.get_op_ref() {
+                op_refs.insert(key.clone(), op_ref.to_string());
+            } else {
                 resolved.insert(key.clone(), value.resolve().await?);
             }
         }
+
+        // Second pass: batch resolve 1Password secrets
+        if !op_refs.is_empty() {
+            let op_resolved = resolve_onepassword_batch(&op_refs).await?;
+            resolved.extend(op_resolved);
+        }
+
         Ok(resolved)
     }
 
@@ -390,18 +392,67 @@ impl Environment {
     }
 
     /// Build and resolve environment for exec command, filtering based on policies
+    ///
+    /// Resolves all environment variables including 1Password op:// references
+    /// using batch resolution for efficiency.
     pub async fn resolve_for_exec(
         command: &str,
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<HashMap<String, String>> {
         let mut resolved = HashMap::new();
+        let mut op_refs: HashMap<String, String> = HashMap::new();
+
+        // First pass: resolve non-op:// values and collect op:// refs
         for (key, value) in env_vars {
-            if value.is_accessible_by_exec(command) {
+            if !value.is_accessible_by_exec(command) {
+                continue;
+            }
+
+            if let Some(op_ref) = value.get_op_ref() {
+                op_refs.insert(key.clone(), op_ref.to_string());
+            } else {
                 resolved.insert(key.clone(), value.resolve().await?);
             }
         }
+
+        // Second pass: batch resolve 1Password secrets
+        if !op_refs.is_empty() {
+            let op_resolved = resolve_onepassword_batch(&op_refs).await?;
+            resolved.extend(op_resolved);
+        }
+
         Ok(resolved)
     }
+}
+
+/// Resolve 1Password secrets using batch resolution
+///
+/// Uses `OnePasswordResolver` which auto-negotiates between:
+/// - HTTP mode (WASM SDK) when `OP_SERVICE_ACCOUNT_TOKEN` is set
+/// - CLI mode (op CLI) as fallback
+async fn resolve_onepassword_batch(
+    refs: &HashMap<String, String>,
+) -> crate::Result<HashMap<String, String>> {
+    let resolver = OnePasswordResolver::new().map_err(|e| {
+        crate::Error::configuration(format!("Failed to initialize 1Password resolver: {e}"))
+    })?;
+
+    // Build SecretSpec for each reference
+    let specs: HashMap<String, SecretSpec> = refs
+        .iter()
+        .map(|(name, op_ref)| (name.clone(), SecretSpec::new(op_ref.clone())))
+        .collect();
+
+    // Batch resolve all secrets
+    let secrets = resolver.resolve_batch(&specs).await.map_err(|e| {
+        crate::Error::configuration(format!("Failed to resolve 1Password secrets: {e}"))
+    })?;
+
+    // Convert SecureSecrets to Strings
+    Ok(secrets
+        .into_iter()
+        .map(|(name, secret)| (name, secret.expose().to_string()))
+        .collect())
 }
 
 #[cfg(test)]
@@ -729,27 +780,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_op_reference_without_cli() {
-        // This tests that op:// references are detected and attempted to be resolved
-        // The resolution will fail since op CLI is not available in tests
+    async fn test_resolve_returns_op_ref_as_is() {
+        // EnvValue::resolve() returns op:// strings unchanged
+        // Actual resolution happens in RuntimeEnv::resolve_for_task/exec
         let env_val = EnvValue::String("op://vault/item/field".to_string());
-        let result = env_val.resolve().await;
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("1Password") || err.contains("op read"),
-            "Expected 1Password-related error, got: {}",
-            err
-        );
+        let result = env_val.resolve().await.unwrap();
+        assert_eq!(result, "op://vault/item/field");
     }
 
     #[tokio::test]
-    async fn test_resolve_op_reference_in_policies_without_cli() {
+    async fn test_resolve_op_reference_in_policies_returns_as_is() {
         let env_val = EnvValue::WithPolicies(EnvVarWithPolicies {
             value: EnvValueSimple::String("op://vault/item/field".to_string()),
             policies: None,
         });
-        let result = env_val.resolve().await;
-        assert!(result.is_err());
+        let result = env_val.resolve().await.unwrap();
+        assert_eq!(result, "op://vault/item/field");
+    }
+
+    #[test]
+    fn test_get_op_ref_detects_op_strings() {
+        let env_val = EnvValue::String("op://vault/item/field".to_string());
+        assert_eq!(env_val.get_op_ref(), Some("op://vault/item/field"));
+
+        let env_val = EnvValue::String("regular_value".to_string());
+        assert_eq!(env_val.get_op_ref(), None);
+
+        let env_val = EnvValue::Int(42);
+        assert_eq!(env_val.get_op_ref(), None);
+    }
+
+    #[test]
+    fn test_get_op_ref_with_policies() {
+        let env_val = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("op://vault/item/field".to_string()),
+            policies: None,
+        });
+        assert_eq!(env_val.get_op_ref(), Some("op://vault/item/field"));
+
+        let env_val = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("regular".to_string()),
+            policies: None,
+        });
+        assert_eq!(env_val.get_op_ref(), None);
     }
 }
