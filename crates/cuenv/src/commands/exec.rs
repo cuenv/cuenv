@@ -7,7 +7,7 @@ use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::execute_command;
+use cuenv_core::tasks::execute_command_with_redaction;
 use std::path::Path;
 
 use cuenv_core::hooks::approval::{
@@ -153,6 +153,8 @@ pub async fn execute_exec(
 
     // Apply command-specific policies and secret resolvers on top of the merged environment
     let mut runtime_env = Environment::new();
+    let mut secrets_for_redaction: Vec<String> = Vec::new();
+
     if let Some(env) = &manifest.env {
         // First apply the base environment (static + hooks)
         for (key, value) in &base_env_vars {
@@ -167,8 +169,11 @@ pub async fn execute_exec(
         };
 
         // Then apply any command-specific overrides with policies and secret resolution
-        let exec_env_vars =
-            cuenv_core::environment::Environment::resolve_for_exec(command, &env_vars).await?;
+        let (exec_env_vars, secrets) =
+            cuenv_core::environment::Environment::resolve_for_exec_with_secrets(command, &env_vars)
+                .await?;
+        secrets_for_redaction = secrets;
+
         for (key, value) in exec_env_vars {
             runtime_env.set(key, value);
         }
@@ -179,8 +184,9 @@ pub async fn execute_exec(
         }
     }
 
-    // Execute the command with the environment
-    let exit_code = execute_command(command, args, &runtime_env).await?;
+    // Execute the command with the environment, redacting any secrets from output
+    let exit_code =
+        execute_command_with_redaction(command, args, &runtime_env, &secrets_for_redaction).await?;
 
     Ok(exit_code)
 }
