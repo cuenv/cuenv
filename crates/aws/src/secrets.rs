@@ -1,13 +1,11 @@
 //! AWS Secrets Manager secret resolver with auto-negotiating dual-mode (HTTP + CLI)
 
-use crate::{SecretError, SecretResolver, SecretSpec, SecureSecret};
 use async_trait::async_trait;
+use aws_sdk_secretsmanager::Client;
+use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::process::Command;
-
-#[cfg(feature = "aws")]
-use aws_sdk_secretsmanager::Client;
 
 /// Configuration for AWS Secrets Manager resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -52,7 +50,6 @@ impl AwsSecretConfig {
 /// - A simple secret ID (name or ARN)
 /// - A JSON-encoded [`AwsSecretConfig`] for advanced options
 pub struct AwsResolver {
-    #[cfg(feature = "aws")]
     http_client: Option<Client>,
 }
 
@@ -72,7 +69,6 @@ impl AwsResolver {
     ///
     /// # Errors
     /// Returns error if AWS configuration cannot be loaded.
-    #[cfg(feature = "aws")]
     pub async fn new() -> Result<Self, SecretError> {
         let http_client = if Self::http_credentials_available() {
             let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
@@ -86,37 +82,17 @@ impl AwsResolver {
         Ok(Self { http_client })
     }
 
-    /// Create a new AWS resolver (CLI mode only)
-    ///
-    /// # Errors
-    ///
-    /// This function is infallible when the `aws` feature is disabled.
-    #[cfg(not(feature = "aws"))]
-    pub fn new() -> Result<Self, SecretError> {
-        Ok(Self {})
-    }
-
     /// Check if HTTP credentials are available in environment
-    #[cfg(feature = "aws")]
     fn http_credentials_available() -> bool {
         std::env::var("AWS_ACCESS_KEY_ID").is_ok() && std::env::var("AWS_SECRET_ACCESS_KEY").is_ok()
     }
 
     /// Check if this resolver can use HTTP mode
-    #[allow(clippy::unused_self)] // self is used when feature is enabled
     fn can_use_http(&self) -> bool {
-        #[cfg(feature = "aws")]
-        {
-            self.http_client.is_some()
-        }
-        #[cfg(not(feature = "aws"))]
-        {
-            false
-        }
+        self.http_client.is_some()
     }
 
     /// Resolve using the AWS SDK (HTTP mode)
-    #[cfg(feature = "aws")]
     async fn resolve_http(
         &self,
         name: &str,
@@ -243,7 +219,6 @@ impl AwsResolver {
         config: &AwsSecretConfig,
     ) -> Result<String, SecretError> {
         // Try HTTP mode if available
-        #[cfg(feature = "aws")]
         if self.http_client.is_some() {
             return self.resolve_http(name, config).await;
         }
@@ -253,7 +228,6 @@ impl AwsResolver {
     }
 
     /// Resolve multiple secrets using `BatchGetSecretValue` (HTTP mode only)
-    #[cfg(feature = "aws")]
     async fn resolve_batch_http(
         &self,
         secrets: &HashMap<String, SecretSpec>,
@@ -409,7 +383,6 @@ impl SecretResolver for AwsResolver {
         }
 
         // Use BatchGetSecretValue if HTTP mode is available
-        #[cfg(feature = "aws")]
         if self.http_client.is_some() {
             return self.resolve_batch_http(secrets).await;
         }
@@ -449,7 +422,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "aws")]
     fn test_http_credentials_check() {
         // This test just ensures the function exists and doesn't panic
         let _ = AwsResolver::http_credentials_available();

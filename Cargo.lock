@@ -1575,6 +1575,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-1password"
+version = "0.15.7"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "cuenv-secrets",
+ "dirs 6.0.0",
+ "extism",
+ "futures",
+ "getrandom 0.3.4",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "cuenv-aws"
+version = "0.15.7"
+dependencies = [
+ "async-trait",
+ "aws-config",
+ "aws-sdk-secretsmanager",
+ "cuenv-secrets",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-bitbucket"
 version = "0.15.7"
 dependencies = [
@@ -1648,6 +1683,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "cucumber",
+ "cuenv-1password",
  "cuenv-codeowners",
  "cuenv-events",
  "cuenv-secrets",
@@ -1723,6 +1759,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-gcp"
+version = "0.15.7"
+dependencies = [
+ "async-trait",
+ "cuenv-secrets",
+ "google-secretmanager1",
+ "hyper-rustls 0.27.7",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-github"
 version = "0.15.7"
 dependencies = [
@@ -1789,18 +1841,8 @@ name = "cuenv-secrets"
 version = "0.15.7"
 dependencies = [
  "async-trait",
- "aws-config",
- "aws-sdk-secretsmanager",
- "chrono",
- "dirs 6.0.0",
- "extism",
  "futures",
- "getrandom 0.3.4",
- "google-secretmanager1",
  "hex",
- "hyper-rustls 0.27.7",
- "hyper-util",
- "once_cell",
  "secrecy",
  "serde",
  "serde_json",
@@ -1808,6 +1850,19 @@ dependencies = [
  "temp-env",
  "tempfile",
  "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "cuenv-vault"
+version = "0.15.7"
+dependencies = [
+ "async-trait",
+ "cuenv-secrets",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-test",
  "tracing",
