@@ -5,22 +5,22 @@ name: cuenv-release-pr
 on:
   push:
     branches:
-      - main
+    - main
     paths-ignore:
-      - docs/**
-      - examples/**
-      - "*.md"
-      - LICENSE
-      - .vscode/**
+    - docs/**
+    - examples/**
+    - '*.md'
+    - LICENSE
+    - .vscode/**
   pull_request:
     branches:
-      - main
+    - main
     paths-ignore:
-      - docs/**
-      - examples/**
-      - "*.md"
-      - LICENSE
-      - .vscode/**
+    - docs/**
+    - examples/**
+    - '*.md'
+    - LICENSE
+    - .vscode/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -33,25 +33,25 @@ jobs:
     name: release.generate-pr
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v15
-        with:
-          name: cuenv
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          pushFilter: (-source$|nixpkgs\.tar\.gz$)
-      - name: Build cuenv
-        run: |-
-          nix build .#cuenv
-          echo "$(pwd)/result/bin" >> $GITHUB_PATH
-      - name: release.generate-pr
-        run: cuenv task release.generate-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v15
+      with:
+        name: cuenv
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        pushFilter: (-source$|nixpkgs\.tar\.gz$)
+    - name: Build cuenv
+      run: |-
+        nix build .#cuenv
+        echo "$(pwd)/result/bin" >> $GITHUB_PATH
+    - name: release.generate-pr
+      run: cuenv task release.generate-pr
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
