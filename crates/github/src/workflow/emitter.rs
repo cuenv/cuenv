@@ -436,9 +436,7 @@ impl GitHubActionsEmitter {
 
         // Setup 1Password WASM SDK if needed
         if requires_onepassword {
-            steps.push(
-                Step::run("cuenv secrets setup onepassword").with_name("Setup 1Password"),
-            );
+            steps.push(Step::run("cuenv secrets setup onepassword").with_name("Setup 1Password"));
         }
 
         // Run the task

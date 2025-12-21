@@ -42,7 +42,7 @@ impl OnePasswordConfig {
 pub struct OnePasswordResolver {
     /// Client ID for WASM SDK (when using HTTP mode)
     #[cfg(feature = "onepassword")]
-    client_id: Option<String>,
+    client_id: Option<u64>,
 }
 
 impl std::fmt::Debug for OnePasswordResolver {
@@ -67,11 +67,10 @@ impl OnePasswordResolver {
         let client_id = if Self::http_mode_available() {
             match Self::init_wasm_client() {
                 Ok(id) => {
-                    eprintln!("[1Password] WASM client initialized successfully");
+                    tracing::debug!("1Password WASM client initialized successfully");
                     Some(id)
                 }
                 Err(e) => {
-                    eprintln!("[1Password] WASM client init FAILED: {e}");
                     tracing::warn!(
                         "Failed to initialize 1Password WASM client, falling back to CLI: {e}"
                     );
@@ -79,7 +78,7 @@ impl OnePasswordResolver {
                 }
             }
         } else {
-            eprintln!("[1Password] HTTP mode not available, using CLI");
+            tracing::debug!("1Password HTTP mode not available, using CLI");
             None
         };
 
@@ -94,7 +93,11 @@ impl OnePasswordResolver {
     fn http_mode_available() -> bool {
         let token_set = std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok();
         let wasm_available = crate::wasm::onepassword_wasm_available();
-        eprintln!("[1Password] token_set={token_set}, wasm_available={wasm_available}");
+        tracing::trace!(
+            token_set,
+            wasm_available,
+            "1Password HTTP mode availability check"
+        );
         token_set && wasm_available
     }
 
@@ -106,7 +109,7 @@ impl OnePasswordResolver {
 
     /// Initialize the WASM client and return the client ID
     #[cfg(feature = "onepassword")]
-    fn init_wasm_client() -> Result<String, SecretError> {
+    fn init_wasm_client() -> Result<u64, SecretError> {
         let token = std::env::var("OP_SERVICE_ACCOUNT_TOKEN").map_err(|_| {
             SecretError::ResolutionFailed {
                 name: "onepassword".to_string(),
@@ -150,7 +153,6 @@ impl OnePasswordResolver {
     fn resolve_http(&self, name: &str, config: &OnePasswordConfig) -> Result<String, SecretError> {
         let client_id = self
             .client_id
-            .as_ref()
             .ok_or_else(|| SecretError::ResolutionFailed {
                 name: name.to_string(),
                 message: "HTTP client not initialized".to_string(),
@@ -171,28 +173,24 @@ impl OnePasswordResolver {
                 message: "SharedCore not initialized".to_string(),
             })?;
 
-        // Invoke the Secrets.Resolve method
-        let params = serde_json::json!({
-            "secret_reference": config.reference
-        });
+        // Invoke the SecretsResolve method (Go SDK uses this name, not "Secrets.Resolve")
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "secret_reference".to_string(),
+            serde_json::Value::String(config.reference.clone()),
+        );
 
-        let result = core.invoke(client_id, "Secrets.Resolve", &params.to_string())?;
+        let result = core.invoke(client_id, "SecretsResolve", params)?;
 
-        // Parse the response to extract the secret value
-        let response: serde_json::Value =
+        // Parse the response - the Go SDK returns a JSON-encoded string
+        // The invoke response is the raw string from WASM, which is a JSON-quoted secret value
+        let secret: String =
             serde_json::from_str(&result).map_err(|e| SecretError::ResolutionFailed {
                 name: name.to_string(),
                 message: format!("Failed to parse resolve response: {e}"),
             })?;
 
-        // The response format from 1Password SDK
-        response["result"]
-            .as_str()
-            .map(ToString::to_string)
-            .ok_or_else(|| SecretError::ResolutionFailed {
-                name: name.to_string(),
-                message: "No result in response".to_string(),
-            })
+        Ok(secret)
     }
 
     /// Resolve using the op CLI
@@ -245,7 +243,6 @@ impl OnePasswordResolver {
     ) -> Result<HashMap<String, SecureSecret>, SecretError> {
         let client_id = self
             .client_id
-            .as_ref()
             .ok_or_else(|| SecretError::ResolutionFailed {
                 name: "batch".to_string(),
                 message: "HTTP client not initialized".to_string(),
@@ -284,12 +281,19 @@ impl OnePasswordResolver {
             }
         }
 
-        // Invoke Secrets.ResolveAll with array of references
-        let params = serde_json::json!({
-            "secret_references": references
-        });
+        // Invoke SecretsResolveAll with array of references
+        let mut params = serde_json::Map::new();
+        params.insert(
+            "secret_references".to_string(),
+            serde_json::Value::Array(
+                references
+                    .iter()
+                    .map(|r| serde_json::Value::String(r.clone()))
+                    .collect(),
+            ),
+        );
 
-        let result = core.invoke(client_id, "Secrets.ResolveAll", &params.to_string())?;
+        let result = core.invoke(client_id, "SecretsResolveAll", params)?;
 
         // Parse the response
         let response: serde_json::Value =
@@ -378,7 +382,7 @@ impl OnePasswordResolver {
 #[cfg(feature = "onepassword")]
 impl Drop for OnePasswordResolver {
     fn drop(&mut self) {
-        if let Some(client_id) = &self.client_id
+        if let Some(client_id) = self.client_id
             && let Ok(core_mutex) = SharedCore::get_or_init()
             && let Ok(mut guard) = core_mutex.lock()
             && let Some(core) = guard.as_mut()
