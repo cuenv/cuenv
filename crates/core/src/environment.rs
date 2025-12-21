@@ -696,4 +696,60 @@ mod tests {
             Some(&EnvValue::String("development".to_string()))
         );
     }
+
+    #[tokio::test]
+    async fn test_resolve_plain_string() {
+        let env_val = EnvValue::String("plain_value".to_string());
+        let resolved = env_val.resolve().await.unwrap();
+        assert_eq!(resolved, "plain_value");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_int() {
+        let env_val = EnvValue::Int(42);
+        let resolved = env_val.resolve().await.unwrap();
+        assert_eq!(resolved, "42");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_bool() {
+        let env_val = EnvValue::Bool(true);
+        let resolved = env_val.resolve().await.unwrap();
+        assert_eq!(resolved, "true");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_with_policies_plain_string() {
+        let env_val = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("policy_value".to_string()),
+            policies: None,
+        });
+        let resolved = env_val.resolve().await.unwrap();
+        assert_eq!(resolved, "policy_value");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_op_reference_without_cli() {
+        // This tests that op:// references are detected and attempted to be resolved
+        // The resolution will fail since op CLI is not available in tests
+        let env_val = EnvValue::String("op://vault/item/field".to_string());
+        let result = env_val.resolve().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("1Password") || err.contains("op read"),
+            "Expected 1Password-related error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_op_reference_in_policies_without_cli() {
+        let env_val = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::String("op://vault/item/field".to_string()),
+            policies: None,
+        });
+        let result = env_val.resolve().await;
+        assert!(result.is_err());
+    }
 }
