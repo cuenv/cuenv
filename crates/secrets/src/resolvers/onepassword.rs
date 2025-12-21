@@ -66,12 +66,8 @@ impl OnePasswordResolver {
         #[cfg(feature = "onepassword")]
         let client_id = if Self::http_mode_available() {
             match Self::init_wasm_client() {
-                Ok(id) => {
-                    eprintln!("[1Password DEBUG] WASM client initialized successfully");
-                    Some(id)
-                }
+                Ok(id) => Some(id),
                 Err(e) => {
-                    eprintln!("[1Password DEBUG] WASM client init FAILED: {e}");
                     tracing::warn!(
                         "Failed to initialize 1Password WASM client, falling back to CLI: {e}"
                     );
@@ -79,7 +75,6 @@ impl OnePasswordResolver {
                 }
             }
         } else {
-            eprintln!("[1Password DEBUG] HTTP mode not available, using CLI");
             None
         };
 
@@ -92,12 +87,8 @@ impl OnePasswordResolver {
     /// Check if HTTP mode is available (token set + WASM installed)
     #[cfg(feature = "onepassword")]
     fn http_mode_available() -> bool {
-        let token_set = std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok();
-        let wasm_available = crate::wasm::onepassword_wasm_available();
-        eprintln!(
-            "[1Password DEBUG] token_set={token_set}, wasm_available={wasm_available}"
-        );
-        token_set && wasm_available
+        std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok()
+            && crate::wasm::onepassword_wasm_available()
     }
 
     /// Check if HTTP credentials are available in environment
