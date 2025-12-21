@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- IR v1.3 schema and compiler foundation for improved pipeline generation
+- `--format` option for dynamic pipeline output (`buildkite`, `github`)
+- `--check` flag to validate workflows are in sync without writing
+- `--from` flag for custom base ref in affected detection
+- Auto-inject 1Password WASM setup step in GitHub workflows
+- Auto-inject `OP_SERVICE_ACCOUNT_TOKEN` for 1Password secrets
+- Environment field for pipelines for secret resolution
+- Monorepo-ready workflow naming with project prefix
+- Comprehensive trigger configuration and workflow generation
+- Per-provider configuration support
+- Unified runtime model for project and task execution
+
+### Fixed
+
+- Buildkite changed files detection for shallow clones
+- Proptest key uniqueness for env order invariance tests
+
 ## [0.8.5](https://github.com/cuenv/cuenv/releases/tag/cuenv-ci-v0.8.5) - 2025-12-06
 
 ### Added

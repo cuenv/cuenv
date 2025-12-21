@@ -12,15 +12,6 @@ on:
     - '*.md'
     - LICENSE
     - .vscode/**
-  pull_request:
-    branches:
-    - main
-    paths-ignore:
-    - docs/**
-    - examples/**
-    - '*.md'
-    - LICENSE
-    - .vscode/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
