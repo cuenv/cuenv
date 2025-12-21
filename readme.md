@@ -6,7 +6,8 @@
 [![Build Status](https://github.com/cuenv/cuenv/workflows/ci/badge.svg)](https://github.com/cuenv/cuenv/actions)
 [![Crates.io](https://img.shields.io/crates/v/cuenv)](https://crates.io/crates/cuenv)
 
-> **Status**: Beta - Core features complete, new capabilities (CI, release management, codegen) in active development
+> [!WARNING]
+> **Rapid iteration in progress.** I'm actively exploring the right APIs and schema to handle everything cuenv needs to do. Expect breaking changes between releases during this period. If you're using cuenv, be prepared for things to break.
 
 ---
 
