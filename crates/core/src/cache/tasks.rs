@@ -191,9 +191,13 @@ pub fn save_result(
             if p.is_dir() {
                 continue;
             }
-            let rel = p
-                .strip_prefix(outputs_root)
-                .expect("WalkDir entry is under outputs_root");
+            let rel = p.strip_prefix(outputs_root).map_err(|_| {
+                Error::configuration(format!(
+                    "path {} is not under outputs_root {}",
+                    p.display(),
+                    outputs_root.display()
+                ))
+            })?;
             let dst = out_dir.join(rel);
             if let Some(parent) = dst.parent() {
                 fs::create_dir_all(parent).ok();
@@ -239,9 +243,13 @@ pub fn materialize_outputs(key: &str, destination: &Path, root: Option<&Path>) -
         if p.is_dir() {
             continue;
         }
-        let rel = p
-            .strip_prefix(&out_dir)
-            .expect("WalkDir entry is under out_dir");
+        let rel = p.strip_prefix(&out_dir).map_err(|_| {
+            Error::configuration(format!(
+                "path {} is not under out_dir {}",
+                p.display(),
+                out_dir.display()
+            ))
+        })?;
         let dst = destination.join(rel);
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).ok();

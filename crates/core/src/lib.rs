@@ -152,6 +152,7 @@ pub enum Error {
 }
 
 impl Error {
+    #[must_use]
     pub fn configuration(msg: impl Into<String>) -> Self {
         Error::Configuration {
             src: String::new(),
@@ -160,6 +161,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn configuration_with_source(
         msg: impl Into<String>,
         src: impl Into<String>,
@@ -172,6 +174,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn ffi(function: &'static str, message: impl Into<String>) -> Self {
         Error::Ffi {
             function,
@@ -180,6 +183,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn ffi_with_help(
         function: &'static str,
         message: impl Into<String>,
@@ -192,6 +196,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn cue_parse(path: &Path, message: impl Into<String>) -> Self {
         Error::CueParse {
             path: path.into(),
@@ -202,6 +207,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn cue_parse_with_source(
         path: &Path,
         message: impl Into<String>,
@@ -218,6 +224,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn validation(msg: impl Into<String>) -> Self {
         Error::Validation {
             src: None,
@@ -227,6 +234,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn validation_with_source(
         msg: impl Into<String>,
         src: impl Into<String>,
@@ -240,6 +248,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn execution(msg: impl Into<String>) -> Self {
         Error::Execution {
             message: msg.into(),
@@ -247,6 +256,7 @@ impl Error {
         }
     }
 
+    #[must_use]
     pub fn execution_with_help(msg: impl Into<String>, help: impl Into<String>) -> Self {
         Error::Execution {
             message: msg.into(),

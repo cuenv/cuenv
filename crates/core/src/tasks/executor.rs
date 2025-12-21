@@ -248,9 +248,9 @@ impl TaskExecutor {
             let resolved_command = self.config.environment.resolve_command(&task.command);
 
             if let Some(shell) = &task.shell {
-                if shell.command.is_some() && shell.flag.is_some() {
-                    let shell_command = shell.command.as_ref().expect("checked is_some above");
-                    let shell_flag = shell.flag.as_ref().expect("checked is_some above");
+                if let (Some(shell_command), Some(shell_flag)) =
+                    (&shell.command, &shell.flag)
+                {
                     let resolved_shell = self.config.environment.resolve_command(shell_command);
                     let mut cmd = Command::new(&resolved_shell);
                     cmd.arg(shell_flag);
@@ -797,8 +797,14 @@ pub async fn execute_command_with_redaction(
         Error::configuration(format!("Failed to execute command '{}': {}", command, e))
     })?;
 
-    let stdout = child.stdout.take().expect("stdout was piped");
-    let stderr = child.stderr.take().expect("stderr was piped");
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::execution("stdout pipe not available"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::execution("stderr pipe not available"))?;
 
     // Build sorted secrets for greedy matching (longer first)
     let mut sorted_secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
@@ -817,7 +823,7 @@ pub async fn execute_command_with_redaction(
                     redacted = redacted.replace(secret, "[REDACTED]");
                 }
             }
-            println!("{redacted}");
+            cuenv_events::emit_stdout!(&redacted);
         }
     });
 
@@ -832,7 +838,7 @@ pub async fn execute_command_with_redaction(
                     redacted = redacted.replace(secret, "[REDACTED]");
                 }
             }
-            eprintln!("{redacted}");
+            cuenv_events::emit_stderr!(&redacted);
         }
     });
 
