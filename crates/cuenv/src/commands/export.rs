@@ -118,6 +118,90 @@ fn evaluate_project(
     }
 }
 
+/// Synchronous fast path for export command.
+///
+/// This function handles cases that don't require CUE evaluation or async operations:
+/// - No env.cue present: returns no-op immediately
+/// - Hooks running/failed/cancelled: returns no-op immediately
+///
+/// Returns `Ok(Some(output))` if the fast path handled the request,
+/// or `Ok(None)` if the async path is needed (for CUE evaluation or hook startup).
+pub fn execute_export_sync(shell_type: Option<&str>, package: &str) -> Result<Option<String>> {
+    let shell = Shell::detect(shell_type);
+    let current_dir = std::env::current_dir().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
+    })?;
+
+    // Fast check: does env.cue exist with matching package?
+    let directory = match env_file::find_env_file(&current_dir, package)? {
+        EnvFileStatus::Match(dir) => dir,
+        EnvFileStatus::Missing => {
+            debug!(
+                "No env.cue found in {} (sync fast path)",
+                current_dir.display()
+            );
+            return Ok(Some(format_no_op(shell)));
+        }
+        EnvFileStatus::PackageMismatch { found_package } => {
+            debug!(
+                "env.cue package mismatch in {}: found {:?}, expected {} (sync fast path)",
+                current_dir.display(),
+                found_package,
+                package
+            );
+            return Ok(Some(format_no_op(shell)));
+        }
+    };
+
+    // Check if we have an active marker for this directory (single stat() call)
+    let state_manager = StateManager::with_default_dir()?;
+    if !state_manager.has_active_marker(&directory) {
+        // No marker means we need async to evaluate CUE and potentially start hooks
+        debug!(
+            "No active marker for {} - falling back to async",
+            directory.display()
+        );
+        return Ok(None);
+    }
+
+    // Marker exists - try to load state synchronously
+    if let Some(instance_hash) = state_manager.get_marker_instance_hash_sync(&directory)
+        && let Ok(Some(state)) = state_manager.load_state_sync(&instance_hash)
+    {
+        match state.status {
+            ExecutionStatus::Completed => {
+                // Environment is ready but we need CUE eval for static vars
+                // Fall back to async path with lightweight runtime
+                debug!(
+                    "State completed for {} - need async for CUE eval",
+                    directory.display()
+                );
+                return Ok(None);
+            }
+            ExecutionStatus::Running => {
+                // Hooks still running - don't block the shell prompt
+                debug!(
+                    "Hooks still running for {} (sync fast path)",
+                    directory.display()
+                );
+                return Ok(Some(format_no_op(shell)));
+            }
+            ExecutionStatus::Failed | ExecutionStatus::Cancelled => {
+                // Hooks failed or cancelled - return no-op
+                debug!(
+                    "Hooks {:?} for {} (sync fast path)",
+                    state.status,
+                    directory.display()
+                );
+                return Ok(Some(format_no_op(shell)));
+            }
+        }
+    }
+
+    // Fall back to async path
+    Ok(None)
+}
+
 /// Execute the export command - the main entry point for shell integration
 ///
 /// When an `executor` is provided, uses its cached module evaluation.

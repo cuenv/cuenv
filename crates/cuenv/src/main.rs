@@ -111,11 +111,14 @@ fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
         None => false, // No subcommand - will show help/error
         Some(cmd) => match cmd {
             // Commands that DON'T need tokio (fast path)
+            // Export uses sync fast path with lightweight runtime for performance
+            // (shell prompt integration requires sub-10ms response time)
             crate::cli::Commands::Version { .. }
             | crate::cli::Commands::Info { .. }
             | crate::cli::Commands::Completions { .. }
             | crate::cli::Commands::Changeset { .. }
-            | crate::cli::Commands::Secrets { .. } => false,
+            | crate::cli::Commands::Secrets { .. }
+            | crate::cli::Commands::Export { .. } => false,
             crate::cli::Commands::Shell { subcommand } => match subcommand {
                 crate::cli::ShellCommands::Init { .. } => false,
             },
@@ -144,7 +147,6 @@ fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
             | crate::cli::Commands::Web { .. }
             | crate::cli::Commands::Allow { .. }
             | crate::cli::Commands::Deny { .. }
-            | crate::cli::Commands::Export { .. }
             | crate::cli::Commands::Sync { .. } => true,
         },
     }
@@ -498,6 +500,44 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
 
         Command::SecretsSetup { provider, wasm_url } => {
             commands::secrets::execute_secrets_setup(provider, wasm_url.as_deref())
+        }
+
+        Command::Export { shell, package } => {
+            // Try sync fast path first (handles no-env-cue, running, failed states)
+            match commands::export::execute_export_sync(shell.as_deref(), &package) {
+                Ok(Some(output)) => {
+                    // Fast path succeeded - output directly
+                    print!("{output}");
+                    Ok(())
+                }
+                Ok(None) => {
+                    // Need async path - use lightweight single-thread runtime
+                    // (like EnvPrint does for CUE evaluation)
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
+
+                    rt.block_on(async {
+                        match commands::export::execute_export(shell.as_deref(), &package, None)
+                            .await
+                        {
+                            Ok(result) => {
+                                print!("{result}");
+                                Ok(())
+                            }
+                            Err(e) => {
+                                let cli_err: CliError = e.into();
+                                Err(cli_err.with_help("Check your CUE configuration"))
+                            }
+                        }
+                    })
+                }
+                Err(e) => {
+                    let cli_err: CliError = e.into();
+                    Err(cli_err.with_help("Check your CUE configuration"))
+                }
+            }
         }
 
         // All other commands should have been routed to async path
