@@ -6,9 +6,9 @@
 //! # Example
 //!
 //! ```rust
-//! use cuenv_codeowners::{Codeowners, Platform, Rule};
+//! use cuenv_codeowners::{CodeOwners, Platform, Rule};
 //!
-//! let codeowners = Codeowners::builder()
+//! let codeowners = CodeOwners::builder()
 //!     .platform(Platform::Github)
 //!     .rule(Rule::new("*", ["@org/core-team"]))  // Catch-all rule
 //!     .rule(Rule::new("*.rs", ["@rust-team"]))
@@ -99,6 +99,20 @@ impl fmt::Display for Platform {
     }
 }
 
+/// Conversion from manifest Platform type.
+///
+/// This is gated behind the `manifest` feature flag.
+#[cfg(feature = "manifest")]
+impl From<cuenv_core::owners::Platform> for Platform {
+    fn from(p: cuenv_core::owners::Platform) -> Self {
+        match p {
+            cuenv_core::owners::Platform::Github => Self::Github,
+            cuenv_core::owners::Platform::Gitlab => Self::Gitlab,
+            cuenv_core::owners::Platform::Bitbucket => Self::Bitbucket,
+        }
+    }
+}
+
 /// A single code ownership rule.
 ///
 /// Each rule maps a file pattern to one or more owners.
@@ -172,14 +186,14 @@ impl Rule {
 
 /// CODEOWNERS file configuration and generator.
 ///
-/// Use [`Codeowners::builder()`] to create a new instance.
+/// Use [`CodeOwners::builder()`] to create a new instance.
 ///
 /// # Example
 ///
 /// ```rust
-/// use cuenv_codeowners::{Codeowners, Platform, Rule};
+/// use cuenv_codeowners::{CodeOwners, Platform, Rule};
 ///
-/// let codeowners = Codeowners::builder()
+/// let codeowners = CodeOwners::builder()
 ///     .platform(Platform::Github)
 ///     .header("Custom header comment")
 ///     .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
@@ -192,7 +206,7 @@ impl Rule {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "schemars", derive(JsonSchema))]
-pub struct Codeowners {
+pub struct CodeOwners {
     /// Target platform for the CODEOWNERS file.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub platform: Option<Platform>,
@@ -207,21 +221,21 @@ pub struct Codeowners {
     pub rules: Vec<Rule>,
 }
 
-impl Codeowners {
-    /// Create a new builder for constructing a Codeowners configuration.
+impl CodeOwners {
+    /// Create a new builder for constructing a CodeOwners configuration.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use cuenv_codeowners::Codeowners;
+    /// use cuenv_codeowners::CodeOwners;
     ///
-    /// let codeowners = Codeowners::builder()
+    /// let codeowners = CodeOwners::builder()
     ///     .rule(cuenv_codeowners::Rule::new("*", ["@fallback-team"]))
     ///     .build();
     /// ```
     #[must_use]
-    pub fn builder() -> CodeownersBuilder {
-        CodeownersBuilder::default()
+    pub fn builder() -> CodeOwnersBuilder {
+        CodeOwnersBuilder::default()
     }
 
     /// Generate the CODEOWNERS file content.
@@ -229,9 +243,9 @@ impl Codeowners {
     /// # Example
     ///
     /// ```rust
-    /// use cuenv_codeowners::{Codeowners, Rule};
+    /// use cuenv_codeowners::{CodeOwners, Rule};
     ///
-    /// let codeowners = Codeowners::builder()
+    /// let codeowners = CodeOwners::builder()
     ///     .rule(Rule::new("*.rs", ["@rust-team"]))
     ///     .build();
     ///
@@ -324,10 +338,10 @@ impl Codeowners {
     /// # Example
     ///
     /// ```rust
-    /// use cuenv_codeowners::{Codeowners, Platform};
+    /// use cuenv_codeowners::{CodeOwners, Platform};
     /// use std::path::Path;
     ///
-    /// let platform = Codeowners::detect_platform(Path::new("."));
+    /// let platform = CodeOwners::detect_platform(Path::new("."));
     /// ```
     #[must_use]
     pub fn detect_platform(repo_root: &Path) -> Platform {
@@ -343,14 +357,14 @@ impl Codeowners {
     }
 }
 
-/// Builder for [`Codeowners`].
+/// Builder for [`CodeOwners`].
 ///
 /// # Example
 ///
 /// ```rust
-/// use cuenv_codeowners::{Codeowners, Platform, Rule};
+/// use cuenv_codeowners::{CodeOwners, Platform, Rule};
 ///
-/// let codeowners = Codeowners::builder()
+/// let codeowners = CodeOwners::builder()
 ///     .platform(Platform::Github)
 ///     .header("Code ownership rules")
 ///     .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
@@ -362,14 +376,14 @@ impl Codeowners {
 ///     .build();
 /// ```
 #[derive(Debug, Clone, Default)]
-pub struct CodeownersBuilder {
+pub struct CodeOwnersBuilder {
     platform: Option<Platform>,
     path: Option<String>,
     header: Option<String>,
     rules: Vec<Rule>,
 }
 
-impl CodeownersBuilder {
+impl CodeOwnersBuilder {
     /// Set the target platform.
     #[must_use]
     pub fn platform(mut self, platform: Platform) -> Self {
@@ -409,15 +423,59 @@ impl CodeownersBuilder {
         self
     }
 
-    /// Build the [`Codeowners`] configuration.
+    /// Build the [`CodeOwners`] configuration.
     #[must_use]
-    pub fn build(self) -> Codeowners {
-        Codeowners {
+    pub fn build(self) -> CodeOwners {
+        CodeOwners {
             platform: self.platform,
             path: self.path,
             header: self.header,
             rules: self.rules,
         }
+    }
+}
+
+/// Default cuenv header for generated CODEOWNERS files.
+pub const DEFAULT_CUENV_HEADER: &str = "CODEOWNERS file - Generated by cuenv\nDo not edit manually. Configure in env.cue and run `cuenv owners sync`";
+
+/// Conversion from manifest Owners type.
+///
+/// This is gated behind the `manifest` feature flag.
+#[cfg(feature = "manifest")]
+impl From<&cuenv_core::owners::Owners> for CodeOwners {
+    fn from(owners: &cuenv_core::owners::Owners) -> Self {
+        let mut builder = CodeOwnersBuilder::default();
+
+        // Set platform
+        builder = builder.platform(owners.platform().into());
+
+        // Set custom path if provided
+        if let Some(ref output) = owners.output
+            && let Some(ref path) = output.path
+        {
+            builder = builder.path(path.clone());
+        }
+
+        // Set header (use custom or default cuenv header)
+        let header = owners
+            .header()
+            .map(String::from)
+            .unwrap_or_else(|| DEFAULT_CUENV_HEADER.to_string());
+        builder = builder.header(header);
+
+        // Add rules in sorted order
+        for (_key, rule) in owners.sorted_rules() {
+            let mut lib_rule = Rule::new(&rule.pattern, rule.owners.clone());
+            if let Some(ref description) = rule.description {
+                lib_rule = lib_rule.description(description.clone());
+            }
+            if let Some(ref section) = rule.section {
+                lib_rule = lib_rule.section(section.clone());
+            }
+            builder = builder.rule(lib_rule);
+        }
+
+        builder.build()
     }
 }
 
@@ -454,15 +512,15 @@ mod tests {
     #[test]
     fn test_codeowners_output_path() {
         // Default (no config)
-        let codeowners = Codeowners::builder().build();
+        let codeowners = CodeOwners::builder().build();
         assert_eq!(codeowners.output_path(), ".github/CODEOWNERS");
 
         // With platform
-        let codeowners = Codeowners::builder().platform(Platform::Gitlab).build();
+        let codeowners = CodeOwners::builder().platform(Platform::Gitlab).build();
         assert_eq!(codeowners.output_path(), "CODEOWNERS");
 
         // With custom path
-        let codeowners = Codeowners::builder()
+        let codeowners = CodeOwners::builder()
             .platform(Platform::Github)
             .path("docs/CODEOWNERS")
             .build();
@@ -471,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_generate_simple() {
-        let codeowners = Codeowners::builder()
+        let codeowners = CodeOwners::builder()
             .rule(Rule::new("*.rs", ["@rust-team"]))
             .rule(Rule::new("/docs/**", ["@docs-team", "@tech-writers"]))
             .build();
@@ -483,7 +541,7 @@ mod tests {
 
     #[test]
     fn test_generate_with_sections() {
-        let codeowners = Codeowners::builder()
+        let codeowners = CodeOwners::builder()
             .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
             .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
             .build();
@@ -495,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_generate_with_custom_header() {
-        let codeowners = Codeowners::builder()
+        let codeowners = CodeOwners::builder()
             .header("Custom Header\nLine 2")
             .build();
 
@@ -506,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_generate_with_descriptions() {
-        let codeowners = Codeowners::builder()
+        let codeowners = CodeOwners::builder()
             .rule(Rule::new("*.rs", ["@rust-team"]).description("Rust source files"))
             .build();
 
@@ -517,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_generate_gitlab_sections() {
-        let codeowners = Codeowners::builder()
+        let codeowners = CodeOwners::builder()
             .platform(Platform::Gitlab)
             .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
             .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
@@ -547,7 +605,7 @@ mod tests {
     #[test]
     fn test_generate_groups_rules_by_section() {
         // Rules with same section should be grouped even if not contiguous in input
-        let codeowners = Codeowners::builder()
+        let codeowners = CodeOwners::builder()
             .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
             .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
             .rule(Rule::new("*.go", ["@backend"]).section("Backend"))
@@ -580,7 +638,7 @@ mod tests {
 
     #[test]
     fn test_builder_chaining() {
-        let codeowners = Codeowners::builder()
+        let codeowners = CodeOwners::builder()
             .platform(Platform::Github)
             .path(".github/CODEOWNERS")
             .header("Code ownership")

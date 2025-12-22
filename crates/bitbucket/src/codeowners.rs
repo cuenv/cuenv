@@ -10,7 +10,7 @@
 
 use cuenv_codeowners::Platform;
 use cuenv_codeowners::provider::{
-    CheckResult, CodeownersProvider, ProjectOwners, ProviderError, Result, SyncResult,
+    CheckResult, CodeOwnersProvider, ProjectOwners, ProviderError, Result, SyncResult,
     generate_aggregated_content, write_codeowners_file,
 };
 use std::fs;
@@ -21,9 +21,9 @@ use std::path::Path;
 /// Writes a single aggregated CODEOWNERS file to the repository root.
 /// Uses comment-style `# Section` syntax for grouping rules.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct BitbucketCodeownersProvider;
+pub struct BitbucketCodeOwnersProvider;
 
-impl CodeownersProvider for BitbucketCodeownersProvider {
+impl CodeOwnersProvider for BitbucketCodeOwnersProvider {
     fn platform(&self) -> Platform {
         Platform::Bitbucket
     }
@@ -106,14 +106,14 @@ mod tests {
 
     #[test]
     fn test_bitbucket_provider_platform() {
-        let provider = BitbucketCodeownersProvider;
+        let provider = BitbucketCodeOwnersProvider;
         assert_eq!(provider.platform(), Platform::Bitbucket);
     }
 
     #[test]
     fn test_bitbucket_sync_creates_file() {
         let temp = tempdir().unwrap();
-        let provider = BitbucketCodeownersProvider;
+        let provider = BitbucketCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn test_bitbucket_uses_comment_section_syntax() {
         let temp = tempdir().unwrap();
-        let provider = BitbucketCodeownersProvider;
+        let provider = BitbucketCodeOwnersProvider;
 
         let projects = vec![
             ProjectOwners::new(
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn test_bitbucket_sync_dry_run() {
         let temp = tempdir().unwrap();
-        let provider = BitbucketCodeownersProvider;
+        let provider = BitbucketCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn test_bitbucket_check_in_sync() {
         let temp = tempdir().unwrap();
-        let provider = BitbucketCodeownersProvider;
+        let provider = BitbucketCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_bitbucket_check_out_of_sync() {
         let temp = tempdir().unwrap();
-        let provider = BitbucketCodeownersProvider;
+        let provider = BitbucketCodeOwnersProvider;
 
         // Create file with different content
         fs::write(temp.path().join("CODEOWNERS"), "# Different content\n").unwrap();
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn test_bitbucket_empty_projects_error() {
         let temp = tempdir().unwrap();
-        let provider = BitbucketCodeownersProvider;
+        let provider = BitbucketCodeOwnersProvider;
 
         let result = provider.sync(temp.path(), &[], false);
         assert!(result.is_err());

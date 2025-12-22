@@ -19,7 +19,7 @@ pub mod version;
 pub(crate) use module_utils::convert_engine_error;
 pub use module_utils::{ModuleGuard, relative_path_from_root};
 
-use crate::cli::{StatusFormat, SyncCommands};
+use crate::cli::StatusFormat;
 use crate::events::{Event, EventSender};
 use clap_complete::Shell;
 use cuengine::ModuleEvalOptions;
@@ -160,12 +160,20 @@ pub enum Command {
         shell: Shell,
     },
     Sync {
-        subcommand: Option<SyncCommands>,
+        /// Provider name (None = sync all providers)
+        subcommand: Option<String>,
         path: String,
         package: String,
-        dry_run: bool,
-        check: bool,
-        all: bool,
+        /// Operation mode (write, dry-run, check).
+        mode: sync::SyncMode,
+        /// Scope (single path or entire workspace).
+        scope: handler::SyncScope,
+        /// Show diff for cubes (cubes-specific).
+        show_diff: bool,
+        /// Overwrite existing files (CI-specific).
+        force: bool,
+        /// CI provider filter.
+        ci_provider: Option<String>,
     },
     SecretsSetup {
         provider: crate::cli::SecretsProvider,
@@ -450,16 +458,21 @@ impl CommandExecutor {
                 subcommand,
                 path,
                 package,
-                dry_run,
-                check,
-                ..
+                mode,
+                scope,
+                show_diff,
+                force,
+                ci_provider,
             } => {
                 self.run_command(handler::SyncHandler {
                     subcommand,
                     path,
                     package,
-                    dry_run,
-                    check,
+                    mode,
+                    scope,
+                    show_diff,
+                    force,
+                    ci_provider,
                 })
                 .await
             }

@@ -1,7 +1,7 @@
 //! GitHub provider implementations for cuenv.
 //!
 //! This crate provides GitHub-specific implementations of:
-//! - [`GitHubCodeownersProvider`] for CODEOWNERS file management (feature: `codeowners`)
+//! - [`GitHubCodeOwnersProvider`] for CODEOWNERS file management (feature: `codeowners`)
 //! - [`GitHubCIProvider`] for GitHub Actions CI integration (feature: `ci`)
 //! - [`workflow::GitHubActionsEmitter`] for workflow file generation (feature: `workflow`)
 //! - [`GitHubReleaseBackend`] for GitHub Releases distribution (feature: `release`)
@@ -29,7 +29,7 @@ pub mod release;
 
 // Re-exports for convenience
 #[cfg(feature = "codeowners")]
-pub use codeowners::GitHubCodeownersProvider;
+pub use codeowners::GitHubCodeOwnersProvider;
 
 #[cfg(feature = "ci")]
 pub use ci::GitHubCIProvider;

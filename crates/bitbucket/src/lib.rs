@@ -1,7 +1,7 @@
 //! Bitbucket provider implementations for cuenv.
 //!
 //! This crate provides Bitbucket-specific implementations of:
-//! - [`BitbucketCodeownersProvider`] for CODEOWNERS file management (feature: `codeowners`)
+//! - [`BitbucketCodeOwnersProvider`] for CODEOWNERS file management (feature: `codeowners`)
 //!
 //! # Features
 //!
@@ -14,4 +14,4 @@ pub mod codeowners;
 
 // Re-exports for convenience
 #[cfg(feature = "codeowners")]
-pub use codeowners::BitbucketCodeownersProvider;
+pub use codeowners::BitbucketCodeOwnersProvider;

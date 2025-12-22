@@ -3,17 +3,17 @@
 //! This module provides functions to detect and instantiate the appropriate
 //! providers based on the repository structure and CI environment.
 
-use cuenv_codeowners::provider::CodeownersProvider;
+use cuenv_codeowners::provider::CodeOwnersProvider;
 use std::path::Path;
 
 #[cfg(feature = "bitbucket")]
-use cuenv_bitbucket::BitbucketCodeownersProvider;
+use cuenv_bitbucket::BitbucketCodeOwnersProvider;
 #[cfg(feature = "buildkite")]
 use cuenv_buildkite::BuildkiteCIProvider;
 #[cfg(feature = "github")]
-use cuenv_github::GitHubCodeownersProvider;
+use cuenv_github::GitHubCodeOwnersProvider;
 #[cfg(feature = "gitlab")]
-use cuenv_gitlab::GitLabCodeownersProvider;
+use cuenv_gitlab::GitLabCodeOwnersProvider;
 
 /// Detect the appropriate CODEOWNERS provider based on repository structure.
 ///
@@ -27,35 +27,35 @@ use cuenv_gitlab::GitLabCodeownersProvider;
 ///
 /// Panics at compile time if no platform features are enabled.
 #[must_use]
-pub fn detect_codeowners_provider(repo_root: &Path) -> Box<dyn CodeownersProvider> {
+pub fn detect_code_owners_provider(repo_root: &Path) -> Box<dyn CodeOwnersProvider> {
     #[cfg(feature = "github")]
     if repo_root.join(".github").is_dir() {
-        return Box::new(GitHubCodeownersProvider);
+        return Box::new(GitHubCodeOwnersProvider);
     }
 
     #[cfg(feature = "gitlab")]
     if repo_root.join(".gitlab-ci.yml").exists() {
-        return Box::new(GitLabCodeownersProvider);
+        return Box::new(GitLabCodeOwnersProvider);
     }
 
     #[cfg(feature = "bitbucket")]
     if repo_root.join("bitbucket-pipelines.yml").exists() {
-        return Box::new(BitbucketCodeownersProvider);
+        return Box::new(BitbucketCodeOwnersProvider);
     }
 
     // Fallback to first available provider
     #[cfg(feature = "github")]
-    return Box::new(GitHubCodeownersProvider);
+    return Box::new(GitHubCodeOwnersProvider);
 
     #[cfg(all(not(feature = "github"), feature = "gitlab"))]
-    return Box::new(GitLabCodeownersProvider);
+    return Box::new(GitLabCodeOwnersProvider);
 
     #[cfg(all(
         not(feature = "github"),
         not(feature = "gitlab"),
         feature = "bitbucket"
     ))]
-    return Box::new(BitbucketCodeownersProvider);
+    return Box::new(BitbucketCodeOwnersProvider);
 
     #[cfg(not(any(feature = "github", feature = "gitlab", feature = "bitbucket")))]
     compile_error!("At least one platform feature must be enabled (github, gitlab, or bitbucket)");
@@ -147,7 +147,7 @@ mod tests {
         let temp = tempdir().unwrap();
         fs::create_dir(temp.path().join(".github")).unwrap();
 
-        let provider = detect_codeowners_provider(temp.path());
+        let provider = detect_code_owners_provider(temp.path());
         assert_eq!(provider.platform(), cuenv_codeowners::Platform::Github);
     }
 
@@ -157,7 +157,7 @@ mod tests {
         let temp = tempdir().unwrap();
         fs::write(temp.path().join(".gitlab-ci.yml"), "").unwrap();
 
-        let provider = detect_codeowners_provider(temp.path());
+        let provider = detect_code_owners_provider(temp.path());
         assert_eq!(provider.platform(), cuenv_codeowners::Platform::Gitlab);
     }
 
@@ -167,7 +167,7 @@ mod tests {
         let temp = tempdir().unwrap();
         fs::write(temp.path().join("bitbucket-pipelines.yml"), "").unwrap();
 
-        let provider = detect_codeowners_provider(temp.path());
+        let provider = detect_code_owners_provider(temp.path());
         assert_eq!(provider.platform(), cuenv_codeowners::Platform::Bitbucket);
     }
 
@@ -175,7 +175,7 @@ mod tests {
     #[cfg(feature = "github")]
     fn test_detect_default_github() {
         let temp = tempdir().unwrap();
-        let provider = detect_codeowners_provider(temp.path());
+        let provider = detect_code_owners_provider(temp.path());
         // Should fall back to GitHub when no platform indicators found
         assert_eq!(provider.platform(), cuenv_codeowners::Platform::Github);
     }

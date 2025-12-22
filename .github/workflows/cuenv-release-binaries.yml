@@ -5,7 +5,7 @@ name: cuenv-release-binaries
 on:
   release:
     types:
-    - published
+      - published
   workflow_dispatch:
     inputs:
       tag_name:
@@ -25,76 +25,76 @@ jobs:
     strategy:
       matrix:
         include:
-        - target: linux-x64
-          rust-triple: x86_64-unknown-linux-gnu
-          runs-on: blacksmith-8vcpu-ubuntu-2404
-        - target: linux-arm64
-          rust-triple: aarch64-unknown-linux-gnu
-          runs-on: blacksmith-8vcpu-ubuntu-2404
-        - target: darwin-arm64
-          rust-triple: aarch64-apple-darwin
-          runs-on: macos-14
+          - target: linux-x64
+            rust-triple: x86_64-unknown-linux-gnu
+            runs-on: blacksmith-8vcpu-ubuntu-2404
+          - target: linux-arm64
+            rust-triple: aarch64-unknown-linux-gnu
+            runs-on: blacksmith-8vcpu-ubuntu-2404
+          - target: darwin-arm64
+            rust-triple: aarch64-apple-darwin
+            runs-on: macos-14
       fail-fast: false
     timeout-minutes: 60
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
-    - name: Setup cuenv
-      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
-    - name: Build for ${{ matrix.target }}
-      run: cuenv release binaries --build-only --target ${{ matrix.target }} -e production
-    - name: Upload binary
-      uses: actions/upload-artifact@v4
-      with:
-        name: binary-${{ matrix.target }}
-        path: target/${{ matrix.rust-triple }}/release/*
-        if-no-files-found: error
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Setup cuenv
+        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
+      - name: Build for ${{ matrix.target }}
+        run: cuenv release binaries --build-only --target ${{ matrix.target }} -e production
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: target/${{ matrix.rust-triple }}/release/*
+          if-no-files-found: error
   publish:
     name: Publish Release
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-    - build
+      - build
     environment: production
     timeout-minutes: 30
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
-    - name: Setup cuenv
-      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
-    - name: Download linux-x64
-      uses: actions/download-artifact@v4
-      with:
-        name: binary-linux-x64
-        path: target/x86_64-unknown-linux-gnu/release
-      continue-on-error: false
-    - name: Download linux-arm64
-      uses: actions/download-artifact@v4
-      with:
-        name: binary-linux-arm64
-        path: target/aarch64-unknown-linux-gnu/release
-      continue-on-error: false
-    - name: Download darwin-arm64
-      uses: actions/download-artifact@v4
-      with:
-        name: binary-darwin-arm64
-        path: target/aarch64-apple-darwin/release
-      continue-on-error: false
-    - name: Setup 1Password
-      run: cuenv secrets setup onepassword
-    - name: Publish release
-      run: cuenv release binaries --publish-only -e production
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Setup cuenv
+        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
+      - name: Download linux-x64
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-linux-x64
+          path: target/x86_64-unknown-linux-gnu/release
+        continue-on-error: false
+      - name: Download linux-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-linux-arm64
+          path: target/aarch64-unknown-linux-gnu/release
+        continue-on-error: false
+      - name: Download darwin-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-darwin-arm64
+          path: target/aarch64-apple-darwin/release
+        continue-on-error: false
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+      - name: Publish release
+        run: cuenv release binaries --publish-only -e production
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}

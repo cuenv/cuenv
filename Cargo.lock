@@ -1671,6 +1671,7 @@ dependencies = [
 name = "cuenv-codeowners"
 version = "0.16.0"
 dependencies = [
+ "cuenv-core",
  "schemars 1.1.0",
  "serde",
  "tempfile",
@@ -1685,7 +1686,6 @@ dependencies = [
  "chrono",
  "cucumber",
  "cuenv-1password",
- "cuenv-codeowners",
  "cuenv-events",
  "cuenv-secrets",
  "cuenv-workspaces",
