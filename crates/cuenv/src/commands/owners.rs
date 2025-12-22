@@ -6,7 +6,7 @@
 
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::{CommandExecutor, convert_engine_error, relative_path_from_root};
-use crate::providers::detect_codeowners_provider;
+use crate::providers::detect_code_owners_provider;
 use cuengine::ModuleEvalOptions;
 use cuenv_codeowners::Rule;
 use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
@@ -75,7 +75,7 @@ pub async fn execute_owners_sync(
     let project_owners = convert_to_project_owners(project_root, &owners, relative_path);
 
     // Detect provider based on repo structure
-    let provider = detect_codeowners_provider(&repo_root);
+    let provider = detect_code_owners_provider(&repo_root);
 
     // Sync using the provider
     let result = provider
@@ -162,7 +162,7 @@ pub async fn execute_owners_check(
     let project_owners = convert_to_project_owners(project_root, &owners, relative_path);
 
     // Detect provider based on repo structure
-    let provider = detect_codeowners_provider(&repo_root);
+    let provider = detect_code_owners_provider(&repo_root);
 
     // Check using the provider
     let result = provider
@@ -316,6 +316,7 @@ fn load_owners_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_codeowners::CodeOwners;
     use cuenv_core::owners::{OwnerRule, OwnersOutput, Platform};
     use std::collections::HashMap;
 
@@ -342,7 +343,9 @@ mod tests {
             rules,
         };
 
-        let content = owners.generate();
+        // Convert to CodeOwners and generate content
+        let codeowners: CodeOwners = (&owners).into();
+        let content = codeowners.generate();
         assert!(content.contains("# Test Header"));
         assert!(content.contains("# Backend"));
         assert!(content.contains("# Rust files"));

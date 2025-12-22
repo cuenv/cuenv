@@ -47,6 +47,7 @@ pub mod owners;
 pub mod paths;
 pub mod secrets;
 pub mod shell;
+pub mod sync;
 pub mod tasks;
 
 // Re-export module types for convenience

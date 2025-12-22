@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use cuenv_core::Result;
 
-use crate::cli::{ShellType, StatusFormat, SyncCommands};
+use crate::cli::{ShellType, StatusFormat};
 use crate::events::Event;
 
 use super::{CommandExecutor, ci, env, exec, export, hooks, sync, task};
@@ -426,13 +426,32 @@ impl CommandHandler for CiHandler {
     }
 }
 
-/// Handler for `sync` command
+/// Scope of sync operation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SyncScope {
+    /// Sync single path.
+    #[default]
+    Path,
+    /// Sync all projects in workspace.
+    Workspace,
+}
+
+/// Handler for `sync` command using provider registry.
 pub struct SyncHandler {
-    pub subcommand: Option<SyncCommands>,
+    /// Specific provider name (None = sync all providers)
+    pub subcommand: Option<String>,
     pub path: String,
     pub package: String,
-    pub dry_run: bool,
-    pub check: bool,
+    /// Operation mode (write, dry-run, check).
+    pub mode: sync::SyncMode,
+    /// Scope (single path or entire workspace).
+    pub scope: SyncScope,
+    /// Show diff for cubes (cubes-specific).
+    pub show_diff: bool,
+    /// Overwrite existing files (CI-specific).
+    pub force: bool,
+    /// CI provider filter (github, buildkite).
+    pub ci_provider: Option<String>,
 }
 
 #[async_trait]
@@ -442,106 +461,34 @@ impl CommandHandler for SyncHandler {
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        // If no subcommand, run all sync operations (ignore + codeowners)
-        let run_ignore = matches!(self.subcommand, None | Some(SyncCommands::Ignore { .. }));
-        let run_codeowners = matches!(
-            self.subcommand,
-            None | Some(SyncCommands::Codeowners { .. })
-        );
+        use sync::{SyncOptions, default_registry};
 
-        // Handle Cubes subcommand separately
-        if let Some(SyncCommands::Cubes {
-            path: cube_path,
-            package: cube_package,
-            dry_run: cube_dry_run,
-            check: cube_check,
-            diff,
-            ..
-        }) = &self.subcommand
-        {
-            return sync::execute_sync_cubes(
-                cube_path,
-                cube_package,
-                *cube_dry_run,
-                *cube_check,
-                *diff,
-                Some(executor),
-            )
-            .await;
-        }
+        let registry = default_registry();
+        let options = SyncOptions {
+            mode: self.mode.clone(),
+            show_diff: self.show_diff,
+            force: self.force,
+            ci_provider: self.ci_provider.clone(),
+        };
 
-        // Handle Ci subcommand separately
-        if let Some(SyncCommands::Ci {
-            path: ci_path,
-            package: ci_package,
-            dry_run: ci_dry_run,
-            check: ci_check,
-            force: ci_force,
-            all: ci_all,
-            provider: ci_provider,
-        }) = &self.subcommand
-        {
-            if *ci_all {
-                return sync::execute_sync_ci_workspace(
-                    ci_package,
-                    *ci_dry_run,
-                    *ci_check,
-                    *ci_force,
-                    ci_provider.as_deref(),
-                )
-                .await;
+        let path = std::path::Path::new(&self.path);
+        let sync_all = self.scope == SyncScope::Workspace;
+
+        match &self.subcommand {
+            // Specific provider: cuenv sync cubes
+            Some(name) => {
+                let result = registry
+                    .sync_provider(name, path, &self.package, &options, sync_all, executor)
+                    .await?;
+                Ok(result.output)
             }
-            return sync::execute_sync_ci(
-                ci_path,
-                ci_package,
-                *ci_dry_run,
-                *ci_check,
-                *ci_force,
-                ci_provider.as_deref(),
-            )
-            .await;
-        }
-
-        let mut outputs = Vec::new();
-        let mut had_error = false;
-
-        if run_ignore {
-            match sync::execute_sync_ignore(
-                &self.path,
-                &self.package,
-                self.dry_run,
-                self.check,
-                Some(executor),
-            )
-            .await
-            {
-                Ok(output) => outputs.push(output),
-                Err(e) => {
-                    outputs.push(format!("Ignore sync error: {e}"));
-                    had_error = true;
-                }
+            // All providers: cuenv sync or cuenv sync -A
+            None => {
+                registry
+                    .sync_all(path, &self.package, &options, sync_all, executor)
+                    .await
             }
         }
-
-        if run_codeowners {
-            match sync::execute_sync_codeowners_workspace(&self.package, self.dry_run, self.check)
-                .await
-            {
-                Ok(output) => outputs.push(output),
-                Err(e) => {
-                    outputs.push(format!("Codeowners sync error: {e}"));
-                    had_error = true;
-                }
-            }
-        }
-
-        let combined_output = outputs.join("\n");
-
-        if had_error {
-            return Err(cuenv_core::Error::configuration(combined_output));
-        }
-
-        Ok(combined_output)
     }
 }
 

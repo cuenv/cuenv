@@ -652,7 +652,7 @@ fn test_sync_ignore_help() {
 }
 
 // ============================================================================
-// Sync Codeowners Integration Tests
+// Sync CodeOwners Integration Tests
 // ============================================================================
 
 #[test]
@@ -760,7 +760,7 @@ fn test_sync_codeowners_discovers_configs() {
             let combined = format!("{stdout}{stderr}");
             assert!(
                 success,
-                "Codeowners sync should succeed (even if no configs found)"
+                "CodeOwners sync should succeed (even if no configs found)"
             );
             assert!(
                 combined.contains("Aggregated")
