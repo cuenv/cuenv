@@ -146,6 +146,16 @@ pub enum Command {
         path: String,
         dry_run: bool,
     },
+    ReleaseBinaries {
+        path: String,
+        dry_run: bool,
+        backends: Option<Vec<String>>,
+        build_only: bool,
+        package_only: bool,
+        publish_only: bool,
+        targets: Option<Vec<String>>,
+        version: Option<String>,
+    },
     Completions {
         shell: Shell,
     },
@@ -468,6 +478,7 @@ impl CommandExecutor {
             | Command::ChangesetFromCommits { .. }
             | Command::ReleaseVersion { .. }
             | Command::ReleasePublish { .. }
+            | Command::ReleaseBinaries { .. }
             | Command::SecretsSetup { .. } => Ok(()),
         }
     }

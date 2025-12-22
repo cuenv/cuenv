@@ -778,6 +778,37 @@ async fn execute_command_safe(
         Command::ReleasePublish { path, dry_run } => {
             return execute_release_publish_safe(path.clone(), *dry_run, json_mode).await;
         }
+        Command::ReleaseBinaries {
+            path,
+            dry_run,
+            backends,
+            build_only,
+            package_only,
+            publish_only,
+            targets,
+            version,
+        } => {
+            use commands::release::{ReleaseBinariesOptions, ReleaseBinariesPhase};
+
+            let phase = if *build_only {
+                ReleaseBinariesPhase::Build
+            } else if *package_only {
+                ReleaseBinariesPhase::Package
+            } else if *publish_only {
+                ReleaseBinariesPhase::Publish
+            } else {
+                ReleaseBinariesPhase::Full
+            };
+
+            let opts = ReleaseBinariesOptions::new(path.clone())
+                .with_dry_run(*dry_run)
+                .with_backends(backends.clone())
+                .with_phase(phase)
+                .with_targets(targets.clone())
+                .with_version(version.clone());
+
+            return execute_release_binaries_safe(opts, json_mode).await;
+        }
         _ => {}
     }
 
@@ -1177,6 +1208,34 @@ async fn execute_release_publish_safe(
         Err(e) => Err(CliError::eval_with_help(
             format!("Release publish failed: {e}"),
             "Check that packages are ready for publishing",
+        )),
+    }
+}
+
+async fn execute_release_binaries_safe(
+    opts: commands::release::ReleaseBinariesOptions,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    match commands::release::execute_release_binaries(opts).await {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "result": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Release binaries failed: {e}"),
+            "Check that binaries are built and artifacts directory exists",
         )),
     }
 }

@@ -1063,120 +1063,207 @@ async fn execute_sync_github(
     Ok(output_lines.join("\n"))
 }
 
+/// Collected pipeline context from project discovery.
+struct PipelineContext {
+    is_release: bool,
+    github_config: cuenv_core::ci::GitHubConfig,
+    trigger: cuenv_ci::ir::TriggerCondition,
+    project_name: Option<String>,
+    environment: Option<String>,
+    stages: cuenv_ci::ir::StageConfiguration,
+    runtimes: Vec<cuenv_ci::ir::Runtime>,
+    tasks: Vec<cuenv_ci::ir::Task>,
+}
+
 /// Generate GitHub workflow files for a single pipeline.
 fn generate_github_workflow_for_pipeline(
     pipeline_name: &str,
     projects: &[cuenv_ci::discovery::DiscoveredCIProject],
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_ci::compiler::{Compiler, CompilerOptions};
-    use cuenv_ci::ir::{
-        IntermediateRepresentation, PipelineMetadata, StageConfiguration, TriggerCondition,
-    };
-    use cuenv_github::workflow::GitHubActionsEmitter;
+    let ctx = collect_pipeline_context(pipeline_name, projects)?;
 
-    let mut all_ir_tasks = Vec::new();
-    let mut found_pipeline = false;
-    let mut github_config = cuenv_core::ci::GitHubConfig::default();
-    let mut trigger_condition: Option<TriggerCondition> = None;
-    let mut project_name: Option<String> = None;
-    let mut pipeline_environment: Option<String> = None;
-    let mut compiled_stages = StageConfiguration::default();
-    let mut compiled_runtimes = Vec::new();
+    if ctx.is_release {
+        return emit_release_workflow(pipeline_name, &ctx);
+    }
+
+    if ctx.tasks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    emit_standard_workflow(pipeline_name, &ctx)
+}
+
+/// Collect pipeline context from all projects.
+fn collect_pipeline_context(
+    pipeline_name: &str,
+    projects: &[cuenv_ci::discovery::DiscoveredCIProject],
+) -> Result<PipelineContext> {
+    use cuenv_ci::compiler::{Compiler, CompilerOptions};
+    use cuenv_ci::ir::StageConfiguration;
+
+    let mut all_tasks = Vec::new();
+    let mut found = false;
+    let mut ctx = PipelineContext {
+        is_release: false,
+        github_config: cuenv_core::ci::GitHubConfig::default(),
+        trigger: cuenv_ci::ir::TriggerCondition::default(),
+        project_name: None,
+        environment: None,
+        stages: StageConfiguration::default(),
+        runtimes: Vec::new(),
+        tasks: Vec::new(),
+    };
 
     for project in projects {
-        let config = &project.config;
-
-        let Some(ci) = &config.ci else {
+        let Some(ci) = &project.config.ci else {
+            continue;
+        };
+        let Some(pipeline) = ci.pipelines.iter().find(|p| p.name == pipeline_name) else {
             continue;
         };
 
-        let Some(ci_pipeline) = ci.pipelines.iter().find(|p| p.name == pipeline_name) else {
-            continue;
-        };
+        found = true;
+        ctx.is_release = pipeline.release == Some(true);
+        ctx.project_name = Some(project.config.name.clone());
+        ctx.environment.clone_from(&pipeline.environment);
+        ctx.github_config = ci.github_config_for_pipeline(pipeline_name);
 
-        found_pipeline = true;
-        project_name = Some(config.name.clone());
-        pipeline_environment.clone_from(&ci_pipeline.environment);
-
-        // Extract GitHub config
-        github_config = ci.github_config_for_pipeline(pipeline_name);
-
-        // Compile project to IR
         let options = CompilerOptions {
-            pipeline: Some(ci_pipeline.clone()),
+            pipeline: Some(pipeline.clone()),
             ..Default::default()
         };
-        let compiler = Compiler::with_options(config.clone(), options);
+        let compiler = Compiler::with_options(project.config.clone(), options);
         let ir = compiler.compile().map_err(|e| {
             cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
         })?;
 
-        // Build trigger condition
-        trigger_condition = Some(build_github_trigger_condition(ci_pipeline, ci));
+        ctx.trigger = build_github_trigger_condition(pipeline, ci);
+        ctx.stages = ir.stages;
+        ctx.runtimes = ir.runtimes;
 
-        // Filter IR tasks to pipeline tasks and dependencies
-        let mut needed_tasks: std::collections::HashSet<String> =
-            ci_pipeline.tasks.iter().cloned().collect();
-
-        let task_deps: std::collections::HashMap<String, Vec<String>> = ir
-            .tasks
-            .iter()
-            .map(|t| (t.id.clone(), t.depends_on.clone()))
-            .collect();
-
-        let mut to_process: Vec<String> = ci_pipeline.tasks.clone();
-        while let Some(task_id) = to_process.pop() {
-            if let Some(deps) = task_deps.get(&task_id) {
-                for dep in deps {
-                    if needed_tasks.insert(dep.clone()) {
-                        to_process.push(dep.clone());
-                    }
-                }
-            }
+        if ctx.is_release {
+            break;
         }
 
-        let pipeline_tasks: Vec<_> = ir
-            .tasks
-            .into_iter()
-            .filter(|t| needed_tasks.contains(&t.id))
-            .collect();
-
-        compiled_stages = ir.stages;
-        compiled_runtimes = ir.runtimes;
-        all_ir_tasks.extend(pipeline_tasks);
+        let tasks = filter_pipeline_tasks(&pipeline.tasks, ir.tasks);
+        all_tasks.extend(tasks);
     }
 
-    if !found_pipeline {
+    if !found {
         return Err(cuenv_core::Error::configuration(format!(
             "No pipeline named '{pipeline_name}' found in any project's CI configuration"
         )));
     }
 
-    if all_ir_tasks.is_empty() {
-        return Ok(Vec::new());
+    ctx.tasks = all_tasks;
+    Ok(ctx)
+}
+
+/// Filter IR tasks to only those needed by the pipeline (including dependencies).
+fn filter_pipeline_tasks(
+    pipeline_tasks: &[String],
+    ir_tasks: Vec<cuenv_ci::ir::Task>,
+) -> Vec<cuenv_ci::ir::Task> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut needed: HashSet<String> = pipeline_tasks.iter().cloned().collect();
+    let deps: HashMap<String, Vec<String>> = ir_tasks
+        .iter()
+        .map(|t| (t.id.clone(), t.depends_on.clone()))
+        .collect();
+
+    let mut to_process: Vec<String> = pipeline_tasks.to_vec();
+    while let Some(task_id) = to_process.pop() {
+        if let Some(task_deps) = deps.get(&task_id) {
+            for dep in task_deps {
+                if needed.insert(dep.clone()) {
+                    to_process.push(dep.clone());
+                }
+            }
+        }
     }
 
-    let combined_ir = IntermediateRepresentation {
+    ir_tasks
+        .into_iter()
+        .filter(|t| needed.contains(&t.id))
+        .collect()
+}
+
+/// Emit a release workflow using the `ReleaseWorkflowBuilder`.
+fn emit_release_workflow(
+    pipeline_name: &str,
+    ctx: &PipelineContext,
+) -> Result<Vec<(String, String)>> {
+    use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
+    use cuenv_github::workflow::{GitHubActionsEmitter, ReleaseWorkflowBuilder};
+
+    let ir = IntermediateRepresentation {
         version: "1.4".to_string(),
         pipeline: PipelineMetadata {
             name: pipeline_name.to_string(),
-            environment: pipeline_environment,
+            environment: ctx.environment.clone(),
             requires_onepassword: false,
-            project_name,
-            trigger: trigger_condition,
+            project_name: ctx.project_name.clone(),
+            trigger: Some(ctx.trigger.clone()),
         },
-        runtimes: compiled_runtimes,
-        stages: compiled_stages,
-        tasks: all_ir_tasks,
+        runtimes: ctx.runtimes.clone(),
+        stages: ctx.stages.clone(),
+        tasks: Vec::new(),
     };
 
-    let emitter = GitHubActionsEmitter::from_config(&github_config).with_nix();
+    let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
+    let workflow = ReleaseWorkflowBuilder::new(emitter).build(&ir);
 
-    let workflows = emitter.emit_workflows(&combined_ir).map_err(|e| {
+    let workflow_name = match &ir.pipeline.project_name {
+        Some(project) => format!("{project}-{}", ir.pipeline.name),
+        None => ir.pipeline.name.clone(),
+    };
+    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+
+    let yaml = workflow.to_yaml().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
+    })?;
+
+    Ok(vec![(filename, yaml)])
+}
+
+/// Emit a standard workflow using the `GitHubActionsEmitter`.
+fn emit_standard_workflow(
+    pipeline_name: &str,
+    ctx: &PipelineContext,
+) -> Result<Vec<(String, String)>> {
+    use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
+    use cuenv_github::workflow::GitHubActionsEmitter;
+
+    let ir = IntermediateRepresentation {
+        version: "1.4".to_string(),
+        pipeline: PipelineMetadata {
+            name: pipeline_name.to_string(),
+            environment: ctx.environment.clone(),
+            requires_onepassword: false,
+            project_name: ctx.project_name.clone(),
+            trigger: Some(ctx.trigger.clone()),
+        },
+        runtimes: ctx.runtimes.clone(),
+        stages: ctx.stages.clone(),
+        tasks: ctx.tasks.clone(),
+    };
+
+    let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
+    let workflows = emitter.emit_workflows(&ir).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to emit GitHub workflow: {e}"))
     })?;
 
     Ok(workflows.into_iter().collect())
+}
+
+/// Sanitize a workflow name for use as a filename.
+fn sanitize_workflow_name(name: &str) -> String {
+    name.to_lowercase()
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
 }
 
 /// Build GitHub Actions trigger condition from pipeline config.

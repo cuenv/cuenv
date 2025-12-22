@@ -11,6 +11,24 @@ name: "cuenv"
 
 runtime: schema.#NixRuntime
 
+// Declarative release configuration for binary distribution
+release: schema.#Release & {
+	binary: "cuenv"
+	targets: ["linux-x64", "linux-arm64", "darwin-arm64"]
+
+	backends: {
+		github: {} // Auto-detect from git remote
+
+		homebrew: {
+			tap: "cuenv/homebrew-tap"
+		}
+
+		crates: {} // Use existing publish logic
+
+		cue: {} // Use existing cue mod publish
+	}
+}
+
 hooks: onEnter: nix: schema.#NixFlake
 
 config: ci: cuenv: source: "build"
@@ -23,6 +41,7 @@ env: {
         CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
         CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codcov/password"}
         CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
+        HOMEBREW_TAP_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
         VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
     }
 }
@@ -87,24 +106,45 @@ ci: {
 			}
 			tasks: ["check"]
 		},
-		// Release pipeline - runs on GitHub release or manual trigger
+		// Release binaries pipeline - auto-generates matrix build + publish from release config
+		// Builds for linux-x64, linux-arm64, darwin-arm64 and publishes to GitHub Releases + Homebrew
 		{
-			name: "release"
+			name:        "release-binaries"
 			environment: "production"
 			when: {
 				release: ["published"]
 				manual: {
 					tag_name: {
-						description: "Tag to release (e.g., v0.6.0)"
+						description: "Tag to release (e.g., v0.16.0)"
 						required:    true
 						type:        "string"
 					}
 				}
 			}
-			derivePaths: false // Release runs regardless of file changes
+			release: true // Auto-generate matrix build from release.targets
+			provider: github: permissions: {
+				contents:   "write"
+				"id-token": "write"
+			}
+		},
+		// Release metadata pipeline - publishes to CUE registry and crates.io
+		{
+			name:        "release-publish"
+			environment: "production"
+			when: {
+				release: ["published"]
+				manual: {
+					tag_name: {
+						description: "Tag to release (e.g., v0.16.0)"
+						required:    true
+						type:        "string"
+					}
+				}
+			}
+			derivePaths: false
 			tasks: [
 				"release.publish-cue",
-				"docs.deploy",
+				"release.publish-crates",
 			]
 			provider: github: permissions: {
 				contents:   "write"
