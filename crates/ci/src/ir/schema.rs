@@ -44,6 +44,7 @@ impl IntermediateRepresentation {
                 requires_onepassword: false,
                 project_name: None,
                 trigger: None,
+                pipeline_tasks: Vec::new(),
             },
             runtimes: Vec::new(),
             stages: StageConfiguration::default(),
@@ -73,6 +74,10 @@ pub struct PipelineMetadata {
     /// Trigger conditions
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trigger: Option<TriggerCondition>,
+
+    /// Task IDs that this pipeline runs (for contributor filtering)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipeline_tasks: Vec<String>,
 }
 
 /// Trigger conditions for pipeline execution

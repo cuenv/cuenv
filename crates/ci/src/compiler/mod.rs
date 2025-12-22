@@ -261,6 +261,7 @@ impl Compiler {
         // Set pipeline context from options (enables environment-aware contributors)
         if let Some(ref pipeline) = self.options.pipeline {
             ir.pipeline.environment.clone_from(&pipeline.environment);
+            ir.pipeline.pipeline_tasks.clone_from(&pipeline.tasks);
         }
 
         // Set up trigger conditions from CI configuration
