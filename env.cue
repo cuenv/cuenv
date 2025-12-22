@@ -39,7 +39,7 @@ env: {
     environment: production: {
         CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
         CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
-        CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codcov/password"}
+        CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
         CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
         HOMEBREW_TAP_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
         VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
@@ -197,7 +197,7 @@ tasks: {
 	// CI sync check - verifies generated workflows match committed files
 	ci: "sync-check": {
 		command: "./result/bin/cuenv"
-		args: ["ci", "--format", "github", "--check"]
+		args: ["sync", "ci", "--check"]
 		description: "Verify CI workflows are in sync with CUE configuration"
 		inputs: ["env.cue", "schema", "cue.mod"]
 	}

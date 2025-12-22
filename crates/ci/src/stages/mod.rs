@@ -19,14 +19,17 @@
 //! - `CuenvContributor` - Installs or builds cuenv
 //! - `CachixContributor` - Configures Cachix for Nix caching
 //! - `OnePasswordContributor` - Sets up 1Password WASM SDK
+//! - `GhModelsContributor` - Installs GitHub Models CLI extension
 
 mod cachix;
 mod cuenv;
+mod gh_models;
 mod nix;
 mod onepassword;
 
 pub use cachix::CachixContributor;
 pub use cuenv::CuenvContributor;
+pub use gh_models::GhModelsContributor;
 pub use nix::NixContributor;
 pub use onepassword::OnePasswordContributor;
 
@@ -111,6 +114,7 @@ pub fn default_contributors() -> Vec<Box<dyn StageContributor>> {
         Box::new(CuenvContributor),
         Box::new(CachixContributor),
         Box::new(OnePasswordContributor),
+        Box::new(GhModelsContributor),
     ]
 }
 
@@ -145,13 +149,14 @@ mod tests {
     #[test]
     fn test_default_contributors() {
         let contributors = default_contributors();
-        assert_eq!(contributors.len(), 4);
+        assert_eq!(contributors.len(), 5);
 
         let ids: Vec<_> = contributors.iter().map(|c| c.id()).collect();
         assert!(ids.contains(&"nix"));
         assert!(ids.contains(&"cuenv"));
         assert!(ids.contains(&"cachix"));
         assert!(ids.contains(&"1password"));
+        assert!(ids.contains(&"gh-models"));
     }
 
     #[test]
