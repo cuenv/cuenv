@@ -229,6 +229,7 @@ async fn execute_dynamic_buildkite(pipeline: Option<String>, from: Option<String
             requires_onepassword: false, // Derived from stages, not stored
             project_name: None,
             trigger: None,
+            pipeline_tasks: vec![],
         },
         runtimes: collected.runtimes,
         stages: collected.stages,

@@ -334,6 +334,7 @@ mod tests {
                 requires_onepassword: false,
                 project_name: None,
                 trigger: None,
+                pipeline_tasks: vec![],
             },
             runtimes: vec![],
             stages: StageConfiguration::default(),

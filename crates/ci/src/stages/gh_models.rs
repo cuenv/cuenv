@@ -3,18 +3,17 @@
 //! Contributes the gh-models extension setup task to CI pipelines that use
 //! `gh models` commands for LLM evaluation.
 //!
-//! Self-detects activation by checking if any task in the project uses
+//! Self-detects activation by checking if any task in the pipeline's IR uses
 //! the `gh` command with `models` as the first argument.
 
 use super::StageContributor;
-use crate::ir::{BuildStage, IntermediateRepresentation, StageTask};
+use crate::ir::{BuildStage, IntermediateRepresentation, StageTask, Task};
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::TaskDefinition;
 use std::collections::HashMap;
 
 /// GitHub Models CLI extension stage contributor
 ///
-/// Self-detects activation by checking if the project contains tasks that
+/// Self-detects activation by checking if the pipeline's IR contains tasks that
 /// use `gh models` commands (e.g., for LLM evaluation).
 ///
 /// When active, contributes:
@@ -23,30 +22,32 @@ use std::collections::HashMap;
 pub struct GhModelsContributor;
 
 impl GhModelsContributor {
-    /// Check if a task uses `gh models` command
-    fn task_uses_gh_models(definition: &TaskDefinition) -> bool {
-        match definition {
-            TaskDefinition::Single(task) => {
-                // Check if command is "gh" and first arg is "models"
-                task.command == "gh" && task.args.first().is_some_and(|arg| arg == "models")
-            }
-            TaskDefinition::Group(group) => {
-                // Recursively check group members
-                match group {
-                    cuenv_core::tasks::TaskGroup::Sequential(tasks) => {
-                        tasks.iter().any(Self::task_uses_gh_models)
-                    }
-                    cuenv_core::tasks::TaskGroup::Parallel(parallel) => {
-                        parallel.tasks.values().any(Self::task_uses_gh_models)
-                    }
-                }
-            }
+    /// Check if an IR task uses `gh models` command
+    fn ir_task_uses_gh_models(task: &Task) -> bool {
+        // IR task command is Vec<String>, check if it's ["gh", "models", ...]
+        // or a shell command containing "gh models"
+        if task.command.len() >= 2 {
+            task.command[0] == "gh" && task.command[1] == "models"
+        } else if task.command.len() == 1 && task.shell {
+            // Shell command - check if it contains "gh models"
+            task.command[0].contains("gh models")
+        } else {
+            false
         }
     }
 
-    /// Check if any task in the project uses `gh models`
-    fn project_uses_gh_models(project: &Project) -> bool {
-        project.tasks.values().any(Self::task_uses_gh_models)
+    /// Check if any of the pipeline's tasks use `gh models`
+    fn pipeline_uses_gh_models(ir: &IntermediateRepresentation) -> bool {
+        // If no specific pipeline tasks are set, check all IR tasks
+        if ir.pipeline.pipeline_tasks.is_empty() {
+            return ir.tasks.iter().any(Self::ir_task_uses_gh_models);
+        }
+
+        // Only check tasks that are part of this pipeline
+        ir.tasks
+            .iter()
+            .filter(|task| ir.pipeline.pipeline_tasks.contains(&task.id))
+            .any(Self::ir_task_uses_gh_models)
     }
 }
 
@@ -55,9 +56,9 @@ impl StageContributor for GhModelsContributor {
         "gh-models"
     }
 
-    fn is_active(&self, _ir: &IntermediateRepresentation, project: &Project) -> bool {
-        // Self-detect: check if the project has tasks using gh models
-        Self::project_uses_gh_models(project)
+    fn is_active(&self, ir: &IntermediateRepresentation, _project: &Project) -> bool {
+        // Self-detect: check if this pipeline's tasks use gh models
+        Self::pipeline_uses_gh_models(ir)
     }
 
     fn contribute(
@@ -93,9 +94,7 @@ impl StageContributor for GhModelsContributor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{PipelineMetadata, StageConfiguration};
-    use cuenv_core::tasks::Task;
-    use std::collections::HashMap;
+    use crate::ir::{CachePolicy, PipelineMetadata, StageConfiguration};
 
     fn make_ir() -> IntermediateRepresentation {
         IntermediateRepresentation {
@@ -106,6 +105,7 @@ mod tests {
                 requires_onepassword: false,
                 project_name: None,
                 trigger: None,
+                pipeline_tasks: vec![],
             },
             runtimes: vec![],
             stages: StageConfiguration::default(),
@@ -113,45 +113,38 @@ mod tests {
         }
     }
 
-    fn make_project_with_gh_models() -> Project {
-        let mut project = Project::new("test");
-        let mut tasks = HashMap::new();
-        tasks.insert(
-            "eval.task-gen".to_string(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "gh".to_string(),
-                args: vec![
-                    "models".to_string(),
-                    "eval".to_string(),
-                    "prompts/test.yml".to_string(),
-                ],
-                ..Default::default()
-            })),
-        );
-        project.tasks = tasks;
-        project
+    fn make_ir_task(id: &str, command: Vec<&str>) -> Task {
+        Task {
+            id: id.to_string(),
+            runtime: None,
+            command: command.into_iter().map(String::from).collect(),
+            shell: false,
+            env: HashMap::new(),
+            secrets: HashMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Normal,
+            deployment: false,
+            manual_approval: false,
+        }
     }
 
-    fn make_project_without_gh_models() -> Project {
-        let mut project = Project::new("test");
-        let mut tasks = HashMap::new();
-        tasks.insert(
-            "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "cargo".to_string(),
-                args: vec!["build".to_string()],
-                ..Default::default()
-            })),
-        );
-        project.tasks = tasks;
-        project
+    fn make_project() -> Project {
+        Project::new("test")
     }
 
     #[test]
     fn test_is_active_with_gh_models_task() {
         let contributor = GhModelsContributor;
-        let ir = make_ir();
-        let project = make_project_with_gh_models();
+        let mut ir = make_ir();
+        ir.tasks.push(make_ir_task(
+            "eval.task-gen",
+            vec!["gh", "models", "eval", "prompts/test.yml"],
+        ));
+        let project = make_project();
 
         assert!(contributor.is_active(&ir, &project));
     }
@@ -159,8 +152,18 @@ mod tests {
     #[test]
     fn test_is_inactive_without_gh_models_task() {
         let contributor = GhModelsContributor;
+        let mut ir = make_ir();
+        ir.tasks.push(make_ir_task("build", vec!["cargo", "build"]));
+        let project = make_project();
+
+        assert!(!contributor.is_active(&ir, &project));
+    }
+
+    #[test]
+    fn test_is_inactive_with_empty_ir() {
+        let contributor = GhModelsContributor;
         let ir = make_ir();
-        let project = make_project_without_gh_models();
+        let project = make_project();
 
         assert!(!contributor.is_active(&ir, &project));
     }
@@ -168,8 +171,12 @@ mod tests {
     #[test]
     fn test_contribute_returns_setup_task() {
         let contributor = GhModelsContributor;
-        let ir = make_ir();
-        let project = make_project_with_gh_models();
+        let mut ir = make_ir();
+        ir.tasks.push(make_ir_task(
+            "eval.task-gen",
+            vec!["gh", "models", "eval", "prompts/test.yml"],
+        ));
+        let project = make_project();
 
         let (contributions, modified) = contributor.contribute(&ir, &project);
 
@@ -187,7 +194,7 @@ mod tests {
     fn test_contribute_runs_extension_install() {
         let contributor = GhModelsContributor;
         let ir = make_ir();
-        let project = make_project_with_gh_models();
+        let project = make_project();
 
         let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
@@ -200,7 +207,11 @@ mod tests {
     fn test_contribute_is_idempotent() {
         let contributor = GhModelsContributor;
         let mut ir = make_ir();
-        let project = make_project_with_gh_models();
+        ir.tasks.push(make_ir_task(
+            "eval.task-gen",
+            vec!["gh", "models", "eval", "prompts/test.yml"],
+        ));
+        let project = make_project();
 
         // First contribution should modify
         let (contributions, modified) = contributor.contribute(&ir, &project);
@@ -216,5 +227,42 @@ mod tests {
         let (contributions, modified) = contributor.contribute(&ir, &project);
         assert!(!modified);
         assert!(contributions.is_empty());
+    }
+
+    #[test]
+    fn test_is_inactive_when_gh_models_not_in_pipeline_tasks() {
+        let contributor = GhModelsContributor;
+        let mut ir = make_ir();
+        // Add a gh models task to IR
+        ir.tasks.push(make_ir_task(
+            "eval.task-gen",
+            vec!["gh", "models", "eval", "prompts/test.yml"],
+        ));
+        // Add a build task
+        ir.tasks.push(make_ir_task("build", vec!["cargo", "build"]));
+        // But pipeline only runs the build task
+        ir.pipeline.pipeline_tasks = vec!["build".to_string()];
+        let project = make_project();
+
+        // Should be inactive because gh models task is not in pipeline_tasks
+        assert!(!contributor.is_active(&ir, &project));
+    }
+
+    #[test]
+    fn test_is_active_when_gh_models_in_pipeline_tasks() {
+        let contributor = GhModelsContributor;
+        let mut ir = make_ir();
+        // Add tasks
+        ir.tasks.push(make_ir_task(
+            "eval.task-gen",
+            vec!["gh", "models", "eval", "prompts/test.yml"],
+        ));
+        ir.tasks.push(make_ir_task("build", vec!["cargo", "build"]));
+        // Pipeline runs both tasks
+        ir.pipeline.pipeline_tasks = vec!["eval.task-gen".to_string(), "build".to_string()];
+        let project = make_project();
+
+        // Should be active because gh models task is in pipeline_tasks
+        assert!(contributor.is_active(&ir, &project));
     }
 }

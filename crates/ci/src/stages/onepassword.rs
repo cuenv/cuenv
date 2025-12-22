@@ -107,6 +107,7 @@ mod tests {
                 requires_onepassword: false, // No longer used for detection
                 project_name: None,
                 trigger: None,
+                pipeline_tasks: vec![],
             },
             runtimes: vec![],
             stages: StageConfiguration::default(),
@@ -124,6 +125,7 @@ mod tests {
                 requires_onepassword: false,
                 project_name: None,
                 trigger: None,
+                pipeline_tasks: vec![],
             },
             runtimes: vec![],
             stages: StageConfiguration::default(),
