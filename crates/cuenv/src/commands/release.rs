@@ -1103,6 +1103,15 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
         manifest.update_workspace_version(new_ver).map_err(|e| {
             cuenv_core::Error::configuration(format!("Failed to update workspace version: {e}"))
         })?;
+
+        // Also update workspace dependency versions
+        manifest
+            .update_workspace_dependency_versions(&new_versions)
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update workspace dependency versions: {e}"
+                ))
+            })?;
     }
 
     // Step 6: Create release branch

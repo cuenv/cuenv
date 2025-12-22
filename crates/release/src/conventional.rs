@@ -123,7 +123,9 @@ impl CommitParser {
                 )));
             }
         } else {
-            None
+            // Auto-detect latest tag when none specified
+            let tags = list_tags(&repo);
+            tags.first().and_then(|tag| find_tag_oid(&repo, tag))
         };
 
         let mut commits = Vec::new();
