@@ -492,19 +492,13 @@ pub enum Commands {
         dry_run: bool,
         #[arg(long, help = "Force a specific pipeline to run")]
         pipeline: Option<String>,
-        #[arg(long, help = "Generate CI workflow file (e.g., 'github')")]
-        generate: Option<String>,
         #[arg(
             long,
-            help = "Output pipeline in specified format (e.g., 'buildkite') for dynamic pipelines"
+            help = "Output dynamic pipeline YAML to stdout (e.g., 'buildkite' for buildkite-agent pipeline upload)"
         )]
-        format: Option<String>,
+        dynamic: Option<String>,
         #[arg(long, help = "Base ref to compare against (branch name or commit SHA)")]
         from: Option<String>,
-        #[arg(long, help = "Overwrite existing workflow file")]
-        force: bool,
-        #[arg(long, help = "Check if CI workflows are in sync without writing")]
-        check: bool,
     },
     #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
     Tui,
@@ -647,6 +641,39 @@ pub enum SyncCommands {
             help = "Sync cubes for all projects in the workspace"
         )]
         all: bool,
+    },
+    #[command(about = "Sync CI workflow files from CUE configuration")]
+    Ci {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(long, help = "Show what would be generated without writing files")]
+        dry_run: bool,
+        #[arg(
+            long,
+            help = "Check if CI workflows are in sync without making changes"
+        )]
+        check: bool,
+        #[arg(long, help = "Overwrite existing workflow files")]
+        force: bool,
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync CI workflows for all projects in the workspace"
+        )]
+        all: bool,
+        #[arg(long, help = "Filter to specific provider (github, buildkite)")]
+        provider: Option<String>,
     },
 }
 
@@ -1067,19 +1094,13 @@ impl Commands {
             Commands::Ci {
                 dry_run,
                 pipeline,
-                generate,
-                format,
+                dynamic,
                 from,
-                force,
-                check,
             } => Command::Ci {
                 dry_run,
                 pipeline,
-                generate,
-                format,
+                dynamic,
                 from,
-                force,
-                check,
             },
             Commands::Tui => Command::Tui,
             Commands::Web { port, host } => Command::Web { port, host },
@@ -1195,6 +1216,30 @@ impl Commands {
                             check: sub_check,
                             diff,
                             all: sub_all,
+                        }),
+                        sub_path,
+                        sub_package,
+                        sub_dry_run,
+                        sub_check,
+                        sub_all || all,
+                    ),
+                    Some(SyncCommands::Ci {
+                        path: sub_path,
+                        package: sub_package,
+                        dry_run: sub_dry_run,
+                        check: sub_check,
+                        force,
+                        all: sub_all,
+                        provider,
+                    }) => (
+                        Some(SyncCommands::Ci {
+                            path: sub_path.clone(),
+                            package: sub_package.clone(),
+                            dry_run: sub_dry_run,
+                            check: sub_check,
+                            force,
+                            all: sub_all,
+                            provider,
                         }),
                         sub_path,
                         sub_package,

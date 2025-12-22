@@ -400,11 +400,8 @@ impl CommandHandler for TaskHandler {
 pub struct CiHandler {
     pub dry_run: bool,
     pub pipeline: Option<String>,
-    pub generate: Option<String>,
-    pub format: Option<String>,
+    pub dynamic: Option<String>,
     pub from: Option<String>,
-    pub force: bool,
-    pub check: bool,
 }
 
 #[async_trait]
@@ -421,11 +418,8 @@ impl CommandHandler for CiHandler {
         ci::execute_ci(
             self.dry_run,
             self.pipeline.clone(),
-            self.generate.clone(),
-            self.format.clone(),
+            self.dynamic.clone(),
             self.from.clone(),
-            self.force,
-            self.check,
         )
         .await?;
         Ok("CI execution completed".to_string())
@@ -472,6 +466,38 @@ impl CommandHandler for SyncHandler {
                 *cube_check,
                 *diff,
                 Some(executor),
+            )
+            .await;
+        }
+
+        // Handle Ci subcommand separately
+        if let Some(SyncCommands::Ci {
+            path: ci_path,
+            package: ci_package,
+            dry_run: ci_dry_run,
+            check: ci_check,
+            force: ci_force,
+            all: ci_all,
+            provider: ci_provider,
+        }) = &self.subcommand
+        {
+            if *ci_all {
+                return sync::execute_sync_ci_workspace(
+                    ci_package,
+                    *ci_dry_run,
+                    *ci_check,
+                    *ci_force,
+                    ci_provider.as_deref(),
+                )
+                .await;
+            }
+            return sync::execute_sync_ci(
+                ci_path,
+                ci_package,
+                *ci_dry_run,
+                *ci_check,
+                *ci_force,
+                ci_provider.as_deref(),
             )
             .await;
         }
