@@ -28,5 +28,5 @@
 pub mod emitter;
 pub mod schema;
 
-pub use emitter::GitHubActionsEmitter;
+pub use emitter::{GitHubActionsEmitter, ReleaseWorkflowBuilder};
 pub use schema::*;

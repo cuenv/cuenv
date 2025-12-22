@@ -20,15 +20,16 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = ["dagger-backend", "github", "gitlab", "bitbucket", "buildkite"]
+default = ["dagger-backend", "github", "gitlab", "bitbucket", "buildkite", "homebrew"]
 dagger-backend = ["dep:cuenv-dagger"]
 # Platform-specific providers
 github = ["dep:cuenv-github"]
 gitlab = ["dep:cuenv-gitlab"]
 bitbucket = ["dep:cuenv-bitbucket"]
 buildkite = ["dep:cuenv-buildkite"]
+homebrew = ["dep:cuenv-homebrew"]
 # Enable all platforms
-all-platforms = ["github", "gitlab", "bitbucket", "buildkite"]
+all-platforms = ["github", "gitlab", "bitbucket", "buildkite", "homebrew"]
 
 [[test]]
 name = "bdd"
@@ -49,6 +50,7 @@ cuenv-github = { workspace = true, optional = true }
 cuenv-gitlab = { workspace = true, optional = true }
 cuenv-bitbucket = { workspace = true, optional = true }
 cuenv-buildkite = { workspace = true, optional = true }
+cuenv-homebrew = { workspace = true, optional = true }
 toml = { workspace = true }
 tokio = { workspace = true }
 tokio-util = "0.7"

@@ -162,7 +162,12 @@ pub struct Pipeline {
     /// Environment for secret resolution (e.g., "production")
     pub environment: Option<String>,
     pub when: Option<PipelineCondition>,
+    /// Manual task list (mutually exclusive with `release`)
+    #[serde(default)]
     pub tasks: Vec<String>,
+    /// When true, auto-generates build matrix and publish jobs from release config.
+    /// Mutually exclusive with `tasks`.
+    pub release: Option<bool>,
     /// Whether to derive trigger paths from task inputs.
     /// Defaults to true for branch/PR triggers, false for scheduled-only.
     pub derive_paths: Option<bool>,
@@ -258,6 +263,7 @@ mod tests {
                     environment: None,
                     when: None,
                     tasks: vec!["test".to_string()],
+                    release: None,
                     derive_paths: None,
                     provider: Some(ProviderConfig {
                         github: Some(GitHubConfig {
@@ -272,6 +278,7 @@ mod tests {
                     environment: None,
                     when: None,
                     tasks: vec!["deploy".to_string()],
+                    release: None,
                     derive_paths: None,
                     provider: None,
                 },

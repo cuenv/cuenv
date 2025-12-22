@@ -44,21 +44,27 @@
 #![warn(missing_docs)]
 #![warn(clippy::all, clippy::pedantic)]
 
+pub mod artifact;
+pub mod backends;
 pub mod changelog;
 pub mod changeset;
 pub mod config;
 pub mod conventional;
 pub mod error;
 pub mod manifest;
+pub mod orchestrator;
 pub mod publish;
 pub mod version;
 
 // Re-export main types
+pub use artifact::{Artifact, ArtifactBuilder, ChecksumsManifest, PackagedArtifact, Target};
+pub use backends::{BackendContext, PublishResult, ReleaseBackend};
 pub use changelog::{ChangelogEntry, ChangelogGenerator};
 pub use changeset::{BumpType, Changeset, ChangesetManager, PackageChange};
 pub use config::{ChangelogConfig, ReleaseConfig, ReleaseGitConfig, ReleasePackagesConfig};
 pub use conventional::{CommitParser, ConventionalCommit};
 pub use error::{Error, Result};
 pub use manifest::CargoManifest;
+pub use orchestrator::{OrchestratorConfig, ReleaseOrchestrator, ReleasePhase, ReleaseReport};
 pub use publish::{PublishPackage, PublishPlan};
 pub use version::{Version, VersionCalculator};

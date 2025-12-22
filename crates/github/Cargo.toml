@@ -15,17 +15,21 @@ description = "GitHub provider implementations for cuenv"
 workspace = true
 
 [features]
-default = ["codeowners", "ci", "workflow"]
+default = ["codeowners", "ci", "workflow", "release"]
 codeowners = ["dep:cuenv-codeowners"]
 ci = ["dep:cuenv-ci", "dep:octocrab", "dep:async-trait"]
 workflow = ["dep:cuenv-ci", "dep:serde", "dep:serde_yaml", "dep:indexmap"]
+release = ["dep:cuenv-release", "dep:octocrab", "dep:async-trait", "dep:tokio", "dep:bytes"]
 
 [dependencies]
 cuenv-core = { workspace = true }
 cuenv-codeowners = { workspace = true, optional = true }
 cuenv-ci = { workspace = true, optional = true }
+cuenv-release = { workspace = true, optional = true }
 octocrab = { version = "0.48", optional = true, default-features = false, features = ["rustls", "rustls-ring", "default-client", "timeout", "retry"] }
 async-trait = { version = "0.1", optional = true }
+tokio = { workspace = true, optional = true, features = ["fs"] }
+bytes = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_yaml = { workspace = true, optional = true }
 indexmap = { version = "2.7", features = ["serde"], optional = true }

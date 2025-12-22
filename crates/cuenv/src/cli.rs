@@ -927,6 +927,25 @@ pub enum ReleaseCommands {
         #[arg(long, help = "Show what would be published without publishing")]
         dry_run: bool,
     },
+    #[command(about = "Build, package, and publish binary releases to configured backends")]
+    Binaries {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+        #[arg(long, help = "Preview without making changes")]
+        dry_run: bool,
+        #[arg(long, help = "Only run specific backend(s)", value_delimiter = ',')]
+        backend: Option<Vec<String>>,
+        #[arg(long, help = "Build only, don't publish")]
+        build_only: bool,
+        #[arg(long, help = "Package only, don't publish (assumes binaries exist)")]
+        package_only: bool,
+        #[arg(long, help = "Publish only (requires existing artifacts)")]
+        publish_only: bool,
+        #[arg(long, help = "Target platform(s) to build", value_delimiter = ',')]
+        target: Option<Vec<String>>,
+        #[arg(long, help = "Version to release (default: from Cargo.toml)")]
+        version: Option<String>,
+    },
 }
 
 impl Commands {
@@ -1142,6 +1161,25 @@ impl Commands {
                 ReleaseCommands::Publish { path, dry_run } => {
                     Command::ReleasePublish { path, dry_run }
                 }
+                ReleaseCommands::Binaries {
+                    path,
+                    dry_run,
+                    backend,
+                    build_only,
+                    package_only,
+                    publish_only,
+                    target,
+                    version,
+                } => Command::ReleaseBinaries {
+                    path,
+                    dry_run,
+                    backends: backend,
+                    build_only,
+                    package_only,
+                    publish_only,
+                    targets: target,
+                    version,
+                },
             },
             Commands::Completions { shell } => Command::Completions { shell },
             Commands::Sync {

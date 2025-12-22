@@ -18,6 +18,7 @@ members = [
     "crates/gitlab",
     "crates/bitbucket",
     "crates/buildkite",
+    "crates/homebrew",
     # Secret provider crates
     "crates/aws",
     "crates/gcp",
@@ -54,6 +55,7 @@ cuenv-github = { path = "crates/github", version = "0.16.0" }
 cuenv-gitlab = { path = "crates/gitlab", version = "0.16.0" }
 cuenv-bitbucket = { path = "crates/bitbucket", version = "0.16.0" }
 cuenv-buildkite = { path = "crates/buildkite", version = "0.16.0" }
+cuenv-homebrew = { path = "crates/homebrew", version = "0.16.0" }
 # Secret provider crates
 cuenv-aws = { path = "crates/aws", version = "0.16.0" }
 cuenv-gcp = { path = "crates/gcp", version = "0.16.0" }
@@ -79,6 +81,11 @@ dirs = "6.0"
 sha2 = "0.10"
 secrecy = { version = "0.10", features = ["serde"] }
 futures = "0.3"
+
+# Binary distribution
+bytes = "1.10"
+flate2 = "1.1"
+tar = "0.4"
 
 # Workspace detection and parsing dependencies
 toml = "0.9"
