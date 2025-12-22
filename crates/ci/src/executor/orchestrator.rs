@@ -105,13 +105,20 @@ pub async fn run_ci(
             },
         );
 
+        // Extract task names from pipeline tasks (which can be simple strings or matrix tasks)
+        let pipeline_task_names: Vec<String> = pipeline
+            .tasks
+            .iter()
+            .map(|t| t.task_name().to_string())
+            .collect();
+
         // For release events, run all tasks unconditionally (no affected-file filtering)
         let tasks_to_run = if context.event == "release" {
-            pipeline.tasks.clone()
+            pipeline_task_names
         } else {
             compute_affected_tasks(
                 &changed_files,
-                &pipeline.tasks,
+                &pipeline_task_names,
                 project_root,
                 config,
                 &project_map,

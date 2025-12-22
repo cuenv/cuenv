@@ -1090,7 +1090,7 @@ struct PipelineContext {
 
 /// Check if any pipeline tasks have matrix configurations.
 fn has_matrix_tasks(pipeline_tasks: &[cuenv_core::ci::PipelineTask]) -> bool {
-    pipeline_tasks.iter().any(|t| t.is_matrix())
+    pipeline_tasks.iter().any(cuenv_core::ci::PipelineTask::is_matrix)
 }
 
 /// Generate GitHub workflow files for a single pipeline.
@@ -1565,15 +1565,15 @@ fn build_workflow_triggers(
         WorkflowInput, WorkflowTriggers,
     };
 
-    let push = if !trigger.branches.is_empty() {
+    let push = if trigger.branches.is_empty() {
+        None
+    } else {
         Some(PushTrigger {
             branches: trigger.branches.clone(),
             paths: trigger.paths.clone(),
             paths_ignore: trigger.paths_ignore.clone(),
             ..Default::default()
         })
-    } else {
-        None
     };
 
     let pull_request = if trigger.pull_request == Some(true) {
@@ -1587,15 +1587,17 @@ fn build_workflow_triggers(
         None
     };
 
-    let release = if !trigger.release.is_empty() {
+    let release = if trigger.release.is_empty() {
+        None
+    } else {
         Some(ReleaseTrigger {
             types: trigger.release.clone(),
         })
-    } else {
-        None
     };
 
-    let schedule = if !trigger.scheduled.is_empty() {
+    let schedule = if trigger.scheduled.is_empty() {
+        None
+    } else {
         Some(
             trigger
                 .scheduled
@@ -1603,8 +1605,6 @@ fn build_workflow_triggers(
                 .map(|cron| ScheduleTrigger { cron: cron.clone() })
                 .collect(),
         )
-    } else {
-        None
     };
 
     let workflow_dispatch = trigger.manual.as_ref().and_then(|m| {

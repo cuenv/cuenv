@@ -115,12 +115,19 @@ fn collect_affected_tasks_for_pipeline(
             },
         );
 
+        // Extract task names from pipeline tasks (which can be simple strings or matrix tasks)
+        let pipeline_task_names: Vec<String> = ci_pipeline
+            .tasks
+            .iter()
+            .map(|t| t.task_name().to_string())
+            .collect();
+
         let tasks_to_run = if event == "release" {
-            ci_pipeline.tasks.clone()
+            pipeline_task_names
         } else {
             compute_affected_tasks(
                 changed_files,
-                &ci_pipeline.tasks,
+                &pipeline_task_names,
                 project_root,
                 config,
                 project_map,

@@ -39,9 +39,6 @@ package schema
 	// cache for later materialization. Writes to undeclared paths are allowed but
 	// will be warned about and are not indexed.
 	outputs?: [...string]
-	// Consume cached outputs from other tasks in the same project.
-	// The referenced task's outputs are materialized into this task's hermetic workspace.
-	inputsFrom?: [...#TaskOutput]
 	// Workspaces to mount/enable for this task
 	workspaces?: [...string]
 

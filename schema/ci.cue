@@ -25,6 +25,10 @@ package schema
 // GitHub Actions provider configuration
 #GitHubConfig: close({
 	runner?: string | [...string]
+	// Runner mapping for matrix dimensions (e.g., arch -> runner name)
+	runners?: close({
+		arch?: [string]: string
+	})
 	cachix?: close({
 		name!:       string
 		authToken?:  string
@@ -65,17 +69,31 @@ package schema
 	gitlab?:    #GitLabConfig
 })
 
+// Artifact download configuration for pipeline tasks
+#ArtifactDownload: close({
+	from!:   string       // Source task name (must have outputs)
+	to!:     string       // Base directory to download artifacts into
+	filter?: string | *"" // Glob pattern to filter matrix variants (e.g., "*stable")
+})
+
+// Matrix task configuration for pipeline
+#MatrixTask: close({
+	task!:  string                            // Task name to run
+	matrix: [string]: [...string]             // Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
+	artifacts?: [...#ArtifactDownload]        // Artifacts to download before running
+	params?: [string]: string                 // Parameters to pass to the task
+})
+
+// Pipeline task reference - either a simple task name or a matrix task
+#PipelineTask: string | #MatrixTask
+
 #Pipeline: close({
 	name:         string
 	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
 
-	// Either specify tasks manually OR use release: true to auto-generate from release config
-	tasks?: [...string]
-
-	// When true, auto-generates build matrix and publish jobs from release.targets and release.backends
-	// This replaces manual task specification for release workflows
-	release?: bool
+	// Tasks to run - can be simple task names or matrix task objects
+	tasks?: [...#PipelineTask]
 
 	derivePaths?: bool // whether to derive trigger paths from task inputs
 	provider?:    #ProviderConfig

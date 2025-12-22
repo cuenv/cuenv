@@ -178,10 +178,6 @@ pub struct Task {
     #[serde(default)]
     pub outputs: Vec<String>,
 
-    /// Consume cached outputs from other tasks in the same project
-    #[serde(default, rename = "inputsFrom")]
-    pub inputs_from: Option<Vec<TaskOutput>>,
-
     /// Workspaces to mount/enable for this task
     #[serde(default)]
     pub workspaces: Vec<String>,
@@ -253,8 +249,6 @@ impl<'de> serde::Deserialize<'de> for Task {
             inputs: Vec<Input>,
             #[serde(default)]
             outputs: Vec<String>,
-            #[serde(default, rename = "inputsFrom")]
-            inputs_from: Option<Vec<TaskOutput>>,
             #[serde(default)]
             workspaces: Vec<String>,
             #[serde(default)]
@@ -298,7 +292,6 @@ impl<'de> serde::Deserialize<'de> for Task {
             depends_on: helper.depends_on,
             inputs: helper.inputs,
             outputs: helper.outputs,
-            inputs_from: helper.inputs_from,
             workspaces: helper.workspaces,
             description: helper.description,
             params: helper.params,
@@ -465,7 +458,6 @@ impl Default for Task {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
-            inputs_from: None,
             workspaces: vec![],
             description: None,
             params: None,
@@ -816,7 +808,7 @@ mod tests {
                     "command": "bash",
                     "args": ["-c", "wrangler deploy"],
                     "dependsOn": ["docs.build"],
-                    "inputsFrom": [{"task": "docs.build"}]
+                    "inputs": [{"task": "docs.build"}]
                 }
             }
         }"#;
