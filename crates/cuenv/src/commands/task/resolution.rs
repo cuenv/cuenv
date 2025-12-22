@@ -221,17 +221,14 @@ mod tests {
         assert_eq!(task.unwrap().command, "cargo test");
 
         // Also works with colon separator
-        let task2 = get_task_mut_by_path(&mut tasks, "test:unit");
-        assert!(task2.is_some());
+        let colon_task = get_task_mut_by_path(&mut tasks, "test:unit");
+        assert!(colon_task.is_some());
     }
 
     #[test]
     fn test_get_task_mut_by_path_not_found() {
         let mut tasks = HashMap::new();
-        tasks.insert(
-            "build".to_string(),
-            TaskDefinition::Single(Box::new(Task::default())),
-        );
+        tasks.insert("build".to_string(), TaskDefinition::Single(Box::default()));
 
         assert!(get_task_mut_by_path(&mut tasks, "nonexistent").is_none());
         assert!(get_task_mut_by_path(&mut tasks, "").is_none());
