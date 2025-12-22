@@ -1701,7 +1701,7 @@ mod tests {
                         "command": "bash",
                         "args": ["-c", "wrangler deploy"],
                         "dependsOn": ["docs.build"],
-                        "inputsFrom": [{"task": "docs.build"}]
+                        "inputs": [{"task": "docs.build"}]
                     }
                 }
             }

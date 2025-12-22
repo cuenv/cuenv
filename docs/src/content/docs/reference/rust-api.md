@@ -158,7 +158,6 @@ let build = Task {
     depends_on: vec!["lint".into(), "test".into()],
     inputs: vec!["src".into(), "Cargo.toml".into()],
     outputs: vec!["target/release/app".into()],
-    inputs_from: None,
     external_inputs: None,
     workspaces: vec![],
     description: Some("Build release binaries".into()),
@@ -174,9 +173,8 @@ let build = Task {
 | `shell`           | `Option<Shell>`                      | Override shell invocation (defaults to direct exec)  |
 | `env`             | `HashMap<String, serde_json::Value>` | Task-specific environment additions                  |
 | `depends_on`      | `Vec<String>`                        | Other tasks that must finish first                   |
-| `inputs`          | `Vec<String>`                        | Files/globs tracked for hermetic execution           |
+| `inputs`          | `Vec<Input>`                         | Files/globs or task output references                |
 | `outputs`         | `Vec<String>`                        | Declared outputs that become cacheable artifacts     |
-| `inputs_from`     | `Option<Vec<TaskOutput>>`            | Consume outputs from other tasks in the same project |
 | `external_inputs` | `Option<Vec<ExternalInput>>`         | Consume outputs from another project in the repo     |
 | `workspaces`      | `Vec<String>`                        | Workspace names to enable (see schema)               |
 | `description`     | `Option<String>`                     | Human-friendly summary                               |
