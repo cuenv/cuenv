@@ -462,6 +462,16 @@ impl GitHubActionsEmitter {
             steps.push(Step::run("cuenv secrets setup onepassword").with_name("Setup 1Password"));
         }
 
+        // Setup GitHub Models CLI extension (from setup-gh-models stage task)
+        if let Some(gh_models_task) = ir.stages.setup.iter().find(|t| t.id == "setup-gh-models") {
+            let command = gh_models_task.command.first().cloned().unwrap_or_default();
+            let name = gh_models_task
+                .label
+                .clone()
+                .unwrap_or_else(|| "Setup GitHub Models CLI".to_string());
+            steps.push(Step::run(&command).with_name(&name));
+        }
+
         // Run the task
         let environment = ir.pipeline.environment.as_deref();
         let task_command = if let Some(env) = environment {
