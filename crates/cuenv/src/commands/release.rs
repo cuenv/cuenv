@@ -1016,29 +1016,46 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
         return Ok("No packages affected by commits. Nothing to release.".to_string());
     }
 
-    // Step 4: Calculate new versions
+    // Step 4: Calculate unified version for fixed (lockstep) versioning
+    // All packages in the workspace share the same version.
+
+    // Find max bump type across all affected packages
+    let max_bump = package_bumps
+        .values()
+        .filter(|b| **b != BumpType::None)
+        .max()
+        .copied()
+        .unwrap_or(BumpType::None);
+
+    if max_bump == BumpType::None {
+        return Ok("No version-bumping changes found. Nothing to release.".to_string());
+    }
+
+    // Find max current version across ALL workspace packages
+    let max_current = package_versions
+        .values()
+        .max()
+        .cloned()
+        .ok_or_else(|| cuenv_core::Error::configuration("No packages found in workspace"))?;
+
+    // Adjust for pre-1.0: breaking changes (Major) become Minor bumps
+    let adjusted_bump = max_current.adjusted_bump_type(max_bump);
+    let new_version = max_current.bump(adjusted_bump);
+
+    // Apply same version to ALL packages (fixed/lockstep versioning)
     let mut bump_infos = Vec::new();
-    let mut new_versions: std::collections::HashMap<String, Version> =
-        std::collections::HashMap::new();
-    for (pkg_name, bump_type) in &package_bumps {
-        // Skip BumpType::None
-        if *bump_type == BumpType::None {
-            continue;
-        }
-
-        let current = package_versions.get(pkg_name).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!("No version found for package: {pkg_name}"))
-        })?;
-
-        let new_version = current.bump(*bump_type);
-        new_versions.insert(pkg_name.clone(), new_version.clone());
+    for (pkg_name, current) in &package_versions {
         bump_infos.push(PackageBumpInfo {
             name: pkg_name.clone(),
             current_version: current.to_string(),
             new_version: new_version.to_string(),
-            bump_type: bump_type.to_string(),
+            bump_type: adjusted_bump.to_string(),
         });
     }
+    let new_versions: std::collections::HashMap<String, Version> = package_versions
+        .keys()
+        .map(|k| (k.clone(), new_version.clone()))
+        .collect();
 
     // Build output
     let mut output = String::new();
