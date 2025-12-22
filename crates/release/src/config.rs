@@ -4,6 +4,43 @@
 //! that can be specified in `env.cue` files.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Versioning strategy for monorepo packages.
+///
+/// Determines how package versions are managed when changes are detected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VersioningStrategy {
+    /// All packages share the same version (lockstep versioning).
+    ///
+    /// When any package changes, all packages are bumped to the same
+    /// new version using the maximum bump type detected.
+    Fixed,
+
+    /// Packages are bumped together but can have different versions.
+    ///
+    /// All packages get the same bump type applied, but each package
+    /// applies it to its own current version.
+    Linked,
+
+    /// Each package is versioned independently (default).
+    ///
+    /// Only packages that have changes are bumped, and each package
+    /// gets its own bump type based on the changes affecting it.
+    #[default]
+    Independent,
+}
+
+impl fmt::Display for VersioningStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fixed => write!(f, "fixed"),
+            Self::Linked => write!(f, "linked"),
+            Self::Independent => write!(f, "independent"),
+        }
+    }
+}
 
 /// Complete release configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -62,6 +99,8 @@ impl ReleaseGitConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReleasePackagesConfig {
+    /// Default versioning strategy for packages not in explicit groups.
+    pub strategy: VersioningStrategy,
     /// Fixed groups: packages that share the same version (lockstep versioning).
     pub fixed: Vec<Vec<String>>,
     /// Linked groups: packages that are bumped together but can have different versions.
@@ -160,7 +199,7 @@ mod tests {
                 vec!["pkg-a".to_string(), "pkg-b".to_string()],
                 vec!["pkg-c".to_string()],
             ],
-            linked: vec![],
+            ..Default::default()
         };
 
         assert!(config.is_in_fixed_group("pkg-a"));
@@ -176,8 +215,8 @@ mod tests {
     #[test]
     fn test_packages_config_linked_groups() {
         let config = ReleasePackagesConfig {
-            fixed: vec![],
             linked: vec![vec!["pkg-x".to_string(), "pkg-y".to_string()]],
+            ..Default::default()
         };
 
         assert!(config.is_in_linked_group("pkg-x"));

@@ -120,9 +120,10 @@ fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
                 crate::cli::ShellCommands::Init { .. } => false,
             },
             crate::cli::Commands::Release { subcommand } => match subcommand {
-                // Version and Publish are sync (CUE/cargo operations)
+                // Version, Publish, and Prepare are sync (CUE/cargo/git operations)
                 crate::cli::ReleaseCommands::Version { .. }
-                | crate::cli::ReleaseCommands::Publish { .. } => false,
+                | crate::cli::ReleaseCommands::Publish { .. }
+                | crate::cli::ReleaseCommands::Prepare { .. } => false,
                 // Binaries needs async for HTTP/process execution
                 crate::cli::ReleaseCommands::Binaries { .. } => true,
             },
@@ -335,7 +336,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         } => match commands::release::execute_changeset_add(
             &path,
             &packages,
-            &summary,
+            summary.as_deref(),
             description.as_deref(),
         ) {
             Ok(output) => {
@@ -393,6 +394,44 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                 Err(e) => Err(CliError::eval_with_help(
                     format!("Changeset from-commits failed: {e}"),
                     "Check that the path is a valid git repository",
+                )),
+            }
+        }
+
+        Command::ReleasePrepare {
+            path,
+            since,
+            dry_run,
+            branch,
+            no_pr,
+        } => {
+            let opts = commands::release::ReleasePrepareOptions {
+                path,
+                since,
+                dry_run,
+                branch,
+                no_pr,
+            };
+            match commands::release::execute_release_prepare(&opts) {
+                Ok(output) => {
+                    if json_mode {
+                        let envelope = OkEnvelope::new(serde_json::json!({ "result": output }));
+                        match serde_json::to_string(&envelope) {
+                            Ok(json) => println!("{json}"),
+                            Err(e) => {
+                                return Err(CliError::other(format!(
+                                    "JSON serialization failed: {e}"
+                                )));
+                            }
+                        }
+                    } else {
+                        println!("{output}");
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(CliError::eval_with_help(
+                    format!("Release prepare failed: {e}"),
+                    "Check git history and workspace configuration",
                 )),
             }
         }
@@ -710,6 +749,7 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
 /// Special commands (Tui, Web, Completions) are handled directly here since they
 /// don't fit the standard command execution pattern. All other commands are delegated
 /// to the executor's event-driven `execute()` method.
+#[allow(clippy::too_many_lines)]
 #[instrument(name = "cuenv_execute_command_safe", skip(executor))]
 async fn execute_command_safe(
     command: Command,
@@ -777,6 +817,23 @@ async fn execute_command_safe(
         Command::ChangesetFromCommits { path, since } => {
             return execute_changeset_from_commits_safe(path.clone(), since.clone(), json_mode)
                 .await;
+        }
+        Command::ReleasePrepare {
+            path,
+            since,
+            dry_run,
+            branch,
+            no_pr,
+        } => {
+            return execute_release_prepare_safe(
+                path.clone(),
+                since.clone(),
+                *dry_run,
+                branch.clone(),
+                *no_pr,
+                json_mode,
+            )
+            .await;
         }
         Command::ReleaseVersion { path, dry_run } => {
             return execute_release_version_safe(path.clone(), *dry_run, json_mode).await;
@@ -1069,7 +1126,7 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
 #[instrument(name = "cuenv_execute_changeset_add_safe")]
 async fn execute_changeset_add_safe(
     path: String,
-    summary: String,
+    summary: Option<String>,
     description: Option<String>,
     packages: Vec<(String, String)>,
     json_mode: bool,
@@ -1077,7 +1134,7 @@ async fn execute_changeset_add_safe(
     match commands::release::execute_changeset_add(
         &path,
         &packages,
-        &summary,
+        summary.as_deref(),
         description.as_deref(),
     ) {
         Ok(output) => {
@@ -1146,6 +1203,47 @@ async fn execute_changeset_from_commits_safe(
         Err(e) => Err(CliError::eval_with_help(
             format!("Changeset from-commits failed: {e}"),
             "Check that the path is a valid git repository",
+        )),
+    }
+}
+
+/// Execute release prepare command safely
+#[instrument(name = "cuenv_execute_release_prepare_safe")]
+async fn execute_release_prepare_safe(
+    path: String,
+    since: Option<String>,
+    dry_run: bool,
+    branch: String,
+    no_pr: bool,
+    json_mode: bool,
+) -> Result<(), CliError> {
+    let opts = commands::release::ReleasePrepareOptions {
+        path,
+        since,
+        dry_run,
+        branch,
+        no_pr,
+    };
+    match commands::release::execute_release_prepare(&opts) {
+        Ok(output) => {
+            if json_mode {
+                let envelope = OkEnvelope::new(serde_json::json!({
+                    "result": output
+                }));
+                match serde_json::to_string(&envelope) {
+                    Ok(json) => println!("{json}"),
+                    Err(e) => {
+                        return Err(CliError::other(format!("JSON serialization failed: {e}")));
+                    }
+                }
+            } else {
+                println!("{output}");
+            }
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Release prepare failed: {e}"),
+            "Check git history and workspace configuration",
         )),
     }
 }

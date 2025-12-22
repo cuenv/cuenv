@@ -451,7 +451,7 @@ mod tests {
         ]);
         let config = ReleasePackagesConfig {
             fixed: vec![vec!["pkg-a".to_string(), "pkg-b".to_string()]],
-            linked: vec![],
+            ..Default::default()
         };
         let calc = VersionCalculator::new(current, config);
 
@@ -471,7 +471,7 @@ mod tests {
         ]);
         let config = ReleasePackagesConfig {
             fixed: vec![vec!["pkg-a".to_string(), "pkg-b".to_string()]],
-            linked: vec![],
+            ..Default::default()
         };
         let calc = VersionCalculator::new(current, config);
 
@@ -494,8 +494,8 @@ mod tests {
             ("pkg-b".to_string(), Version::new(2, 0, 0)),
         ]);
         let config = ReleasePackagesConfig {
-            fixed: vec![],
             linked: vec![vec!["pkg-a".to_string(), "pkg-b".to_string()]],
+            ..Default::default()
         };
         let calc = VersionCalculator::new(current, config);
 
