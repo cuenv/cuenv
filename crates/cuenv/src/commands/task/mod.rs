@@ -5,7 +5,12 @@ mod discovery;
 mod normalization;
 mod rendering;
 mod resolution;
+mod types;
 mod workspace;
+
+// Re-export types for the public API. Some types may not be used externally yet.
+#[allow(unused_imports)]
+pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
 
 use arguments::{apply_args_to_task, resolve_task_args};
 use discovery::{evaluate_manifest, find_tasks_with_labels, format_label_root, normalize_labels};
@@ -22,12 +27,11 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
-    BackendFactory, ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, TaskIndex,
-    Tasks,
+    BackendFactory, ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, TaskIndex, Tasks,
 };
 
-use super::env_file::find_cue_module_root;
 use super::CommandExecutor;
+use super::env_file::find_cue_module_root;
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
 
@@ -47,7 +51,67 @@ use std::path::Path;
 
 use super::export::get_environment_with_hooks;
 
-/// Execute a named task from the CUE configuration.
+/// Execute a task using the new structured request API.
+///
+/// This is the preferred entry point for task execution. It accepts a
+/// `TaskExecutionRequest` which groups all parameters into a structured
+/// format with type-safe selection modes.
+///
+/// # Example
+///
+/// ```ignore
+/// let request = TaskExecutionRequest::named("./", "cuenv", "build")
+///     .with_args(vec!["--release".to_string()])
+///     .with_environment("prod");
+///
+/// let output = execute(request).await?;
+/// ```
+pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
+    // Extract parameters from the request and delegate to the legacy implementation
+    let (task_name, labels, task_args, interactive, all) = match &request.selection {
+        TaskSelection::Named { name, args } => {
+            (Some(name.as_str()), &[][..], args.as_slice(), false, false)
+        }
+        TaskSelection::Labels(l) => (None, l.as_slice(), &[][..], false, false),
+        TaskSelection::List => (None, &[][..], &[][..], false, false),
+        TaskSelection::Interactive => (None, &[][..], &[][..], true, false),
+        TaskSelection::All => (None, &[][..], &[][..], false, true),
+    };
+
+    let tui = request.execution_mode == ExecutionMode::Tui;
+
+    execute_task_legacy(
+        &request.path,
+        &request.package,
+        task_name,
+        labels,
+        request.environment.as_deref(),
+        &request.output.format,
+        request.output.capture_output,
+        request
+            .output
+            .materialize_outputs
+            .as_ref()
+            .and_then(|p| p.to_str()),
+        request.output.show_cache_path,
+        request.backend.as_deref(),
+        tui,
+        interactive,
+        request.output.help,
+        all,
+        task_args,
+        request.executor,
+    )
+    .await
+}
+
+/// Execute a named task from the CUE configuration (legacy API).
+///
+/// **Deprecated**: Use [`execute`] with [`TaskExecutionRequest`] instead.
+///
+/// This function is kept for backward compatibility. New code should use
+/// the structured request API which provides better type safety and
+/// clearer intent.
 ///
 /// Tasks can be selected in two mutually exclusive ways:
 /// - By name: Provide `task_name` to execute a specific task
@@ -65,6 +129,51 @@ use super::export::get_environment_with_hooks;
     clippy::fn_params_excessive_bools
 )]
 pub async fn execute_task(
+    path: &str,
+    package: &str,
+    task_name: Option<&str>,
+    labels: &[String],
+    environment: Option<&str>,
+    format: &str,
+    capture_output: bool,
+    materialize_outputs: Option<&str>,
+    show_cache_path: bool,
+    backend: Option<&str>,
+    tui: bool,
+    interactive: bool,
+    help: bool,
+    all: bool,
+    task_args: &[String],
+    executor: Option<&CommandExecutor>,
+) -> Result<String> {
+    let request = TaskExecutionRequest::from_legacy(
+        path,
+        package,
+        task_name,
+        labels,
+        environment,
+        format,
+        capture_output,
+        materialize_outputs,
+        show_cache_path,
+        backend,
+        tui,
+        interactive,
+        help,
+        all,
+        task_args,
+        executor,
+    );
+    execute(request).await
+}
+
+/// Internal implementation of task execution.
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools
+)]
+async fn execute_task_legacy(
     path: &str,
     package: &str,
     task_name: Option<&str>,
