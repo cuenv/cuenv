@@ -985,10 +985,12 @@ pub struct PackageBumpInfo {
 /// Returns an error if any step fails.
 #[allow(clippy::too_many_lines)]
 pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<String> {
-    let root = Path::new(&opts.path);
+    let root = Path::new(&opts.path).canonicalize().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {e}", &opts.path))
+    })?;
 
     // Step 1: Parse commits since last tag
-    let commits = CommitParser::parse_since_tag(root, opts.since.as_deref())
+    let commits = CommitParser::parse_since_tag(&root, opts.since.as_deref())
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
 
     if commits.is_empty() {
@@ -996,7 +998,7 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
     }
 
     // Step 2: Get workspace packages
-    let manifest = CargoManifest::new(root);
+    let manifest = CargoManifest::new(&root);
     let package_paths = manifest.get_package_paths().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
     })?;
@@ -1005,7 +1007,7 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
     })?;
 
     // Step 3: Analyze which packages each commit affects
-    let analyzer = CommitAnalyzer::new(root, package_paths.clone());
+    let analyzer = CommitAnalyzer::new(&root, package_paths.clone());
     let package_bumps = analyzer
         .calculate_bumps(&commits)
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to analyze commits: {e}")))?;
@@ -1088,11 +1090,11 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
 
     // Step 6: Create release branch
     let _ = writeln!(output, "Creating release branch '{}'...", opts.branch);
-    run_git_command(root, &["checkout", "-b", &opts.branch])?;
+    run_git_command(&root, &["checkout", "-b", &opts.branch])?;
 
     // Step 7: Commit changes
     let _ = writeln!(output, "Committing version updates...");
-    run_git_command(root, &["add", "-A"])?;
+    run_git_command(&root, &["add", "-A"])?;
 
     let commit_msg = format!(
         "chore(release): prepare release\n\n{}",
@@ -1102,11 +1104,11 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
             .collect::<Vec<_>>()
             .join("\n")
     );
-    run_git_command(root, &["commit", "-m", &commit_msg])?;
+    run_git_command(&root, &["commit", "-m", &commit_msg])?;
 
     // Step 8: Push branch
     let _ = writeln!(output, "Pushing branch to origin...");
-    run_git_command(root, &["push", "-u", "origin", &opts.branch])?;
+    run_git_command(&root, &["push", "-u", "origin", &opts.branch])?;
 
     // Step 9: Create PR
     if !opts.no_pr {
@@ -1119,7 +1121,7 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
                 .map_or("next", |i| i.new_version.as_str())
         );
 
-        match create_pull_request(root, &pr_title, &pr_body) {
+        match create_pull_request(&root, &pr_title, &pr_body) {
             Ok(pr_url) => {
                 let _ = writeln!(output, "\nPull request created: {pr_url}");
             }
