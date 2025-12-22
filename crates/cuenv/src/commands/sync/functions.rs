@@ -1356,9 +1356,25 @@ fn execute_sync_buildkite(
 ) -> Result<String> {
     // Note: Using --dynamic instead of --format for the new CLI
     let pipeline_content = r#"# Buildkite bootstrap pipeline for cuenv
-# This generates a dynamic pipeline based on affected tasks
+# This installs Nix, builds cuenv, then generates a dynamic pipeline
 steps:
+  - label: ":nix: Install Nix"
+    key: install-nix
+    command: |
+      curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none
+      . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+      nix --version
+
+  - label: ":package: Build cuenv"
+    key: build-cuenv
+    depends_on: install-nix
+    command: |
+      . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+      nix build .#cuenv --accept-flake-config
+      echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE"
+
   - label: ":pipeline: Generate Pipeline"
+    depends_on: build-cuenv
     command: cuenv ci --dynamic buildkite | buildkite-agent pipeline upload
 "#;
 
