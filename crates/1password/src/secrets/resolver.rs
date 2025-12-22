@@ -163,7 +163,7 @@ impl OnePasswordResolver {
             serde_json::Value::String(config.reference.clone()),
         );
 
-        let result = core.invoke(client_id, "SecretsResolve", &params)?;
+        let result = core.invoke(client_id, "SecretsResolve", &params, &config.reference)?;
 
         // Parse the response - the Go SDK returns a JSON-encoded string
         // The invoke response is the raw string from WASM, which is a JSON-quoted secret value
@@ -274,7 +274,9 @@ impl OnePasswordResolver {
             ),
         );
 
-        let result = core.invoke(client_id, "SecretsResolveAll", &params)?;
+        // Use first reference as context for top-level errors
+        let context = references.first().map_or("batch", String::as_str);
+        let result = core.invoke(client_id, "SecretsResolveAll", &params, context)?;
 
         // Parse the response
         let response: serde_json::Value =
@@ -302,19 +304,16 @@ impl OnePasswordResolver {
                     message: "Response index out of bounds".to_string(),
                 })?;
 
-            // Check for errors
+            // Check for errors - fail immediately with the specific secret reference
             if let Some(error) = resp.get("error")
                 && !error.is_null()
             {
                 let error_type = error["type"].as_str().unwrap_or("Unknown");
                 let error_msg = error["message"].as_str().unwrap_or("Unknown error");
-                tracing::warn!(
-                    reference = %reference,
-                    error_type = %error_type,
-                    message = %error_msg,
-                    "Failed to resolve secret in batch"
-                );
-                continue;
+                return Err(SecretError::ResolutionFailed {
+                    name: reference.clone(),
+                    message: format!("1Password error ({error_type}): {error_msg}"),
+                });
             }
 
             // Extract secret value

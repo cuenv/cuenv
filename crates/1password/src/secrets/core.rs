@@ -238,11 +238,14 @@ impl SharedCore {
     ///
     /// The method name and parameters depend on the specific operation.
     /// For resolving secrets, use method `SecretsResolve` with the secret reference.
+    ///
+    /// The `context` parameter is used for error messages to identify which secret failed.
     pub fn invoke(
         &mut self,
         client_id: u64,
         method: &str,
         params: &serde_json::Map<String, serde_json::Value>,
+        context: &str,
     ) -> Result<String, SecretError> {
         // Structure matches Go SDK's InvokeConfig exactly:
         // InvokeConfig { Invocation { ClientID, Parameters { MethodName, SerializedParams } } }
@@ -258,7 +261,7 @@ impl SharedCore {
 
         let request_bytes =
             serde_json::to_vec(&request).map_err(|e| SecretError::ResolutionFailed {
-                name: "onepassword".to_string(),
+                name: context.to_string(),
                 message: format!("Failed to serialize invoke request: {e}"),
             })?;
 
@@ -266,14 +269,14 @@ impl SharedCore {
             .plugin
             .call::<_, String>("invoke", request_bytes)
             .map_err(|e| SecretError::ResolutionFailed {
-                name: "onepassword".to_string(),
-                message: format!("Invoke failed: {e}"),
+                name: context.to_string(),
+                message: format!("1Password invoke failed: {e}"),
             })?;
 
         // Parse response to check for errors
         let response: serde_json::Value =
             serde_json::from_str(&result).map_err(|e| SecretError::ResolutionFailed {
-                name: "onepassword".to_string(),
+                name: context.to_string(),
                 message: format!("Failed to parse invoke response: {e}"),
             })?;
 
@@ -284,7 +287,7 @@ impl SharedCore {
                 .and_then(|m| m.as_str())
                 .unwrap_or("unknown error");
             return Err(SecretError::ResolutionFailed {
-                name: "onepassword".to_string(),
+                name: context.to_string(),
                 message: format!("1Password error ({error_name}): {message}"),
             });
         }
