@@ -116,11 +116,8 @@ pub enum Command {
     Ci {
         dry_run: bool,
         pipeline: Option<String>,
-        generate: Option<String>,
-        format: Option<String>,
+        dynamic: Option<String>,
         from: Option<String>,
-        force: bool,
-        check: bool,
     },
     Tui,
     Web {
@@ -428,20 +425,14 @@ impl CommandExecutor {
             Command::Ci {
                 dry_run,
                 pipeline,
-                generate,
-                format,
+                dynamic,
                 from,
-                force,
-                check,
             } => {
                 self.run_command(handler::CiHandler {
                     dry_run,
                     pipeline,
-                    generate,
-                    format,
+                    dynamic,
                     from,
-                    force,
-                    check,
                 })
                 .await
             }
