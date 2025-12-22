@@ -28,20 +28,19 @@ fn test_export_no_env_cue_fast() {
         .expect("Failed to run cuenv");
     let elapsed = start.elapsed();
 
-    assert!(output.status.success(), "Export failed: {:?}", output);
+    assert!(output.status.success(), "Export failed: {output:?}");
 
     // The output should be a no-op script that clears state
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("set -e") || stdout.contains("true"),
-        "Expected no-op fish script, got: {}",
-        stdout
+        "Expected no-op fish script, got: {stdout}"
     );
 
+    let elapsed_ms = elapsed.as_millis();
     assert!(
-        elapsed.as_millis() < 10,
-        "PERFORMANCE REGRESSION: Export took {}ms, expected <10ms for no-env-cue case",
-        elapsed.as_millis()
+        elapsed_ms < 10,
+        "PERFORMANCE REGRESSION: Export took {elapsed_ms}ms, expected <10ms for no-env-cue case"
     );
 }
 
@@ -70,19 +69,16 @@ fn test_export_performance_threshold() {
         times.push(start.elapsed().as_millis());
     }
 
-    times.sort();
+    times.sort_unstable();
     let median = times[times.len() / 2];
     let min = times[0];
 
     // Strict 10ms threshold - this is critical for shell prompt performance
     assert!(
         median < 10,
-        "PERFORMANCE REGRESSION: Median export time {}ms exceeds 10ms threshold.\n\
-         Min: {}ms, All times: {:?}\n\
-         Export must be sub-10ms for shell prompt integration.",
-        median,
-        min,
-        times
+        "PERFORMANCE REGRESSION: Median export time {median}ms exceeds 10ms threshold.\n\
+         Min: {min}ms, All times: {times:?}\n\
+         Export must be sub-10ms for shell prompt integration."
     );
 }
 
@@ -109,16 +105,13 @@ fn test_export_all_shells_fast() {
 
         assert!(
             output.status.success(),
-            "Export failed for shell {}: {:?}",
-            shell,
-            output
+            "Export failed for shell {shell}: {output:?}"
         );
 
+        let elapsed_ms = elapsed.as_millis();
         assert!(
-            elapsed.as_millis() < 10,
-            "PERFORMANCE REGRESSION: Export for shell {} took {}ms, expected <10ms",
-            shell,
-            elapsed.as_millis()
+            elapsed_ms < 10,
+            "PERFORMANCE REGRESSION: Export for shell {shell} took {elapsed_ms}ms, expected <10ms"
         );
     }
 }
