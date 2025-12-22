@@ -1,9 +1,6 @@
 name: Environment Configuration
 description: Test if LLM can generate valid cuenv env definitions with secrets
 model: openai/gpt-5
-modelParameters:
-  temperature: 0.3
-  max_tokens: 512
 messages:
   - role: system
     content: |
