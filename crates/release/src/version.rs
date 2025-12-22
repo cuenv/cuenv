@@ -78,6 +78,22 @@ impl Version {
     pub fn is_initial_development(&self) -> bool {
         self.major == 0
     }
+
+    /// Get adjusted bump type for pre-1.0 versions.
+    ///
+    /// In semver, 0.x.x versions are considered "initial development" where
+    /// the public API is not stable. Breaking changes in 0.x.x are conventionally
+    /// treated as minor bumps (0.1.0 → 0.2.0) rather than major bumps.
+    ///
+    /// This method remaps `BumpType::Major` to `BumpType::Minor` for pre-1.0 versions.
+    #[must_use]
+    pub fn adjusted_bump_type(&self, bump: BumpType) -> BumpType {
+        if self.is_initial_development() && bump == BumpType::Major {
+            BumpType::Minor
+        } else {
+            bump
+        }
+    }
 }
 
 impl Default for Version {
@@ -422,6 +438,29 @@ mod tests {
     fn test_version_is_initial_development() {
         assert!(Version::new(0, 1, 0).is_initial_development());
         assert!(!Version::new(1, 0, 0).is_initial_development());
+    }
+
+    #[test]
+    fn test_adjusted_bump_type_pre_1_0() {
+        // In pre-1.0 (0.x.x), Major bumps become Minor (breaking changes are minor bumps)
+        let v = Version::new(0, 16, 0);
+        assert_eq!(v.adjusted_bump_type(BumpType::Major), BumpType::Minor);
+        assert_eq!(v.adjusted_bump_type(BumpType::Minor), BumpType::Minor);
+        assert_eq!(v.adjusted_bump_type(BumpType::Patch), BumpType::Patch);
+        assert_eq!(v.adjusted_bump_type(BumpType::None), BumpType::None);
+    }
+
+    #[test]
+    fn test_adjusted_bump_type_post_1_0() {
+        // In post-1.0 (1.x.x+), Major bumps stay Major
+        let v = Version::new(1, 0, 0);
+        assert_eq!(v.adjusted_bump_type(BumpType::Major), BumpType::Major);
+        assert_eq!(v.adjusted_bump_type(BumpType::Minor), BumpType::Minor);
+        assert_eq!(v.adjusted_bump_type(BumpType::Patch), BumpType::Patch);
+        assert_eq!(v.adjusted_bump_type(BumpType::None), BumpType::None);
+
+        let v2 = Version::new(2, 5, 3);
+        assert_eq!(v2.adjusted_bump_type(BumpType::Major), BumpType::Major);
     }
 
     #[test]
