@@ -48,6 +48,7 @@ pub mod artifact;
 pub mod backends;
 pub mod changelog;
 pub mod changeset;
+pub mod commit_analyzer;
 pub mod config;
 pub mod conventional;
 pub mod error;
@@ -61,7 +62,10 @@ pub use artifact::{Artifact, ArtifactBuilder, ChecksumsManifest, PackagedArtifac
 pub use backends::{BackendContext, PublishResult, ReleaseBackend};
 pub use changelog::{ChangelogEntry, ChangelogGenerator};
 pub use changeset::{BumpType, Changeset, ChangesetManager, PackageChange};
-pub use config::{ChangelogConfig, ReleaseConfig, ReleaseGitConfig, ReleasePackagesConfig};
+pub use commit_analyzer::{CommitAnalyzer, PackageAffect};
+pub use config::{
+    ChangelogConfig, ReleaseConfig, ReleaseGitConfig, ReleasePackagesConfig, VersioningStrategy,
+};
 pub use conventional::{CommitParser, ConventionalCommit};
 pub use error::{Error, Result};
 pub use manifest::CargoManifest;

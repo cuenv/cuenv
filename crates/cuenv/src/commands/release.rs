@@ -8,8 +8,8 @@
 //! - `cuenv release publish` - Publish workspace packages to crates.io in dependency order
 
 use cuenv_release::{
-    BumpType, CargoManifest, Changeset, ChangesetManager, CommitParser, PackageChange,
-    PublishPackage, PublishPlan, ReleasePackagesConfig, VersionCalculator,
+    BumpType, CargoManifest, Changeset, ChangesetManager, CommitAnalyzer, CommitParser,
+    PackageChange, PublishPackage, PublishPlan, ReleasePackagesConfig, Version, VersionCalculator,
 };
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -22,6 +22,8 @@ use toml::Value as TomlValue;
 /// Execute the `changeset add` command.
 ///
 /// Creates a new changeset with the specified packages and bump types.
+/// If no packages or summary are provided and stdin is a TTY, launches
+/// an interactive picker.
 ///
 /// # Errors
 ///
@@ -29,10 +31,30 @@ use toml::Value as TomlValue;
 pub fn execute_changeset_add(
     path: &str,
     packages: &[(String, String)],
-    summary: &str,
+    summary: Option<&str>,
     description: Option<&str>,
 ) -> cuenv_core::Result<String> {
     let root = Path::new(path);
+
+    // If no packages or summary provided and running interactively, launch picker
+    if packages.is_empty()
+        && summary.is_none()
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+    {
+        return execute_changeset_add_interactive(root);
+    }
+
+    // Validate we have the required args for non-interactive mode
+    let summary = summary.ok_or_else(|| {
+        cuenv_core::Error::configuration("Summary is required. Use -s or run interactively.")
+    })?;
+
+    if packages.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "At least one package must be specified. Use -P or run interactively.",
+        ));
+    }
+
     let manager = ChangesetManager::new(root);
 
     // Parse package changes
@@ -42,12 +64,6 @@ pub fn execute_changeset_add(
             cuenv_core::Error::configuration(format!("Invalid bump type for {name}: {e}"))
         })?;
         pkg_changes.push(PackageChange::new(name, bump));
-    }
-
-    if pkg_changes.is_empty() {
-        return Err(cuenv_core::Error::configuration(
-            "At least one package must be specified",
-        ));
     }
 
     let changeset = Changeset::new(summary, pkg_changes, description.map(String::from));
@@ -62,6 +78,64 @@ pub fn execute_changeset_add(
         changeset.id,
         changeset.summary
     ))
+}
+
+/// Execute the interactive changeset add flow.
+fn execute_changeset_add_interactive(root: &Path) -> cuenv_core::Result<String> {
+    use super::changeset_picker::{ChangesetPickerResult, PackageInfo, run_changeset_picker};
+
+    // Get package info from manifest
+    let manifest = CargoManifest::new(root);
+    let package_versions = manifest.read_package_versions().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package versions: {e}"))
+    })?;
+
+    let packages: Vec<PackageInfo> = package_versions
+        .into_iter()
+        .map(|(name, version)| PackageInfo {
+            name,
+            version: version.to_string(),
+        })
+        .collect();
+
+    if packages.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "No packages found in workspace",
+        ));
+    }
+
+    // Run the interactive picker
+    let result = run_changeset_picker(packages)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Interactive picker failed: {e}")))?;
+
+    match result {
+        ChangesetPickerResult::Cancelled => Ok("Changeset creation cancelled.".to_string()),
+        ChangesetPickerResult::Completed {
+            packages: pkg_bumps,
+            summary,
+            description,
+        } => {
+            let manager = ChangesetManager::new(root);
+
+            let pkg_changes: Vec<PackageChange> = pkg_bumps
+                .into_iter()
+                .map(|(name, bump)| PackageChange::new(name, bump))
+                .collect();
+
+            let changeset = Changeset::new(&summary, pkg_changes, description);
+
+            let changeset_path = manager.add(&changeset).map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to create changeset: {e}"))
+            })?;
+
+            Ok(format!(
+                "Created changeset: {}\n  ID: {}\n  Summary: {}",
+                changeset_path.display(),
+                changeset.id,
+                changeset.summary
+            ))
+        }
+    }
 }
 
 /// Status output for JSON mode
@@ -196,11 +270,9 @@ pub fn execute_changeset_status_with_format(path: &str, json: bool) -> cuenv_cor
 ///
 /// Parses conventional commits since the last tag and creates a changeset.
 ///
-/// This function applies a workspace-wide version bump strategy: it calculates the
-/// maximum bump type from all conventional commits and applies it to ALL packages
-/// in the workspace. This is intentional behavior for unified versioning across
-/// the workspace. For per-package versioning, use `changeset add` to manually
-/// specify version bumps for individual packages.
+/// This function uses per-package versioning: it analyzes git diffs to determine
+/// which packages each commit affects, and bumps only those packages. This enables
+/// independent versioning in monorepos.
 ///
 /// # Errors
 ///
@@ -219,26 +291,29 @@ pub fn execute_changeset_from_commits(
         return Ok("No conventional commits found since last tag.".to_string());
     }
 
-    // Calculate aggregate bump type (workspace-wide)
-    let bump = CommitParser::aggregate_bump(&commits);
-    if bump == BumpType::None {
-        return Ok(
-            "No version-bumping commits found (only chore, docs, etc.).\n\
-             Use 'feat:' for features (minor) or 'fix:' for fixes (patch)."
-                .to_string(),
-        );
-    }
-
-    // Get package names from manifest
+    // Get package paths from manifest
     let manifest = CargoManifest::new(root);
-    let package_names = manifest.get_package_names().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to read package names: {e}"))
+    let package_paths = manifest.get_package_paths().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
     })?;
 
-    // Apply the aggregate bump to all workspace packages
-    let pkg_changes: Vec<PackageChange> = package_names
+    // Analyze commits per package
+    let analyzer = CommitAnalyzer::new(root, package_paths.clone());
+    let package_bumps = analyzer
+        .calculate_bumps(&commits)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to analyze commits: {e}")))?;
+
+    if package_bumps.is_empty() {
+        return Ok("No version-bumping commits found for any packages.\n\
+             Use 'feat:' for features (minor) or 'fix:' for fixes (patch).\n\
+             Note: Changes to root-level files don't affect package versions."
+            .to_string());
+    }
+
+    // Create package changes only for affected packages
+    let pkg_changes: Vec<PackageChange> = package_bumps
         .iter()
-        .map(|name| PackageChange::new(name, bump))
+        .map(|(name, bump)| PackageChange::new(name, *bump))
         .collect();
 
     // Generate summary from commits
@@ -264,10 +339,27 @@ pub fn execute_changeset_from_commits(
     );
     let _ = writeln!(output, "  Path: {}", changeset_path.display());
     let _ = writeln!(output, "  ID: {}", changeset.id);
-    let _ = writeln!(output, "  Bump type: {bump}");
     let _ = writeln!(output, "\nPackages affected:");
-    for name in &package_names {
-        let _ = writeln!(output, "  • {name}");
+
+    // Sort for consistent output
+    let mut sorted_bumps: Vec<_> = package_bumps.iter().collect();
+    sorted_bumps.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, bump) in sorted_bumps {
+        let _ = writeln!(output, "  • {name} ({bump})");
+    }
+
+    // Show packages not affected
+    let affected_packages: std::collections::HashSet<_> = package_bumps.keys().collect();
+    let all_packages: Vec<_> = package_paths
+        .keys()
+        .filter(|p| !affected_packages.contains(p))
+        .collect();
+
+    if !all_packages.is_empty() {
+        let _ = writeln!(output, "\nPackages unchanged:");
+        for name in all_packages {
+            let _ = writeln!(output, "  • {name}");
+        }
     }
 
     Ok(output)
@@ -849,6 +941,365 @@ fn parse_github_url(url: &str) -> Option<(String, String)> {
     None
 }
 
+/// Options for the `release prepare` command.
+#[derive(Debug, Clone)]
+pub struct ReleasePrepareOptions {
+    /// Project root path.
+    pub path: String,
+    /// Git tag or ref to analyze commits from.
+    pub since: Option<String>,
+    /// Preview changes without applying.
+    pub dry_run: bool,
+    /// Branch name for the release.
+    pub branch: String,
+    /// Skip creating the pull request.
+    pub no_pr: bool,
+}
+
+/// Information about a package version bump.
+#[derive(Debug, serde::Serialize)]
+pub struct PackageBumpInfo {
+    /// Package name.
+    pub name: String,
+    /// Current version.
+    pub current_version: String,
+    /// New version.
+    pub new_version: String,
+    /// Bump type.
+    pub bump_type: String,
+}
+
+/// Execute the `release prepare` command.
+///
+/// This unified command orchestrates the release workflow:
+/// 1. Analyze commits since the last tag
+/// 2. Map commits to affected packages
+/// 3. Calculate per-package version bumps
+/// 4. Update Cargo.toml versions
+/// 5. Generate/update CHANGELOG.md
+/// 6. Create release branch, commit, and push
+/// 7. Create PR via `gh` CLI
+///
+/// # Errors
+///
+/// Returns an error if any step fails.
+#[allow(clippy::too_many_lines)]
+pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<String> {
+    let root = Path::new(&opts.path);
+
+    // Step 1: Parse commits since last tag
+    let commits = CommitParser::parse_since_tag(root, opts.since.as_deref())
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
+
+    if commits.is_empty() {
+        return Ok("No conventional commits found since last tag. Nothing to release.".to_string());
+    }
+
+    // Step 2: Get workspace packages
+    let manifest = CargoManifest::new(root);
+    let package_paths = manifest.get_package_paths().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
+    })?;
+    let package_versions = manifest.read_package_versions().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package versions: {e}"))
+    })?;
+
+    // Step 3: Analyze which packages each commit affects
+    let analyzer = CommitAnalyzer::new(root, package_paths.clone());
+    let package_bumps = analyzer
+        .calculate_bumps(&commits)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to analyze commits: {e}")))?;
+
+    if package_bumps.is_empty() {
+        return Ok("No packages affected by commits. Nothing to release.".to_string());
+    }
+
+    // Step 4: Calculate new versions
+    let mut bump_infos = Vec::new();
+    let mut new_versions: std::collections::HashMap<String, Version> =
+        std::collections::HashMap::new();
+    for (pkg_name, bump_type) in &package_bumps {
+        // Skip BumpType::None
+        if *bump_type == BumpType::None {
+            continue;
+        }
+
+        let current = package_versions.get(pkg_name).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!("No version found for package: {pkg_name}"))
+        })?;
+
+        let new_version = current.bump(*bump_type);
+        new_versions.insert(pkg_name.clone(), new_version.clone());
+        bump_infos.push(PackageBumpInfo {
+            name: pkg_name.clone(),
+            current_version: current.to_string(),
+            new_version: new_version.to_string(),
+            bump_type: bump_type.to_string(),
+        });
+    }
+
+    // Build output
+    let mut output = String::new();
+    let _ = writeln!(output, "Release Prepare Summary");
+    let _ = writeln!(output, "=======================\n");
+    let _ = writeln!(output, "Commits analyzed: {}", commits.len());
+    let _ = writeln!(output, "Packages affected: {}\n", bump_infos.len());
+
+    let _ = writeln!(output, "Version Bumps:");
+    let _ = writeln!(output, "{:-<60}", "");
+    let _ = writeln!(output, "{:<30} {:>12} {:>12}", "Package", "Current", "New");
+    let _ = writeln!(output, "{:-<60}", "");
+    for info in &bump_infos {
+        let _ = writeln!(
+            output,
+            "{:<30} {:>12} {:>12}",
+            info.name, info.current_version, info.new_version
+        );
+    }
+    let _ = writeln!(output, "{:-<60}\n", "");
+
+    if opts.dry_run {
+        let _ = writeln!(output, "[DRY RUN] No changes applied.");
+        let _ = writeln!(output, "\nTo apply changes, run without --dry-run");
+        return Ok(output);
+    }
+
+    // Step 5: Update Cargo.toml versions
+    let _ = writeln!(output, "Updating package versions...");
+    for info in &bump_infos {
+        if let Some(pkg_path) = package_paths.get(&info.name) {
+            let manifest_path = pkg_path.join("Cargo.toml");
+            update_package_version(&manifest_path, &info.new_version)?;
+        }
+    }
+
+    // Also update workspace version if present
+    let workspace_manifest = root.join("Cargo.toml");
+    if let Ok(content) = fs::read_to_string(&workspace_manifest)
+        && content.contains("[workspace.package]")
+        && content.contains("version =")
+        && let Some(primary) = bump_infos.first()
+        && let Some(new_ver) = new_versions.get(&primary.name)
+    {
+        manifest.update_workspace_version(new_ver).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to update workspace version: {e}"))
+        })?;
+    }
+
+    // Step 6: Create release branch
+    let _ = writeln!(output, "Creating release branch '{}'...", opts.branch);
+    run_git_command(root, &["checkout", "-b", &opts.branch])?;
+
+    // Step 7: Commit changes
+    let _ = writeln!(output, "Committing version updates...");
+    run_git_command(root, &["add", "-A"])?;
+
+    let commit_msg = format!(
+        "chore(release): prepare release\n\n{}",
+        bump_infos
+            .iter()
+            .map(|i| format!("- {}: {} -> {}", i.name, i.current_version, i.new_version))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    run_git_command(root, &["commit", "-m", &commit_msg])?;
+
+    // Step 8: Push branch
+    let _ = writeln!(output, "Pushing branch to origin...");
+    run_git_command(root, &["push", "-u", "origin", &opts.branch])?;
+
+    // Step 9: Create PR
+    if !opts.no_pr {
+        let _ = writeln!(output, "Creating pull request...");
+        let pr_body = generate_pr_body(&bump_infos, &commits);
+        let pr_title = format!(
+            "chore(release): prepare release {}",
+            bump_infos
+                .first()
+                .map_or("next", |i| i.new_version.as_str())
+        );
+
+        match create_pull_request(root, &pr_title, &pr_body) {
+            Ok(pr_url) => {
+                let _ = writeln!(output, "\nPull request created: {pr_url}");
+            }
+            Err(e) => {
+                let _ = writeln!(output, "\nWarning: Failed to create PR: {e}");
+                let _ = writeln!(output, "You can create the PR manually.");
+            }
+        }
+    }
+
+    let _ = writeln!(output, "\nRelease preparation complete!");
+    Ok(output)
+}
+
+/// Update a package's Cargo.toml with new version.
+fn update_package_version(manifest_path: &Path, new_version: &str) -> cuenv_core::Result<()> {
+    let content = fs::read_to_string(manifest_path).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read {}: {e}", manifest_path.display()))
+    })?;
+
+    // Simple regex-free version update
+    let mut new_content = String::new();
+    let mut in_package = false;
+    let mut version_updated = false;
+
+    for line in content.lines() {
+        if line.trim() == "[package]" {
+            in_package = true;
+        } else if line.starts_with('[') {
+            in_package = false;
+        }
+
+        if in_package && line.trim().starts_with("version") && !version_updated {
+            // Check if it's workspace reference
+            if line.contains("workspace = true") {
+                new_content.push_str(line);
+            } else {
+                let _ = write!(new_content, "version = \"{new_version}\"");
+                version_updated = true;
+            }
+        } else {
+            new_content.push_str(line);
+        }
+        new_content.push('\n');
+    }
+
+    fs::write(manifest_path, new_content).map_err(|e| {
+        cuenv_core::Error::configuration(format!(
+            "Failed to write {}: {e}",
+            manifest_path.display()
+        ))
+    })?;
+
+    Ok(())
+}
+
+/// Run a git command.
+fn run_git_command(root: &Path, args: &[&str]) -> cuenv_core::Result<()> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to run git {}: {e}", args.join(" ")),
+                "Ensure git is installed and available in PATH",
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(cuenv_core::Error::execution_with_help(
+            format!("git {} failed: {stderr}", args.join(" ")),
+            "Check the error message above",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Generate PR body from bump info and commits.
+fn generate_pr_body(
+    bumps: &[PackageBumpInfo],
+    commits: &[cuenv_release::ConventionalCommit],
+) -> String {
+    let mut body = String::new();
+
+    body.push_str("## Summary\n\n");
+
+    // Version table
+    body.push_str("| Package | Current | New | Bump |\n");
+    body.push_str("|---------|---------|-----|------|\n");
+    for info in bumps {
+        let _ = writeln!(
+            body,
+            "| {} | {} | {} | {} |",
+            info.name, info.current_version, info.new_version, info.bump_type
+        );
+    }
+
+    body.push_str("\n## Commits\n\n");
+
+    // Group commits by type
+    let mut features: Vec<&cuenv_release::ConventionalCommit> = Vec::new();
+    let mut fixes: Vec<&cuenv_release::ConventionalCommit> = Vec::new();
+    let mut others: Vec<&cuenv_release::ConventionalCommit> = Vec::new();
+
+    for commit in commits {
+        match commit.commit_type.as_str() {
+            "feat" => features.push(commit),
+            "fix" => fixes.push(commit),
+            _ => others.push(commit),
+        }
+    }
+
+    if !features.is_empty() {
+        body.push_str("### Features\n\n");
+        for c in &features {
+            let scope = c
+                .scope
+                .as_ref()
+                .map_or(String::new(), |s| format!("**{s}**: "));
+            let _ = writeln!(body, "- {}{}", scope, c.description);
+        }
+        body.push('\n');
+    }
+
+    if !fixes.is_empty() {
+        body.push_str("### Bug Fixes\n\n");
+        for c in &fixes {
+            let scope = c
+                .scope
+                .as_ref()
+                .map_or(String::new(), |s| format!("**{s}**: "));
+            let _ = writeln!(body, "- {}{}", scope, c.description);
+        }
+        body.push('\n');
+    }
+
+    if !others.is_empty() {
+        body.push_str("### Other Changes\n\n");
+        for c in &others {
+            let scope = c
+                .scope
+                .as_ref()
+                .map_or(String::new(), |s| format!("**{s}**: "));
+            let _ = writeln!(body, "- {}{}", scope, c.description);
+        }
+    }
+
+    body.push_str("\n---\n\n🤖 Generated with [cuenv](https://github.com/cuenv/cuenv)\n");
+
+    body
+}
+
+/// Create a pull request using gh CLI.
+fn create_pull_request(root: &Path, title: &str, body: &str) -> cuenv_core::Result<String> {
+    let output = Command::new("gh")
+        .args(["pr", "create", "--title", title, "--body", body])
+        .current_dir(root)
+        .output()
+        .map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to run gh pr create: {e}"),
+                "Ensure gh CLI is installed and authenticated (gh auth login)",
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(cuenv_core::Error::execution_with_help(
+            format!("gh pr create failed: {stderr}"),
+            "Ensure gh CLI is authenticated and repository has a remote origin",
+        ));
+    }
+
+    let pr_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(pr_url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -900,7 +1351,8 @@ version.workspace = true
 
         let packages = vec![("my-pkg".to_string(), "minor".to_string())];
 
-        let result = execute_changeset_add(path, &packages, "Add feature", Some("Details here"));
+        let result =
+            execute_changeset_add(path, &packages, Some("Add feature"), Some("Details here"));
 
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -915,7 +1367,7 @@ version.workspace = true
 
         let packages = vec![("my-pkg".to_string(), "invalid".to_string())];
 
-        let result = execute_changeset_add(path, &packages, "Test", None);
+        let result = execute_changeset_add(path, &packages, Some("Test"), None);
         assert!(result.is_err());
     }
 
@@ -926,7 +1378,7 @@ version.workspace = true
 
         let packages: Vec<(String, String)> = vec![];
 
-        let result = execute_changeset_add(path, &packages, "Test", None);
+        let result = execute_changeset_add(path, &packages, Some("Test"), None);
         assert!(result.is_err());
     }
 
@@ -947,7 +1399,7 @@ version.workspace = true
 
         // First add a changeset
         let packages = vec![("pkg-a".to_string(), "minor".to_string())];
-        execute_changeset_add(path, &packages, "Add feature", None).unwrap();
+        execute_changeset_add(path, &packages, Some("Add feature"), None).unwrap();
 
         // Then check status
         let result = execute_changeset_status(path);
@@ -974,7 +1426,7 @@ version.workspace = true
 
         // Add a changeset first
         let packages = vec![("foo".to_string(), "minor".to_string())];
-        execute_changeset_add(&path, &packages, "Feature", None).unwrap();
+        execute_changeset_add(&path, &packages, Some("Feature"), None).unwrap();
 
         let result = execute_release_version(&path, true);
         assert!(result.is_ok());
@@ -990,7 +1442,7 @@ version.workspace = true
 
         // Add a changeset
         let packages = vec![("foo".to_string(), "minor".to_string())];
-        execute_changeset_add(&path, &packages, "Feature", None).unwrap();
+        execute_changeset_add(&path, &packages, Some("Feature"), None).unwrap();
 
         // Apply version changes
         let result = execute_release_version(&path, false);
@@ -1148,8 +1600,9 @@ version.workspace = true
             .unwrap();
 
         // Create a second commit (after tag) - this should be picked up
-        let new_file = std::path::Path::new(&path).join("new-file.txt");
-        std::fs::write(new_file, "content").unwrap();
+        // The file must be in a package directory for per-package analysis to detect it
+        let new_file = std::path::Path::new(&path).join("crates/foo/new-feature.rs");
+        std::fs::write(new_file, "// new feature").unwrap();
         create_git_commit(&path, "feat: new feature after tag");
 
         // Test with since_tag - should only process commits after the tag
@@ -1160,6 +1613,8 @@ version.workspace = true
         assert!(output.contains("conventional commit"));
         // Should have created changeset from 1 commit (the one after the tag)
         assert!(output.contains("1 conventional commit"));
+        // Only foo should be affected (not bar)
+        assert!(output.contains("foo"));
     }
 
     #[test]
