@@ -1,13 +1,13 @@
-//! Sync command implementation for generating files from CUE configuration.
+//! Sync function implementations.
 //!
 //! Supports generating:
 //! - Ignore files (.gitignore, .dockerignore, etc.) from the `ignore` field
 //! - CODEOWNERS file from the `owners` field
 //! - Project files from CUE cube templates
 
-use super::env_file::find_cue_module_root;
-use super::owners;
-use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
+use super::super::env_file::find_cue_module_root;
+use super::super::owners;
+use super::super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::{Base, Project};
 use cuenv_core::{ModuleEvaluation, Result};
@@ -402,7 +402,7 @@ async fn execute_sync_codeowners_inner(
 }
 
 /// Load module from path for workspace operations.
-fn load_module_from_path(path: &Path, package: &str) -> Result<cuenv_core::ModuleEvaluation> {
+pub fn load_module_from_path(path: &Path, package: &str) -> Result<cuenv_core::ModuleEvaluation> {
     let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
         source: e,
         path: Some(path.to_path_buf().into_boxed_path()),
@@ -431,7 +431,7 @@ fn load_module_from_path(path: &Path, package: &str) -> Result<cuenv_core::Modul
 }
 
 /// Create a synthetic project name from a relative path.
-fn synthetic_name_from_path(path: &Path) -> String {
+pub fn synthetic_name_from_path(path: &Path) -> String {
     if path == Path::new(".") {
         "[root]".to_string()
     } else {
@@ -449,7 +449,7 @@ pub async fn execute_sync_codeowners_workspace(
     dry_run: bool,
     check: bool,
 ) -> Result<String> {
-    use crate::providers::detect_codeowners_provider;
+    use crate::providers::detect_code_owners_provider;
     use cuenv_codeowners::Rule;
     use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
 
@@ -510,7 +510,7 @@ pub async fn execute_sync_codeowners_workspace(
     }
 
     // Detect provider based on repo structure
-    let provider = detect_codeowners_provider(&module.root);
+    let provider = detect_code_owners_provider(&module.root);
 
     if check {
         // Check mode - verify CODEOWNERS is in sync

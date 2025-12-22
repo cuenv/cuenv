@@ -12,7 +12,7 @@
 
 use cuenv_codeowners::Platform;
 use cuenv_codeowners::provider::{
-    CheckResult, CodeownersProvider, ProjectOwners, ProviderError, Result, SyncResult,
+    CheckResult, CodeOwnersProvider, ProjectOwners, ProviderError, Result, SyncResult,
     generate_aggregated_content, write_codeowners_file,
 };
 use std::fs;
@@ -23,9 +23,9 @@ use std::path::Path;
 /// Writes a single aggregated CODEOWNERS file to the repository root.
 /// Uses GitLab's `[Section]` syntax for grouping rules.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct GitLabCodeownersProvider;
+pub struct GitLabCodeOwnersProvider;
 
-impl CodeownersProvider for GitLabCodeownersProvider {
+impl CodeOwnersProvider for GitLabCodeOwnersProvider {
     fn platform(&self) -> Platform {
         Platform::Gitlab
     }
@@ -108,14 +108,14 @@ mod tests {
 
     #[test]
     fn test_gitlab_provider_platform() {
-        let provider = GitLabCodeownersProvider;
+        let provider = GitLabCodeOwnersProvider;
         assert_eq!(provider.platform(), Platform::Gitlab);
     }
 
     #[test]
     fn test_gitlab_sync_creates_file() {
         let temp = tempdir().unwrap();
-        let provider = GitLabCodeownersProvider;
+        let provider = GitLabCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn test_gitlab_uses_section_syntax() {
         let temp = tempdir().unwrap();
-        let provider = GitLabCodeownersProvider;
+        let provider = GitLabCodeOwnersProvider;
 
         let projects = vec![
             ProjectOwners::new(
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn test_gitlab_sync_dry_run() {
         let temp = tempdir().unwrap();
-        let provider = GitLabCodeownersProvider;
+        let provider = GitLabCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn test_gitlab_check_in_sync() {
         let temp = tempdir().unwrap();
-        let provider = GitLabCodeownersProvider;
+        let provider = GitLabCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn test_gitlab_check_out_of_sync() {
         let temp = tempdir().unwrap();
-        let provider = GitLabCodeownersProvider;
+        let provider = GitLabCodeOwnersProvider;
 
         // Create file with different content
         fs::write(temp.path().join("CODEOWNERS"), "# Different content\n").unwrap();
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn test_gitlab_empty_projects_error() {
         let temp = tempdir().unwrap();
-        let provider = GitLabCodeownersProvider;
+        let provider = GitLabCodeOwnersProvider;
 
         let result = provider.sync(temp.path(), &[], false);
         assert!(result.is_err());

@@ -10,7 +10,7 @@
 
 use cuenv_codeowners::Platform;
 use cuenv_codeowners::provider::{
-    CheckResult, CodeownersProvider, ProjectOwners, ProviderError, Result, SyncResult,
+    CheckResult, CodeOwnersProvider, ProjectOwners, ProviderError, Result, SyncResult,
     generate_aggregated_content, write_codeowners_file,
 };
 use std::fs;
@@ -20,9 +20,9 @@ use std::path::Path;
 ///
 /// Writes a single aggregated CODEOWNERS file to `.github/CODEOWNERS`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct GitHubCodeownersProvider;
+pub struct GitHubCodeOwnersProvider;
 
-impl CodeownersProvider for GitHubCodeownersProvider {
+impl CodeOwnersProvider for GitHubCodeOwnersProvider {
     fn platform(&self) -> Platform {
         Platform::Github
     }
@@ -105,14 +105,14 @@ mod tests {
 
     #[test]
     fn test_github_provider_platform() {
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
         assert_eq!(provider.platform(), Platform::Github);
     }
 
     #[test]
     fn test_github_sync_creates_file() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn test_github_sync_dry_run() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn test_github_sync_updates_file() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         // Create initial file
         let github_dir = temp.path().join(".github");
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn test_github_sync_unchanged() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn test_github_check_in_sync() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn test_github_check_out_of_sync() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         // Create file with different content
         let github_dir = temp.path().join(".github");
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn test_github_check_missing_file() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![ProjectOwners::new(
             "services/api",
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn test_github_aggregates_multiple_projects() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         let projects = vec![
             ProjectOwners::new(
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn test_github_root_project() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         // Project at repo root
         let projects = vec![ProjectOwners::new(
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn test_github_empty_projects_error() {
         let temp = tempdir().unwrap();
-        let provider = GitHubCodeownersProvider;
+        let provider = GitHubCodeOwnersProvider;
 
         let result = provider.sync(temp.path(), &[], false);
         assert!(result.is_err());

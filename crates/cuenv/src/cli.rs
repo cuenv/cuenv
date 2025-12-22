@@ -585,9 +585,10 @@ pub enum SyncCommands {
         all: bool,
     },
     #[command(
+        name = "codeowners",
         about = "Sync CODEOWNERS file from CUE configuration (always aggregates all configs)"
     )]
-    Codeowners {
+    CodeOwners {
         #[arg(
             long,
             short = 'p',
@@ -1190,14 +1191,39 @@ impl Commands {
                 check,
                 all,
             } => {
-                // If subcommand has its own arguments, use them; otherwise use parent args
+                use crate::commands::handler::SyncScope;
+                use crate::commands::sync::SyncMode;
+
+                // Helper to convert bools to SyncMode
+                let to_mode = |dry_run: bool, check: bool| {
+                    if dry_run {
+                        SyncMode::DryRun
+                    } else if check {
+                        SyncMode::Check
+                    } else {
+                        SyncMode::Write
+                    }
+                };
+
+                // Helper to convert bool to SyncScope
+                let to_scope = |all: bool| {
+                    if all {
+                        SyncScope::Workspace
+                    } else {
+                        SyncScope::Path
+                    }
+                };
+
+                // Convert subcommand to provider name and extract provider-specific args
                 let (
-                    effective_subcommand,
+                    provider_name,
                     effective_path,
                     effective_package,
-                    effective_dry_run,
-                    effective_check,
-                    effective_all,
+                    mode,
+                    scope,
+                    show_diff,
+                    force,
+                    ci_provider,
                 ) = match subcommand {
                     Some(SyncCommands::Ignore {
                         path: sub_path,
@@ -1206,94 +1232,86 @@ impl Commands {
                         check: sub_check,
                         all: sub_all,
                     }) => (
-                        Some(SyncCommands::Ignore {
-                            path: sub_path.clone(),
-                            package: sub_package.clone(),
-                            dry_run: sub_dry_run,
-                            check: sub_check,
-                            all: sub_all,
-                        }),
+                        Some("ignore".to_string()),
                         sub_path,
                         sub_package,
-                        sub_dry_run,
-                        sub_check,
-                        sub_all || all,
+                        to_mode(sub_dry_run, sub_check),
+                        to_scope(sub_all || all),
+                        false,
+                        false,
+                        None,
                     ),
-                    Some(SyncCommands::Codeowners {
+                    Some(SyncCommands::CodeOwners {
                         path: sub_path,
                         package: sub_package,
                         dry_run: sub_dry_run,
                         check: sub_check,
                         all: sub_all,
                     }) => (
-                        Some(SyncCommands::Codeowners {
-                            path: sub_path.clone(),
-                            package: sub_package.clone(),
-                            dry_run: sub_dry_run,
-                            check: sub_check,
-                            all: sub_all,
-                        }),
+                        Some("codeowners".to_string()),
                         sub_path,
                         sub_package,
-                        sub_dry_run,
-                        sub_check,
-                        sub_all || all,
+                        to_mode(sub_dry_run, sub_check),
+                        to_scope(sub_all || all),
+                        false,
+                        false,
+                        None,
                     ),
                     Some(SyncCommands::Cubes {
                         path: sub_path,
                         package: sub_package,
                         dry_run: sub_dry_run,
                         check: sub_check,
-                        diff,
+                        diff: cubes_diff,
                         all: sub_all,
                     }) => (
-                        Some(SyncCommands::Cubes {
-                            path: sub_path.clone(),
-                            package: sub_package.clone(),
-                            dry_run: sub_dry_run,
-                            check: sub_check,
-                            diff,
-                            all: sub_all,
-                        }),
+                        Some("cubes".to_string()),
                         sub_path,
                         sub_package,
-                        sub_dry_run,
-                        sub_check,
-                        sub_all || all,
+                        to_mode(sub_dry_run, sub_check),
+                        to_scope(sub_all || all),
+                        cubes_diff,
+                        false,
+                        None,
                     ),
                     Some(SyncCommands::Ci {
                         path: sub_path,
                         package: sub_package,
                         dry_run: sub_dry_run,
                         check: sub_check,
-                        force,
+                        force: ci_force,
                         all: sub_all,
                         provider,
                     }) => (
-                        Some(SyncCommands::Ci {
-                            path: sub_path.clone(),
-                            package: sub_package.clone(),
-                            dry_run: sub_dry_run,
-                            check: sub_check,
-                            force,
-                            all: sub_all,
-                            provider,
-                        }),
+                        Some("ci".to_string()),
                         sub_path,
                         sub_package,
-                        sub_dry_run,
-                        sub_check,
-                        sub_all || all,
+                        to_mode(sub_dry_run, sub_check),
+                        to_scope(sub_all || all),
+                        false,
+                        ci_force,
+                        provider,
                     ),
-                    None => (None, path, package, dry_run, check, all),
+                    None => (
+                        None,
+                        path,
+                        package,
+                        to_mode(dry_run, check),
+                        to_scope(all),
+                        false,
+                        false,
+                        None,
+                    ),
                 };
                 Command::Sync {
-                    subcommand: effective_subcommand,
+                    subcommand: provider_name,
                     path: effective_path,
                     package: effective_package,
-                    dry_run: effective_dry_run,
-                    check: effective_check,
-                    all: effective_all,
+                    mode,
+                    scope,
+                    show_diff,
+                    force,
+                    ci_provider,
                 }
             }
             Commands::Secrets { subcommand } => match subcommand {

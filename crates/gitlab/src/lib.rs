@@ -1,7 +1,7 @@
 //! GitLab provider implementations for cuenv.
 //!
 //! This crate provides GitLab-specific implementations of:
-//! - [`GitLabCodeownersProvider`] for CODEOWNERS file management (feature: `codeowners`)
+//! - [`GitLabCodeOwnersProvider`] for CODEOWNERS file management (feature: `codeowners`)
 //!
 //! # Features
 //!
@@ -14,4 +14,4 @@ pub mod codeowners;
 
 // Re-exports for convenience
 #[cfg(feature = "codeowners")]
-pub use codeowners::GitLabCodeownersProvider;
+pub use codeowners::GitLabCodeOwnersProvider;

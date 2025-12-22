@@ -17,7 +17,7 @@ CODEOWNERS files automatically assign reviewers to pull requests based on file p
 
 ```text
 ┌────────────────────┐     ┌─────────────────┐     ┌──────────────────┐
-│ CodeownersBuilder  │────►│   Codeowners    │────►│  .CODEOWNERS     │
+│ CodeOwnersBuilder  │────►│   CodeOwners    │────►│  .CODEOWNERS     │
 │ (fluent API)       │     │  (config)       │     │  (output file)   │
 └────────────────────┘     └─────────────────┘     └──────────────────┘
                                    │
@@ -36,11 +36,11 @@ Enum representing the target platform (GitHub, GitLab, Bitbucket) with platform-
 **Rule**
 A single ownership rule mapping a file pattern to one or more owners.
 
-**Codeowners**
+**CodeOwners**
 The main configuration struct holding platform, rules, and output settings.
 
-**CodeownersBuilder**
-Fluent builder for constructing `Codeowners` configurations.
+**CodeOwnersBuilder**
+Fluent builder for constructing `CodeOwners` configurations.
 
 ## API Reference
 
@@ -85,14 +85,14 @@ let rule = Rule::new("/docs/**", ["@docs-team", "@tech-writers"])
 | `description(text)`    | Add a comment above the rule              |
 | `section(name)`        | Assign to a section for grouped output    |
 
-### Codeowners
+### CodeOwners
 
 Main configuration and generator:
 
 ```rust
-use cuenv_codeowners::{Codeowners, Platform, Rule};
+use cuenv_codeowners::{CodeOwners, Platform, Rule};
 
-let codeowners = Codeowners::builder()
+let codeowners = CodeOwners::builder()
     .platform(Platform::Github)
     .header("Code ownership rules")
     .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
@@ -114,7 +114,7 @@ let path = codeowners.output_path(); // ".github/CODEOWNERS"
 | `output_path()`              | Get the output path (custom or platform default) |
 | `detect_platform(repo_root)` | Auto-detect platform from repo structure         |
 
-### CodeownersBuilder
+### CodeOwnersBuilder
 
 Fluent builder for configuration:
 
@@ -125,7 +125,7 @@ Fluent builder for configuration:
 | `header(str)`        | Set header comment                   |
 | `rule(Rule)`         | Add a single rule                    |
 | `rules(iter)`        | Add multiple rules                   |
-| `build()`            | Build the `Codeowners` configuration |
+| `build()`            | Build the `CodeOwners` configuration |
 
 ## Features
 
@@ -145,10 +145,10 @@ cuenv-codeowners = { version = "...", features = ["serde"] }
 ### Basic Usage
 
 ```rust
-use cuenv_codeowners::{Codeowners, Platform, Rule};
+use cuenv_codeowners::{CodeOwners, Platform, Rule};
 use std::fs;
 
-let codeowners = Codeowners::builder()
+let codeowners = CodeOwners::builder()
     .platform(Platform::Github)
     .rule(Rule::new("*", ["@org/core-team"]))  // Catch-all rule
     .rule(Rule::new("*.rs", ["@rust-team"]))
@@ -162,14 +162,14 @@ fs::write(codeowners.output_path(), content)?;
 ### Platform Auto-Detection
 
 ```rust
-use cuenv_codeowners::{Codeowners, Platform};
+use cuenv_codeowners::{CodeOwners, Platform};
 use std::path::Path;
 
 // Detect from repo structure
-let platform = Codeowners::detect_platform(Path::new("."));
+let platform = CodeOwners::detect_platform(Path::new("."));
 // Checks for: .github/ -> GitHub, .gitlab-ci.yml -> GitLab, etc.
 
-let codeowners = Codeowners::builder()
+let codeowners = CodeOwners::builder()
     .platform(platform)
     .build();
 ```
@@ -177,9 +177,9 @@ let codeowners = Codeowners::builder()
 ### Organized Sections
 
 ```rust
-use cuenv_codeowners::{Codeowners, Platform, Rule};
+use cuenv_codeowners::{CodeOwners, Platform, Rule};
 
-let codeowners = Codeowners::builder()
+let codeowners = CodeOwners::builder()
     .platform(Platform::Github)
     .header("Auto-generated CODEOWNERS\nDo not edit manually")
     // Rules with same section are grouped together
@@ -215,9 +215,9 @@ println!("{}", codeowners.generate());
 GitLab uses `[Section]` syntax instead of `# Section`:
 
 ```rust
-use cuenv_codeowners::{Codeowners, Platform, Rule};
+use cuenv_codeowners::{CodeOwners, Platform, Rule};
 
-let codeowners = Codeowners::builder()
+let codeowners = CodeOwners::builder()
     .platform(Platform::Gitlab)
     .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
     .build();

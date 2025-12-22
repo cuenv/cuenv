@@ -47,7 +47,6 @@ zstd = { version = "0.13", features = ["zstdmt"] }
 hex = "0.4"
 cuenv-workspaces = { workspace = true, features = ["discovery-rust", "parsers-rust"] }
 cuenv-events = { workspace = true }
-cuenv-codeowners = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -36,7 +36,7 @@ name = "bdd"
 harness = false
 
 [dependencies]
-cuenv-codeowners = { workspace = true }
+cuenv-codeowners = { workspace = true, features = ["manifest"] }
 cuenv-core = { workspace = true }
 cuenv-cubes = { workspace = true }
 cuenv-dagger = { workspace = true, optional = true }
