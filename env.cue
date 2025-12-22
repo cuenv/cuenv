@@ -11,19 +11,6 @@ name: "cuenv"
 
 runtime: schema.#NixRuntime
 
-// Declarative release configuration for binary distribution
-release: schema.#Release & {
-	binary: "cuenv"
-	targets: ["linux-x64", "linux-arm64", "darwin-arm64"]
-
-	backends: {
-		crates: {}
-		cue: {}
-		github: {}
-		homebrew: tap: "cuenv/homebrew-tap"
-	}
-}
-
 hooks: onEnter: nix: schema.#NixFlake
 
 // Build cuenv from source instead of using released binaries
@@ -33,12 +20,12 @@ env: {
 	CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
 
 	environment: production: {
-		CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
-		CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
-		CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
-		CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
-		HOMEBREW_TAP_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
-		VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
+		CACHIX_AUTH_TOKEN:     schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
+		CLOUDFLARE_API_TOKEN:  schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
+		CODECOV_TOKEN:         schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
+		CUE_REGISTRY_TOKEN:    schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
+		HOMEBREW_TAP_TOKEN:    schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
+		VSCE_PAT:              schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
 	}
 }
 
@@ -66,6 +53,13 @@ ignore: {
 ci: {
 	provider: github: {
 		runner: "blacksmith-8vcpu-ubuntu-2404"
+		runners: {
+			arch: {
+				"linux-x64":    "blacksmith-8vcpu-ubuntu-2404"
+				"linux-arm64":  "blacksmith-8vcpu-ubuntu-2404-arm"
+				"darwin-arm64": "macos-14"
+			}
+		}
 		cachix: {
 			name:       "cuenv"
 			pushFilter: "(-source$|nixpkgs\\.tar\\.gz$)"
@@ -78,13 +72,12 @@ ci: {
 			".vscode/**",
 		]
 		artifacts: {
-			paths: [".cuenv/reports/"]
+			paths:          [".cuenv/reports/"]
 			ifNoFilesFound: "ignore"
 		}
 	}
 
 	pipelines: [
-		// Sync check pipeline - verifies generated workflows are in sync
 		{
 			name: "sync-check"
 			when: {
@@ -93,7 +86,6 @@ ci: {
 			}
 			tasks: ["ci.sync-check"]
 		},
-		// CI pipeline - runs on PRs and main branch pushes
 		{
 			name: "ci"
 			when: {
@@ -102,8 +94,6 @@ ci: {
 			}
 			tasks: ["check"]
 		},
-		// Release pipeline - builds binaries, publishes to GitHub/Homebrew/crates.io/CUE registry
-		// Triggered on release publish or manual workflow dispatch
 		{
 			name:        "release"
 			environment: "production"
@@ -117,22 +107,39 @@ ci: {
 					}
 				}
 			}
-			release: true // Auto-generate matrix build from release.targets
-			tasks: [
-				"docs.deploy",
-				"release.publish-cue",
-				"release.publish-crates",
-			]
 			provider: github: permissions: {
 				contents:   "write"
 				"id-token": "write"
 			}
+			tasks: [
+				{
+					task: "release.build"
+					matrix: {
+						arch: ["linux-x64", "linux-arm64", "darwin-arm64"]
+					}
+				},
+				{
+					task: "release.publish:github"
+					artifacts: [{
+						from:   "release.build"
+						to:     "dist"
+						filter: ""  // All variants (default)
+					}]
+					params: {
+						tag:   "${{ github.ref_name }}"
+						paths: "dist/**/*"
+					}
+				},
+				"release.publish:homebrew",
+				"release.publish:crates",
+				"release.publish:cue",
+				"docs.deploy",
+			]
 		},
 	]
 }
 
 tasks: {
-	// Common inputs for Rust/Cargo tasks
 	#BaseInputs: [
 		"Cargo.toml",
 		"Cargo.lock",
@@ -141,18 +148,16 @@ tasks: {
 
 	pwd: command: "pwd"
 
-	// CI sync check - verifies generated workflows match committed files
 	ci: "sync-check": {
-		command: "./result/bin/cuenv"
-		args: ["sync", "ci", "--check"]
+		command:     "./result/bin/cuenv"
+		args:        ["sync", "ci", "--check"]
 		description: "Verify CI workflows are in sync with CUE configuration"
-		inputs: ["env.cue", "schema", "cue.mod"]
+		inputs:      ["env.cue", "schema", "cue.mod"]
 	}
 
-	// CI check task - delegates to nix flake check for optimal caching
 	check: {
 		command: "nix"
-		args: ["flake", "check"]
+		args:    ["flake", "check"]
 		inputs: [
 			"flake.nix",
 			"flake.lock",
@@ -167,8 +172,8 @@ tasks: {
 
 	lint: {
 		command: "cargo"
-		args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
-		inputs: #BaseInputs
+		args:    ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+		inputs:  #BaseInputs
 	}
 
 	fmt: {
@@ -207,34 +212,34 @@ tasks: {
 		}
 		check: {
 			command: "treefmt"
-			args: ["--fail-on-change"]
-			inputs: _inputs
+			args:    ["--fail-on-change"]
+			inputs:  _inputs
 		}
 	}
 
 	test: {
 		unit: {
 			command: "cargo"
-			args: ["nextest", "run", "--workspace", "--all-features"]
-			inputs: list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
+			args:    ["nextest", "run", "--workspace", "--all-features"]
+			inputs:  list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		}
 		doc: {
 			command: "cargo"
-			args: ["test", "--doc", "--workspace"]
-			inputs: #BaseInputs
+			args:    ["test", "--doc", "--workspace"]
+			inputs:  #BaseInputs
 		}
 		bdd: {
 			command: "cargo"
-			args: ["test", "--test", "bdd"]
-			inputs: list.Concat([#BaseInputs, ["tests", "features", "schema", "cue.mod"]])
+			args:    ["test", "--test", "bdd"]
+			inputs:  list.Concat([#BaseInputs, ["tests", "features", "schema", "cue.mod"]])
 			outputs: [".test"]
 		}
 	}
 
 	build: {
 		command: "cargo"
-		args: ["build", "--workspace", "--all-features"]
-		inputs: #BaseInputs
+		args:    ["build", "--workspace", "--all-features"]
+		inputs:  #BaseInputs
 	}
 
 	cross: {
@@ -268,35 +273,35 @@ tasks: {
 	security: {
 		deny: {
 			command: "cargo"
-			args: ["deny", "check", "bans", "licenses", "advisories"]
-			inputs: list.Concat([#BaseInputs, ["deny.toml"]])
+			args:    ["deny", "check", "bans", "licenses", "advisories"]
+			inputs:  list.Concat([#BaseInputs, ["deny.toml"]])
 		}
 	}
 
 	sbom: {
 		command: "cargo"
-		args: ["cyclonedx", "--override-filename", "sbom.json"]
-		inputs: #BaseInputs
+		args:    ["cyclonedx", "--override-filename", "sbom.json"]
+		inputs:  #BaseInputs
 		outputs: ["sbom.json"]
 	}
 
 	coverage: {
 		command: "cargo"
-		args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-		inputs: list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
+		args:    ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
+		inputs:  list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		outputs: ["lcov.info"]
 	}
 
 	bench: {
 		command: "cargo"
-		args: ["bench", "--workspace", "--no-fail-fast"]
-		inputs: #BaseInputs
+		args:    ["bench", "--workspace", "--no-fail-fast"]
+		inputs:  #BaseInputs
 	}
 
 	docs: {
 		build: {
 			command: "bash"
-			args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build"]
+			args:    ["-c", "bun install --frozen-lockfile && cd docs && bun run build"]
 			inputs: [
 				"package.json",
 				"bun.lock",
@@ -305,41 +310,84 @@ tasks: {
 			outputs: ["docs/dist"]
 		}
 		deploy: {
-			command: "bash"
-			args: ["-c", "cd docs && npx wrangler deploy"]
+			command:   "bash"
+			args:      ["-c", "cd docs && npx wrangler deploy"]
 			dependsOn: ["docs.build"]
-			inputsFrom: [{task: "docs.build"}]
+			inputs:    [{task: "docs.build"}]
 		}
 	}
 
-	// LLM evaluation tasks using GitHub Models
 	eval: {
 		_inputs: ["llms.txt", "schema", "prompts"]
 
 		"task-gen": {
 			command: "gh"
-			args: ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
-			inputs: _inputs
+			args:    ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
+			inputs:  _inputs
 		}
 
 		"env-gen": {
 			command: "gh"
-			args: ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
-			inputs: _inputs
+			args:    ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
+			inputs:  _inputs
 		}
 
 		qa: {
 			command: "gh"
-			args: ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
-			inputs: _inputs
+			args:    ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
+			inputs:  _inputs
 		}
 	}
 
 	release: {
 		build: {
-			command: "cargo"
-			args: ["build", "--workspace", "--release"]
-			inputs: #BaseInputs
+			command: "nix"
+			args:    ["build", ".#cuenv"]
+			inputs:  #BaseInputs
+			outputs: ["result/bin/cuenv"]
+		}
+
+		"publish:github": {
+			command: "gh"
+			args:    ["release", "upload", "{{tag}}", "{{paths}}"]
+			params: {
+				tag: {
+					description: "Git tag to upload to"
+					required:    true
+				}
+				paths: {
+					description: "Glob pattern for files to upload"
+					required:    true
+				}
+			}
+		}
+
+		"publish:homebrew": {
+			command: "bash"
+			args: ["-c", """
+				echo "Publishing to homebrew tap..."
+				# Update homebrew tap with new version and checksums
+				"""]
+			dependsOn: ["release.publish:github"]
+		}
+
+		"publish:crates": {
+			command:   "cargo"
+			args:      ["publish", "-p", "cuenv"]
+			dependsOn: ["release.publish:cue"]
+		}
+
+		"publish:cue": {
+			command: "bash"
+			args: ["-c", """
+				TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+				if [ -z "$TAG" ]; then
+					echo "Error: No git tag found"
+					exit 1
+				fi
+				cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish $TAG
+				"""]
+			inputs: ["cue.mod", "schema"]
 		}
 
 		test: {
@@ -354,38 +402,16 @@ tasks: {
 			inputs: list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		}
 
-		"publish-cue": {
-			command: "bash"
-			args: ["-c", """
-				TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-				if [ -z "$TAG" ]; then
-					echo "Error: No git tag found"
-					exit 1
-				fi
-				cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish $TAG
-				"""]
-			inputs: ["cue.mod", "schema"]
-		}
-
-		"publish-crates": {
-			command: "bash"
-			args: ["-c", "./result/bin/cuenv release publish"]
-			dependsOn: ["release.publish-cue"]
-			inputs: #BaseInputs
-		}
-
-		// Prepare a release: analyze commits, bump versions, create PR
 		prepare: {
 			command: "./result/bin/cuenv"
-			args: ["release", "prepare"]
-			inputs: ["Cargo.toml", "Cargo.lock", "crates"]
+			args:    ["release", "prepare"]
+			inputs:  ["Cargo.toml", "Cargo.lock", "crates"]
 		}
 
-		// Dry-run prepare: preview what release prepare would do
 		"prepare-dry-run": {
 			command: "./result/bin/cuenv"
-			args: ["release", "prepare", "--dry-run"]
-			inputs: ["Cargo.toml", "Cargo.lock", "crates"]
+			args:    ["release", "prepare", "--dry-run"]
+			inputs:  ["Cargo.toml", "Cargo.lock", "crates"]
 		}
 	}
 }

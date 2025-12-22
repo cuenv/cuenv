@@ -17,7 +17,7 @@ use crate::ir::{
     WorkflowDispatchInputDef,
 };
 use crate::stages;
-use cuenv_core::ci::{CI, ManualTrigger, Pipeline};
+use cuenv_core::ci::{CI, ManualTrigger, Pipeline, PipelineTask};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
 use digest::DigestBuilder;
@@ -261,7 +261,12 @@ impl Compiler {
         // Set pipeline context from options (enables environment-aware contributors)
         if let Some(ref pipeline) = self.options.pipeline {
             ir.pipeline.environment.clone_from(&pipeline.environment);
-            ir.pipeline.pipeline_tasks.clone_from(&pipeline.tasks);
+            ir.pipeline.pipeline_tasks = pipeline
+                .tasks
+                .iter()
+                .map(PipelineTask::task_name)
+                .map(String::from)
+                .collect();
         }
 
         // Set up trigger conditions from CI configuration
@@ -391,8 +396,8 @@ impl Compiler {
         let mut paths = HashSet::new();
 
         // Collect inputs from all pipeline tasks (including transitive deps)
-        for task_name in &pipeline.tasks {
-            self.collect_task_inputs(task_name, &mut paths);
+        for task in &pipeline.tasks {
+            self.collect_task_inputs(task.task_name(), &mut paths);
         }
 
         // Add implicit CUE inputs (changes here should always trigger)

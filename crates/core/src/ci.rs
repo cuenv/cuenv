@@ -64,12 +64,83 @@ pub struct PipelineCondition {
     pub release: Option<Vec<String>>,
 }
 
+/// Runner mapping for matrix dimensions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RunnerMapping {
+    /// Architecture to runner mapping (e.g., "linux-x64" -> "ubuntu-latest")
+    pub arch: Option<HashMap<String, String>>,
+}
+
+/// Artifact download configuration for pipeline tasks
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactDownload {
+    /// Source task name (must have outputs)
+    pub from: String,
+    /// Base directory to download artifacts into
+    pub to: String,
+    /// Glob pattern to filter matrix variants (e.g., "*stable")
+    #[serde(default)]
+    pub filter: String,
+}
+
+/// Matrix task configuration for pipeline
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MatrixTask {
+    /// Task name to run
+    pub task: String,
+    /// Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
+    pub matrix: HashMap<String, Vec<String>>,
+    /// Artifacts to download before running
+    #[serde(default)]
+    pub artifacts: Option<Vec<ArtifactDownload>>,
+    /// Parameters to pass to the task
+    #[serde(default)]
+    pub params: Option<HashMap<String, String>>,
+}
+
+/// Pipeline task reference - either a simple task name or a matrix task
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum PipelineTask {
+    /// Simple task reference by name
+    Simple(String),
+    /// Matrix task with dimensions and optional artifacts/params
+    Matrix(MatrixTask),
+}
+
+impl PipelineTask {
+    /// Get the task name regardless of variant
+    pub fn task_name(&self) -> &str {
+        match self {
+            PipelineTask::Simple(name) => name,
+            PipelineTask::Matrix(matrix) => &matrix.task,
+        }
+    }
+
+    /// Check if this is a matrix task
+    pub fn is_matrix(&self) -> bool {
+        matches!(self, PipelineTask::Matrix(_))
+    }
+
+    /// Get matrix dimensions if this is a matrix task
+    pub fn matrix(&self) -> Option<&HashMap<String, Vec<String>>> {
+        match self {
+            PipelineTask::Simple(_) => None,
+            PipelineTask::Matrix(m) => Some(&m.matrix),
+        }
+    }
+}
+
 /// GitHub Actions provider configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubConfig {
     /// Runner label(s) - single string or array of labels
     pub runner: Option<StringOrVec>,
+    /// Runner mapping for matrix dimensions
+    pub runners: Option<RunnerMapping>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
     /// Artifact upload configuration
@@ -162,12 +233,9 @@ pub struct Pipeline {
     /// Environment for secret resolution (e.g., "production")
     pub environment: Option<String>,
     pub when: Option<PipelineCondition>,
-    /// Manual task list (mutually exclusive with `release`)
+    /// Tasks to run - can be simple task names or matrix task objects
     #[serde(default)]
-    pub tasks: Vec<String>,
-    /// When true, auto-generates build matrix and publish jobs from release config.
-    /// Mutually exclusive with `tasks`.
-    pub release: Option<bool>,
+    pub tasks: Vec<PipelineTask>,
     /// Whether to derive trigger paths from task inputs.
     /// Defaults to true for branch/PR triggers, false for scheduled-only.
     pub derive_paths: Option<bool>,
@@ -203,6 +271,7 @@ impl CI {
         match pipeline_config {
             Some(pipeline) => GitHubConfig {
                 runner: pipeline.runner.clone().or(global.runner),
+                runners: pipeline.runners.clone().or(global.runners),
                 cachix: pipeline.cachix.clone().or(global.cachix),
                 artifacts: pipeline.artifacts.clone().or(global.artifacts),
                 paths_ignore: pipeline.paths_ignore.clone().or(global.paths_ignore),
@@ -262,8 +331,7 @@ mod tests {
                     name: "ci".to_string(),
                     environment: None,
                     when: None,
-                    tasks: vec!["test".to_string()],
-                    release: None,
+                    tasks: vec![PipelineTask::Simple("test".to_string())],
                     derive_paths: None,
                     provider: Some(ProviderConfig {
                         github: Some(GitHubConfig {
@@ -277,8 +345,7 @@ mod tests {
                     name: "release".to_string(),
                     environment: None,
                     when: None,
-                    tasks: vec!["deploy".to_string()],
-                    release: None,
+                    tasks: vec![PipelineTask::Simple("deploy".to_string())],
                     derive_paths: None,
                     provider: None,
                 },
@@ -411,5 +478,79 @@ mod tests {
         let json = r#"{"name": "default", "tasks": ["build"]}"#;
         let pipeline: Pipeline = serde_json::from_str(json).unwrap();
         assert_eq!(pipeline.derive_paths, None);
+    }
+
+    #[test]
+    fn test_pipeline_task_simple() {
+        let json = r#""build""#;
+        let task: PipelineTask = serde_json::from_str(json).unwrap();
+        assert!(matches!(task, PipelineTask::Simple(ref s) if s == "build"));
+        assert_eq!(task.task_name(), "build");
+        assert!(!task.is_matrix());
+        assert!(task.matrix().is_none());
+    }
+
+    #[test]
+    fn test_pipeline_task_matrix() {
+        let json =
+            r#"{"task": "release.build", "matrix": {"arch": ["linux-x64", "darwin-arm64"]}}"#;
+        let task: PipelineTask = serde_json::from_str(json).unwrap();
+        assert!(task.is_matrix());
+        assert_eq!(task.task_name(), "release.build");
+
+        let matrix = task.matrix().unwrap();
+        assert!(matrix.contains_key("arch"));
+        assert_eq!(matrix["arch"], vec!["linux-x64", "darwin-arm64"]);
+    }
+
+    #[test]
+    fn test_pipeline_task_matrix_with_artifacts() {
+        let json = r#"{
+            "task": "release.publish",
+            "matrix": {},
+            "artifacts": [{"from": "release.build", "to": "dist", "filter": "*stable"}],
+            "params": {"tag": "v1.0.0"}
+        }"#;
+        let task: PipelineTask = serde_json::from_str(json).unwrap();
+
+        if let PipelineTask::Matrix(m) = task {
+            assert_eq!(m.task, "release.publish");
+            let artifacts = m.artifacts.unwrap();
+            assert_eq!(artifacts.len(), 1);
+            assert_eq!(artifacts[0].from, "release.build");
+            assert_eq!(artifacts[0].to, "dist");
+            assert_eq!(artifacts[0].filter, "*stable");
+
+            let params = m.params.unwrap();
+            assert_eq!(params.get("tag"), Some(&"v1.0.0".to_string()));
+        } else {
+            panic!("Expected Matrix variant");
+        }
+    }
+
+    #[test]
+    fn test_pipeline_mixed_tasks() {
+        let json = r#"{
+            "name": "release",
+            "tasks": [
+                {"task": "release.build", "matrix": {"arch": ["linux-x64", "darwin-arm64"]}},
+                "release.publish:github",
+                "docs.deploy"
+            ]
+        }"#;
+        let pipeline: Pipeline = serde_json::from_str(json).unwrap();
+        assert_eq!(pipeline.tasks.len(), 3);
+        assert!(pipeline.tasks[0].is_matrix());
+        assert!(!pipeline.tasks[1].is_matrix());
+        assert!(!pipeline.tasks[2].is_matrix());
+    }
+
+    #[test]
+    fn test_runner_mapping() {
+        let json = r#"{"arch": {"linux-x64": "ubuntu-latest", "darwin-arm64": "macos-14"}}"#;
+        let mapping: RunnerMapping = serde_json::from_str(json).unwrap();
+        let arch = mapping.arch.unwrap();
+        assert_eq!(arch.get("linux-x64"), Some(&"ubuntu-latest".to_string()));
+        assert_eq!(arch.get("darwin-arm64"), Some(&"macos-14".to_string()));
     }
 }
