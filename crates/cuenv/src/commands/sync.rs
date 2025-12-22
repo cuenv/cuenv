@@ -839,6 +839,7 @@ pub async fn execute_sync_ci(
     };
 
     let mut outputs = Vec::new();
+    let mut errors: Vec<(String, cuenv_core::Error)> = Vec::new();
 
     for prov in &providers {
         let result = match prov.as_str() {
@@ -851,19 +852,31 @@ pub async fn execute_sync_ci(
 
         match result {
             Ok(output) if !output.is_empty() => outputs.push(output),
-            Ok(_) => {} // Skip empty output
+            Ok(_) => {} // Skip empty output (no config for this provider)
             Err(e) => {
-                // For missing config, just skip silently unless it was explicitly requested
                 if provider.is_some() {
                     return Err(e);
                 }
                 tracing::debug!("Skipping {prov}: {e}");
+                errors.push((prov.clone(), e));
             }
         }
     }
 
     if outputs.is_empty() {
-        Ok("No CI configuration found.".to_string())
+        if errors.is_empty() {
+            Ok("No CI configuration found.".to_string())
+        } else {
+            // CI config exists but all providers had errors
+            let error_summary: Vec<String> = errors
+                .iter()
+                .map(|(prov, e)| format!("{prov}: {e}"))
+                .collect();
+            Ok(format!(
+                "CI sync failed for all providers:\n{}",
+                error_summary.join("\n")
+            ))
+        }
     } else {
         Ok(outputs.join("\n"))
     }
