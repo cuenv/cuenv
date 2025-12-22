@@ -17,33 +17,29 @@ release: schema.#Release & {
 	targets: ["linux-x64", "linux-arm64", "darwin-arm64"]
 
 	backends: {
-		github: {} // Auto-detect from git remote
-
-		homebrew: {
-			tap: "cuenv/homebrew-tap"
-		}
-
-		crates: {} // Use existing publish logic
-
-		cue: {} // Use existing cue mod publish
+		crates: {}
+		cue: {}
+		github: {}
+		homebrew: tap: "cuenv/homebrew-tap"
 	}
 }
 
 hooks: onEnter: nix: schema.#NixFlake
 
+// Build cuenv from source instead of using released binaries
 config: ci: cuenv: source: "build"
 
 env: {
-    CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
+	CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
 
-    environment: production: {
-        CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
-        CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
-        CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
-        CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
-        HOMEBREW_TAP_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
-        VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
-    }
+	environment: production: {
+		CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
+		CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
+		CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
+		CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
+		HOMEBREW_TAP_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
+		VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
+	}
 }
 
 owners: rules: default: {
@@ -106,10 +102,10 @@ ci: {
 			}
 			tasks: ["check"]
 		},
-		// Release binaries pipeline - auto-generates matrix build + publish from release config
-		// Builds for linux-x64, linux-arm64, darwin-arm64 and publishes to GitHub Releases + Homebrew
+		// Release pipeline - builds binaries, publishes to GitHub/Homebrew/crates.io/CUE registry
+		// Triggered on release publish or manual workflow dispatch
 		{
-			name:        "release-binaries"
+			name:        "release"
 			environment: "production"
 			when: {
 				release: ["published"]
@@ -122,63 +118,14 @@ ci: {
 				}
 			}
 			release: true // Auto-generate matrix build from release.targets
-			provider: github: permissions: {
-				contents:   "write"
-				"id-token": "write"
-			}
-		},
-		// Release metadata pipeline - publishes to CUE registry and crates.io
-		{
-			name:        "release-publish"
-			environment: "production"
-			when: {
-				release: ["published"]
-				manual: {
-					tag_name: {
-						description: "Tag to release (e.g., v0.16.0)"
-						required:    true
-						type:        "string"
-					}
-				}
-			}
-			derivePaths: false
 			tasks: [
+				"docs.deploy",
 				"release.publish-cue",
 				"release.publish-crates",
 			]
 			provider: github: permissions: {
 				contents:   "write"
 				"id-token": "write"
-			}
-		},
-		// Release PR pipeline - creates release PRs from changesets
-		{
-			name: "release-pr"
-			when: branch: "main"
-			tasks: ["release.generate-pr"]
-			provider: github: permissions: {
-				contents:       "write"
-				"pull-requests": "write"
-			}
-		},
-		// Docs deployment - on main push only
-		{
-			name:        "deploy"
-			environment: "production"
-			when: branch: "main"
-			tasks: ["docs.build", "docs.deploy"]
-		},
-		// LLM evaluation - on changes to prompts/schema, weekly scheduled
-		{
-			name: "llms-eval"
-			when: {
-				branch:      "main"
-				pullRequest: true
-				scheduled:   "0 0 * * 0" // Weekly Sunday midnight UTC
-			}
-			tasks: ["eval.task-gen", "eval.env-gen", "eval.qa"]
-			provider: github: permissions: {
-				models: "read"
 			}
 		},
 	]
@@ -427,10 +374,18 @@ tasks: {
 			inputs: #BaseInputs
 		}
 
-		"generate-pr": {
-			command: "bash"
-			args: ["-c", "./result/bin/cuenv changeset from-commits && ./result/bin/cuenv release version"]
-			inputs: [".changeset", "Cargo.toml", "crates"]
+		// Prepare a release: analyze commits, bump versions, create PR
+		prepare: {
+			command: "./result/bin/cuenv"
+			args: ["release", "prepare"]
+			inputs: ["Cargo.toml", "Cargo.lock", "crates"]
+		}
+
+		// Dry-run prepare: preview what release prepare would do
+		"prepare-dry-run": {
+			command: "./result/bin/cuenv"
+			args: ["release", "prepare", "--dry-run"]
+			inputs: ["Cargo.toml", "Cargo.lock", "crates"]
 		}
 	}
 }

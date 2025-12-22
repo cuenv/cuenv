@@ -1,3 +1,4 @@
+pub mod changeset_picker;
 pub mod ci;
 pub mod env;
 pub(crate) mod env_file;
@@ -126,7 +127,7 @@ pub enum Command {
     },
     ChangesetAdd {
         path: String,
-        summary: String,
+        summary: Option<String>,
         description: Option<String>,
         packages: Vec<(String, String)>,
     },
@@ -137,6 +138,13 @@ pub enum Command {
     ChangesetFromCommits {
         path: String,
         since: Option<String>,
+    },
+    ReleasePrepare {
+        path: String,
+        since: Option<String>,
+        dry_run: bool,
+        branch: String,
+        no_pr: bool,
     },
     ReleaseVersion {
         path: String,
@@ -489,6 +497,7 @@ impl CommandExecutor {
             | Command::ChangesetAdd { .. }
             | Command::ChangesetStatus { .. }
             | Command::ChangesetFromCommits { .. }
+            | Command::ReleasePrepare { .. }
             | Command::ReleaseVersion { .. }
             | Command::ReleasePublish { .. }
             | Command::ReleaseBinaries { .. }

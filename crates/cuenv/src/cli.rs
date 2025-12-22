@@ -878,18 +878,22 @@ pub enum ShellType {
 
 #[derive(Subcommand, Debug)]
 pub enum ChangesetCommands {
-    #[command(about = "Add a new changeset")]
+    #[command(about = "Add a new changeset (interactive if no args provided)")]
     Add {
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
-        #[arg(long, short = 's', help = "Summary of the change")]
-        summary: String,
+        #[arg(
+            long,
+            short = 's',
+            help = "Summary of the change (interactive if omitted)"
+        )]
+        summary: Option<String>,
         #[arg(long, short = 'd', help = "Detailed description of the change")]
         description: Option<String>,
         #[arg(
             long,
             short = 'P',
-            help = "Package and bump type (format: package:bump, e.g., my-pkg:minor)",
+            help = "Package and bump type (format: package:bump, e.g., my-pkg:minor). Interactive if omitted.",
             value_name = "PACKAGE:BUMP"
         )]
         packages: Vec<String>,
@@ -912,6 +916,25 @@ pub enum ChangesetCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum ReleaseCommands {
+    #[command(
+        about = "Prepare a release: analyze commits, bump versions, generate changelog, create PR"
+    )]
+    Prepare {
+        #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
+        path: String,
+        #[arg(long, short = 's', help = "Git tag or ref to analyze commits from")]
+        since: Option<String>,
+        #[arg(long, help = "Preview changes without applying")]
+        dry_run: bool,
+        #[arg(
+            long,
+            default_value = "release/next",
+            help = "Branch name for the release"
+        )]
+        branch: String,
+        #[arg(long, help = "Skip creating the pull request")]
+        no_pr: bool,
+    },
     #[command(
         about = "Calculate and apply version bumps from changesets (manifest reading not yet implemented)"
     )]
@@ -1156,6 +1179,19 @@ impl Commands {
                 }
             },
             Commands::Release { subcommand } => match subcommand {
+                ReleaseCommands::Prepare {
+                    path,
+                    since,
+                    dry_run,
+                    branch,
+                    no_pr,
+                } => Command::ReleasePrepare {
+                    path,
+                    since,
+                    dry_run,
+                    branch,
+                    no_pr,
+                },
                 ReleaseCommands::Version { path, dry_run } => {
                     Command::ReleaseVersion { path, dry_run }
                 }

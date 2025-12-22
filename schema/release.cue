@@ -87,8 +87,17 @@ package schema
 	pushTags?: bool | *true
 })
 
+// #VersioningStrategy defines how packages are versioned in a monorepo
+#VersioningStrategy: "fixed" | "linked" | "independent"
+
 // #ReleasePackages defines package grouping for version management
 #ReleasePackages: close({
+	// Default versioning strategy for packages not in explicit groups.
+	// - "fixed": All packages share the same version (lockstep versioning)
+	// - "linked": Packages are bumped together but can have different versions
+	// - "independent": Each package is versioned independently (default)
+	strategy?: #VersioningStrategy | *"independent"
+
 	// Fixed groups: packages that share the same version (lockstep versioning)
 	// All packages in a group are bumped together with the highest bump level.
 	// Example: [["crates/cuenv-core", "crates/cuenv-cli"]]
