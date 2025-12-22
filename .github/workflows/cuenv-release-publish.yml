@@ -44,8 +44,6 @@ jobs:
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
-    - name: Setup GitHub Models CLI
-      run: gh extension install github/gh-models
     - name: release.publish-crates
       run: cuenv task release.publish-crates -e production
       env:
@@ -73,8 +71,6 @@ jobs:
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
-    - name: Setup GitHub Models CLI
-      run: gh extension install github/gh-models
     - name: release.publish-cue
       run: cuenv task release.publish-cue -e production
       env:

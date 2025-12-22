@@ -49,8 +49,6 @@ jobs:
         pushFilter: (-source$|nixpkgs\.tar\.gz$)
     - name: Build cuenv
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || true
-    - name: Setup GitHub Models CLI
-      run: gh extension install github/gh-models
     - name: check
       run: cuenv task check
       env:

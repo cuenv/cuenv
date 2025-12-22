@@ -469,7 +469,11 @@ impl GitHubActionsEmitter {
                 .label
                 .clone()
                 .unwrap_or_else(|| "Setup GitHub Models CLI".to_string());
-            steps.push(Step::run(&command).with_name(&name));
+            steps.push(
+                Step::run(&command)
+                    .with_name(&name)
+                    .with_env("GH_TOKEN", "${{ github.token }}"),
+            );
         }
 
         // Run the task
@@ -970,6 +974,7 @@ mod tests {
                 requires_onepassword: false,
                 project_name: None,
                 trigger: None,
+                pipeline_tasks: vec![],
             },
             runtimes: vec![],
             stages: StageConfiguration::default(),
