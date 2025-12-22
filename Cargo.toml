@@ -93,7 +93,7 @@ toml_edit = "0.23"
 
 # Git and conventional commits
 git-conventional = "0.12"
-gix = { version = "0.75", default-features = false, features = ["revision"] }
+gix = { version = "0.76", default-features = false, features = ["revision"] }
 serde_yaml = "0.9"
 glob = "0.3"
 
