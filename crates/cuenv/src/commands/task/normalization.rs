@@ -58,7 +58,11 @@ pub(crate) fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> Stri
 ///
 /// Uses the manifest's `name` field if non-empty, otherwise falls back to
 /// a path-derived identifier relative to the module root.
-pub(crate) fn compute_project_id(manifest: &Project, project_root: &Path, module_root: &Path) -> String {
+pub(crate) fn compute_project_id(
+    manifest: &Project,
+    project_root: &Path,
+    module_root: &Path,
+) -> String {
     let trimmed = manifest.name.trim();
     if !trimmed.is_empty() {
         return trimmed.to_string();
@@ -211,15 +215,27 @@ mod tests {
     #[test]
     fn test_canonicalize_dep_absolute() {
         // Deps with dots or colons are treated as absolute
-        assert_eq!(canonicalize_dep_for_task_name("deploy.prod", "build.test"), "deploy.prod");
-        assert_eq!(canonicalize_dep_for_task_name("deploy:prod", "build.test"), "deploy.prod");
+        assert_eq!(
+            canonicalize_dep_for_task_name("deploy.prod", "build.test"),
+            "deploy.prod"
+        );
+        assert_eq!(
+            canonicalize_dep_for_task_name("deploy:prod", "build.test"),
+            "deploy.prod"
+        );
     }
 
     #[test]
     fn test_canonicalize_dep_relative() {
         // Simple names are resolved relative to parent namespace
-        assert_eq!(canonicalize_dep_for_task_name("lint", "build.test"), "build.lint");
-        assert_eq!(canonicalize_dep_for_task_name("check", "fmt.fix"), "fmt.check");
+        assert_eq!(
+            canonicalize_dep_for_task_name("lint", "build.test"),
+            "build.lint"
+        );
+        assert_eq!(
+            canonicalize_dep_for_task_name("check", "fmt.fix"),
+            "fmt.check"
+        );
     }
 
     #[test]
@@ -251,7 +267,10 @@ mod tests {
     #[test]
     fn test_normalize_dep_fqdn_passthrough() {
         let map = HashMap::new();
-        assert_eq!(normalize_dep("task:proj:build", "default", &map), "task:proj:build");
+        assert_eq!(
+            normalize_dep("task:proj:build", "default", &map),
+            "task:proj:build"
+        );
     }
 
     #[test]
@@ -264,6 +283,9 @@ mod tests {
     fn test_normalize_dep_taskref() {
         let mut map = HashMap::new();
         map.insert("other".to_string(), "other-id".to_string());
-        assert_eq!(normalize_dep("#other:build", "myproj", &map), "task:other-id:build");
+        assert_eq!(
+            normalize_dep("#other:build", "myproj", &map),
+            "task:other-id:build"
+        );
     }
 }

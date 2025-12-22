@@ -1336,8 +1336,8 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        // Execute the task command (with cached module from self)
-        match task::execute_task(
+        // Build task execution request using the new structured API
+        let request = task::TaskExecutionRequest::from_legacy(
             &path,
             &package,
             name.as_deref(),
@@ -1354,9 +1354,10 @@ impl CommandExecutor {
             all,
             &task_args,
             Some(self),
-        )
-        .await
-        {
+        );
+
+        // Execute the task command
+        match task::execute(request).await {
             Ok(output) => {
                 // Print output to stdout (needed for CLI mode)
                 if !output.is_empty() {

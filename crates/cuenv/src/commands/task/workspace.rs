@@ -7,10 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use cuenv_core::Result;
 use cuenv_core::manifest::{HookItem, Project};
 use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::{TaskDefinition, TaskGroup, TaskIndex, Tasks};
-use cuenv_core::Result;
 
 use crate::commands::CommandExecutor;
 

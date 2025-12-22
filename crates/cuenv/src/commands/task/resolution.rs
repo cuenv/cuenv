@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 use std::fs;
 
-use cuenv_core::tasks::discovery::TaskDiscovery;
 use cuenv_core::manifest::TaskRef;
+use cuenv_core::tasks::discovery::TaskDiscovery;
 use cuenv_core::tasks::{Task, TaskDefinition};
 
 use super::normalization::{canonicalize_dep_for_task_name, normalize_dep};
@@ -176,7 +176,7 @@ pub(crate) fn get_task_mut_by_name_or_path<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::tasks::{ParallelGroup, TaskDefinition, TaskGroup};
+    use cuenv_core::tasks::TaskDefinition;
 
     #[test]
     fn test_get_task_mut_by_path_simple() {
