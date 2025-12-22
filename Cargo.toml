@@ -89,7 +89,7 @@ tar = "0.4"
 
 # Workspace detection and parsing dependencies
 toml = "0.9"
-toml_edit = "0.23"
+toml_edit = "0.24"
 
 # Git and conventional commits
 git-conventional = "0.12"
