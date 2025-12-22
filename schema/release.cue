@@ -1,8 +1,64 @@
 package schema
 
+// #Target defines supported build targets for binary distribution
+#Target: "linux-x64" | "linux-arm64" | "darwin-arm64"
+
+// #GitHubBackend configures GitHub Releases as a distribution backend
+#GitHubBackend: close({
+	// Repository in "owner/repo" format (auto-detected from git remote if omitted)
+	repo?: string
+	// Upload binary tarballs as release assets (default: true)
+	assets?: bool | *true
+	// Create release as draft (default: false)
+	draft?: bool | *false
+})
+
+// #HomebrewBackend configures Homebrew tap updates
+#HomebrewBackend: close({
+	// Tap repository in "owner/repo" format (required)
+	tap!: string
+	// Formula name (default: project name)
+	formula?: string
+	// Token env var name for pushing to tap (default: HOMEBREW_TAP_TOKEN)
+	tokenEnv?: string | *"HOMEBREW_TAP_TOKEN"
+})
+
+// #CratesBackend configures crates.io publishing
+#CratesBackend: close({
+	// Token env var name (default: CARGO_REGISTRY_TOKEN)
+	tokenEnv?: string | *"CARGO_REGISTRY_TOKEN"
+	// Publish packages in dependency order (default: true)
+	ordered?: bool | *true
+})
+
+// #CueBackend configures CUE registry publishing
+#CueBackend: close({
+	// Module path (auto-detected from cue.mod if omitted)
+	module?: string
+	// Token env var name (default: CUE_REGISTRY_TOKEN)
+	tokenEnv?: string | *"CUE_REGISTRY_TOKEN"
+})
+
+// #ReleaseBackends defines which distribution backends to use
+#ReleaseBackends: close({
+	github?:   #GitHubBackend
+	homebrew?: #HomebrewBackend
+	crates?:   #CratesBackend
+	cue?:      #CueBackend
+})
+
 // #Release defines the release management configuration for cuenv.
 // This enables native release workflows including versioning, changelogs, and publishing.
 #Release: close({
+	// Binary name for distribution (default: project name)
+	binary?: string
+
+	// Build targets for binary distribution
+	targets?: [...#Target]
+
+	// Distribution backends configuration
+	backends?: #ReleaseBackends
+
 	// Git configuration for release management
 	git?: #ReleaseGit
 

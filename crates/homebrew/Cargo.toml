@@ -1,0 +1,25 @@
+[package]
+name = "cuenv-homebrew"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "development-tools::build-utils"]
+readme = "../../readme.md"
+description = "Homebrew tap provider for cuenv"
+
+[lints]
+workspace = true
+
+[dependencies]
+cuenv-release = { workspace = true }
+octocrab = { version = "0.48", default-features = false, features = ["rustls", "rustls-ring", "default-client", "timeout", "retry"] }
+async-trait = "0.1"
+tracing = { workspace = true }
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = { workspace = true }

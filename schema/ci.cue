@@ -69,7 +69,14 @@ package schema
 	name:         string
 	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
-	tasks:        [...string]
+
+	// Either specify tasks manually OR use release: true to auto-generate from release config
+	tasks?: [...string]
+
+	// When true, auto-generates build matrix and publish jobs from release.targets and release.backends
+	// This replaces manual task specification for release workflows
+	release?: bool
+
 	derivePaths?: bool // whether to derive trigger paths from task inputs
 	provider?:    #ProviderConfig
 })

@@ -113,6 +113,31 @@ pub enum Error {
         package: Option<String>,
     },
 
+    /// Artifact packaging error.
+    #[error("Artifact error: {message}")]
+    #[diagnostic(
+        code(cuenv::release::artifact),
+        help("Check that the binary exists and is readable")
+    )]
+    Artifact {
+        /// The error message
+        message: String,
+        /// The path that caused the error
+        path: Option<PathBuf>,
+    },
+
+    /// Backend error (GitHub, Homebrew, etc.).
+    #[error("{backend} backend error: {message}")]
+    #[diagnostic(code(cuenv::release::backend))]
+    Backend {
+        /// The backend that failed
+        backend: String,
+        /// The error message
+        message: String,
+        /// Help text for the user
+        help: Option<String>,
+    },
+
     /// Wrapped I/O error.
     #[error("I/O error: {0}")]
     #[diagnostic(code(cuenv::release::io))]
@@ -214,6 +239,29 @@ impl Error {
         Self::Publish {
             message: message.into(),
             package,
+        }
+    }
+
+    /// Create a new artifact error.
+    #[must_use]
+    pub fn artifact(message: impl Into<String>, path: Option<PathBuf>) -> Self {
+        Self::Artifact {
+            message: message.into(),
+            path,
+        }
+    }
+
+    /// Create a new backend error.
+    #[must_use]
+    pub fn backend(
+        backend: impl Into<String>,
+        message: impl Into<String>,
+        help: Option<String>,
+    ) -> Self {
+        Self::Backend {
+            backend: backend.into(),
+            message: message.into(),
+            help,
         }
     }
 }

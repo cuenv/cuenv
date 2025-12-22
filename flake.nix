@@ -218,7 +218,17 @@
         checks = {
           inherit cuenv;
 
-          cuenv-fmt = craneLib.cargoFmt { inherit src; };
+          cuenv-fmt = pkgs.runCommand "cuenv-fmt-${version}"
+            {
+              nativeBuildInputs = with pkgs; [ treefmt rustfmt go nodePackages.prettier nixpkgs-fmt ];
+            } ''
+            cp -r ${src} src
+            chmod -R +w src
+            cd src
+            cp ${./treefmt.toml} treefmt.toml
+            treefmt --no-cache --fail-on-change
+            touch $out
+          '';
 
           cuenv-clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
