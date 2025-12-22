@@ -115,10 +115,16 @@ fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
             | crate::cli::Commands::Info { .. }
             | crate::cli::Commands::Completions { .. }
             | crate::cli::Commands::Changeset { .. }
-            | crate::cli::Commands::Release { .. }
             | crate::cli::Commands::Secrets { .. } => false,
             crate::cli::Commands::Shell { subcommand } => match subcommand {
                 crate::cli::ShellCommands::Init { .. } => false,
+            },
+            crate::cli::Commands::Release { subcommand } => match subcommand {
+                // Version and Publish are sync (CUE/cargo operations)
+                crate::cli::ReleaseCommands::Version { .. }
+                | crate::cli::ReleaseCommands::Publish { .. } => false,
+                // Binaries needs async for HTTP/process execution
+                crate::cli::ReleaseCommands::Binaries { .. } => true,
             },
             crate::cli::Commands::Env { subcommand } => match subcommand {
                 // env status without --wait, print, and list are sync (CUE evaluation is sync FFI)

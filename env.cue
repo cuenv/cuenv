@@ -409,7 +409,14 @@ tasks: {
 
 		"publish-cue": {
 			command: "bash"
-			args: ["-c", "cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish $TAG"]
+			args: ["-c", """
+				TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+				if [ -z "$TAG" ]; then
+					echo "Error: No git tag found"
+					exit 1
+				fi
+				cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish $TAG
+				"""]
 			inputs: ["cue.mod", "schema"]
 		}
 
