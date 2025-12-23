@@ -54,9 +54,9 @@ schema.#Project & {
 			runner: "blacksmith-8vcpu-ubuntu-2404"
 			runners: {
 				arch: {
-					"linux-x64":    "blacksmith-8vcpu-ubuntu-2404"
-					"linux-arm64":  "blacksmith-8vcpu-ubuntu-2404-arm"
-					"darwin-arm64": "macos-14"
+					"linux-x64":    "namespace-profile-cuenv-linux-x86"
+					"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
+					"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 				}
 			}
 
@@ -352,18 +352,8 @@ schema.#Project & {
 		}
 
 		publish: github: {
-			command: "gh"
-			args: ["release", "upload", "{{tag}}", "{{paths}}"]
-			params: {
-				tag: {
-					description: "Git tag to upload to"
-					required:    true
-				}
-				paths: {
-					description: "Glob pattern for files to upload"
-					required:    true
-				}
-			}
+			command: "bash"
+			args: ["-c", "gh release upload $TAG $PATHS"]
 		}
 
 		publish: crates: {
@@ -380,7 +370,7 @@ schema.#Project & {
 					echo "Error: No git tag found"
 					exit 1
 				fi
-				cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish $TAG
+				cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish v$TAG
 				"""]
 			inputs: ["cue.mod", "schema"]
 		}
