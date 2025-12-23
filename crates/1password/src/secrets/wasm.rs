@@ -73,6 +73,13 @@ mod tests {
     #[test]
     fn test_wasm_path() {
         let path = onepassword_wasm_path().unwrap();
-        assert!(path.to_string_lossy().contains("onepassword-core.wasm"));
+
+        // If ONEPASSWORD_WASM_PATH env var is set (Nix builds), path should match it.
+        // Otherwise, path should be in cache directory with standard filename.
+        if let Ok(env_path) = std::env::var("ONEPASSWORD_WASM_PATH") {
+            assert_eq!(path, PathBuf::from(env_path));
+        } else {
+            assert!(path.to_string_lossy().contains("onepassword-core.wasm"));
+        }
     }
 }

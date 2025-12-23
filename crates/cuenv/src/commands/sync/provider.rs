@@ -31,8 +31,6 @@ pub struct SyncOptions {
     pub mode: SyncMode,
     /// Show diff for files that would change (cubes-specific).
     pub show_diff: bool,
-    /// Overwrite existing files (CI-specific).
-    pub force: bool,
     /// CI provider filter (github, buildkite).
     pub ci_provider: Option<String>,
 }
@@ -147,7 +145,6 @@ pub trait SyncProvider: Send + Sync {
         SyncOptions {
             mode,
             show_diff: matches.get_flag("diff"),
-            force: matches.get_flag("force"),
             ci_provider: matches.get_one::<String>("provider").cloned(),
         }
     }

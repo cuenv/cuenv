@@ -448,8 +448,6 @@ pub struct SyncHandler {
     pub scope: SyncScope,
     /// Show diff for cubes (cubes-specific).
     pub show_diff: bool,
-    /// Overwrite existing files (CI-specific).
-    pub force: bool,
     /// CI provider filter (github, buildkite).
     pub ci_provider: Option<String>,
 }
@@ -467,7 +465,6 @@ impl CommandHandler for SyncHandler {
         let options = SyncOptions {
             mode: self.mode.clone(),
             show_diff: self.show_diff,
-            force: self.force,
             ci_provider: self.ci_provider.clone(),
         };
 
