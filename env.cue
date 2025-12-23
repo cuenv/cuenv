@@ -369,7 +369,7 @@ schema.#Project & {
 		publish: crates: {
 			command: "cargo"
 			args: ["publish", "-p", "cuenv"]
-			dependsOn: ["release.publish.cue"]
+			dependsOn: ["publish.cue"]
 		}
 
 		publish: cue: {
