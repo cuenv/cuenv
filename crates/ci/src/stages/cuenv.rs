@@ -13,41 +13,89 @@ use cuenv_core::manifest::Project;
 /// - Setup: Install or build cuenv based on configuration
 ///
 /// The source mode is configured via `config.ci.cuenv.source`:
-/// - `release` (default): Download latest cuenv from GitHub Releases
-/// - `build`: Build from source via `nix build .#cuenv`
+/// - `release` (default): Download pre-built binary from GitHub Releases
+/// - `git`: Build from git checkout (requires Nix)
+/// - `nix`: Install via Nix flake (auto-configures Cachix)
+/// - `homebrew`: Install via Homebrew tap (no Nix required)
+///
+/// The version is configured via `config.ci.cuenv.version`:
+/// - `self` (default): Use current checkout (for git/nix)
+/// - `latest`: Latest release (for release mode)
+/// - `0.17.0`: Specific version tag
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CuenvContributor;
 
 impl CuenvContributor {
-    /// Get the cuenv source configuration from the project
-    fn get_source(project: &Project) -> CuenvSource {
+    /// Get the cuenv configuration from the project
+    fn get_config(project: &Project) -> (CuenvSource, String) {
         project
             .config
             .as_ref()
             .and_then(|c| c.ci.as_ref())
             .and_then(|ci| ci.cuenv.as_ref())
-            .map(|c| c.source)
-            .unwrap_or_default()
+            .map_or_else(
+                || (CuenvSource::Release, "latest".to_string()),
+                |c| (c.source, c.version.clone()),
+            )
     }
 
-    /// Generate the command for release mode (download from GitHub)
-    fn release_command() -> String {
-        concat!(
-            ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && ",
-            "curl -sSL https://github.com/cuenv/cuenv/releases/latest/download/cuenv-x86_64-linux.tar.gz | ",
-            "tar -xzf - -C /usr/local/bin && ",
-            "chmod +x /usr/local/bin/cuenv"
+    /// Release mode: Download pre-built binary from GitHub Releases
+    fn release_command(version: &str) -> String {
+        let url = if version == "latest" || version == "self" {
+            "https://github.com/cuenv/cuenv/releases/latest/download".to_string()
+        } else {
+            format!("https://github.com/cuenv/cuenv/releases/download/{version}")
+        };
+        format!(
+            "curl -sSL {url}/cuenv-x86_64-linux.tar.gz | \
+             tar -xzf - -C /usr/local/bin && \
+             chmod +x /usr/local/bin/cuenv"
         )
-        .to_string()
     }
 
-    /// Generate the command for build mode (nix build)
-    fn build_command() -> String {
+    /// Git mode: Build from checkout
+    fn git_command(version: &str) -> String {
+        if version == "self" {
+            // Build from current checkout
+            concat!(
+                ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && ",
+                "nix build .#cuenv --accept-flake-config && ",
+                "echo \"$(pwd)/result/bin\" >> $GITHUB_PATH 2>/dev/null || ",
+                "echo \"$(pwd)/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || true"
+            )
+            .to_string()
+        } else {
+            // Clone specific version and build
+            format!(
+                ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+                 git clone --depth 1 --branch {version} https://github.com/cuenv/cuenv.git /tmp/cuenv && \
+                 cd /tmp/cuenv && \
+                 nix build .#cuenv --accept-flake-config && \
+                 echo \"/tmp/cuenv/result/bin\" >> $GITHUB_PATH 2>/dev/null || \
+                 echo \"/tmp/cuenv/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || true"
+            )
+        }
+    }
+
+    /// Nix mode: Install via flake (with Cachix support via accept-flake-config)
+    fn nix_command(version: &str) -> String {
+        if version == "self" {
+            // Build from current checkout
+            Self::git_command("self")
+        } else {
+            // Install from flake reference
+            format!(
+                ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+                 nix profile install github:cuenv/cuenv/{version}#cuenv --accept-flake-config"
+            )
+        }
+    }
+
+    /// Homebrew mode: Install via tap (no Nix required)
+    fn homebrew_command() -> String {
         concat!(
-            ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && ",
-            "nix build .#cuenv --accept-flake-config && ",
-            "echo \"$(pwd)/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || ",
-            "echo \"$(pwd)/result/bin\" >> $GITHUB_PATH 2>/dev/null || true"
+            "brew tap cuenv/cuenv https://github.com/cuenv/cuenv && ",
+            "brew install cuenv/cuenv/cuenv"
         )
         .to_string()
     }
@@ -73,11 +121,33 @@ impl StageContributor for CuenvContributor {
             return (vec![], false);
         }
 
-        let source = Self::get_source(project);
+        let (source, version) = Self::get_config(project);
 
-        let (command, label) = match source {
-            CuenvSource::Release => (Self::release_command(), "Setup cuenv"),
-            CuenvSource::Build => (Self::build_command(), "Build cuenv"),
+        let (command, label, depends_on) = match source {
+            CuenvSource::Release => (
+                Self::release_command(&version),
+                "Setup cuenv (release)",
+                vec![], // No Nix dependency
+            ),
+            CuenvSource::Git => (
+                Self::git_command(&version),
+                if version == "self" {
+                    "Build cuenv"
+                } else {
+                    "Build cuenv (versioned)"
+                },
+                vec!["install-nix".to_string()],
+            ),
+            CuenvSource::Nix => (
+                Self::nix_command(&version),
+                "Setup cuenv (nix)",
+                vec!["install-nix".to_string()],
+            ),
+            CuenvSource::Homebrew => (
+                Self::homebrew_command(),
+                "Setup cuenv (homebrew)",
+                vec![], // No Nix dependency!
+            ),
         };
 
         (
@@ -89,7 +159,7 @@ impl StageContributor for CuenvContributor {
                     label: Some(label.to_string()),
                     command: vec![command],
                     shell: true,
-                    depends_on: vec!["install-nix".to_string()],
+                    depends_on,
                     priority: 10,
                     ..Default::default()
                 },
@@ -129,28 +199,14 @@ mod tests {
         }
     }
 
-    fn make_project_with_build_source() -> Project {
+    fn make_project_with_source(source: CuenvSource, version: &str) -> Project {
         Project {
             name: "test".to_string(),
             config: Some(Config {
                 ci: Some(CIConfig {
                     cuenv: Some(CuenvConfig {
-                        source: CuenvSource::Build,
-                    }),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
-    fn make_project_with_release_source() -> Project {
-        Project {
-            name: "test".to_string(),
-            config: Some(Config {
-                ci: Some(CIConfig {
-                    cuenv: Some(CuenvConfig {
-                        source: CuenvSource::Release,
+                        source,
+                        version: version.to_string(),
                     }),
                 }),
                 ..Default::default()
@@ -169,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn test_default_is_release_mode() {
+    fn test_default_is_release_mode_with_latest() {
         let contributor = CuenvContributor;
         let ir = make_ir();
         let project = make_project(); // No config
@@ -181,46 +237,128 @@ mod tests {
         let (stage, task) = &contributions[0];
         assert_eq!(*stage, BuildStage::Setup);
         assert_eq!(task.id, "setup-cuenv");
-        assert_eq!(task.label, Some("Setup cuenv".to_string()));
-        assert!(task.command[0].contains("github.com/cuenv/cuenv/releases"));
+        assert_eq!(task.label, Some("Setup cuenv (release)".to_string()));
+        assert!(task.command[0].contains("releases/latest/download"));
+        // Release mode has no Nix dependency
+        assert!(task.depends_on.is_empty());
     }
 
     #[test]
-    fn test_explicit_release_mode() {
+    fn test_release_mode_with_specific_version() {
         let contributor = CuenvContributor;
         let ir = make_ir();
-        let project = make_project_with_release_source();
+        let project = make_project_with_source(CuenvSource::Release, "0.17.0");
 
         let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
-        assert_eq!(task.label, Some("Setup cuenv".to_string()));
-        assert!(task.command[0].contains("github.com/cuenv/cuenv/releases"));
+        assert_eq!(task.label, Some("Setup cuenv (release)".to_string()));
+        assert!(task.command[0].contains("releases/download/0.17.0"));
+        assert!(task.depends_on.is_empty());
     }
 
     #[test]
-    fn test_build_mode() {
+    fn test_git_self_mode() {
         let contributor = CuenvContributor;
         let ir = make_ir();
-        let project = make_project_with_build_source();
+        let project = make_project_with_source(CuenvSource::Git, "self");
 
         let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
         assert_eq!(task.label, Some("Build cuenv".to_string()));
         assert!(task.command[0].contains("nix build .#cuenv"));
+        assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 
     #[test]
-    fn test_depends_on_install_nix() {
+    fn test_git_versioned_mode() {
         let contributor = CuenvContributor;
         let ir = make_ir();
-        let project = make_project();
+        let project = make_project_with_source(CuenvSource::Git, "0.17.0");
 
         let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
+        assert_eq!(task.label, Some("Build cuenv (versioned)".to_string()));
+        assert!(task.command[0].contains("git clone --depth 1 --branch 0.17.0"));
+        assert!(task.command[0].contains("nix build .#cuenv"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
+    }
+
+    #[test]
+    fn test_nix_self_mode() {
+        let contributor = CuenvContributor;
+        let ir = make_ir();
+        let project = make_project_with_source(CuenvSource::Nix, "self");
+
+        let (contributions, _) = contributor.contribute(&ir, &project);
+        let (_, task) = &contributions[0];
+
+        assert_eq!(task.label, Some("Setup cuenv (nix)".to_string()));
+        // Nix self mode uses same command as git self
+        assert!(task.command[0].contains("nix build .#cuenv"));
+        assert!(task.depends_on.contains(&"install-nix".to_string()));
+    }
+
+    #[test]
+    fn test_nix_versioned_mode() {
+        let contributor = CuenvContributor;
+        let ir = make_ir();
+        let project = make_project_with_source(CuenvSource::Nix, "0.17.0");
+
+        let (contributions, _) = contributor.contribute(&ir, &project);
+        let (_, task) = &contributions[0];
+
+        assert_eq!(task.label, Some("Setup cuenv (nix)".to_string()));
+        assert!(task.command[0].contains("nix profile install github:cuenv/cuenv/0.17.0#cuenv"));
+        assert!(task.depends_on.contains(&"install-nix".to_string()));
+    }
+
+    #[test]
+    fn test_homebrew_mode() {
+        let contributor = CuenvContributor;
+        let ir = make_ir();
+        let project = make_project_with_source(CuenvSource::Homebrew, "ignored");
+
+        let (contributions, _) = contributor.contribute(&ir, &project);
+        let (_, task) = &contributions[0];
+
+        assert_eq!(task.label, Some("Setup cuenv (homebrew)".to_string()));
+        assert!(task.command[0].contains("brew tap cuenv/cuenv"));
+        assert!(task.command[0].contains("brew install cuenv/cuenv/cuenv"));
+    }
+
+    #[test]
+    fn test_homebrew_no_nix_dependency() {
+        let contributor = CuenvContributor;
+        let ir = make_ir();
+        let project = make_project_with_source(CuenvSource::Homebrew, "ignored");
+
+        let (contributions, _) = contributor.contribute(&ir, &project);
+        let (_, task) = &contributions[0];
+
+        // Homebrew mode has NO Nix dependency
+        assert!(
+            task.depends_on.is_empty(),
+            "Homebrew mode should not depend on install-nix"
+        );
+    }
+
+    #[test]
+    fn test_release_no_nix_dependency() {
+        let contributor = CuenvContributor;
+        let ir = make_ir();
+        let project = make_project_with_source(CuenvSource::Release, "latest");
+
+        let (contributions, _) = contributor.contribute(&ir, &project);
+        let (_, task) = &contributions[0];
+
+        // Release mode has NO Nix dependency
+        assert!(
+            task.depends_on.is_empty(),
+            "Release mode should not depend on install-nix"
+        );
     }
 
     #[test]

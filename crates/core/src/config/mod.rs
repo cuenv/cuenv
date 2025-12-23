@@ -59,12 +59,21 @@ pub struct CuenvConfig {
     /// Source for cuenv binary
     #[serde(default)]
     pub source: CuenvSource,
+
+    /// Version to install ("self", "latest", or specific version like "0.17.0")
+    #[serde(default = "default_cuenv_version")]
+    pub version: String,
+}
+
+fn default_cuenv_version() -> String {
+    "self".to_string()
 }
 
 impl Default for CuenvConfig {
     fn default() -> Self {
         Self {
             source: CuenvSource::Release,
+            version: default_cuenv_version(),
         }
     }
 }
@@ -73,11 +82,15 @@ impl Default for CuenvConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CuenvSource {
+    /// Build from git checkout (requires Nix)
+    Git,
+    /// Install via Nix flake (auto-configures Cachix)
+    Nix,
+    /// Install via Homebrew tap (no Nix required)
+    Homebrew,
     /// Download from GitHub Releases (default)
     #[default]
     Release,
-    /// Build from source via nix build
-    Build,
 }
 
 /// Task output format options

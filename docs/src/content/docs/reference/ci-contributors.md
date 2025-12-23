@@ -68,15 +68,64 @@ runtime: schema.#NixFlake & {
 
 ### CuenvContributor
 
-Builds cuenv from the project's flake for use in CI.
+Installs or builds cuenv for use in CI pipelines.
 
-**Activation:** Project has a Nix-based runtime (same as NixContributor)
+**Activation:** Always active (cuenv is needed to run tasks)
 
 **Stage:** Setup (priority 10)
 
 **Task ID:** `setup-cuenv`
 
-**Dependencies:** `install-nix`
+**Dependencies:** Depends on cuenv source mode:
+
+- `git` / `nix`: Depends on `install-nix`
+- `release` / `homebrew`: No dependencies (Nix not required)
+
+**Configuration:**
+
+The source and version are configured via `config.ci.cuenv`:
+
+| Source              | Version              | Behavior                                                          | Nix Required |
+| ------------------- | -------------------- | ----------------------------------------------------------------- | ------------ |
+| `release` (default) | `latest` or `0.17.0` | Download pre-built binary from GitHub Releases                    | No           |
+| `git`               | `self` (default)     | Build from current checkout via `nix build .#cuenv`               | Yes          |
+| `git`               | `0.17.0`             | Clone specific tag and build via nix                              | Yes          |
+| `nix`               | `self`               | Build from current checkout + Cachix                              | Yes          |
+| `nix`               | `0.17.0`             | Install via `nix profile install github:cuenv/cuenv/0.17.0#cuenv` | Yes          |
+| `homebrew`          | (ignored)            | Install via `brew tap cuenv/cuenv && brew install cuenv`          | **No**       |
+
+**Configuration Examples:**
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "my-project"
+
+// Option 1: Release mode (default) - fastest, no Nix required
+config: ci: cuenv: {
+    source: "release"
+    version: "latest"
+}
+
+// Option 2: Homebrew mode - no Nix required
+config: ci: cuenv: {
+    source: "homebrew"
+}
+
+// Option 3: Git mode - build from current checkout
+config: ci: cuenv: {
+    source: "git"
+    version: "self"
+}
+
+// Option 4: Nix mode - install specific version with Cachix
+config: ci: cuenv: {
+    source: "nix"
+    version: "0.19.0"
+}
+```
 
 ---
 
