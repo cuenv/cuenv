@@ -178,8 +178,6 @@ pub enum Command {
         scope: handler::SyncScope,
         /// Show diff for cubes (cubes-specific).
         show_diff: bool,
-        /// Overwrite existing files (CI-specific).
-        force: bool,
         /// CI provider filter.
         ci_provider: Option<String>,
     },
@@ -469,7 +467,6 @@ impl CommandExecutor {
                 mode,
                 scope,
                 show_diff,
-                force,
                 ci_provider,
             } => {
                 self.run_command(handler::SyncHandler {
@@ -479,7 +476,6 @@ impl CommandExecutor {
                     mode,
                     scope,
                     show_diff,
-                    force,
                     ci_provider,
                 })
                 .await

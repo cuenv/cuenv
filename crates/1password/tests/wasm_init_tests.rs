@@ -14,15 +14,14 @@ use std::path::PathBuf;
 fn ensure_wasm_available() -> PathBuf {
     let path = wasm::onepassword_wasm_path().expect("Should get WASM path");
 
-    if !path.exists() {
-        panic!(
-            "1Password WASM not found at {}.\n\
-            Either:\n\
-            - Set ONEPASSWORD_WASM_PATH env var (done automatically in Nix builds), or\n\
-            - Run: cuenv secrets setup onepassword",
-            path.display()
-        );
-    }
+    assert!(
+        path.exists(),
+        "1Password WASM not found at {}.\n\
+        Either:\n\
+        - Set ONEPASSWORD_WASM_PATH env var (done automatically in Nix builds), or\n\
+        - Run: cuenv secrets setup onepassword",
+        path.display()
+    );
 
     path
 }
@@ -32,9 +31,20 @@ fn ensure_wasm_available() -> PathBuf {
 /// This is the critical test - it verifies that the Extism runtime can load
 /// the 1Password WASM SDK on this platform with the required host functions.
 /// This is where CI failures occur if there's a platform compatibility issue.
+///
+/// Note: Uses unsafe to set HOME env var for wasmtime's bytecode cache.
+/// In Nix sandbox, HOME=/homeless-shelter which is unwritable.
 #[test]
+#[allow(unsafe_code)]
 fn test_wasm_loads_and_plugin_initializes() {
     let path = ensure_wasm_available();
+
+    // Set HOME to a temp directory for wasmtime's bytecode cache.
+    let temp_home = std::env::temp_dir().join("cuenv-wasm-test-home");
+    std::fs::create_dir_all(&temp_home).expect("Should create temp home");
+    // SAFETY: This test runs in isolation and no other threads are reading
+    // environment variables concurrently during this initialization.
+    unsafe { std::env::set_var("HOME", &temp_home) };
 
     // Load WASM bytes
     let bytes = std::fs::read(&path).expect("Should read WASM file");
@@ -95,9 +105,20 @@ fn test_wasm_file_size() {
 }
 
 /// Test using `SharedCore` directly (same code path as production)
+///
+/// Note: Uses unsafe to set HOME env var for wasmtime's bytecode cache.
+/// In Nix sandbox, HOME=/homeless-shelter which is unwritable.
 #[test]
+#[allow(unsafe_code)]
 fn test_shared_core_initializes() {
     let _path = ensure_wasm_available();
+
+    // Set HOME to a temp directory for wasmtime's bytecode cache.
+    let temp_home = std::env::temp_dir().join("cuenv-wasm-test-home");
+    std::fs::create_dir_all(&temp_home).expect("Should create temp home");
+    // SAFETY: This test runs in isolation and no other threads are reading
+    // environment variables concurrently during this initialization.
+    unsafe { std::env::set_var("HOME", &temp_home) };
 
     // This tests the full SharedCore initialization path
     let core_mutex =

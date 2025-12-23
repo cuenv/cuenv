@@ -761,7 +761,6 @@ pub async fn execute_sync_ci(
     _package: &str,
     dry_run: bool,
     check: bool,
-    force: bool,
     provider: Option<&str>,
     executor: &CommandExecutor,
 ) -> Result<String> {
@@ -790,8 +789,8 @@ pub async fn execute_sync_ci(
 
     for prov in &providers {
         let result = match prov.as_str() {
-            "github" => execute_sync_github(dir_path, dry_run, check, force, &projects).await,
-            "buildkite" => execute_sync_buildkite(dir_path, dry_run, check, force),
+            "github" => execute_sync_github(dir_path, dry_run, check, &projects).await,
+            "buildkite" => execute_sync_buildkite(dir_path, dry_run, check),
             _ => Err(cuenv_core::Error::configuration(format!(
                 "Unsupported CI provider: {prov}. Supported: github, buildkite"
             ))),
@@ -837,7 +836,6 @@ pub async fn execute_sync_ci_workspace(
     _package: &str,
     dry_run: bool,
     check: bool,
-    force: bool,
     provider: Option<&str>,
     executor: &CommandExecutor,
 ) -> Result<String> {
@@ -874,7 +872,6 @@ pub async fn execute_sync_ci_workspace(
             "cuenv",
             dry_run,
             check,
-            force,
             provider,
             executor,
         )
@@ -905,7 +902,6 @@ async fn execute_sync_github(
     _project_path: &Path,
     dry_run: bool,
     check: bool,
-    force: bool,
     projects: &[cuenv_ci::discovery::DiscoveredCIProject],
 ) -> Result<String> {
     if projects.is_empty() {
@@ -970,17 +966,13 @@ async fn execute_sync_github(
         let workflow_path = workflows_dir.join(filename);
         let exists = workflow_path.exists();
 
-        if exists && !force && !dry_run {
-            // Check if content matches
+        // Check if content matches (skip if unchanged)
+        if exists && !dry_run {
             let existing = std::fs::read_to_string(&workflow_path).unwrap_or_default();
             if existing == *content {
                 output_lines.push(format!("GitHub: {filename} (unchanged)"));
                 continue;
             }
-            return Err(cuenv_core::Error::configuration(format!(
-                "Workflow file exists: {}. Use --force to overwrite.",
-                workflow_path.display()
-            )));
         }
 
         if dry_run {
@@ -1908,12 +1900,7 @@ fn build_github_trigger_condition(
 
 /// Sync Buildkite bootstrap pipeline file.
 #[instrument(name = "sync_buildkite", skip_all)]
-fn execute_sync_buildkite(
-    _project_path: &Path,
-    dry_run: bool,
-    check: bool,
-    force: bool,
-) -> Result<String> {
+fn execute_sync_buildkite(_project_path: &Path, dry_run: bool, check: bool) -> Result<String> {
     // Note: Using --dynamic instead of --format for the new CLI
     let pipeline_content = r#"# Buildkite bootstrap pipeline for cuenv
 # This installs Nix, builds cuenv, then generates a dynamic pipeline
@@ -1959,16 +1946,12 @@ steps:
 
     let exists = pipeline_path.exists();
 
-    // Check if file exists and matches (no-op)
-    if exists && !force && !dry_run {
+    // Check if file exists and matches (skip if unchanged)
+    if exists && !dry_run {
         let existing = std::fs::read_to_string(&pipeline_path).unwrap_or_default();
         if existing == pipeline_content {
             return Ok("Buildkite: pipeline.yml (unchanged)".to_string());
         }
-        return Err(cuenv_core::Error::configuration(format!(
-            "Pipeline file exists: {}. Use --force to overwrite.",
-            pipeline_path.display()
-        )));
     }
 
     // Dry-run mode
