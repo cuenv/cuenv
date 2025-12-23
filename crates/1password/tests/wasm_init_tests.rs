@@ -4,34 +4,24 @@
 //! plugin can be initialized. This catches platform/runtime compatibility issues
 //! that would otherwise only appear at secret resolution time.
 //!
-//! The tests download the WASM if not already present, so they run in CI without
-//! requiring pre-setup.
+//! In CI (Nix builds), the WASM is provided via `ONEPASSWORD_WASM_PATH` env var.
+//! For local development, run `cuenv secrets setup onepassword` to download it.
 
 use cuenv_1password::secrets::{core, wasm};
 use std::path::PathBuf;
 
-/// WASM SDK URL - must match the one in secrets.rs
-const ONEPASSWORD_WASM_URL: &str =
-    "https://github.com/1Password/onepassword-sdk-go/raw/refs/tags/v0.3.1/internal/wasm/core.wasm";
-
-/// Ensure WASM is available, downloading if necessary
+/// Ensure WASM is available (from env var or cache)
 fn ensure_wasm_available() -> PathBuf {
-    let path = wasm::onepassword_wasm_path().expect("Should get cache path");
+    let path = wasm::onepassword_wasm_path().expect("Should get WASM path");
 
     if !path.exists() {
-        let response = reqwest::blocking::get(ONEPASSWORD_WASM_URL)
-            .expect("WASM download request should succeed");
-
-        assert!(
-            response.status().is_success(),
-            "WASM download failed with status: {}",
-            response.status()
+        panic!(
+            "1Password WASM not found at {}.\n\
+            Either:\n\
+            - Set ONEPASSWORD_WASM_PATH env var (done automatically in Nix builds), or\n\
+            - Run: cuenv secrets setup onepassword",
+            path.display()
         );
-
-        let bytes = response.bytes().expect("Should read response bytes");
-
-        std::fs::create_dir_all(path.parent().unwrap()).expect("Should create cache dir");
-        std::fs::write(&path, &bytes).expect("Should write WASM file");
     }
 
     path

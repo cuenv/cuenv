@@ -6,12 +6,21 @@
 use cuenv_secrets::SecretError;
 use std::path::PathBuf;
 
-/// Get the path to the 1Password WASM SDK in the cache
+/// Get the path to the 1Password WASM SDK
+///
+/// Checks `ONEPASSWORD_WASM_PATH` environment variable first (used in Nix builds),
+/// then falls back to the cache directory for local development.
 ///
 /// # Errors
 ///
-/// Returns an error if the cache directory cannot be determined.
+/// Returns an error if the cache directory cannot be determined and no env var is set.
 pub fn onepassword_wasm_path() -> Result<PathBuf, SecretError> {
+    // Check environment override first (used in Nix builds)
+    if let Ok(path) = std::env::var("ONEPASSWORD_WASM_PATH") {
+        return Ok(PathBuf::from(path));
+    }
+
+    // Fall back to cache directory for local development
     let cache_dir = dirs::cache_dir().ok_or_else(|| SecretError::ResolutionFailed {
         name: "onepassword".to_string(),
         message: "Could not determine cache directory".to_string(),
