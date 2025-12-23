@@ -1,7 +1,7 @@
 //! Regression tests for CUE module evaluation count.
 //!
 //! These tests ensure that `sync -A` and related commands only evaluate
-//! the CUE module once, using the CommandExecutor's cached module.
+//! the CUE module once, using the `CommandExecutor`'s cached module.
 //!
 //! Note: These tests run against the actual cuenv repository since setting up
 //! a proper CUE environment with schema imports in a temp directory is complex.
@@ -51,9 +51,8 @@ fn test_sync_all_evaluates_module_once() {
     // Should evaluate exactly once - the CommandExecutor caches the result
     assert_eq!(
         eval_count, 1,
-        "sync -A should evaluate the CUE module exactly once, but it was evaluated {} times. \
-         This indicates a regression in module caching.",
-        eval_count
+        "sync -A should evaluate the CUE module exactly once, but it was evaluated {eval_count} times. \
+         This indicates a regression in module caching."
     );
 }
 
@@ -64,8 +63,7 @@ fn test_sync_codeowners_evaluates_module_once() {
 
     assert_eq!(
         eval_count, 1,
-        "sync codeowners should evaluate the CUE module exactly once, but it was evaluated {} times.",
-        eval_count
+        "sync codeowners should evaluate the CUE module exactly once, but it was evaluated {eval_count} times."
     );
 }
 
@@ -76,7 +74,6 @@ fn test_sync_ignore_evaluates_module_once() {
 
     assert_eq!(
         eval_count, 1,
-        "sync ignore should evaluate the CUE module exactly once, but it was evaluated {} times.",
-        eval_count
+        "sync ignore should evaluate the CUE module exactly once, but it was evaluated {eval_count} times."
     );
 }
