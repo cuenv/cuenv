@@ -57,22 +57,24 @@ impl CuenvContributor {
     fn git_command(version: &str) -> String {
         if version == "self" {
             // Build from current checkout
+            // Note: PATH-setting is grouped with its own || true so build failures propagate
             concat!(
                 ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && ",
                 "nix build .#cuenv --accept-flake-config && ",
-                "echo \"$(pwd)/result/bin\" >> $GITHUB_PATH 2>/dev/null || ",
-                "echo \"$(pwd)/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || true"
+                "{ echo \"$(pwd)/result/bin\" >> $GITHUB_PATH 2>/dev/null || ",
+                "echo \"$(pwd)/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }"
             )
             .to_string()
         } else {
             // Clone specific version and build
+            // Note: PATH-setting is grouped with its own || true so build failures propagate
             format!(
                 ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
                  git clone --depth 1 --branch {version} https://github.com/cuenv/cuenv.git /tmp/cuenv && \
                  cd /tmp/cuenv && \
                  nix build .#cuenv --accept-flake-config && \
-                 echo \"/tmp/cuenv/result/bin\" >> $GITHUB_PATH 2>/dev/null || \
-                 echo \"/tmp/cuenv/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || true"
+                 {{ echo \"/tmp/cuenv/result/bin\" >> $GITHUB_PATH 2>/dev/null || \
+                 echo \"/tmp/cuenv/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }}"
             )
         }
     }
