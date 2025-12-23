@@ -20,12 +20,12 @@ env: {
 	CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
 
 	environment: production: {
-		CACHIX_AUTH_TOKEN:     schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
-		CLOUDFLARE_API_TOKEN:  schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
-		CODECOV_TOKEN:         schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
-		CUE_REGISTRY_TOKEN:    schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
-		HOMEBREW_TAP_TOKEN:    schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
-		VSCE_PAT:              schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
+		CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
+		CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
+		CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
+		CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
+		HOMEBREW_TAP_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
+		VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
 	}
 }
 
@@ -72,7 +72,7 @@ ci: {
 			".vscode/**",
 		]
 		artifacts: {
-			paths:          [".cuenv/reports/"]
+			paths: [".cuenv/reports/"]
 			ifNoFilesFound: "ignore"
 		}
 	}
@@ -119,20 +119,20 @@ ci: {
 					}
 				},
 				{
-					task: "release.publish:github"
+					task: "release.publish.github"
 					artifacts: [{
 						from:   "release.build"
 						to:     "dist"
-						filter: ""  // All variants (default)
+						filter: "" // All variants (default)
 					}]
 					params: {
 						tag:   "${{ github.ref_name }}"
 						paths: "dist/**/*"
 					}
 				},
-				"release.publish:homebrew",
-				"release.publish:crates",
-				"release.publish:cue",
+				"release.publish.homebrew",
+				"release.publish.crates",
+				"release.publish.cue",
 				"docs.deploy",
 			]
 		},
@@ -149,15 +149,15 @@ tasks: {
 	pwd: command: "pwd"
 
 	ci: "sync-check": {
-		command:     "./result/bin/cuenv"
-		args:        ["sync", "ci", "--check"]
+		command: "./result/bin/cuenv"
+		args: ["sync", "ci", "--check"]
 		description: "Verify CI workflows are in sync with CUE configuration"
-		inputs:      ["env.cue", "schema", "cue.mod"]
+		inputs: ["env.cue", "schema", "cue.mod"]
 	}
 
 	check: {
 		command: "nix"
-		args:    ["flake", "check"]
+		args: ["flake", "check"]
 		inputs: [
 			"flake.nix",
 			"flake.lock",
@@ -172,8 +172,8 @@ tasks: {
 
 	lint: {
 		command: "cargo"
-		args:    ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
-		inputs:  #BaseInputs
+		args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+		inputs: #BaseInputs
 	}
 
 	fmt: {
@@ -212,34 +212,34 @@ tasks: {
 		}
 		check: {
 			command: "treefmt"
-			args:    ["--fail-on-change"]
-			inputs:  _inputs
+			args: ["--fail-on-change"]
+			inputs: _inputs
 		}
 	}
 
 	test: {
 		unit: {
 			command: "cargo"
-			args:    ["nextest", "run", "--workspace", "--all-features"]
-			inputs:  list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
+			args: ["nextest", "run", "--workspace", "--all-features"]
+			inputs: list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		}
 		doc: {
 			command: "cargo"
-			args:    ["test", "--doc", "--workspace"]
-			inputs:  #BaseInputs
+			args: ["test", "--doc", "--workspace"]
+			inputs: #BaseInputs
 		}
 		bdd: {
 			command: "cargo"
-			args:    ["test", "--test", "bdd"]
-			inputs:  list.Concat([#BaseInputs, ["tests", "features", "schema", "cue.mod"]])
+			args: ["test", "--test", "bdd"]
+			inputs: list.Concat([#BaseInputs, ["tests", "features", "schema", "cue.mod"]])
 			outputs: [".test"]
 		}
 	}
 
 	build: {
 		command: "cargo"
-		args:    ["build", "--workspace", "--all-features"]
-		inputs:  #BaseInputs
+		args: ["build", "--workspace", "--all-features"]
+		inputs: #BaseInputs
 	}
 
 	cross: {
@@ -273,35 +273,35 @@ tasks: {
 	security: {
 		deny: {
 			command: "cargo"
-			args:    ["deny", "check", "bans", "licenses", "advisories"]
-			inputs:  list.Concat([#BaseInputs, ["deny.toml"]])
+			args: ["deny", "check", "bans", "licenses", "advisories"]
+			inputs: list.Concat([#BaseInputs, ["deny.toml"]])
 		}
 	}
 
 	sbom: {
 		command: "cargo"
-		args:    ["cyclonedx", "--override-filename", "sbom.json"]
-		inputs:  #BaseInputs
+		args: ["cyclonedx", "--override-filename", "sbom.json"]
+		inputs: #BaseInputs
 		outputs: ["sbom.json"]
 	}
 
 	coverage: {
 		command: "cargo"
-		args:    ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-		inputs:  list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
+		args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
+		inputs: list.Concat([#BaseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
 		outputs: ["lcov.info"]
 	}
 
 	bench: {
 		command: "cargo"
-		args:    ["bench", "--workspace", "--no-fail-fast"]
-		inputs:  #BaseInputs
+		args: ["bench", "--workspace", "--no-fail-fast"]
+		inputs: #BaseInputs
 	}
 
 	docs: {
 		build: {
 			command: "bash"
-			args:    ["-c", "bun install --frozen-lockfile && cd docs && bun run build"]
+			args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build"]
 			inputs: [
 				"package.json",
 				"bun.lock",
@@ -310,10 +310,10 @@ tasks: {
 			outputs: ["docs/dist"]
 		}
 		deploy: {
-			command:   "bash"
-			args:      ["-c", "cd docs && npx wrangler deploy"]
+			command: "bash"
+			args: ["-c", "cd docs && npx wrangler deploy"]
 			dependsOn: ["docs.build"]
-			inputs:    [{task: "docs.build"}]
+			inputs: [{task: "docs.build"}]
 		}
 	}
 
@@ -322,34 +322,34 @@ tasks: {
 
 		"task-gen": {
 			command: "gh"
-			args:    ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
-			inputs:  _inputs
+			args: ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
+			inputs: _inputs
 		}
 
 		"env-gen": {
 			command: "gh"
-			args:    ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
-			inputs:  _inputs
+			args: ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
+			inputs: _inputs
 		}
 
 		qa: {
 			command: "gh"
-			args:    ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
-			inputs:  _inputs
+			args: ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
+			inputs: _inputs
 		}
 	}
 
 	release: {
 		build: {
 			command: "nix"
-			args:    ["build", ".#cuenv"]
-			inputs:  #BaseInputs
+			args: ["build", ".#cuenv"]
+			inputs: #BaseInputs
 			outputs: ["result/bin/cuenv"]
 		}
 
-		"publish:github": {
+		publish: github: {
 			command: "gh"
-			args:    ["release", "upload", "{{tag}}", "{{paths}}"]
+			args: ["release", "upload", "{{tag}}", "{{paths}}"]
 			params: {
 				tag: {
 					description: "Git tag to upload to"
@@ -362,7 +362,7 @@ tasks: {
 			}
 		}
 
-		"publish:homebrew": {
+		publish: homebrew: {
 			command: "bash"
 			args: ["-c", """
 				echo "Publishing to homebrew tap..."
@@ -371,13 +371,13 @@ tasks: {
 			dependsOn: ["release.publish:github"]
 		}
 
-		"publish:crates": {
-			command:   "cargo"
-			args:      ["publish", "-p", "cuenv"]
+		publish: crates: {
+			command: "cargo"
+			args: ["publish", "-p", "cuenv"]
 			dependsOn: ["release.publish:cue"]
 		}
 
-		"publish:cue": {
+		publish: cue: {
 			command: "bash"
 			args: ["-c", """
 				TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
@@ -404,14 +404,14 @@ tasks: {
 
 		prepare: {
 			command: "./result/bin/cuenv"
-			args:    ["release", "prepare"]
-			inputs:  ["Cargo.toml", "Cargo.lock", "crates"]
+			args: ["release", "prepare"]
+			inputs: ["Cargo.toml", "Cargo.lock", "crates"]
 		}
 
 		"prepare-dry-run": {
 			command: "./result/bin/cuenv"
-			args:    ["release", "prepare", "--dry-run"]
-			inputs:  ["Cargo.toml", "Cargo.lock", "crates"]
+			args: ["release", "prepare", "--dry-run"]
+			inputs: ["Cargo.toml", "Cargo.lock", "crates"]
 		}
 	}
 }

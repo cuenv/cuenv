@@ -166,18 +166,18 @@ let build = Task {
 
 **Fields:**
 
-| Field             | Type                                 | Description                                          |
-| ----------------- | ------------------------------------ | ---------------------------------------------------- |
-| `command`         | `String`                             | Executable to run                                    |
-| `args`            | `Vec<String>`                        | Arguments for the command                            |
-| `shell`           | `Option<Shell>`                      | Override shell invocation (defaults to direct exec)  |
-| `env`             | `HashMap<String, serde_json::Value>` | Task-specific environment additions                  |
-| `depends_on`      | `Vec<String>`                        | Other tasks that must finish first                   |
-| `inputs`          | `Vec<Input>`                         | Files/globs or task output references                |
-| `outputs`         | `Vec<String>`                        | Declared outputs that become cacheable artifacts     |
-| `external_inputs` | `Option<Vec<ExternalInput>>`         | Consume outputs from another project in the repo     |
-| `workspaces`      | `Vec<String>`                        | Workspace names to enable (see schema)               |
-| `description`     | `Option<String>`                     | Human-friendly summary                               |
+| Field             | Type                                 | Description                                         |
+| ----------------- | ------------------------------------ | --------------------------------------------------- |
+| `command`         | `String`                             | Executable to run                                   |
+| `args`            | `Vec<String>`                        | Arguments for the command                           |
+| `shell`           | `Option<Shell>`                      | Override shell invocation (defaults to direct exec) |
+| `env`             | `HashMap<String, serde_json::Value>` | Task-specific environment additions                 |
+| `depends_on`      | `Vec<String>`                        | Other tasks that must finish first                  |
+| `inputs`          | `Vec<Input>`                         | Files/globs or task output references               |
+| `outputs`         | `Vec<String>`                        | Declared outputs that become cacheable artifacts    |
+| `external_inputs` | `Option<Vec<ExternalInput>>`         | Consume outputs from another project in the repo    |
+| `workspaces`      | `Vec<String>`                        | Workspace names to enable (see schema)              |
+| `description`     | `Option<String>`                     | Human-friendly summary                              |
 
 #### TaskDefinition & TaskGroup
 
