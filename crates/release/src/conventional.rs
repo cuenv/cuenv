@@ -5,8 +5,11 @@
 //! repository access.
 
 use crate::changeset::BumpType;
+use crate::config::TagType;
 use crate::error::{Error, Result};
 use gix::bstr::ByteSlice;
+use semver::Version as SemverVersion;
+use std::cmp::Ordering;
 use std::path::Path;
 
 /// A parsed conventional commit with version bump information.
@@ -48,7 +51,8 @@ pub struct CommitParser;
 impl CommitParser {
     /// Parse all conventional commits since the given tag.
     ///
-    /// If `since_tag` is `None`, parses all commits.
+    /// If `since_tag` is `None`, auto-detects the latest tag matching the
+    /// configured `tag_prefix` and `tag_type`.
     ///
     /// # Errors
     ///
@@ -58,6 +62,8 @@ impl CommitParser {
     pub fn parse_since_tag(
         root: &Path,
         since_tag: Option<&str>,
+        tag_prefix: &str,
+        tag_type: TagType,
     ) -> Result<Vec<ConventionalCommit>> {
         let repo =
             gix::open(root).map_err(|e| Error::git(format!("Failed to open repository: {e}")))?;
@@ -82,7 +88,7 @@ impl CommitParser {
                 Some(oid)
             } else {
                 // Collect available tags for suggestions
-                let available_tags = list_tags(&repo);
+                let available_tags = list_tags_for_config(&repo, tag_prefix, tag_type);
                 let suggestion = if available_tags.is_empty() {
                     String::new()
                 } else {
@@ -123,8 +129,8 @@ impl CommitParser {
                 )));
             }
         } else {
-            // Auto-detect latest tag when none specified
-            let tags = list_tags(&repo);
+            // Auto-detect latest tag matching the configured prefix and type
+            let tags = list_tags_for_config(&repo, tag_prefix, tag_type);
             tags.first().and_then(|tag| find_tag_oid(&repo, tag))
         };
 
@@ -259,9 +265,52 @@ fn find_tag_oid(repo: &gix::Repository, tag_name: &str) -> Option<gix::ObjectId>
     None
 }
 
-/// List all tags in the repository.
-fn list_tags(repo: &gix::Repository) -> Vec<String> {
-    let mut tags = Vec::new();
+/// A comparable version that can be either semver or calver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ComparableVersion {
+    Semver(SemverVersion),
+    Calver(Vec<u32>), // e.g., [2024, 12, 23] or [2024, 12]
+}
+
+impl Ord for ComparableVersion {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::Semver(a), Self::Semver(b)) => a.cmp(b),
+            (Self::Calver(a), Self::Calver(b)) => a.cmp(b),
+            // Different types shouldn't happen in practice
+            _ => Ordering::Equal,
+        }
+    }
+}
+
+impl PartialOrd for ComparableVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Parse a calver version string (e.g., "2024.12.23" or "24.04").
+fn parse_calver(s: &str) -> Option<Vec<u32>> {
+    let parts: std::result::Result<Vec<u32>, _> = s.split('.').map(str::parse).collect();
+    let parts = parts.ok()?;
+    // CalVer needs at least 2 parts (year.month or similar)
+    if parts.len() >= 2 { Some(parts) } else { None }
+}
+
+/// Extract version from a tag if it matches the prefix and tag type.
+fn extract_version(tag: &str, prefix: &str, tag_type: TagType) -> Option<ComparableVersion> {
+    let version_str = tag.strip_prefix(prefix)?;
+    match tag_type {
+        TagType::Semver => SemverVersion::parse(version_str)
+            .ok()
+            .map(ComparableVersion::Semver),
+        TagType::Calver => parse_calver(version_str).map(ComparableVersion::Calver),
+    }
+}
+
+/// List all tags matching the prefix and type, sorted by version (newest first).
+fn list_tags_for_config(repo: &gix::Repository, prefix: &str, tag_type: TagType) -> Vec<String> {
+    let mut tags_with_versions: Vec<(String, ComparableVersion)> = Vec::new();
 
     if let Ok(refs) = repo.references()
         && let Ok(tag_refs) = refs.tags()
@@ -270,15 +319,20 @@ fn list_tags(repo: &gix::Repository) -> Vec<String> {
             if let Ok(name) = tag_ref.name().as_bstr().to_str() {
                 // Strip "refs/tags/" prefix
                 let tag_name = name.strip_prefix("refs/tags/").unwrap_or(name);
-                tags.push(tag_name.to_string());
+
+                if let Some(version) = extract_version(tag_name, prefix, tag_type) {
+                    tags_with_versions.push((tag_name.to_string(), version));
+                }
             }
         }
     }
 
-    // Sort by version (most recent first) - simple reverse sort works for semver
-    tags.sort();
-    tags.reverse();
-    tags
+    // Sort by version (most recent first)
+    tags_with_versions.sort_by(|a, b| b.1.cmp(&a.1));
+    tags_with_versions
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Calculate Levenshtein distance between two strings.

@@ -64,7 +64,8 @@ pub use changelog::{ChangelogEntry, ChangelogGenerator};
 pub use changeset::{BumpType, Changeset, ChangesetManager, PackageChange};
 pub use commit_analyzer::{CommitAnalyzer, PackageAffect};
 pub use config::{
-    ChangelogConfig, ReleaseConfig, ReleaseGitConfig, ReleasePackagesConfig, VersioningStrategy,
+    ChangelogConfig, ReleaseConfig, ReleaseGitConfig, ReleasePackagesConfig, TagType,
+    VersioningStrategy,
 };
 pub use conventional::{CommitParser, ConventionalCommit};
 pub use error::{Error, Result};
