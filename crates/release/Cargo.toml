@@ -32,6 +32,7 @@ toml_edit = { workspace = true }
 petgraph = { workspace = true }
 git-conventional = { workspace = true }
 gix = { workspace = true }
+semver = { workspace = true }
 
 # Binary distribution
 flate2 = { workspace = true }

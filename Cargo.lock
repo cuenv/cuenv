@@ -1844,6 +1844,7 @@ dependencies = [
  "glob",
  "miette",
  "petgraph",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
