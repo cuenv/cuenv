@@ -49,6 +49,12 @@
         platformBuildInputs = with pkgs;
           [ libiconv ];
 
+        # 1Password WASM SDK (fetched for tests)
+        onepassword-wasm = pkgs.fetchurl {
+          url = "https://github.com/1Password/onepassword-sdk-go/raw/refs/tags/v0.3.1/internal/wasm/core.wasm";
+          hash = "sha256-hY3SBC679vUNDkpREjfUWAaQxC5mrPQhdYSuUKx+j2o=";
+        };
+
         # CUE bridge builder
         cue-bridge = pkgs.buildGoModule {
           pname = "libcue-bridge";
@@ -166,6 +172,7 @@
             ${setupBridge}
           '';
           CUE_BRIDGE_PATH = cue-bridge;
+          ONEPASSWORD_WASM_PATH = onepassword-wasm;
         };
 
         # Build artifacts for dependency caching
