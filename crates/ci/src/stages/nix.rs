@@ -2,8 +2,10 @@
 //!
 //! Contributes Nix installation to the CI pipeline.
 
+use std::collections::HashMap;
+
 use super::StageContributor;
-use crate::ir::{BuildStage, IntermediateRepresentation, StageTask};
+use crate::ir::{ActionSpec, BuildStage, IntermediateRepresentation, StageTask};
 use cuenv_core::manifest::{Project, Runtime};
 
 /// Nix stage contributor
@@ -52,6 +54,20 @@ impl StageContributor for NixContributor {
                         ],
                         shell: true,
                         priority: 0,
+                        // GitHub Action alternative (used by GitHubStageRenderer)
+                        action: Some(ActionSpec {
+                            uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
+                            inputs: {
+                                let mut inputs = HashMap::new();
+                                inputs.insert(
+                                    "extra-conf".to_string(),
+                                    serde_yaml::Value::String(
+                                        "accept-flake-config = true".to_string(),
+                                    ),
+                                );
+                                inputs
+                            },
+                        }),
                         ..Default::default()
                     },
                 ),

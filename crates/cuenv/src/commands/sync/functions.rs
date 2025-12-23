@@ -1317,6 +1317,49 @@ fn emit_matrix_workflow(
     Ok(vec![(filename, yaml)])
 }
 
+/// Render stage tasks to GitHub Actions steps using the `StageRenderer`.
+///
+/// Returns a tuple of:
+/// - `Vec` of rendered steps (bootstrap + setup stages)
+/// - `IndexMap` of secret env vars that need to be passed to task steps
+///
+/// This function replaces hardcoded contributor checks with the proper
+/// renderer pattern, allowing new contributors to be added without
+/// modifying emitter code.
+fn render_stage_steps(
+    stages: &cuenv_ci::ir::StageConfiguration,
+) -> (
+    Vec<cuenv_github::workflow::schema::Step>,
+    indexmap::IndexMap<String, String>,
+) {
+    use cuenv_ci::StageRenderer;
+    use cuenv_github::workflow::GitHubStageRenderer;
+
+    let renderer = GitHubStageRenderer::new();
+    let mut steps = Vec::new();
+    let mut secret_env_vars = indexmap::IndexMap::new();
+
+    // Render bootstrap stage tasks (e.g., Nix installation)
+    for step in renderer.render_bootstrap(stages).unwrap() {
+        steps.push(step);
+    }
+
+    // Render setup stage tasks (e.g., cuenv, 1Password, Cachix)
+    // Also collect env vars from setup tasks that need to be passed to task steps
+    for task in &stages.setup {
+        let step = renderer.render_task(task).unwrap();
+        steps.push(step);
+
+        // Collect env vars from setup tasks - these may contain secrets
+        // that need to be available when the actual task runs
+        for (key, value) in &task.env {
+            secret_env_vars.insert(key.clone(), value.clone());
+        }
+    }
+
+    (steps, secret_env_vars)
+}
+
 /// Build a simple job from an IR task.
 fn build_simple_job(
     task: &cuenv_ci::ir::Task,
@@ -1336,24 +1379,9 @@ fn build_simple_job(
             .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
     );
 
-    // Nix installation (if needed)
-    let has_install_nix = stages.bootstrap.iter().any(|t| t.id == "install-nix");
-    if has_install_nix {
-        steps.push(
-            Step::uses("DeterminateSystems/nix-installer-action@v16")
-                .with_name("Install Nix")
-                .with_input(
-                    "extra-conf",
-                    serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                ),
-        );
-    }
-
-    // Setup cuenv
-    if let Some(cuenv_task) = stages.setup.iter().find(|t| t.id == "setup-cuenv") {
-        let command = cuenv_task.command.first().cloned().unwrap_or_default();
-        steps.push(Step::run(&command).with_name("Setup cuenv"));
-    }
+    // Render bootstrap and setup stages using the StageRenderer
+    let (stage_steps, secret_env_vars) = render_stage_steps(stages);
+    steps.extend(stage_steps);
 
     // Run the task
     let task_command = if let Some(env) = environment {
@@ -1361,9 +1389,14 @@ fn build_simple_job(
     } else {
         format!("cuenv task {}", task.id)
     };
-    let task_step = Step::run(task_command)
+    let mut task_step = Step::run(task_command)
         .with_name(task.id.clone())
         .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+
+    // Add secret env vars from setup stages to the task step
+    for (key, value) in secret_env_vars {
+        task_step.env.insert(key, value);
+    }
     steps.push(task_step);
 
     Job {
@@ -1405,24 +1438,9 @@ fn build_artifact_aggregation_job(
             .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
     );
 
-    // Nix installation (if needed)
-    let has_install_nix = stages.bootstrap.iter().any(|t| t.id == "install-nix");
-    if has_install_nix {
-        steps.push(
-            Step::uses("DeterminateSystems/nix-installer-action@v16")
-                .with_name("Install Nix")
-                .with_input(
-                    "extra-conf",
-                    serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                ),
-        );
-    }
-
-    // Setup cuenv
-    if let Some(cuenv_task) = stages.setup.iter().find(|t| t.id == "setup-cuenv") {
-        let command = cuenv_task.command.first().cloned().unwrap_or_default();
-        steps.push(Step::run(&command).with_name("Setup cuenv"));
-    }
+    // Render bootstrap and setup stages using the StageRenderer
+    let (stage_steps, secret_env_vars) = render_stage_steps(stages);
+    steps.extend(stage_steps);
 
     // Download artifacts from previous jobs
     if let Some(artifacts) = &matrix_task.artifacts {
@@ -1468,6 +1486,10 @@ fn build_artifact_aggregation_job(
         for (key, value) in params {
             task_step.env.insert(key.to_uppercase(), value.clone());
         }
+    }
+    // Add secret env vars from setup stages to the task step
+    for (key, value) in secret_env_vars {
+        task_step.env.insert(key, value);
     }
     steps.push(task_step);
 
@@ -1526,24 +1548,9 @@ fn expand_matrix_jobs(
                     .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
             );
 
-            // Nix installation
-            let has_install_nix = stages.bootstrap.iter().any(|t| t.id == "install-nix");
-            if has_install_nix {
-                steps.push(
-                    Step::uses("DeterminateSystems/nix-installer-action@v16")
-                        .with_name("Install Nix")
-                        .with_input(
-                            "extra-conf",
-                            serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                        ),
-                );
-            }
-
-            // Setup cuenv
-            if let Some(cuenv_task) = stages.setup.iter().find(|t| t.id == "setup-cuenv") {
-                let command = cuenv_task.command.first().cloned().unwrap_or_default();
-                steps.push(Step::run(&command).with_name("Setup cuenv"));
-            }
+            // Render bootstrap and setup stages using the StageRenderer
+            let (stage_steps, secret_env_vars) = render_stage_steps(stages);
+            steps.extend(stage_steps);
 
             // Run the task
             let task_command = if let Some(env) = environment {
@@ -1556,6 +1563,10 @@ fn expand_matrix_jobs(
                 .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
             // Add arch as an environment variable for the task
             task_step.env.insert("CUENV_ARCH".to_string(), arch.clone());
+            // Add secret env vars from setup stages to the task step
+            for (key, value) in &secret_env_vars {
+                task_step.env.insert(key.clone(), value.clone());
+            }
             steps.push(task_step);
 
             // Upload artifact if this is a build task with outputs
