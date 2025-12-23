@@ -1312,9 +1312,11 @@ fn build_pipeline_jobs(
 
     let mut jobs = IndexMap::new();
     let mut artifact_source_jobs: HashSet<String> = HashSet::new();
+    let mut processed_task_names: HashSet<String> = HashSet::new();
 
     for pipeline_task in expanded_tasks {
         let task_name = pipeline_task.task_name();
+        processed_task_names.insert(task_name.to_string());
         let job_id = task_name.replace(['.', ' '], "-");
 
         match pipeline_task {
@@ -1376,6 +1378,11 @@ fn build_pipeline_jobs(
 
     // Add transitive dependencies not in pipeline tasks
     for ir_task in &ctx.tasks {
+        // Skip if this task was explicitly in the pipeline (including as matrix task)
+        if processed_task_names.contains(&ir_task.id) {
+            continue;
+        }
+
         let job_id = ir_task.id.replace(['.', ' '], "-");
         if jobs.contains_key(&job_id) {
             continue;
