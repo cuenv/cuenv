@@ -4,6 +4,47 @@
 
 use std::convert::Infallible;
 
+/// Transform CI-agnostic secret reference syntax to GitHub Actions syntax.
+///
+/// Converts `${VAR_NAME}` to `${{ secrets.VAR_NAME }}` for env var values
+/// that are entirely a secret reference (not embedded references).
+///
+/// # Examples
+/// - `${FOO}` -> `${{ secrets.FOO }}`
+/// - `${FOO_BAR_123}` -> `${{ secrets.FOO_BAR_123 }}`
+/// - `prefix-${VAR}` -> unchanged (embedded reference)
+/// - `regular_value` -> unchanged
+#[must_use]
+pub fn transform_secret_ref(value: &str) -> String {
+    // Check for pattern: ${UPPERCASE_VAR_NAME}
+    let trimmed = value.trim();
+    if !trimmed.starts_with("${") || !trimmed.ends_with('}') {
+        return value.to_string();
+    }
+
+    // Extract the variable name (between ${ and })
+    let var_name = &trimmed[2..trimmed.len() - 1];
+
+    // Validate: must be non-empty, start with uppercase letter, contain only A-Z, 0-9, _
+    let Some(first_char) = var_name.chars().next() else {
+        return value.to_string();
+    };
+
+    if !first_char.is_ascii_uppercase() {
+        return value.to_string();
+    }
+
+    let is_valid_var_name = var_name
+        .chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+
+    if !is_valid_var_name {
+        return value.to_string();
+    }
+
+    format!("${{{{ secrets.{var_name} }}}}")
+}
+
 use cuenv_ci::StageRenderer;
 use cuenv_ci::ir::StageTask;
 
@@ -37,9 +78,9 @@ impl StageRenderer for GitHubStageRenderer {
                 step.with_inputs.insert(key.clone(), value.clone());
             }
 
-            // Add environment variables
+            // Add environment variables (transform secret references)
             for (key, value) in &task.env {
-                step.env.insert(key.clone(), value.clone());
+                step.env.insert(key.clone(), transform_secret_ref(value));
             }
 
             return Ok(step);
@@ -49,9 +90,9 @@ impl StageRenderer for GitHubStageRenderer {
         let command = task.command_string();
         let mut step = Step::run(&command).with_name(task.label());
 
-        // Add environment variables
+        // Add environment variables (transform secret references)
         for (key, value) in &task.env {
-            step.env.insert(key.clone(), value.clone());
+            step.env.insert(key.clone(), transform_secret_ref(value));
         }
 
         Ok(step)
@@ -153,9 +194,10 @@ mod tests {
             ],
             env: {
                 let mut env = HashMap::new();
+                // Use CI-agnostic format (what contributors produce)
                 env.insert(
                     "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
-                    "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}".to_string(),
+                    "${OP_SERVICE_ACCOUNT_TOKEN}".to_string(),
                 );
                 env
             },
@@ -171,6 +213,7 @@ mod tests {
             steps[1].run,
             Some("cuenv secrets setup onepassword".to_string())
         );
+        // Verify transformation: ${VAR} -> ${{ secrets.VAR }}
         assert_eq!(
             steps[1].env.get("OP_SERVICE_ACCOUNT_TOKEN"),
             Some(&"${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}".to_string())
@@ -190,5 +233,47 @@ mod tests {
 
         // Falls back to ID when no label
         assert_eq!(step.name, Some("setup-1password".to_string()));
+    }
+
+    #[test]
+    fn test_transform_secret_ref() {
+        // Basic transformation
+        assert_eq!(transform_secret_ref("${FOO}"), "${{ secrets.FOO }}");
+
+        // With numbers and underscores
+        assert_eq!(
+            transform_secret_ref("${FOO_BAR_123}"),
+            "${{ secrets.FOO_BAR_123 }}"
+        );
+
+        // Real-world example
+        assert_eq!(
+            transform_secret_ref("${OP_SERVICE_ACCOUNT_TOKEN}"),
+            "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}"
+        );
+
+        // Embedded reference - should NOT transform
+        assert_eq!(
+            transform_secret_ref("prefix-${VAR}-suffix"),
+            "prefix-${VAR}-suffix"
+        );
+
+        // Regular value - no change
+        assert_eq!(transform_secret_ref("regular_value"), "regular_value");
+
+        // Already correct syntax - no change (idempotent for final output)
+        assert_eq!(
+            transform_secret_ref("${{ secrets.VAR }}"),
+            "${{ secrets.VAR }}"
+        );
+
+        // Empty value
+        assert_eq!(transform_secret_ref(""), "");
+
+        // Lowercase variable (not a secret ref convention)
+        assert_eq!(transform_secret_ref("${foo}"), "${foo}");
+
+        // Empty braces
+        assert_eq!(transform_secret_ref("${}"), "${}");
     }
 }

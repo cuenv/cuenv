@@ -31,4 +31,4 @@ pub mod stage_renderer;
 
 pub use emitter::{GitHubActionsEmitter, ReleaseWorkflowBuilder};
 pub use schema::*;
-pub use stage_renderer::GitHubStageRenderer;
+pub use stage_renderer::{GitHubStageRenderer, transform_secret_ref};
