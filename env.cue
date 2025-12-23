@@ -119,7 +119,7 @@ ci: {
 					}
 				},
 				{
-					task: "release.publish.github"
+					task: "release"
 					artifacts: [{
 						from:   "release.build"
 						to:     "dist"
@@ -130,9 +130,6 @@ ci: {
 						paths: "dist/**/*"
 					}
 				},
-				"release.publish.homebrew",
-				"release.publish.crates",
-				"release.publish.cue",
 				"docs.deploy",
 			]
 		},

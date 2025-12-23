@@ -364,35 +364,6 @@ async fn execute_sync_codeowners_inner(
     }
 }
 
-/// Load module from path for workspace operations.
-pub fn load_module_from_path(path: &Path, package: &str) -> Result<cuenv_core::ModuleEvaluation> {
-    let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(path.to_path_buf().into_boxed_path()),
-        operation: "canonicalize path".to_string(),
-    })?;
-
-    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE module found (looking for cue.mod/) starting from: {}",
-            target_path.display()
-        ))
-    })?;
-
-    let options = ModuleEvalOptions {
-        recursive: true,
-        ..Default::default()
-    };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
-        .map_err(convert_engine_error)?;
-
-    Ok(cuenv_core::ModuleEvaluation::from_raw(
-        module_root,
-        raw_result.instances,
-        raw_result.projects,
-    ))
-}
-
 /// Create a synthetic project name from a relative path.
 pub fn synthetic_name_from_path(path: &Path) -> String {
     if path == Path::new(".") {
@@ -406,11 +377,12 @@ pub fn synthetic_name_from_path(path: &Path) -> String {
 ///
 /// Aggregates ownership rules from all configs in the CUE module into a single CODEOWNERS file.
 /// CODEOWNERS is a single file at repo root, so it must aggregate all configs.
-#[instrument(name = "sync_codeowners_workspace")]
+#[instrument(name = "sync_codeowners_workspace", skip(executor))]
 pub async fn execute_sync_codeowners_workspace(
     package: &str,
     dry_run: bool,
     check: bool,
+    executor: &CommandExecutor,
 ) -> Result<String> {
     use crate::providers::detect_code_owners_provider;
     use cuenv_codeowners::Rule;
@@ -421,8 +393,8 @@ pub async fn execute_sync_codeowners_workspace(
         cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
     })?;
 
-    // Use module-wide evaluation instead of per-directory discovery
-    let module = load_module_from_path(&cwd, package)?;
+    // Use cached module from executor (avoids redundant CUE evaluation)
+    let module = executor.get_module(&cwd)?;
 
     // Collect all configs with owners configuration
     let mut project_owners_list = Vec::new();
@@ -790,10 +762,21 @@ pub async fn execute_sync_ci(
     check: bool,
     force: bool,
     provider: Option<&str>,
+    executor: &CommandExecutor,
 ) -> Result<String> {
     tracing::info!("Starting sync ci command");
 
     let dir_path = Path::new(path);
+
+    // Get cached module from executor and discover projects before async work
+    // (ModuleGuard contains MutexGuard which is not Send)
+    let projects = {
+        let cwd = std::env::current_dir().map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
+        })?;
+        let module = executor.get_module(&cwd)?;
+        cuenv_ci::discovery::discover_projects_from_module(&module)
+    };
 
     // Determine which providers to sync
     let providers = match provider {
@@ -806,7 +789,7 @@ pub async fn execute_sync_ci(
 
     for prov in &providers {
         let result = match prov.as_str() {
-            "github" => execute_sync_github(dir_path, dry_run, check, force).await,
+            "github" => execute_sync_github(dir_path, dry_run, check, force, &projects).await,
             "buildkite" => execute_sync_buildkite(dir_path, dry_run, check, force),
             _ => Err(cuenv_core::Error::configuration(format!(
                 "Unsupported CI provider: {prov}. Supported: github, buildkite"
@@ -855,9 +838,17 @@ pub async fn execute_sync_ci_workspace(
     check: bool,
     force: bool,
     provider: Option<&str>,
+    executor: &CommandExecutor,
 ) -> Result<String> {
-    // For workspace-wide sync, we use project discovery
-    let projects = cuenv_ci::discovery::discover_projects()?;
+    // Get cached module from executor and discover projects before async work
+    // (ModuleGuard contains MutexGuard which is not Send, must be dropped before await)
+    let projects = {
+        let cwd = std::env::current_dir().map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
+        })?;
+        let module = executor.get_module(&cwd)?;
+        cuenv_ci::discovery::discover_projects_from_module(&module)
+    };
 
     if projects.is_empty() {
         return Ok("No projects with CI configuration found.".to_string());
@@ -884,6 +875,7 @@ pub async fn execute_sync_ci_workspace(
             check,
             force,
             provider,
+            executor,
         )
         .await;
 
@@ -913,11 +905,8 @@ async fn execute_sync_github(
     dry_run: bool,
     check: bool,
     force: bool,
+    projects: &[cuenv_ci::discovery::DiscoveredCIProject],
 ) -> Result<String> {
-    use cuenv_ci::discovery::discover_projects;
-
-    // Discover projects
-    let projects = discover_projects()?;
     if projects.is_empty() {
         return Err(cuenv_core::Error::configuration(
             "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
@@ -927,7 +916,7 @@ async fn execute_sync_github(
     // Generate workflows per-project, per-pipeline
     // Each project with CI config gets its own workflow files
     let mut all_workflows: Vec<(String, String)> = Vec::new();
-    for project in &projects {
+    for project in projects {
         let Some(ci) = &project.config.ci else {
             continue;
         };
