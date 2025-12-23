@@ -7,6 +7,10 @@ use cuenv_secrets::SecretError;
 use std::path::PathBuf;
 
 /// Get the path to the 1Password WASM SDK in the cache
+///
+/// # Errors
+///
+/// Returns an error if the cache directory cannot be determined.
 pub fn onepassword_wasm_path() -> Result<PathBuf, SecretError> {
     let cache_dir = dirs::cache_dir().ok_or_else(|| SecretError::ResolutionFailed {
         name: "onepassword".to_string(),
@@ -20,11 +24,19 @@ pub fn onepassword_wasm_path() -> Result<PathBuf, SecretError> {
 }
 
 /// Check if the 1Password WASM SDK is available in the cache
+#[must_use]
 pub fn onepassword_wasm_available() -> bool {
     onepassword_wasm_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 /// Load the 1Password WASM SDK from the cache
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The cache directory cannot be determined
+/// - The WASM file does not exist (run `cuenv secrets setup onepassword` first)
+/// - The file cannot be read
 pub fn load_onepassword_wasm() -> Result<Vec<u8>, SecretError> {
     let path = onepassword_wasm_path()?;
 
