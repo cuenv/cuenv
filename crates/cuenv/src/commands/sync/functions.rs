@@ -1501,6 +1501,7 @@ fn build_simple_job(
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
 ) -> cuenv_github::workflow::schema::Job {
     use cuenv_github::workflow::schema::{Job, RunsOn, Step};
+    use cuenv_github::workflow::transform_secret_ref;
     use indexmap::IndexMap;
 
     let mut steps = Vec::new();
@@ -1528,7 +1529,7 @@ fn build_simple_job(
 
     // Add secret env vars from setup stages to the task step
     for (key, value) in secret_env_vars {
-        task_step.env.insert(key, value);
+        task_step.env.insert(key, transform_secret_ref(&value));
     }
     steps.push(task_step);
 
@@ -1560,6 +1561,7 @@ fn build_artifact_aggregation_job(
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
 ) -> cuenv_github::workflow::schema::Job {
     use cuenv_github::workflow::schema::{Job, RunsOn, Step};
+    use cuenv_github::workflow::transform_secret_ref;
     use indexmap::IndexMap;
 
     let mut steps = Vec::new();
@@ -1622,7 +1624,7 @@ fn build_artifact_aggregation_job(
     }
     // Add secret env vars from setup stages to the task step
     for (key, value) in secret_env_vars {
-        task_step.env.insert(key, value);
+        task_step.env.insert(key, transform_secret_ref(&value));
     }
     steps.push(task_step);
 
@@ -1651,6 +1653,7 @@ fn expand_matrix_jobs(
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
 ) -> indexmap::IndexMap<String, cuenv_github::workflow::schema::Job> {
     use cuenv_github::workflow::schema::{Job, RunsOn, Step};
+    use cuenv_github::workflow::transform_secret_ref;
     use indexmap::IndexMap;
 
     let mut jobs = IndexMap::new();
@@ -1698,7 +1701,9 @@ fn expand_matrix_jobs(
             task_step.env.insert("CUENV_ARCH".to_string(), arch.clone());
             // Add secret env vars from setup stages to the task step
             for (key, value) in &secret_env_vars {
-                task_step.env.insert(key.clone(), value.clone());
+                task_step
+                    .env
+                    .insert(key.clone(), transform_secret_ref(value));
             }
             steps.push(task_step);
 
