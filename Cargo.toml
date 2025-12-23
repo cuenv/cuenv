@@ -27,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.19.1"
+version = "0.20.0"
 edition = "2024"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
@@ -39,28 +39,28 @@ keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
-cuenv-events = { path = "crates/events", version = "0.19.0" }
-cuenv-secrets = { path = "crates/secrets", version = "0.19.0" }
-cuenv-core = { path = "crates/core", version = "0.19.0" }
-cuenv-dagger = { path = "crates/dagger", version = "0.19.0" }
-cuenv-workspaces = { path = "crates/workspaces", version = "0.19.0" }
-cuenv-ci = { path = "crates/ci", version = "0.19.0" }
-cuenv-release = { path = "crates/release", version = "0.19.0" }
-cuenv-ignore = { path = "crates/ignore", version = "0.19.0" }
-cuenv-codeowners = { path = "crates/codeowners", version = "0.19.0" }
-cuenv-cubes = { path = "crates/cubes", version = "0.19.0" }
-cuengine = { path = "crates/cuengine", version = "0.19.0" }
+cuenv-events = { path = "crates/events", version = "0.20.0" }
+cuenv-secrets = { path = "crates/secrets", version = "0.20.0" }
+cuenv-core = { path = "crates/core", version = "0.20.0" }
+cuenv-dagger = { path = "crates/dagger", version = "0.20.0" }
+cuenv-workspaces = { path = "crates/workspaces", version = "0.20.0" }
+cuenv-ci = { path = "crates/ci", version = "0.20.0" }
+cuenv-release = { path = "crates/release", version = "0.20.0" }
+cuenv-ignore = { path = "crates/ignore", version = "0.20.0" }
+cuenv-codeowners = { path = "crates/codeowners", version = "0.20.0" }
+cuenv-cubes = { path = "crates/cubes", version = "0.20.0" }
+cuengine = { path = "crates/cuengine", version = "0.20.0" }
 # Platform-specific provider crates
-cuenv-github = { path = "crates/github", version = "0.19.0" }
-cuenv-gitlab = { path = "crates/gitlab", version = "0.19.0" }
-cuenv-bitbucket = { path = "crates/bitbucket", version = "0.19.0" }
-cuenv-buildkite = { path = "crates/buildkite", version = "0.19.0" }
-cuenv-homebrew = { path = "crates/homebrew", version = "0.19.0" }
+cuenv-github = { path = "crates/github", version = "0.20.0" }
+cuenv-gitlab = { path = "crates/gitlab", version = "0.20.0" }
+cuenv-bitbucket = { path = "crates/bitbucket", version = "0.20.0" }
+cuenv-buildkite = { path = "crates/buildkite", version = "0.20.0" }
+cuenv-homebrew = { path = "crates/homebrew", version = "0.20.0" }
 # Secret provider crates
-cuenv-aws = { path = "crates/aws", version = "0.19.0" }
-cuenv-gcp = { path = "crates/gcp", version = "0.19.0" }
-cuenv-vault = { path = "crates/vault", version = "0.19.0" }
-cuenv-1password = { path = "crates/1password", version = "0.19.0" }
+cuenv-aws = { path = "crates/aws", version = "0.20.0" }
+cuenv-gcp = { path = "crates/gcp", version = "0.20.0" }
+cuenv-vault = { path = "crates/vault", version = "0.20.0" }
+cuenv-1password = { path = "crates/1password", version = "0.20.0" }
 schemars = "1.0.4"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
