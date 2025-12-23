@@ -1254,21 +1254,40 @@ fn emit_matrix_workflow(
                 }
             }
             cuenv_core::ci::PipelineTask::Matrix(matrix_task) => {
-                // Expand matrix into separate jobs
-                let expanded_jobs = expand_matrix_jobs(
-                    matrix_task,
-                    &ctx.github_config,
-                    &ctx.stages,
-                    ctx.environment.as_ref(),
-                    &previous_jobs,
-                    &emitter,
-                );
+                if matrix_task.matrix.is_empty() {
+                    // No matrix dimensions - this is an artifact aggregation task
+                    // Create a single job that depends on previous jobs and downloads artifacts
+                    let job = build_artifact_aggregation_job(
+                        task_name,
+                        matrix_task,
+                        &ctx.stages,
+                        ctx.environment.as_ref(),
+                        &previous_jobs,
+                        &emitter,
+                    );
+                    let job_id = task_name.replace(['.', ' '], "-");
+                    jobs.insert(job_id.clone(), job);
+                    previous_jobs = vec![job_id];
+                } else {
+                    // Matrix expansion - create multiple jobs
+                    let expanded_jobs = expand_matrix_jobs(
+                        matrix_task,
+                        &ctx.github_config,
+                        &ctx.stages,
+                        ctx.environment.as_ref(),
+                        &previous_jobs,
+                        &emitter,
+                    );
 
-                let job_ids: Vec<String> = expanded_jobs.keys().cloned().collect();
-                for (id, job) in expanded_jobs {
-                    jobs.insert(id, job);
+                    // Only update previous_jobs if we actually created jobs
+                    if !expanded_jobs.is_empty() {
+                        let job_ids: Vec<String> = expanded_jobs.keys().cloned().collect();
+                        for (id, job) in expanded_jobs {
+                            jobs.insert(id, job);
+                        }
+                        previous_jobs = job_ids;
+                    }
                 }
-                previous_jobs = job_ids;
             }
         }
     }
@@ -1358,6 +1377,111 @@ fn build_simple_job(
         concurrency: None,
         continue_on_error: None,
         timeout_minutes: None,
+        steps,
+    }
+}
+
+/// Build a job for artifact aggregation tasks (matrix tasks with no dimensions).
+///
+/// These tasks have `artifacts` and/or `params` but no `matrix` dimensions.
+/// They download artifacts from previous matrix jobs and run a single task.
+fn build_artifact_aggregation_job(
+    task_name: &str,
+    matrix_task: &cuenv_core::ci::MatrixTask,
+    stages: &cuenv_ci::ir::StageConfiguration,
+    environment: Option<&String>,
+    previous_jobs: &[String],
+    emitter: &cuenv_github::workflow::GitHubActionsEmitter,
+) -> cuenv_github::workflow::schema::Job {
+    use cuenv_github::workflow::schema::{Job, RunsOn, Step};
+    use indexmap::IndexMap;
+
+    let mut steps = Vec::new();
+
+    // Checkout
+    steps.push(
+        Step::uses("actions/checkout@v4")
+            .with_name("Checkout")
+            .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
+    );
+
+    // Nix installation (if needed)
+    let has_install_nix = stages.bootstrap.iter().any(|t| t.id == "install-nix");
+    if has_install_nix {
+        steps.push(
+            Step::uses("DeterminateSystems/nix-installer-action@v16")
+                .with_name("Install Nix")
+                .with_input(
+                    "extra-conf",
+                    serde_yaml::Value::String("accept-flake-config = true".to_string()),
+                ),
+        );
+    }
+
+    // Setup cuenv
+    if let Some(cuenv_task) = stages.setup.iter().find(|t| t.id == "setup-cuenv") {
+        let command = cuenv_task.command.first().cloned().unwrap_or_default();
+        steps.push(Step::run(&command).with_name("Setup cuenv"));
+    }
+
+    // Download artifacts from previous jobs
+    if let Some(artifacts) = &matrix_task.artifacts {
+        for artifact in artifacts {
+            let source_prefix = artifact.from.replace('.', "-");
+            for prev_job in previous_jobs {
+                if prev_job.starts_with(&source_prefix) {
+                    // Extract the arch suffix from the job name
+                    let arch_suffix = prev_job
+                        .strip_prefix(&source_prefix)
+                        .unwrap_or("")
+                        .trim_start_matches('-');
+                    let download_path = if arch_suffix.is_empty() {
+                        artifact.to.clone()
+                    } else {
+                        format!("{}/{}", artifact.to, arch_suffix)
+                    };
+
+                    steps.push(
+                        Step::uses("actions/download-artifact@v4")
+                            .with_name(format!("Download {prev_job}"))
+                            .with_input("name", serde_yaml::Value::String(prev_job.clone()))
+                            .with_input("path", serde_yaml::Value::String(download_path)),
+                    );
+                }
+            }
+        }
+    }
+
+    // Build task command with params
+    let task_command = if let Some(env) = environment {
+        format!("cuenv task {task_name} -e {env}")
+    } else {
+        format!("cuenv task {task_name}")
+    };
+
+    let mut task_step = Step::run(&task_command)
+        .with_name(task_name.to_string())
+        .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+
+    // Add params as environment variables
+    if let Some(params) = &matrix_task.params {
+        for (key, value) in params {
+            task_step.env.insert(key.to_uppercase(), value.clone());
+        }
+    }
+    steps.push(task_step);
+
+    Job {
+        name: Some(task_name.to_string()),
+        runs_on: RunsOn::Label(emitter.runner.clone()),
+        needs: previous_jobs.to_vec(),
+        if_condition: None,
+        strategy: None,
+        environment: None,
+        env: IndexMap::new(),
+        concurrency: None,
+        continue_on_error: None,
+        timeout_minutes: Some(30),
         steps,
     }
 }
