@@ -18,7 +18,8 @@ static SHARED_CORE: LazyLock<Mutex<Option<SharedCore>>> = LazyLock::new(|| Mutex
 /// - `unix_time_milliseconds_imported` (op-now): Returns current Unix time in milliseconds
 /// - `unix_time_milliseconds_imported` (zxcvbn): Same as above, for password strength checking
 /// - `utc_offset_seconds` (op-time): Returns local timezone offset in seconds
-fn create_host_functions() -> Vec<Function> {
+#[must_use]
+pub fn create_host_functions() -> Vec<Function> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // random_fill_imported: Generate random bytes and return pointer to them in WASM memory
@@ -124,6 +125,13 @@ impl SharedCore {
     ///
     /// On first call, loads the WASM from disk and initializes the plugin.
     /// Subsequent calls return the cached instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The shared core lock cannot be acquired
+    /// - The WASM file cannot be loaded
+    /// - The Extism plugin fails to initialize
     pub fn get_or_init() -> Result<&'static Mutex<Option<SharedCore>>, SecretError> {
         let mut guard = SHARED_CORE
             .lock()
@@ -161,6 +169,14 @@ impl SharedCore {
     /// Initialize a new 1Password client.
     ///
     /// Returns a client ID that can be used for subsequent `invoke` calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The client configuration cannot be serialized
+    /// - The WASM `init_client` call fails
+    /// - The response cannot be parsed
+    /// - 1Password returns an authentication error
     pub fn init_client(&mut self, token: &str) -> Result<u64, SecretError> {
         // Map Rust OS/arch names to Go equivalents (what 1Password SDK expects)
         let os = match std::env::consts::OS {
@@ -240,6 +256,14 @@ impl SharedCore {
     /// For resolving secrets, use method `SecretsResolve` with the secret reference.
     ///
     /// The `context` parameter is used for error messages to identify which secret failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The invoke request cannot be serialized
+    /// - The WASM invoke call fails
+    /// - The response cannot be parsed
+    /// - 1Password returns an error for the operation
     pub fn invoke(
         &mut self,
         client_id: u64,

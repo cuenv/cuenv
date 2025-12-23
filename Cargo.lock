@@ -1589,6 +1589,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.4",
  "once_cell",
+ "reqwest 0.12.26",
  "serde",
  "serde_json",
  "tokio",
