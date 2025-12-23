@@ -333,6 +333,21 @@ pub enum BuildStage {
     Failure,
 }
 
+/// Specification for a GitHub Action step (platform-specific hint)
+///
+/// When present, GitHub emitters will render this task as a `uses:` step
+/// instead of a `run:` step. Other platforms fall back to the `command` field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionSpec {
+    /// GitHub Action reference (e.g., "actions/checkout@v4")
+    pub uses: String,
+
+    /// Action inputs
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub inputs: HashMap<String, serde_yaml::Value>,
+}
+
 /// A task contributed by a stage provider
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -348,7 +363,7 @@ pub struct StageTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 
-    /// Command to execute
+    /// Command to execute (used by all platforms unless `action` overrides for GitHub)
     pub command: Vec<String>,
 
     /// Shell execution mode (false = direct execve, true = wrap in /bin/sh -c)
@@ -370,6 +385,10 @@ pub struct StageTask {
     /// Priority within the stage (lower = earlier, default 0)
     #[serde(default, skip_serializing_if = "is_zero")]
     pub priority: i32,
+
+    /// Optional GitHub Action specification (overrides `command` for GitHub emitters)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<ActionSpec>,
 }
 
 /// Helper to skip serializing zero priority
@@ -661,6 +680,7 @@ mod tests {
             secrets: HashMap::new(),
             depends_on: vec![],
             priority: 0,
+            action: None,
         };
 
         let json = serde_json::to_value(&task).unwrap();

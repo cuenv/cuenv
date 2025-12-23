@@ -27,6 +27,8 @@
 
 pub mod emitter;
 pub mod schema;
+pub mod stage_renderer;
 
 pub use emitter::{GitHubActionsEmitter, ReleaseWorkflowBuilder};
 pub use schema::*;
+pub use stage_renderer::GitHubStageRenderer;
