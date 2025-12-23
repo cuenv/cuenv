@@ -38,7 +38,7 @@ pub mod registry;
 pub use functions::{
     execute_sync_ci, execute_sync_ci_workspace, execute_sync_codeowners,
     execute_sync_codeowners_workspace, execute_sync_cubes, execute_sync_ignore,
-    load_module_from_path, synthetic_name_from_path,
+    synthetic_name_from_path,
 };
 pub use provider::{SyncMode, SyncOptions};
 pub use providers::default_registry;

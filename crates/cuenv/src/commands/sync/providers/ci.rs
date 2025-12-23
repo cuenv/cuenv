@@ -47,7 +47,7 @@ impl SyncProvider for CiSyncProvider {
         path: &Path,
         package: &str,
         options: &SyncOptions,
-        _executor: &CommandExecutor,
+        executor: &CommandExecutor,
     ) -> Result<SyncResult> {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
@@ -59,6 +59,7 @@ impl SyncProvider for CiSyncProvider {
             check,
             options.force,
             options.ci_provider.as_deref(),
+            executor,
         )
         .await?;
 
@@ -69,7 +70,7 @@ impl SyncProvider for CiSyncProvider {
         &self,
         package: &str,
         options: &SyncOptions,
-        _executor: &CommandExecutor,
+        executor: &CommandExecutor,
     ) -> Result<SyncResult> {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
@@ -80,6 +81,7 @@ impl SyncProvider for CiSyncProvider {
             check,
             options.force,
             options.ci_provider.as_deref(),
+            executor,
         )
         .await?;
 

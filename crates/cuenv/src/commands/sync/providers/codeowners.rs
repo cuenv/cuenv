@@ -34,22 +34,23 @@ impl SyncProvider for CodeOwnersSyncProvider {
         _path: &Path,
         package: &str,
         options: &SyncOptions,
-        _executor: &CommandExecutor,
+        executor: &CommandExecutor,
     ) -> Result<SyncResult> {
         // CODEOWNERS always uses workspace aggregation since it's a single file at repo root
-        self.sync_workspace(package, options, _executor).await
+        self.sync_workspace(package, options, executor).await
     }
 
     async fn sync_workspace(
         &self,
         package: &str,
         options: &SyncOptions,
-        _executor: &CommandExecutor,
+        executor: &CommandExecutor,
     ) -> Result<SyncResult> {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
-        let output = functions::execute_sync_codeowners_workspace(package, dry_run, check).await?;
+        let output =
+            functions::execute_sync_codeowners_workspace(package, dry_run, check, executor).await?;
 
         Ok(SyncResult::success(output))
     }

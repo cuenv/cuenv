@@ -79,3 +79,28 @@ pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
 
     Ok(projects)
 }
+
+/// Discover projects from an already-evaluated module.
+///
+/// This avoids redundant CUE evaluation when the caller already has a cached module.
+/// Use this when integrating with `CommandExecutor` which caches module evaluation.
+#[must_use]
+pub fn discover_projects_from_module(module: &ModuleEvaluation) -> Vec<DiscoveredCIProject> {
+    module
+        .projects()
+        .filter_map(|instance| {
+            instance.deserialize().ok().map(|mut config: Project| {
+                // Expand cross-project references and implicit dependencies
+                config.expand_cross_project_references();
+
+                // Build the path to the env.cue file
+                let env_cue_path = module.root.join(&instance.path).join("env.cue");
+
+                DiscoveredCIProject {
+                    path: env_cue_path,
+                    config,
+                }
+            })
+        })
+        .collect()
+}
