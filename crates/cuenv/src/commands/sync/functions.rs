@@ -13,6 +13,7 @@ use cuenv_core::manifest::{Base, Project};
 use cuenv_core::{ModuleEvaluation, Result};
 use cuenv_ignore::{FileStatus, IgnoreFile, IgnoreFiles};
 use similar::TextDiff;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tracing::instrument;
 
@@ -1106,33 +1107,71 @@ fn build_project_pipeline_context(
 }
 
 /// Filter IR tasks to only those needed by the pipeline (including dependencies).
+///
+/// Supports task group expansion: if a pipeline task name doesn't match any IR task
+/// exactly, it's treated as a prefix and all IR tasks starting with that prefix
+/// are included. For example, `task: "release"` expands to `release.build`,
+/// `release.publish.github`, etc.
 fn filter_pipeline_tasks(
     pipeline_tasks: &[String],
     ir_tasks: Vec<cuenv_ci::ir::Task>,
 ) -> Vec<cuenv_ci::ir::Task> {
-    use std::collections::{HashMap, HashSet};
-
-    let mut needed: HashSet<String> = pipeline_tasks.iter().cloned().collect();
-    let deps: HashMap<String, Vec<String>> = ir_tasks
+    // Expand task group references: exact match or prefix expansion
+    let expanded: HashSet<String> = pipeline_tasks
         .iter()
-        .map(|t| (t.id.clone(), t.depends_on.clone()))
+        .flat_map(|task_name| {
+            let exact_match = ir_tasks.iter().any(|t| t.id == *task_name);
+            if exact_match {
+                vec![task_name.clone()]
+            } else {
+                // Expand as prefix (task group)
+                let prefix = format!("{task_name}.");
+                let matches: Vec<_> = ir_tasks
+                    .iter()
+                    .filter(|t| t.id.starts_with(&prefix))
+                    .map(|t| t.id.clone())
+                    .collect();
+                if matches.is_empty() {
+                    vec![task_name.clone()] // Keep original for dependency resolution
+                } else {
+                    matches
+                }
+            }
+        })
         .collect();
 
-    let mut to_process: Vec<String> = pipeline_tasks.to_vec();
-    while let Some(task_id) = to_process.pop() {
-        if let Some(task_deps) = deps.get(&task_id) {
-            for dep in task_deps {
-                if needed.insert(dep.clone()) {
-                    to_process.push(dep.clone());
+    // Resolve transitive dependencies
+    let deps: HashMap<&str, &[String]> = ir_tasks
+        .iter()
+        .map(|t| (t.id.as_str(), t.depends_on.as_slice()))
+        .collect();
+
+    let needed = resolve_transitive_deps(&expanded, &deps);
+
+    ir_tasks
+        .into_iter()
+        .filter(|t| needed.contains(t.id.as_str()))
+        .collect()
+}
+
+/// Recursively resolve all transitive dependencies for a set of task IDs.
+fn resolve_transitive_deps(
+    initial: &HashSet<String>,
+    deps: &HashMap<&str, &[String]>,
+) -> HashSet<String> {
+    let mut all: HashSet<String> = initial.clone();
+    let mut frontier: Vec<&str> = initial.iter().map(String::as_str).collect();
+
+    while let Some(task_id) = frontier.pop() {
+        if let Some(task_deps) = deps.get(task_id) {
+            for dep in *task_deps {
+                if all.insert(dep.clone()) {
+                    frontier.push(dep);
                 }
             }
         }
     }
-
-    ir_tasks
-        .into_iter()
-        .filter(|t| needed.contains(&t.id))
-        .collect()
+    all
 }
 
 /// Emit a release workflow using the `ReleaseWorkflowBuilder`.
@@ -1205,6 +1244,163 @@ fn emit_standard_workflow(
     Ok(workflows.into_iter().collect())
 }
 
+/// Expand pipeline tasks that reference task groups into individual tasks.
+///
+/// If a task name doesn't match any IR task exactly, it's treated as a prefix
+/// and all IR tasks starting with that prefix are included.
+fn expand_pipeline_task_groups(
+    pipeline_tasks: &[cuenv_core::ci::PipelineTask],
+    ir_tasks: &[cuenv_ci::ir::Task],
+    explicit_task_names: &HashSet<String>,
+) -> Vec<cuenv_core::ci::PipelineTask> {
+    pipeline_tasks
+        .iter()
+        .flat_map(|pipeline_task| {
+            let task_name = pipeline_task.task_name();
+
+            // Check if this task exists in IR directly
+            if ir_tasks.iter().any(|t| t.id == task_name) {
+                return vec![pipeline_task.clone()];
+            }
+
+            // Not an exact match - expand as task group
+            let prefix = format!("{task_name}.");
+            let sub_tasks: Vec<_> = ir_tasks
+                .iter()
+                .filter(|t| t.id.starts_with(&prefix))
+                .filter(|t| !explicit_task_names.contains(&t.id))
+                .collect();
+
+            if sub_tasks.is_empty() {
+                return vec![pipeline_task.clone()];
+            }
+
+            // Entry-point tasks: those with no dependencies on other tasks in the same group
+            let group_task_ids: HashSet<&str> = sub_tasks.iter().map(|t| t.id.as_str()).collect();
+
+            sub_tasks
+                .into_iter()
+                .map(|ir_task| {
+                    let has_internal_deps = ir_task
+                        .depends_on
+                        .iter()
+                        .any(|dep| group_task_ids.contains(dep.as_str()));
+
+                    match pipeline_task {
+                        cuenv_core::ci::PipelineTask::Simple(_) => {
+                            cuenv_core::ci::PipelineTask::Simple(ir_task.id.clone())
+                        }
+                        cuenv_core::ci::PipelineTask::Matrix(matrix_task) => {
+                            if has_internal_deps {
+                                cuenv_core::ci::PipelineTask::Simple(ir_task.id.clone())
+                            } else {
+                                // Empty matrix signals artifact aggregation mode
+                                cuenv_core::ci::PipelineTask::Matrix(cuenv_core::ci::MatrixTask {
+                                    task: ir_task.id.clone(),
+                                    artifacts: matrix_task.artifacts.clone(),
+                                    params: matrix_task.params.clone(),
+                                    matrix: HashMap::new(),
+                                })
+                            }
+                        }
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Build jobs from expanded pipeline tasks, tracking artifact sources.
+fn build_pipeline_jobs(
+    expanded_tasks: &[cuenv_core::ci::PipelineTask],
+    ctx: &PipelineContext,
+    emitter: &cuenv_github::workflow::GitHubActionsEmitter,
+) -> indexmap::IndexMap<String, cuenv_github::workflow::schema::Job> {
+    use indexmap::IndexMap;
+
+    let mut jobs = IndexMap::new();
+    let mut artifact_source_jobs: HashSet<String> = HashSet::new();
+
+    for pipeline_task in expanded_tasks {
+        let task_name = pipeline_task.task_name();
+        let job_id = task_name.replace(['.', ' '], "-");
+
+        match pipeline_task {
+            cuenv_core::ci::PipelineTask::Simple(_) => {
+                if let Some(ir_task) = ctx.tasks.iter().find(|t| t.id == task_name) {
+                    let mut job =
+                        build_simple_job(ir_task, &ctx.stages, ctx.environment.as_ref(), emitter);
+                    job.needs = ir_task
+                        .depends_on
+                        .iter()
+                        .map(|dep| dep.replace(['.', ' '], "-"))
+                        .collect();
+                    jobs.insert(job_id, job);
+                }
+            }
+            cuenv_core::ci::PipelineTask::Matrix(matrix_task) => {
+                if matrix_task.matrix.is_empty() {
+                    let ir_task = ctx.tasks.iter().find(|t| t.id == task_name);
+                    let mut seen: HashSet<String> = artifact_source_jobs.clone();
+                    let mut combined_needs: Vec<String> =
+                        artifact_source_jobs.iter().cloned().collect();
+
+                    if let Some(ir_task) = ir_task {
+                        for dep in &ir_task.depends_on {
+                            let dep_job_id = dep.replace(['.', ' '], "-");
+                            if seen.insert(dep_job_id.clone()) {
+                                combined_needs.push(dep_job_id);
+                            }
+                        }
+                    }
+
+                    let job = build_artifact_aggregation_job(
+                        task_name,
+                        matrix_task,
+                        &ctx.stages,
+                        ctx.environment.as_ref(),
+                        &combined_needs,
+                        emitter,
+                    );
+                    jobs.insert(job_id, job);
+                } else {
+                    let expanded_jobs = expand_matrix_jobs(
+                        matrix_task,
+                        &ctx.github_config,
+                        &ctx.stages,
+                        ctx.environment.as_ref(),
+                        &[],
+                        emitter,
+                    );
+
+                    for (id, job) in expanded_jobs {
+                        artifact_source_jobs.insert(id.clone());
+                        jobs.insert(id, job);
+                    }
+                }
+            }
+        }
+    }
+
+    // Add transitive dependencies not in pipeline tasks
+    for ir_task in &ctx.tasks {
+        let job_id = ir_task.id.replace(['.', ' '], "-");
+        if jobs.contains_key(&job_id) {
+            continue;
+        }
+
+        let mut job = build_simple_job(ir_task, &ctx.stages, ctx.environment.as_ref(), emitter);
+        job.needs = ir_task
+            .depends_on
+            .iter()
+            .map(|dep| dep.replace(['.', ' '], "-"))
+            .collect();
+        jobs.insert(job_id, job);
+    }
+
+    jobs
+}
+
 /// Emit a workflow with matrix expansion for tasks that have matrix configurations.
 fn emit_matrix_workflow(
     pipeline_name: &str,
@@ -1212,76 +1408,25 @@ fn emit_matrix_workflow(
 ) -> Result<Vec<(String, String)>> {
     use cuenv_github::workflow::GitHubActionsEmitter;
     use cuenv_github::workflow::schema::{Concurrency, PermissionLevel, Permissions, Workflow};
-    use indexmap::IndexMap;
 
-    // Build workflow name
     let workflow_name = match &ctx.project_name {
         Some(project) => format!("{project}-{pipeline_name}"),
         None => pipeline_name.to_string(),
     };
 
-    // Build emitter for configuration
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
 
-    // Build jobs from pipeline tasks
-    let mut jobs = IndexMap::new();
-    let mut previous_jobs: Vec<String> = Vec::new();
+    let explicit_task_names: HashSet<String> = ctx
+        .pipeline_tasks
+        .iter()
+        .map(|pt| pt.task_name().to_string())
+        .collect();
 
-    for pipeline_task in &ctx.pipeline_tasks {
-        let task_name = pipeline_task.task_name();
-        let job_id = task_name.replace(['.', ' '], "-");
+    let expanded_tasks =
+        expand_pipeline_task_groups(&ctx.pipeline_tasks, &ctx.tasks, &explicit_task_names);
 
-        match pipeline_task {
-            cuenv_core::ci::PipelineTask::Simple(_) => {
-                // Find the IR task for this simple task
-                if let Some(ir_task) = ctx.tasks.iter().find(|t| t.id == task_name) {
-                    let mut job =
-                        build_simple_job(ir_task, &ctx.stages, ctx.environment.as_ref(), &emitter);
-                    job.needs.clone_from(&previous_jobs);
-                    jobs.insert(job_id.clone(), job);
-                    previous_jobs = vec![job_id];
-                }
-            }
-            cuenv_core::ci::PipelineTask::Matrix(matrix_task) => {
-                if matrix_task.matrix.is_empty() {
-                    // No matrix dimensions - this is an artifact aggregation task
-                    // Create a single job that depends on previous jobs and downloads artifacts
-                    let job = build_artifact_aggregation_job(
-                        task_name,
-                        matrix_task,
-                        &ctx.stages,
-                        ctx.environment.as_ref(),
-                        &previous_jobs,
-                        &emitter,
-                    );
-                    let job_id = task_name.replace(['.', ' '], "-");
-                    jobs.insert(job_id.clone(), job);
-                    previous_jobs = vec![job_id];
-                } else {
-                    // Matrix expansion - create multiple jobs
-                    let expanded_jobs = expand_matrix_jobs(
-                        matrix_task,
-                        &ctx.github_config,
-                        &ctx.stages,
-                        ctx.environment.as_ref(),
-                        &previous_jobs,
-                        &emitter,
-                    );
+    let jobs = build_pipeline_jobs(&expanded_tasks, ctx, &emitter);
 
-                    // Only update previous_jobs if we actually created jobs
-                    if !expanded_jobs.is_empty() {
-                        let job_ids: Vec<String> = expanded_jobs.keys().cloned().collect();
-                        for (id, job) in expanded_jobs {
-                            jobs.insert(id, job);
-                        }
-                        previous_jobs = job_ids;
-                    }
-                }
-            }
-        }
-    }
-
-    // Build the workflow
     let workflow = Workflow {
         name: workflow_name.clone(),
         on: build_workflow_triggers(&ctx.trigger, &emitter),
@@ -1294,7 +1439,7 @@ fn emit_matrix_workflow(
             id_token: Some(PermissionLevel::Write),
             ..Default::default()
         }),
-        env: IndexMap::new(),
+        env: indexmap::IndexMap::new(),
         jobs,
     };
 
@@ -2134,5 +2279,203 @@ mod tests {
                 .patterns_list()
                 .contains(&"dist/bundle.js".to_string())
         );
+    }
+
+    // ============================================================================
+    // Pipeline Task Filtering Tests
+    // ============================================================================
+
+    fn make_ir_task(id: &str, depends_on: Vec<&str>) -> cuenv_ci::ir::Task {
+        cuenv_ci::ir::Task {
+            id: id.to_string(),
+            runtime: None,
+            command: vec!["echo".to_string(), id.to_string()],
+            shell: false,
+            env: HashMap::new(),
+            secrets: HashMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: depends_on.into_iter().map(String::from).collect(),
+            cache_policy: cuenv_ci::ir::CachePolicy::default(),
+            deployment: false,
+            manual_approval: false,
+        }
+    }
+
+    #[test]
+    fn test_resolve_transitive_deps_empty() {
+        let initial: HashSet<String> = HashSet::new();
+        let deps: HashMap<&str, &[String]> = HashMap::new();
+        let result = resolve_transitive_deps(&initial, &deps);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_transitive_deps_no_deps() {
+        let initial: HashSet<String> = ["task_a".to_string()].into_iter().collect();
+        let deps: HashMap<&str, &[String]> = HashMap::new();
+        let result = resolve_transitive_deps(&initial, &deps);
+        assert_eq!(result, initial);
+    }
+
+    #[test]
+    fn test_resolve_transitive_deps_single_level() {
+        let initial: HashSet<String> = ["task_c".to_string()].into_iter().collect();
+        let dep_b = vec![];
+        let dep_c = vec!["task_b".to_string()];
+        let deps: HashMap<&str, &[String]> =
+            [("task_b", dep_b.as_slice()), ("task_c", dep_c.as_slice())]
+                .into_iter()
+                .collect();
+
+        let result = resolve_transitive_deps(&initial, &deps);
+        assert!(result.contains("task_c"));
+        assert!(result.contains("task_b"));
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_transitive_deps_multi_level() {
+        // task_d -> task_c -> task_b -> task_a
+        let dep_a = vec![];
+        let dep_b = vec!["task_a".to_string()];
+        let dep_c = vec!["task_b".to_string()];
+        let dep_d = vec!["task_c".to_string()];
+        let deps: HashMap<&str, &[String]> = [
+            ("task_a", dep_a.as_slice()),
+            ("task_b", dep_b.as_slice()),
+            ("task_c", dep_c.as_slice()),
+            ("task_d", dep_d.as_slice()),
+        ]
+        .into_iter()
+        .collect();
+
+        let initial: HashSet<String> = ["task_d".to_string()].into_iter().collect();
+        let result = resolve_transitive_deps(&initial, &deps);
+
+        assert!(result.contains("task_a"));
+        assert!(result.contains("task_b"));
+        assert!(result.contains("task_c"));
+        assert!(result.contains("task_d"));
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn test_resolve_transitive_deps_diamond() {
+        // task_d depends on both task_b and task_c, which both depend on task_a
+        let dep_a = vec![];
+        let dep_b = vec!["task_a".to_string()];
+        let dep_c = vec!["task_a".to_string()];
+        let dep_d = vec!["task_b".to_string(), "task_c".to_string()];
+        let deps: HashMap<&str, &[String]> = [
+            ("task_a", dep_a.as_slice()),
+            ("task_b", dep_b.as_slice()),
+            ("task_c", dep_c.as_slice()),
+            ("task_d", dep_d.as_slice()),
+        ]
+        .into_iter()
+        .collect();
+
+        let initial: HashSet<String> = ["task_d".to_string()].into_iter().collect();
+        let result = resolve_transitive_deps(&initial, &deps);
+
+        // Should contain all 4, with task_a only once
+        assert!(result.contains("task_a"));
+        assert!(result.contains("task_b"));
+        assert!(result.contains("task_c"));
+        assert!(result.contains("task_d"));
+        assert_eq!(result.len(), 4);
+    }
+
+    #[test]
+    fn test_filter_pipeline_tasks_exact_match() {
+        let ir_tasks = vec![
+            make_ir_task("build", vec![]),
+            make_ir_task("test", vec!["build"]),
+            make_ir_task("deploy", vec!["test"]),
+        ];
+
+        let pipeline_tasks = vec!["test".to_string()];
+        let result = filter_pipeline_tasks(&pipeline_tasks, ir_tasks);
+
+        // Should include test and its dependency build
+        let ids: HashSet<_> = result.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains("build"));
+        assert!(ids.contains("test"));
+        assert!(!ids.contains("deploy"));
+    }
+
+    #[test]
+    fn test_filter_pipeline_tasks_group_expansion() {
+        let ir_tasks = vec![
+            make_ir_task("release.build", vec![]),
+            make_ir_task("release.test", vec!["release.build"]),
+            make_ir_task("release.publish", vec!["release.test"]),
+            make_ir_task("docs.build", vec![]),
+        ];
+
+        // "release" should expand to all release.* tasks
+        let pipeline_tasks = vec!["release".to_string()];
+        let result = filter_pipeline_tasks(&pipeline_tasks, ir_tasks);
+
+        let ids: HashSet<_> = result.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains("release.build"));
+        assert!(ids.contains("release.test"));
+        assert!(ids.contains("release.publish"));
+        assert!(!ids.contains("docs.build"));
+    }
+
+    #[test]
+    fn test_filter_pipeline_tasks_group_expansion_with_external_deps() {
+        let ir_tasks = vec![
+            make_ir_task("build", vec![]),
+            make_ir_task("release.prepare", vec!["build"]),
+            make_ir_task("release.publish", vec!["release.prepare"]),
+        ];
+
+        // "release" expands to release.* but should also include "build" as transitive dep
+        let pipeline_tasks = vec!["release".to_string()];
+        let result = filter_pipeline_tasks(&pipeline_tasks, ir_tasks);
+
+        let ids: HashSet<_> = result.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains("build"));
+        assert!(ids.contains("release.prepare"));
+        assert!(ids.contains("release.publish"));
+    }
+
+    #[test]
+    fn test_filter_pipeline_tasks_no_match_keeps_original() {
+        let ir_tasks = vec![
+            make_ir_task("build", vec![]),
+            make_ir_task("test", vec!["build"]),
+        ];
+
+        // "nonexistent" doesn't match anything but is kept for dependency resolution
+        let pipeline_tasks = vec!["nonexistent".to_string()];
+        let result = filter_pipeline_tasks(&pipeline_tasks, ir_tasks);
+
+        // No tasks match, so result should be empty
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_pipeline_tasks_mixed_exact_and_group() {
+        let ir_tasks = vec![
+            make_ir_task("lint", vec![]),
+            make_ir_task("release.build", vec!["lint"]),
+            make_ir_task("release.publish", vec!["release.build"]),
+        ];
+
+        // Mix of exact match and group expansion
+        let pipeline_tasks = vec!["lint".to_string(), "release".to_string()];
+        let result = filter_pipeline_tasks(&pipeline_tasks, ir_tasks);
+
+        let ids: HashSet<_> = result.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains("lint"));
+        assert!(ids.contains("release.build"));
+        assert!(ids.contains("release.publish"));
+        assert_eq!(ids.len(), 3);
     }
 }
