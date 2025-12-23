@@ -59,21 +59,23 @@ impl OnePasswordResolver {
     ///
     /// # Errors
     ///
-    /// Returns an error if the 1Password WASM client cannot be initialized.
+    /// Returns an error if HTTP mode is detected (WASM + token) but WASM initialization fails.
+    /// This prevents silent fallback to CLI mode which masks configuration errors.
     pub fn new() -> Result<Self, SecretError> {
         let client_id = if Self::http_mode_available() {
-            match Self::init_wasm_client() {
-                Ok(id) => {
-                    tracing::debug!("1Password WASM client initialized successfully");
-                    Some(id)
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to initialize 1Password WASM client, falling back to CLI: {e}"
-                    );
-                    None
-                }
-            }
+            // HTTP mode is available (WASM + token), WASM MUST initialize successfully
+            // Do NOT silently fall back to CLI - that masks the real error
+            let id = Self::init_wasm_client().map_err(|e| SecretError::ResolutionFailed {
+                name: "onepassword".to_string(),
+                message: format!(
+                    "1Password HTTP mode detected (WASM + token) but initialization failed: {e}\n\
+                    \n\
+                    This indicates a platform/runtime compatibility issue.\n\
+                    To use CLI mode instead, unset OP_SERVICE_ACCOUNT_TOKEN or remove the WASM file."
+                ),
+            })?;
+            tracing::debug!("1Password WASM client initialized successfully");
+            Some(id)
         } else {
             tracing::debug!("1Password HTTP mode not available, using CLI");
             None
