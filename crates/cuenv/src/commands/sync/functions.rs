@@ -37,31 +37,6 @@ fn collect_cube_gitignore_patterns(manifest: &Project) -> Vec<String> {
     patterns
 }
 
-/// Convert Base manifest ignore configuration to `cuenv_ignore::IgnoreFile` configs.
-/// This version works with Base (no cube support).
-fn convert_base_to_ignore_files(manifest: &Base) -> Vec<IgnoreFile> {
-    let mut files = Vec::new();
-
-    if let Some(ignore) = &manifest.ignore {
-        for (tool, value) in ignore {
-            let project_patterns: Vec<String> = value.patterns().to_vec();
-            if !project_patterns.is_empty() {
-                let mut patterns = vec!["# Project ignores".to_string()];
-                patterns.extend(project_patterns);
-
-                files.push(
-                    IgnoreFile::new(tool)
-                        .patterns(patterns)
-                        .filename_opt(value.filename())
-                        .header(CUENV_IGNORE_HEADER),
-                );
-            }
-        }
-    }
-
-    files
-}
-
 /// Convert Project manifest ignore configuration to `cuenv_ignore::IgnoreFile` configs.
 /// Also integrates cube-generated gitignore patterns.
 fn convert_project_to_ignore_files(manifest: &Project) -> Vec<IgnoreFile> {
@@ -122,16 +97,6 @@ fn convert_project_to_ignore_files(manifest: &Project) -> Vec<IgnoreFile> {
     }
 
     files
-}
-
-/// Load Base configuration from CUE using module-wide evaluation.
-fn load_base_config(
-    path: &Path,
-    package: &str,
-    executor: Option<&CommandExecutor>,
-) -> Result<Base> {
-    let (instance, _module_root) = load_instance_at_path(path, package, executor)?;
-    instance.deserialize()
 }
 
 /// Load Project configuration from CUE using module-wide evaluation.
@@ -959,30 +924,17 @@ async fn execute_sync_github(
         ));
     }
 
-    // Collect all pipeline names
-    let pipelines_to_process: Vec<String> = {
-        let mut names = std::collections::HashSet::new();
-        for project in &projects {
-            if let Some(ci) = &project.config.ci {
-                for pipeline in &ci.pipelines {
-                    names.insert(pipeline.name.clone());
-                }
-            }
-        }
-        let mut sorted: Vec<_> = names.into_iter().collect();
-        sorted.sort();
-        sorted
-    };
-
-    if pipelines_to_process.is_empty() {
-        return Ok(String::new()); // No pipelines configured
-    }
-
-    // Generate workflows for all pipelines
+    // Generate workflows per-project, per-pipeline
+    // Each project with CI config gets its own workflow files
     let mut all_workflows: Vec<(String, String)> = Vec::new();
-    for pipeline_name in &pipelines_to_process {
-        let workflows = generate_github_workflow_for_pipeline(pipeline_name, &projects)?;
-        all_workflows.extend(workflows);
+    for project in &projects {
+        let Some(ci) = &project.config.ci else {
+            continue;
+        };
+        for pipeline in &ci.pipelines {
+            let workflows = generate_github_workflow_for_project(project, pipeline)?;
+            all_workflows.extend(workflows);
+        }
     }
 
     if all_workflows.is_empty() {
@@ -1090,106 +1042,78 @@ struct PipelineContext {
 
 /// Check if any pipeline tasks have matrix configurations.
 fn has_matrix_tasks(pipeline_tasks: &[cuenv_core::ci::PipelineTask]) -> bool {
-    pipeline_tasks.iter().any(cuenv_core::ci::PipelineTask::is_matrix)
+    pipeline_tasks
+        .iter()
+        .any(cuenv_core::ci::PipelineTask::is_matrix)
 }
 
-/// Generate GitHub workflow files for a single pipeline.
-fn generate_github_workflow_for_pipeline(
-    pipeline_name: &str,
-    projects: &[cuenv_ci::discovery::DiscoveredCIProject],
+/// Generate GitHub workflow files for a single project and pipeline.
+fn generate_github_workflow_for_project(
+    project: &cuenv_ci::discovery::DiscoveredCIProject,
+    pipeline: &cuenv_core::ci::Pipeline,
 ) -> Result<Vec<(String, String)>> {
-    let ctx = collect_pipeline_context(pipeline_name, projects)?;
+    let ctx = build_project_pipeline_context(project, pipeline)?;
 
     // Check for matrix tasks (these need special handling)
     if has_matrix_tasks(&ctx.pipeline_tasks) {
-        return emit_matrix_workflow(pipeline_name, &ctx);
+        return emit_matrix_workflow(&pipeline.name, &ctx);
     }
 
     if ctx.is_release {
-        return emit_release_workflow(pipeline_name, &ctx);
+        return emit_release_workflow(&pipeline.name, &ctx);
     }
 
     if ctx.tasks.is_empty() {
         return Ok(Vec::new());
     }
 
-    emit_standard_workflow(pipeline_name, &ctx)
+    emit_standard_workflow(&pipeline.name, &ctx)
 }
 
-/// Collect pipeline context from all projects.
-fn collect_pipeline_context(
-    pipeline_name: &str,
-    projects: &[cuenv_ci::discovery::DiscoveredCIProject],
+/// Build pipeline context for a single project and pipeline.
+fn build_project_pipeline_context(
+    project: &cuenv_ci::discovery::DiscoveredCIProject,
+    pipeline: &cuenv_core::ci::Pipeline,
 ) -> Result<PipelineContext> {
     use cuenv_ci::compiler::{Compiler, CompilerOptions};
-    use cuenv_ci::ir::StageConfiguration;
 
-    let mut all_tasks = Vec::new();
-    let mut found = false;
-    let mut ctx = PipelineContext {
-        is_release: false,
-        github_config: cuenv_core::ci::GitHubConfig::default(),
-        trigger: cuenv_ci::ir::TriggerCondition::default(),
-        project_name: None,
-        environment: None,
-        stages: StageConfiguration::default(),
-        runtimes: Vec::new(),
-        tasks: Vec::new(),
-        pipeline_tasks: Vec::new(),
+    let ci = project
+        .config
+        .ci
+        .as_ref()
+        .ok_or_else(|| cuenv_core::Error::configuration("Project has no CI configuration"))?;
+
+    // Detect release pipelines by checking if they have release event triggers
+    let is_release = pipeline.when.as_ref().is_some_and(|w| w.release.is_some());
+
+    let options = CompilerOptions {
+        pipeline: Some(pipeline.clone()),
+        ..Default::default()
     };
+    let compiler = Compiler::with_options(project.config.clone(), options);
+    let ir = compiler
+        .compile()
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to compile project: {e}")))?;
 
-    for project in projects {
-        let Some(ci) = &project.config.ci else {
-            continue;
-        };
-        let Some(pipeline) = ci.pipelines.iter().find(|p| p.name == pipeline_name) else {
-            continue;
-        };
+    // Extract task names from pipeline tasks (which can be simple strings or matrix tasks)
+    let pipeline_task_names: Vec<String> = pipeline
+        .tasks
+        .iter()
+        .map(|t| t.task_name().to_string())
+        .collect();
+    let tasks = filter_pipeline_tasks(&pipeline_task_names, ir.tasks);
 
-        found = true;
-        // Detect release pipelines by checking if they have release event triggers
-        ctx.is_release = pipeline.when.as_ref().is_some_and(|w| w.release.is_some());
-        ctx.project_name = Some(project.config.name.clone());
-        ctx.environment.clone_from(&pipeline.environment);
-        ctx.github_config = ci.github_config_for_pipeline(pipeline_name);
-        // Store original pipeline tasks for matrix expansion
-        ctx.pipeline_tasks.clone_from(&pipeline.tasks);
-
-        let options = CompilerOptions {
-            pipeline: Some(pipeline.clone()),
-            ..Default::default()
-        };
-        let compiler = Compiler::with_options(project.config.clone(), options);
-        let ir = compiler.compile().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
-        })?;
-
-        ctx.trigger = build_github_trigger_condition(pipeline, ci);
-        ctx.stages = ir.stages;
-        ctx.runtimes = ir.runtimes;
-
-        if ctx.is_release {
-            break;
-        }
-
-        // Extract task names from pipeline tasks (which can be simple strings or matrix tasks)
-        let pipeline_task_names: Vec<String> = pipeline
-            .tasks
-            .iter()
-            .map(|t| t.task_name().to_string())
-            .collect();
-        let tasks = filter_pipeline_tasks(&pipeline_task_names, ir.tasks);
-        all_tasks.extend(tasks);
-    }
-
-    if !found {
-        return Err(cuenv_core::Error::configuration(format!(
-            "No pipeline named '{pipeline_name}' found in any project's CI configuration"
-        )));
-    }
-
-    ctx.tasks = all_tasks;
-    Ok(ctx)
+    Ok(PipelineContext {
+        is_release,
+        github_config: ci.github_config_for_pipeline(&pipeline.name),
+        trigger: build_github_trigger_condition(pipeline, ci),
+        project_name: Some(project.config.name.clone()),
+        environment: pipeline.environment.clone(),
+        stages: ir.stages,
+        runtimes: ir.runtimes,
+        tasks,
+        pipeline_tasks: pipeline.tasks.clone(),
+    })
 }
 
 /// Filter IR tasks to only those needed by the pipeline (including dependencies).
@@ -1297,10 +1221,8 @@ fn emit_matrix_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_github::workflow::schema::{
-        Concurrency, PermissionLevel, Permissions, Workflow,
-    };
     use cuenv_github::workflow::GitHubActionsEmitter;
+    use cuenv_github::workflow::schema::{Concurrency, PermissionLevel, Permissions, Workflow};
     use indexmap::IndexMap;
 
     // Build workflow name
@@ -1324,9 +1246,9 @@ fn emit_matrix_workflow(
             cuenv_core::ci::PipelineTask::Simple(_) => {
                 // Find the IR task for this simple task
                 if let Some(ir_task) = ctx.tasks.iter().find(|t| t.id == task_name) {
-                    let job = build_simple_job(ir_task, &ctx.stages, &ctx.environment, &emitter);
-                    let mut job = job;
-                    job.needs = previous_jobs.clone();
+                    let mut job =
+                        build_simple_job(ir_task, &ctx.stages, ctx.environment.as_ref(), &emitter);
+                    job.needs.clone_from(&previous_jobs);
                     jobs.insert(job_id.clone(), job);
                     previous_jobs = vec![job_id];
                 }
@@ -1337,7 +1259,7 @@ fn emit_matrix_workflow(
                     matrix_task,
                     &ctx.github_config,
                     &ctx.stages,
-                    &ctx.environment,
+                    ctx.environment.as_ref(),
                     &previous_jobs,
                     &emitter,
                 );
@@ -1380,7 +1302,7 @@ fn emit_matrix_workflow(
 fn build_simple_job(
     task: &cuenv_ci::ir::Task,
     stages: &cuenv_ci::ir::StageConfiguration,
-    environment: &Option<String>,
+    environment: Option<&String>,
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
 ) -> cuenv_github::workflow::schema::Job {
     use cuenv_github::workflow::schema::{Job, RunsOn, Step};
@@ -1445,7 +1367,7 @@ fn expand_matrix_jobs(
     matrix_task: &cuenv_core::ci::MatrixTask,
     github_config: &cuenv_core::ci::GitHubConfig,
     stages: &cuenv_ci::ir::StageConfiguration,
-    environment: &Option<String>,
+    environment: Option<&String>,
     previous_jobs: &[String],
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
 ) -> indexmap::IndexMap<String, cuenv_github::workflow::schema::Job> {
@@ -1457,10 +1379,7 @@ fn expand_matrix_jobs(
     let base_job_id = task_name.replace(['.', ' '], "-");
 
     // Get the runner mapping for arch dimension
-    let arch_runners = github_config
-        .runners
-        .as_ref()
-        .and_then(|r| r.arch.as_ref());
+    let arch_runners = github_config.runners.as_ref().and_then(|r| r.arch.as_ref());
 
     // Expand matrix combinations
     // For simplicity, we'll handle single-dimension matrix (arch) first
