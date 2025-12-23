@@ -368,13 +368,13 @@ tasks: {
 				echo "Publishing to homebrew tap..."
 				# Update homebrew tap with new version and checksums
 				"""]
-			dependsOn: ["release.publish:github"]
+			dependsOn: ["release.publish.github"]
 		}
 
 		publish: crates: {
 			command: "cargo"
 			args: ["publish", "-p", "cuenv"]
-			dependsOn: ["release.publish:cue"]
+			dependsOn: ["release.publish.cue"]
 		}
 
 		publish: cue: {
