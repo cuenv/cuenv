@@ -665,8 +665,6 @@ pub enum SyncCommands {
             help = "Check if CI workflows are in sync without making changes"
         )]
         check: bool,
-        #[arg(long, help = "Overwrite existing workflow files")]
-        force: bool,
         #[arg(
             long = "all",
             short = 'A',
@@ -1258,7 +1256,6 @@ impl Commands {
                     mode,
                     scope,
                     show_diff,
-                    force,
                     ci_provider,
                 ) = match subcommand {
                     Some(SyncCommands::Ignore {
@@ -1274,7 +1271,6 @@ impl Commands {
                         to_mode(sub_dry_run, sub_check),
                         to_scope(sub_all || all),
                         false,
-                        false,
                         None,
                     ),
                     Some(SyncCommands::CodeOwners {
@@ -1289,7 +1285,6 @@ impl Commands {
                         sub_package,
                         to_mode(sub_dry_run, sub_check),
                         to_scope(sub_all || all),
-                        false,
                         false,
                         None,
                     ),
@@ -1307,7 +1302,6 @@ impl Commands {
                         to_mode(sub_dry_run, sub_check),
                         to_scope(sub_all || all),
                         cubes_diff,
-                        false,
                         None,
                     ),
                     Some(SyncCommands::Ci {
@@ -1315,7 +1309,6 @@ impl Commands {
                         package: sub_package,
                         dry_run: sub_dry_run,
                         check: sub_check,
-                        force: ci_force,
                         all: sub_all,
                         provider,
                     }) => (
@@ -1325,7 +1318,6 @@ impl Commands {
                         to_mode(sub_dry_run, sub_check),
                         to_scope(sub_all || all),
                         false,
-                        ci_force,
                         provider,
                     ),
                     None => (
@@ -1334,7 +1326,6 @@ impl Commands {
                         package,
                         to_mode(dry_run, check),
                         to_scope(all),
-                        false,
                         false,
                         None,
                     ),
@@ -1346,7 +1337,6 @@ impl Commands {
                     mode,
                     scope,
                     show_diff,
-                    force,
                     ci_provider,
                 }
             }

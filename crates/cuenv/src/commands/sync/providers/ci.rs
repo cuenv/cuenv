@@ -3,7 +3,7 @@
 //! Syncs CI workflow files (GitHub Actions, Buildkite) from CUE configuration.
 
 use async_trait::async_trait;
-use clap::{Arg, Command, arg};
+use clap::{Arg, Command};
 use cuenv_core::Result;
 use cuenv_core::manifest::Base;
 use std::path::Path;
@@ -32,14 +32,12 @@ impl SyncProvider for CiSyncProvider {
     }
 
     fn build_command(&self) -> Command {
-        self.default_command()
-            .arg(arg!(--force "Overwrite existing workflow files"))
-            .arg(
-                Arg::new("provider")
-                    .long("provider")
-                    .help("Filter to specific provider (github, buildkite)")
-                    .value_name("PROVIDER"),
-            )
+        self.default_command().arg(
+            Arg::new("provider")
+                .long("provider")
+                .help("Filter to specific provider (github, buildkite)")
+                .value_name("PROVIDER"),
+        )
     }
 
     async fn sync_path(
@@ -57,7 +55,6 @@ impl SyncProvider for CiSyncProvider {
             package,
             dry_run,
             check,
-            options.force,
             options.ci_provider.as_deref(),
             executor,
         )
@@ -79,7 +76,6 @@ impl SyncProvider for CiSyncProvider {
             package,
             dry_run,
             check,
-            options.force,
             options.ci_provider.as_deref(),
             executor,
         )
