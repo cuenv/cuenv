@@ -16,8 +16,16 @@ package schema
 
 // Configuration for cuenv installation in CI
 #CuenvConfig: close({
-	// Source for cuenv binary
-	// - "release": Download from GitHub Releases (default)
-	// - "build": Build from source via nix build
-	source?: "release" | *"release" | "build"
+	// Source for cuenv binary in CI
+	// - "git": Build from git checkout (requires Nix)
+	// - "nix": Install via Nix flake (auto-configures Cachix)
+	// - "homebrew": Install via Homebrew tap (no Nix required)
+	// - "release": Download pre-built binary from GitHub Releases (default)
+	source?: "git" | "nix" | "homebrew" | *"release"
+
+	// Version to install
+	// - "self": Use current checkout (default, for git/nix source)
+	// - "latest": Latest release (for release mode)
+	// - "0.17.0": Specific version tag
+	version?: string | *"self"
 })

@@ -6,14 +6,31 @@ use std::collections::HashMap;
 
 use super::StageContributor;
 use crate::ir::{ActionSpec, BuildStage, IntermediateRepresentation, StageTask};
+use cuenv_core::config::CuenvSource;
 use cuenv_core::manifest::{Project, Runtime};
 
 /// Nix stage contributor
 ///
 /// When active (any task uses a Nix runtime), contributes:
 /// - Bootstrap: Install Nix via Determinate Systems installer
+///
+/// Note: This contributor is skipped when cuenv source is `homebrew` or `release`,
+/// as those installation methods don't require Nix.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NixContributor;
+
+impl NixContributor {
+    /// Check if the cuenv source mode requires Nix
+    fn cuenv_source_requires_nix(project: &Project) -> bool {
+        project
+            .config
+            .as_ref()
+            .and_then(|c| c.ci.as_ref())
+            .and_then(|ci| ci.cuenv.as_ref())
+            // Default is Release mode which doesn't require Nix for cuenv itself
+            .is_some_and(|c| matches!(c.source, CuenvSource::Git | CuenvSource::Nix))
+    }
+}
 
 impl StageContributor for NixContributor {
     fn id(&self) -> &'static str {
@@ -22,7 +39,13 @@ impl StageContributor for NixContributor {
 
     fn is_active(&self, _ir: &IntermediateRepresentation, project: &Project) -> bool {
         // Active if project uses a Nix-based runtime (Nix or Devenv)
-        matches!(project.runtime, Some(Runtime::Nix(_) | Runtime::Devenv(_)))
+        let has_nix_runtime = matches!(project.runtime, Some(Runtime::Nix(_) | Runtime::Devenv(_)));
+
+        // Also check if cuenv source mode requires Nix (git or nix mode)
+        let cuenv_needs_nix = Self::cuenv_source_requires_nix(project);
+
+        // Active if either condition is true
+        has_nix_runtime || cuenv_needs_nix
     }
 
     fn contribute(
@@ -81,6 +104,7 @@ impl StageContributor for NixContributor {
 mod tests {
     use super::*;
     use crate::ir::{PipelineMetadata, PurityMode, Runtime, StageConfiguration};
+    use cuenv_core::config::{CIConfig, Config, CuenvConfig};
 
     fn make_ir_with_runtime() -> IntermediateRepresentation {
         IntermediateRepresentation {
@@ -140,6 +164,22 @@ mod tests {
         }
     }
 
+    fn make_project_with_cuenv_source(source: CuenvSource) -> Project {
+        Project {
+            name: "test".to_string(),
+            config: Some(Config {
+                ci: Some(CIConfig {
+                    cuenv: Some(CuenvConfig {
+                        source,
+                        version: "self".to_string(),
+                    }),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn test_is_active_with_runtime() {
         let contributor = NixContributor;
@@ -155,6 +195,46 @@ mod tests {
         let ir = make_ir_without_runtime();
         let project = make_project_without_runtime();
 
+        assert!(!contributor.is_active(&ir, &project));
+    }
+
+    #[test]
+    fn test_is_active_with_git_cuenv_source() {
+        let contributor = NixContributor;
+        let ir = make_ir_without_runtime();
+        let project = make_project_with_cuenv_source(CuenvSource::Git);
+
+        // Git source requires Nix for building
+        assert!(contributor.is_active(&ir, &project));
+    }
+
+    #[test]
+    fn test_is_active_with_nix_cuenv_source() {
+        let contributor = NixContributor;
+        let ir = make_ir_without_runtime();
+        let project = make_project_with_cuenv_source(CuenvSource::Nix);
+
+        // Nix source requires Nix for installation
+        assert!(contributor.is_active(&ir, &project));
+    }
+
+    #[test]
+    fn test_is_inactive_with_homebrew_cuenv_source() {
+        let contributor = NixContributor;
+        let ir = make_ir_without_runtime();
+        let project = make_project_with_cuenv_source(CuenvSource::Homebrew);
+
+        // Homebrew source does NOT require Nix
+        assert!(!contributor.is_active(&ir, &project));
+    }
+
+    #[test]
+    fn test_is_inactive_with_release_cuenv_source() {
+        let contributor = NixContributor;
+        let ir = make_ir_without_runtime();
+        let project = make_project_with_cuenv_source(CuenvSource::Release);
+
+        // Release source does NOT require Nix
         assert!(!contributor.is_active(&ir, &project));
     }
 

@@ -14,7 +14,7 @@ runtime: schema.#NixRuntime
 hooks: onEnter: nix: schema.#NixFlake
 
 // Build cuenv from source instead of using released binaries
-config: ci: cuenv: source: "build"
+config: ci: cuenv: source: "git", version: "self"
 
 env: {
 	CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
