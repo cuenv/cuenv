@@ -7,6 +7,7 @@ use crate::workflow::schema::{
     PushTrigger, ReleaseTrigger, RunsOn, ScheduleTrigger, Step, Strategy, Workflow,
     WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
 };
+use crate::workflow::stage_renderer::transform_secret_ref;
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
 use cuenv_ci::ir::{IntermediateRepresentation, OutputType, Task, TriggerCondition};
 use indexmap::IndexMap;
@@ -487,9 +488,11 @@ impl GitHubActionsEmitter {
             .with_name(task.id.clone())
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
 
-        // Add task environment variables
+        // Add task environment variables (transform secret references)
         for (key, value) in &task.env {
-            task_step.env.insert(key.clone(), value.clone());
+            task_step
+                .env
+                .insert(key.clone(), transform_secret_ref(value));
         }
 
         // Add 1Password service account token if needed
