@@ -9,7 +9,8 @@
 
 use cuenv_release::{
     BumpType, CargoManifest, Changeset, ChangesetManager, CommitAnalyzer, CommitParser,
-    PackageChange, PublishPackage, PublishPlan, ReleasePackagesConfig, Version, VersionCalculator,
+    PackageChange, PublishPackage, PublishPlan, ReleasePackagesConfig, TagType, Version,
+    VersionCalculator,
 };
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -284,7 +285,8 @@ pub fn execute_changeset_from_commits(
     let root = Path::new(path);
 
     // Parse conventional commits
-    let commits = CommitParser::parse_since_tag(root, since_tag)
+    // TODO: Load tag_prefix and tag_type from project's release config (env.cue)
+    let commits = CommitParser::parse_since_tag(root, since_tag, "", TagType::Semver)
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
 
     if commits.is_empty() {
@@ -990,7 +992,8 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
     })?;
 
     // Step 1: Parse commits since last tag
-    let commits = CommitParser::parse_since_tag(&root, opts.since.as_deref())
+    // TODO: Load tag_prefix and tag_type from project's release config (env.cue)
+    let commits = CommitParser::parse_since_tag(&root, opts.since.as_deref(), "", TagType::Semver)
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
 
     if commits.is_empty() {

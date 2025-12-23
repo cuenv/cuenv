@@ -69,16 +69,22 @@ package schema
 	changelog?: #ChangelogConfig
 })
 
+// #TagType defines the versioning scheme for release tags
+#TagType: "semver" | "calver"
+
 // #ReleaseGit defines git-related release settings
 #ReleaseGit: close({
 	// Default branch for releases (e.g., "main", "master")
 	defaultBranch?: string | *"main"
 
-	// Tag format template. Supports ${package} and ${version} placeholders.
-	// Examples:
-	//   - "v${version}" for single-package repos
-	//   - "${package}-v${version}" for monorepos
-	tagFormat?: string | *"v${version}"
+	// Tag prefix for version tags (default: empty for bare versions)
+	// Examples: "" → 0.19.1, "v" → v0.19.1, "vscode/v" → vscode/v0.1.1
+	tagPrefix?: string | *""
+
+	// Version tag type (default: semver)
+	// - "semver": Semantic versioning (e.g., 0.19.1, 1.0.0-alpha.1)
+	// - "calver": Calendar versioning (e.g., 2024.12.23, 24.04)
+	tagType?: #TagType | *"semver"
 
 	// Whether to create tags during release
 	createTags?: bool | *true

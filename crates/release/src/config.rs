@@ -42,6 +42,29 @@ impl fmt::Display for VersioningStrategy {
     }
 }
 
+/// Version tag type for release tags.
+///
+/// Determines how version strings are parsed and compared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TagType {
+    /// Semantic versioning (e.g., 0.19.1, 1.0.0-alpha.1).
+    #[default]
+    Semver,
+
+    /// Calendar versioning (e.g., 2024.12.23, 24.04).
+    Calver,
+}
+
+impl fmt::Display for TagType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Semver => write!(f, "semver"),
+            Self::Calver => write!(f, "calver"),
+        }
+    }
+}
+
 /// Complete release configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -61,9 +84,12 @@ pub struct ReleaseGitConfig {
     /// Default branch for releases.
     #[serde(rename = "defaultBranch")]
     pub default_branch: String,
-    /// Tag format template with ${package} and ${version} placeholders.
-    #[serde(rename = "tagFormat")]
-    pub tag_format: String,
+    /// Tag prefix for version tags (default: empty for bare versions).
+    #[serde(rename = "tagPrefix")]
+    pub tag_prefix: String,
+    /// Version tag type (semver or calver).
+    #[serde(rename = "tagType")]
+    pub tag_type: TagType,
     /// Whether to create tags during release.
     #[serde(rename = "createTags")]
     pub create_tags: bool,
@@ -76,7 +102,8 @@ impl Default for ReleaseGitConfig {
     fn default() -> Self {
         Self {
             default_branch: "main".to_string(),
-            tag_format: "v${version}".to_string(),
+            tag_prefix: String::new(),
+            tag_type: TagType::Semver,
             create_tags: true,
             push_tags: true,
         }
@@ -84,14 +111,12 @@ impl Default for ReleaseGitConfig {
 }
 
 impl ReleaseGitConfig {
-    /// Format a tag name for a package and version.
+    /// Format a tag name from a version.
     ///
-    /// Replaces `${package}` and `${version}` placeholders in the tag format.
+    /// Combines the tag prefix with the version string.
     #[must_use]
-    pub fn format_tag(&self, package: &str, version: &str) -> String {
-        self.tag_format
-            .replace("${package}", package)
-            .replace("${version}", version)
+    pub fn format_tag(&self, version: &str) -> String {
+        format!("{}{}", self.tag_prefix, version)
     }
 }
 
@@ -172,24 +197,36 @@ mod tests {
     fn test_release_config_default() {
         let config = ReleaseConfig::default();
         assert_eq!(config.git.default_branch, "main");
-        assert_eq!(config.git.tag_format, "v${version}");
+        assert_eq!(config.git.tag_prefix, "");
+        assert_eq!(config.git.tag_type, TagType::Semver);
         assert!(config.git.create_tags);
         assert!(config.git.push_tags);
     }
 
     #[test]
     fn test_git_config_format_tag() {
+        // Default: empty prefix (bare semver)
         let config = ReleaseGitConfig::default();
-        assert_eq!(config.format_tag("my-pkg", "1.0.0"), "v1.0.0");
+        assert_eq!(config.format_tag("1.0.0"), "1.0.0");
 
-        let monorepo_config = ReleaseGitConfig {
-            tag_format: "${package}-v${version}".to_string(),
+        // With "v" prefix
+        let v_config = ReleaseGitConfig {
+            tag_prefix: "v".to_string(),
             ..Default::default()
         };
-        assert_eq!(
-            monorepo_config.format_tag("my-pkg", "1.0.0"),
-            "my-pkg-v1.0.0"
-        );
+        assert_eq!(v_config.format_tag("1.0.0"), "v1.0.0");
+
+        // With package prefix
+        let pkg_config = ReleaseGitConfig {
+            tag_prefix: "vscode/v".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(pkg_config.format_tag("0.1.1"), "vscode/v0.1.1");
+    }
+
+    #[test]
+    fn test_tag_type_default() {
+        assert_eq!(TagType::default(), TagType::Semver);
     }
 
     #[test]
