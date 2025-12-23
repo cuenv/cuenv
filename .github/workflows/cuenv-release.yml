@@ -35,13 +35,13 @@ jobs:
       - name: Setup Cachix
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
         env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build cuenv
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: release.build (linux-x64)
         run: cuenv task release.build -e production
         env:
@@ -71,13 +71,13 @@ jobs:
       - name: Setup Cachix
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
         env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build cuenv
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: release.build (linux-arm64)
         run: cuenv task release.build -e production
         env:
@@ -107,13 +107,13 @@ jobs:
       - name: Setup Cachix
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
         env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build cuenv
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: release.build (darwin-arm64)
         run: cuenv task release.build -e production
         env:
@@ -127,106 +127,6 @@ jobs:
           name: release-build-darwin-arm64
           path: result/bin/*
           if-no-files-found: ignore
-  release-prepare:
-    name: release.prepare
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    needs:
-      - release-build-linux-x64
-      - release-build-linux-arm64
-      - release-build-darwin-arm64
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Setup Cachix
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
-        env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-      - name: Download release-build-linux-x64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-linux-x64
-          path: dist/linux-x64
-      - name: Download release-build-linux-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-linux-arm64
-          path: dist/linux-arm64
-      - name: Download release-build-darwin-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-darwin-arm64
-          path: dist/darwin-arm64
-      - name: release.prepare
-        run: cuenv task release.prepare -e production
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PATHS: dist/**/*
-          TAG: ${{ github.ref_name }}
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-  release-prepare-dry-run:
-    name: release.prepare-dry-run
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    needs:
-      - release-build-linux-x64
-      - release-build-linux-arm64
-      - release-build-darwin-arm64
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Setup Cachix
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
-        env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-      - name: Download release-build-linux-x64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-linux-x64
-          path: dist/linux-x64
-      - name: Download release-build-linux-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-linux-arm64
-          path: dist/linux-arm64
-      - name: Download release-build-darwin-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-darwin-arm64
-          path: dist/darwin-arm64
-      - name: release.prepare-dry-run
-        run: cuenv task release.prepare-dry-run -e production
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PATHS: dist/**/*
-          TAG: ${{ github.ref_name }}
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
   release-publish-crates:
     name: release.publish.crates
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -244,13 +144,13 @@ jobs:
       - name: Setup Cachix
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
         env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build cuenv
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: release.publish.crates
         run: cuenv task release.publish.crates -e production
         env:
@@ -261,9 +161,9 @@ jobs:
     name: release.publish.cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - release-build-linux-x64
       - release-build-linux-arm64
       - release-build-darwin-arm64
+      - release-build-linux-x64
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -277,18 +177,13 @@ jobs:
       - name: Setup Cachix
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
         env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build cuenv
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-      - name: Download release-build-linux-x64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-linux-x64
-          path: dist/linux-x64
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Download release-build-linux-arm64
         uses: actions/download-artifact@v4
         with:
@@ -299,6 +194,11 @@ jobs:
         with:
           name: release-build-darwin-arm64
           path: dist/darwin-arm64
+      - name: Download release-build-linux-x64
+        uses: actions/download-artifact@v4
+        with:
+          name: release-build-linux-x64
+          path: dist/linux-x64
       - name: release.publish.cue
         run: cuenv task release.publish.cue -e production
         env:
@@ -311,9 +211,9 @@ jobs:
     name: release.publish.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - release-build-linux-x64
       - release-build-linux-arm64
       - release-build-darwin-arm64
+      - release-build-linux-x64
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -327,18 +227,13 @@ jobs:
       - name: Setup Cachix
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
         env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build cuenv
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-      - name: Download release-build-linux-x64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-linux-x64
-          path: dist/linux-x64
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Download release-build-linux-arm64
         uses: actions/download-artifact@v4
         with:
@@ -349,88 +244,13 @@ jobs:
         with:
           name: release-build-darwin-arm64
           path: dist/darwin-arm64
+      - name: Download release-build-linux-x64
+        uses: actions/download-artifact@v4
+        with:
+          name: release-build-linux-x64
+          path: dist/linux-x64
       - name: release.publish.github
         run: cuenv task release.publish.github -e production
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PATHS: dist/**/*
-          TAG: ${{ github.ref_name }}
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-  release-publish-homebrew:
-    name: release.publish.homebrew
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    needs:
-      - release-publish-github
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Setup Cachix
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
-        env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-      - name: release.publish.homebrew
-        run: cuenv task release.publish.homebrew -e production
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-  release-test:
-    name: release.test
-    runs-on: blacksmith-8vcpu-ubuntu-2404
-    needs:
-      - release-build-linux-x64
-      - release-build-linux-arm64
-      - release-build-darwin-arm64
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Setup Cachix
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
-        env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
-      - name: Download release-build-linux-x64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-linux-x64
-          path: dist/linux-x64
-      - name: Download release-build-linux-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-linux-arm64
-          path: dist/linux-arm64
-      - name: Download release-build-darwin-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: release-build-darwin-arm64
-          path: dist/darwin-arm64
-      - name: release.test
-        run: cuenv task release.test -e production
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PATHS: dist/**/*
@@ -454,13 +274,13 @@ jobs:
       - name: Setup Cachix
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
         env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build cuenv
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: docs.deploy
         run: cuenv task docs.deploy -e production
         env:
@@ -482,15 +302,43 @@ jobs:
       - name: Setup Cachix
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
         env:
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Build cuenv
         run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: docs.build
         run: cuenv task docs.build -e production
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
+          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+  release-build:
+    name: release.build
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Setup Cachix
+        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Build cuenv
+        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> $GITHUB_PATH 2>/dev/null || echo "$(pwd)/result/bin" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: release.build
+        run: cuenv task release.build -e production
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
