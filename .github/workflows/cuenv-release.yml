@@ -47,8 +47,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CUENV_ARCH: linux-x64
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -83,8 +83,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CUENV_ARCH: linux-arm64
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -119,8 +119,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CUENV_ARCH: darwin-arm64
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -155,15 +155,15 @@ jobs:
         run: cuenv task publish.crates -e production
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-cue:
     name: publish.cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - nix-build-darwin-arm64
       - nix-build-linux-x64
       - nix-build-linux-arm64
+      - nix-build-darwin-arm64
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -184,11 +184,6 @@ jobs:
         run: cuenv secrets setup onepassword
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: Download nix-build-darwin-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: nix-build-darwin-arm64
-          path: dist/darwin-arm64
       - name: Download nix-build-linux-x64
         uses: actions/download-artifact@v4
         with:
@@ -199,21 +194,26 @@ jobs:
         with:
           name: nix-build-linux-arm64
           path: dist/linux-arm64
+      - name: Download nix-build-darwin-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-build-darwin-arm64
+          path: dist/darwin-arm64
       - name: publish.cue
         run: cuenv task publish.cue -e production
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           PATHS: dist/**/*
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-github:
     name: publish.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - nix-build-darwin-arm64
       - nix-build-linux-x64
       - nix-build-linux-arm64
+      - nix-build-darwin-arm64
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -234,11 +234,6 @@ jobs:
         run: cuenv secrets setup onepassword
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: Download nix-build-darwin-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: nix-build-darwin-arm64
-          path: dist/darwin-arm64
       - name: Download nix-build-linux-x64
         uses: actions/download-artifact@v4
         with:
@@ -249,14 +244,19 @@ jobs:
         with:
           name: nix-build-linux-arm64
           path: dist/linux-arm64
+      - name: Download nix-build-darwin-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-build-darwin-arm64
+          path: dist/darwin-arm64
       - name: publish.github
         run: cuenv task publish.github -e production
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           PATHS: dist/**/*
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
     name: docs.deploy
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -285,8 +285,8 @@ jobs:
         run: cuenv task docs.deploy -e production
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
     name: docs.build
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -313,5 +313,5 @@ jobs:
         run: cuenv task docs.build -e production
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_AUTH_TOKEN: ${CACHIX_AUTH_TOKEN}
-          OP_SERVICE_ACCOUNT_TOKEN: ${OP_SERVICE_ACCOUNT_TOKEN}
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
