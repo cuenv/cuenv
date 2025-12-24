@@ -212,20 +212,35 @@
           ONEPASSWORD_WASM_PATH = onepassword-wasm;
         };
 
-        # Build artifacts for dependency caching
-        # Build deps normally without cross-compilation - cargo-zigbuild handles that in final build
-        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-          src = srcArtifacts;
-          preBuild = "";
-          buildInputs = platformBuildInputs;
-        });
-
         # Rust target triple for explicit --target flag
         rustTarget =
           let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
           in if cpu == "x86_64" then "x86_64-unknown-linux-gnu"
           else if cpu == "aarch64" then "aarch64-unknown-linux-gnu"
           else throw "Unsupported Linux architecture: ${cpu}";
+
+        # Build artifacts for dependency caching
+        # Must use same --target and CC settings as main build for cache compatibility
+        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+          src = srcArtifacts;
+          preBuild = "";
+          buildInputs = platformBuildInputs;
+        } // (if pkgs.stdenv.isLinux then {
+          buildPhaseCargoCommand = ''
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+            export HOST_CC=cc
+            export HOST_CXX=c++
+            export CC_x86_64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
+            export CXX_x86_64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
+            export CC_aarch64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
+            export CXX_aarch64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
+            export AR=${zigARWrapper}/bin/zig-ar
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
+            cargo build --release --locked --target ${rustTarget}
+          '';
+        } else { }));
 
         # Main package build
         # On Linux: Use --target with HOST_CC/TARGET_CC separation for portable binaries
