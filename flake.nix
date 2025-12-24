@@ -226,7 +226,7 @@
             export CXX=${zigCXXWrapper}/bin/zig-cxx
             export AR=${zigARWrapper}/bin/zig-ar
             export RUSTFLAGS="-C linker=${zigCCWrapper}/bin/zig-cc"
-            cargoWithProfile --locked
+            cargo check --profile release --locked
           '';
         } else { }));
 
