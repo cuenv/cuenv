@@ -54,30 +54,16 @@
             cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
             os = pkgs.stdenv.hostPlatform.parsed.kernel.name;
           in
-            if os == "linux" then
-              if cpu == "x86_64" then "x86_64-linux-gnu.2.17"
-              else if cpu == "aarch64" then "aarch64-linux-gnu.2.17"
-              else throw "Unsupported Linux architecture: ${cpu}"
-            else if os == "darwin" then
-              if cpu == "aarch64" then "aarch64-macos.11.0"
-              else if cpu == "x86_64" then "x86_64-macos.11.0"
-              else throw "Unsupported macOS architecture: ${cpu}"
-            else throw "Unsupported OS: ${os}";
+          if os == "linux" then
+            if cpu == "x86_64" then "x86_64-linux-gnu.2.17"
+            else if cpu == "aarch64" then "aarch64-linux-gnu.2.17"
+            else throw "Unsupported Linux architecture: ${cpu}"
+          else if os == "darwin" then
+            if cpu == "aarch64" then "aarch64-macos.11.0"
+            else if cpu == "x86_64" then "x86_64-macos.11.0"
+            else throw "Unsupported macOS architecture: ${cpu}"
+          else throw "Unsupported OS: ${os}";
 
-        # Rust target triple with glibc version suffix for cargo-zigbuild (Linux only)
-        # macOS uses regular cargo with MACOSX_DEPLOYMENT_TARGET instead
-        rustZigTarget =
-          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
-          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu.2.17"
-             else if cpu == "aarch64" then "aarch64-unknown-linux-gnu.2.17"
-             else throw "Unsupported Linux architecture: ${cpu}";
-
-        # Base Rust target (without version suffix) for Linux output paths
-        rustBaseTarget =
-          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
-          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu"
-             else if cpu == "aarch64" then "aarch64-unknown-linux-gnu"
-             else throw "Unsupported Linux architecture: ${cpu}";
 
         # Zig wrappers for CGO (CC cannot contain spaces)
         zigCCWrapper = pkgs.writeShellScriptBin "zig-cc" ''
@@ -217,7 +203,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config cue git cargo-zigbuild zig ];
+          nativeBuildInputs = with pkgs; [ go pkg-config cue git zig ];
           buildInputs = platformBuildInputs;
           preBuild = ''
             ${setupBridge}
@@ -234,24 +220,27 @@
         });
 
         # Main package build
-        # On Linux: Use cargo-zigbuild for portable binaries (glibc 2.17 target)
-        # On macOS: Use regular cargo with deployment target env var (no NixOS path issues)
+        # On Linux: Use Zig as CC/linker for portable binaries (glibc 2.17 target)
+        # On macOS: Use regular cargo with deployment target env var
         cuenv = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           pname = "cuenv";
           inherit version;
         } // (if pkgs.stdenv.isLinux then {
-          # Linux: Use cargo-zigbuild for portable glibc binaries
+          # Linux: Use Zig wrappers for portable glibc binaries
           doNotPostBuildInstallCargoBinaries = true;
           buildPhaseCargoCommand = ''
             export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
             export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-            export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/cargo-zigbuild-cache"
-            cargo zigbuild --release --target ${rustZigTarget}
+            export CC=${zigCCWrapper}/bin/zig-cc
+            export CXX=${zigCXXWrapper}/bin/zig-cxx
+            export AR=${zigARWrapper}/bin/zig-ar
+            export RUSTFLAGS="-C linker=${zigCCWrapper}/bin/zig-cc"
+            cargo build --release
           '';
           installPhaseCommand = ''
             mkdir -p $out/bin
-            cp target/${rustBaseTarget}/release/cuenv $out/bin/
+            cp target/release/cuenv $out/bin/
           '';
         } else {
           # macOS: Use regular cargo with deployment target set explicitly
@@ -274,7 +263,6 @@
           cargo-nextest
           cargo-deny
           cargo-cyclonedx
-          cargo-zigbuild
           zig
           git
           gh
