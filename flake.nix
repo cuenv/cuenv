@@ -226,13 +226,14 @@
           buildInputs = platformBuildInputs;
         } // (if pkgs.stdenv.isLinux then {
           # Use --target to separate HOST (build scripts) from TARGET (main crate)
-          # Build scripts use native linker (can run on NixOS)
-          # Main crate uses Zig linker via CARGO_TARGET_*_LINKER (portable binary)
+          # Use target-specific CC/CXX so HOST compilation uses native toolchain
           buildPhaseCargoCommand = ''
             export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
             export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-            export CC=${zigCCWrapper}/bin/zig-cc
-            export CXX=${zigCXXWrapper}/bin/zig-cxx
+            export CC_x86_64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
+            export CXX_x86_64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
+            export CC_aarch64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
+            export CXX_aarch64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
             export AR=${zigARWrapper}/bin/zig-ar
             export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
@@ -250,12 +251,15 @@
         } // (if pkgs.stdenv.isLinux then {
           # Linux: Use Zig wrappers for portable glibc binaries
           # --target creates HOST/TARGET separation so build scripts use native linker
+          # Use target-specific CC/CXX so HOST compilation uses native toolchain
           doNotPostBuildInstallCargoBinaries = true;
           buildPhaseCargoCommand = ''
             export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
             export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-            export CC=${zigCCWrapper}/bin/zig-cc
-            export CXX=${zigCXXWrapper}/bin/zig-cxx
+            export CC_x86_64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
+            export CXX_x86_64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
+            export CC_aarch64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
+            export CXX_aarch64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
             export AR=${zigARWrapper}/bin/zig-ar
             export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
