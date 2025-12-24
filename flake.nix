@@ -218,18 +218,7 @@
           src = srcArtifacts;
           preBuild = "";
           buildInputs = platformBuildInputs;
-        } // (if pkgs.stdenv.isLinux then {
-          # Use Zig for C compilation but NOT for Rust linker
-          # Build scripts need native linker to run on NixOS
-          buildPhaseCargoCommand = ''
-            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
-            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-            export CC=${zigCCWrapper}/bin/zig-cc
-            export CXX=${zigCXXWrapper}/bin/zig-cxx
-            export AR=${zigARWrapper}/bin/zig-ar
-            cargo build --release --locked
-          '';
-        } else { }));
+        });
 
         # Main package build
         # On Linux: Use Zig as CC/linker for portable binaries (glibc 2.17 target)
