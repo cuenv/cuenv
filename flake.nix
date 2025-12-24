@@ -241,6 +241,7 @@
           buildPhaseCargoCommand = ''
             export XDG_CACHE_HOME="$TMPDIR/xdg_cache"
             export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/zigbuild_cache"
+            export AWS_LC_SYS_NO_ASM=1
             cargo zigbuild --release --target ${zigbuildTarget}
           '';
           installPhaseCommand = ''
