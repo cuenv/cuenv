@@ -3,6 +3,9 @@
 //! Implements distributed caching using the Bazel Remote Execution API v2
 //! for Action Cache and Content Addressable Storage (CAS).
 
+// Remote cache operations with gRPC have inherent complexity
+#![allow(clippy::too_many_lines)]
+
 use crate::executor::backend::{
     BackendError, BackendResult, CacheBackend, CacheEntry, CacheLookupResult, CacheOutput,
     policy_allows_read, policy_allows_write,

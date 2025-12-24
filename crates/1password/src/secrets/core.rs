@@ -3,6 +3,9 @@
 //! This module provides a thread-safe wrapper around the 1Password WASM SDK,
 //! following the same pattern as the official Go SDK.
 
+// WASM host functions and SDK initialization involve complex setup
+#![allow(clippy::too_many_lines)]
+
 use super::wasm;
 use cuenv_secrets::SecretError;
 use extism::{CurrentPlugin, Function, Manifest, Plugin, UserData, Val, ValType, Wasm};

@@ -4,6 +4,9 @@
 //! Shows changed files, environment variables, and upstream outputs
 //! without exposing secret values.
 
+// Diff comparison involves complex field-by-field analysis
+#![allow(clippy::too_many_lines)]
+
 use crate::report::{PipelineReport, TaskReport};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

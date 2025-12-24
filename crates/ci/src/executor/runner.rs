@@ -3,6 +3,9 @@
 //! Executes individual IR tasks with proper command handling, environment
 //! injection, and output capture.
 
+// Task execution with output capture and error handling
+#![allow(clippy::too_many_lines)]
+
 use crate::ir::Task as IRTask;
 use std::collections::HashMap;
 use std::path::PathBuf;

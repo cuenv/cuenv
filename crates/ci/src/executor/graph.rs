@@ -3,6 +3,9 @@
 //! Builds a directed acyclic graph (DAG) from IR tasks for dependency-ordered
 //! parallel execution.
 
+// Graph algorithms with caching policy propagation have inherent complexity
+#![allow(clippy::cognitive_complexity)]
+
 use crate::compiler::digest::compute_task_digest;
 use crate::ir::{IntermediateRepresentation, Task as IRTask};
 use petgraph::algo::{is_cyclic_directed, toposort};

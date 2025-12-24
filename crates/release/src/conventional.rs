@@ -4,6 +4,9 @@
 //! following the Conventional Commits specification, and `gix` for git
 //! repository access.
 
+// Git repository traversal and commit parsing involves complex iteration
+#![allow(clippy::too_many_lines)]
+
 use crate::changeset::BumpType;
 use crate::config::TagType;
 use crate::error::{Error, Result};
@@ -188,7 +191,6 @@ impl CommitParser {
         let mut features = Vec::new();
         let mut fixes = Vec::new();
         let mut breaking = Vec::new();
-        let mut other = Vec::new();
 
         for commit in commits {
             let desc = commit.scope.as_ref().map_or_else(
@@ -203,7 +205,7 @@ impl CommitParser {
             match commit.commit_type.as_str() {
                 "feat" => features.push(desc),
                 "fix" | "perf" => fixes.push(desc),
-                "chore" | "docs" | "style" | "refactor" | "test" | "ci" => other.push(desc),
+                // chore, docs, style, refactor, test, ci - not included in release summaries
                 _ => {}
             }
         }

@@ -1,4 +1,9 @@
 //! Build script for compiling the Go CUE bridge
+//!
+//! Build scripts should panic on failure - there's no recovery path for build errors.
+
+// Build scripts are expected to panic/expect on failure - no runtime recovery needed
+#![allow(clippy::panic, clippy::expect_used, clippy::too_many_lines)]
 
 use std::env;
 use std::path::{Path, PathBuf};

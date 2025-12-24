@@ -13,13 +13,11 @@ pub fn compute_affected_tasks(
     all_projects: &HashMap<String, DiscoveredCIProject>,
 ) -> Vec<String> {
     let mut affected = HashSet::new();
-    let mut directly_affected = HashSet::new();
     let mut visited_external_cache: HashMap<String, bool> = HashMap::new();
 
     // 1. Identify directly affected tasks (file changes in this project)
     for task_name in pipeline_tasks {
         if is_task_directly_affected(task_name, config, changed_files, project_root) {
-            directly_affected.insert(task_name.clone());
             affected.insert(task_name.clone());
         }
     }

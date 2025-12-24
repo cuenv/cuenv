@@ -2,6 +2,9 @@
 //!
 //! Transforms cuenv IR into Buildkite pipeline YAML format.
 
+// Pipeline emission involves complex step generation with many options
+#![allow(clippy::too_many_lines)]
+
 use crate::schema::{AgentRules, BlockStep, CommandStep, CommandValue, DependsOn, Pipeline, Step};
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
 use cuenv_ci::ir::{IntermediateRepresentation, OutputType, StageTask, Task};
