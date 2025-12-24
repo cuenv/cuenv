@@ -213,12 +213,24 @@
         };
 
         # Build artifacts for dependency caching
-        # On Linux, use Zig to ensure build scripts are portable
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           src = srcArtifacts;
           preBuild = "";
           buildInputs = platformBuildInputs;
-        });
+        } // (if pkgs.stdenv.isLinux then {
+          # Use Zig for C compilation and target-specific linker (not RUSTFLAGS)
+          # CARGO_TARGET_*_LINKER only affects final binary, not build scripts
+          buildPhaseCargoCommand = ''
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+            export CC=${zigCCWrapper}/bin/zig-cc
+            export CXX=${zigCXXWrapper}/bin/zig-cxx
+            export AR=${zigARWrapper}/bin/zig-ar
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
+            cargo build --release --locked
+          '';
+        } else { }));
 
         # Main package build
         # On Linux: Use Zig as CC/linker for portable binaries (glibc 2.17 target)
@@ -236,7 +248,8 @@
             export CC=${zigCCWrapper}/bin/zig-cc
             export CXX=${zigCXXWrapper}/bin/zig-cxx
             export AR=${zigARWrapper}/bin/zig-ar
-            export RUSTFLAGS="-C linker=${zigCCWrapper}/bin/zig-cc"
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
             cargo build --release
           '';
           installPhaseCommand = ''
