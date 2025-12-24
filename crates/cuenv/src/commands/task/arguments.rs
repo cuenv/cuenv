@@ -98,10 +98,7 @@ pub fn parse_task_args(
 }
 
 /// Validate and resolve arguments against task parameter definitions
-pub fn resolve_task_args(
-    params: Option<&TaskParams>,
-    cli_args: &[String],
-) -> Result<ResolvedArgs> {
+pub fn resolve_task_args(params: Option<&TaskParams>, cli_args: &[String]) -> Result<ResolvedArgs> {
     let (positional_values, named_values) = parse_task_args(cli_args, params);
     let mut resolved = ResolvedArgs::new();
 

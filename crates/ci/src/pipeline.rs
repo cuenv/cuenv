@@ -255,10 +255,7 @@ mod tests {
 
     #[test]
     fn test_expand_task_groups_simple() {
-        let ir_tasks = vec![
-            make_task("build.linux", &[]),
-            make_task("build.macos", &[]),
-        ];
+        let ir_tasks = vec![make_task("build.linux", &[]), make_task("build.macos", &[])];
         let pipeline_tasks = vec![PipelineTask::Simple("build".to_string())];
         let explicit: HashSet<String> = HashSet::new();
 

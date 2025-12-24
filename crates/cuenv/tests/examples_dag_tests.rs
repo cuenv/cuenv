@@ -3,6 +3,9 @@
 //! This module tests that all examples in the `examples/` directory can be
 //! loaded and produce valid task DAGs.
 
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use cuengine::evaluate_cue_package_typed;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskGraph, Tasks};

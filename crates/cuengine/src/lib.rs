@@ -313,7 +313,10 @@ fn str_to_cstring(s: &str, fn_name: &'static str, param_name: &str) -> Result<CS
 
 /// Serialize options to JSON `CString` for FFI.
 fn options_to_cstring(options: Option<&ModuleEvalOptions>) -> Result<CString> {
-    let options_json = options.map_or_else(|| "{}".to_string(), |o| serde_json::to_string(o).unwrap_or_else(|_| "{}".to_string()));
+    let options_json = options.map_or_else(
+        || "{}".to_string(),
+        |o| serde_json::to_string(o).unwrap_or_else(|_| "{}".to_string()),
+    );
     str_to_cstring(&options_json, "cue_eval_module", "options")
 }
 

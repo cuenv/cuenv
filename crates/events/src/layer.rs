@@ -265,9 +265,7 @@ impl CuenvEventVisitor {
             "system.shutdown" => EventCategory::System(SystemEvent::Shutdown),
 
             // Output events
-            "output.stdout" => EventCategory::Output(OutputEvent::Stdout {
-                content: content?,
-            }),
+            "output.stdout" => EventCategory::Output(OutputEvent::Stdout { content: content? }),
             "output.stderr" => EventCategory::Output(OutputEvent::Stderr { content: content? }),
 
             _ => return None,

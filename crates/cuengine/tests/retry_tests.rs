@@ -1,5 +1,12 @@
 //! Tests for retry logic with exponential backoff
 
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::significant_drop_tightening
+)]
+
 use cuengine::CueEngineError;
 use cuengine::retry::{RetryConfig, with_retry};
 use std::sync::{Arc, Mutex};

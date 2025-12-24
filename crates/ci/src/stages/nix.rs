@@ -70,7 +70,10 @@ impl StageContributor for NixContributor {
         github_action.insert("inputs".to_string(), serde_json::Value::Object(inputs));
 
         let mut provider_hints = serde_json::Map::new();
-        provider_hints.insert("github_action".to_string(), serde_json::Value::Object(github_action));
+        provider_hints.insert(
+            "github_action".to_string(),
+            serde_json::Value::Object(github_action),
+        );
 
         (
             vec![

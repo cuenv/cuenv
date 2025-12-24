@@ -330,6 +330,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Test requires comprehensive setup and assertions
     fn distinguishes_workspace_from_nested_node_modules() {
         let json = r#"{
   "name": "workspace-root",

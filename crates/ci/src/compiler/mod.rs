@@ -317,7 +317,7 @@ impl Compiler {
     }
 
     /// Build trigger condition for a pipeline from its configuration
-    fn build_trigger_condition(&self, pipeline: &Pipeline, ci_config: &CI) -> TriggerCondition {
+    fn build_trigger_condition(&self, pipeline: &Pipeline, _ci_config: &CI) -> TriggerCondition {
         let when = pipeline.when.as_ref();
 
         // Extract branch patterns

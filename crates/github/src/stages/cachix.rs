@@ -6,8 +6,8 @@
 //! and the Cachix GitHub Action integration.
 
 use crate::config::GitHubConfig;
-use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, SecretConfig, StageTask};
 use cuenv_ci::StageContributor;
+use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, SecretConfig, StageTask};
 use cuenv_core::manifest::Project;
 use std::collections::HashMap;
 

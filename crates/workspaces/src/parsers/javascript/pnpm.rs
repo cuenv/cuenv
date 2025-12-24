@@ -212,7 +212,7 @@ fn entry_from_package(
     })
 }
 
-#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
+#[allow(clippy::option_if_let_else, clippy::too_many_lines)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_package_key(lockfile_path: &Path, package_key: &str) -> Result<(String, String)> {
     // Remove leading "/" if present
     let key = package_key.trim_start_matches('/');
