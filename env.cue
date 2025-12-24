@@ -374,5 +374,11 @@ schema.#Project & {
 				"""]
 			inputs: ["cue.mod", "schema"]
 		}
+
+		cargo: install: {
+			command: "cargo"
+			args: ["install", "--path", "./crates/cuenv"]
+			inputs: _baseInputs
+		}
 	}
 }

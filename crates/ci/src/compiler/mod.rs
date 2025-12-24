@@ -54,8 +54,14 @@ pub struct Compiler {
     options: CompilerOptions,
 }
 
+/// Factory function type for creating stage contributors.
+///
+/// Used to defer contributor creation until compilation time,
+/// allowing `CompilerOptions` to remain `Clone`.
+pub type ContributorFactory = fn() -> Vec<Box<dyn crate::StageContributor>>;
+
 /// Compiler configuration options
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct CompilerOptions {
     /// Default purity mode for runtimes
     pub purity_mode: PurityMode,
@@ -82,6 +88,30 @@ pub struct CompilerOptions {
     /// the pipeline's environment, enabling contributors to self-detect
     /// their requirements.
     pub pipeline: Option<Pipeline>,
+
+    /// Factory function for creating stage contributors.
+    ///
+    /// If None, uses `stages::default_contributors()`.
+    /// Set this to include provider-specific contributors (e.g., Cachix for GitHub).
+    pub contributor_factory: Option<ContributorFactory>,
+}
+
+impl std::fmt::Debug for CompilerOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompilerOptions")
+            .field("purity_mode", &self.purity_mode)
+            .field("validate_inputs", &self.validate_inputs)
+            .field("default_cache_policy", &self.default_cache_policy)
+            .field("flake_lock_path", &self.flake_lock_path)
+            .field("project_root", &self.project_root)
+            .field("input_overrides", &self.input_overrides)
+            .field("pipeline", &self.pipeline)
+            .field(
+                "contributor_factory",
+                &self.contributor_factory.map(|_| "Some(<fn>)"),
+            )
+            .finish()
+    }
 }
 
 impl Compiler {
@@ -285,7 +315,10 @@ impl Compiler {
         // Apply stage contributors with fixed-point iteration
         // Contributors self-detect their requirements and report modifications.
         // Loop continues until no contributor reports changes (stable state).
-        let contributors = stages::default_contributors();
+        let contributors = self
+            .options
+            .contributor_factory
+            .map_or_else(stages::default_contributors, |factory| factory());
         loop {
             let mut any_modified = false;
             for contributor in &contributors {

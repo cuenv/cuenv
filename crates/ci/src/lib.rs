@@ -16,6 +16,7 @@ pub mod render;
 pub mod report;
 pub mod stages;
 
+pub use compiler::ContributorFactory;
 pub use render::StageRenderer;
 pub use stages::StageContributor;
 

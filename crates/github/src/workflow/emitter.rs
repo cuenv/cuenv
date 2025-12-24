@@ -434,7 +434,7 @@ impl GitHubActionsEmitter {
                     })
                     .unwrap_or("CACHIX_AUTH_TOKEN");
 
-                let mut cachix_step = Step::uses("cachix/cachix-action@v15")
+                let cachix_step = Step::uses("cachix/cachix-action@v15")
                     .with_name("Setup Cachix")
                     .with_input("name", serde_yaml::Value::String(cache_name.to_string()))
                     .with_input(
@@ -443,10 +443,6 @@ impl GitHubActionsEmitter {
                             "${{{{ secrets.{auth_token_secret} }}}}"
                         )),
                     );
-                cachix_step.with_inputs.insert(
-                    "pushFilter".to_string(),
-                    serde_yaml::Value::String("(-source$|nixpkgs\\.tar\\.gz$)".to_string()),
-                );
                 steps.push(cachix_step);
             }
         }
