@@ -2,10 +2,8 @@
 //!
 //! Contributes Nix installation to the CI pipeline.
 
-use std::collections::HashMap;
-
 use super::StageContributor;
-use crate::ir::{ActionSpec, BuildStage, IntermediateRepresentation, StageTask};
+use crate::ir::{BuildStage, IntermediateRepresentation, StageTask};
 use cuenv_core::config::CuenvSource;
 use cuenv_core::manifest::{Project, Runtime};
 
@@ -58,6 +56,22 @@ impl StageContributor for NixContributor {
             return (vec![], false);
         }
 
+        // Build provider hints for GitHub Actions
+        let mut github_action = serde_json::Map::new();
+        github_action.insert(
+            "uses".to_string(),
+            serde_json::Value::String("DeterminateSystems/nix-installer-action@v16".to_string()),
+        );
+        let mut inputs = serde_json::Map::new();
+        inputs.insert(
+            "extra-conf".to_string(),
+            serde_json::Value::String("accept-flake-config = true".to_string()),
+        );
+        github_action.insert("inputs".to_string(), serde_json::Value::Object(inputs));
+
+        let mut provider_hints = serde_json::Map::new();
+        provider_hints.insert("github_action".to_string(), serde_json::Value::Object(github_action));
+
         (
             vec![
                 // Bootstrap: Install Nix
@@ -77,20 +91,8 @@ impl StageContributor for NixContributor {
                         ],
                         shell: true,
                         priority: 0,
-                        // GitHub Action alternative (used by GitHubStageRenderer)
-                        action: Some(ActionSpec {
-                            uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
-                            inputs: {
-                                let mut inputs = HashMap::new();
-                                inputs.insert(
-                                    "extra-conf".to_string(),
-                                    serde_yaml::Value::String(
-                                        "accept-flake-config = true".to_string(),
-                                    ),
-                                );
-                                inputs
-                            },
-                        }),
+                        // Provider-specific hints (GitHub Actions uses "github_action" key)
+                        provider_hints: Some(serde_json::Value::Object(provider_hints)),
                         ..Default::default()
                     },
                 ),

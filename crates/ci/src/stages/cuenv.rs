@@ -7,6 +7,29 @@ use crate::ir::{BuildStage, IntermediateRepresentation, StageTask};
 use cuenv_core::config::CuenvSource;
 use cuenv_core::manifest::Project;
 
+/// Generate a shell command to add a path to the CI system's PATH.
+///
+/// This uses runtime detection to support multiple CI systems without
+/// compile-time dependencies. The shell tries each known environment
+/// variable in order and silently continues if none are set.
+///
+/// Known CI systems:
+/// - GitHub Actions: `$GITHUB_PATH`
+/// - Buildkite: `$BUILDKITE_ENV_FILE`
+/// - GitLab CI: `$GITLAB_ENV` (future)
+///
+/// Falls back to `|| true` so the command never fails.
+fn path_export_command(path: &str) -> String {
+    // CI systems use different mechanisms for persisting PATH changes:
+    // - GitHub Actions: echo to $GITHUB_PATH
+    // - Buildkite: echo to $BUILDKITE_ENV_FILE with PATH= prefix
+    // We try each in order; if none are set, we continue silently.
+    format!(
+        "{{ echo \"{path}\" >> \"$GITHUB_PATH\" 2>/dev/null || \
+        echo \"{path}\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true; }}"
+    )
+}
+
 /// Cuenv stage contributor
 ///
 /// Always active (cuenv is needed to run tasks). Contributes:
@@ -58,23 +81,22 @@ impl CuenvContributor {
         if version == "self" {
             // Build from current checkout
             // Note: PATH-setting is grouped with its own || true so build failures propagate
-            concat!(
-                ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && ",
-                "nix build .#cuenv --accept-flake-config && ",
-                "{ echo \"$(pwd)/result/bin\" >> $GITHUB_PATH 2>/dev/null || ",
-                "echo \"$(pwd)/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }"
+            format!(
+                ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+                nix build .#cuenv --accept-flake-config && \
+                {path_export}",
+                path_export = path_export_command("$(pwd)/result/bin")
             )
-            .to_string()
         } else {
             // Clone specific version and build
             // Note: PATH-setting is grouped with its own || true so build failures propagate
             format!(
                 ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-                 git clone --depth 1 --branch {version} https://github.com/cuenv/cuenv.git /tmp/cuenv && \
-                 cd /tmp/cuenv && \
-                 nix build .#cuenv --accept-flake-config && \
-                 {{ echo \"/tmp/cuenv/result/bin\" >> $GITHUB_PATH 2>/dev/null || \
-                 echo \"/tmp/cuenv/result/bin\" >> $BUILDKITE_ENV_FILE 2>/dev/null || true; }}"
+                git clone --depth 1 --branch {version} https://github.com/cuenv/cuenv.git /tmp/cuenv && \
+                cd /tmp/cuenv && \
+                nix build .#cuenv --accept-flake-config && \
+                {path_export}",
+                path_export = path_export_command("/tmp/cuenv/result/bin")
             )
         }
     }

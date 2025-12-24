@@ -6,8 +6,8 @@
 //!
 //! ## Architecture
 //!
-//! 1. Contributors produce `StageTask` with optional `ActionSpec` for GitHub
-//! 2. Emitters implement `StageRenderer` to convert tasks to native steps
+//! 1. Contributors produce `StageTask` with optional `provider_hints` for platform-specific optimizations
+//! 2. Emitters implement `StageRenderer` to convert tasks to native steps (extracting hints as needed)
 //! 3. Adding new contributors requires NO changes to emitters
 //!
 //! ## Example
@@ -19,7 +19,8 @@
 //!     type Error = Infallible;
 //!
 //!     fn render_task(&self, task: &StageTask) -> Result<Self::Step, Self::Error> {
-//!         if let Some(action) = &task.action {
+//!         // Extract GitHub-specific hints from provider_hints
+//!         if let Some(action) = ActionSpec::from_stage_task(task) {
 //!             // Render as GitHub Action
 //!             Ok(Step::uses(&action.uses).with_name(task.label()))
 //!         } else {
