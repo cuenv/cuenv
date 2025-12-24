@@ -79,9 +79,23 @@ pub fn generate_summary(report: &PipelineReport) -> String {
     md
 }
 
-/// Write the summary to GitHub's Job Summary (`GITHUB_STEP_SUMMARY`).
+/// Known CI system environment variables for job summary output.
 ///
-/// This makes the report appear in the workflow run summary page.
+/// Each CI system has its own mechanism for displaying job summaries:
+/// - GitHub Actions: `GITHUB_STEP_SUMMARY` - append markdown to this file
+/// - GitLab CI: `CI_JOB_URL` - no native summary, but we could post to MR (future)
+/// - Buildkite: `BUILDKITE_ANNOTATION_CONTEXT` - use buildkite-agent annotate (future)
+const JOB_SUMMARY_ENV_VARS: &[&str] = &[
+    "GITHUB_STEP_SUMMARY", // GitHub Actions
+    // Future: Add other CI systems as they're implemented
+];
+
+/// Write the summary to the CI system's job summary mechanism.
+///
+/// Uses runtime detection to find the appropriate summary file/mechanism.
+/// Currently supports:
+/// - GitHub Actions: writes to `$GITHUB_STEP_SUMMARY`
+///
 /// Appends to the file to support multiple projects in a single run.
 ///
 /// # Errors
@@ -90,18 +104,22 @@ pub fn generate_summary(report: &PipelineReport) -> String {
 pub fn write_job_summary(report: &PipelineReport) -> std::io::Result<()> {
     use std::io::Write as IoWrite;
 
-    let summary_path = std::env::var("GITHUB_STEP_SUMMARY").ok();
-
-    if let Some(path) = summary_path {
-        let summary = generate_summary(report);
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        writeln!(file, "{summary}")?;
-        tracing::info!("Wrote job summary to {path}");
+    // Try each known CI system's summary mechanism
+    for env_var in JOB_SUMMARY_ENV_VARS {
+        if let Ok(path) = std::env::var(env_var) {
+            let summary = generate_summary(report);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
+            writeln!(file, "{summary}")?;
+            tracing::info!("Wrote job summary to {path} (via {env_var})");
+            return Ok(());
+        }
     }
 
+    // No summary mechanism available - this is not an error
+    tracing::debug!("No job summary mechanism available (checked: {:?})", JOB_SUMMARY_ENV_VARS);
     Ok(())
 }
 
