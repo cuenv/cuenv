@@ -203,7 +203,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config cue git zig ];
+          nativeBuildInputs = with pkgs; [ go pkg-config cue git zig cmake ];
           buildInputs = platformBuildInputs;
           preBuild = ''
             ${setupBridge}
