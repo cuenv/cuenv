@@ -2,6 +2,8 @@
 //!
 //! Converts cuenv IR stage tasks into GitHub Actions workflow steps.
 
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::convert::Infallible;
 
 /// Transform CI-agnostic secret reference syntax to GitHub Actions syntax.
@@ -50,9 +52,37 @@ use cuenv_ci::ir::StageTask;
 
 use super::schema::Step;
 
+/// Specification for a GitHub Action step.
+///
+/// This is GitHub-specific and extracted from the provider-agnostic `provider_hints`
+/// field in `StageTask`. When present under the `github_action` key, GitHub emitters
+/// will render this task as a `uses:` step instead of a `run:` step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionSpec {
+    /// GitHub Action reference (e.g., "actions/checkout@v4")
+    pub uses: String,
+
+    /// Action inputs
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub inputs: HashMap<String, serde_json::Value>,
+}
+
+impl ActionSpec {
+    /// Try to extract an ActionSpec from a StageTask's provider_hints.
+    ///
+    /// Looks for the `github_action` key in the provider_hints JSON.
+    #[must_use]
+    pub fn from_stage_task(task: &StageTask) -> Option<Self> {
+        let hints = task.provider_hints.as_ref()?;
+        let action_value = hints.get("github_action")?;
+        serde_json::from_value(action_value.clone()).ok()
+    }
+}
+
 /// Renders stage tasks as GitHub Actions workflow steps.
 ///
-/// Handles both action-based steps (via `ActionSpec`) and run-based steps.
+/// Handles both action-based steps (via `ActionSpec` in provider_hints) and run-based steps.
 #[derive(Debug, Clone, Default)]
 pub struct GitHubStageRenderer;
 
@@ -69,13 +99,14 @@ impl StageRenderer for GitHubStageRenderer {
     type Error = Infallible;
 
     fn render_task(&self, task: &StageTask) -> Result<Step, Self::Error> {
-        // If a GitHub Action is specified, use it
-        if let Some(action) = &task.action {
+        // If a GitHub Action is specified in provider_hints, use it
+        if let Some(action) = ActionSpec::from_stage_task(task) {
             let mut step = Step::uses(&action.uses).with_name(task.label());
 
-            // Add action inputs
+            // Add action inputs (converting from serde_json::Value to serde_yaml::Value)
             for (key, value) in &action.inputs {
-                step.with_inputs.insert(key.clone(), value.clone());
+                let yaml_value = json_to_yaml_value(value);
+                step.with_inputs.insert(key.clone(), yaml_value);
             }
 
             // Add environment variables (transform secret references)
@@ -99,11 +130,50 @@ impl StageRenderer for GitHubStageRenderer {
     }
 }
 
+/// Convert a `serde_json::Value` to a `serde_yaml::Value`.
+fn json_to_yaml_value(json: &serde_json::Value) -> serde_yaml::Value {
+    match json {
+        serde_json::Value::Null => serde_yaml::Value::Null,
+        serde_json::Value::Bool(b) => serde_yaml::Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                serde_yaml::Value::Number(serde_yaml::Number::from(i))
+            } else if let Some(f) = n.as_f64() {
+                serde_yaml::Value::Number(serde_yaml::Number::from(f))
+            } else {
+                serde_yaml::Value::Null
+            }
+        }
+        serde_json::Value::String(s) => serde_yaml::Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            serde_yaml::Value::Sequence(arr.iter().map(json_to_yaml_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let mapping: serde_yaml::Mapping = obj
+                .iter()
+                .map(|(k, v)| (serde_yaml::Value::String(k.clone()), json_to_yaml_value(v)))
+                .collect();
+            serde_yaml::Value::Mapping(mapping)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_ci::ir::{ActionSpec, StageConfiguration};
-    use std::collections::HashMap;
+    use cuenv_ci::ir::StageConfiguration;
+
+    /// Helper to create provider_hints with a GitHub action
+    fn make_github_action_hints(uses: &str, inputs: HashMap<String, serde_json::Value>) -> serde_json::Value {
+        let mut action = serde_json::Map::new();
+        action.insert("uses".to_string(), serde_json::Value::String(uses.to_string()));
+        if !inputs.is_empty() {
+            action.insert("inputs".to_string(), serde_json::Value::Object(inputs.into_iter().collect()));
+        }
+        let mut hints = serde_json::Map::new();
+        hints.insert("github_action".to_string(), serde_json::Value::Object(action));
+        serde_json::Value::Object(hints)
+    }
 
     #[test]
     fn test_render_run_step() {
@@ -141,6 +211,12 @@ mod tests {
 
     #[test]
     fn test_render_action_step() {
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "extra-conf".to_string(),
+            serde_json::Value::String("accept-flake-config = true".to_string()),
+        );
+
         let task = StageTask {
             id: "install-nix".to_string(),
             provider: "nix".to_string(),
@@ -150,17 +226,10 @@ mod tests {
                 "-L".to_string(),
                 "https://install.nix".to_string(),
             ],
-            action: Some(ActionSpec {
-                uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
-                inputs: {
-                    let mut inputs = HashMap::new();
-                    inputs.insert(
-                        "extra-conf".to_string(),
-                        serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                    );
-                    inputs
-                },
-            }),
+            provider_hints: Some(make_github_action_hints(
+                "DeterminateSystems/nix-installer-action@v16",
+                inputs,
+            )),
             ..Default::default()
         };
 
@@ -275,5 +344,35 @@ mod tests {
 
         // Empty braces
         assert_eq!(transform_secret_ref("${}"), "${}");
+    }
+
+    #[test]
+    fn test_action_spec_from_stage_task() {
+        let mut inputs = HashMap::new();
+        inputs.insert(
+            "key".to_string(),
+            serde_json::Value::String("value".to_string()),
+        );
+
+        let task = StageTask {
+            id: "test".to_string(),
+            provider_hints: Some(make_github_action_hints("actions/checkout@v4", inputs)),
+            ..Default::default()
+        };
+
+        let action = ActionSpec::from_stage_task(&task).expect("Should extract action");
+        assert_eq!(action.uses, "actions/checkout@v4");
+        assert!(action.inputs.contains_key("key"));
+    }
+
+    #[test]
+    fn test_action_spec_from_stage_task_without_hints() {
+        let task = StageTask {
+            id: "test".to_string(),
+            provider_hints: None,
+            ..Default::default()
+        };
+
+        assert!(ActionSpec::from_stage_task(&task).is_none());
     }
 }

@@ -447,20 +447,6 @@ pub enum BuildStage {
     Failure,
 }
 
-/// Specification for a GitHub Action step (platform-specific hint)
-///
-/// When present, GitHub emitters will render this task as a `uses:` step
-/// instead of a `run:` step. Other platforms fall back to the `command` field.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ActionSpec {
-    /// GitHub Action reference (e.g., "actions/checkout@v4")
-    pub uses: String,
-
-    /// Action inputs
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub inputs: HashMap<String, serde_yaml::Value>,
-}
 
 /// A task contributed by a stage provider
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -500,9 +486,13 @@ pub struct StageTask {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub priority: i32,
 
-    /// Optional GitHub Action specification (overrides `command` for GitHub emitters)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub action: Option<ActionSpec>,
+    /// Provider-specific hints (e.g., GitHub Action specs, Buildkite plugins)
+    ///
+    /// This is an opaque JSON value that provider-specific emitters can interpret.
+    /// For example, GitHub emitters may look for an `action` key containing
+    /// `{ "uses": "actions/checkout@v4", "inputs": {...} }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_hints: Option<serde_json::Value>,
 }
 
 /// Helper to skip serializing zero priority
@@ -848,7 +838,7 @@ mod tests {
             secrets: HashMap::new(),
             depends_on: vec![],
             priority: 0,
-            action: None,
+            provider_hints: None,
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -869,6 +859,7 @@ mod tests {
         assert!(task.env.is_empty());
         assert!(task.depends_on.is_empty());
         assert_eq!(task.priority, 0);
+        assert!(task.provider_hints.is_none());
     }
 
     #[test]

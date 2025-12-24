@@ -350,11 +350,11 @@ fn test_stages_are_sorted_by_priority() {
 }
 
 // ============================================================================
-// ActionSpec Tests
+// Provider Hints Tests (provider_hints replaces ActionSpec)
 // ============================================================================
 
 #[test]
-fn test_nix_contributor_provides_action_spec() {
+fn test_nix_contributor_provides_github_action_hints() {
     skip_if_ffi_unavailable!();
 
     let examples_dir = get_examples_dir();
@@ -363,7 +363,7 @@ fn test_nix_contributor_provides_action_spec() {
 
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 
-    // NixContributor should provide ActionSpec for GitHub Actions
+    // NixContributor should provide provider_hints for GitHub Actions
     let install_nix = ir
         .stages
         .bootstrap
@@ -372,15 +372,17 @@ fn test_nix_contributor_provides_action_spec() {
         .expect("install-nix task should exist");
 
     assert!(
-        install_nix.action.is_some(),
-        "install-nix should have ActionSpec for GitHub Actions"
+        install_nix.provider_hints.is_some(),
+        "install-nix should have provider_hints for GitHub Actions"
     );
 
-    let action = install_nix.action.as_ref().unwrap();
+    let hints = install_nix.provider_hints.as_ref().unwrap();
+    let github_action = hints.get("github_action").expect("Should have github_action key");
+    let uses = github_action.get("uses").expect("Should have uses field");
     assert!(
-        action
-            .uses
+        uses.as_str()
+            .unwrap()
             .contains("DeterminateSystems/nix-installer-action"),
-        "ActionSpec should use DeterminateSystems/nix-installer-action"
+        "provider_hints.github_action.uses should contain DeterminateSystems/nix-installer-action"
     );
 }
