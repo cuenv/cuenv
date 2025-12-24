@@ -59,7 +59,7 @@ pub struct GitHubStageRenderer;
 impl GitHubStageRenderer {
     /// Create a new GitHub stage renderer
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 /// Configuration for GCP Secret Manager resolution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GcpSecretConfig {
     /// GCP project ID
@@ -85,7 +85,7 @@ impl GcpResolver {
     }
 
     /// Check if this resolver can use HTTP mode
-    fn can_use_http(&self) -> bool {
+    const fn can_use_http(&self) -> bool {
         self.use_http
     }
 

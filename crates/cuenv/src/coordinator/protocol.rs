@@ -139,7 +139,7 @@ impl WireMessage {
 
     /// Create a pong message.
     #[must_use]
-    pub fn pong(correlation_id: Uuid) -> Self {
+    pub const fn pong(correlation_id: Uuid) -> Self {
         Self {
             msg_type: MessageType::Pong,
             correlation_id,

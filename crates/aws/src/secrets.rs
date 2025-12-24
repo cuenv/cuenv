@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use tokio::process::Command;
 
 /// Configuration for AWS Secrets Manager resolution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AwsSecretConfig {
     /// Secret ID - can be ARN or secret name
@@ -88,7 +88,7 @@ impl AwsResolver {
     }
 
     /// Check if this resolver can use HTTP mode
-    fn can_use_http(&self) -> bool {
+    const fn can_use_http(&self) -> bool {
         self.http_client.is_some()
     }
 

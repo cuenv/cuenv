@@ -85,7 +85,7 @@ impl CStringPtr {
     /// - Returns either null or a valid C string pointer
     /// - Allocates memory that must be freed with `cue_free_string`
     /// - Does not modify the memory after returning the pointer
-    pub unsafe fn new(ptr: *mut c_char) -> Self {
+    pub const unsafe fn new(ptr: *mut c_char) -> Self {
         Self {
             ptr,
             _marker: PhantomData,
@@ -94,7 +94,7 @@ impl CStringPtr {
 
     /// Checks if the wrapped pointer is null
     #[must_use]
-    pub fn is_null(&self) -> bool {
+    pub const fn is_null(&self) -> bool {
         self.ptr.is_null()
     }
 
@@ -255,7 +255,6 @@ pub struct ModuleResult {
 /// - The module root path is invalid
 /// - The CUE module cannot be loaded
 /// - All CUE instances fail evaluation
-#[allow(clippy::too_many_lines)]
 #[tracing::instrument(
     name = "evaluate_module",
     fields(
@@ -269,54 +268,60 @@ pub struct ModuleResult {
 pub fn evaluate_module(
     module_root: &Path,
     package_name: &str,
-    options: Option<ModuleEvalOptions>,
+    options: Option<&ModuleEvalOptions>,
 ) -> Result<ModuleResult> {
     tracing::info!("Starting module-wide CUE evaluation");
     let start_time = std::time::Instant::now();
 
-    let Some(module_root_str) = module_root.to_str() else {
-        tracing::error!("Module root path is not valid UTF-8: {:?}", module_root);
-        return Err(Error::configuration(
-            "Invalid module root path: not UTF-8".to_string(),
-        ));
-    };
+    let c_module_root = path_to_cstring(module_root, "cue_eval_module", "module root")?;
+    let c_package = str_to_cstring(package_name, "cue_eval_module", "package name")?;
+    let c_options = options_to_cstring(options)?;
 
-    let c_module_root = match CString::new(module_root_str) {
-        Ok(c_string) => c_string,
-        Err(e) => {
-            tracing::error!("Failed to convert module root to C string: {}", e);
-            return Err(Error::ffi(
-                "cue_eval_module",
-                format!("Invalid module root path: {e}"),
-            ));
-        }
-    };
+    let json_str = call_ffi_eval_module(&c_module_root, &c_package, &c_options)?;
+    let envelope = parse_bridge_envelope(&json_str)?;
+    let module_result = process_bridge_response(envelope, module_root)?;
 
-    let c_package = match CString::new(package_name) {
-        Ok(c_string) => c_string,
-        Err(e) => {
-            tracing::error!("Failed to convert package name to C string: {}", e);
-            return Err(Error::ffi(
-                "cue_eval_module",
-                format!("Invalid package name: {e}"),
-            ));
-        }
-    };
+    let total_duration = start_time.elapsed();
+    tracing::info!(
+        total_duration_ms = total_duration.as_millis(),
+        instance_count = module_result.instances.len(),
+        "Module evaluation completed successfully"
+    );
 
-    // Serialize options to JSON for FFI
-    let options_json =
-        serde_json::to_string(&options.unwrap_or_default()).unwrap_or_else(|_| "{}".to_string());
-    let c_options = match CString::new(options_json) {
-        Ok(c_string) => c_string,
-        Err(e) => {
-            tracing::error!("Failed to convert options to C string: {}", e);
-            return Err(Error::ffi(
-                "cue_eval_module",
-                format!("Invalid options: {e}"),
-            ));
-        }
-    };
+    Ok(module_result)
+}
 
+/// Convert a path to a `CString` for FFI.
+fn path_to_cstring(path: &Path, fn_name: &'static str, param_name: &str) -> Result<CString> {
+    let Some(path_str) = path.to_str() else {
+        tracing::error!("{} path is not valid UTF-8: {:?}", param_name, path);
+        return Err(Error::configuration(format!(
+            "Invalid {param_name} path: not UTF-8"
+        )));
+    };
+    str_to_cstring(path_str, fn_name, param_name)
+}
+
+/// Convert a string to a `CString` for FFI.
+fn str_to_cstring(s: &str, fn_name: &'static str, param_name: &str) -> Result<CString> {
+    CString::new(s).map_err(|e| {
+        tracing::error!("Failed to convert {} to C string: {}", param_name, e);
+        Error::ffi(fn_name, format!("Invalid {param_name}: {e}"))
+    })
+}
+
+/// Serialize options to JSON `CString` for FFI.
+fn options_to_cstring(options: Option<&ModuleEvalOptions>) -> Result<CString> {
+    let options_json = options.map_or_else(|| "{}".to_string(), |o| serde_json::to_string(o).unwrap_or_else(|_| "{}".to_string()));
+    str_to_cstring(&options_json, "cue_eval_module", "options")
+}
+
+/// Call the FFI function and return the JSON string result.
+fn call_ffi_eval_module(
+    c_module_root: &CString,
+    c_package: &CString,
+    c_options: &CString,
+) -> Result<String> {
     tracing::debug!("Calling FFI function cue_eval_module");
     let ffi_start = std::time::Instant::now();
 
@@ -350,95 +355,94 @@ pub fn evaluate_module(
     }
 
     // Safety: result.to_str() is safe because we checked result is not null
-    let json_str = match unsafe { result.to_str() } {
-        Ok(str_ref) => str_ref,
-        Err(e) => {
-            tracing::error!("Failed to convert FFI result to UTF-8 string: {}", e);
-            return Err(e);
-        }
-    };
+    unsafe { result.to_str() }.map(String::from)
+}
 
-    // Parse the structured JSON envelope from Go
-    let envelope: BridgeEnvelope = match serde_json::from_str(json_str) {
-        Ok(env) => env,
-        Err(e) => {
-            tracing::error!(
-                json_response = json_str,
-                parse_error = %e,
-                "Failed to parse JSON envelope from Go bridge"
-            );
-            return Err(Error::ffi(
-                "cue_eval_module",
-                format!("Invalid JSON envelope from Go bridge: {e}"),
-            ));
-        }
-    };
-
-    // Handle error response
-    if let Some(bridge_error) = envelope.error {
+/// Parse the JSON envelope from the Go bridge.
+fn parse_bridge_envelope(json_str: &str) -> Result<BridgeEnvelope<'_>> {
+    serde_json::from_str(json_str).map_err(|e| {
         tracing::error!(
-            error_code = bridge_error.code,
-            error_message = bridge_error.message,
-            error_hint = bridge_error.hint,
-            "Module evaluation failed"
+            json_response = json_str,
+            parse_error = %e,
+            "Failed to parse JSON envelope from Go bridge"
         );
+        Error::ffi(
+            "cue_eval_module",
+            format!("Invalid JSON envelope from Go bridge: {e}"),
+        )
+    })
+}
 
-        #[allow(clippy::option_if_let_else)]
-        let full_message = if let Some(hint) = bridge_error.hint {
-            format!("{} (Hint: {})", bridge_error.message, hint)
-        } else {
-            bridge_error.message
-        };
-
-        return match bridge_error.code.as_str() {
-            ERROR_CODE_INVALID_INPUT | ERROR_CODE_REGISTRY_INIT => {
-                Err(Error::configuration(full_message))
-            }
-            ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE | ERROR_CODE_DEPENDENCY_RES => {
-                Err(Error::cue_parse(module_root, full_message))
-            }
-            ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => {
-                Err(Error::ffi("cue_eval_module", full_message))
-            }
-            _ => Err(Error::ffi("cue_eval_module", full_message)),
-        };
+/// Process the bridge response and return the module result.
+fn process_bridge_response(envelope: BridgeEnvelope, module_root: &Path) -> Result<ModuleResult> {
+    if let Some(bridge_error) = envelope.error {
+        return Err(handle_bridge_error(bridge_error, module_root));
     }
 
-    // Handle success response
-    let json_data = if let Some(raw_json) = envelope.ok {
-        raw_json.get()
-    } else {
-        tracing::error!("Bridge envelope has neither 'ok' nor 'error' field");
-        return Err(Error::ffi(
-            "cue_eval_module",
-            "Invalid bridge response: missing both 'ok' and 'error' fields".to_string(),
-        ));
-    };
-
-    // Parse the module result
-    let module_result: ModuleResult = match serde_json::from_str(json_data) {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::error!(
-                json_data = json_data,
-                parse_error = %e,
-                "Failed to parse module result"
-            );
-            return Err(Error::ffi(
+    let json_data = envelope
+        .ok
+        .map(|raw| raw.get().to_string())
+        .ok_or_else(|| {
+            tracing::error!("Bridge envelope has neither 'ok' nor 'error' field");
+            Error::ffi(
                 "cue_eval_module",
-                format!("Failed to parse module result: {e}"),
-            ));
-        }
-    };
+                "Invalid bridge response: missing both 'ok' and 'error' fields".to_string(),
+            )
+        })?;
 
-    let total_duration = start_time.elapsed();
-    tracing::info!(
-        total_duration_ms = total_duration.as_millis(),
-        instance_count = module_result.instances.len(),
-        "Module evaluation completed successfully"
+    parse_module_result(&json_data)
+}
+
+/// Handle a bridge error and convert it to our error type.
+fn handle_bridge_error(bridge_error: BridgeError, module_root: &Path) -> Error {
+    tracing::error!(
+        error_code = bridge_error.code,
+        error_message = bridge_error.message,
+        error_hint = bridge_error.hint,
+        "Module evaluation failed"
     );
 
-    Ok(module_result)
+    let full_message = bridge_error
+        .hint
+        .map(|hint| format!("{} (Hint: {})", bridge_error.message, hint))
+        .unwrap_or(bridge_error.message);
+
+    match bridge_error.code.as_str() {
+        ERROR_CODE_INVALID_INPUT | ERROR_CODE_REGISTRY_INIT => Error::configuration(full_message),
+        ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE | ERROR_CODE_DEPENDENCY_RES => {
+            Error::cue_parse(module_root, full_message)
+        }
+        ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => {
+            Error::ffi("cue_eval_module", full_message)
+        }
+        _ => Error::ffi("cue_eval_module", full_message),
+    }
+}
+
+/// Parse the module result from JSON.
+fn parse_module_result(json_data: &str) -> Result<ModuleResult> {
+    serde_json::from_str(json_data).map_err(|e| {
+        tracing::error!(
+            json_data = json_data,
+            parse_error = %e,
+            "Failed to parse module result"
+        );
+        Error::ffi(
+            "cue_eval_module",
+            format!("Failed to parse module result: {e}"),
+        )
+    })
+}
+
+/// Extract a string from an FFI result wrapper.
+fn extract_ffi_string(wrapper: CStringPtr, fn_name: &'static str) -> Result<String> {
+    if wrapper.is_null() {
+        tracing::error!("{} returned null pointer", fn_name);
+        return Err(Error::ffi(fn_name, format!("{fn_name} returned null")));
+    }
+
+    // Safety: wrapper.to_str() is safe because we checked wrapper is not null
+    unsafe { wrapper.to_str() }.map(String::from)
 }
 
 /// Gets the bridge version information from the Go side
@@ -463,29 +467,10 @@ pub fn get_bridge_version() -> Result<String> {
     // - The returned pointer must be freed with cue_free_string
     let version_ptr = unsafe { cue_bridge_version() };
 
-    // Safety: CStringPtr::new is safe because:
-    // - version_ptr is either null or a valid pointer from cue_bridge_version
-    // - CStringPtr takes ownership and will free the memory on drop
+    // Safety: CStringPtr::new is safe because version_ptr is from cue_bridge_version
     let version_wrapper = unsafe { CStringPtr::new(version_ptr) };
 
-    if version_wrapper.is_null() {
-        tracing::error!("cue_bridge_version returned null pointer");
-        return Err(Error::ffi(
-            "cue_bridge_version",
-            "Bridge version call returned null".to_string(),
-        ));
-    }
-
-    // Safety: version_wrapper.to_str() is safe because:
-    // - We've checked that the wrapper is not null
-    // - The pointer points to a valid C string from the Go side
-    let bridge_version = match unsafe { version_wrapper.to_str() } {
-        Ok(str_ref) => str_ref.to_string(),
-        Err(e) => {
-            tracing::error!("Failed to convert bridge version to UTF-8 string: {}", e);
-            return Err(e);
-        }
-    };
+    let bridge_version = extract_ffi_string(version_wrapper, "cue_bridge_version")?;
 
     tracing::info!(bridge_version = bridge_version, "Retrieved bridge version");
     Ok(bridge_version)
@@ -523,7 +508,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         target_dir: None, // Use module root
     };
 
-    let result = evaluate_module(dir_path, package_name, Some(options))?;
+    let result = evaluate_module(dir_path, package_name, Some(&options))?;
 
     // For single-directory eval, extract the instance at "." or the only instance
     let instance = result

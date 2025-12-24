@@ -46,7 +46,7 @@ impl<'a> CommitAnalyzer<'a> {
     /// * `root` - The workspace root path.
     /// * `package_paths` - Map of package names to their paths (relative to root).
     #[must_use]
-    pub fn new(root: &'a Path, package_paths: HashMap<String, PathBuf>) -> Self {
+    pub const fn new(root: &'a Path, package_paths: HashMap<String, PathBuf>) -> Self {
         Self {
             root,
             package_paths,
@@ -341,7 +341,7 @@ version = "1.0.0"
                 breaking: false,
                 description: "update foo".to_string(),
                 body: None,
-                hash: hash2.clone(),
+                hash: hash2,
             },
             ConventionalCommit {
                 commit_type: "feat".to_string(),
@@ -349,7 +349,7 @@ version = "1.0.0"
                 breaking: false,
                 description: "update bar".to_string(),
                 body: None,
-                hash: hash3.clone(),
+                hash: hash3,
             },
         ];
 

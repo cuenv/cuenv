@@ -42,7 +42,7 @@ impl BuildkiteEmitter {
 
     /// Enable emoji prefixes in step labels
     #[must_use]
-    pub fn with_emojis(mut self) -> Self {
+    pub const fn with_emojis(mut self) -> Self {
         self.use_emojis = true;
         self
     }
@@ -146,11 +146,10 @@ impl BuildkiteEmitter {
         let label = self.format_label(&task.id, task.deployment);
 
         // Build the command - Nix setup is handled by stage tasks
-        let base_command = if let Some(ref env) = ir.pipeline.environment {
-            format!("cuenv task {} -e {}", task.id, env)
-        } else {
-            format!("cuenv task {}", task.id)
-        };
+        let base_command = ir.pipeline.environment.as_ref().map_or_else(
+            || format!("cuenv task {}", task.id),
+            |env| format!("cuenv task {} -e {}", task.id, env),
+        );
 
         // Wrap with nix develop if task has a runtime
         let command = if let Some(runtime_id) = &task.runtime {
@@ -210,11 +209,10 @@ impl BuildkiteEmitter {
         }
 
         // Handle concurrency
-        let (concurrency_group, concurrency) = if let Some(group) = &task.concurrency_group {
-            (Some(group.clone()), Some(1))
-        } else {
-            (None, None)
-        };
+        let (concurrency_group, concurrency) = task
+            .concurrency_group
+            .as_ref()
+            .map_or((None, None), |group| (Some(group.clone()), Some(1)));
 
         CommandStep {
             label: Some(label),
@@ -359,6 +357,9 @@ mod tests {
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: HashMap::new(),
         }
     }
 

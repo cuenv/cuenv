@@ -17,7 +17,7 @@ pub struct TaskTreeWidget<'a> {
 impl<'a> TaskTreeWidget<'a> {
     /// Create a new task tree widget
     #[must_use]
-    pub fn new(state: &'a TuiState) -> Self {
+    pub const fn new(state: &'a TuiState) -> Self {
         Self { state }
     }
 

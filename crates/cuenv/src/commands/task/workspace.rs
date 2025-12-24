@@ -23,7 +23,7 @@ use super::resolution::{get_task_mut_by_name_or_path, resolve_task_refs_in_manif
 
 /// Context for a project during global task building.
 #[derive(Clone)]
-pub(crate) struct ProjectCtx {
+pub struct ProjectCtx {
     pub root: PathBuf,
     pub id: String,
     pub manifest: Project,
@@ -39,7 +39,7 @@ pub(crate) struct ProjectCtx {
 ///
 /// This creates the dependency chain: hooks -> install -> setup -> user tasks
 #[allow(clippy::too_many_lines)]
-pub(crate) fn inject_workspace_setup_tasks(
+pub fn inject_workspace_setup_tasks(
     manifest: &mut Project,
     discovery: &TaskDiscovery,
     manifest_project_id: &str,
@@ -290,7 +290,7 @@ pub(crate) fn inject_workspace_setup_tasks(
 ///
 /// Returns the global tasks and the current project's ID.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn build_global_tasks(
+pub fn build_global_tasks(
     module_root: &Path,
     current_project_root: &Path,
     current_manifest: &Project,

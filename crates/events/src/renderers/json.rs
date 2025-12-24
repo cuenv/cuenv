@@ -18,13 +18,13 @@ pub struct JsonRenderer {
 impl JsonRenderer {
     /// Create a new JSON renderer with compact output.
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { pretty: false }
     }
 
     /// Create a new JSON renderer with pretty-printed output.
     #[must_use]
-    pub fn pretty() -> Self {
+    pub const fn pretty() -> Self {
         Self { pretty: true }
     }
 

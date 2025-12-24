@@ -101,7 +101,7 @@ fn run_with_tokio() -> i32 {
 }
 
 /// Determine if a command requires the async runtime
-fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
+const fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
     // Handle --llms flag (doesn't need async)
     if cli.llms {
         return false;
@@ -734,7 +734,7 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
 
     // Initialize enhanced tracing with event capture
     let tracing_config = TracingConfig {
-        format: trace_format.clone(),
+        format: trace_format,
         level: log_level,
         ..Default::default()
     };

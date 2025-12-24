@@ -88,7 +88,7 @@ pub async fn execute_exec(
             recursive: true,
             ..Default::default()
         };
-        let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
+        let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
             .map_err(convert_engine_error)?;
 
         let module = ModuleEvaluation::from_raw(

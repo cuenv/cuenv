@@ -59,7 +59,7 @@ pub fn validate_path(path: &Path, limits: &Limits) -> Result<()> {
 
     // Check for path traversal attempts
     for component in path.components() {
-        if let std::path::Component::ParentDir = component {
+        if component == std::path::Component::ParentDir {
             return Err(Error::validation(
                 "Path contains parent directory traversal (..)",
             ));

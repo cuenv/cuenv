@@ -70,7 +70,7 @@ impl BackendContext {
 
     /// Sets the dry-run flag.
     #[must_use]
-    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }

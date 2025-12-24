@@ -227,7 +227,7 @@ fn parse_array_package(lockfile_path: &Path, name: &str, items: &[Value]) -> Res
     let metadata_val = items
         .get(2)
         .cloned()
-        .unwrap_or(Value::Object(Map::default()));
+        .unwrap_or_else(|| Value::Object(Map::default()));
 
     let metadata: BunPackageMetadata = match metadata_val {
         Value::Object(_) => {
@@ -363,11 +363,11 @@ fn parse_locator(
         _ => trimmed,
     };
 
-    let (protocol, remainder) = if let Some(colon_idx) = spec_part.find(':') {
-        (&spec_part[..colon_idx], &spec_part[colon_idx + 1..])
-    } else {
-        ("npm", spec_part)
-    };
+    let (protocol, remainder) = spec_part
+        .find(':')
+        .map_or(("npm", spec_part), |colon_idx| {
+            (&spec_part[..colon_idx], &spec_part[colon_idx + 1..])
+        });
 
     let remainder = remainder.trim();
     let source = match protocol {
@@ -397,6 +397,7 @@ fn workspace_path(path: &str) -> PathBuf {
 }
 
 // Convert jsonc_parser::JsonValue to serde_json::Value
+#[allow(clippy::option_if_let_else)] // Result-based parsing with fallbacks - imperative is clearer
 fn convert_jsonc_to_serde_value(jsonc_value: jsonc_parser::JsonValue) -> Value {
     match jsonc_value {
         jsonc_parser::JsonValue::Null => Value::Null,

@@ -259,7 +259,7 @@ impl IgnoreFilesBuilder {
     /// Defaults to `false`. When `true`, returns an error if the directory
     /// is not within a Git repository.
     #[must_use]
-    pub fn require_git_repo(mut self, require: bool) -> Self {
+    pub const fn require_git_repo(mut self, require: bool) -> Self {
         self.require_git_repo = require;
         self
     }
@@ -269,7 +269,7 @@ impl IgnoreFilesBuilder {
     /// When `true`, no files will be written. The result will indicate
     /// what would happen with `WouldCreate` and `WouldUpdate` statuses.
     #[must_use]
-    pub fn dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
@@ -287,67 +287,71 @@ impl IgnoreFilesBuilder {
 
         tracing::info!("Starting ignore file generation");
 
-        // Verify we're in a git repository if required
         if self.require_git_repo {
             verify_git_repository(&dir)?;
         }
 
-        let mut results = Vec::new();
-
-        // Sort files by tool name for deterministic output
         let mut sorted_files = self.files;
         sorted_files.sort_by(|a, b| a.tool.cmp(&b.tool));
 
-        for file in sorted_files {
-            // Skip empty pattern lists
-            if file.patterns.is_empty() {
-                tracing::debug!("Skipping tool '{}' - no patterns", file.tool);
-                continue;
-            }
-
-            // Validate tool name
-            validate_tool_name(&file.tool)?;
-
-            // Get and validate filename
-            let filename = file.output_filename();
-            validate_filename(&filename)?;
-
-            let filepath = dir.join(&filename);
-            let content = file.generate();
-
-            let (status, pattern_count) = if self.dry_run {
-                let status = if filepath.exists() {
-                    let existing = std::fs::read_to_string(&filepath)?;
-                    if existing == content {
-                        FileStatus::Unchanged
-                    } else {
-                        FileStatus::WouldUpdate
-                    }
-                } else {
-                    FileStatus::WouldCreate
-                };
-                (status, file.patterns.len())
-            } else {
-                let status = write_ignore_file(&filepath, &content)?;
-                (status, file.patterns.len())
-            };
-
-            tracing::info!(
-                filename = %filename,
-                status = %status,
-                patterns = pattern_count,
-                "Processed ignore file"
-            );
-
-            results.push(FileResult {
-                filename,
-                status,
-                pattern_count,
-            });
-        }
+        let dry_run = self.dry_run;
+        let results = sorted_files
+            .iter()
+            .filter(|f| !f.patterns.is_empty())
+            .map(|file| process_ignore_file(&dir, file, dry_run))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(SyncResult { files: results })
     }
+}
+
+/// Process a single ignore file and return its result.
+fn process_ignore_file(dir: &Path, file: &IgnoreFile, dry_run: bool) -> Result<FileResult> {
+    validate_tool_name(&file.tool)?;
+
+    let filename = file.output_filename();
+    validate_filename(&filename)?;
+
+    let filepath = dir.join(&filename);
+    let content = file.generate();
+    let pattern_count = file.patterns.len();
+
+    let status = determine_file_status(&filepath, &content, dry_run)?;
+
+    tracing::info!(
+        filename = %filename,
+        status = %status,
+        patterns = pattern_count,
+        "Processed ignore file"
+    );
+
+    Ok(FileResult {
+        filename,
+        status,
+        pattern_count,
+    })
+}
+
+/// Determine the status of an ignore file based on `dry_run` mode and existing content.
+fn determine_file_status(filepath: &Path, content: &str, dry_run: bool) -> Result<FileStatus> {
+    if dry_run {
+        Ok(determine_dry_run_status(filepath, content)?)
+    } else {
+        write_ignore_file(filepath, content)
+    }
+}
+
+/// Determine what would happen to a file in dry-run mode.
+fn determine_dry_run_status(filepath: &Path, content: &str) -> Result<FileStatus> {
+    if !filepath.exists() {
+        return Ok(FileStatus::WouldCreate);
+    }
+    let existing = std::fs::read_to_string(filepath)?;
+    Ok(if existing == content {
+        FileStatus::Unchanged
+    } else {
+        FileStatus::WouldUpdate
+    })
 }
 
 // ============================================================================

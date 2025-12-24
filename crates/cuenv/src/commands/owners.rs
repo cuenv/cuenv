@@ -284,7 +284,7 @@ fn load_owners_config(
         target_dir: Some(target_path.to_string_lossy().to_string()),
         ..Default::default()
     };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
+    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
         .map_err(convert_engine_error)?;
 
     // Build ModuleEvaluation

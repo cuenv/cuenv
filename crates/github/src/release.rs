@@ -47,14 +47,14 @@ impl GitHubReleaseConfig {
 
     /// Sets the draft flag.
     #[must_use]
-    pub fn with_draft(mut self, draft: bool) -> Self {
+    pub const fn with_draft(mut self, draft: bool) -> Self {
         self.draft = draft;
         self
     }
 
     /// Sets the prerelease flag.
     #[must_use]
-    pub fn with_prerelease(mut self, prerelease: bool) -> Self {
+    pub const fn with_prerelease(mut self, prerelease: bool) -> Self {
         self.prerelease = prerelease;
         self
     }
@@ -103,7 +103,7 @@ pub struct GitHubReleaseBackend {
 impl GitHubReleaseBackend {
     /// Creates a new GitHub release backend.
     #[must_use]
-    pub fn new(config: GitHubReleaseConfig) -> Self {
+    pub const fn new(config: GitHubReleaseConfig) -> Self {
         Self { config }
     }
 

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 ///
 /// The flake.lock file contains a directed graph of flake inputs,
 /// where each input can reference other inputs or follow paths.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FlakeLock {
     /// Version of the lockfile format (currently 7)
     pub version: u8,
@@ -29,7 +29,7 @@ pub struct FlakeLock {
 /// (which contains locked version information).
 ///
 /// The distinction is made by checking if `locked` or `original` is present.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FlakeNode {
     /// Whether this is a non-flake input (file, tarball, etc.)
     /// Only present on input nodes.
@@ -54,13 +54,13 @@ pub struct FlakeNode {
 impl FlakeNode {
     /// Check if this is a root node (no locked or original info)
     #[must_use]
-    pub fn is_root(&self) -> bool {
+    pub const fn is_root(&self) -> bool {
         self.locked.is_none() && self.original.is_none() && self.flake.is_none()
     }
 
     /// Check if this is an input node (has locked or original info)
     #[must_use]
-    pub fn is_input(&self) -> bool {
+    pub const fn is_input(&self) -> bool {
         self.locked.is_some() || self.original.is_some() || self.flake.is_some()
     }
 }
@@ -69,7 +69,7 @@ impl FlakeNode {
 ///
 /// Can be either a direct reference to a node name,
 /// or a "follows" path to inherit from another input.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum InputRef {
     /// Direct reference to another node by name
@@ -84,7 +84,7 @@ pub enum InputRef {
 /// This contains the exact version that was resolved when
 /// `nix flake lock` was run. The `nar_hash` is the critical
 /// field for ensuring reproducibility.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockedInfo {
     /// Input type (github, gitlab, tarball, path, etc.)
     #[serde(rename = "type")]
@@ -120,7 +120,7 @@ pub struct LockedInfo {
 ///
 /// This represents how the input was specified in flake.nix
 /// before being locked to a specific version.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OriginalInfo {
     /// Input type (github, gitlab, tarball, path, etc.)
     #[serde(rename = "type")]

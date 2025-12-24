@@ -93,7 +93,7 @@ pub enum SecretError {
 }
 
 /// Configuration for a secret to resolve
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SecretSpec {
     /// Source reference (env var name, 1Password reference, etc.)
     pub source: String,

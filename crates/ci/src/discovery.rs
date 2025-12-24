@@ -49,7 +49,7 @@ pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
         recursive: true,
         ..Default::default()
     };
-    let raw_result = cuengine::evaluate_module(&module_root, "cuenv", Some(options))
+    let raw_result = cuengine::evaluate_module(&module_root, "cuenv", Some(&options))
         .map_err(|e| cuenv_core::Error::configuration(format!("CUE evaluation failed: {e}")))?;
 
     let module = ModuleEvaluation::from_raw(

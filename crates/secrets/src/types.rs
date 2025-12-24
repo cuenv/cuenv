@@ -167,7 +167,7 @@ impl BatchSecrets {
 
     /// Get the fingerprints map.
     #[must_use]
-    pub fn fingerprints(&self) -> &HashMap<String, String> {
+    pub const fn fingerprints(&self) -> &HashMap<String, String> {
         &self.fingerprints
     }
 

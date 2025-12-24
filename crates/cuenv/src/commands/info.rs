@@ -73,15 +73,15 @@ pub fn execute_info(
     })?;
 
     // Build evaluation options
-    let options = Some(ModuleEvalOptions {
+    let options = ModuleEvalOptions {
         with_meta,
         recursive,
         ..Default::default()
-    });
+    };
 
     // Evaluate the entire module
     let raw_result =
-        cuengine::evaluate_module(&module_root, package, options).map_err(convert_engine_error)?;
+        cuengine::evaluate_module(&module_root, package, Some(&options)).map_err(convert_engine_error)?;
 
     // If --meta is requested, dump the full JSON with separate meta map
     if with_meta {

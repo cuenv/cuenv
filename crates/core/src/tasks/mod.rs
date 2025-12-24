@@ -27,7 +27,7 @@ fn default_hermetic() -> bool {
 }
 
 /// Shell configuration for task execution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Shell {
     /// Shell executable name (e.g., "bash", "fish", "zsh")
     pub command: Option<String>,
@@ -36,7 +36,7 @@ pub struct Shell {
 }
 
 /// Mapping of external output to local workspace path
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Mapping {
     /// Path relative to external project root of a declared output from the external task
     pub from: String,
@@ -102,7 +102,7 @@ pub struct TaskOutput {
 }
 
 /// Source location metadata from CUE evaluation
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SourceLocation {
     /// Path to source file, relative to cue.mod root
     pub file: String,
@@ -346,7 +346,7 @@ pub struct DaggerSecret {
 }
 
 /// Cache volume mount configuration for Dagger
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaggerCacheMount {
     /// Path inside the container to mount the cache (e.g., "/root/.npm")
     pub path: String,
@@ -370,7 +370,7 @@ pub struct TaskParams {
 }
 
 /// Parameter type for validation
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ParamType {
     #[default]

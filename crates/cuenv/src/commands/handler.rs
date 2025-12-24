@@ -351,6 +351,7 @@ pub struct TaskHandler {
     pub interactive: bool,
     pub help: bool,
     pub all: bool,
+    pub skip_dependencies: bool,
     pub task_args: Vec<String>,
 }
 
@@ -373,25 +374,47 @@ impl CommandHandler for TaskHandler {
             ));
         }
 
-        let request = task::TaskExecutionRequest::from_legacy(
-            &self.path,
-            &self.package,
-            self.name.as_deref(),
-            &self.labels,
-            self.environment.as_deref(),
-            &self.format,
-            false,
-            self.materialize_outputs.as_deref(),
-            self.show_cache_path,
-            self.backend.as_deref(),
-            self.tui,
-            self.interactive,
-            self.help,
-            self.all,
-            &self.task_args,
-            Some(executor),
-        );
+        // Build request using the builder pattern
+        let mut request = match (&self.name, &self.labels, self.interactive, self.all) {
+            (Some(name), _, _, _) => {
+                task::TaskExecutionRequest::named(&self.path, &self.package, name)
+                    .with_args(self.task_args.clone())
+            }
+            (None, labels, _, _) if !labels.is_empty() => {
+                task::TaskExecutionRequest::labels(&self.path, &self.package, labels.clone())
+            }
+            (None, _, true, _) => {
+                task::TaskExecutionRequest::interactive(&self.path, &self.package)
+            }
+            (None, _, _, true) => task::TaskExecutionRequest::all(&self.path, &self.package),
+            (None, _, _, _) => task::TaskExecutionRequest::list(&self.path, &self.package),
+        };
 
+        // Apply optional settings
+        if let Some(env) = &self.environment {
+            request = request.with_environment(env);
+        }
+        request = request.with_format(&self.format);
+        if let Some(path) = &self.materialize_outputs {
+            request = request.with_materialize_outputs(path);
+        }
+        if self.show_cache_path {
+            request = request.with_show_cache_path();
+        }
+        if let Some(backend) = &self.backend {
+            request = request.with_backend(backend);
+        }
+        if self.tui {
+            request = request.with_tui();
+        }
+        if self.help {
+            request = request.with_help();
+        }
+        if self.skip_dependencies {
+            request = request.with_skip_dependencies();
+        }
+
+        let request = request.with_executor(executor);
         task::execute(request).await
     }
 }

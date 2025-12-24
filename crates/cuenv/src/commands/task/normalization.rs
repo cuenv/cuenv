@@ -14,7 +14,7 @@ use cuenv_core::tasks::{Task, TaskDefinition};
 ///
 /// Task names can use either colons or dots as separators, but internally
 /// we use dots for consistency with CUE's namespace syntax.
-pub(crate) fn normalize_task_name(raw: &str) -> String {
+pub fn normalize_task_name(raw: &str) -> String {
     raw.replace(':', ".")
 }
 
@@ -22,7 +22,7 @@ pub(crate) fn normalize_task_name(raw: &str) -> String {
 ///
 /// The FQDN format is `task:{project_id}:{task_name}` where `task_name`
 /// has colons normalized to dots.
-pub(crate) fn task_fqdn(project_id: &str, task_name: &str) -> String {
+pub fn task_fqdn(project_id: &str, task_name: &str) -> String {
     format!("task:{project_id}:{}", normalize_task_name(task_name))
 }
 
@@ -37,7 +37,7 @@ pub(crate) fn task_fqdn(project_id: &str, task_name: &str) -> String {
 /// // If task_name is "build.test" and dep is "lint", returns "build.lint"
 /// // If dep is "deploy.prod", returns "deploy.prod" (already absolute)
 /// ```
-pub(crate) fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> String {
+pub fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> String {
     // Match TaskIndex semantics: treat dotted/colon deps as absolute, otherwise
     // resolve relative to the parent namespace of `task_name`.
     if dep.contains('.') || dep.contains(':') {
@@ -58,7 +58,7 @@ pub(crate) fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> Stri
 ///
 /// Uses the manifest's `name` field if non-empty, otherwise falls back to
 /// a path-derived identifier relative to the module root.
-pub(crate) fn compute_project_id(
+pub fn compute_project_id(
     manifest: &Project,
     project_root: &Path,
     module_root: &Path,
@@ -82,7 +82,7 @@ pub(crate) fn compute_project_id(
 ///
 /// Recursively walks the task definition and sets `project_root` on any
 /// task that doesn't already have one.
-pub(crate) fn set_default_project_root(def: &mut TaskDefinition, project_root: &PathBuf) {
+pub fn set_default_project_root(def: &mut TaskDefinition, project_root: &PathBuf) {
     match def {
         TaskDefinition::Single(task) => {
             if task.project_root.is_none() {
@@ -109,7 +109,7 @@ pub(crate) fn set_default_project_root(def: &mut TaskDefinition, project_root: &
 /// - If already an FQDN (starts with "task:"), returns as-is
 /// - If a `TaskRef` (starts with "#"), parses and converts to FQDN
 /// - Otherwise, creates FQDN using the default project ID
-pub(crate) fn normalize_dep(
+pub fn normalize_dep(
     dep: &str,
     default_project_id: &str,
     project_id_by_name: &HashMap<String, String>,
@@ -136,7 +136,7 @@ pub(crate) fn normalize_dep(
 ///
 /// Recursively walks the definition and converts all `depends_on` entries
 /// to fully-qualified task references.
-pub(crate) fn normalize_definition_deps(
+pub fn normalize_definition_deps(
     def: &mut TaskDefinition,
     project_id_by_root: &HashMap<PathBuf, String>,
     project_id_by_name: &HashMap<String, String>,

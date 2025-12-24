@@ -71,39 +71,66 @@ use std::path::{Path, PathBuf};
 pub fn detect_package_managers(root: &Path) -> Result<Vec<PackageManager>> {
     tracing::debug!("Detecting package managers in: {}", root.display());
 
-    // Find all lockfiles present
-    let lockfiles = find_lockfiles(root);
-    tracing::debug!("Found {} lockfile(s)", lockfiles.len());
-
-    // Build confidence scores for each detected manager
     let mut detections = Vec::new();
     let mut detected_managers = HashSet::new();
 
+    detect_from_lockfiles(root, &mut detections, &mut detected_managers)?;
+    detect_from_package_json(root, &mut detections, &mut detected_managers)?;
+    detect_from_workspace_configs(root, &mut detections, &mut detected_managers)?;
+
+    Ok(prioritize_managers(detections))
+}
+
+/// Detect package managers from lockfiles.
+fn detect_from_lockfiles(
+    root: &Path,
+    detections: &mut Vec<(PackageManager, u8)>,
+    detected_managers: &mut HashSet<PackageManager>,
+) -> Result<()> {
+    let lockfiles = find_lockfiles(root);
+    tracing::debug!("Found {} lockfile(s)", lockfiles.len());
+
     for (manager, lockfile_path) in lockfiles {
-        tracing::debug!(
-            "Processing lockfile: {} ({})",
-            lockfile_path.display(),
-            manager
-        );
-
-        // Handle Yarn version detection specially
-        let detected_manager = if matches!(manager, PackageManager::YarnClassic) {
-            detect_yarn_version(&lockfile_path)?
-        } else {
-            manager
-        };
-
-        // Check if workspace config is valid
-        let has_valid_config = validate_workspace_config(root, detected_manager)?;
-
-        let confidence = calculate_confidence(true, has_valid_config);
-        tracing::debug!("Manager {} has confidence {}", detected_manager, confidence);
-
-        detections.push((detected_manager, confidence));
-        detected_managers.insert(detected_manager);
+        let detected = process_lockfile(root, manager, &lockfile_path)?;
+        detections.push(detected);
+        detected_managers.insert(detected.0);
     }
+    Ok(())
+}
 
-    if let Some(manager) = detect_manager_from_package_json(root, &detected_managers)? {
+/// Process a single lockfile and return the detected manager with confidence.
+#[allow(clippy::cognitive_complexity)]
+fn process_lockfile(
+    root: &Path,
+    manager: PackageManager,
+    lockfile_path: &Path,
+) -> Result<(PackageManager, u8)> {
+    tracing::debug!(
+        "Processing lockfile: {} ({})",
+        lockfile_path.display(),
+        manager
+    );
+
+    let detected_manager = if matches!(manager, PackageManager::YarnClassic) {
+        detect_yarn_version(lockfile_path)?
+    } else {
+        manager
+    };
+
+    let has_valid_config = validate_workspace_config(root, detected_manager)?;
+    let confidence = calculate_confidence(true, has_valid_config);
+    tracing::debug!("Manager {} has confidence {}", detected_manager, confidence);
+
+    Ok((detected_manager, confidence))
+}
+
+/// Detect package manager from package.json if not already detected.
+fn detect_from_package_json(
+    root: &Path,
+    detections: &mut Vec<(PackageManager, u8)>,
+    detected_managers: &mut HashSet<PackageManager>,
+) -> Result<()> {
+    if let Some(manager) = detect_manager_from_package_json(root, detected_managers)? {
         let confidence = calculate_confidence(false, true);
         tracing::debug!(
             "Manager {} detected via package.json (confidence {})",
@@ -113,10 +140,17 @@ pub fn detect_package_managers(root: &Path) -> Result<Vec<PackageManager>> {
         detections.push((manager, confidence));
         detected_managers.insert(manager);
     }
+    Ok(())
+}
 
-    // Also check for workspace configs without lockfiles for remaining managers
+/// Detect package managers from workspace configs without lockfiles.
+fn detect_from_workspace_configs(
+    root: &Path,
+    detections: &mut Vec<(PackageManager, u8)>,
+    detected_managers: &mut HashSet<PackageManager>,
+) -> Result<()> {
     for manager in [PackageManager::Pnpm, PackageManager::Cargo] {
-        if is_manager_detected(&detected_managers, manager) {
+        if is_manager_detected(detected_managers, manager) {
             continue;
         }
 
@@ -131,8 +165,7 @@ pub fn detect_package_managers(root: &Path) -> Result<Vec<PackageManager>> {
             detected_managers.insert(manager);
         }
     }
-
-    Ok(prioritize_managers(detections))
+    Ok(())
 }
 
 /// Infers the package manager from a command string.
@@ -447,7 +480,7 @@ fn detect_yarn_version(lockfile_path: &Path) -> Result<PackageManager> {
 /// - Lockfile only: 75
 /// - Valid config only: 50
 /// - Neither: 0
-fn calculate_confidence(has_lockfile: bool, has_valid_config: bool) -> u8 {
+const fn calculate_confidence(has_lockfile: bool, has_valid_config: bool) -> u8 {
     match (has_lockfile, has_valid_config) {
         (true, true) => 100,
         (true, false) => 75,
@@ -481,7 +514,7 @@ fn prioritize_managers(detections: Vec<(PackageManager, u8)>) -> Vec<PackageMana
 /// Returns a priority value for deterministic ordering when confidence is equal.
 ///
 /// Lower values = higher priority
-fn manager_priority(manager: PackageManager) -> u8 {
+const fn manager_priority(manager: PackageManager) -> u8 {
     match manager {
         PackageManager::Cargo => 0,
         PackageManager::Deno => 1,

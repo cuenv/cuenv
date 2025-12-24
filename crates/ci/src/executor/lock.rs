@@ -124,7 +124,7 @@ impl ConcurrencyLock {
 
     /// Create a lock manager with custom configuration
     #[must_use]
-    pub fn with_config(config: LockConfig) -> Self {
+    pub const fn with_config(config: LockConfig) -> Self {
         Self { config }
     }
 
@@ -137,7 +137,7 @@ impl ConcurrencyLock {
 
     /// Set the lock acquisition timeout
     #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+    pub const fn with_timeout(mut self, timeout: Duration) -> Self {
         self.config.timeout = timeout;
         self
     }

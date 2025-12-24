@@ -197,13 +197,13 @@ impl LogRedactor {
 
     /// Check if any secrets are configured
     #[must_use]
-    pub fn has_secrets(&self) -> bool {
+    pub const fn has_secrets(&self) -> bool {
         !self.secrets.is_empty()
     }
 
     /// Get the number of secrets being redacted
     #[must_use]
-    pub fn secret_count(&self) -> usize {
+    pub const fn secret_count(&self) -> usize {
         self.secrets.len()
     }
 }
