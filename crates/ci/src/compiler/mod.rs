@@ -377,11 +377,9 @@ impl Compiler {
             Vec::new()
         };
 
-        // Get paths_ignore from provider config
-        let paths_ignore = ci_config
-            .github_config_for_pipeline(&pipeline.name)
-            .paths_ignore
-            .unwrap_or_default();
+        // Note: paths_ignore is platform-specific (e.g., GitHub's paths-ignore).
+        // It should be populated by the platform emitter, not the abstract compiler.
+        let paths_ignore = Vec::new();
 
         TriggerCondition {
             branches,

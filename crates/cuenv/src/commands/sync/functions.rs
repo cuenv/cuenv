@@ -11,6 +11,7 @@ use super::super::{CommandExecutor, convert_engine_error, relative_path_from_roo
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::{Base, Project};
 use cuenv_core::{ModuleEvaluation, Result};
+use cuenv_github::GitHubConfigExt;
 use cuenv_ignore::{FileStatus, IgnoreFile, IgnoreFiles};
 use similar::TextDiff;
 use std::collections::{HashMap, HashSet};

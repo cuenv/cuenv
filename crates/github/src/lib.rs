@@ -5,6 +5,7 @@
 //! - [`GitHubCIProvider`] for GitHub Actions CI integration (feature: `ci`)
 //! - [`workflow::GitHubActionsEmitter`] for workflow file generation (feature: `workflow`)
 //! - [`GitHubReleaseBackend`] for GitHub Releases distribution (feature: `release`)
+//! - [`GitHubConfigExt`] for GitHub-specific configuration operations
 //!
 //! # Features
 //!
@@ -14,6 +15,8 @@
 //! - `release` (default): Upload artifacts to GitHub Releases
 
 #![warn(missing_docs)]
+
+pub mod config;
 
 #[cfg(feature = "codeowners")]
 pub mod codeowners;
@@ -28,6 +31,8 @@ pub mod workflow;
 pub mod release;
 
 // Re-exports for convenience
+pub use config::GitHubConfigExt;
+
 #[cfg(feature = "codeowners")]
 pub use codeowners::GitHubCodeOwnersProvider;
 
