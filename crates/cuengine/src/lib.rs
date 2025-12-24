@@ -265,6 +265,7 @@ pub struct ModuleResult {
     level = "info",
     skip(options)
 )]
+#[allow(clippy::cognitive_complexity)] // FFI orchestration has inherent complexity
 pub fn evaluate_module(
     module_root: &Path,
     package_name: &str,
@@ -317,6 +318,7 @@ fn options_to_cstring(options: Option<&ModuleEvalOptions>) -> Result<CString> {
 }
 
 /// Call the FFI function and return the JSON string result.
+#[allow(clippy::cognitive_complexity)] // FFI error handling requires multiple branches
 fn call_ffi_eval_module(
     c_module_root: &CString,
     c_package: &CString,
@@ -435,6 +437,7 @@ fn parse_module_result(json_data: &str) -> Result<ModuleResult> {
 }
 
 /// Extract a string from an FFI result wrapper.
+#[allow(clippy::needless_pass_by_value)] // CStringPtr Drop impl manages FFI memory - must take ownership
 fn extract_ffi_string(wrapper: CStringPtr, fn_name: &'static str) -> Result<String> {
     if wrapper.is_null() {
         tracing::error!("{} returned null pointer", fn_name);
@@ -569,6 +572,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     ),
     level = "info"
 )]
+#[allow(clippy::cognitive_complexity)] // Generic deserialization with error handling is inherently complex
 pub fn evaluate_cue_package_typed<T>(dir_path: &Path, package_name: &str) -> Result<T>
 where
     T: serde::de::DeserializeOwned,

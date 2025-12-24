@@ -189,7 +189,7 @@ impl<'a> CommitAnalyzer<'a> {
 
             if file_path.starts_with(relative_pkg_path) {
                 let path_len = relative_pkg_path.components().count();
-                if best_match.is_none() || path_len > best_match.as_ref().unwrap().1 {
+                if best_match.as_ref().map_or(true, |(_, prev_len)| path_len > *prev_len) {
                     best_match = Some((pkg_name, path_len));
                 }
             }

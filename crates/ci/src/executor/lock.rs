@@ -3,6 +3,9 @@
 //! Provides distributed locking for task concurrency groups to ensure
 //! serialized execution of deployment tasks.
 
+// Distributed locking with retry logic and timeout handling is inherently complex
+#![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
