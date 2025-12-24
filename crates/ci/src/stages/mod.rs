@@ -13,23 +13,22 @@
 //! The stages are then sorted by priority and included in the IR for emitters
 //! to translate into platform-specific steps.
 //!
-//! ## Available Contributors
+//! ## Core Contributors (provider-agnostic)
 //!
 //! - `NixContributor` - Installs Nix
 //! - `CuenvContributor` - Installs or builds cuenv
-//! - `CachixContributor` - Configures Cachix for Nix caching
 //! - `OnePasswordContributor` - Sets up 1Password WASM SDK
-//! - `GhModelsContributor` - Installs GitHub Models CLI extension
+//!
+//! ## Provider-Specific Contributors
+//!
+//! Provider-specific contributors live in their respective crates:
+//! - `cuenv-github`: `CachixContributor`, `GhModelsContributor`
 
-mod cachix;
 mod cuenv;
-mod gh_models;
 mod nix;
 mod onepassword;
 
-pub use cachix::CachixContributor;
 pub use cuenv::CuenvContributor;
-pub use gh_models::GhModelsContributor;
 pub use nix::NixContributor;
 pub use onepassword::OnePasswordContributor;
 
@@ -103,19 +102,29 @@ pub trait StageContributor: Send + Sync {
     ) -> (Vec<(BuildStage, StageTask)>, bool);
 }
 
-/// Returns the default set of stage contributors
+/// Returns the core (provider-agnostic) stage contributors.
 ///
 /// These are applied in order during IR compilation. The order doesn't matter
 /// much since tasks within stages are sorted by priority.
+///
+/// For provider-specific contributors, use the provider crate's contributor
+/// functions (e.g., `cuenv_github::stages::github_contributors()`).
 #[must_use]
-pub fn default_contributors() -> Vec<Box<dyn StageContributor>> {
+pub fn core_contributors() -> Vec<Box<dyn StageContributor>> {
     vec![
         Box::new(NixContributor),
         Box::new(CuenvContributor),
-        Box::new(CachixContributor),
         Box::new(OnePasswordContributor),
-        Box::new(GhModelsContributor),
     ]
+}
+
+/// Returns the default set of stage contributors.
+///
+/// This is a convenience function that returns only core contributors.
+/// For GitHub Actions pipelines, combine with `cuenv_github::stages::github_contributors()`.
+#[must_use]
+pub fn default_contributors() -> Vec<Box<dyn StageContributor>> {
+    core_contributors()
 }
 
 #[cfg(test)]
@@ -148,16 +157,24 @@ mod tests {
     }
 
     #[test]
-    fn test_default_contributors() {
-        let contributors = default_contributors();
-        assert_eq!(contributors.len(), 5);
+    fn test_core_contributors() {
+        let contributors = core_contributors();
+        assert_eq!(contributors.len(), 3);
 
         let ids: Vec<_> = contributors.iter().map(|c| c.id()).collect();
         assert!(ids.contains(&"nix"));
         assert!(ids.contains(&"cuenv"));
-        assert!(ids.contains(&"cachix"));
         assert!(ids.contains(&"1password"));
-        assert!(ids.contains(&"gh-models"));
+        // Provider-specific contributors moved to cuenv-github
+        assert!(!ids.contains(&"cachix"));
+        assert!(!ids.contains(&"gh-models"));
+    }
+
+    #[test]
+    fn test_default_contributors_returns_core() {
+        let default = default_contributors();
+        let core = core_contributors();
+        assert_eq!(default.len(), core.len());
     }
 
     #[test]
@@ -172,15 +189,6 @@ mod tests {
     #[test]
     fn test_onepassword_contributor_inactive_by_default() {
         let contributor = OnePasswordContributor;
-        let ir = make_ir();
-        let project = make_project();
-
-        assert!(!contributor.is_active(&ir, &project));
-    }
-
-    #[test]
-    fn test_cachix_contributor_inactive_without_config() {
-        let contributor = CachixContributor;
         let ir = make_ir();
         let project = make_project();
 

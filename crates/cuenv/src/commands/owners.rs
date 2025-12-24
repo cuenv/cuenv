@@ -316,8 +316,8 @@ fn load_owners_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_codeowners::CodeOwners;
-    use cuenv_core::owners::{OwnerRule, OwnersOutput, Platform};
+    use cuenv_codeowners::{CodeOwners, SectionStyle};
+    use cuenv_core::owners::{OwnerRule, OwnersOutput};
     use std::collections::HashMap;
 
     #[test]
@@ -336,15 +336,29 @@ mod tests {
 
         let owners = Owners {
             output: Some(OwnersOutput {
-                platform: Some(Platform::Github),
+                platform: Some("github".to_string()),
                 path: None,
                 header: Some("Test Header".to_string()),
             }),
             rules,
         };
 
-        // Convert to CodeOwners and generate content
-        let codeowners: CodeOwners = (&owners).into();
+        // Build CodeOwners using the builder pattern
+        let codeowners = CodeOwners::builder()
+            .section_style(SectionStyle::Comment)
+            .header(owners.header().unwrap_or(""))
+            .rules(owners.sorted_rules().into_iter().map(|(_key, r)| {
+                let mut rule = Rule::new(&r.pattern, r.owners.clone());
+                if let Some(ref desc) = r.description {
+                    rule = rule.description(desc.clone());
+                }
+                if let Some(ref section) = r.section {
+                    rule = rule.section(section.clone());
+                }
+                rule
+            }))
+            .build();
+
         let content = codeowners.generate();
         assert!(content.contains("# Test Header"));
         assert!(content.contains("# Backend"));

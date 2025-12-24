@@ -6,8 +6,8 @@
 //! Self-detects activation by checking if any task in the pipeline's IR uses
 //! the `gh` command with `models` as the first argument.
 
-use super::StageContributor;
-use crate::ir::{BuildStage, IntermediateRepresentation, StageTask, Task};
+use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, StageTask, Task};
+use cuenv_ci::StageContributor;
 use cuenv_core::manifest::Project;
 use std::collections::HashMap;
 
@@ -94,7 +94,7 @@ impl StageContributor for GhModelsContributor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CachePolicy, PipelineMetadata, StageConfiguration};
+    use cuenv_ci::ir::{CachePolicy, PipelineMetadata, StageConfiguration};
 
     fn make_ir() -> IntermediateRepresentation {
         IntermediateRepresentation {

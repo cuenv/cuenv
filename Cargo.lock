@@ -1674,7 +1674,6 @@ dependencies = [
 name = "cuenv-codeowners"
 version = "0.20.2"
 dependencies = [
- "cuenv-core",
  "schemars 1.1.0",
  "serde",
  "tempfile",
@@ -1791,6 +1790,7 @@ dependencies = [
  "indexmap 2.12.1",
  "octocrab",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "tokio",

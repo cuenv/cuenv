@@ -8,7 +8,7 @@
 //! This provider aggregates all project ownership rules into a single file
 //! at `.github/CODEOWNERS`, with patterns prefixed by project paths.
 
-use cuenv_codeowners::Platform;
+use cuenv_codeowners::SectionStyle;
 use cuenv_codeowners::provider::{
     CheckResult, CodeOwnersProvider, ProjectOwners, ProviderError, Result, SyncResult,
     generate_aggregated_content, write_codeowners_file,
@@ -19,12 +19,17 @@ use std::path::Path;
 /// GitHub CODEOWNERS provider.
 ///
 /// Writes a single aggregated CODEOWNERS file to `.github/CODEOWNERS`.
+/// Uses comment-style sections (`# Section Name`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GitHubCodeOwnersProvider;
 
 impl CodeOwnersProvider for GitHubCodeOwnersProvider {
-    fn platform(&self) -> Platform {
-        Platform::Github
+    fn output_path(&self) -> &str {
+        ".github/CODEOWNERS"
+    }
+
+    fn section_style(&self) -> SectionStyle {
+        SectionStyle::Comment
     }
 
     fn sync(
@@ -40,10 +45,10 @@ impl CodeOwnersProvider for GitHubCodeOwnersProvider {
         }
 
         // Generate aggregated content
-        let content = generate_aggregated_content(Platform::Github, projects, None);
+        let content = generate_aggregated_content(self.section_style(), projects, None);
 
         // Output path is always at repo root
-        let output_path = repo_root.join(".github/CODEOWNERS");
+        let output_path = repo_root.join(self.output_path());
 
         // Write the file
         let status = write_codeowners_file(&output_path, &content, dry_run)?;
@@ -63,9 +68,9 @@ impl CodeOwnersProvider for GitHubCodeOwnersProvider {
         }
 
         // Generate expected content
-        let expected = generate_aggregated_content(Platform::Github, projects, None);
+        let expected = generate_aggregated_content(self.section_style(), projects, None);
 
-        let output_path = repo_root.join(".github/CODEOWNERS");
+        let output_path = repo_root.join(self.output_path());
 
         // Read actual content if file exists
         let actual = if output_path.exists() {
@@ -104,9 +109,15 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_github_provider_platform() {
+    fn test_github_provider_output_path() {
         let provider = GitHubCodeOwnersProvider;
-        assert_eq!(provider.platform(), Platform::Github);
+        assert_eq!(provider.output_path(), ".github/CODEOWNERS");
+    }
+
+    #[test]
+    fn test_github_provider_section_style() {
+        let provider = GitHubCodeOwnersProvider;
+        assert_eq!(provider.section_style(), SectionStyle::Comment);
     }
 
     #[test]

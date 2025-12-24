@@ -1,9 +1,13 @@
 //! Cachix Stage Contributor
 //!
 //! Contributes Cachix setup task to the CI pipeline for Nix caching.
+//!
+//! This is a GitHub-specific contributor because it uses GitHub secrets
+//! and the Cachix GitHub Action integration.
 
-use super::StageContributor;
-use crate::ir::{BuildStage, IntermediateRepresentation, StageTask};
+use crate::config::GitHubConfig;
+use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, SecretConfig, StageTask};
+use cuenv_ci::StageContributor;
 use cuenv_core::manifest::Project;
 use std::collections::HashMap;
 
@@ -15,18 +19,18 @@ use std::collections::HashMap;
 pub struct CachixContributor;
 
 impl CachixContributor {
-    /// Get Cachix configuration from project
+    /// Get Cachix configuration from project's GitHub provider config
     fn get_cachix_config(project: &Project) -> Option<CachixInfo> {
         let ci = project.ci.as_ref()?;
         let provider = ci.provider.as_ref()?;
-        let github = provider.github.as_ref()?;
-        let cachix = github.cachix.as_ref()?;
+        let github_value = provider.get("github")?;
+        let github: GitHubConfig = serde_json::from_value(github_value.clone()).ok()?;
+        let cachix = github.cachix?;
 
         Some(CachixInfo {
-            name: cachix.name.clone(),
+            name: cachix.name,
             auth_token_secret: cachix
                 .auth_token
-                .clone()
                 .unwrap_or_else(|| "CACHIX_AUTH_TOKEN".to_string()),
         })
     }
@@ -61,11 +65,9 @@ impl StageContributor for CachixContributor {
             return (vec![], false);
         };
 
+        // Build environment variables for the Cachix setup
         let mut env = HashMap::new();
-        env.insert(
-            "CACHIX_AUTH_TOKEN".to_string(),
-            format!("${{{}}}", config.auth_token_secret),
-        );
+        env.insert("CACHIX_CACHE_NAME".to_string(), config.name.clone());
 
         (
             vec![(
@@ -73,20 +75,19 @@ impl StageContributor for CachixContributor {
                 StageTask {
                     id: "setup-cachix".to_string(),
                     provider: "cachix".to_string(),
-                    label: Some("Setup Cachix".to_string()),
-                    command: vec![format!(
-                        concat!(
-                            ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && ",
-                            "nix-env -iA cachix -f https://cachix.org/api/v1/install && ",
-                            "cachix use {}"
-                        ),
-                        config.name
-                    )],
-                    shell: true,
+                    label: Some(format!("Setup Cachix ({})", config.name)),
+                    command: vec![],
+                    shell: false,
                     env,
                     depends_on: vec!["install-nix".to_string()],
-                    // Priority 5: after Nix install (0), before cuenv build (10)
-                    priority: 5,
+                    priority: 15, // After Nix install but before cuenv
+                    secrets: HashMap::from([(
+                        "CACHIX_AUTH_TOKEN".to_string(),
+                        SecretConfig {
+                            source: config.auth_token_secret,
+                            cache_key: false,
+                        },
+                    )]),
                     ..Default::default()
                 },
             )],
@@ -98,8 +99,9 @@ impl StageContributor for CachixContributor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{PipelineMetadata, StageConfiguration};
-    use cuenv_core::ci::{CI, CachixConfig, GitHubConfig, ProviderConfig};
+    use cuenv_ci::ir::{PipelineMetadata, StageConfiguration};
+    use cuenv_core::ci::CI;
+    use serde_json::json;
 
     fn make_ir() -> IntermediateRepresentation {
         IntermediateRepresentation {
@@ -123,17 +125,16 @@ mod tests {
             name: "test".to_string(),
             ci: Some(CI {
                 pipelines: vec![],
-                provider: Some(ProviderConfig {
-                    github: Some(GitHubConfig {
-                        cachix: Some(CachixConfig {
-                            name: "my-cache".to_string(),
-                            auth_token: None,
-                            push_filter: None,
-                        }),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
+                provider: Some(
+                    serde_json::from_value(json!({
+                        "github": {
+                            "cachix": {
+                                "name": "my-cache"
+                            }
+                        }
+                    }))
+                    .unwrap(),
+                ),
             }),
             ..Default::default()
         }
@@ -144,17 +145,17 @@ mod tests {
             name: "test".to_string(),
             ci: Some(CI {
                 pipelines: vec![],
-                provider: Some(ProviderConfig {
-                    github: Some(GitHubConfig {
-                        cachix: Some(CachixConfig {
-                            name: "my-cache".to_string(),
-                            auth_token: Some("MY_CACHIX_TOKEN".to_string()),
-                            push_filter: None,
-                        }),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
+                provider: Some(
+                    serde_json::from_value(json!({
+                        "github": {
+                            "cachix": {
+                                "name": "my-cache",
+                                "authToken": "MY_CACHIX_TOKEN"
+                            }
+                        }
+                    }))
+                    .unwrap(),
+                ),
             }),
             ..Default::default()
         }
@@ -171,17 +172,17 @@ mod tests {
     #[test]
     fn test_is_active_with_cachix() {
         let contributor = CachixContributor;
-        let ir = make_ir();
         let project = make_project_with_cachix();
+        let ir = make_ir();
 
         assert!(contributor.is_active(&ir, &project));
     }
 
     #[test]
-    fn test_is_active_without_cachix() {
+    fn test_is_inactive_without_cachix() {
         let contributor = CachixContributor;
-        let ir = make_ir();
         let project = make_project_without_cachix();
+        let ir = make_ir();
 
         assert!(!contributor.is_active(&ir, &project));
     }
@@ -189,8 +190,8 @@ mod tests {
     #[test]
     fn test_contribute_returns_setup_task() {
         let contributor = CachixContributor;
-        let ir = make_ir();
         let project = make_project_with_cachix();
+        let ir = make_ir();
 
         let (contributions, modified) = contributor.contribute(&ir, &project);
 
@@ -201,80 +202,40 @@ mod tests {
         assert_eq!(*stage, BuildStage::Setup);
         assert_eq!(task.id, "setup-cachix");
         assert_eq!(task.provider, "cachix");
-        assert_eq!(task.priority, 5);
+        assert!(task.label.as_ref().unwrap().contains("my-cache"));
     }
 
     #[test]
-    fn test_contribute_uses_cache_name() {
+    fn test_contribute_uses_default_token_secret() {
         let contributor = CachixContributor;
-        let ir = make_ir();
         let project = make_project_with_cachix();
+        let ir = make_ir();
 
         let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
-        assert!(task.command[0].contains("cachix use my-cache"));
+        let secret = task.secrets.get("CACHIX_AUTH_TOKEN").unwrap();
+        assert_eq!(secret.source, "CACHIX_AUTH_TOKEN");
     }
 
     #[test]
-    fn test_contribute_default_auth_token() {
+    fn test_contribute_uses_custom_token_secret() {
         let contributor = CachixContributor;
-        let ir = make_ir();
-        let project = make_project_with_cachix();
-
-        let (contributions, _) = contributor.contribute(&ir, &project);
-        let (_, task) = &contributions[0];
-
-        assert_eq!(
-            task.env.get("CACHIX_AUTH_TOKEN").unwrap(),
-            "${CACHIX_AUTH_TOKEN}"
-        );
-    }
-
-    #[test]
-    fn test_contribute_custom_auth_token() {
-        let contributor = CachixContributor;
-        let ir = make_ir();
         let project = make_project_with_custom_token();
+        let ir = make_ir();
 
         let (contributions, _) = contributor.contribute(&ir, &project);
         let (_, task) = &contributions[0];
 
-        assert_eq!(
-            task.env.get("CACHIX_AUTH_TOKEN").unwrap(),
-            "${MY_CACHIX_TOKEN}"
-        );
-    }
-
-    #[test]
-    fn test_contribute_depends_on_install_nix() {
-        let contributor = CachixContributor;
-        let ir = make_ir();
-        let project = make_project_with_cachix();
-
-        let (contributions, _) = contributor.contribute(&ir, &project);
-        let (_, task) = &contributions[0];
-
-        assert!(task.depends_on.contains(&"install-nix".to_string()));
-    }
-
-    #[test]
-    fn test_contribute_empty_without_config() {
-        let contributor = CachixContributor;
-        let ir = make_ir();
-        let project = make_project_without_cachix();
-
-        let (contributions, modified) = contributor.contribute(&ir, &project);
-
-        assert!(!modified);
-        assert!(contributions.is_empty());
+        let secret = task.secrets.get("CACHIX_AUTH_TOKEN").unwrap();
+        assert_eq!(secret.source, "MY_CACHIX_TOKEN");
     }
 
     #[test]
     fn test_contribute_is_idempotent() {
         let contributor = CachixContributor;
-        let mut ir = make_ir();
         let project = make_project_with_cachix();
+        let mut ir = make_ir();
 
         // First contribution should modify
         let (contributions, modified) = contributor.contribute(&ir, &project);
@@ -290,5 +251,17 @@ mod tests {
         let (contributions, modified) = contributor.contribute(&ir, &project);
         assert!(!modified);
         assert!(contributions.is_empty());
+    }
+
+    #[test]
+    fn test_contribute_depends_on_nix() {
+        let contributor = CachixContributor;
+        let project = make_project_with_cachix();
+        let ir = make_ir();
+
+        let (contributions, _) = contributor.contribute(&ir, &project);
+        let (_, task) = &contributions[0];
+
+        assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 }

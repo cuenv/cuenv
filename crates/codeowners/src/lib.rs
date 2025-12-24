@@ -1,35 +1,35 @@
-//! Generate CODEOWNERS files for GitHub, GitLab, and Bitbucket.
+//! Generate CODEOWNERS files with configurable formatting.
 //!
 //! This crate provides a builder-based API for generating CODEOWNERS files
-//! that define code ownership rules for your repository.
+//! that define code ownership rules for your repository. It is provider-agnostic;
+//! platform-specific logic (paths, section styles) belongs in provider crates
+//! like `cuenv-github` or `cuenv-gitlab`.
 //!
 //! # Example
 //!
 //! ```rust
-//! use cuenv_codeowners::{CodeOwners, Platform, Rule};
+//! use cuenv_codeowners::{CodeOwners, SectionStyle, Rule};
 //!
 //! let codeowners = CodeOwners::builder()
-//!     .platform(Platform::Github)
-//!     .rule(Rule::new("*", ["@org/core-team"]))  // Catch-all rule
+//!     .section_style(SectionStyle::Comment)  // GitHub/Bitbucket style
+//!     .rule(Rule::new("*", ["@org/core-team"]))
 //!     .rule(Rule::new("*.rs", ["@rust-team"]))
 //!     .rule(Rule::new("/docs/**", ["@docs-team"]).section("Documentation"))
 //!     .build();
 //!
 //! let content = codeowners.generate();
-//! // Write to .github/CODEOWNERS or wherever appropriate
 //! ```
 //!
-//! # Platform Support
+//! # Section Styles
 //!
-//! - **GitHub**: Uses `.github/CODEOWNERS` path and `# Section` comment syntax
-//! - **GitLab**: Uses `CODEOWNERS` path and `[Section]` syntax for sections
-//! - **Bitbucket**: Uses `CODEOWNERS` path and `# Section` comment syntax
+//! - `Comment`: `# Section Name` (used by GitHub, Bitbucket)
+//! - `Bracket`: `[Section Name]` (used by GitLab)
+//! - `None`: No section headers
 //!
 //! # Provider Support
 //!
 //! The [`provider`] module provides a trait-based abstraction for syncing
-//! CODEOWNERS files. Use [`provider::detect_provider`] to auto-detect the
-//! platform and get the appropriate provider.
+//! CODEOWNERS files. Provider implementations live in platform crates.
 //!
 //! # Features
 //!
@@ -42,73 +42,37 @@ pub mod provider;
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
 
 #[cfg(feature = "schemars")]
 use schemars::JsonSchema;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Target platform for CODEOWNERS file generation.
+/// Section formatting style for CODEOWNERS files.
 ///
-/// Different platforms have different default paths and section syntax:
-/// - GitHub: `.github/CODEOWNERS`, sections as `# Section Name`
-/// - GitLab: `CODEOWNERS`, sections as `[Section Name]`
-/// - Bitbucket: `CODEOWNERS`, sections as `# Section Name`
+/// Different platforms use different syntax for section headers:
+/// - GitHub/Bitbucket: `# Section Name` (comment style)
+/// - GitLab: `[Section Name]` (bracket style)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 #[cfg_attr(feature = "schemars", derive(JsonSchema))]
-pub enum Platform {
-    /// GitHub - uses `.github/CODEOWNERS` and `# Section` comments
+pub enum SectionStyle {
+    /// `# Section Name` - comment-based sections (GitHub, Bitbucket)
     #[default]
-    Github,
-    /// GitLab - uses `CODEOWNERS` and `[Section]` syntax
-    Gitlab,
-    /// Bitbucket - uses `CODEOWNERS` and `# Section` comments
-    Bitbucket,
+    Comment,
+    /// `[Section Name]` - bracket-based sections (GitLab)
+    Bracket,
+    /// No section headers in output
+    None,
 }
 
-impl Platform {
-    /// Get the default path for CODEOWNERS file on this platform.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use cuenv_codeowners::Platform;
-    ///
-    /// assert_eq!(Platform::Github.default_path(), ".github/CODEOWNERS");
-    /// assert_eq!(Platform::Gitlab.default_path(), "CODEOWNERS");
-    /// ```
-    #[must_use]
-    pub fn default_path(&self) -> &'static str {
-        match self {
-            Platform::Github => ".github/CODEOWNERS",
-            Platform::Gitlab | Platform::Bitbucket => "CODEOWNERS",
-        }
-    }
-}
-
-impl fmt::Display for Platform {
+impl fmt::Display for SectionStyle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Platform::Github => write!(f, "github"),
-            Platform::Gitlab => write!(f, "gitlab"),
-            Platform::Bitbucket => write!(f, "bitbucket"),
-        }
-    }
-}
-
-/// Conversion from manifest Platform type.
-///
-/// This is gated behind the `manifest` feature flag.
-#[cfg(feature = "manifest")]
-impl From<cuenv_core::owners::Platform> for Platform {
-    fn from(p: cuenv_core::owners::Platform) -> Self {
-        match p {
-            cuenv_core::owners::Platform::Github => Self::Github,
-            cuenv_core::owners::Platform::Gitlab => Self::Gitlab,
-            cuenv_core::owners::Platform::Bitbucket => Self::Bitbucket,
+            SectionStyle::Comment => write!(f, "comment"),
+            SectionStyle::Bracket => write!(f, "bracket"),
+            SectionStyle::None => write!(f, "none"),
         }
     }
 }
@@ -191,12 +155,12 @@ impl Rule {
 /// # Example
 ///
 /// ```rust
-/// use cuenv_codeowners::{CodeOwners, Platform, Rule};
+/// use cuenv_codeowners::{CodeOwners, SectionStyle, Rule};
 ///
 /// let codeowners = CodeOwners::builder()
-///     .platform(Platform::Github)
+///     .section_style(SectionStyle::Comment)
 ///     .header("Custom header comment")
-///     .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
+///     .rule(Rule::new("*", ["@org/maintainers"]))
 ///     .rule(Rule::new("*.rs", ["@rust-team"]))
 ///     .build();
 ///
@@ -207,12 +171,9 @@ impl Rule {
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(feature = "schemars", derive(JsonSchema))]
 pub struct CodeOwners {
-    /// Target platform for the CODEOWNERS file.
+    /// Section formatting style.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub platform: Option<Platform>,
-    /// Custom output path override.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub path: Option<String>,
+    pub section_style: Option<SectionStyle>,
     /// Custom header comment for the file.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub header: Option<String>,
@@ -255,7 +216,7 @@ impl CodeOwners {
     #[must_use]
     pub fn generate(&self) -> String {
         let mut output = String::new();
-        let platform = self.platform.unwrap_or_default();
+        let section_style = self.section_style.unwrap_or_default();
 
         // Add header
         if let Some(ref header) = self.header {
@@ -285,16 +246,19 @@ impl CodeOwners {
 
             // Write section header if present
             if let Some(section_name) = section {
-                match platform {
-                    Platform::Gitlab => {
+                match section_style {
+                    SectionStyle::Bracket => {
                         output.push('[');
                         output.push_str(section_name);
                         output.push_str("]\n");
                     }
-                    Platform::Github | Platform::Bitbucket => {
+                    SectionStyle::Comment => {
                         output.push_str("# ");
                         output.push_str(section_name);
                         output.push('\n');
+                    }
+                    SectionStyle::None => {
+                        // No section header
                     }
                 }
             }
@@ -316,45 +280,6 @@ impl CodeOwners {
 
         output
     }
-
-    /// Get the output path for the CODEOWNERS file.
-    ///
-    /// Returns the custom path if set, otherwise the platform's default path.
-    #[must_use]
-    pub fn output_path(&self) -> &str {
-        self.path
-            .as_deref()
-            .unwrap_or_else(|| self.platform.unwrap_or_default().default_path())
-    }
-
-    /// Detect the platform from repository structure.
-    ///
-    /// Checks for platform-specific files/directories:
-    /// - `.github/` directory -> GitHub
-    /// - `.gitlab-ci.yml` file -> GitLab
-    /// - `bitbucket-pipelines.yml` file -> Bitbucket
-    /// - Falls back to GitHub if none detected
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use cuenv_codeowners::{CodeOwners, Platform};
-    /// use std::path::Path;
-    ///
-    /// let platform = CodeOwners::detect_platform(Path::new("."));
-    /// ```
-    #[must_use]
-    pub fn detect_platform(repo_root: &Path) -> Platform {
-        if repo_root.join(".github").is_dir() {
-            Platform::Github
-        } else if repo_root.join(".gitlab-ci.yml").exists() {
-            Platform::Gitlab
-        } else if repo_root.join("bitbucket-pipelines.yml").exists() {
-            Platform::Bitbucket
-        } else {
-            Platform::Github
-        }
-    }
 }
 
 /// Builder for [`CodeOwners`].
@@ -362,12 +287,12 @@ impl CodeOwners {
 /// # Example
 ///
 /// ```rust
-/// use cuenv_codeowners::{CodeOwners, Platform, Rule};
+/// use cuenv_codeowners::{CodeOwners, SectionStyle, Rule};
 ///
 /// let codeowners = CodeOwners::builder()
-///     .platform(Platform::Github)
+///     .section_style(SectionStyle::Comment)
 ///     .header("Code ownership rules")
-///     .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
+///     .rule(Rule::new("*", ["@org/maintainers"]))
 ///     .rule(Rule::new("*.rs", ["@rust-team"]))
 ///     .rules([
 ///         Rule::new("/docs/**", ["@docs-team"]),
@@ -377,26 +302,16 @@ impl CodeOwners {
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct CodeOwnersBuilder {
-    platform: Option<Platform>,
-    path: Option<String>,
+    section_style: Option<SectionStyle>,
     header: Option<String>,
     rules: Vec<Rule>,
 }
 
 impl CodeOwnersBuilder {
-    /// Set the target platform.
+    /// Set the section formatting style.
     #[must_use]
-    pub fn platform(mut self, platform: Platform) -> Self {
-        self.platform = Some(platform);
-        self
-    }
-
-    /// Set a custom output path.
-    ///
-    /// Overrides the platform's default path.
-    #[must_use]
-    pub fn path(mut self, path: impl Into<String>) -> Self {
-        self.path = Some(path.into());
+    pub fn section_style(mut self, style: SectionStyle) -> Self {
+        self.section_style = Some(style);
         self
     }
 
@@ -427,8 +342,7 @@ impl CodeOwnersBuilder {
     #[must_use]
     pub fn build(self) -> CodeOwners {
         CodeOwners {
-            platform: self.platform,
-            path: self.path,
+            section_style: self.section_style,
             header: self.header,
             rules: self.rules,
         }
@@ -438,63 +352,15 @@ impl CodeOwnersBuilder {
 /// Default cuenv header for generated CODEOWNERS files.
 pub const DEFAULT_CUENV_HEADER: &str = "CODEOWNERS file - Generated by cuenv\nDo not edit manually. Configure in env.cue and run `cuenv owners sync`";
 
-/// Conversion from manifest Owners type.
-///
-/// This is gated behind the `manifest` feature flag.
-#[cfg(feature = "manifest")]
-impl From<&cuenv_core::owners::Owners> for CodeOwners {
-    fn from(owners: &cuenv_core::owners::Owners) -> Self {
-        let mut builder = CodeOwnersBuilder::default();
-
-        // Set platform
-        builder = builder.platform(owners.platform().into());
-
-        // Set custom path if provided
-        if let Some(ref output) = owners.output
-            && let Some(ref path) = output.path
-        {
-            builder = builder.path(path.clone());
-        }
-
-        // Set header (use custom or default cuenv header)
-        let header = owners
-            .header()
-            .map(String::from)
-            .unwrap_or_else(|| DEFAULT_CUENV_HEADER.to_string());
-        builder = builder.header(header);
-
-        // Add rules in sorted order
-        for (_key, rule) in owners.sorted_rules() {
-            let mut lib_rule = Rule::new(&rule.pattern, rule.owners.clone());
-            if let Some(ref description) = rule.description {
-                lib_rule = lib_rule.description(description.clone());
-            }
-            if let Some(ref section) = rule.section {
-                lib_rule = lib_rule.section(section.clone());
-            }
-            builder = builder.rule(lib_rule);
-        }
-
-        builder.build()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_platform_default_paths() {
-        assert_eq!(Platform::Github.default_path(), ".github/CODEOWNERS");
-        assert_eq!(Platform::Gitlab.default_path(), "CODEOWNERS");
-        assert_eq!(Platform::Bitbucket.default_path(), "CODEOWNERS");
-    }
-
-    #[test]
-    fn test_platform_display() {
-        assert_eq!(Platform::Github.to_string(), "github");
-        assert_eq!(Platform::Gitlab.to_string(), "gitlab");
-        assert_eq!(Platform::Bitbucket.to_string(), "bitbucket");
+    fn test_section_style_display() {
+        assert_eq!(SectionStyle::Comment.to_string(), "comment");
+        assert_eq!(SectionStyle::Bracket.to_string(), "bracket");
+        assert_eq!(SectionStyle::None.to_string(), "none");
     }
 
     #[test]
@@ -510,24 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn test_codeowners_output_path() {
-        // Default (no config)
-        let codeowners = CodeOwners::builder().build();
-        assert_eq!(codeowners.output_path(), ".github/CODEOWNERS");
-
-        // With platform
-        let codeowners = CodeOwners::builder().platform(Platform::Gitlab).build();
-        assert_eq!(codeowners.output_path(), "CODEOWNERS");
-
-        // With custom path
-        let codeowners = CodeOwners::builder()
-            .platform(Platform::Github)
-            .path("docs/CODEOWNERS")
-            .build();
-        assert_eq!(codeowners.output_path(), "docs/CODEOWNERS");
-    }
-
-    #[test]
     fn test_generate_simple() {
         let codeowners = CodeOwners::builder()
             .rule(Rule::new("*.rs", ["@rust-team"]))
@@ -540,8 +388,9 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_with_sections() {
+    fn test_generate_with_sections_comment_style() {
         let codeowners = CodeOwners::builder()
+            .section_style(SectionStyle::Comment)
             .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
             .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
             .build();
@@ -574,38 +423,62 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_gitlab_sections() {
+    fn test_generate_bracket_sections() {
         let codeowners = CodeOwners::builder()
-            .platform(Platform::Gitlab)
+            .section_style(SectionStyle::Bracket)
             .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
             .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
             .build();
 
         let content = codeowners.generate();
-        // GitLab uses [Section] syntax
+        // Bracket style uses [Section] syntax
         assert!(
             content.contains("[Backend]"),
-            "GitLab should use [Section] syntax, got: {content}"
+            "Bracket style should use [Section] syntax, got: {content}"
         );
         assert!(
             content.contains("[Frontend]"),
-            "GitLab should use [Section] syntax, got: {content}"
+            "Bracket style should use [Section] syntax, got: {content}"
         );
         // Should NOT use comment-style sections
         assert!(
             !content.contains("# Backend"),
-            "GitLab should NOT use # Section"
+            "Bracket style should NOT use # Section"
         );
         assert!(
             !content.contains("# Frontend"),
-            "GitLab should NOT use # Section"
+            "Bracket style should NOT use # Section"
         );
+    }
+
+    #[test]
+    fn test_generate_no_section_headers() {
+        let codeowners = CodeOwners::builder()
+            .section_style(SectionStyle::None)
+            .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
+            .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
+            .build();
+
+        let content = codeowners.generate();
+        // No section headers should appear
+        assert!(
+            !content.contains("Backend"),
+            "SectionStyle::None should not include section headers"
+        );
+        assert!(
+            !content.contains("Frontend"),
+            "SectionStyle::None should not include section headers"
+        );
+        // Rules should still be present
+        assert!(content.contains("*.rs @backend"));
+        assert!(content.contains("*.ts @frontend"));
     }
 
     #[test]
     fn test_generate_groups_rules_by_section() {
         // Rules with same section should be grouped even if not contiguous in input
         let codeowners = CodeOwners::builder()
+            .section_style(SectionStyle::Comment)
             .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
             .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
             .rule(Rule::new("*.go", ["@backend"]).section("Backend"))
@@ -639,8 +512,7 @@ mod tests {
     #[test]
     fn test_builder_chaining() {
         let codeowners = CodeOwners::builder()
-            .platform(Platform::Github)
-            .path(".github/CODEOWNERS")
+            .section_style(SectionStyle::Comment)
             .header("Code ownership")
             .rule(Rule::new("*.rs", ["@rust"]))
             .rules([
@@ -649,8 +521,7 @@ mod tests {
             ])
             .build();
 
-        assert_eq!(codeowners.platform, Some(Platform::Github));
-        assert_eq!(codeowners.path, Some(".github/CODEOWNERS".to_string()));
+        assert_eq!(codeowners.section_style, Some(SectionStyle::Comment));
         assert_eq!(codeowners.header, Some("Code ownership".to_string()));
         assert_eq!(codeowners.rules.len(), 3);
     }

@@ -1,15 +1,15 @@
 ---
 title: cuenv-codeowners
-description: Generate CODEOWNERS files for GitHub, GitLab, and Bitbucket
+description: Generate CODEOWNERS files with configurable section styles
 ---
 
-The `cuenv-codeowners` crate provides a builder-based API for generating CODEOWNERS files that define code ownership rules for your repository. It supports GitHub, GitLab, and Bitbucket with platform-specific syntax.
+The `cuenv-codeowners` crate provides a builder-based API for generating CODEOWNERS files that define code ownership rules for your repository. It is provider-agnostic; platform-specific logic (paths, section styles) belongs in provider crates like `cuenv-github` or `cuenv-gitlab`.
 
 ## Overview
 
 CODEOWNERS files automatically assign reviewers to pull requests based on file paths. This crate lets you programmatically generate these files with:
 
-- Multi-platform support (GitHub, GitLab, Bitbucket)
+- Configurable section styles (comment `#` or bracket `[]`)
 - Section grouping for organized output
 - Custom headers and descriptions
 
@@ -23,45 +23,45 @@ CODEOWNERS files automatically assign reviewers to pull requests based on file p
                                    │
                                    ▼
                            ┌─────────────────┐
-                           │    Platform     │
-                           │ (syntax rules)  │
+                           │  SectionStyle   │
+                           │ (formatting)    │
                            └─────────────────┘
 ```
 
 ### Key Components
 
-**Platform**
-Enum representing the target platform (GitHub, GitLab, Bitbucket) with platform-specific syntax rules.
+**SectionStyle**
+Enum representing how sections are formatted in the output.
 
 **Rule**
 A single ownership rule mapping a file pattern to one or more owners.
 
 **CodeOwners**
-The main configuration struct holding platform, rules, and output settings.
+The main configuration struct holding section style, rules, and output settings.
 
 **CodeOwnersBuilder**
 Fluent builder for constructing `CodeOwners` configurations.
 
 ## API Reference
 
-### Platform
+### SectionStyle
 
-Target platform for CODEOWNERS file generation:
+Section formatting style for CODEOWNERS files:
 
 ```rust
-use cuenv_codeowners::Platform;
+use cuenv_codeowners::SectionStyle;
 
-// Each platform has different section syntax and default paths
-let github = Platform::Github;    // .github/CODEOWNERS, # Section
-let gitlab = Platform::Gitlab;    // CODEOWNERS, [Section]
-let bitbucket = Platform::Bitbucket; // CODEOWNERS, # Section
+// Each style formats sections differently
+let comment = SectionStyle::Comment;  // # Section Name (GitHub, Bitbucket)
+let bracket = SectionStyle::Bracket;  // [Section Name] (GitLab)
+let none = SectionStyle::None;        // No section headers
 ```
 
-| Platform    | Default Path         | Section Syntax |
-| ----------- | -------------------- | -------------- |
-| `Github`    | `.github/CODEOWNERS` | `# Section`    |
-| `Gitlab`    | `CODEOWNERS`         | `[Section]`    |
-| `Bitbucket` | `CODEOWNERS`         | `# Section`    |
+| Style     | Output          | Used By              |
+| --------- | --------------- | -------------------- |
+| `Comment` | `# Section`     | GitHub, Bitbucket    |
+| `Bracket` | `[Section]`     | GitLab               |
+| `None`    | (no headers)    | Custom configurations|
 
 ### Rule
 
@@ -90,42 +90,36 @@ let rule = Rule::new("/docs/**", ["@docs-team", "@tech-writers"])
 Main configuration and generator:
 
 ```rust
-use cuenv_codeowners::{CodeOwners, Platform, Rule};
+use cuenv_codeowners::{CodeOwners, SectionStyle, Rule};
 
 let codeowners = CodeOwners::builder()
-    .platform(Platform::Github)
+    .section_style(SectionStyle::Comment)
     .header("Code ownership rules")
-    .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
+    .rule(Rule::new("*", ["@org/maintainers"]))
     .rule(Rule::new("*.rs", ["@rust-team"]))
     .rule(Rule::new("/docs/**", ["@docs-team"]).section("Documentation"))
     .build();
 
 // Generate file content
 let content = codeowners.generate();
-
-// Get output path
-let path = codeowners.output_path(); // ".github/CODEOWNERS"
 ```
 
-| Method                       | Description                                      |
-| ---------------------------- | ------------------------------------------------ |
-| `builder()`                  | Create a new builder                             |
-| `generate()`                 | Generate the CODEOWNERS file content             |
-| `output_path()`              | Get the output path (custom or platform default) |
-| `detect_platform(repo_root)` | Auto-detect platform from repo structure         |
+| Method       | Description                          |
+| ------------ | ------------------------------------ |
+| `builder()`  | Create a new builder                 |
+| `generate()` | Generate the CODEOWNERS file content |
 
 ### CodeOwnersBuilder
 
 Fluent builder for configuration:
 
-| Method               | Description                          |
-| -------------------- | ------------------------------------ |
-| `platform(Platform)` | Set target platform                  |
-| `path(str)`          | Override output path                 |
-| `header(str)`        | Set header comment                   |
-| `rule(Rule)`         | Add a single rule                    |
-| `rules(iter)`        | Add multiple rules                   |
-| `build()`            | Build the `CodeOwners` configuration |
+| Method                    | Description                          |
+| ------------------------- | ------------------------------------ |
+| `section_style(style)`    | Set section formatting style         |
+| `header(str)`             | Set header comment                   |
+| `rule(Rule)`              | Add a single rule                    |
+| `rules(iter)`             | Add multiple rules                   |
+| `build()`                 | Build the `CodeOwners` configuration |
 
 ## Features
 
@@ -145,45 +139,30 @@ cuenv-codeowners = { version = "...", features = ["serde"] }
 ### Basic Usage
 
 ```rust
-use cuenv_codeowners::{CodeOwners, Platform, Rule};
+use cuenv_codeowners::{CodeOwners, SectionStyle, Rule};
 use std::fs;
 
 let codeowners = CodeOwners::builder()
-    .platform(Platform::Github)
-    .rule(Rule::new("*", ["@org/core-team"]))  // Catch-all rule
+    .section_style(SectionStyle::Comment)
+    .rule(Rule::new("*", ["@org/core-team"]))
     .rule(Rule::new("*.rs", ["@rust-team"]))
     .rule(Rule::new("*.ts", ["@frontend-team"]))
     .build();
 
 let content = codeowners.generate();
-fs::write(codeowners.output_path(), content)?;
-```
-
-### Platform Auto-Detection
-
-```rust
-use cuenv_codeowners::{CodeOwners, Platform};
-use std::path::Path;
-
-// Detect from repo structure
-let platform = CodeOwners::detect_platform(Path::new("."));
-// Checks for: .github/ -> GitHub, .gitlab-ci.yml -> GitLab, etc.
-
-let codeowners = CodeOwners::builder()
-    .platform(platform)
-    .build();
+fs::write(".github/CODEOWNERS", content)?;
 ```
 
 ### Organized Sections
 
 ```rust
-use cuenv_codeowners::{CodeOwners, Platform, Rule};
+use cuenv_codeowners::{CodeOwners, SectionStyle, Rule};
 
 let codeowners = CodeOwners::builder()
-    .platform(Platform::Github)
+    .section_style(SectionStyle::Comment)
     .header("Auto-generated CODEOWNERS\nDo not edit manually")
     // Rules with same section are grouped together
-    .rule(Rule::new("*", ["@org/maintainers"]))  // Catch-all rule
+    .rule(Rule::new("*", ["@org/maintainers"]))
     .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
     .rule(Rule::new("*.go", ["@backend"]).section("Backend"))
     .rule(Rule::new("*.ts", ["@frontend"]).section("Frontend"))
@@ -210,15 +189,15 @@ println!("{}", codeowners.generate());
 // *.tsx @frontend
 ```
 
-### GitLab Sections
+### GitLab Bracket Sections
 
 GitLab uses `[Section]` syntax instead of `# Section`:
 
 ```rust
-use cuenv_codeowners::{CodeOwners, Platform, Rule};
+use cuenv_codeowners::{CodeOwners, SectionStyle, Rule};
 
 let codeowners = CodeOwners::builder()
-    .platform(Platform::Gitlab)
+    .section_style(SectionStyle::Bracket)
     .rule(Rule::new("*.rs", ["@backend"]).section("Backend"))
     .build();
 
@@ -227,6 +206,14 @@ println!("{}", codeowners.generate());
 // [Backend]
 // *.rs @backend
 ```
+
+## Provider Crates
+
+For platform-specific CODEOWNERS management (paths, detection), use the provider crates:
+
+- `cuenv-github` - GitHub CODEOWNERS (`.github/CODEOWNERS`, comment sections)
+- `cuenv-gitlab` - GitLab CODEOWNERS (`CODEOWNERS`, bracket sections)
+- `cuenv-bitbucket` - Bitbucket CODEOWNERS (`CODEOWNERS`, comment sections)
 
 ## Testing
 
