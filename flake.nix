@@ -65,13 +65,6 @@
           else throw "Unsupported OS: ${os}";
 
 
-        # Rust target triple for explicit --target flag (needed for HOST/TARGET separation)
-        rustTarget =
-          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
-          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu"
-          else if cpu == "aarch64" then "aarch64-unknown-linux-gnu"
-          else throw "Unsupported Linux architecture: ${cpu}";
-
         # Zig wrappers for CGO (CC cannot contain spaces)
         zigCCWrapper = pkgs.writeShellScriptBin "zig-cc" ''
           exec ${pkgs.zig}/bin/zig cc -target ${zigTarget} "$@"
@@ -210,7 +203,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config cue git zig ];
+          nativeBuildInputs = with pkgs; [ go pkg-config cue git zig cargo-zigbuild ];
           buildInputs = platformBuildInputs;
           preBuild = ''
             ${setupBridge}
@@ -220,54 +213,40 @@
         };
 
         # Build artifacts for dependency caching
+        # Build deps normally without cross-compilation - cargo-zigbuild handles that in final build
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           src = srcArtifacts;
           preBuild = "";
           buildInputs = platformBuildInputs;
-        } // (if pkgs.stdenv.isLinux then {
-          # Use --target to separate HOST (build scripts) from TARGET (main crate)
-          # Use target-specific CC/CXX so HOST compilation uses native toolchain
-          buildPhaseCargoCommand = ''
-            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
-            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-            export CC_x86_64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
-            export CXX_x86_64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
-            export CC_aarch64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
-            export CXX_aarch64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
-            export AR=${zigARWrapper}/bin/zig-ar
-            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
-            cargo build --release --locked --target ${rustTarget}
-          '';
-        } else { }));
+        });
+
+        # Rust target for cargo-zigbuild (arch-specific)
+        zigbuildTarget =
+          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu.2.17"
+          else if cpu == "aarch64" then "aarch64-unknown-linux-gnu.2.17"
+          else throw "Unsupported Linux architecture: ${cpu}";
 
         # Main package build
-        # On Linux: Use Zig as CC/linker for portable binaries (glibc 2.17 target)
+        # On Linux: Use cargo-zigbuild for portable binaries (glibc 2.17 target)
         # On macOS: Use regular cargo with deployment target env var
         cuenv = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           pname = "cuenv";
           inherit version;
         } // (if pkgs.stdenv.isLinux then {
-          # Linux: Use Zig wrappers for portable glibc binaries
-          # --target creates HOST/TARGET separation so build scripts use native linker
-          # Use target-specific CC/CXX so HOST compilation uses native toolchain
+          # Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
+          # cargo-zigbuild properly handles HOST/TARGET separation
+          auditable = false; # cargo-auditable's --undefined flag breaks Zig linker
           doNotPostBuildInstallCargoBinaries = true;
           buildPhaseCargoCommand = ''
-            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
-            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-            export CC_x86_64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
-            export CXX_x86_64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
-            export CC_aarch64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
-            export CXX_aarch64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
-            export AR=${zigARWrapper}/bin/zig-ar
-            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
-            cargo build --release --target ${rustTarget}
+            export XDG_CACHE_HOME="$TMPDIR/xdg_cache"
+            export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/zigbuild_cache"
+            cargo zigbuild --release --target ${zigbuildTarget}
           '';
           installPhaseCommand = ''
             mkdir -p $out/bin
-            cp target/${rustTarget}/release/cuenv $out/bin/
+            cp target/${pkgs.lib.removeSuffix ".2.17" zigbuildTarget}/release/cuenv $out/bin/
           '';
         } else {
           # macOS: Use regular cargo with deployment target set explicitly
