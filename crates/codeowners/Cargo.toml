@@ -9,16 +9,14 @@ homepage.workspace = true
 keywords.workspace = true
 categories = ["development-tools", "command-line-utilities"]
 readme = "../../readme.md"
-description = "Generate CODEOWNERS files for GitHub, GitLab, and Bitbucket"
+description = "Generate CODEOWNERS files with configurable section styles"
 
 [features]
 default = []
 serde = ["dep:serde"]
 schemars = ["dep:schemars", "serde"]
-manifest = ["dep:cuenv-core"]
 
 [dependencies]
-cuenv-core = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 

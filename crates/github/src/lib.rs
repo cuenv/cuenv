@@ -6,6 +6,7 @@
 //! - [`workflow::GitHubActionsEmitter`] for workflow file generation (feature: `workflow`)
 //! - [`GitHubReleaseBackend`] for GitHub Releases distribution (feature: `release`)
 //! - [`GitHubConfigExt`] for GitHub-specific configuration operations
+//! - [`stages`] for GitHub-specific stage contributors (feature: `ci`)
 //!
 //! # Features
 //!
@@ -24,6 +25,9 @@ pub mod codeowners;
 #[cfg(feature = "ci")]
 pub mod ci;
 
+#[cfg(feature = "ci")]
+pub mod stages;
+
 #[cfg(feature = "workflow")]
 pub mod workflow;
 
@@ -38,6 +42,9 @@ pub use codeowners::GitHubCodeOwnersProvider;
 
 #[cfg(feature = "ci")]
 pub use ci::GitHubCIProvider;
+
+#[cfg(feature = "ci")]
+pub use stages::{CachixContributor, GhModelsContributor, github_contributors};
 
 #[cfg(feature = "workflow")]
 pub use workflow::GitHubActionsEmitter;

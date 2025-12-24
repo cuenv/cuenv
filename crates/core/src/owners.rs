@@ -3,71 +3,31 @@
 //! This module provides serde-compatible types for deserializing CODEOWNERS
 //! configuration from CUE manifests.
 //!
+//! Provider crates (cuenv-github, cuenv-gitlab, cuenv-bitbucket) handle the
+//! platform-specific logic (file paths, section styles) based on repository
+//! structure detection.
+//!
 //! Based on schema/owners.cue
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
-
-/// Platform for CODEOWNERS file generation.
-///
-/// This is the manifest-compatible version with serde/schemars derives.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Platform {
-    /// GitHub - uses `.github/CODEOWNERS`
-    #[default]
-    Github,
-    /// GitLab - uses `CODEOWNERS` with `[Section]` syntax
-    Gitlab,
-    /// Bitbucket - uses `CODEOWNERS`
-    Bitbucket,
-}
-
-impl Platform {
-    /// Get the default path for CODEOWNERS file on this platform.
-    #[must_use]
-    pub fn default_path(&self) -> &'static str {
-        match self {
-            Self::Github => ".github/CODEOWNERS",
-            Self::Gitlab | Self::Bitbucket => "CODEOWNERS",
-        }
-    }
-}
-
-impl fmt::Display for Platform {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Github => write!(f, "github"),
-            Self::Gitlab => write!(f, "gitlab"),
-            Self::Bitbucket => write!(f, "bitbucket"),
-        }
-    }
-}
 
 /// Output configuration for CODEOWNERS file generation.
+///
+/// Note: The `platform` field is kept for CUE schema compatibility but is not
+/// used directly. The provider is detected at runtime based on repository
+/// structure (`.github/` directory, `.gitlab-ci.yml`, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct OwnersOutput {
-    /// Platform to generate CODEOWNERS for.
-    pub platform: Option<Platform>,
+    /// Platform hint (e.g., "github", "gitlab", "bitbucket").
+    /// Provider is detected automatically; this field is for schema compatibility.
+    pub platform: Option<String>,
 
     /// Custom path for CODEOWNERS file (overrides platform default).
     pub path: Option<String>,
 
     /// Header comment to include at the top of the generated file.
     pub header: Option<String>,
-}
-
-impl OwnersOutput {
-    /// Get the output path for the CODEOWNERS file.
-    #[must_use]
-    pub fn output_path(&self) -> &str {
-        if let Some(ref path) = self.path {
-            path
-        } else {
-            self.platform.unwrap_or_default().default_path()
-        }
-    }
 }
 
 /// A single code ownership rule.
@@ -110,15 +70,6 @@ pub struct Owners {
 }
 
 impl Owners {
-    /// Get the output path for the CODEOWNERS file.
-    #[must_use]
-    pub fn output_path(&self) -> &str {
-        self.output
-            .as_ref()
-            .map(OwnersOutput::output_path)
-            .unwrap_or_else(|| Platform::default().default_path())
-    }
-
     /// Get rules sorted by order then by key for determinism.
     #[must_use]
     pub fn sorted_rules(&self) -> Vec<(&String, &OwnerRule)> {
@@ -131,68 +82,22 @@ impl Owners {
         rule_entries
     }
 
-    /// Get the platform, defaulting to GitHub if not specified.
-    #[must_use]
-    pub fn platform(&self) -> Platform {
-        self.output
-            .as_ref()
-            .and_then(|o| o.platform)
-            .unwrap_or_default()
-    }
-
     /// Get the header, if any.
     #[must_use]
     pub fn header(&self) -> Option<&str> {
         self.output.as_ref().and_then(|o| o.header.as_deref())
+    }
+
+    /// Get the custom path, if specified.
+    #[must_use]
+    pub fn custom_path(&self) -> Option<&str> {
+        self.output.as_ref().and_then(|o| o.path.as_deref())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_platform_default_paths() {
-        assert_eq!(Platform::Github.default_path(), ".github/CODEOWNERS");
-        assert_eq!(Platform::Gitlab.default_path(), "CODEOWNERS");
-        assert_eq!(Platform::Bitbucket.default_path(), "CODEOWNERS");
-    }
-
-    #[test]
-    fn test_platform_display() {
-        assert_eq!(Platform::Github.to_string(), "github");
-        assert_eq!(Platform::Gitlab.to_string(), "gitlab");
-        assert_eq!(Platform::Bitbucket.to_string(), "bitbucket");
-    }
-
-    #[test]
-    fn test_owners_output_path() {
-        // Default (no output config)
-        let owners = Owners::default();
-        assert_eq!(owners.output_path(), ".github/CODEOWNERS");
-
-        // With platform specified
-        let owners = Owners {
-            output: Some(OwnersOutput {
-                platform: Some(Platform::Gitlab),
-                path: None,
-                header: None,
-            }),
-            ..Default::default()
-        };
-        assert_eq!(owners.output_path(), "CODEOWNERS");
-
-        // With custom path
-        let owners = Owners {
-            output: Some(OwnersOutput {
-                platform: Some(Platform::Github),
-                path: Some("docs/CODEOWNERS".to_string()),
-                header: None,
-            }),
-            ..Default::default()
-        };
-        assert_eq!(owners.output_path(), "docs/CODEOWNERS");
-    }
 
     #[test]
     fn test_sorted_rules() {
@@ -241,24 +146,6 @@ mod tests {
     }
 
     #[test]
-    fn test_owners_platform() {
-        // Default
-        let owners = Owners::default();
-        assert_eq!(owners.platform(), Platform::Github);
-
-        // With platform
-        let owners = Owners {
-            output: Some(OwnersOutput {
-                platform: Some(Platform::Gitlab),
-                path: None,
-                header: None,
-            }),
-            ..Default::default()
-        };
-        assert_eq!(owners.platform(), Platform::Gitlab);
-    }
-
-    #[test]
     fn test_owners_header() {
         // No header
         let owners = Owners::default();
@@ -274,5 +161,40 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(owners.header(), Some("Custom Header"));
+    }
+
+    #[test]
+    fn test_owners_custom_path() {
+        // No custom path
+        let owners = Owners::default();
+        assert!(owners.custom_path().is_none());
+
+        // With custom path
+        let owners = Owners {
+            output: Some(OwnersOutput {
+                platform: None,
+                path: Some("docs/CODEOWNERS".to_string()),
+                header: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(owners.custom_path(), Some("docs/CODEOWNERS"));
+    }
+
+    #[test]
+    fn test_owners_output_platform_string() {
+        // Platform can be set as a string hint
+        let owners = Owners {
+            output: Some(OwnersOutput {
+                platform: Some("gitlab".to_string()),
+                path: None,
+                header: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            owners.output.as_ref().unwrap().platform,
+            Some("gitlab".to_string())
+        );
     }
 }

@@ -1012,7 +1012,7 @@ async fn execute_sync_github(
 /// Collected pipeline context from project discovery.
 struct PipelineContext {
     is_release: bool,
-    github_config: cuenv_core::ci::GitHubConfig,
+    github_config: cuenv_github::config::GitHubConfig,
     trigger: cuenv_ci::ir::TriggerCondition,
     project_name: Option<String>,
     environment: Option<String>,

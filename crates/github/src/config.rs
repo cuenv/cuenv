@@ -1,9 +1,53 @@
-//! GitHub configuration extension traits.
+//! GitHub configuration types and extension traits.
 //!
-//! This module provides extension traits for working with GitHub-specific
-//! configuration, keeping platform logic in the platform crate.
+//! This module provides GitHub-specific configuration types and extension traits
+//! for working with GitHub Actions CI configuration.
 
-use cuenv_core::ci::{GitHubConfig, CI};
+use cuenv_core::ci::{RunnerMapping, StringOrVec, CI};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// GitHub Actions provider configuration.
+///
+/// This struct is owned by the GitHub crate - it should not be defined in core.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubConfig {
+    /// Runner label(s) - single string or array of labels
+    pub runner: Option<StringOrVec>,
+    /// Runner mapping for matrix dimensions
+    pub runners: Option<RunnerMapping>,
+    /// Cachix configuration for Nix caching
+    pub cachix: Option<CachixConfig>,
+    /// Artifact upload configuration
+    pub artifacts: Option<ArtifactsConfig>,
+    /// Paths to ignore for trigger conditions
+    pub paths_ignore: Option<Vec<String>>,
+    /// Workflow permissions
+    pub permissions: Option<HashMap<String, String>>,
+}
+
+/// Cachix caching configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CachixConfig {
+    /// Cachix cache name
+    pub name: String,
+    /// Secret name for auth token (defaults to CACHIX_AUTH_TOKEN)
+    pub auth_token: Option<String>,
+    /// Push filter pattern
+    pub push_filter: Option<String>,
+}
+
+/// Artifact upload configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactsConfig {
+    /// Paths to upload as artifacts
+    pub paths: Option<Vec<String>>,
+    /// Behavior when no files found: "warn", "error", or "ignore"
+    pub if_no_files_found: Option<String>,
+}
 
 /// Extension trait for GitHub-specific configuration operations on [`CI`].
 ///
@@ -22,8 +66,8 @@ impl GitHubConfigExt for CI {
         let global = self
             .provider
             .as_ref()
-            .and_then(|p| p.github.as_ref())
-            .cloned()
+            .and_then(|p| p.get("github"))
+            .and_then(|v| serde_json::from_value::<GitHubConfig>(v.clone()).ok())
             .unwrap_or_default();
 
         let pipeline_config = self
@@ -31,7 +75,8 @@ impl GitHubConfigExt for CI {
             .iter()
             .find(|p| p.name == pipeline_name)
             .and_then(|p| p.provider.as_ref())
-            .and_then(|p| p.github.as_ref());
+            .and_then(|p| p.get("github"))
+            .and_then(|v| serde_json::from_value::<GitHubConfig>(v.clone()).ok());
 
         match pipeline_config {
             Some(pipeline) => GitHubConfig {
@@ -50,25 +95,23 @@ impl GitHubConfigExt for CI {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::ci::{
-        CachixConfig, Pipeline, PipelineTask, ProviderConfig, StringOrVec,
-    };
+    use cuenv_core::ci::{Pipeline, PipelineTask};
+    use serde_json::json;
 
     #[test]
     fn test_github_config_merge() {
         let ci = CI {
-            provider: Some(ProviderConfig {
-                github: Some(GitHubConfig {
-                    runner: Some(StringOrVec::String("ubuntu-latest".to_string())),
-                    cachix: Some(CachixConfig {
-                        name: "my-cache".to_string(),
-                        auth_token: None,
-                        push_filter: None,
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
+            provider: Some(
+                serde_json::from_value(json!({
+                    "github": {
+                        "runner": "ubuntu-latest",
+                        "cachix": {
+                            "name": "my-cache"
+                        }
+                    }
+                }))
+                .unwrap(),
+            ),
             pipelines: vec![
                 Pipeline {
                     name: "ci".to_string(),
@@ -76,13 +119,14 @@ mod tests {
                     when: None,
                     tasks: vec![PipelineTask::Simple("test".to_string())],
                     derive_paths: None,
-                    provider: Some(ProviderConfig {
-                        github: Some(GitHubConfig {
-                            runner: Some(StringOrVec::String("self-hosted".to_string())),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }),
+                    provider: Some(
+                        serde_json::from_value(json!({
+                            "github": {
+                                "runner": "self-hosted"
+                            }
+                        }))
+                        .unwrap(),
+                    ),
                 },
                 Pipeline {
                     name: "release".to_string(),
