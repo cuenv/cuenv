@@ -219,14 +219,15 @@
           preBuild = "";
           buildInputs = platformBuildInputs;
         } // (if pkgs.stdenv.isLinux then {
+          # Use Zig for C compilation but NOT for Rust linker
+          # Build scripts need native linker to run on NixOS
           buildPhaseCargoCommand = ''
             export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
             export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
             export CC=${zigCCWrapper}/bin/zig-cc
             export CXX=${zigCXXWrapper}/bin/zig-cxx
             export AR=${zigARWrapper}/bin/zig-ar
-            export RUSTFLAGS="-C linker=${zigCCWrapper}/bin/zig-cc"
-            cargo check --profile release --locked
+            cargo build --release --locked
           '';
         } else { }));
 
