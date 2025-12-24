@@ -47,7 +47,7 @@ impl CliRenderer {
 
     /// Create a new CLI renderer with the given configuration.
     #[must_use]
-    pub fn with_config(config: CliRendererConfig) -> Self {
+    pub const fn with_config(config: CliRendererConfig) -> Self {
         Self { config }
     }
 

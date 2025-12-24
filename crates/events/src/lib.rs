@@ -421,18 +421,22 @@ macro_rules! emit_stderr {
 }
 
 #[cfg(test)]
+#[allow(clippy::cognitive_complexity)]
 mod tests {
     use super::*;
     use tokio::sync::mpsc;
     use tracing_subscriber::layer::SubscriberExt;
 
-    #[tokio::test]
-    async fn test_emit_macros_compile() {
+    fn with_test_subscriber(f: impl FnOnce()) {
         let (tx, _rx) = mpsc::unbounded_channel();
         let layer = CuenvEventLayer::new(tx);
         let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, f);
+    }
 
-        tracing::subscriber::with_default(subscriber, || {
+    #[tokio::test]
+    async fn test_task_macros_compile() {
+        with_test_subscriber(|| {
             emit_task_started!("build", "cargo build", true);
             emit_task_cache_hit!("build", "abc123");
             emit_task_cache_miss!("test");
@@ -440,7 +444,12 @@ mod tests {
             emit_task_completed!("build", true, Some(0), 1000_u64);
             emit_task_group_started!("all", false, 3_usize);
             emit_task_group_completed!("all", true, 5000_u64);
+        });
+    }
 
+    #[tokio::test]
+    async fn test_ci_macros_compile() {
+        with_test_subscriber(|| {
             emit_ci_context!("github", "push", "main");
             emit_ci_changed_files!(10_usize);
             emit_ci_projects_discovered!(3_usize);
@@ -449,19 +458,27 @@ mod tests {
             emit_ci_task_result!("/path", "build", true);
             emit_ci_task_result!("/path", "test", false, "assertion failed");
             emit_ci_report!("/path/report.json");
+        });
+    }
 
+    #[tokio::test]
+    async fn test_command_macros_compile() {
+        with_test_subscriber(|| {
             emit_command_started!("env");
             emit_command_started!("task", vec!["build".to_string()]);
             emit_command_progress!("env", 0.5_f32, "loading");
             emit_command_completed!("env", true, 100_u64);
+        });
+    }
 
+    #[tokio::test]
+    async fn test_misc_macros_compile() {
+        with_test_subscriber(|| {
             emit_prompt_requested!("p1", "Continue?", vec!["yes", "no"]);
             emit_prompt_resolved!("p1", "yes");
             emit_wait_progress!("hook", 5_u64);
-
             emit_supervisor_log!("supervisor", "started");
             emit_shutdown!();
-
             emit_stdout!("hello");
             emit_stderr!("error");
         });

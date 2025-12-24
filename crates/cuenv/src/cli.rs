@@ -129,26 +129,26 @@ impl From<cuenv_core::Error> for CliError {
         match err {
             // Configuration errors are user-facing config issues (exit code 2)
             // Extract just the message to avoid "Configuration error: Configuration error:"
-            cuenv_core::Error::Configuration { message, .. } => CliError::config(message),
+            cuenv_core::Error::Configuration { message, .. } => Self::config(message),
             // FFI, CUE parsing, validation, and execution errors are evaluation errors (exit code 3)
             cuenv_core::Error::Ffi { .. }
             | cuenv_core::Error::CueParse { .. }
-            | cuenv_core::Error::Validation { .. } => CliError::eval(err.to_string()),
+            | cuenv_core::Error::Validation { .. } => Self::eval(err.to_string()),
             // Execution errors - extract message to avoid redundant prefix
             cuenv_core::Error::Execution { message, .. } => {
-                CliError::eval_with_help(message, "Check the task output above for details")
+                Self::eval_with_help(message, "Check the task output above for details")
             }
             // I/O, encoding, and timeout errors are unexpected runtime errors
             cuenv_core::Error::Io { .. }
             | cuenv_core::Error::Utf8 { .. }
-            | cuenv_core::Error::Timeout { .. } => CliError::other(err.to_string()),
+            | cuenv_core::Error::Timeout { .. } => Self::other(err.to_string()),
         }
     }
 }
 
 /// Map CLI error to appropriate exit code
 #[must_use]
-pub fn exit_code_for(err: &CliError) -> i32 {
+pub const fn exit_code_for(err: &CliError) -> i32 {
     match err {
         CliError::Config { .. } => EXIT_CLI,
         CliError::Eval { .. } | CliError::Other { .. } => EXIT_EVAL,
@@ -198,10 +198,10 @@ pub enum OutputFormat {
 impl std::fmt::Display for OutputFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            OutputFormat::Json => "json",
-            OutputFormat::Env => "env",
-            OutputFormat::Text => "text",
-            OutputFormat::Rich => "rich",
+            Self::Json => "json",
+            Self::Env => "env",
+            Self::Text => "text",
+            Self::Rich => "rich",
         };
         write!(f, "{s}")
     }
@@ -210,10 +210,10 @@ impl std::fmt::Display for OutputFormat {
 impl AsRef<str> for OutputFormat {
     fn as_ref(&self) -> &str {
         match self {
-            OutputFormat::Json => "json",
-            OutputFormat::Env => "env",
-            OutputFormat::Text => "text",
-            OutputFormat::Rich => "rich",
+            Self::Json => "json",
+            Self::Env => "env",
+            Self::Text => "text",
+            Self::Rich => "rich",
         }
     }
 }
@@ -231,7 +231,7 @@ impl<T> OkEnvelope<T> {
     /// Create a new success envelope
     #[must_use]
     #[allow(dead_code)]
-    pub fn new(data: T) -> Self {
+    pub const fn new(data: T) -> Self {
         Self { status: "ok", data }
     }
 }
@@ -248,7 +248,7 @@ pub struct ErrorEnvelope<E> {
 impl<E> ErrorEnvelope<E> {
     /// Create a new error envelope
     #[must_use]
-    pub fn new(error: E) -> Self {
+    pub const fn new(error: E) -> Self {
         Self {
             status: "error",
             error,
@@ -400,6 +400,13 @@ pub enum Commands {
             default_value_t = false
         )]
         all: bool,
+        #[arg(
+            long = "skip-dependencies",
+            short = 'S',
+            help = "Skip executing task dependencies (for CI orchestrators that handle deps externally)",
+            default_value_t = false
+        )]
+        skip_dependencies: bool,
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,
     },
@@ -715,9 +722,9 @@ pub enum StatusFormat {
 impl std::fmt::Display for StatusFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
-            StatusFormat::Text => "text",
-            StatusFormat::Short => "short",
-            StatusFormat::Starship => "starship",
+            Self::Text => "text",
+            Self::Short => "short",
+            Self::Starship => "starship",
         };
         write!(f, "{s}")
     }
@@ -980,16 +987,16 @@ impl Commands {
     pub fn package(&self) -> &str {
         match self {
             // Commands with explicit --package parameter
-            Commands::Info { package, .. }
-            | Commands::Task { package, .. }
-            | Commands::Exec { package, .. }
-            | Commands::Sync { package, .. }
-            | Commands::Allow { package, .. }
-            | Commands::Deny { package, .. }
-            | Commands::Export { package, .. } => package,
+            Self::Info { package, .. }
+            | Self::Task { package, .. }
+            | Self::Exec { package, .. }
+            | Self::Sync { package, .. }
+            | Self::Allow { package, .. }
+            | Self::Deny { package, .. }
+            | Self::Export { package, .. } => package,
 
             // Nested env subcommands with --package
-            Commands::Env { subcommand } => match subcommand {
+            Self::Env { subcommand } => match subcommand {
                 EnvCommands::Print { package, .. }
                 | EnvCommands::Load { package, .. }
                 | EnvCommands::Status { package, .. }
@@ -999,15 +1006,15 @@ impl Commands {
             },
 
             // Commands that don't use CUE evaluation or have no package param
-            Commands::Version { .. }
-            | Commands::Completions { .. }
-            | Commands::Shell { .. }
-            | Commands::Ci { .. }
-            | Commands::Tui
-            | Commands::Web { .. }
-            | Commands::Changeset { .. }
-            | Commands::Release { .. }
-            | Commands::Secrets { .. } => "cuenv",
+            Self::Version { .. }
+            | Self::Completions { .. }
+            | Self::Shell { .. }
+            | Self::Ci { .. }
+            | Self::Tui
+            | Self::Web { .. }
+            | Self::Changeset { .. }
+            | Self::Release { .. }
+            | Self::Secrets { .. } => "cuenv",
         }
     }
 
@@ -1017,10 +1024,10 @@ impl Commands {
     #[must_use]
     pub fn into_command(self, environment: Option<String>) -> Command {
         match self {
-            Commands::Version { output_format } => Command::Version {
+            Self::Version { output_format } => Command::Version {
                 format: output_format.to_string(),
             },
-            Commands::Info {
+            Self::Info {
                 path,
                 package,
                 meta,
@@ -1029,7 +1036,7 @@ impl Commands {
                 package,
                 meta,
             },
-            Commands::Env { subcommand } => match subcommand {
+            Self::Env { subcommand } => match subcommand {
                 EnvCommands::Print {
                     path,
                     package,
@@ -1074,7 +1081,7 @@ impl Commands {
                     format: output_format.to_string(),
                 },
             },
-            Commands::Task {
+            Self::Task {
                 name,
                 path,
                 package,
@@ -1087,6 +1094,7 @@ impl Commands {
                 interactive,
                 help,
                 all,
+                skip_dependencies,
                 task_args,
             } => Command::Task {
                 path,
@@ -1102,9 +1110,10 @@ impl Commands {
                 interactive,
                 help,
                 all,
+                skip_dependencies,
                 task_args,
             },
-            Commands::Exec {
+            Self::Exec {
                 command,
                 args,
                 path,
@@ -1116,10 +1125,10 @@ impl Commands {
                 args,
                 environment,
             },
-            Commands::Shell { subcommand } => match subcommand {
+            Self::Shell { subcommand } => match subcommand {
                 ShellCommands::Init { shell } => Command::ShellInit { shell },
             },
-            Commands::Allow {
+            Self::Allow {
                 path,
                 package,
                 note,
@@ -1130,9 +1139,9 @@ impl Commands {
                 note,
                 yes,
             },
-            Commands::Deny { path, package, all } => Command::Deny { path, package, all },
-            Commands::Export { shell, package } => Command::Export { shell, package },
-            Commands::Ci {
+            Self::Deny { path, package, all } => Command::Deny { path, package, all },
+            Self::Export { shell, package } => Command::Export { shell, package },
+            Self::Ci {
                 dry_run,
                 pipeline,
                 dynamic,
@@ -1143,9 +1152,9 @@ impl Commands {
                 dynamic,
                 from,
             },
-            Commands::Tui => Command::Tui,
-            Commands::Web { port, host } => Command::Web { port, host },
-            Commands::Changeset { subcommand } => match subcommand {
+            Self::Tui => Command::Tui,
+            Self::Web { port, host } => Command::Web { port, host },
+            Self::Changeset { subcommand } => match subcommand {
                 ChangesetCommands::Add {
                     path,
                     summary,
@@ -1176,7 +1185,7 @@ impl Commands {
                     Command::ChangesetFromCommits { path, since }
                 }
             },
-            Commands::Release { subcommand } => match subcommand {
+            Self::Release { subcommand } => match subcommand {
                 ReleaseCommands::Prepare {
                     path,
                     since,
@@ -1216,8 +1225,8 @@ impl Commands {
                     version,
                 },
             },
-            Commands::Completions { shell } => Command::Completions { shell },
-            Commands::Sync {
+            Self::Completions { shell } => Command::Completions { shell },
+            Self::Sync {
                 subcommand,
                 path,
                 package,
@@ -1340,7 +1349,7 @@ impl Commands {
                     ci_provider,
                 }
             }
-            Commands::Secrets { subcommand } => match subcommand {
+            Self::Secrets { subcommand } => match subcommand {
                 SecretsCommands::Setup { provider, wasm_url } => {
                     Command::SecretsSetup { provider, wasm_url }
                 }

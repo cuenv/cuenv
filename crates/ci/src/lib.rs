@@ -10,6 +10,7 @@ pub mod executor;
 pub mod flake;
 pub mod gc;
 pub mod ir;
+pub mod pipeline;
 pub mod provider;
 pub mod render;
 pub mod report;

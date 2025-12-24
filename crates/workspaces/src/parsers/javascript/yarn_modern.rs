@@ -197,6 +197,7 @@ fn entry_from_package(
     }))
 }
 
+#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_descriptor(lockfile_path: &Path, descriptor: &str) -> Result<(String, String)> {
     // Descriptors have format: "package-name@protocol:version"
     // Examples: "left-pad@npm:^1.3.0", "@babel/core@npm:^7.0.0", "my-pkg@workspace:."
@@ -229,6 +230,7 @@ fn parse_descriptor(lockfile_path: &Path, descriptor: &str) -> Result<(String, S
     }
 }
 
+#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_resolution(resolution: &str, package_name: &str) -> (String, DependencySource) {
     // Resolutions look like:
     // - "left-pad@npm:1.3.0"

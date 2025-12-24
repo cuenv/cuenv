@@ -96,13 +96,13 @@ impl PublishPlan {
 
     /// Get the number of packages to publish.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.packages.len()
     }
 
     /// Check if the plan is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.packages.is_empty()
     }
 

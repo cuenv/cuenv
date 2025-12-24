@@ -11,14 +11,14 @@ use cuenv_core::tasks::{TaskDefinition, TaskIndex, WorkspaceTask};
 
 /// Node in a hierarchical task tree for display purposes
 #[derive(Default)]
-pub(crate) struct TaskTreeNode {
+pub struct TaskTreeNode {
     pub description: Option<String>,
     pub children: BTreeMap<String, TaskTreeNode>,
     pub is_task: bool,
 }
 
 /// Get CLI help text for the task subcommand
-pub(crate) fn get_task_cli_help() -> String {
+pub fn get_task_cli_help() -> String {
     use clap::CommandFactory;
     let mut cmd = crate::cli::Cli::command();
     // Navigate to the "task" subcommand
@@ -32,7 +32,7 @@ pub(crate) fn get_task_cli_help() -> String {
 }
 
 /// Format detailed information about a single task
-pub(crate) fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
+pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
     let mut output = String::new();
     writeln!(output, "Task: {}", task.name).expect("write to string");
 
@@ -118,7 +118,7 @@ pub(crate) fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> Strin
 }
 
 /// Collect all tasks from discovered projects into `WorkspaceTask` format
-pub(crate) fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<WorkspaceTask> {
+pub fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<WorkspaceTask> {
     let mut result = Vec::new();
 
     for project in discovery.projects() {
@@ -154,7 +154,7 @@ pub(crate) fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<Workspac
 }
 
 /// Render workspace tasks in human-readable format
-pub(crate) fn render_workspace_task_list(tasks: &[WorkspaceTask]) -> String {
+pub fn render_workspace_task_list(tasks: &[WorkspaceTask]) -> String {
     if tasks.is_empty() {
         return "No tasks found in workspace".to_string();
     }
@@ -187,7 +187,7 @@ pub(crate) fn render_workspace_task_list(tasks: &[WorkspaceTask]) -> String {
 ///
 /// `cwd_relative`: Current working directory relative to cue.mod root (e.g., "projects/foo")
 /// Tasks from the current directory are shown first, then progressively further parent dirs
-pub(crate) fn render_task_tree(
+pub fn render_task_tree(
     tasks: Vec<&cuenv_core::tasks::IndexedTask>,
     cwd_relative: Option<&str>,
 ) -> String {

@@ -71,7 +71,7 @@ pub struct MatchHook {
 }
 
 /// Reference to a task in another env.cue project by its name property
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TaskRef {
     /// Format: "#project-name:task-name" where project-name is the `name` field in env.cue
     /// Example: "#projen-generator:bun.install"
@@ -124,7 +124,7 @@ pub struct TaskMatcher {
 }
 
 /// Pattern matcher for task arguments
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArgMatcher {
     /// Match if any arg contains this substring
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -140,7 +140,7 @@ fn default_true() -> bool {
 }
 
 /// Collection of hooks that can be executed
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Hooks {
     /// Named hooks to execute when entering an environment (map of name -> hook)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,7 +200,7 @@ pub enum FileMode {
 }
 
 /// Format configuration for a generated file
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FormatConfig {
     /// Indent style: "space" or "tab"
@@ -270,7 +270,7 @@ pub enum IgnoreValue {
 }
 
 /// Extended ignore configuration with patterns and optional filename override.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IgnoreEntry {
     /// List of patterns to include in the ignore file
     pub patterns: Vec<String>,
@@ -319,7 +319,7 @@ pub enum Runtime {
 }
 
 /// Nix runtime configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NixRuntime {
     /// Flake reference (default: "." for local flake.nix)
     #[serde(default = "default_flake")]
@@ -343,7 +343,7 @@ fn default_flake() -> String {
 }
 
 /// Devenv runtime configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct DevenvRuntime {
     /// Path to devenv config directory (default: ".")
     #[serde(default = "default_flake")]
@@ -351,7 +351,7 @@ pub struct DevenvRuntime {
 }
 
 /// Simple container runtime configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContainerRuntime {
     /// Container image (e.g., "node:20-alpine", "rust:1.75-slim")
     pub image: String,
@@ -375,7 +375,7 @@ pub struct DaggerRuntime {
 }
 
 /// Secret configuration for Dagger containers
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaggerSecret {
     /// Name identifier for the secret
     pub name: String,
@@ -390,7 +390,7 @@ pub struct DaggerSecret {
 }
 
 /// Cache volume mount configuration for Dagger
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DaggerCacheMount {
     /// Path inside the container to mount the cache
     pub path: String,

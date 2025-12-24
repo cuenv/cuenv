@@ -23,13 +23,13 @@ pub struct BatchConfig {
 impl BatchConfig {
     /// Create a new batch config with the given salt configuration.
     #[must_use]
-    pub fn new(salt_config: SaltConfig) -> Self {
+    pub const fn new(salt_config: SaltConfig) -> Self {
         Self { salt_config }
     }
 
     /// Create a batch config from an optional salt string.
     #[must_use]
-    pub fn from_salt(salt: Option<String>) -> Self {
+    pub const fn from_salt(salt: Option<String>) -> Self {
         Self {
             salt_config: SaltConfig::new(salt),
         }
@@ -139,27 +139,24 @@ impl<'a> BatchResolver<'a> {
         for (_provider, batch_result) in provider_results {
             for (name, secure_value) in batch_result {
                 // Compute fingerprint if this secret affects cache keys
-                let fingerprint = if let Some((spec, _)) = secrets.get(&name) {
-                    if spec.cache_key {
-                        // Warn if secret is too short
-                        if secure_value.len() < 4 {
-                            tracing::warn!(
-                                secret = %name,
-                                len = secure_value.len(),
-                                "Secret is too short for safe cache key inclusion"
-                            );
-                        }
-                        Some(compute_secret_fingerprint(
-                            &name,
-                            secure_value.expose(),
-                            self.config.salt_config.write_salt().unwrap_or(""),
-                        ))
-                    } else {
-                        None
+                let fingerprint = secrets.get(&name).and_then(|(spec, _)| {
+                    if !spec.cache_key {
+                        return None;
                     }
-                } else {
-                    None
-                };
+                    // Warn if secret is too short
+                    if secure_value.len() < 4 {
+                        tracing::warn!(
+                            secret = %name,
+                            len = secure_value.len(),
+                            "Secret is too short for safe cache key inclusion"
+                        );
+                    }
+                    Some(compute_secret_fingerprint(
+                        &name,
+                        secure_value.expose(),
+                        self.config.salt_config.write_salt().unwrap_or(""),
+                    ))
+                });
 
                 batch.insert(name, secure_value, fingerprint);
             }
@@ -214,27 +211,24 @@ pub async fn resolve_batch<R: SecretResolver>(
     // Build BatchSecrets with fingerprints
     let mut batch = BatchSecrets::with_capacity(secrets.len());
     for (name, secure_value) in batch_results {
-        let fingerprint = if let Some(spec) = secrets.get(&name) {
-            if spec.cache_key {
-                // Warn if secret is too short
-                if secure_value.len() < 4 {
-                    tracing::warn!(
-                        secret = %name,
-                        len = secure_value.len(),
-                        "Secret is too short for safe cache key inclusion"
-                    );
-                }
-                Some(compute_secret_fingerprint(
-                    &name,
-                    secure_value.expose(),
-                    salt_config.write_salt().unwrap_or(""),
-                ))
-            } else {
-                None
+        let fingerprint = secrets.get(&name).and_then(|spec| {
+            if !spec.cache_key {
+                return None;
             }
-        } else {
-            None
-        };
+            // Warn if secret is too short
+            if secure_value.len() < 4 {
+                tracing::warn!(
+                    secret = %name,
+                    len = secure_value.len(),
+                    "Secret is too short for safe cache key inclusion"
+                );
+            }
+            Some(compute_secret_fingerprint(
+                &name,
+                secure_value.expose(),
+                salt_config.write_salt().unwrap_or(""),
+            ))
+        });
 
         batch.insert(name, secure_value, fingerprint);
     }

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 pub const IR_VERSION: &str = "1.4";
 
 /// Root IR document
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IntermediateRepresentation {
     /// IR version (always "1.4")
     pub version: String,
@@ -54,7 +54,7 @@ impl IntermediateRepresentation {
 }
 
 /// Pipeline metadata and trigger configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PipelineMetadata {
     /// Pipeline name
     pub name: String,
@@ -81,7 +81,7 @@ pub struct PipelineMetadata {
 }
 
 /// Trigger conditions for pipeline execution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub struct TriggerCondition {
     /// Branch patterns to trigger on
@@ -114,7 +114,7 @@ pub struct TriggerCondition {
 }
 
 /// Manual trigger (`workflow_dispatch`) configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ManualTriggerConfig {
     /// Whether manual trigger is enabled
     pub enabled: bool,
@@ -125,7 +125,7 @@ pub struct ManualTriggerConfig {
 }
 
 /// Workflow dispatch input definition
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct WorkflowDispatchInputDef {
     /// Human-readable description
@@ -149,7 +149,7 @@ pub struct WorkflowDispatchInputDef {
 }
 
 /// Runtime environment definition (Nix flake-based)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Runtime {
     /// Unique runtime identifier
     pub id: String,
@@ -172,7 +172,7 @@ pub struct Runtime {
 }
 
 /// Purity enforcement for Nix flakes
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PurityMode {
     /// Reject unlocked flakes (strict mode)
@@ -187,7 +187,7 @@ pub enum PurityMode {
 }
 
 /// Task definition in the IR
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Task {
     /// Unique task identifier
     pub id: String,
@@ -242,10 +242,124 @@ pub struct Task {
     /// Manual approval required before execution
     #[serde(default)]
     pub manual_approval: bool,
+
+    /// Matrix configuration for parallel job expansion
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matrix: Option<MatrixConfig>,
+
+    /// Artifacts to download before running this task
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_downloads: Vec<ArtifactDownload>,
+
+    /// Parameters to pass to the task command
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub params: HashMap<String, String>,
+}
+
+impl Task {
+    /// Create a synthetic task for artifact aggregation.
+    ///
+    /// Used when converting `MatrixTask` (with artifacts/params but no matrix dimensions)
+    /// into an IR `Task` for the emitter.
+    #[must_use]
+    pub fn synthetic_aggregation(
+        id: impl Into<String>,
+        artifact_downloads: Vec<ArtifactDownload>,
+        params: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            runtime: None,
+            command: vec![],
+            shell: false,
+            env: HashMap::new(),
+            secrets: HashMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Normal,
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads,
+            params,
+        }
+    }
+
+    /// Create a synthetic task for matrix expansion.
+    ///
+    /// Used when converting `MatrixTask` (with matrix dimensions)
+    /// into an IR `Task` for the emitter.
+    #[must_use]
+    pub fn synthetic_matrix(id: impl Into<String>, matrix: MatrixConfig) -> Self {
+        Self {
+            id: id.into(),
+            runtime: None,
+            command: vec![],
+            shell: false,
+            env: HashMap::new(),
+            secrets: HashMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Normal,
+            deployment: false,
+            manual_approval: false,
+            matrix: Some(matrix),
+            artifact_downloads: vec![],
+            params: HashMap::new(),
+        }
+    }
+}
+
+/// Matrix configuration for parallel job expansion
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MatrixConfig {
+    /// Matrix dimensions (e.g., `{"arch": ["linux-x64", "darwin-arm64"]}`)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub dimensions: HashMap<String, Vec<String>>,
+
+    /// Exclude specific combinations
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<HashMap<String, String>>,
+
+    /// Include additional combinations
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<HashMap<String, String>>,
+
+    /// Maximum parallel jobs (0 = unlimited)
+    #[serde(default)]
+    pub max_parallel: usize,
+
+    /// Fail-fast behavior (stop all jobs on first failure)
+    #[serde(default = "default_fail_fast")]
+    pub fail_fast: bool,
+}
+
+const fn default_fail_fast() -> bool {
+    true
+}
+
+/// Artifact download configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactDownload {
+    /// Name pattern for the artifact (can include matrix variables like `build-${{ matrix.arch }}`)
+    pub name: String,
+
+    /// Directory to download artifacts into
+    pub path: String,
+
+    /// Optional filter pattern for matrix variants (e.g., `"*stable"`)
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub filter: String,
 }
 
 /// Secret configuration for a task
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SecretConfig {
     /// Source reference (e.g., CI variable name, 1Password reference)
     pub source: String,
@@ -256,7 +370,7 @@ pub struct SecretConfig {
 }
 
 /// Resource requirements for task execution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ResourceRequirements {
     /// CPU request/limit (e.g., "2", "1000m")
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,7 +386,7 @@ pub struct ResourceRequirements {
 }
 
 /// Output artifact declaration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OutputDeclaration {
     /// Path to output file/directory
     pub path: String,
@@ -283,7 +397,7 @@ pub struct OutputDeclaration {
 }
 
 /// Output storage type
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputType {
     /// Store in Content Addressable Store (default)
@@ -295,7 +409,7 @@ pub enum OutputType {
 }
 
 /// Cache policy for task execution
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CachePolicy {
     /// Read from cache, write on miss (default)
@@ -337,7 +451,7 @@ pub enum BuildStage {
 ///
 /// When present, GitHub emitters will render this task as a `uses:` step
 /// instead of a `run:` step. Other platforms fall back to the `command` field.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionSpec {
     /// GitHub Action reference (e.g., "actions/checkout@v4")
@@ -349,7 +463,7 @@ pub struct ActionSpec {
 }
 
 /// A task contributed by a stage provider
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[derive(Default)]
 pub struct StageTask {
@@ -394,12 +508,12 @@ pub struct StageTask {
 /// Helper to skip serializing zero priority
 /// Serde's `skip_serializing_if` requires a reference parameter
 #[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_zero(v: &i32) -> bool {
+const fn is_zero(v: &i32) -> bool {
     *v == 0
 }
 
 /// Stage configuration containing all provider-injected tasks
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StageConfiguration {
     /// Bootstrap tasks (environment setup, runs first)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -421,7 +535,7 @@ pub struct StageConfiguration {
 impl StageConfiguration {
     /// Check if all stages are empty
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.bootstrap.is_empty()
             && self.setup.is_empty()
             && self.success.is_empty()
@@ -530,6 +644,9 @@ mod tests {
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: HashMap::new(),
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -555,6 +672,9 @@ mod tests {
             cache_policy: CachePolicy::Disabled,
             deployment: true,
             manual_approval: true,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: HashMap::new(),
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -562,6 +682,51 @@ mod tests {
         assert_eq!(json["manual_approval"], true);
         assert_eq!(json["cache_policy"], "disabled");
         assert_eq!(json["concurrency_group"], "production");
+    }
+
+    #[test]
+    fn test_task_with_matrix() {
+        let task = Task {
+            id: "build-matrix".to_string(),
+            runtime: None,
+            command: vec!["cargo".to_string(), "build".to_string()],
+            shell: false,
+            env: HashMap::new(),
+            secrets: HashMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Normal,
+            deployment: false,
+            manual_approval: false,
+            matrix: Some(MatrixConfig {
+                dimensions: [("arch".to_string(), vec!["x64".to_string(), "arm64".to_string()])]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            }),
+            artifact_downloads: vec![],
+            params: HashMap::new(),
+        };
+
+        let json = serde_json::to_value(&task).unwrap();
+        assert_eq!(json["matrix"]["dimensions"]["arch"], serde_json::json!(["x64", "arm64"]));
+    }
+
+    #[test]
+    fn test_artifact_download() {
+        let artifact = ArtifactDownload {
+            name: "build-${{ matrix.arch }}".to_string(),
+            path: "./artifacts".to_string(),
+            filter: "*stable".to_string(),
+        };
+
+        let json = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(json["name"], "build-${{ matrix.arch }}");
+        assert_eq!(json["path"], "./artifacts");
+        assert_eq!(json["filter"], "*stable");
     }
 
     #[test]
@@ -631,6 +796,9 @@ mod tests {
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: HashMap::new(),
         });
 
         let json = serde_json::to_string_pretty(&ir).unwrap();

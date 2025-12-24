@@ -69,7 +69,7 @@ impl OrchestratorConfig {
 
     /// Sets dry-run mode.
     #[must_use]
-    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
@@ -98,7 +98,7 @@ pub struct ReleaseReport {
 impl ReleaseReport {
     /// Creates an empty report.
     #[must_use]
-    fn empty(phase: ReleasePhase) -> Self {
+    const fn empty(phase: ReleasePhase) -> Self {
         Self {
             phase,
             artifacts: Vec::new(),
@@ -109,7 +109,7 @@ impl ReleaseReport {
 
     /// Creates a report with artifacts.
     #[must_use]
-    fn with_artifacts(phase: ReleasePhase, artifacts: Vec<PackagedArtifact>) -> Self {
+    const fn with_artifacts(phase: ReleasePhase, artifacts: Vec<PackagedArtifact>) -> Self {
         Self {
             phase,
             artifacts,
@@ -159,7 +159,7 @@ impl ReleaseOrchestrator {
 
     /// Returns a reference to the configuration.
     #[must_use]
-    pub fn config(&self) -> &OrchestratorConfig {
+    pub const fn config(&self) -> &OrchestratorConfig {
         &self.config
     }
 

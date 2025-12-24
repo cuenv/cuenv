@@ -73,7 +73,7 @@ impl FlakeLockError {
 
     /// Create a strict mode violation error
     #[must_use]
-    pub fn strict_violation(inputs: Vec<String>) -> Self {
+    pub const fn strict_violation(inputs: Vec<String>) -> Self {
         Self::StrictModeViolation {
             count: inputs.len(),
             inputs,

@@ -34,7 +34,7 @@ pub struct UnlockedInput {
 }
 
 /// Reasons why an input may be unlocked
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnlockReason {
     /// No `locked` section present in the input
     MissingLockedSection,
@@ -76,7 +76,7 @@ pub struct FlakeLockAnalyzer {
 impl FlakeLockAnalyzer {
     /// Create analyzer from parsed `FlakeLock`
     #[must_use]
-    pub fn new(lock: FlakeLock) -> Self {
+    pub const fn new(lock: FlakeLock) -> Self {
         Self { lock }
     }
 
@@ -248,7 +248,7 @@ impl FlakeLockAnalyzer {
 
     /// Get the underlying `FlakeLock`
     #[must_use]
-    pub fn lock(&self) -> &FlakeLock {
+    pub const fn lock(&self) -> &FlakeLock {
         &self.lock
     }
 }

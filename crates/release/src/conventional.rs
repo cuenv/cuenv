@@ -191,11 +191,10 @@ impl CommitParser {
         let mut other = Vec::new();
 
         for commit in commits {
-            let desc = if let Some(ref scope) = commit.scope {
-                format!("**{}**: {}", scope, commit.description)
-            } else {
-                commit.description.clone()
-            };
+            let desc = commit.scope.as_ref().map_or_else(
+                || commit.description.clone(),
+                |scope| format!("**{scope}**: {}", commit.description),
+            );
 
             if commit.breaking {
                 breaking.push(desc.clone());

@@ -12,7 +12,7 @@ use std::fmt;
 /// Platform for CODEOWNERS file generation.
 ///
 /// This is the manifest-compatible version with serde/schemars derives.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
     /// GitHub - uses `.github/CODEOWNERS`
@@ -71,7 +71,7 @@ impl OwnersOutput {
 }
 
 /// A single code ownership rule.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OwnerRule {
     /// File pattern (glob syntax) - same as CODEOWNERS format.
     pub pattern: String,

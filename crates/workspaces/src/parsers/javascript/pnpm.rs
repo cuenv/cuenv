@@ -212,6 +212,7 @@ fn entry_from_package(
     })
 }
 
+#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_package_key(lockfile_path: &Path, package_key: &str) -> Result<(String, String)> {
     // Remove leading "/" if present
     let key = package_key.trim_start_matches('/');
@@ -294,6 +295,7 @@ fn parse_package_key(lockfile_path: &Path, package_key: &str) -> Result<(String,
     }
 }
 
+#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn determine_source(name: &str, package_info: &PnpmPackage) -> DependencySource {
     if let Some(resolution) = &package_info.resolution {
         match resolution {

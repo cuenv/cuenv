@@ -164,7 +164,7 @@ impl Cube {
             recursive: true,
             ..Default::default()
         };
-        let raw_result = cuengine::evaluate_module(&module_root, &package_name, Some(options))
+        let raw_result = cuengine::evaluate_module(&module_root, &package_name, Some(&options))
             .map_err(|e| CodegenError::Cube(format!("CUE evaluation failed: {e}")))?;
 
         let module = ModuleEvaluation::from_raw(

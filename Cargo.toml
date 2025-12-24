@@ -118,6 +118,20 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 all = "warn"
 pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+
 # Prevent direct console output - use cuenv_events emit macros instead
 print_stdout = "warn"
 print_stderr = "warn"
+
+# Detect overly complex functions (AI slop indicator)
+cognitive_complexity = "warn"
+
+# Restriction cherry-picks (strict error handling)
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"

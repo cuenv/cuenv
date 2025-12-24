@@ -132,7 +132,7 @@ impl SharedCore {
     /// - The shared core lock cannot be acquired
     /// - The WASM file cannot be loaded
     /// - The Extism plugin fails to initialize
-    pub fn get_or_init() -> Result<&'static Mutex<Option<SharedCore>>, SecretError> {
+    pub fn get_or_init() -> Result<&'static Mutex<Option<Self>>, SecretError> {
         let mut guard = SHARED_CORE
             .lock()
             .map_err(|_| SecretError::ResolutionFailed {
@@ -157,7 +157,7 @@ impl SharedCore {
                 }
             })?;
 
-            *guard = Some(SharedCore { plugin });
+            *guard = Some(Self { plugin });
             tracing::debug!("1Password WASM plugin initialized");
         }
 

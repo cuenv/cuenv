@@ -17,7 +17,7 @@ pub struct OutputPanelWidget<'a> {
 impl<'a> OutputPanelWidget<'a> {
     /// Create a new output panel widget
     #[must_use]
-    pub fn new(state: &'a TuiState) -> Self {
+    pub const fn new(state: &'a TuiState) -> Self {
         Self { state }
     }
 

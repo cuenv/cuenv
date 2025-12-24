@@ -55,12 +55,12 @@ impl BackendError {
     /// Returns true if this error indicates the cache is unavailable but
     /// execution should continue without caching (graceful degradation).
     #[must_use]
-    pub fn is_gracefully_degradable(&self) -> bool {
+    pub const fn is_gracefully_degradable(&self) -> bool {
         matches!(
             self,
-            BackendError::Unavailable(_)
-                | BackendError::Connection(_)
-                | BackendError::ActionNotFound { .. }
+            Self::Unavailable(_)
+                | Self::Connection(_)
+                | Self::ActionNotFound { .. }
         )
     }
 
@@ -70,7 +70,7 @@ impl BackendError {
         path: impl Into<std::path::PathBuf>,
         source: std::io::Error,
     ) -> Self {
-        BackendError::IoWithContext {
+        Self::IoWithContext {
             operation,
             path: path.into(),
             source,
@@ -218,13 +218,13 @@ pub trait CacheBackend: Send + Sync {
 
 /// Determine if cache read is allowed for a policy
 #[must_use]
-pub fn policy_allows_read(policy: CachePolicy) -> bool {
+pub const fn policy_allows_read(policy: CachePolicy) -> bool {
     matches!(policy, CachePolicy::Normal | CachePolicy::Readonly)
 }
 
 /// Determine if cache write is allowed for a policy
 #[must_use]
-pub fn policy_allows_write(policy: CachePolicy) -> bool {
+pub const fn policy_allows_write(policy: CachePolicy) -> bool {
     matches!(policy, CachePolicy::Normal | CachePolicy::Writeonly)
 }
 

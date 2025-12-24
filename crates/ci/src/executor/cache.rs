@@ -51,7 +51,7 @@ impl CacheError {
         path: impl Into<PathBuf>,
         source: io::Error,
     ) -> Self {
-        CacheError::IoWithContext {
+        Self::IoWithContext {
             operation,
             path: path.into(),
             source,
@@ -590,6 +590,9 @@ mod tests {
             cache_policy: policy,
             deployment: false,
             manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: std::collections::HashMap::new(),
         }
     }
 

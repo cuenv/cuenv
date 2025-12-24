@@ -75,28 +75,28 @@ impl CIExecutorConfig {
 
     /// Set the maximum parallel tasks
     #[must_use]
-    pub fn with_max_parallel(mut self, max_parallel: usize) -> Self {
+    pub const fn with_max_parallel(mut self, max_parallel: usize) -> Self {
         self.max_parallel = max_parallel;
         self
     }
 
     /// Enable or disable output capture
     #[must_use]
-    pub fn with_capture_output(mut self, capture: bool) -> Self {
+    pub const fn with_capture_output(mut self, capture: bool) -> Self {
         self.capture_output = capture;
         self
     }
 
     /// Enable or disable dry run mode
     #[must_use]
-    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
 
     /// Set a global cache policy override
     #[must_use]
-    pub fn with_cache_policy_override(mut self, policy: CachePolicy) -> Self {
+    pub const fn with_cache_policy_override(mut self, policy: CachePolicy) -> Self {
         self.cache_policy_override = Some(policy);
         self
     }

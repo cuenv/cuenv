@@ -24,7 +24,7 @@ pub type Url = String;
 /// A workspace is the root container for a multi-package project. It contains
 /// metadata about the workspace root, the package manager in use, all member
 /// packages, and the location of the lockfile.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Workspace {
     /// The root directory of the workspace.
@@ -56,7 +56,7 @@ impl Workspace {
     /// assert_eq!(workspace.member_count(), 0);
     /// ```
     #[must_use]
-    pub fn new(root: PathBuf, manager: PackageManager) -> Self {
+    pub const fn new(root: PathBuf, manager: PackageManager) -> Self {
         Self {
             root,
             manager,
@@ -136,13 +136,13 @@ impl Workspace {
     /// assert_eq!(workspace.member_count(), 0);
     /// ```
     #[must_use]
-    pub fn member_count(&self) -> usize {
+    pub const fn member_count(&self) -> usize {
         self.members.len()
     }
 }
 
 /// Represents a single package or crate within a workspace.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceMember {
     /// The name of the package/crate.
@@ -190,7 +190,7 @@ impl PackageManager {
     /// assert_eq!(PackageManager::Pnpm.lockfile_name(), "pnpm-lock.yaml");
     /// ```
     #[must_use]
-    pub fn lockfile_name(&self) -> &str {
+    pub const fn lockfile_name(&self) -> &str {
         match self {
             Self::Npm => "package-lock.json",
             Self::Bun => "bun.lock",
@@ -212,7 +212,7 @@ impl PackageManager {
     /// assert_eq!(PackageManager::Cargo.manifest_name(), "Cargo.toml");
     /// ```
     #[must_use]
-    pub fn manifest_name(&self) -> &str {
+    pub const fn manifest_name(&self) -> &str {
         match self {
             Self::Npm | Self::Bun | Self::Pnpm | Self::YarnClassic | Self::YarnModern => {
                 "package.json"
@@ -234,7 +234,7 @@ impl PackageManager {
     /// assert_eq!(PackageManager::Pnpm.workspace_config_name(), "pnpm-workspace.yaml");
     /// ```
     #[must_use]
-    pub fn workspace_config_name(&self) -> &str {
+    pub const fn workspace_config_name(&self) -> &str {
         match self {
             Self::Npm | Self::Bun | Self::YarnClassic | Self::YarnModern => "package.json",
             Self::Pnpm => "pnpm-workspace.yaml",
@@ -259,7 +259,7 @@ impl fmt::Display for PackageManager {
 }
 
 /// Describes how a dependency is specified in a manifest file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum DependencySpec {
     /// A registry dependency with version requirement.
@@ -294,7 +294,7 @@ pub enum DependencySpec {
 }
 
 /// Represents a resolved dependency from a lockfile.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LockfileEntry {
     /// Package name.
@@ -319,7 +319,7 @@ pub struct LockfileEntry {
 }
 
 /// Describes where a dependency comes from.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type", content = "value")]
 pub enum DependencySource {
     /// Package registry URL.

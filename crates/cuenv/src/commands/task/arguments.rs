@@ -9,7 +9,7 @@ use cuenv_core::Result;
 use cuenv_core::tasks::{ResolvedArgs, Task, TaskParams};
 
 /// Check if an argument looks like a flag (starts with `-` but is not a negative number)
-pub(crate) fn looks_like_flag(arg: &str) -> bool {
+pub fn looks_like_flag(arg: &str) -> bool {
     if !arg.starts_with('-') {
         return false;
     }
@@ -25,7 +25,7 @@ pub(crate) fn looks_like_flag(arg: &str) -> bool {
 /// Parse CLI arguments into positional and named values
 /// If params is provided, short flags (-x) are resolved to their long names
 /// Supports `--` separator to end flag parsing
-pub(crate) fn parse_task_args(
+pub fn parse_task_args(
     args: &[String],
     params: Option<&TaskParams>,
 ) -> (Vec<String>, HashMap<String, String>) {
@@ -98,7 +98,7 @@ pub(crate) fn parse_task_args(
 }
 
 /// Validate and resolve arguments against task parameter definitions
-pub(crate) fn resolve_task_args(
+pub fn resolve_task_args(
     params: Option<&TaskParams>,
     cli_args: &[String],
 ) -> Result<ResolvedArgs> {
@@ -168,7 +168,7 @@ pub(crate) fn resolve_task_args(
 }
 
 /// Apply resolved arguments to a task, interpolating placeholders in command and args
-pub(crate) fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
+pub fn apply_args_to_task(task: &Task, resolved_args: &ResolvedArgs) -> Task {
     let mut new_task = task.clone();
 
     // Interpolate command

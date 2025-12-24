@@ -93,7 +93,7 @@ pub struct HomebrewBackend {
 impl HomebrewBackend {
     /// Creates a new Homebrew backend.
     #[must_use]
-    pub fn new(config: HomebrewConfig) -> Self {
+    pub const fn new(config: HomebrewConfig) -> Self {
         Self { config }
     }
 

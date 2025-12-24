@@ -12,7 +12,7 @@ pub struct SaltConfig {
 impl SaltConfig {
     /// Create a new salt config with only a current salt
     #[must_use]
-    pub fn new(current: Option<String>) -> Self {
+    pub const fn new(current: Option<String>) -> Self {
         Self {
             current,
             previous: None,
@@ -21,13 +21,13 @@ impl SaltConfig {
 
     /// Create a salt config with rotation support
     #[must_use]
-    pub fn with_rotation(current: Option<String>, previous: Option<String>) -> Self {
+    pub const fn with_rotation(current: Option<String>, previous: Option<String>) -> Self {
         Self { current, previous }
     }
 
     /// Check if any salt is available
     #[must_use]
-    pub fn has_salt(&self) -> bool {
+    pub const fn has_salt(&self) -> bool {
         self.current.is_some() || self.previous.is_some()
     }
 

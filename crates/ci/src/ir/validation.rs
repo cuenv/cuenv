@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 /// Validation errors for IR documents
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum ValidationError {
     #[error("Task graph contains cycle: {0}")]
     CyclicDependency(String),
@@ -45,7 +45,7 @@ pub struct IrValidator<'a> {
 impl<'a> IrValidator<'a> {
     /// Create a new validator for the given IR
     #[must_use]
-    pub fn new(ir: &'a IntermediateRepresentation) -> Self {
+    pub const fn new(ir: &'a IntermediateRepresentation) -> Self {
         Self { ir }
     }
 
@@ -233,6 +233,9 @@ mod tests {
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: HashMap::new(),
         }
     }
 

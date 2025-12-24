@@ -167,7 +167,7 @@ pub enum SendError {
 impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SendError::Closed => write!(f, "event bus is closed"),
+            Self::Closed => write!(f, "event bus is closed"),
         }
     }
 }

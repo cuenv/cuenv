@@ -69,13 +69,13 @@ impl Version {
 
     /// Check if this is a pre-release version.
     #[must_use]
-    pub fn is_prerelease(&self) -> bool {
+    pub const fn is_prerelease(&self) -> bool {
         self.prerelease.is_some()
     }
 
     /// Check if this is the initial development version (0.x.x).
     #[must_use]
-    pub fn is_initial_development(&self) -> bool {
+    pub const fn is_initial_development(&self) -> bool {
         self.major == 0
     }
 
@@ -205,7 +205,7 @@ pub struct VersionCalculator {
 impl VersionCalculator {
     /// Create a new version calculator.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         current_versions: HashMap<String, Version>,
         packages_config: ReleasePackagesConfig,
     ) -> Self {

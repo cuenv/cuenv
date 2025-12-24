@@ -56,7 +56,7 @@ pub struct TaskOutput {
 impl TaskOutput {
     /// Create a cached result (no actual execution)
     #[must_use]
-    pub fn from_cache(task_id: String, duration_ms: u64) -> Self {
+    pub const fn from_cache(task_id: String, duration_ms: u64) -> Self {
         Self {
             task_id,
             exit_code: 0,
@@ -70,7 +70,7 @@ impl TaskOutput {
 
     /// Create a dry-run result
     #[must_use]
-    pub fn dry_run(task_id: String) -> Self {
+    pub const fn dry_run(task_id: String) -> Self {
         Self {
             task_id,
             exit_code: 0,
@@ -252,6 +252,9 @@ mod tests {
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: HashMap::new(),
         }
     }
 

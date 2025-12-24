@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use tokio::process::Command;
 
 /// Configuration for exec-based secret resolution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecSecretConfig {
     /// Command to execute
     pub command: String,
@@ -45,7 +45,7 @@ pub struct ExecSecretResolver;
 impl ExecSecretResolver {
     /// Create a new command execution resolver
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 

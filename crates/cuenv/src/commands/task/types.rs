@@ -36,6 +36,9 @@ pub struct TaskExecutionRequest<'a> {
     /// Backend to use for task execution (e.g., "dagger")
     pub backend: Option<String>,
 
+    /// Skip executing task dependencies (for CI orchestrators that handle deps externally)
+    pub skip_dependencies: bool,
+
     /// Optional executor for cached module evaluation
     pub executor: Option<&'a CommandExecutor>,
 }
@@ -50,6 +53,7 @@ impl fmt::Debug for TaskExecutionRequest<'_> {
             .field("output", &self.output)
             .field("execution_mode", &self.execution_mode)
             .field("backend", &self.backend)
+            .field("skip_dependencies", &self.skip_dependencies)
             .field(
                 "executor",
                 &self.executor.as_ref().map(|_| "<CommandExecutor>"),
@@ -138,6 +142,7 @@ impl<'a> TaskExecutionRequest<'a> {
             output: OutputConfig::default(),
             execution_mode: ExecutionMode::default(),
             backend: None,
+            skip_dependencies: false,
             executor: None,
         }
     }
@@ -160,13 +165,66 @@ impl<'a> TaskExecutionRequest<'a> {
             output: OutputConfig::default(),
             execution_mode: ExecutionMode::default(),
             backend: None,
+            skip_dependencies: false,
+            executor: None,
+        }
+    }
+
+    /// Create a new request for executing tasks matching labels.
+    #[must_use]
+    pub fn labels(
+        path: impl Into<String>,
+        package: impl Into<String>,
+        labels: Vec<String>,
+    ) -> Self {
+        Self {
+            path: path.into(),
+            package: package.into(),
+            selection: TaskSelection::Labels(labels),
+            environment: None,
+            output: OutputConfig::default(),
+            execution_mode: ExecutionMode::default(),
+            backend: None,
+            skip_dependencies: false,
+            executor: None,
+        }
+    }
+
+    /// Create a new request for interactive task selection.
+    #[must_use]
+    pub fn interactive(path: impl Into<String>, package: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            package: package.into(),
+            selection: TaskSelection::Interactive,
+            environment: None,
+            output: OutputConfig::default(),
+            execution_mode: ExecutionMode::default(),
+            backend: None,
+            skip_dependencies: false,
+            executor: None,
+        }
+    }
+
+    /// Create a new request for listing all workspace tasks.
+    #[must_use]
+    pub fn all(path: impl Into<String>, package: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            package: package.into(),
+            selection: TaskSelection::All,
+            environment: None,
+            output: OutputConfig::default(),
+            execution_mode: ExecutionMode::default(),
+            backend: None,
+            skip_dependencies: false,
             executor: None,
         }
     }
 
     /// Set the executor for cached module evaluation.
     #[must_use]
-    pub fn with_executor(mut self, executor: &'a CommandExecutor) -> Self {
+    pub const fn with_executor(mut self, executor: &'a CommandExecutor) -> Self {
         self.executor = Some(executor);
         self
     }
@@ -196,14 +254,14 @@ impl<'a> TaskExecutionRequest<'a> {
 
     /// Enable output capture.
     #[must_use]
-    pub fn with_capture(mut self) -> Self {
+    pub const fn with_capture(mut self) -> Self {
         self.output.capture_output = true;
         self
     }
 
     /// Enable TUI mode.
     #[must_use]
-    pub fn with_tui(mut self) -> Self {
+    pub const fn with_tui(mut self) -> Self {
         self.execution_mode = ExecutionMode::Tui;
         self
     }
@@ -217,7 +275,7 @@ impl<'a> TaskExecutionRequest<'a> {
 
     /// Enable help mode.
     #[must_use]
-    pub fn with_help(mut self) -> Self {
+    pub const fn with_help(mut self) -> Self {
         self.output.help = true;
         self
     }
@@ -231,74 +289,16 @@ impl<'a> TaskExecutionRequest<'a> {
 
     /// Enable cache path display.
     #[must_use]
-    pub fn with_show_cache_path(mut self) -> Self {
+    pub const fn with_show_cache_path(mut self) -> Self {
         self.output.show_cache_path = true;
         self
     }
-}
 
-/// Convert from the old parameter-based API to the new request struct.
-///
-/// This is used during the transition period and for backward compatibility.
-impl<'a> TaskExecutionRequest<'a> {
-    /// Create a request from the legacy parameter list.
-    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-    pub fn from_legacy(
-        path: &str,
-        package: &str,
-        task_name: Option<&str>,
-        labels: &[String],
-        environment: Option<&str>,
-        format: &str,
-        capture_output: bool,
-        materialize_outputs: Option<&str>,
-        show_cache_path: bool,
-        backend: Option<&str>,
-        tui: bool,
-        interactive: bool,
-        help: bool,
-        all: bool,
-        task_args: &[String],
-        executor: Option<&'a CommandExecutor>,
-    ) -> Self {
-        // Determine selection mode based on parameters
-        let selection = if interactive {
-            TaskSelection::Interactive
-        } else if all {
-            TaskSelection::All
-        } else if !labels.is_empty() {
-            TaskSelection::Labels(labels.to_vec())
-        } else if let Some(name) = task_name {
-            TaskSelection::Named {
-                name: name.to_string(),
-                args: task_args.to_vec(),
-            }
-        } else {
-            TaskSelection::List
-        };
-
-        let execution_mode = if tui {
-            ExecutionMode::Tui
-        } else {
-            ExecutionMode::Simple
-        };
-
-        Self {
-            path: path.to_string(),
-            package: package.to_string(),
-            selection,
-            environment: environment.map(ToString::to_string),
-            output: OutputConfig {
-                format: format.to_string(),
-                capture_output,
-                show_cache_path,
-                materialize_outputs: materialize_outputs.map(PathBuf::from),
-                help,
-            },
-            execution_mode,
-            backend: backend.map(ToString::to_string),
-            executor,
-        }
+    /// Skip executing task dependencies.
+    #[must_use]
+    pub const fn with_skip_dependencies(mut self) -> Self {
+        self.skip_dependencies = true;
+        self
     }
 }
 
@@ -345,25 +345,12 @@ mod tests {
     }
 
     #[test]
-    fn test_from_legacy_named_task() {
-        let req = TaskExecutionRequest::from_legacy(
-            "./",
-            "cuenv",
-            Some("build"),
-            &[],
-            Some("prod"),
-            "json",
-            true,
-            None,
-            false,
-            None,
-            false,
-            false,
-            false,
-            false,
-            &["--release".to_string()],
-            None,
-        );
+    fn test_named_task_with_args() {
+        let req = TaskExecutionRequest::named("./", "cuenv", "build")
+            .with_args(vec!["--release".to_string()])
+            .with_environment("prod")
+            .with_format("json")
+            .with_capture();
 
         assert!(matches!(
             req.selection,
@@ -375,77 +362,16 @@ mod tests {
     }
 
     #[test]
-    fn test_from_legacy_labels() {
-        let req = TaskExecutionRequest::from_legacy(
-            "./",
-            "cuenv",
-            None,
-            &["test".to_string(), "unit".to_string()],
-            None,
-            "simple",
-            false,
-            None,
-            false,
-            None,
-            false,
-            false,
-            false,
-            false,
-            &[],
-            None,
-        );
-
-        assert!(matches!(
-            req.selection,
-            TaskSelection::Labels(ref labels) if labels == &vec!["test".to_string(), "unit".to_string()]
-        ));
-    }
-
-    #[test]
-    fn test_from_legacy_interactive() {
-        let req = TaskExecutionRequest::from_legacy(
-            "./",
-            "cuenv",
-            None,
-            &[],
-            None,
-            "simple",
-            false,
-            None,
-            false,
-            None,
-            false,
-            true, // interactive
-            false,
-            false,
-            &[],
-            None,
-        );
-
-        assert!(matches!(req.selection, TaskSelection::Interactive));
-    }
-
-    #[test]
-    fn test_from_legacy_tui_mode() {
-        let req = TaskExecutionRequest::from_legacy(
-            "./",
-            "cuenv",
-            Some("build"),
-            &[],
-            None,
-            "simple",
-            false,
-            None,
-            false,
-            None,
-            true, // tui
-            false,
-            false,
-            false,
-            &[],
-            None,
-        );
+    fn test_tui_mode() {
+        let req = TaskExecutionRequest::named("./", "cuenv", "build").with_tui();
 
         assert_eq!(req.execution_mode, ExecutionMode::Tui);
+    }
+
+    #[test]
+    fn test_skip_dependencies() {
+        let req = TaskExecutionRequest::named("./", "cuenv", "build").with_skip_dependencies();
+
+        assert!(req.skip_dependencies);
     }
 }

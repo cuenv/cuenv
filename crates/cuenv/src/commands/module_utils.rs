@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 
 /// Convert cuengine error to `cuenv_core` error
-pub(crate) fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error {
+pub fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error {
     match err {
         cuengine::CueEngineError::Configuration { message } => {
             cuenv_core::Error::configuration(message)

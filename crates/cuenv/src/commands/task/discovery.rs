@@ -17,7 +17,7 @@ use crate::commands::{CommandExecutor, convert_engine_error, relative_path_from_
 /// Normalize a list of labels by sorting, deduplicating, and filtering empty strings.
 ///
 /// This ensures consistent behavior across label matching and naming operations.
-pub(crate) fn normalize_labels(labels: &[String]) -> Vec<String> {
+pub fn normalize_labels(labels: &[String]) -> Vec<String> {
     let mut normalized: Vec<String> = labels
         .iter()
         .map(|s| s.trim().to_string())
@@ -32,7 +32,7 @@ pub(crate) fn normalize_labels(labels: &[String]) -> Vec<String> {
 ///
 /// Returns a sorted list of task FQDNs (or names) that have all required labels.
 /// Tasks must be `Single` tasks with labels that include every label in the input.
-pub(crate) fn find_tasks_with_labels(tasks: &Tasks, labels: &[String]) -> Vec<String> {
+pub fn find_tasks_with_labels(tasks: &Tasks, labels: &[String]) -> Vec<String> {
     let required_labels = normalize_labels(labels);
 
     let mut matching: Vec<String> = tasks
@@ -58,7 +58,7 @@ pub(crate) fn find_tasks_with_labels(tasks: &Tasks, labels: &[String]) -> Vec<St
 ///
 /// The name uses a reserved prefix (`__cuenv_labels__`) to avoid collisions with
 /// user-defined task names. The labels are sorted and joined with `+` for stability.
-pub(crate) fn format_label_root(labels: &[String]) -> String {
+pub fn format_label_root(labels: &[String]) -> String {
     let sorted = normalize_labels(labels);
     format!("__cuenv_labels__{}", sorted.join("+"))
 }
@@ -71,7 +71,7 @@ pub(crate) fn format_label_root(labels: &[String]) -> String {
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
-pub(crate) fn evaluate_manifest(
+pub fn evaluate_manifest(
     dir: &Path,
     package: &str,
     executor: Option<&CommandExecutor>,
@@ -125,7 +125,7 @@ pub(crate) fn evaluate_manifest(
         recursive: true,
         ..Default::default()
     };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(options))
+    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
         .map_err(convert_engine_error)?;
 
     let module = ModuleEvaluation::from_raw(

@@ -93,7 +93,7 @@ impl Compiler {
 
     /// Create a compiler with custom options
     #[must_use]
-    pub fn with_options(project: Project, options: CompilerOptions) -> Self {
+    pub const fn with_options(project: Project, options: CompilerOptions) -> Self {
         Self { project, options }
     }
 
@@ -576,6 +576,9 @@ impl Compiler {
             cache_policy,
             deployment,
             manual_approval: false, // Would come from task metadata
+            matrix: None,
+            artifact_downloads: vec![],
+            params: HashMap::new(),
         })
     }
 }

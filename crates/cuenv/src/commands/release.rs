@@ -718,7 +718,7 @@ impl ReleaseBinariesOptions {
 
     /// Sets dry run mode.
     #[must_use]
-    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
@@ -732,7 +732,7 @@ impl ReleaseBinariesOptions {
 
     /// Sets the release phase.
     #[must_use]
-    pub fn with_phase(mut self, phase: ReleaseBinariesPhase) -> Self {
+    pub const fn with_phase(mut self, phase: ReleaseBinariesPhase) -> Self {
         self.phase = phase;
         self
     }

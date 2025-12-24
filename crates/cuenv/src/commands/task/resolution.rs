@@ -22,7 +22,7 @@ use super::normalization::{canonicalize_dep_for_task_name, normalize_dep};
 /// The resolved task's dependencies are canonicalized relative to the
 /// referenced task's name (not the placeholder name) to ensure correct
 /// dependency resolution during indexing.
-pub(crate) fn resolve_task_refs_in_definition(
+pub fn resolve_task_refs_in_definition(
     def: &mut TaskDefinition,
     discovery: &TaskDiscovery,
     manifest_project_id: &str,
@@ -100,7 +100,7 @@ pub(crate) fn resolve_task_refs_in_definition(
 ///
 /// Iterates through all task definitions in the manifest and resolves
 /// any `TaskRef` placeholders.
-pub(crate) fn resolve_task_refs_in_manifest(
+pub fn resolve_task_refs_in_manifest(
     manifest: &mut cuenv_core::manifest::Project,
     discovery: &TaskDiscovery,
     manifest_project_id: &str,
@@ -119,7 +119,7 @@ pub(crate) fn resolve_task_refs_in_manifest(
 /// # Path Format
 /// - `"build"` - top-level task named "build"
 /// - `"test.unit"` or `"test:unit"` - task "unit" inside parallel group "test"
-pub(crate) fn get_task_mut_by_path<'a>(
+pub fn get_task_mut_by_path<'a>(
     tasks: &'a mut HashMap<String, TaskDefinition>,
     raw_path: &str,
 ) -> Option<&'a mut Task> {
@@ -155,7 +155,7 @@ pub(crate) fn get_task_mut_by_path<'a>(
 /// First tries a direct lookup for the normalized name (covers injected implicit
 /// tasks like "bun.install" that are stored as top-level keys). Falls back to
 /// nested path lookup for tasks defined within groups.
-pub(crate) fn get_task_mut_by_name_or_path<'a>(
+pub fn get_task_mut_by_name_or_path<'a>(
     tasks: &'a mut HashMap<String, TaskDefinition>,
     raw_path: &str,
 ) -> Option<&'a mut Task> {

@@ -174,7 +174,7 @@ impl ChangesetPicker {
     }
 
     /// Move to the previous phase.
-    fn previous_phase(&mut self) {
+    const fn previous_phase(&mut self) {
         self.phase = match self.phase {
             Phase::PackageSelect | Phase::Summary => Phase::PackageSelect,
             Phase::Description => Phase::Summary,

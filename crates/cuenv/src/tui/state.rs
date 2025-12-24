@@ -24,27 +24,27 @@ pub enum TaskStatus {
 impl TaskStatus {
     /// Get the display symbol for this status
     #[must_use]
-    pub fn symbol(self) -> &'static str {
+    pub const fn symbol(self) -> &'static str {
         match self {
-            TaskStatus::Pending => "⏸",
-            TaskStatus::Running => "▶",
-            TaskStatus::Completed => "✓",
-            TaskStatus::Failed => "✗",
-            TaskStatus::Skipped => "⊘",
-            TaskStatus::Cached => "⚡",
+            Self::Pending => "⏸",
+            Self::Running => "▶",
+            Self::Completed => "✓",
+            Self::Failed => "✗",
+            Self::Skipped => "⊘",
+            Self::Cached => "⚡",
         }
     }
 
     /// Get the color for this status (as ratatui Color)
     #[must_use]
-    pub fn color(self) -> ratatui::style::Color {
+    pub const fn color(self) -> ratatui::style::Color {
         use ratatui::style::Color;
         match self {
-            TaskStatus::Running => Color::Yellow,
-            TaskStatus::Completed => Color::Green,
-            TaskStatus::Failed => Color::Red,
-            TaskStatus::Pending | TaskStatus::Skipped => Color::DarkGray,
-            TaskStatus::Cached => Color::Cyan,
+            Self::Running => Color::Yellow,
+            Self::Completed => Color::Green,
+            Self::Failed => Color::Red,
+            Self::Pending | Self::Skipped => Color::DarkGray,
+            Self::Cached => Color::Cyan,
         }
     }
 }
@@ -120,7 +120,7 @@ pub struct TaskInfo {
 impl TaskInfo {
     /// Create a new task info
     #[must_use]
-    pub fn new(name: String, dependencies: Vec<String>, level: usize) -> Self {
+    pub const fn new(name: String, dependencies: Vec<String>, level: usize) -> Self {
         Self {
             name,
             status: TaskStatus::Pending,
@@ -177,7 +177,7 @@ pub struct TaskOutput {
 impl TaskOutput {
     /// Create a new task output buffer
     #[must_use]
-    pub fn new(name: String) -> Self {
+    pub const fn new(name: String) -> Self {
         Self {
             name,
             stdout: VecDeque::new(),
@@ -227,7 +227,7 @@ impl TaskOutput {
 
     /// Clear dirty flags after rendering
     #[allow(dead_code)]
-    pub fn clear_dirty(&mut self) {
+    pub const fn clear_dirty(&mut self) {
         self.stdout_dirty = false;
         self.stderr_dirty = false;
     }
@@ -570,14 +570,14 @@ impl TuiState {
     }
 
     /// Move cursor up in tree
-    pub fn cursor_up(&mut self) {
+    pub const fn cursor_up(&mut self) {
         if self.cursor_position > 0 {
             self.cursor_position -= 1;
         }
     }
 
     /// Move cursor down in tree
-    pub fn cursor_down(&mut self) {
+    pub const fn cursor_down(&mut self) {
         if self.cursor_position < self.flattened_tree.len().saturating_sub(1) {
             self.cursor_position += 1;
         }

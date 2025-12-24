@@ -333,6 +333,7 @@ fn is_workspace_member(package_name: &str, workspace_members: &WorkspaceMembers)
 /// - Git dependencies (via `SourceId::is_git()`)
 /// - Path dependencies (via `SourceId::is_path()`)
 /// - Registry dependencies (via `SourceId::is_registry()`)
+#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn determine_source(
     package: &Package,
     workspace_root: &Path,
