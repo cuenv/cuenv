@@ -2,6 +2,12 @@
 //!
 //! Main entry point for CI pipeline execution, integrating with the provider
 //! system for context detection, file change tracking, and reporting.
+//!
+//! This module orchestrates complex async workflows with caching, concurrency control,
+//! and multi-project coordination. The complexity is inherent to the domain.
+
+// CI orchestration has inherent complexity - coordinates async tasks, caching, reporting
+#![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 
 use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
 use crate::discovery::discover_projects;

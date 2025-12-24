@@ -2,6 +2,9 @@
 //!
 //! LRU-based cleanup for local cache and optionally Nix store closures.
 
+// GC involves complex file system traversal with LRU and size calculations
+#![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};

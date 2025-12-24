@@ -1,5 +1,8 @@
 //! AWS Secrets Manager secret resolver with auto-negotiating dual-mode (HTTP + CLI)
 
+// AWS SDK and CLI dual-mode resolver with complex batch operations
+#![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+
 use async_trait::async_trait;
 use aws_sdk_secretsmanager::Client;
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};

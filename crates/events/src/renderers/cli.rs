@@ -3,7 +3,7 @@
 //! Renders events to stdout/stderr for terminal display.
 //! This module is allowed to use println!/eprintln! as it's the output layer.
 
-#![allow(clippy::print_stdout, clippy::print_stderr)]
+#![allow(clippy::print_stdout, clippy::print_stderr, clippy::too_many_lines)]
 
 use crate::bus::EventReceiver;
 use crate::event::{

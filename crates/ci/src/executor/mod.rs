@@ -4,7 +4,8 @@
 //! and parallel execution.
 
 // CI executor outputs to stdout/stderr as part of its normal operation
-#![allow(clippy::print_stdout, clippy::print_stderr)]
+// Executor has inherent complexity from parallel task management and caching
+#![allow(clippy::print_stdout, clippy::print_stderr, clippy::cognitive_complexity, clippy::too_many_lines)]
 
 pub mod backend;
 pub mod cache;

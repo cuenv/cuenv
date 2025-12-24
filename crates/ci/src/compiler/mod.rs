@@ -8,6 +8,9 @@
 //! The compiler applies stage contributors (Nix, 1Password, Cachix) during
 //! compilation to inject setup/teardown tasks into the IR stages.
 
+// IR compilation involves complex transformations with many fields
+#![allow(clippy::too_many_lines)]
+
 pub mod digest;
 
 use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
