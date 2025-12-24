@@ -34,7 +34,12 @@
 
         rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" "llvm-tools-preview" ];
-          targets = [ "x86_64-unknown-linux-gnu" ];
+          targets = [
+            "x86_64-unknown-linux-gnu"
+            "aarch64-unknown-linux-gnu"
+            "aarch64-apple-darwin"
+            "x86_64-apple-darwin"
+          ];
         };
 
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
@@ -42,6 +47,48 @@
         # Read version from Cargo.toml
         cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
         version = cargoToml.workspace.package.version;
+
+        # Zig target for C compilation (used by CGO)
+        zigTarget =
+          let
+            cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+            os = pkgs.stdenv.hostPlatform.parsed.kernel.name;
+          in
+            if os == "linux" then
+              if cpu == "x86_64" then "x86_64-linux-gnu.2.17"
+              else if cpu == "aarch64" then "aarch64-linux-gnu.2.17"
+              else throw "Unsupported Linux architecture: ${cpu}"
+            else if os == "darwin" then
+              if cpu == "aarch64" then "aarch64-macos.11.0"
+              else if cpu == "x86_64" then "x86_64-macos.11.0"
+              else throw "Unsupported macOS architecture: ${cpu}"
+            else throw "Unsupported OS: ${os}";
+
+        # Rust target triple with glibc version suffix for cargo-zigbuild (Linux only)
+        # macOS uses regular cargo with MACOSX_DEPLOYMENT_TARGET instead
+        rustZigTarget =
+          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu.2.17"
+             else if cpu == "aarch64" then "aarch64-unknown-linux-gnu.2.17"
+             else throw "Unsupported Linux architecture: ${cpu}";
+
+        # Base Rust target (without version suffix) for Linux output paths
+        rustBaseTarget =
+          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu"
+             else if cpu == "aarch64" then "aarch64-unknown-linux-gnu"
+             else throw "Unsupported Linux architecture: ${cpu}";
+
+        # Zig wrappers for CGO (CC cannot contain spaces)
+        zigCCWrapper = pkgs.writeShellScriptBin "zig-cc" ''
+          exec ${pkgs.zig}/bin/zig cc -target ${zigTarget} "$@"
+        '';
+        zigCXXWrapper = pkgs.writeShellScriptBin "zig-cxx" ''
+          exec ${pkgs.zig}/bin/zig c++ -target ${zigTarget} "$@"
+        '';
+        zigARWrapper = pkgs.writeShellScriptBin "zig-ar" ''
+          exec ${pkgs.zig}/bin/zig ar "$@"
+        '';
 
         # Platform-specific build inputs
         # Note: darwin frameworks (CoreFoundation, Security, etc.) are now provided
@@ -62,7 +109,8 @@
           src = ./crates/cuengine;
           vendorHash = "sha256-tHAcwRsNWNwPUkTlQT8mw3GNKsMFCMCKwdSq3KNad80=";
           go = pkgs.go_1_24;
-          nativeBuildInputs = pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
+          nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
+            ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
 
           buildPhase = ''
             runHook preBuild
@@ -75,19 +123,22 @@
               else if cpu == "aarch64" then "arm64"
               else cpu
             }
-            export CC=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}cc
-            export CXX=${pkgs.stdenv.cc}/bin/${pkgs.stdenv.cc.targetPrefix}c++
-            export AR=${pkgs.stdenv.cc.bintools.bintools_bin}/bin/${pkgs.stdenv.cc.targetPrefix}ar
-            export RANLIB=${pkgs.stdenv.cc.bintools.bintools_bin}/bin/${pkgs.stdenv.cc.targetPrefix}ranlib
+            export CC=${zigCCWrapper}/bin/zig-cc
+            export CXX=${zigCXXWrapper}/bin/zig-cxx
+            export AR=${zigARWrapper}/bin/zig-ar
+
+            # Zig needs writable cache directories in Nix sandbox
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
 
             mkdir -p $out/debug $out/release
 
             go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/debug/
-            
+
             CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go
             cp libcue_bridge.h $out/release/
-            
+
             runHook postBuild
           '';
 
@@ -166,7 +217,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config cue git ];
+          nativeBuildInputs = with pkgs; [ go pkg-config cue git cargo-zigbuild zig ];
           buildInputs = platformBuildInputs;
           preBuild = ''
             ${setupBridge}
@@ -183,11 +234,37 @@
         });
 
         # Main package build
+        # On Linux: Use cargo-zigbuild for portable binaries (glibc 2.17 target)
+        # On macOS: Use regular cargo with deployment target env var (no NixOS path issues)
         cuenv = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           pname = "cuenv";
           inherit version;
-        });
+        } // (if pkgs.stdenv.isLinux then {
+          # Linux: Use cargo-zigbuild for portable glibc binaries
+          doNotPostBuildInstallCargoBinaries = true;
+          buildPhaseCargoCommand = ''
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+            export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/cargo-zigbuild-cache"
+            cargo zigbuild --release --target ${rustZigTarget}
+          '';
+          installPhaseCommand = ''
+            mkdir -p $out/bin
+            cp target/${rustBaseTarget}/release/cuenv $out/bin/
+          '';
+        } else {
+          # macOS: Use regular cargo with deployment target set explicitly
+          doNotPostBuildInstallCargoBinaries = true;
+          buildPhaseCargoCommand = ''
+            export MACOSX_DEPLOYMENT_TARGET="11.0"
+            cargo build --release
+          '';
+          installPhaseCommand = ''
+            mkdir -p $out/bin
+            cp target/release/cuenv $out/bin/
+          '';
+        }));
 
         # Development tools configuration
         devTools = with pkgs; [
