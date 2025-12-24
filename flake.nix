@@ -212,6 +212,13 @@
           ONEPASSWORD_WASM_PATH = onepassword-wasm;
         };
 
+        # Rust target for cargo-zigbuild (arch-specific, with glibc version)
+        zigbuildTarget =
+          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
+          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu.2.17"
+          else if cpu == "aarch64" then "aarch64-unknown-linux-gnu.2.17"
+          else throw "Unsupported Linux architecture: ${cpu}";
+
         # Build artifacts for dependency caching
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           src = srcArtifacts;
@@ -220,22 +227,25 @@
         });
 
         # Main package build
-        # TODO: Re-enable zig cross-compilation for portable Linux binaries once
-        # aws-lc-sys compatibility issues are resolved (it rejects zig as CC)
+        # On Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
+        # On macOS: Use regular cargo with deployment target env var
         cuenv = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           pname = "cuenv";
           inherit version;
+          nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-zigbuild ];
         } // (if pkgs.stdenv.isLinux then {
-          # Linux: Build native binary (not portable to other distros)
-          # Portable binary support blocked by aws-lc-sys rejecting zig compiler
+          # Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
+          auditable = false; # cargo-auditable passes --undefined which zig doesn't support
           doNotPostBuildInstallCargoBinaries = true;
           buildPhaseCargoCommand = ''
-            cargo build --release
+            export XDG_CACHE_HOME="$TMPDIR/xdg_cache"
+            export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/zigbuild_cache"
+            cargo zigbuild --release --target ${zigbuildTarget}
           '';
           installPhaseCommand = ''
             mkdir -p $out/bin
-            cp target/release/cuenv $out/bin/
+            cp target/${pkgs.lib.removeSuffix ".2.17" zigbuildTarget}/release/cuenv $out/bin/
           '';
         } else {
           # macOS: Use regular cargo with deployment target set explicitly
