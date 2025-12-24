@@ -82,8 +82,6 @@ sha2 = "0.10"
 secrecy = { version = "0.10", features = ["serde"] }
 futures = "0.3"
 
-# Force ring crypto backend for rustls (aws-lc-sys doesn't work with zig cross-compilation)
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 # Binary distribution
 bytes = "1.10"
@@ -164,3 +162,4 @@ panic = "warn"
 todo = "warn"
 unimplemented = "warn"
 dbg_macro = "warn"
+
