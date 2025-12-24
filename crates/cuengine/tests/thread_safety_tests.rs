@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::items_after_statements)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::missing_const_for_fn)]
 
 use cuengine::CStringPtr;
 use std::ffi::CString;

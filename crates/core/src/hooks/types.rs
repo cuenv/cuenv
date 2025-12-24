@@ -75,6 +75,7 @@ impl HookResult {
     }
 
     /// Create a failed hook result
+    #[allow(clippy::too_many_arguments)] // Hook result requires full execution context
     pub fn failure(
         hook: Hook,
         exit_status: Option<ExitStatus>,

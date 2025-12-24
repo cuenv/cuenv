@@ -18,6 +18,7 @@ use tokio::process::Command;
 #[async_trait]
 pub trait TaskBackend: Send + Sync {
     /// Execute a single task and return the result
+    #[allow(clippy::too_many_arguments)] // Task execution requires full context
     async fn execute(
         &self,
         name: &str,

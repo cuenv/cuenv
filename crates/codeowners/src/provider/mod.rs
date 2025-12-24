@@ -20,7 +20,7 @@
 //! let result = provider.sync(Path::new("."), &projects, false)?;
 //! ```
 
-use crate::{CodeOwnersBuilder, SectionStyle, Rule};
+use crate::{CodeOwnersBuilder, Rule, SectionStyle};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -371,13 +371,11 @@ mod tests {
 
     #[test]
     fn test_generate_aggregated_content_bracket_style() {
-        let projects = vec![
-            ProjectOwners::new(
-                "services/api",
-                "services/api",
-                vec![Rule::new("*.rs", ["@backend-team"])],
-            ),
-        ];
+        let projects = vec![ProjectOwners::new(
+            "services/api",
+            "services/api",
+            vec![Rule::new("*.rs", ["@backend-team"])],
+        )];
 
         let content = generate_aggregated_content(SectionStyle::Bracket, &projects, None);
 

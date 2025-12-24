@@ -37,7 +37,7 @@ pub struct FormulaGenerator;
 impl FormulaGenerator {
     /// Generates a Ruby formula from the data.
     #[must_use]
-    #[allow(clippy::format_push_string)]
+    #[allow(clippy::format_push_string, clippy::too_many_lines)]
     pub fn generate(data: &FormulaData) -> String {
         let mut formula = format!(
             r#"class {} < Formula

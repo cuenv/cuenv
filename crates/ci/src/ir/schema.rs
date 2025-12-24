@@ -447,7 +447,6 @@ pub enum BuildStage {
     Failure,
 }
 
-
 /// A task contributed by a stage provider
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -692,9 +691,12 @@ mod tests {
             deployment: false,
             manual_approval: false,
             matrix: Some(MatrixConfig {
-                dimensions: [("arch".to_string(), vec!["x64".to_string(), "arm64".to_string()])]
-                    .into_iter()
-                    .collect(),
+                dimensions: [(
+                    "arch".to_string(),
+                    vec!["x64".to_string(), "arm64".to_string()],
+                )]
+                .into_iter()
+                .collect(),
                 ..Default::default()
             }),
             artifact_downloads: vec![],
@@ -702,7 +704,10 @@ mod tests {
         };
 
         let json = serde_json::to_value(&task).unwrap();
-        assert_eq!(json["matrix"]["dimensions"]["arch"], serde_json::json!(["x64", "arm64"]));
+        assert_eq!(
+            json["matrix"]["dimensions"]["arch"],
+            serde_json::json!(["x64", "arm64"])
+        );
     }
 
     #[test]

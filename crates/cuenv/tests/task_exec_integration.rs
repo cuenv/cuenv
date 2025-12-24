@@ -1,6 +1,7 @@
 //! Integration tests for task and exec commands
 
-#![allow(clippy::print_stderr)]
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::print_stderr, clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;
 use std::path::Path;

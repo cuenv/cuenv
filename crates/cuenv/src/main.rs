@@ -6,7 +6,8 @@
 //! environment variable management, and task orchestration.
 
 // CLI binary needs to output to stdout/stderr - this is intentional
-#![allow(clippy::print_stdout, clippy::print_stderr)]
+// expect_used is allowed for infallible operations like writing to strings
+#![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)]
 
 mod cli;
 mod commands;

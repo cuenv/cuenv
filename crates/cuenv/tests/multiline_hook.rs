@@ -1,5 +1,8 @@
 //! Integration test for hooks with multiline exports
 
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use assert_cmd::Command;
 use std::fs;
 use tempfile::TempDir;

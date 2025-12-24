@@ -7,10 +7,12 @@ use crate::workflow::schema::{
     PushTrigger, ReleaseTrigger, RunsOn, ScheduleTrigger, Step, Strategy, Workflow,
     WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
 };
-use crate::workflow::stage_renderer::{transform_secret_ref, GitHubStageRenderer};
-use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
-use cuenv_ci::ir::{IntermediateRepresentation, OutputType, StageConfiguration, Task, TriggerCondition};
+use crate::workflow::stage_renderer::{GitHubStageRenderer, transform_secret_ref};
 use cuenv_ci::StageRenderer;
+use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
+use cuenv_ci::ir::{
+    IntermediateRepresentation, OutputType, StageConfiguration, Task, TriggerCondition,
+};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
@@ -673,7 +675,9 @@ impl GitHubActionsEmitter {
 
         // Add task-level env vars
         for (key, value) in &task.env {
-            task_step.env.insert(key.clone(), transform_secret_ref(value));
+            task_step
+                .env
+                .insert(key.clone(), transform_secret_ref(value));
         }
 
         steps.push(task_step);
@@ -857,7 +861,9 @@ impl GitHubActionsEmitter {
 
                 // Add secret env vars from setup stages to the task step
                 for (key, value) in &secret_env_vars {
-                    task_step.env.insert(key.clone(), transform_secret_ref(value));
+                    task_step
+                        .env
+                        .insert(key.clone(), transform_secret_ref(value));
                 }
 
                 steps.push(task_step);
@@ -1605,7 +1611,10 @@ mod tests {
         let job = emitter.build_simple_job(&task, &stages, Some(&env));
 
         // Find the task step and check command includes environment
-        let task_step = job.steps.iter().find(|s| s.name.as_deref() == Some("deploy"));
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("deploy"));
         assert!(task_step.is_some());
         let run_cmd = task_step.unwrap().run.as_ref().unwrap();
         assert!(run_cmd.contains("-e production"));
@@ -1619,9 +1628,12 @@ mod tests {
         let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
         let mut task = make_task("release.build", &["cargo", "build"]);
         task.matrix = Some(MatrixConfig {
-            dimensions: [("arch".to_string(), vec!["linux-x64".to_string(), "darwin-arm64".to_string()])]
-                .into_iter()
-                .collect(),
+            dimensions: [(
+                "arch".to_string(),
+                vec!["linux-x64".to_string(), "darwin-arm64".to_string()],
+            )]
+            .into_iter()
+            .collect(),
             ..Default::default()
         });
         let stages = StageConfiguration::default();
@@ -1635,12 +1647,21 @@ mod tests {
 
         // Each job should have the arch in its name
         let linux_job = jobs.get("release-build-linux-x64").unwrap();
-        assert_eq!(linux_job.name, Some("release.build (linux-x64)".to_string()));
+        assert_eq!(
+            linux_job.name,
+            Some("release.build (linux-x64)".to_string())
+        );
 
         // Should have CUENV_ARCH env var
-        let task_step = linux_job.steps.iter().find(|s| s.name.as_deref() == Some("release.build (linux-x64)"));
+        let task_step = linux_job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("release.build (linux-x64)"));
         assert!(task_step.is_some());
-        assert_eq!(task_step.unwrap().env.get("CUENV_ARCH"), Some(&"linux-x64".to_string()));
+        assert_eq!(
+            task_step.unwrap().env.get("CUENV_ARCH"),
+            Some(&"linux-x64".to_string())
+        );
     }
 
     #[test]
@@ -1650,9 +1671,12 @@ mod tests {
         let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
         let mut task = make_task("build", &["cargo", "build"]);
         task.matrix = Some(MatrixConfig {
-            dimensions: [("arch".to_string(), vec!["linux-x64".to_string(), "darwin-arm64".to_string()])]
-                .into_iter()
-                .collect(),
+            dimensions: [(
+                "arch".to_string(),
+                vec!["linux-x64".to_string(), "darwin-arm64".to_string()],
+            )]
+            .into_iter()
+            .collect(),
             ..Default::default()
         });
         let stages = StageConfiguration::default();
@@ -1679,18 +1703,19 @@ mod tests {
 
         let emitter = GitHubActionsEmitter::new();
         let mut task = make_task("release.publish", &["./publish.sh"]);
-        task.artifact_downloads = vec![
-            ArtifactDownload {
-                name: "release-build".to_string(),
-                path: "./artifacts".to_string(),
-                filter: String::new(),
-            },
-        ];
+        task.artifact_downloads = vec![ArtifactDownload {
+            name: "release-build".to_string(),
+            path: "./artifacts".to_string(),
+            filter: String::new(),
+        }];
         task.params = [("version".to_string(), "1.0.0".to_string())]
             .into_iter()
             .collect();
         let stages = StageConfiguration::default();
-        let previous_jobs = vec!["release-build-linux-x64".to_string(), "release-build-darwin-arm64".to_string()];
+        let previous_jobs = vec![
+            "release-build-linux-x64".to_string(),
+            "release-build-darwin-arm64".to_string(),
+        ];
 
         let job = emitter.build_artifact_aggregation_job(&task, &stages, None, &previous_jobs);
 
@@ -1699,15 +1724,23 @@ mod tests {
         assert_eq!(job.timeout_minutes, Some(30));
 
         // Should have download artifact steps
-        let download_steps: Vec<_> = job.steps.iter()
+        let download_steps: Vec<_> = job
+            .steps
+            .iter()
             .filter(|s| s.uses.as_deref() == Some("actions/download-artifact@v4"))
             .collect();
         assert_eq!(download_steps.len(), 2);
 
         // Task step should have params as env vars
-        let task_step = job.steps.iter().find(|s| s.name.as_deref() == Some("release.publish"));
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("release.publish"));
         assert!(task_step.is_some());
-        assert_eq!(task_step.unwrap().env.get("VERSION"), Some(&"1.0.0".to_string()));
+        assert_eq!(
+            task_step.unwrap().env.get("VERSION"),
+            Some(&"1.0.0".to_string())
+        );
     }
 
     #[test]
@@ -1736,17 +1769,19 @@ mod tests {
         use cuenv_ci::ir::ArtifactDownload;
 
         let task_without = make_task("build", &["cargo", "build"]);
-        assert!(!GitHubActionsEmitter::task_has_artifact_downloads(&task_without));
+        assert!(!GitHubActionsEmitter::task_has_artifact_downloads(
+            &task_without
+        ));
 
         let mut task_with = make_task("publish", &["./publish.sh"]);
-        task_with.artifact_downloads = vec![
-            ArtifactDownload {
-                name: "build".to_string(),
-                path: "./out".to_string(),
-                filter: String::new(),
-            },
-        ];
-        assert!(GitHubActionsEmitter::task_has_artifact_downloads(&task_with));
+        task_with.artifact_downloads = vec![ArtifactDownload {
+            name: "build".to_string(),
+            path: "./out".to_string(),
+            filter: String::new(),
+        }];
+        assert!(GitHubActionsEmitter::task_has_artifact_downloads(
+            &task_with
+        ));
     }
 
     #[test]
@@ -1778,6 +1813,9 @@ mod tests {
         assert!(steps[1].name.as_deref() == Some("Setup cuenv"));
 
         // Secret env vars should be collected
-        assert_eq!(secret_env_vars.get("MY_VAR"), Some(&"${MY_SECRET}".to_string()));
+        assert_eq!(
+            secret_env_vars.get("MY_VAR"),
+            Some(&"${MY_SECRET}".to_string())
+        );
     }
 }

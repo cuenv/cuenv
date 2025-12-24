@@ -1,3 +1,6 @@
+// Transitive dependencies bring in multiple versions of foldhash and unicode-width
+#![allow(clippy::multiple_crate_versions)]
+
 //! Workspace and dependency resolution for cuenv across multiple package managers.
 //!
 //! This crate provides trait-based abstractions for discovering, parsing, and resolving

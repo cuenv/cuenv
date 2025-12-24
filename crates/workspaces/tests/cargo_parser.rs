@@ -1,4 +1,6 @@
 #![cfg(feature = "parser-cargo")]
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 //! Integration tests for the Cargo lockfile parser.
 

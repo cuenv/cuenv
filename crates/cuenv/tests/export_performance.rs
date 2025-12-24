@@ -5,6 +5,9 @@
 //!
 //! Note: Threshold is 15ms instead of 10ms to account for CI/sandbox variability.
 
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::process::Command;
 use std::time::Instant;
 use tempfile::TempDir;

@@ -204,7 +204,7 @@ impl ReleaseOrchestrator {
     }
 
     /// Packages binaries into tarballs with checksums.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::too_many_lines)]
     async fn package(&self) -> Result<ReleaseReport> {
         info!(
             targets = ?self.config.targets,
@@ -304,6 +304,7 @@ impl ReleaseOrchestrator {
     }
 
     /// Publishes artifacts to all configured backends.
+    #[allow(clippy::too_many_lines)] // Multi-backend publishing has multiple iterations
     async fn publish_artifacts(&self, artifacts: &[PackagedArtifact]) -> Result<ReleaseReport> {
         if self.backends.is_empty() {
             warn!("No backends configured");
@@ -399,6 +400,7 @@ impl ReleaseOrchestrator {
     }
 
     /// Loads existing packaged artifacts from the output directory.
+    #[allow(clippy::too_many_lines)] // Artifact loading has multiple file operations
     fn load_existing_artifacts(&self) -> Result<Vec<PackagedArtifact>> {
         let mut artifacts = Vec::new();
 

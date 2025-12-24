@@ -1,7 +1,11 @@
 //! 1Password secret resolver with auto-negotiating dual-mode (HTTP via WASM SDK + CLI)
 
 // Complex WASM+CLI dual-mode resolver with mutex-based shared core management
-#![allow(clippy::cognitive_complexity, clippy::too_many_lines, clippy::significant_drop_tightening)]
+#![allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening
+)]
 
 use super::core::SharedCore;
 use super::wasm;

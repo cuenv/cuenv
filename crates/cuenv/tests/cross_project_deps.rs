@@ -1,4 +1,11 @@
-#![allow(missing_docs, unused_variables, clippy::uninlined_format_args)]
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(
+    missing_docs,
+    unused_variables,
+    clippy::uninlined_format_args,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 use std::fs;
 use std::path::Path;
 use std::process::Command;

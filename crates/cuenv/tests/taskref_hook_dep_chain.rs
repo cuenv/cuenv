@@ -1,8 +1,11 @@
+// Integration tests can use unwrap/expect for cleaner assertions
 #![allow(
     missing_docs,
     unused_variables,
     clippy::too_many_lines,
-    clippy::uninlined_format_args
+    clippy::uninlined_format_args,
+    clippy::unwrap_used,
+    clippy::expect_used
 )]
 
 use std::fs;

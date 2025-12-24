@@ -58,9 +58,7 @@ impl BackendError {
     pub const fn is_gracefully_degradable(&self) -> bool {
         matches!(
             self,
-            Self::Unavailable(_)
-                | Self::Connection(_)
-                | Self::ActionNotFound { .. }
+            Self::Unavailable(_) | Self::Connection(_) | Self::ActionNotFound { .. }
         )
     }
 

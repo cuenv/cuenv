@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub struct BunLockfileParser;
 
 impl LockfileParser for BunLockfileParser {
+    #[allow(clippy::too_many_lines)] // Lockfile parsing requires linear handling of format variants
     fn parse(&self, lockfile_path: &Path) -> Result<Vec<LockfileEntry>> {
         // Check if this is the binary bun.lockb format
         if lockfile_path
@@ -363,11 +364,9 @@ fn parse_locator(
         _ => trimmed,
     };
 
-    let (protocol, remainder) = spec_part
-        .find(':')
-        .map_or(("npm", spec_part), |colon_idx| {
-            (&spec_part[..colon_idx], &spec_part[colon_idx + 1..])
-        });
+    let (protocol, remainder) = spec_part.find(':').map_or(("npm", spec_part), |colon_idx| {
+        (&spec_part[..colon_idx], &spec_part[colon_idx + 1..])
+    });
 
     let remainder = remainder.trim();
     let source = match protocol {
