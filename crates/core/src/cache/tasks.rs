@@ -149,6 +149,7 @@ pub struct TaskLogs {
     pub stderr: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)] // Task result caching requires multiple path parameters
 pub fn save_result(
     key: &str,
     meta: &TaskResultMeta,

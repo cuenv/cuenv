@@ -225,7 +225,7 @@ fn parse_lockfile_details(contents: &str) -> Vec<LockfileDetail> {
 
 /// Fully manual parser for Yarn Classic lockfiles (used as fallback when `yarn_lock_parser` fails).
 /// This parses everything including name, version, resolved, integrity, and dependencies.
-#[allow(clippy::cognitive_complexity)]
+#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 #[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Vec<LockfileEntry> {
     let mut entries = Vec::new();

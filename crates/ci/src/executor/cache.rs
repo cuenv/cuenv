@@ -8,7 +8,11 @@
 //! - Legacy helper functions for backward compatibility
 
 // Cache operations involve complex state management and error handling
-#![allow(clippy::cognitive_complexity, clippy::too_many_lines, clippy::too_many_arguments)]
+#![allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    clippy::too_many_arguments
+)]
 
 use crate::executor::backend::{
     BackendError, BackendResult, CacheBackend, CacheEntry, CacheLookupResult, CacheOutput,

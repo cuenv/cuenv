@@ -6,8 +6,8 @@
 //! Self-detects activation by checking if any task in the pipeline's IR uses
 //! the `gh` command with `models` as the first argument.
 
-use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, StageTask, Task};
 use cuenv_ci::StageContributor;
+use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, StageTask, Task};
 use cuenv_core::manifest::Project;
 use std::collections::HashMap;
 

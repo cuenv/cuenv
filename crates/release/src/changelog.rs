@@ -246,7 +246,9 @@ impl ChangelogGenerator {
         let content = existing.find("\n## ").map_or_else(
             // No existing entries, append to end
             || format!("{}\n{}", existing.trim_end(), new_content),
-            |idx| format!("{}{}{}", &existing[..idx], "\n", new_content.trim_end()) + &existing[idx..],
+            |idx| {
+                format!("{}{}{}", &existing[..idx], "\n", new_content.trim_end()) + &existing[idx..]
+            },
         );
 
         // Ensure parent directory exists

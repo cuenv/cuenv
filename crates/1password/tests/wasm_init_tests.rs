@@ -7,6 +7,9 @@
 //! In CI (Nix builds), the WASM is provided via `ONEPASSWORD_WASM_PATH` env var.
 //! For local development, run `cuenv secrets setup onepassword` to download it.
 
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::expect_used)]
+
 use cuenv_1password::secrets::{core, wasm};
 use std::path::PathBuf;
 
@@ -109,7 +112,7 @@ fn test_wasm_file_size() {
 /// Note: Uses unsafe to set HOME env var for wasmtime's bytecode cache.
 /// In Nix sandbox, HOME=/homeless-shelter which is unwritable.
 #[test]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, clippy::significant_drop_tightening)]
 fn test_shared_core_initializes() {
     let _path = ensure_wasm_available();
 

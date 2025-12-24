@@ -1,6 +1,7 @@
 //! Benchmarks for CUE evaluation performance
 
 #![allow(missing_docs)] // Benchmarks don't need documentation
+#![allow(clippy::unwrap_used, clippy::expect_used)] // Benchmarks can use unwrap
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use cuengine::evaluate_cue_package;

@@ -1,6 +1,12 @@
 //! Integration tests for JavaScript lockfile parsers.
 
-#![allow(clippy::print_stderr)]
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(
+    clippy::print_stderr,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::cognitive_complexity
+)]
 
 use cuenv_workspaces::{DependencySource, LockfileParser};
 use std::path::Path;
@@ -179,9 +185,9 @@ mod pnpm_tests {
         );
 
         // Check workspace root
-        let workspace_entries: Vec<_> = entries.iter().filter(|e| e.is_workspace_member).collect();
+        let workspace_count = entries.iter().filter(|e| e.is_workspace_member).count();
         assert!(
-            workspace_entries.len() >= 2,
+            workspace_count >= 2,
             "Expected at least 2 workspace members"
         );
 

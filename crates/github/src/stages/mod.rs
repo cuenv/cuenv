@@ -22,8 +22,5 @@ use cuenv_ci::StageContributor;
 /// when compiling for GitHub Actions.
 #[must_use]
 pub fn github_contributors() -> Vec<Box<dyn StageContributor>> {
-    vec![
-        Box::new(CachixContributor),
-        Box::new(GhModelsContributor),
-    ]
+    vec![Box::new(CachixContributor), Box::new(GhModelsContributor)]
 }

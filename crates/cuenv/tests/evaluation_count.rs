@@ -6,6 +6,9 @@
 //! Note: These tests run against the actual cuenv repository since setting up
 //! a proper CUE environment with schema imports in a temp directory is complex.
 
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::process::Command;
 
 /// Run cuenv with debug logging from the project root and count module evaluations.

@@ -4,6 +4,9 @@
 //! When building from crates.io (where these files aren't included), it creates
 //! a minimal placeholder file instead.
 
+// Build scripts run at compile time and should fail fast on errors
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
 use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
@@ -17,20 +20,17 @@ fn main() {
     let output_path = format!("{out_dir}/llms-full.txt");
 
     // Try to find llms.txt and schema/ in workspace root
-    let (llms_path, schema_dir) = match workspace_root {
-        Some(root) => {
-            let llms = root.join("llms.txt");
-            let schema = root.join("schema");
-            if llms.exists() && schema.exists() {
-                println!("cargo::rerun-if-changed={}", llms.display());
-                println!("cargo::rerun-if-changed={}", schema.display());
-                (Some(llms), Some(schema))
-            } else {
-                (None, None)
-            }
+    let (llms_path, schema_dir) = workspace_root.map_or((None, None), |root| {
+        let llms = root.join("llms.txt");
+        let schema = root.join("schema");
+        if llms.exists() && schema.exists() {
+            println!("cargo::rerun-if-changed={}", llms.display());
+            println!("cargo::rerun-if-changed={}", schema.display());
+            (Some(llms), Some(schema))
+        } else {
+            (None, None)
         }
-        None => (None, None),
-    };
+    });
 
     // If files exist, generate full llms-full.txt
     if let (Some(llms_path), Some(schema_dir)) = (llms_path, schema_dir) {

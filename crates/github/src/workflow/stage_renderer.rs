@@ -164,14 +164,26 @@ mod tests {
     use cuenv_ci::ir::StageConfiguration;
 
     /// Helper to create provider_hints with a GitHub action
-    fn make_github_action_hints(uses: &str, inputs: HashMap<String, serde_json::Value>) -> serde_json::Value {
+    fn make_github_action_hints(
+        uses: &str,
+        inputs: HashMap<String, serde_json::Value>,
+    ) -> serde_json::Value {
         let mut action = serde_json::Map::new();
-        action.insert("uses".to_string(), serde_json::Value::String(uses.to_string()));
+        action.insert(
+            "uses".to_string(),
+            serde_json::Value::String(uses.to_string()),
+        );
         if !inputs.is_empty() {
-            action.insert("inputs".to_string(), serde_json::Value::Object(inputs.into_iter().collect()));
+            action.insert(
+                "inputs".to_string(),
+                serde_json::Value::Object(inputs.into_iter().collect()),
+            );
         }
         let mut hints = serde_json::Map::new();
-        hints.insert("github_action".to_string(), serde_json::Value::Object(action));
+        hints.insert(
+            "github_action".to_string(),
+            serde_json::Value::Object(action),
+        );
         serde_json::Value::Object(hints)
     }
 

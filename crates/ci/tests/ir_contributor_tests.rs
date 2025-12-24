@@ -6,6 +6,9 @@
 //! This prevents regressions where contributors fail to inject their setup tasks
 //! into CI workflows.
 
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::expect_used)]
+
 use cuengine::evaluate_cue_package_typed;
 use cuenv_ci::compiler::{Compiler, CompilerOptions};
 use cuenv_ci::ir::IntermediateRepresentation;
@@ -377,7 +380,9 @@ fn test_nix_contributor_provides_github_action_hints() {
     );
 
     let hints = install_nix.provider_hints.as_ref().unwrap();
-    let github_action = hints.get("github_action").expect("Should have github_action key");
+    let github_action = hints
+        .get("github_action")
+        .expect("Should have github_action key");
     let uses = github_action.get("uses").expect("Should have uses field");
     assert!(
         uses.as_str()

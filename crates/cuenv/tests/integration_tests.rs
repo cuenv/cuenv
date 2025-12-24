@@ -3,7 +3,8 @@
 //! These tests exercise the complete CLI functionality, including
 //! argument parsing, command execution, and output formatting.
 
-#![allow(clippy::print_stdout)]
+// Integration tests can use unwrap/expect for cleaner assertions
+#![allow(clippy::print_stdout, clippy::unwrap_used, clippy::expect_used)]
 
 use std::fs;
 use std::process::Command;

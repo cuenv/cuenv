@@ -58,11 +58,7 @@ pub fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> String {
 ///
 /// Uses the manifest's `name` field if non-empty, otherwise falls back to
 /// a path-derived identifier relative to the module root.
-pub fn compute_project_id(
-    manifest: &Project,
-    project_root: &Path,
-    module_root: &Path,
-) -> String {
+pub fn compute_project_id(manifest: &Project, project_root: &Path, module_root: &Path) -> String {
     let trimmed = manifest.name.trim();
     if !trimmed.is_empty() {
         return trimmed.to_string();

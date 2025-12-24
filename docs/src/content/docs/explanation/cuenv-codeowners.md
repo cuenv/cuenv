@@ -57,11 +57,11 @@ let bracket = SectionStyle::Bracket;  // [Section Name] (GitLab)
 let none = SectionStyle::None;        // No section headers
 ```
 
-| Style     | Output          | Used By              |
-| --------- | --------------- | -------------------- |
-| `Comment` | `# Section`     | GitHub, Bitbucket    |
-| `Bracket` | `[Section]`     | GitLab               |
-| `None`    | (no headers)    | Custom configurations|
+| Style     | Output       | Used By               |
+| --------- | ------------ | --------------------- |
+| `Comment` | `# Section`  | GitHub, Bitbucket     |
+| `Bracket` | `[Section]`  | GitLab                |
+| `None`    | (no headers) | Custom configurations |
 
 ### Rule
 
@@ -113,13 +113,13 @@ let content = codeowners.generate();
 
 Fluent builder for configuration:
 
-| Method                    | Description                          |
-| ------------------------- | ------------------------------------ |
-| `section_style(style)`    | Set section formatting style         |
-| `header(str)`             | Set header comment                   |
-| `rule(Rule)`              | Add a single rule                    |
-| `rules(iter)`             | Add multiple rules                   |
-| `build()`                 | Build the `CodeOwners` configuration |
+| Method                 | Description                          |
+| ---------------------- | ------------------------------------ |
+| `section_style(style)` | Set section formatting style         |
+| `header(str)`          | Set header comment                   |
+| `rule(Rule)`           | Add a single rule                    |
+| `rules(iter)`          | Add multiple rules                   |
+| `build()`              | Build the `CodeOwners` configuration |
 
 ## Features
 

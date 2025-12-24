@@ -80,8 +80,8 @@ pub fn execute_info(
     };
 
     // Evaluate the entire module
-    let raw_result =
-        cuengine::evaluate_module(&module_root, package, Some(&options)).map_err(convert_engine_error)?;
+    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
+        .map_err(convert_engine_error)?;
 
     // If --meta is requested, dump the full JSON with separate meta map
     if with_meta {

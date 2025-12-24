@@ -1232,7 +1232,11 @@ fn build_pipeline_jobs(
                 } else {
                     // Matrix expansion task: create a synthetic IR Task with matrix config
                     let synthetic_task = create_synthetic_matrix_task(task_name, matrix_task);
-                    let arch_runners = ctx.github_config.runners.as_ref().and_then(|r| r.arch.clone());
+                    let arch_runners = ctx
+                        .github_config
+                        .runners
+                        .as_ref()
+                        .and_then(|r| r.arch.clone());
 
                     let expanded_jobs = emitter.build_matrix_jobs(
                         &synthetic_task,
@@ -1301,10 +1305,7 @@ fn create_synthetic_aggregation_task(
         })
         .unwrap_or_default();
 
-    let params = matrix_task
-        .params
-        .clone()
-        .unwrap_or_default();
+    let params = matrix_task.params.clone().unwrap_or_default();
 
     Task {
         id: task_name.to_string(),
@@ -1386,8 +1387,11 @@ fn emit_matrix_workflow(
         .map(|pt| pt.task_name().to_string())
         .collect();
 
-    let expanded_tasks =
-        cuenv_ci::pipeline::expand_task_groups(&ctx.pipeline_tasks, &ctx.tasks, &explicit_task_names);
+    let expanded_tasks = cuenv_ci::pipeline::expand_task_groups(
+        &ctx.pipeline_tasks,
+        &ctx.tasks,
+        &explicit_task_names,
+    );
 
     let jobs = build_pipeline_jobs(&expanded_tasks, ctx, &emitter);
 
@@ -1943,5 +1947,4 @@ mod tests {
                 .contains(&"dist/bundle.js".to_string())
         );
     }
-
 }

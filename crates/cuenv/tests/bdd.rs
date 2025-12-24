@@ -3,7 +3,13 @@
 //! These tests verify the behavior of the CLI through feature specifications,
 //! particularly focusing on shell integration and hook execution.
 
-#![allow(clippy::print_stderr)]
+// BDD tests use unwrap/expect for cleaner assertions
+#![allow(
+    clippy::print_stderr,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::branches_sharing_code
+)]
 
 use cucumber::{World, given, then, when};
 use std::collections::HashMap;

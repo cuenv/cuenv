@@ -87,7 +87,7 @@ pub fn generate_summary(report: &PipelineReport) -> String {
 /// - Buildkite: `BUILDKITE_ANNOTATION_CONTEXT` - use buildkite-agent annotate (future)
 const JOB_SUMMARY_ENV_VARS: &[&str] = &[
     "GITHUB_STEP_SUMMARY", // GitHub Actions
-    // Future: Add other CI systems as they're implemented
+                           // Future: Add other CI systems as they're implemented
 ];
 
 /// Write the summary to the CI system's job summary mechanism.
@@ -119,7 +119,10 @@ pub fn write_job_summary(report: &PipelineReport) -> std::io::Result<()> {
     }
 
     // No summary mechanism available - this is not an error
-    tracing::debug!("No job summary mechanism available (checked: {:?})", JOB_SUMMARY_ENV_VARS);
+    tracing::debug!(
+        "No job summary mechanism available (checked: {:?})",
+        JOB_SUMMARY_ENV_VARS
+    );
     Ok(())
 }
 
