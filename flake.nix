@@ -212,67 +212,30 @@
           ONEPASSWORD_WASM_PATH = onepassword-wasm;
         };
 
-        # Rust target triple for explicit --target flag
-        rustTarget =
-          let cpu = pkgs.stdenv.hostPlatform.parsed.cpu.name;
-          in if cpu == "x86_64" then "x86_64-unknown-linux-gnu"
-          else if cpu == "aarch64" then "aarch64-unknown-linux-gnu"
-          else throw "Unsupported Linux architecture: ${cpu}";
-
         # Build artifacts for dependency caching
-        # Must use same --target and CC settings as main build for cache compatibility
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           src = srcArtifacts;
           preBuild = "";
           buildInputs = platformBuildInputs;
-        } // (if pkgs.stdenv.isLinux then {
-          buildPhaseCargoCommand = ''
-            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
-            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-            export HOST_CC=cc
-            export HOST_CXX=c++
-            export CC_x86_64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
-            export CXX_x86_64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
-            export CC_aarch64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
-            export CXX_aarch64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
-            export AR=${zigARWrapper}/bin/zig-ar
-            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
-            cargo build --release --locked --target ${rustTarget}
-          '';
-        } else { }));
+        });
 
         # Main package build
-        # On Linux: Use --target with HOST_CC/TARGET_CC separation for portable binaries
-        # On macOS: Use regular cargo with deployment target env var
+        # TODO: Re-enable zig cross-compilation for portable Linux binaries once
+        # aws-lc-sys compatibility issues are resolved (it rejects zig as CC)
         cuenv = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
           pname = "cuenv";
           inherit version;
         } // (if pkgs.stdenv.isLinux then {
-          # Linux: Use zig for target compilation, native gcc for build scripts
-          # HOST_CC/HOST_CXX tell cc crate to use native compiler for build scripts
-          # CC_<target>/CXX_<target> tell cc crate to use zig for target
+          # Linux: Build native binary (not portable to other distros)
+          # Portable binary support blocked by aws-lc-sys rejecting zig compiler
           doNotPostBuildInstallCargoBinaries = true;
           buildPhaseCargoCommand = ''
-            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
-            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-            # Use native compiler for HOST (build scripts)
-            export HOST_CC=cc
-            export HOST_CXX=c++
-            # Use zig for TARGET (final binary)
-            export CC_x86_64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
-            export CXX_x86_64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
-            export CC_aarch64_unknown_linux_gnu=${zigCCWrapper}/bin/zig-cc
-            export CXX_aarch64_unknown_linux_gnu=${zigCXXWrapper}/bin/zig-cxx
-            export AR=${zigARWrapper}/bin/zig-ar
-            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${zigCCWrapper}/bin/zig-cc
-            cargo build --release --target ${rustTarget}
+            cargo build --release
           '';
           installPhaseCommand = ''
             mkdir -p $out/bin
-            cp target/${rustTarget}/release/cuenv $out/bin/
+            cp target/release/cuenv $out/bin/
           '';
         } else {
           # macOS: Use regular cargo with deployment target set explicitly
