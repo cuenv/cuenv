@@ -213,11 +213,22 @@
         };
 
         # Build artifacts for dependency caching
+        # On Linux, use Zig to ensure build scripts are portable
         cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
           src = srcArtifacts;
           preBuild = "";
           buildInputs = platformBuildInputs;
-        });
+        } // (if pkgs.stdenv.isLinux then {
+          buildPhaseCargoCommand = ''
+            export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+            export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+            export CC=${zigCCWrapper}/bin/zig-cc
+            export CXX=${zigCXXWrapper}/bin/zig-cxx
+            export AR=${zigARWrapper}/bin/zig-ar
+            export RUSTFLAGS="-C linker=${zigCCWrapper}/bin/zig-cc"
+            cargoWithProfile --locked
+          '';
+        } else { }));
 
         # Main package build
         # On Linux: Use Zig as CC/linker for portable binaries (glibc 2.17 target)
