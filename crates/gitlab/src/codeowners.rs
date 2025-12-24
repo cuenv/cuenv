@@ -10,7 +10,7 @@
 //! This provider aggregates all project ownership rules into a single file
 //! at the repository root `CODEOWNERS`.
 
-use cuenv_codeowners::Platform;
+use cuenv_codeowners::SectionStyle;
 use cuenv_codeowners::provider::{
     CheckResult, CodeOwnersProvider, ProjectOwners, ProviderError, Result, SyncResult,
     generate_aggregated_content, write_codeowners_file,
@@ -26,8 +26,12 @@ use std::path::Path;
 pub struct GitLabCodeOwnersProvider;
 
 impl CodeOwnersProvider for GitLabCodeOwnersProvider {
-    fn platform(&self) -> Platform {
-        Platform::Gitlab
+    fn output_path(&self) -> &str {
+        "CODEOWNERS"
+    }
+
+    fn section_style(&self) -> SectionStyle {
+        SectionStyle::Bracket
     }
 
     fn sync(
@@ -42,11 +46,11 @@ impl CodeOwnersProvider for GitLabCodeOwnersProvider {
             ));
         }
 
-        // Generate aggregated content with GitLab platform (uses [Section] syntax)
-        let content = generate_aggregated_content(Platform::Gitlab, projects, None);
+        // Generate aggregated content with Bracket style (uses [Section] syntax)
+        let content = generate_aggregated_content(self.section_style(), projects, None);
 
         // Output path is at repo root for GitLab
-        let output_path = repo_root.join("CODEOWNERS");
+        let output_path = repo_root.join(self.output_path());
 
         // Write the file
         let status = write_codeowners_file(&output_path, &content, dry_run)?;
@@ -66,9 +70,9 @@ impl CodeOwnersProvider for GitLabCodeOwnersProvider {
         }
 
         // Generate expected content
-        let expected = generate_aggregated_content(Platform::Gitlab, projects, None);
+        let expected = generate_aggregated_content(self.section_style(), projects, None);
 
-        let output_path = repo_root.join("CODEOWNERS");
+        let output_path = repo_root.join(self.output_path());
 
         // Read actual content if file exists
         let actual = if output_path.exists() {
@@ -107,9 +111,15 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_gitlab_provider_platform() {
+    fn test_gitlab_provider_output_path() {
         let provider = GitLabCodeOwnersProvider;
-        assert_eq!(provider.platform(), Platform::Gitlab);
+        assert_eq!(provider.output_path(), "CODEOWNERS");
+    }
+
+    #[test]
+    fn test_gitlab_provider_section_style() {
+        let provider = GitLabCodeOwnersProvider;
+        assert_eq!(provider.section_style(), SectionStyle::Bracket);
     }
 
     #[test]
@@ -166,8 +176,6 @@ mod tests {
             result.content.contains("[services/web]"),
             "Should use [Section] syntax"
         );
-        // Should NOT use comment-style sections for project names
-        // (but header comments are still # prefixed)
     }
 
     #[test]

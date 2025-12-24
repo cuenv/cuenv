@@ -84,7 +84,7 @@ impl GitHubActionsEmitter {
     ///
     /// This applies all configuration from the CUE manifest to the emitter.
     #[must_use]
-    pub fn from_config(config: &cuenv_core::ci::GitHubConfig) -> Self {
+    pub fn from_config(config: &crate::config::GitHubConfig) -> Self {
         let mut emitter = Self::default();
 
         // Apply runner configuration

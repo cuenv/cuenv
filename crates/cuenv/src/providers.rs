@@ -148,7 +148,7 @@ mod tests {
         fs::create_dir(temp.path().join(".github")).unwrap();
 
         let provider = detect_code_owners_provider(temp.path());
-        assert_eq!(provider.platform(), cuenv_codeowners::Platform::Github);
+        assert_eq!(provider.output_path(), ".github/CODEOWNERS");
     }
 
     #[test]
@@ -158,7 +158,11 @@ mod tests {
         fs::write(temp.path().join(".gitlab-ci.yml"), "").unwrap();
 
         let provider = detect_code_owners_provider(temp.path());
-        assert_eq!(provider.platform(), cuenv_codeowners::Platform::Gitlab);
+        assert_eq!(provider.output_path(), "CODEOWNERS");
+        assert_eq!(
+            provider.section_style(),
+            cuenv_codeowners::SectionStyle::Bracket
+        );
     }
 
     #[test]
@@ -168,7 +172,11 @@ mod tests {
         fs::write(temp.path().join("bitbucket-pipelines.yml"), "").unwrap();
 
         let provider = detect_code_owners_provider(temp.path());
-        assert_eq!(provider.platform(), cuenv_codeowners::Platform::Bitbucket);
+        assert_eq!(provider.output_path(), "CODEOWNERS");
+        assert_eq!(
+            provider.section_style(),
+            cuenv_codeowners::SectionStyle::Comment
+        );
     }
 
     #[test]
@@ -177,6 +185,6 @@ mod tests {
         let temp = tempdir().unwrap();
         let provider = detect_code_owners_provider(temp.path());
         // Should fall back to GitHub when no platform indicators found
-        assert_eq!(provider.platform(), cuenv_codeowners::Platform::Github);
+        assert_eq!(provider.output_path(), ".github/CODEOWNERS");
     }
 }

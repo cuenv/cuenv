@@ -8,7 +8,7 @@
 //! This provider aggregates all project ownership rules into a single file
 //! at the repository root `CODEOWNERS`.
 
-use cuenv_codeowners::Platform;
+use cuenv_codeowners::SectionStyle;
 use cuenv_codeowners::provider::{
     CheckResult, CodeOwnersProvider, ProjectOwners, ProviderError, Result, SyncResult,
     generate_aggregated_content, write_codeowners_file,
@@ -24,8 +24,12 @@ use std::path::Path;
 pub struct BitbucketCodeOwnersProvider;
 
 impl CodeOwnersProvider for BitbucketCodeOwnersProvider {
-    fn platform(&self) -> Platform {
-        Platform::Bitbucket
+    fn output_path(&self) -> &str {
+        "CODEOWNERS"
+    }
+
+    fn section_style(&self) -> SectionStyle {
+        SectionStyle::Comment
     }
 
     fn sync(
@@ -40,11 +44,11 @@ impl CodeOwnersProvider for BitbucketCodeOwnersProvider {
             ));
         }
 
-        // Generate aggregated content with Bitbucket platform
-        let content = generate_aggregated_content(Platform::Bitbucket, projects, None);
+        // Generate aggregated content with Comment style
+        let content = generate_aggregated_content(self.section_style(), projects, None);
 
         // Output path is at repo root for Bitbucket
-        let output_path = repo_root.join("CODEOWNERS");
+        let output_path = repo_root.join(self.output_path());
 
         // Write the file
         let status = write_codeowners_file(&output_path, &content, dry_run)?;
@@ -64,9 +68,9 @@ impl CodeOwnersProvider for BitbucketCodeOwnersProvider {
         }
 
         // Generate expected content
-        let expected = generate_aggregated_content(Platform::Bitbucket, projects, None);
+        let expected = generate_aggregated_content(self.section_style(), projects, None);
 
-        let output_path = repo_root.join("CODEOWNERS");
+        let output_path = repo_root.join(self.output_path());
 
         // Read actual content if file exists
         let actual = if output_path.exists() {
@@ -105,9 +109,15 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_bitbucket_provider_platform() {
+    fn test_bitbucket_provider_output_path() {
         let provider = BitbucketCodeOwnersProvider;
-        assert_eq!(provider.platform(), Platform::Bitbucket);
+        assert_eq!(provider.output_path(), "CODEOWNERS");
+    }
+
+    #[test]
+    fn test_bitbucket_provider_section_style() {
+        let provider = BitbucketCodeOwnersProvider;
+        assert_eq!(provider.section_style(), SectionStyle::Comment);
     }
 
     #[test]

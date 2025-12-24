@@ -133,98 +133,22 @@ impl PipelineTask {
     }
 }
 
-/// GitHub Actions provider configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct GitHubConfig {
-    /// Runner label(s) - single string or array of labels
-    pub runner: Option<StringOrVec>,
-    /// Runner mapping for matrix dimensions
-    pub runners: Option<RunnerMapping>,
-    /// Cachix configuration for Nix caching
-    pub cachix: Option<CachixConfig>,
-    /// Artifact upload configuration
-    pub artifacts: Option<ArtifactsConfig>,
-    /// Paths to ignore for trigger conditions
-    pub paths_ignore: Option<Vec<String>>,
-    /// Workflow permissions
-    pub permissions: Option<HashMap<String, String>>,
-}
-
-/// Cachix caching configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CachixConfig {
-    /// Cachix cache name
-    pub name: String,
-    /// Secret name for auth token (defaults to CACHIX_AUTH_TOKEN)
-    pub auth_token: Option<String>,
-    /// Push filter pattern
-    pub push_filter: Option<String>,
-}
-
-/// Artifact upload configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ArtifactsConfig {
-    /// Paths to upload as artifacts
-    pub paths: Option<Vec<String>>,
-    /// Behavior when no files found: "warn", "error", or "ignore"
-    pub if_no_files_found: Option<String>,
-}
-
-/// Buildkite provider configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct BuildkiteConfig {
-    /// Default queue for agents
-    pub queue: Option<String>,
-    /// Enable emoji prefixes in step labels
-    pub use_emojis: Option<bool>,
-    /// Buildkite plugins
-    pub plugins: Option<Vec<BuildkitePlugin>>,
-}
-
-/// Buildkite plugin configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BuildkitePlugin {
-    /// Plugin name
-    pub name: String,
-    /// Plugin configuration (arbitrary JSON)
-    pub config: Option<serde_json::Value>,
-}
-
-/// GitLab CI provider configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct GitLabConfig {
-    /// Docker image for jobs
-    pub image: Option<String>,
-    /// Runner tags
-    pub tags: Option<Vec<String>>,
-    /// Cache configuration
-    pub cache: Option<GitLabCacheConfig>,
-}
-
-/// GitLab cache configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct GitLabCacheConfig {
-    /// Cache key
-    pub key: Option<String>,
-    /// Paths to cache
-    pub paths: Option<Vec<String>>,
-}
-
-/// Provider-specific configuration container
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ProviderConfig {
-    /// GitHub Actions configuration
-    pub github: Option<GitHubConfig>,
-    /// Buildkite configuration
-    pub buildkite: Option<BuildkiteConfig>,
-    /// GitLab CI configuration
-    pub gitlab: Option<GitLabConfig>,
-}
+/// Provider-specific configuration container.
+///
+/// This is a dynamic map of provider name to provider-specific configuration.
+/// Each provider crate (cuenv-github, cuenv-buildkite, cuenv-gitlab) defines
+/// its own typed configuration and deserializes from this map.
+///
+/// Example CUE configuration:
+/// ```cue
+/// provider: {
+///     github: {
+///         runner: "ubuntu-latest"
+///         cachix: { name: "my-cache" }
+///     }
+/// }
+/// ```
+pub type ProviderConfig = HashMap<String, serde_json::Value>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
