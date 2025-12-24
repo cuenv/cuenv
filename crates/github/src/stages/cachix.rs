@@ -68,6 +68,10 @@ impl StageContributor for CachixContributor {
         // Build environment variables for the Cachix setup
         let mut env = HashMap::new();
         env.insert("CACHIX_CACHE_NAME".to_string(), config.name.clone());
+        env.insert(
+            "CACHIX_AUTH_TOKEN".to_string(),
+            format!("${{{}}}", config.auth_token_secret),
+        );
 
         (
             vec![(
