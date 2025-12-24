@@ -129,7 +129,7 @@ impl CoordinatorClient {
 
     /// Get the client ID.
     #[must_use]
-    pub fn client_id(&self) -> Uuid {
+    pub const fn client_id(&self) -> Uuid {
         self.client_id
     }
 
@@ -153,7 +153,7 @@ pub struct CoordinatorHandle {
 impl CoordinatorHandle {
     /// Create a handle for an existing coordinator.
     #[must_use]
-    pub fn existing(pid: u32, socket: std::path::PathBuf) -> Self {
+    pub const fn existing(pid: u32, socket: std::path::PathBuf) -> Self {
         Self {
             pid: Some(pid),
             socket,
@@ -163,7 +163,7 @@ impl CoordinatorHandle {
 
     /// Create a handle for a coordinator we started.
     #[must_use]
-    pub fn new(pid: u32, socket: std::path::PathBuf) -> Self {
+    pub const fn new(pid: u32, socket: std::path::PathBuf) -> Self {
         Self {
             pid: Some(pid),
             socket,

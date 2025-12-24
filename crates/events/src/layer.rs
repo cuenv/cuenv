@@ -34,7 +34,7 @@ pub struct CuenvEventLayer {
 impl CuenvEventLayer {
     /// Create a new layer that sends events to the given channel.
     #[must_use]
-    pub fn new(sender: mpsc::UnboundedSender<CuenvEvent>) -> Self {
+    pub const fn new(sender: mpsc::UnboundedSender<CuenvEvent>) -> Self {
         Self { sender }
     }
 }
@@ -143,6 +143,7 @@ impl CuenvEventVisitor {
         }
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn build(self) -> Option<CuenvEvent> {
         let event_type = self.event_type.as_deref()?;
         let source = EventSource::new(&self.target);
@@ -227,7 +228,7 @@ impl CuenvEventVisitor {
             "command.progress" => EventCategory::Command(CommandEvent::Progress {
                 command: self.command?,
                 progress: self.progress?,
-                message: message.clone()?,
+                message: message?,
             }),
             "command.completed" => EventCategory::Command(CommandEvent::Completed {
                 command: self.command?,
@@ -239,7 +240,7 @@ impl CuenvEventVisitor {
             "interactive.prompt_requested" => {
                 EventCategory::Interactive(InteractiveEvent::PromptRequested {
                     prompt_id: self.prompt_id?,
-                    message: message.clone()?,
+                    message: message?,
                     options: self.options.unwrap_or_default(),
                 })
             }
@@ -265,7 +266,7 @@ impl CuenvEventVisitor {
 
             // Output events
             "output.stdout" => EventCategory::Output(OutputEvent::Stdout {
-                content: content.clone()?,
+                content: content?,
             }),
             "output.stderr" => EventCategory::Output(OutputEvent::Stderr { content: content? }),
 

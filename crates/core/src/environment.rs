@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::env;
 
 /// Policy for controlling environment variable access
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Policy {
     /// Allowlist of task names that can access this variable
     #[serde(skip_serializing_if = "Option::is_none", rename = "allowTasks")]

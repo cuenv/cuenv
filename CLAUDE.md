@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Rules
+
+- Never allow clippy warnings, fix the root cause
+
 ## Project Overview
 
 cuenv is a CUE-powered environment management and task orchestration system built in Rust with a Go FFI bridge for CUE evaluation. It provides type-safe environments with runtime secret resolution and parallel task execution with content-aware caching.

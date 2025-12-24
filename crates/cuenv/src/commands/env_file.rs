@@ -113,7 +113,7 @@ pub fn find_ancestor_env_files(start: &Path, expected_package: &str) -> Result<V
     let module_root = find_cue_module_root(&start_canonical);
 
     let mut ancestors = Vec::new();
-    let mut current = start_canonical.clone();
+    let mut current = start_canonical;
 
     loop {
         // Check if this directory has an env.cue with matching package

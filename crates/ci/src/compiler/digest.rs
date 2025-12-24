@@ -275,7 +275,7 @@ mod proptest_tests {
             key in "[A-Z_]+",
             value in "[a-zA-Z0-9]+",
         ) {
-            let env = HashMap::from([(key.clone(), value.clone())]);
+            let env = HashMap::from([(key, value)]);
             let inputs: Vec<String> = vec![];
 
             let digest1 = compute_task_digest(&cmd, &env, &inputs, None, None, None);

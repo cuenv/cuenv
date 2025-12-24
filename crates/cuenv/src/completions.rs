@@ -52,7 +52,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         recursive: true,
         ..Default::default()
     };
-    let Ok(raw_result) = cuengine::evaluate_module(&module_root, package, Some(options)) else {
+    let Ok(raw_result) = cuengine::evaluate_module(&module_root, package, Some(&options)) else {
         return Vec::new();
     };
 
@@ -141,7 +141,7 @@ fn get_task_params(
         recursive: true,
         ..Default::default()
     };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(options)).ok()?;
+    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options)).ok()?;
 
     let module = ModuleEvaluation::from_raw(
         module_root.clone(),

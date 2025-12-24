@@ -53,7 +53,7 @@ pub struct CIConfig {
 }
 
 /// Configuration for cuenv installation in CI
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CuenvConfig {
     /// Source for cuenv binary
@@ -131,7 +131,7 @@ pub struct BackendConfig {
 }
 
 /// Backend-specific options supported by cuenv
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BackendOptions {
     /// Default container image for the Dagger backend
     #[serde(skip_serializing_if = "Option::is_none")]

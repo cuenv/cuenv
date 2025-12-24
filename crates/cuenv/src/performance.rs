@@ -179,7 +179,7 @@ impl Drop for PerformanceGuard {
 }
 
 /// Get current memory usage if available
-fn get_memory_usage() -> Option<u64> {
+const fn get_memory_usage() -> Option<u64> {
     // On Linux, we can read from /proc/self/status
     #[cfg(target_os = "linux")]
     {

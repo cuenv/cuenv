@@ -440,6 +440,9 @@ mod tests {
             cache_policy: CachePolicy::Normal,
             deployment: false,
             manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: HashMap::new(),
         }
     }
 

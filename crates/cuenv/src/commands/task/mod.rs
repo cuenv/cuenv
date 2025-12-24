@@ -99,72 +99,11 @@ pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
         interactive,
         request.output.help,
         all,
+        request.skip_dependencies,
         task_args,
         request.executor,
     )
     .await
-}
-
-/// Execute a named task from the CUE configuration (legacy API).
-///
-/// **Deprecated**: Use [`execute`] with [`TaskExecutionRequest`] instead.
-///
-/// This function is kept for backward compatibility. New code should use
-/// the structured request API which provides better type safety and
-/// clearer intent.
-///
-/// Tasks can be selected in two mutually exclusive ways:
-/// - By name: Provide `task_name` to execute a specific task
-/// - By labels: Provide `labels` to execute all tasks matching ALL given labels (AND semantics)
-///
-/// When using labels, the function discovers all projects in the CUE module scope,
-/// finds tasks matching the labels, creates a synthetic root task that depends on them,
-/// and executes via the DAG.
-///
-/// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
-#[allow(
-    clippy::too_many_lines,
-    clippy::too_many_arguments,
-    clippy::fn_params_excessive_bools
-)]
-pub async fn execute_task(
-    path: &str,
-    package: &str,
-    task_name: Option<&str>,
-    labels: &[String],
-    environment: Option<&str>,
-    format: &str,
-    capture_output: bool,
-    materialize_outputs: Option<&str>,
-    show_cache_path: bool,
-    backend: Option<&str>,
-    tui: bool,
-    interactive: bool,
-    help: bool,
-    all: bool,
-    task_args: &[String],
-    executor: Option<&CommandExecutor>,
-) -> Result<String> {
-    let request = TaskExecutionRequest::from_legacy(
-        path,
-        package,
-        task_name,
-        labels,
-        environment,
-        format,
-        capture_output,
-        materialize_outputs,
-        show_cache_path,
-        backend,
-        tui,
-        interactive,
-        help,
-        all,
-        task_args,
-        executor,
-    );
-    execute(request).await
 }
 
 /// Internal implementation of task execution.
@@ -188,6 +127,7 @@ async fn execute_task_legacy(
     interactive: bool,
     help: bool,
     all: bool,
+    skip_dependencies: bool,
     task_args: &[String],
     executor: Option<&CommandExecutor>,
 ) -> Result<String> {
@@ -317,26 +257,39 @@ async fn execute_task_legacy(
 
         match run_picker(selectable) {
             Ok(PickerResult::Selected(selected_task)) => {
-                // Recursively call execute_task with the selected task
-                return Box::pin(execute_task(
-                    path,
-                    package,
-                    Some(&selected_task),
-                    labels,
-                    environment,
-                    format,
-                    capture_output,
-                    materialize_outputs,
-                    show_cache_path,
-                    backend,
-                    tui,
-                    false, // interactive = false for the actual execution
-                    help,
-                    all,
-                    task_args,
-                    executor,
-                ))
-                .await;
+                // Build a new request for the selected task
+                let mut request =
+                    TaskExecutionRequest::named(path, package, &selected_task).with_format(format);
+
+                if let Some(env) = environment {
+                    request = request.with_environment(env);
+                }
+                if capture_output {
+                    request = request.with_capture();
+                }
+                if let Some(mat_path) = materialize_outputs {
+                    request = request.with_materialize_outputs(mat_path);
+                }
+                if show_cache_path {
+                    request = request.with_show_cache_path();
+                }
+                if let Some(be) = backend {
+                    request = request.with_backend(be);
+                }
+                if tui {
+                    request = request.with_tui();
+                }
+                if help {
+                    request = request.with_help();
+                }
+                if skip_dependencies {
+                    request = request.with_skip_dependencies();
+                }
+                if let Some(exec) = executor {
+                    request = request.with_executor(exec);
+                }
+
+                return Box::pin(execute(request)).await;
             }
             Ok(PickerResult::Cancelled) => {
                 return Ok(String::new());
@@ -544,7 +497,7 @@ async fn execute_task_legacy(
             let root = task_fqdn(&current_project_id, &display_task_name);
             (global, root)
         } else {
-            (tasks.clone(), display_task_name.clone())
+            (tasks, display_task_name.clone())
         };
 
         all_tasks = global_tasks;
@@ -665,12 +618,23 @@ async fn execute_task_legacy(
     // Build task graph for dependency-aware execution
     tracing::debug!("Building task graph for task: {}", task_graph_root_name);
     let mut task_graph = TaskGraph::new();
-    task_graph
-        .build_for_task(&task_graph_root_name, &all_tasks)
-        .map_err(|e| {
-            tracing::error!("Failed to build task graph: {}", e);
-            e
-        })?;
+
+    if skip_dependencies {
+        // When skipping dependencies, just add the target task without its dependency tree.
+        // This is used by CI orchestrators (like GitHub Actions) that handle dependencies externally.
+        tracing::debug!("Skipping dependencies - adding only the target task");
+        if let Some(TaskDefinition::Single(task)) = all_tasks.get(&task_graph_root_name) {
+            task_graph.add_task(&task_graph_root_name, (**task).clone())?;
+        }
+    } else {
+        task_graph
+            .build_for_task(&task_graph_root_name, &all_tasks)
+            .map_err(|e| {
+                tracing::error!("Failed to build task graph: {}", e);
+                e
+            })?;
+    }
+
     tracing::debug!(
         "Successfully built task graph with {} tasks",
         task_graph.task_count()
@@ -958,25 +922,8 @@ env: {
 }"#;
         fs::write(temp_dir.path().join("env.cue"), cue_content).expect("write to string");
 
-        let result = execute_task(
-            temp_dir.path().to_str().unwrap(),
-            "test",
-            None,
-            &[],
-            None,
-            "simple",
-            false,
-            None,
-            false,
-            None,
-            false, // tui
-            false, // interactive
-            false, // help
-            false, // all
-            &[],
-            None, // executor
-        )
-        .await;
+        let request = TaskExecutionRequest::list(temp_dir.path().to_str().unwrap(), "test");
+        let result = execute(request).await;
 
         // The result depends on FFI availability
         if let Ok(output) = result {

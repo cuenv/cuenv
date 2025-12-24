@@ -267,7 +267,7 @@
 
           shellHook = ''
             ${setupBridge}
-            
+
             # Install docs dependencies
             cd docs
             bun install

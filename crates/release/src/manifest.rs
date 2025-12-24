@@ -299,7 +299,7 @@ impl CargoManifest {
         } else {
             return Err(Error::manifest(
                 "Root manifest is missing [workspace.package] table".to_string(),
-                Some(path.clone()),
+                Some(path),
             ));
         }
 

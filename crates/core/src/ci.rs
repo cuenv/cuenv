@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Workflow dispatch input definition for manual triggers
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowDispatchInput {
     /// Description shown in the GitHub UI
@@ -65,14 +65,14 @@ pub struct PipelineCondition {
 }
 
 /// Runner mapping for matrix dimensions
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct RunnerMapping {
     /// Architecture to runner mapping (e.g., "linux-x64" -> "ubuntu-latest")
     pub arch: Option<HashMap<String, String>>,
 }
 
 /// Artifact download configuration for pipeline tasks
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactDownload {
     /// Source task name (must have outputs)
@@ -152,7 +152,7 @@ pub struct GitHubConfig {
 }
 
 /// Cachix caching configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CachixConfig {
     /// Cachix cache name
@@ -164,7 +164,7 @@ pub struct CachixConfig {
 }
 
 /// Artifact upload configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactsConfig {
     /// Paths to upload as artifacts
@@ -186,7 +186,7 @@ pub struct BuildkiteConfig {
 }
 
 /// Buildkite plugin configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BuildkitePlugin {
     /// Plugin name
     pub name: String,
@@ -207,7 +207,7 @@ pub struct GitLabConfig {
 }
 
 /// GitLab cache configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct GitLabCacheConfig {
     /// Cache key
     pub key: Option<String>,
@@ -282,7 +282,7 @@ impl CI {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum StringOrVec {
     String(String),

@@ -1,7 +1,7 @@
 pub mod changeset_picker;
 pub mod ci;
 pub mod env;
-pub(crate) mod env_file;
+pub mod env_file;
 pub mod exec;
 pub mod export;
 pub mod handler;
@@ -17,7 +17,7 @@ pub mod task_list;
 pub mod task_picker;
 pub mod version;
 
-pub(crate) use module_utils::convert_engine_error;
+pub use module_utils::convert_engine_error;
 pub use module_utils::{ModuleGuard, relative_path_from_root};
 
 use crate::cli::StatusFormat;
@@ -87,6 +87,7 @@ pub enum Command {
         interactive: bool,
         help: bool,
         all: bool,
+        skip_dependencies: bool,
         task_args: Vec<String>,
     },
     Exec {
@@ -204,7 +205,7 @@ pub struct CommandExecutor {
 #[allow(dead_code)]
 impl CommandExecutor {
     /// Create a new executor with the specified event sender and package name.
-    pub fn new(event_sender: EventSender, package: String) -> Self {
+    pub const fn new(event_sender: EventSender, package: String) -> Self {
         Self {
             event_sender,
             module: Mutex::new(None),
@@ -248,7 +249,7 @@ impl CommandExecutor {
                 recursive: true,
                 ..Default::default()
             };
-            let raw = cuengine::evaluate_module(&module_root, &self.package, Some(options))
+            let raw = cuengine::evaluate_module(&module_root, &self.package, Some(&options))
                 .map_err(convert_engine_error)?;
 
             *guard = Some(ModuleEvaluation::from_raw(
@@ -426,6 +427,7 @@ impl CommandExecutor {
                 interactive,
                 help,
                 all,
+                skip_dependencies,
                 task_args,
             } => {
                 self.run_command(handler::TaskHandler {
@@ -442,6 +444,7 @@ impl CommandExecutor {
                     interactive,
                     help,
                     all,
+                    skip_dependencies,
                     task_args,
                 })
                 .await

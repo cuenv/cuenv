@@ -1,0 +1,14 @@
+# Aggressive thresholds for strict code quality
+cognitive-complexity-threshold = 15
+too-many-lines-threshold = 50
+too-many-arguments-threshold = 5
+type-complexity-threshold = 200
+
+# Allow these in test code
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
+
+# Note: print_stdout/print_stderr lints in Cargo.toml handle console output
+# disallowed-macros not needed - it catches build.rs which must use println!

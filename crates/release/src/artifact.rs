@@ -31,7 +31,7 @@ pub enum Target {
 impl Target {
     /// Returns the Rust target triple for this target.
     #[must_use]
-    pub fn rust_triple(&self) -> &'static str {
+    pub const fn rust_triple(&self) -> &'static str {
         match self {
             Self::LinuxX64 => "x86_64-unknown-linux-gnu",
             Self::LinuxArm64 => "aarch64-unknown-linux-gnu",
@@ -41,7 +41,7 @@ impl Target {
 
     /// Returns the OS string for archive naming.
     #[must_use]
-    pub fn os(&self) -> &'static str {
+    pub const fn os(&self) -> &'static str {
         match self {
             Self::LinuxX64 | Self::LinuxArm64 => "linux",
             Self::DarwinArm64 => "darwin",
@@ -50,7 +50,7 @@ impl Target {
 
     /// Returns the architecture string for archive naming.
     #[must_use]
-    pub fn arch(&self) -> &'static str {
+    pub const fn arch(&self) -> &'static str {
         match self {
             Self::LinuxX64 => "x86_64",
             Self::LinuxArm64 | Self::DarwinArm64 => "arm64",
@@ -59,7 +59,7 @@ impl Target {
 
     /// Returns the short identifier (e.g., "linux-x64").
     #[must_use]
-    pub fn short_id(&self) -> &'static str {
+    pub const fn short_id(&self) -> &'static str {
         match self {
             Self::LinuxX64 => "linux-x64",
             Self::LinuxArm64 => "linux-arm64",
@@ -69,7 +69,7 @@ impl Target {
 
     /// Returns the GitHub Actions runner for this target.
     #[must_use]
-    pub fn github_runner(&self) -> &'static str {
+    pub const fn github_runner(&self) -> &'static str {
         match self {
             Self::LinuxX64 | Self::LinuxArm64 => "ubuntu-latest",
             Self::DarwinArm64 => "macos-14",
@@ -78,7 +78,7 @@ impl Target {
 
     /// Returns all supported targets.
     #[must_use]
-    pub fn all() -> &'static [Target] {
+    pub const fn all() -> &'static [Self] {
         &[Self::LinuxX64, Self::LinuxArm64, Self::DarwinArm64]
     }
 

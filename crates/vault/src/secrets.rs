@@ -7,7 +7,7 @@ use tokio::process::Command;
 use vaultrs::client::VaultClient;
 
 /// Configuration for `HashiCorp` Vault resolution
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VaultSecretConfig {
     /// Path to the secret (e.g., "secret/data/myapp/config")
@@ -116,7 +116,7 @@ impl VaultResolver {
     }
 
     /// Check if this resolver can use HTTP mode
-    fn can_use_http(&self) -> bool {
+    const fn can_use_http(&self) -> bool {
         self.client.is_some()
     }
 

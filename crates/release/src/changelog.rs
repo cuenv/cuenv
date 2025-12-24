@@ -39,7 +39,7 @@ pub struct ChangelogChange {
 impl ChangelogEntry {
     /// Create a new changelog entry.
     #[must_use]
-    pub fn new(version: Version, date: DateTime<Utc>, changes: Vec<ChangelogChange>) -> Self {
+    pub const fn new(version: Version, date: DateTime<Utc>, changes: Vec<ChangelogChange>) -> Self {
         Self {
             version,
             date,
@@ -138,7 +138,7 @@ pub struct ChangelogGenerator {
 impl ChangelogGenerator {
     /// Create a new changelog generator with the given configuration.
     #[must_use]
-    pub fn new(config: ChangelogConfig) -> Self {
+    pub const fn new(config: ChangelogConfig) -> Self {
         Self { config }
     }
 
@@ -243,12 +243,11 @@ impl ChangelogGenerator {
         };
 
         // Insert new content after the header
-        let content = if let Some(idx) = existing.find("\n## ") {
-            format!("{}{}{}", &existing[..idx], "\n", new_content.trim_end()) + &existing[idx..]
-        } else {
+        let content = existing.find("\n## ").map_or_else(
             // No existing entries, append to end
-            format!("{}\n{}", existing.trim_end(), new_content)
-        };
+            || format!("{}\n{}", existing.trim_end(), new_content),
+            |idx| format!("{}{}{}", &existing[..idx], "\n", new_content.trim_end()) + &existing[idx..],
+        );
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {

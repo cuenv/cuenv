@@ -54,11 +54,11 @@ pub enum LogLevel {
 impl From<LogLevel> for Level {
     fn from(level: LogLevel) -> Self {
         match level {
-            LogLevel::Trace => Level::TRACE,
-            LogLevel::Debug => Level::DEBUG,
-            LogLevel::Info => Level::INFO,
-            LogLevel::Warn => Level::WARN,
-            LogLevel::Error => Level::ERROR,
+            LogLevel::Trace => Self::TRACE,
+            LogLevel::Debug => Self::DEBUG,
+            LogLevel::Info => Self::INFO,
+            LogLevel::Warn => Self::WARN,
+            LogLevel::Error => Self::ERROR,
         }
     }
 }
@@ -68,10 +68,10 @@ impl std::str::FromStr for TracingFormat {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "pretty" => Ok(TracingFormat::Pretty),
-            "compact" => Ok(TracingFormat::Compact),
-            "json" => Ok(TracingFormat::Json),
-            "dev" => Ok(TracingFormat::Dev),
+            "pretty" => Ok(Self::Pretty),
+            "compact" => Ok(Self::Compact),
+            "json" => Ok(Self::Json),
+            "dev" => Ok(Self::Dev),
             _ => Err(format!("Unknown tracing format: {s}")),
         }
     }

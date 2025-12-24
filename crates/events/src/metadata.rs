@@ -48,7 +48,7 @@ impl MetadataContext {
 
     /// Create a new metadata context with a specific correlation ID.
     #[must_use]
-    pub fn with_correlation_id(id: Uuid) -> Self {
+    pub const fn with_correlation_id(id: Uuid) -> Self {
         Self {
             correlation_id: id,
             default_target: None,

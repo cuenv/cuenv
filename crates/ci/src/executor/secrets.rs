@@ -181,13 +181,13 @@ impl CIResolvedSecrets {
 
     /// Get the inner values map
     #[must_use]
-    pub fn values(&self) -> &HashMap<String, String> {
+    pub const fn values(&self) -> &HashMap<String, String> {
         &self.inner.values
     }
 
     /// Get the inner fingerprints map
     #[must_use]
-    pub fn fingerprints(&self) -> &HashMap<String, String> {
+    pub const fn fingerprints(&self) -> &HashMap<String, String> {
         &self.inner.fingerprints
     }
 

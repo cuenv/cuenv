@@ -95,7 +95,7 @@ impl GarbageCollector {
 
     /// Create with custom configuration
     #[must_use]
-    pub fn with_config(config: GCConfig) -> Self {
+    pub const fn with_config(config: GCConfig) -> Self {
         Self { config }
     }
 
@@ -108,28 +108,28 @@ impl GarbageCollector {
 
     /// Set max cache size
     #[must_use]
-    pub fn max_size(mut self, bytes: u64) -> Self {
+    pub const fn max_size(mut self, bytes: u64) -> Self {
         self.config.max_size_bytes = bytes;
         self
     }
 
     /// Set max age in days
     #[must_use]
-    pub fn max_age_days(mut self, days: u32) -> Self {
+    pub const fn max_age_days(mut self, days: u32) -> Self {
         self.config.max_age_days = days;
         self
     }
 
     /// Enable Nix garbage collection
     #[must_use]
-    pub fn with_nix_gc(mut self) -> Self {
+    pub const fn with_nix_gc(mut self) -> Self {
         self.config.run_nix_gc = true;
         self
     }
 
     /// Enable dry run mode
     #[must_use]
-    pub fn dry_run(mut self) -> Self {
+    pub const fn dry_run(mut self) -> Self {
         self.config.dry_run = true;
         self
     }

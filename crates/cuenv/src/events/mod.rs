@@ -28,9 +28,9 @@ pub enum Event {
 impl fmt::Display for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Event::UserInput { input } => write!(f, "UserInput: {input}"),
-            Event::CommandStart { command } => write!(f, "CommandStart: {command}"),
-            Event::CommandProgress {
+            Self::UserInput { input } => write!(f, "UserInput: {input}"),
+            Self::CommandStart { command } => write!(f, "CommandStart: {command}"),
+            Self::CommandProgress {
                 command,
                 progress,
                 message,
@@ -43,7 +43,7 @@ impl fmt::Display for Event {
                     message
                 )
             }
-            Event::CommandComplete {
+            Self::CommandComplete {
                 command, success, ..
             } => {
                 write!(
@@ -53,8 +53,8 @@ impl fmt::Display for Event {
                     if *success { "success" } else { "failed" }
                 )
             }
-            Event::SystemShutdown => write!(f, "SystemShutdown"),
-            Event::TuiRefresh => write!(f, "TuiRefresh"),
+            Self::SystemShutdown => write!(f, "SystemShutdown"),
+            Self::TuiRefresh => write!(f, "TuiRefresh"),
         }
     }
 }

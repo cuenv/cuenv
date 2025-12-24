@@ -420,6 +420,9 @@ async fn execute_single_task_by_name(
         cache_policy: cache_policy_override.unwrap_or(CachePolicy::Normal),
         deployment: false,
         manual_approval: false,
+        matrix: None,
+        artifact_downloads: vec![],
+        params: HashMap::new(),
     };
 
     // Build environment

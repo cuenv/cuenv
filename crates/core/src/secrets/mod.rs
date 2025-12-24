@@ -24,7 +24,7 @@ pub use cuenv_secrets::resolvers::{EnvSecretResolver, ExecSecretResolver};
 pub use cuenv_1password::secrets::{OnePasswordConfig, OnePasswordResolver};
 
 /// Resolver for executing commands to retrieve secret values
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecResolver {
     /// Command to execute
     pub command: String,
@@ -42,7 +42,7 @@ pub struct ExecResolver {
 /// - `aws`, `gcp`, `vault`: Cloud provider secrets
 ///
 /// Resolution is delegated to the trait-based [`SecretResolver`] system.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Secret {
     /// Resolver type: "exec", "onepassword", "aws", "gcp", "vault"
     pub resolver: String,
