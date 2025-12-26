@@ -39,7 +39,7 @@ nix run github:cuenv/cuenv -- --help
 For macOS and Linux users with Homebrew:
 
 ```bash
-brew install cuenv/cuenv
+brew install cuenv/cuenv/cuenv
 ```
 
 ### Method 3: From Crates.io
@@ -144,7 +144,7 @@ cargo install cuenv
 #### Using Homebrew
 
 ```bash
-brew install cuenv/cuenv
+brew install cuenv/cuenv/cuenv
 ```
 
 #### Manual Installation

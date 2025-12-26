@@ -115,13 +115,9 @@ impl CuenvContributor {
         }
     }
 
-    /// Homebrew mode: Install via tap (no Nix required)
+    /// Homebrew mode: Install directly from repo (no Nix required)
     fn homebrew_command() -> String {
-        concat!(
-            "brew tap cuenv/cuenv https://github.com/cuenv/cuenv && ",
-            "brew install cuenv/cuenv/cuenv"
-        )
-        .to_string()
+        "brew install cuenv/cuenv/cuenv".to_string()
     }
 }
 
@@ -349,8 +345,7 @@ mod tests {
         let (_, task) = &contributions[0];
 
         assert_eq!(task.label, Some("Setup cuenv (homebrew)".to_string()));
-        assert!(task.command[0].contains("brew tap cuenv/cuenv"));
-        assert!(task.command[0].contains("brew install cuenv/cuenv/cuenv"));
+        assert_eq!(task.command[0], "brew install cuenv/cuenv/cuenv");
     }
 
     #[test]
