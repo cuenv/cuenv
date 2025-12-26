@@ -92,7 +92,7 @@ The source and version are configured via `config.ci.cuenv`:
 | `git`               | `0.17.0`             | Clone specific tag and build via nix                              | Yes          |
 | `nix`               | `self`               | Build from current checkout + Cachix                              | Yes          |
 | `nix`               | `0.17.0`             | Install via `nix profile install github:cuenv/cuenv/0.17.0#cuenv` | Yes          |
-| `homebrew`          | (ignored)            | Install via `brew tap cuenv/cuenv && brew install cuenv`          | **No**       |
+| `homebrew`          | (ignored)            | Install via `brew install cuenv/cuenv/cuenv`                      | **No**       |
 
 **Configuration Examples:**
 
