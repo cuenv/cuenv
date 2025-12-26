@@ -119,6 +119,11 @@ impl CuenvContributor {
     fn homebrew_command() -> String {
         "brew install cuenv/cuenv/cuenv".to_string()
     }
+
+    /// Wrap a command with `cuenv sync -A` to ensure project synchronization
+    fn with_sync(command: &str) -> String {
+        format!("{command} && cuenv sync -A")
+    }
 }
 
 impl StageContributor for CuenvContributor {
@@ -145,12 +150,12 @@ impl StageContributor for CuenvContributor {
 
         let (command, label, depends_on) = match source {
             CuenvSource::Release => (
-                Self::release_command(&version),
+                Self::with_sync(&Self::release_command(&version)),
                 "Setup cuenv (release)",
                 vec![], // No Nix dependency
             ),
             CuenvSource::Git => (
-                Self::git_command(&version),
+                Self::with_sync(&Self::git_command(&version)),
                 if version == "self" {
                     "Build cuenv"
                 } else {
@@ -159,12 +164,12 @@ impl StageContributor for CuenvContributor {
                 vec!["install-nix".to_string()],
             ),
             CuenvSource::Nix => (
-                Self::nix_command(&version),
+                Self::with_sync(&Self::nix_command(&version)),
                 "Setup cuenv (nix)",
                 vec!["install-nix".to_string()],
             ),
             CuenvSource::Homebrew => (
-                Self::homebrew_command(),
+                Self::with_sync(&Self::homebrew_command()),
                 "Setup cuenv (homebrew)",
                 vec![], // No Nix dependency!
             ),
@@ -259,6 +264,7 @@ mod tests {
         assert_eq!(task.id, "setup-cuenv");
         assert_eq!(task.label, Some("Setup cuenv (release)".to_string()));
         assert!(task.command[0].contains("releases/latest/download"));
+        assert!(task.command[0].contains("&& cuenv sync -A"));
         // Release mode has no Nix dependency
         assert!(task.depends_on.is_empty());
     }
@@ -274,6 +280,7 @@ mod tests {
 
         assert_eq!(task.label, Some("Setup cuenv (release)".to_string()));
         assert!(task.command[0].contains("releases/download/0.17.0"));
+        assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.is_empty());
     }
 
@@ -288,6 +295,7 @@ mod tests {
 
         assert_eq!(task.label, Some("Build cuenv".to_string()));
         assert!(task.command[0].contains("nix build .#cuenv"));
+        assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 
@@ -303,6 +311,7 @@ mod tests {
         assert_eq!(task.label, Some("Build cuenv (versioned)".to_string()));
         assert!(task.command[0].contains("git clone --depth 1 --branch 0.17.0"));
         assert!(task.command[0].contains("nix build .#cuenv"));
+        assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 
@@ -318,6 +327,7 @@ mod tests {
         assert_eq!(task.label, Some("Setup cuenv (nix)".to_string()));
         // Nix self mode uses same command as git self
         assert!(task.command[0].contains("nix build .#cuenv"));
+        assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 
@@ -332,6 +342,7 @@ mod tests {
 
         assert_eq!(task.label, Some("Setup cuenv (nix)".to_string()));
         assert!(task.command[0].contains("nix profile install github:cuenv/cuenv/0.17.0#cuenv"));
+        assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 
@@ -345,7 +356,8 @@ mod tests {
         let (_, task) = &contributions[0];
 
         assert_eq!(task.label, Some("Setup cuenv (homebrew)".to_string()));
-        assert_eq!(task.command[0], "brew install cuenv/cuenv/cuenv");
+        assert!(task.command[0].contains("brew install cuenv/cuenv/cuenv"));
+        assert!(task.command[0].contains("&& cuenv sync -A"));
     }
 
     #[test]

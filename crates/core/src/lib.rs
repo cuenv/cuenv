@@ -45,6 +45,7 @@ pub mod manifest;
 pub mod module;
 pub mod owners;
 pub mod paths;
+pub mod rules;
 pub mod secrets;
 pub mod shell;
 pub mod sync;

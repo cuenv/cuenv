@@ -839,8 +839,6 @@ mod tests {
             ci: None,
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
-            ignore: None,
-            owners: None,
             cube: None,
             runtime: None,
         };
@@ -883,8 +881,6 @@ mod tests {
             ci: None,
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
-            ignore: None,
-            owners: None,
             cube: None,
             runtime: None,
         };
@@ -907,8 +903,6 @@ mod tests {
             ci: None,
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
-            ignore: None,
-            owners: None,
             cube: None,
             runtime: None,
         };
