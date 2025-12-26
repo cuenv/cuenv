@@ -493,6 +493,71 @@ impl CommandHandler for SyncHandler {
 
         let path = std::path::Path::new(&self.path);
         let sync_all = self.scope == SyncScope::Workspace;
+        let project_error = |path: &std::path::Path| {
+            cuenv_core::Error::configuration(format!(
+                "No cuenv project found at path: {}. Run 'cuenv info' to inspect project layout or use 'cuenv sync -A' to sync all projects.",
+                path.display()
+            ))
+        };
+
+        if self.subcommand.is_none() && !sync_all {
+            let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(path.to_path_buf().into_boxed_path()),
+                operation: "canonicalize path".to_string(),
+            })?;
+            let (is_project, is_root) = {
+                let module = executor.get_module(&target_path)?;
+                let is_root = module.root == target_path;
+                let is_project = module.projects().any(|instance| {
+                    module
+                        .root
+                        .join(&instance.path)
+                        .canonicalize()
+                        .ok()
+                        .is_some_and(|path| path == target_path)
+                });
+                (is_project, is_root)
+            };
+
+            if !is_project {
+                if !is_root {
+                    return Err(project_error(path));
+                }
+
+                let provider_names = ["ignore", "codeowners"];
+                let mut outputs = Vec::new();
+                let mut had_error = false;
+
+                for name in provider_names {
+                    let result = registry
+                        .sync_provider(name, path, &self.package, &options, sync_all, executor)
+                        .await;
+
+                    match result {
+                        Ok(r) => {
+                            if !r.output.is_empty() {
+                                outputs.push(format!("[{name}]\n{}", r.output));
+                            }
+                            had_error |= r.had_error;
+                        }
+                        Err(e) => {
+                            outputs.push(format!("[{name}] Error: {e}"));
+                            had_error = true;
+                        }
+                    }
+                }
+
+                let combined = outputs.join("\n\n");
+                return if had_error {
+                    Err(cuenv_core::Error::configuration(combined))
+                } else if combined.is_empty() {
+                    Ok("No sync operations performed.".to_string())
+                } else {
+                    Ok(combined)
+                };
+            }
+        }
 
         match &self.subcommand {
             // Specific provider: cuenv sync cubes
