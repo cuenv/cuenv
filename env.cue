@@ -146,14 +146,14 @@ schema.#Project & {
 			"crates",
 		]
 
-		// There should be a Cuenv way to trigger cuenv checks?
-		// schema.#CuenvCommand & { command: "sync --check" } ?
-		// ci: syncCheck: {
-		// 	command: "./result/bin/cuenv"
-		// 	args: ["sync", "ci", "--check"]
-		// 	description: "Verify CI workflows are in sync with CUE configuration"
-		// 	inputs: ["env.cue", "schema", "cue.mod"]
-		// }
+		ci: {
+			"sync-check": {
+				command: "cuenv"
+				args: ["sync", "ci", "--check"]
+				description: "Verify CI workflows are in sync with CUE configuration"
+				inputs: ["env.cue", "schema", "cue.mod"]
+			}
+		}
 
 		// Shared Modules should provide: schema.#NixFlakeCheck
 		check: {

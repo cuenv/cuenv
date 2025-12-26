@@ -37,8 +37,8 @@ jobs:
       - name: Setup Cachix (cuenv)
         run: ""
         env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
@@ -48,8 +48,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CUENV_ARCH: linux-x64
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -75,8 +75,8 @@ jobs:
       - name: Setup Cachix (cuenv)
         run: ""
         env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
@@ -86,8 +86,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CUENV_ARCH: linux-arm64
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -113,8 +113,8 @@ jobs:
       - name: Setup Cachix (cuenv)
         run: ""
         env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
@@ -124,8 +124,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CUENV_ARCH: darwin-arm64
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -152,8 +152,8 @@ jobs:
       - name: Setup Cachix (cuenv)
         run: ""
         env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
@@ -162,8 +162,8 @@ jobs:
         run: cuenv task publish.crates -e production --skip-dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-cue:
     name: publish.cue
@@ -187,8 +187,8 @@ jobs:
       - name: Setup Cachix (cuenv)
         run: ""
         env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
@@ -214,8 +214,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           PATHS: dist/**/*
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-github:
     name: publish.github
@@ -239,8 +239,8 @@ jobs:
       - name: Setup Cachix (cuenv)
         run: ""
         env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
@@ -266,8 +266,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           PATHS: dist/**/*
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
     name: docs.deploy
@@ -288,8 +288,8 @@ jobs:
       - name: Setup Cachix (cuenv)
         run: ""
         env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
@@ -298,8 +298,8 @@ jobs:
         run: cuenv task docs.deploy -e production --skip-dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
     name: docs.build
@@ -318,8 +318,8 @@ jobs:
       - name: Setup Cachix (cuenv)
         run: ""
         env:
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: Setup 1Password
         run: cuenv secrets setup onepassword
         env:
@@ -328,6 +328,6 @@ jobs:
         run: cuenv task docs.build -e production --skip-dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
