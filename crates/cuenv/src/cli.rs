@@ -1576,7 +1576,7 @@ mod tests {
             "env",
             "print",
             "--path",
-            "examples/env-basic",
+            "_examples/env-basic",
             "--package",
             "_examples",
             "--output",
@@ -1591,7 +1591,7 @@ mod tests {
                     package,
                     output_format,
                 } => {
-                    assert_eq!(path, "examples/env-basic");
+                    assert_eq!(path, "_examples/env-basic");
                     assert_eq!(package, "_examples");
                     assert!(matches!(output_format, OutputFormat::Json));
                 }

@@ -50,7 +50,7 @@ schema.#Project & {
 
 			pathsIgnore: [
 				"docs/**",
-				"examples/**",
+				"_examples/**",
 				"*.md",
 				"LICENSE",
 				".vscode/**",
@@ -175,7 +175,7 @@ schema.#Project & {
 				"deny.toml",
 				"docs",
 				"env.cue",
-				"examples",
+				"_examples",
 				"features",
 				"flake.lock",
 				"flake.nix",
@@ -188,7 +188,7 @@ schema.#Project & {
 				"release-please-config.json",
 				"release.toml",
 				"schema",
-				"tests",
+				"_tests",
 				"treefmt.toml",
 			]
 			fix: {
@@ -206,7 +206,7 @@ schema.#Project & {
 			unit: {
 				command: "cargo"
 				args: ["nextest", "run", "--workspace", "--all-features"]
-				inputs: list.Concat([_baseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
+				inputs: list.Concat([_baseInputs, ["_tests", "features", "_examples", "schema", "cue.mod"]])
 			}
 			doc: {
 				command: "cargo"
@@ -216,7 +216,7 @@ schema.#Project & {
 			bdd: {
 				command: "cargo"
 				args: ["test", "--test", "bdd"]
-				inputs: list.Concat([_baseInputs, ["tests", "features", "schema", "cue.mod"]])
+				inputs: list.Concat([_baseInputs, ["_tests", "features", "schema", "cue.mod"]])
 				outputs: [".test"]
 			}
 		}
@@ -273,7 +273,7 @@ schema.#Project & {
 		coverage: {
 			command: "cargo"
 			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-			inputs: list.Concat([_baseInputs, ["tests", "features", "examples", "schema", "cue.mod"]])
+			inputs: list.Concat([_baseInputs, ["_tests", "features", "_examples", "schema", "cue.mod"]])
 			outputs: ["lcov.info"]
 
 		}

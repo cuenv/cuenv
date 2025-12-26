@@ -998,7 +998,7 @@ mod tests {
 
     #[test]
     fn test_derive_trigger_paths_with_project_path() {
-        use cuenv_core::ci::{Pipeline, PipelineCondition, PipelineTask, StringOrVec, CI};
+        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
 
         let mut project = Project::new("test-project");
         project.tasks.insert(
@@ -1049,12 +1049,24 @@ mod tests {
         let trigger = ir.pipeline.trigger.expect("should have trigger");
 
         // Task inputs should be prefixed with project_path
-        assert!(trigger.paths.contains(&"projects/api/src/**/*.rs".to_string()));
-        assert!(trigger.paths.contains(&"projects/api/Cargo.toml".to_string()));
+        assert!(
+            trigger
+                .paths
+                .contains(&"projects/api/src/**/*.rs".to_string())
+        );
+        assert!(
+            trigger
+                .paths
+                .contains(&"projects/api/Cargo.toml".to_string())
+        );
 
         // CUE implicit paths should also be prefixed
         assert!(trigger.paths.contains(&"projects/api/env.cue".to_string()));
-        assert!(trigger.paths.contains(&"projects/api/schema/**".to_string()));
+        assert!(
+            trigger
+                .paths
+                .contains(&"projects/api/schema/**".to_string())
+        );
 
         // cue.mod should NOT be prefixed (it's at module root)
         assert!(trigger.paths.contains(&"cue.mod/**".to_string()));
@@ -1062,7 +1074,7 @@ mod tests {
 
     #[test]
     fn test_derive_trigger_paths_fallback_to_project_dir() {
-        use cuenv_core::ci::{Pipeline, PipelineCondition, PipelineTask, StringOrVec, CI};
+        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
 
         let mut project = Project::new("test-project");
         // Task with NO inputs
@@ -1120,7 +1132,7 @@ mod tests {
 
     #[test]
     fn test_derive_trigger_paths_root_project() {
-        use cuenv_core::ci::{Pipeline, PipelineCondition, PipelineTask, StringOrVec, CI};
+        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
 
         let mut project = Project::new("test-project");
         project.tasks.insert(
@@ -1175,7 +1187,7 @@ mod tests {
 
     #[test]
     fn test_derive_trigger_paths_root_project_no_inputs_fallback() {
-        use cuenv_core::ci::{Pipeline, PipelineCondition, PipelineTask, StringOrVec, CI};
+        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
 
         let mut project = Project::new("test-project");
         // Task with NO inputs

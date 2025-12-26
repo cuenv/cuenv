@@ -40,7 +40,7 @@ fn get_test_examples_path() -> String {
         .expect("Failed to find project root");
 
     project_root
-        .join("examples/env-basic")
+        .join("_examples/env-basic")
         .to_string_lossy()
         .to_string()
 }
@@ -447,7 +447,7 @@ fn test_env_print_command_invalid_package() {
         "env",
         "print",
         "--path",
-        "examples/env-basic",
+        "_examples/env-basic",
         "--package",
         "nonexistent",
     ]);
