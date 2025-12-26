@@ -654,6 +654,15 @@ impl GitHubActionsEmitter {
         let (stage_steps, secret_env_vars) = Self::render_stage_steps(stages);
         steps.extend(stage_steps);
 
+        // Download artifacts if task has artifact_downloads
+        for artifact in &task.artifact_downloads {
+            let download_step = Step::uses("actions/download-artifact@v4")
+                .with_name(format!("Download {}", artifact.name))
+                .with_input("name", serde_yaml::Value::String(artifact.name.clone()))
+                .with_input("path", serde_yaml::Value::String(artifact.path.clone()));
+            steps.push(download_step);
+        }
+
         // Run the task
         // Use --skip-dependencies because GitHub Actions handles job dependencies via `needs:`
         let task_command = environment.map_or_else(
@@ -677,6 +686,32 @@ impl GitHubActionsEmitter {
         }
 
         steps.push(task_step);
+
+        // Upload artifacts for orchestrator outputs
+        let orchestrator_outputs: Vec<_> = task
+            .outputs
+            .iter()
+            .filter(|o| o.output_type == OutputType::Orchestrator)
+            .collect();
+
+        if !orchestrator_outputs.is_empty() {
+            let paths: Vec<String> = orchestrator_outputs
+                .iter()
+                .map(|o| o.path.clone())
+                .collect();
+            let mut upload_step = Step::uses("actions/upload-artifact@v4")
+                .with_name("Upload artifacts")
+                .with_input(
+                    "name",
+                    serde_yaml::Value::String(format!("{}-artifacts", task.id.replace('.', "-"))),
+                )
+                .with_input("path", serde_yaml::Value::String(paths.join("\n")));
+            upload_step.with_inputs.insert(
+                "if-no-files-found".to_string(),
+                serde_yaml::Value::String("ignore".to_string()),
+            );
+            steps.push(upload_step);
+        }
 
         Job {
             name: Some(task.id.clone()),

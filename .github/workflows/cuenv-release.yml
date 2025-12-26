@@ -5,7 +5,7 @@ name: cuenv-release
 on:
   release:
     types:
-      - published
+    - published
   workflow_dispatch:
     inputs:
       tag_name:
@@ -24,310 +24,260 @@ jobs:
     runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
-      - name: Setup Cachix (cuenv)
-        run: ""
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: nix.build (linux-x64)
-        run: cuenv task nix.build -e production --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CUENV_ARCH: linux-x64
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nix-build-linux-x64
-          path: result/bin/*
-          if-no-files-found: ignore
-  nix-build-linux-arm64:
-    name: nix.build (linux-arm64)
-    runs-on: namespace-profile-cuenv-linux-arm64
-    timeout-minutes: 60
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
-      - name: Setup Cachix (cuenv)
-        run: ""
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: nix.build (linux-arm64)
-        run: cuenv task nix.build -e production --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CUENV_ARCH: linux-arm64
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nix-build-linux-arm64
-          path: result/bin/*
-          if-no-files-found: ignore
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
+    - name: Setup Cachix (cuenv)
+      run: ''
+      env:
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: nix.build (linux-x64)
+      run: cuenv task nix.build -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CUENV_ARCH: linux-x64
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nix-build-linux-x64
+        path: result/bin/*
+        if-no-files-found: ignore
   nix-build-darwin-arm64:
     name: nix.build (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
     timeout-minutes: 60
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
-      - name: Setup Cachix (cuenv)
-        run: ""
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: nix.build (darwin-arm64)
-        run: cuenv task nix.build -e production --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CUENV_ARCH: darwin-arm64
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nix-build-darwin-arm64
-          path: result/bin/*
-          if-no-files-found: ignore
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
+    - name: Setup Cachix (cuenv)
+      run: ''
+      env:
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: nix.build (darwin-arm64)
+      run: cuenv task nix.build -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CUENV_ARCH: darwin-arm64
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nix-build-darwin-arm64
+        path: result/bin/*
+        if-no-files-found: ignore
   publish-crates:
     name: publish.crates
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - publish-cue
+    - publish-cue
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
-      - name: Setup Cachix (cuenv)
-        run: ""
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: publish.crates
-        run: cuenv task publish.crates -e production --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
+    - name: Setup Cachix (cuenv)
+      run: ''
+      env:
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: publish.crates
+      run: cuenv task publish.crates -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-cue:
     name: publish.cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - nix-build-linux-x64
-      - nix-build-linux-arm64
-      - nix-build-darwin-arm64
+    - nix-build-linux-x64
+    - nix-build-darwin-arm64
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
-      - name: Setup Cachix (cuenv)
-        run: ""
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: Download nix-build-linux-x64
-        uses: actions/download-artifact@v4
-        with:
-          name: nix-build-linux-x64
-          path: dist/linux-x64
-      - name: Download nix-build-linux-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: nix-build-linux-arm64
-          path: dist/linux-arm64
-      - name: Download nix-build-darwin-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: nix-build-darwin-arm64
-          path: dist/darwin-arm64
-      - name: publish.cue
-        run: cuenv task publish.cue -e production --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-          PATHS: dist/**/*
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
+    - name: Setup Cachix (cuenv)
+      run: ''
+      env:
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Download nix-build-linux-x64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-linux-x64
+        path: dist/linux-x64
+    - name: Download nix-build-darwin-arm64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-darwin-arm64
+        path: dist/darwin-arm64
+    - name: publish.cue
+      run: cuenv task publish.cue -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PATHS: dist/**/*
+        TAG: ${{ github.ref_name }}
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-github:
     name: publish.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - nix-build-linux-x64
-      - nix-build-linux-arm64
-      - nix-build-darwin-arm64
+    - nix-build-linux-x64
+    - nix-build-darwin-arm64
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
-      - name: Setup Cachix (cuenv)
-        run: ""
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: Download nix-build-linux-x64
-        uses: actions/download-artifact@v4
-        with:
-          name: nix-build-linux-x64
-          path: dist/linux-x64
-      - name: Download nix-build-linux-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: nix-build-linux-arm64
-          path: dist/linux-arm64
-      - name: Download nix-build-darwin-arm64
-        uses: actions/download-artifact@v4
-        with:
-          name: nix-build-darwin-arm64
-          path: dist/darwin-arm64
-      - name: publish.github
-        run: cuenv task publish.github -e production --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-          PATHS: dist/**/*
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
+    - name: Setup Cachix (cuenv)
+      run: ''
+      env:
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Download nix-build-linux-x64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-linux-x64
+        path: dist/linux-x64
+    - name: Download nix-build-darwin-arm64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-darwin-arm64
+        path: dist/darwin-arm64
+    - name: publish.github
+      run: cuenv task publish.github -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PATHS: dist/**/*
+        TAG: ${{ github.ref_name }}
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
     name: docs.deploy
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - docs-build
+    - docs-build
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
-      - name: Setup Cachix (cuenv)
-        run: ""
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: docs.deploy
-        run: cuenv task docs.deploy -e production --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
+    - name: Setup Cachix (cuenv)
+      run: ''
+      env:
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: docs.deploy
+      run: cuenv task docs.deploy -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
     name: docs.build
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
-      - name: Setup Cachix (cuenv)
-        run: ""
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Setup 1Password
-        run: cuenv secrets setup onepassword
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-      - name: docs.build
-        run: cuenv task docs.build -e production --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; }
+    - name: Setup Cachix (cuenv)
+      run: ''
+      env:
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: docs.build
+      run: cuenv task docs.build -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}

@@ -1082,6 +1082,7 @@ fn build_project_pipeline_context(
     let options = CompilerOptions {
         pipeline: Some(pipeline.clone()),
         contributor_factory: Some(github_contributor_factory),
+        ci_mode: true,
         ..Default::default()
     };
     let compiler = Compiler::with_options(project.config.clone(), options);
