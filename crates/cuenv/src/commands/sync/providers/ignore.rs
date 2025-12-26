@@ -1,6 +1,7 @@
 //! Ignore file sync provider.
 //!
-//! Syncs ignore files (.gitignore, .dockerignore, etc.) from CUE configuration.
+//! **DEPRECATED**: Ignore configuration has moved to .rules.cue files.
+//! Use the 'rules' sync provider instead: `cuenv sync rules`
 
 use async_trait::async_trait;
 use cuenv_core::Result;
@@ -8,8 +9,7 @@ use cuenv_core::manifest::Base;
 use std::path::Path;
 
 use crate::commands::CommandExecutor;
-use crate::commands::sync::functions;
-use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
+use crate::commands::sync::provider::{SyncOptions, SyncProvider, SyncResult};
 
 /// Sync provider for ignore files.
 pub struct IgnoreSyncProvider;
@@ -24,98 +24,36 @@ impl SyncProvider for IgnoreSyncProvider {
         "Sync ignore files (.gitignore, .dockerignore, etc.)"
     }
 
-    fn has_config(&self, manifest: &Base) -> bool {
-        manifest.ignore.is_some()
+    fn has_config(&self, _manifest: &Base) -> bool {
+        // Ignore is now configured via .rules.cue files, not env.cue
+        // Use the 'rules' sync provider instead
+        false
     }
 
     async fn sync_path(
         &self,
-        path: &Path,
-        package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
+        _path: &Path,
+        _package: &str,
+        _options: &SyncOptions,
+        _executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
-
-        let output = functions::execute_sync_ignore(
-            path.to_str().unwrap_or("."),
-            package,
-            dry_run,
-            check,
-            Some(executor),
-        )
-        .await?;
-
-        Ok(SyncResult::success(output))
+        // Ignore is now configured via .rules.cue files, not env.cue
+        // Use the 'rules' sync provider instead
+        Ok(SyncResult::success(
+            "Ignore configuration has moved to .rules.cue files. Use 'cuenv sync rules' instead.",
+        ))
     }
 
     async fn sync_workspace(
         &self,
-        package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
+        _package: &str,
+        _options: &SyncOptions,
+        _executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
-
-        // For ignore files, we iterate over all instances with ignore config
-        let cwd = std::env::current_dir().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-        })?;
-
-        // Collect paths with ignore config before any async operations
-        let paths_to_sync: Vec<(std::path::PathBuf, String)> = {
-            let module = executor.get_module(&cwd)?;
-            let mut paths = Vec::new();
-            for (path, instance) in &module.instances {
-                if let Ok(manifest) = instance.deserialize::<Base>()
-                    && manifest.ignore.is_some()
-                {
-                    paths.push((module.root.join(path), path.display().to_string()));
-                }
-            }
-            paths
-            // module guard is dropped here at the end of the block
-        };
-
-        let mut outputs = Vec::new();
-        let mut had_error = false;
-
-        for (full_path, display_path) in paths_to_sync {
-            let result = functions::execute_sync_ignore(
-                full_path.to_str().unwrap_or("."),
-                package,
-                dry_run,
-                check,
-                Some(executor),
-            )
-            .await;
-
-            match result {
-                Ok(output) if !output.is_empty() => {
-                    let display = if display_path.is_empty() {
-                        "[root]".to_string()
-                    } else {
-                        display_path
-                    };
-                    outputs.push(format!("{display}:\n{output}"));
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    outputs.push(format!("{display_path}: Error: {e}"));
-                    had_error = true;
-                }
-            }
-        }
-
-        if outputs.is_empty() {
-            Ok(SyncResult::success("No ignore configurations found."))
-        } else {
-            Ok(SyncResult {
-                output: outputs.join("\n\n"),
-                had_error,
-            })
-        }
+        // Ignore is now configured via .rules.cue files, not env.cue
+        // Use the 'rules' sync provider instead
+        Ok(SyncResult::success(
+            "Ignore configuration has moved to .rules.cue files. Use 'cuenv sync rules' instead.",
+        ))
     }
 }

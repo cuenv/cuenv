@@ -263,11 +263,7 @@ fn sync_outside_project_errors() {
 
     let non_project = root.join("shared");
     fs::create_dir_all(&non_project).unwrap();
-    fs::write(
-        non_project.join("env.cue"),
-        base_env_cue("@shared", false),
-    )
-    .unwrap();
+    fs::write(non_project.join("env.cue"), base_env_cue("@shared", false)).unwrap();
 
     let (stdout, stderr, success) = run_cuenv(&non_project, &["sync"]);
     assert!(!success, "sync should fail outside a project");

@@ -9,7 +9,6 @@ use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
-use crate::owners::Owners;
 use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 
@@ -167,14 +166,6 @@ pub struct Base {
     /// Workspaces configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
-
-    /// Code ownership configuration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub owners: Option<Owners>,
-
-    /// Ignore patterns for tool-specific ignore files
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ignore: Option<Ignore>,
 }
 
 /// Ignore patterns for tool-specific ignore files.
@@ -297,6 +288,98 @@ impl IgnoreValue {
             Self::Extended(entry) => entry.filename.as_deref(),
         }
     }
+}
+
+// ============================================================================
+// Directory Rules Types (for .rules.cue files)
+// ============================================================================
+
+/// Directory-scoped rules configuration from .rules.cue files.
+///
+/// Each .rules.cue file is evaluated independently (no CUE unification).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryRules {
+    /// Ignore patterns for tool-specific ignore files.
+    /// Generates files in the same directory as .rules.cue.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Ignore>,
+
+    /// Code ownership rules.
+    /// Aggregated across all .rules.cue files to generate
+    /// a single CODEOWNERS file at the repository root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owners: Option<RulesOwners>,
+
+    /// EditorConfig settings.
+    /// Generates .editorconfig in the same directory as .rules.cue.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editorconfig: Option<EditorConfig>,
+}
+
+/// Simplified owners for directory rules (no output config).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct RulesOwners {
+    /// Code ownership rules - maps rule names to rule definitions.
+    #[serde(default)]
+    pub rules: HashMap<String, crate::owners::OwnerRule>,
+}
+
+/// EditorConfig configuration.
+///
+/// Note: `root = true` is auto-injected for the .editorconfig at repo root.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct EditorConfig {
+    /// File-pattern specific settings.
+    #[serde(flatten)]
+    pub sections: HashMap<String, EditorConfigSection>,
+}
+
+/// A section in an EditorConfig file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct EditorConfigSection {
+    /// Indentation style: "tab" or "space"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indent_style: Option<String>,
+
+    /// Number of columns for each indentation level, or "tab"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indent_size: Option<EditorConfigValue>,
+
+    /// Number of columns for tab character display
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab_width: Option<u32>,
+
+    /// Line ending style: "lf", "crlf", or "cr"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_of_line: Option<String>,
+
+    /// Character encoding
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charset: Option<String>,
+
+    /// Remove trailing whitespace on save
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trim_trailing_whitespace: Option<bool>,
+
+    /// Ensure file ends with a newline
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insert_final_newline: Option<bool>,
+
+    /// Maximum line length (soft limit), or "off"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_line_length: Option<EditorConfigValue>,
+}
+
+/// A value that can be either an integer or a special string value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum EditorConfigValue {
+    /// Integer value
+    Int(u32),
+    /// String value (e.g., "tab" for indent_size, "off" for max_line_length)
+    String(String),
 }
 
 // ============================================================================
@@ -428,17 +511,9 @@ pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CI>,
 
-    /// Code ownership configuration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub owners: Option<Owners>,
-
     /// Tasks configuration
     #[serde(default)]
     pub tasks: HashMap<String, TaskDefinition>,
-
-    /// Ignore patterns for tool-specific ignore files
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ignore: Option<Ignore>,
 
     /// Cube configuration for code generation
     #[serde(skip_serializing_if = "Option::is_none")]
