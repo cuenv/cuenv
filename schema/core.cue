@@ -4,8 +4,6 @@ package schema
 	config?:     #Config
 	env?:        #Env
 	workspaces?: #Workspaces
-	owners?:     #Owners
-	ignore?:     #Ignore
 })
 
 #ProjectName: string & =~"^[a-zA-Z0-9._-]+$"

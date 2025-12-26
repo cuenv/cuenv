@@ -28,27 +28,6 @@ schema.#Project & {
 		}
 	}
 
-	owners: rules: default: {
-		pattern: "**"
-		owners: ["@rawkode"]
-	}
-
-	ignore: {
-		git: [
-			".cache",
-			".cargo",
-			".cuenv",
-			".test",
-			"*.vsix",
-			"bdd_test_runs",
-			"crates/cuengine/vendor",
-			"dist",
-			"node_modules",
-			"result",
-			"target",
-		]
-	}
-
 	ci: {
 		provider: github: {
 			runner: "blacksmith-8vcpu-ubuntu-2404"

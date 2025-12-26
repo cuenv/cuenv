@@ -1548,6 +1548,7 @@ dependencies = [
  "cuenv-core",
  "cuenv-cubes",
  "cuenv-dagger",
+ "cuenv-editorconfig",
  "cuenv-events",
  "cuenv-github",
  "cuenv-gitlab",
@@ -1556,6 +1557,8 @@ dependencies = [
  "cuenv-release",
  "dirs 6.0.0",
  "futures",
+ "gix",
+ "ignore",
  "indexmap 2.12.1",
  "libc",
  "miette",
@@ -1749,6 +1752,16 @@ dependencies = [
  "cuenv-core",
  "dagger-sdk",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cuenv-editorconfig"
+version = "0.20.3"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror 2.0.17",
  "tracing",
 ]
 

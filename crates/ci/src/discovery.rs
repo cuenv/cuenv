@@ -155,7 +155,9 @@ mod tests {
     fn test_discovered_ci_project_nested_relative_path() {
         // Deeply nested projects should preserve full relative path
         let project = DiscoveredCIProject {
-            path: PathBuf::from("/repo/projects/rawkode.academy/platform/email-preferences/env.cue"),
+            path: PathBuf::from(
+                "/repo/projects/rawkode.academy/platform/email-preferences/env.cue",
+            ),
             relative_path: PathBuf::from("projects/rawkode.academy/platform/email-preferences"),
             config: Project::default(),
         };
@@ -202,6 +204,9 @@ mod tests {
         // No cue.mod directory
 
         let found = find_cue_module_root(temp_dir.path());
-        assert!(found.is_none(), "Should not find module root without cue.mod");
+        assert!(
+            found.is_none(),
+            "Should not find module root without cue.mod"
+        );
     }
 }

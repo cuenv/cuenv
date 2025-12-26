@@ -122,16 +122,6 @@ impl BaseDiscovery {
 
         tracing::debug!(
             discovered = self.bases.len(),
-            with_owners = self
-                .bases
-                .iter()
-                .filter(|b| b.manifest.owners.is_some())
-                .count(),
-            with_ignore = self
-                .bases
-                .iter()
-                .filter(|b| b.manifest.ignore.is_some())
-                .count(),
             failures = load_failures.len(),
             "Base discovery complete"
         );
@@ -168,16 +158,6 @@ impl BaseDiscovery {
     /// Get all discovered Base configurations
     pub fn bases(&self) -> &[DiscoveredBase] {
         &self.bases
-    }
-
-    /// Get Base configurations that have owners defined
-    pub fn with_owners(&self) -> impl Iterator<Item = &DiscoveredBase> {
-        self.bases.iter().filter(|b| b.manifest.owners.is_some())
-    }
-
-    /// Get Base configurations that have ignore defined
-    pub fn with_ignore(&self) -> impl Iterator<Item = &DiscoveredBase> {
-        self.bases.iter().filter(|b| b.manifest.ignore.is_some())
     }
 }
 

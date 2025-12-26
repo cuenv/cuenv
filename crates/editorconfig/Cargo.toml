@@ -1,0 +1,27 @@
+[package]
+name = "cuenv-editorconfig"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories = ["development-tools", "command-line-utilities"]
+readme = "../../readme.md"
+description = "Generate .editorconfig files from CUE configuration"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -4,15 +4,13 @@
 //! - `cuenv sync codeowners` - Sync CODEOWNERS file from CUE configuration
 //! - `cuenv sync codeowners --check` - Check CODEOWNERS file is in sync with CUE configuration
 
+use crate::commands::CommandExecutor;
 use crate::commands::env_file::find_cue_module_root;
-use crate::commands::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use crate::providers::detect_code_owners_provider;
-use cuengine::ModuleEvalOptions;
 use cuenv_codeowners::Rule;
 use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
-use cuenv_core::manifest::Base;
+use cuenv_core::Result;
 use cuenv_core::owners::Owners;
-use cuenv_core::{ModuleEvaluation, Result};
 use std::path::{Path, PathBuf};
 
 /// Execute the `owners sync` command.
@@ -228,89 +226,19 @@ fn convert_to_project_owners(
 }
 
 /// Load code ownership configuration from CUE using module-wide evaluation.
-/// Works with both schema.#Base and schema.#Project configurations.
 ///
-/// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// **DEPRECATED**: CODEOWNERS configuration has moved to .rules.cue files.
+/// Use `cuenv sync rules` instead.
 #[allow(dead_code)]
 fn load_owners_config(
-    root: &Path,
-    package: &str,
-    executor: Option<&CommandExecutor>,
+    _root: &Path,
+    _package: &str,
+    _executor: Option<&CommandExecutor>,
 ) -> Result<Owners> {
-    let target_path = root.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(root.to_path_buf().into_boxed_path()),
-        operation: "canonicalize path".to_string(),
-    })?;
-
-    // Use executor's cached module if available, otherwise fresh evaluation
-    if let Some(exec) = executor {
-        tracing::debug!("Using cached module evaluation from executor");
-        let module = exec.get_module(&target_path)?;
-        let rel_path = relative_path_from_root(&module.root, &target_path);
-
-        let instance = module.get(&rel_path).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "No CUE instance found at path: {} (relative: {})",
-                target_path.display(),
-                rel_path.display()
-            ))
-        })?;
-
-        let manifest: Base = instance.deserialize()?;
-        return manifest.owners.ok_or_else(|| {
-            cuenv_core::Error::configuration(
-                "No 'owners' configuration found in env.cue. Add an 'owners' section with code ownership rules."
-            )
-        });
-    }
-
-    // Legacy path: fresh evaluation
-    tracing::debug!("Using fresh module evaluation (no executor)");
-
-    // Find the CUE module root
-    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE module found (looking for cue.mod/) starting from: {}",
-            target_path.display()
-        ))
-    })?;
-
-    // Use non-recursive evaluation since owners only need the current project's config,
-    // not cross-project references.
-    let options = ModuleEvalOptions {
-        recursive: false,
-        target_dir: Some(target_path.to_string_lossy().to_string()),
-        ..Default::default()
-    };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
-        .map_err(convert_engine_error)?;
-
-    // Build ModuleEvaluation
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        raw_result.instances,
-        raw_result.projects,
-    );
-
-    // Get the instance at the target path
-    let rel_path = relative_path_from_root(&module_root, &target_path);
-    let instance = module.get(&rel_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE instance found at path: {} (relative: {})",
-            target_path.display(),
-            rel_path.display()
-        ))
-    })?;
-
-    // Deserialize to Base schema and extract owners
-    let manifest: Base = instance.deserialize()?;
-    manifest.owners.ok_or_else(|| {
-        cuenv_core::Error::configuration(
-            "No 'owners' configuration found in env.cue. Add an 'owners' section with code ownership rules."
-        )
-    })
+    // Owners configuration has moved to .rules.cue files
+    Err(cuenv_core::Error::configuration(
+        "CODEOWNERS configuration has moved to .rules.cue files. Use 'cuenv sync rules' instead.",
+    ))
 }
 
 #[cfg(test)]

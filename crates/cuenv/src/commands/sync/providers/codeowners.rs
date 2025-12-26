@@ -1,7 +1,7 @@
 //! CODEOWNERS sync provider.
 //!
-//! Syncs CODEOWNERS file from CUE configuration.
-//! CODEOWNERS is always aggregated from all configs in the workspace.
+//! **DEPRECATED**: CODEOWNERS configuration has moved to .rules.cue files.
+//! Use the 'rules' sync provider instead: `cuenv sync rules`
 
 use async_trait::async_trait;
 use cuenv_core::Result;
@@ -9,10 +9,11 @@ use cuenv_core::manifest::Base;
 use std::path::Path;
 
 use crate::commands::CommandExecutor;
-use crate::commands::sync::functions;
-use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
+use crate::commands::sync::provider::{SyncOptions, SyncProvider, SyncResult};
 
 /// Sync provider for CODEOWNERS.
+///
+/// **DEPRECATED**: Use `RulesSyncProvider` instead.
 pub struct CodeOwnersSyncProvider;
 
 #[async_trait]
@@ -22,36 +23,35 @@ impl SyncProvider for CodeOwnersSyncProvider {
     }
 
     fn description(&self) -> &'static str {
-        "Sync CODEOWNERS file (always aggregates all configs)"
+        "Sync CODEOWNERS file (DEPRECATED: use 'rules' provider)"
     }
 
-    fn has_config(&self, manifest: &Base) -> bool {
-        manifest.owners.is_some()
+    fn has_config(&self, _manifest: &Base) -> bool {
+        // Owners is now configured via .rules.cue files, not env.cue
+        // Use the 'rules' sync provider instead
+        false
     }
 
     async fn sync_path(
         &self,
         _path: &Path,
-        package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
+        _package: &str,
+        _options: &SyncOptions,
+        _executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        // CODEOWNERS always uses workspace aggregation since it's a single file at repo root
-        self.sync_workspace(package, options, executor).await
+        Ok(SyncResult::success(
+            "CODEOWNERS configuration has moved to .rules.cue files. Use 'cuenv sync rules' instead.",
+        ))
     }
 
     async fn sync_workspace(
         &self,
-        package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
+        _package: &str,
+        _options: &SyncOptions,
+        _executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
-
-        let output =
-            functions::execute_sync_codeowners_workspace(package, dry_run, check, executor).await?;
-
-        Ok(SyncResult::success(output))
+        Ok(SyncResult::success(
+            "CODEOWNERS configuration has moved to .rules.cue files. Use 'cuenv sync rules' instead.",
+        ))
     }
 }

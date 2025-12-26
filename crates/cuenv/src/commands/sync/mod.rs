@@ -2,10 +2,9 @@
 //!
 //! This module provides a trait-based system for syncing different types of
 //! generated files from CUE configuration:
-//! - Ignore files (.gitignore, .dockerignore, etc.)
-//! - CODEOWNERS file
 //! - Cube-generated files
 //! - CI workflow files
+//! - Rules files (ignore, editorconfig, codeowners via .rules.cue)
 //!
 //! # Architecture
 //!
@@ -35,11 +34,7 @@ pub mod registry;
 
 // Re-export for external use (e.g., tests)
 #[allow(unused_imports)]
-pub use functions::{
-    execute_sync_ci, execute_sync_ci_workspace, execute_sync_codeowners,
-    execute_sync_codeowners_workspace, execute_sync_cubes, execute_sync_ignore,
-    synthetic_name_from_path,
-};
+pub use functions::{execute_sync_ci, execute_sync_ci_workspace, execute_sync_cubes};
 pub use provider::{SyncMode, SyncOptions};
 pub use providers::default_registry;
 
