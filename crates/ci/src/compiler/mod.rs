@@ -101,6 +101,18 @@ pub struct CompilerOptions {
     /// - Task outputs use `OutputType::Orchestrator` for cross-job artifact sharing
     /// - Task input references (`inputs: [{task: "..."}]`) are converted to `artifact_downloads`
     pub ci_mode: bool,
+
+    /// Module root (repo root / cue.mod location)
+    ///
+    /// Used for constructing trigger paths relative to the repository root.
+    pub module_root: Option<PathBuf>,
+
+    /// Project path relative to module root
+    ///
+    /// Used as a fallback for trigger paths when tasks have no explicit inputs.
+    /// For example, if a project is at `projects/rawkode.academy/api`, this would
+    /// be `"projects/rawkode.academy/api"`.
+    pub project_path: Option<String>,
 }
 
 impl std::fmt::Debug for CompilerOptions {
@@ -118,6 +130,8 @@ impl std::fmt::Debug for CompilerOptions {
                 &self.contributor_factory.map(|_| "Some(<fn>)"),
             )
             .field("ci_mode", &self.ci_mode)
+            .field("module_root", &self.module_root)
+            .field("project_path", &self.project_path)
             .finish()
     }
 }
@@ -310,11 +324,11 @@ impl Compiler {
                 .collect();
         }
 
-        // Set up trigger conditions from CI configuration
-        if let Some(ci_config) = &self.project.ci
-            && let Some(first_pipeline) = ci_config.pipelines.first()
+        // Set up trigger conditions from CI configuration using the pipeline from options
+        if let Some(ref pipeline) = self.options.pipeline
+            && let Some(ci_config) = &self.project.ci
         {
-            ir.pipeline.trigger = Some(self.build_trigger_condition(first_pipeline, ci_config));
+            ir.pipeline.trigger = Some(self.build_trigger_condition(pipeline, ci_config));
         }
 
         // Compile tasks
@@ -435,16 +449,46 @@ impl Compiler {
 
     /// Derive trigger paths from task inputs
     fn derive_trigger_paths(&self, pipeline: &Pipeline) -> Vec<String> {
-        let mut paths = HashSet::new();
+        let mut task_inputs = HashSet::new();
 
         // Collect inputs from all pipeline tasks (including transitive deps)
+        // These paths are relative to the project directory
         for task in &pipeline.tasks {
-            self.collect_task_inputs(task.task_name(), &mut paths);
+            self.collect_task_inputs(task.task_name(), &mut task_inputs);
+        }
+
+        let mut paths = HashSet::new();
+
+        // Prefix task inputs with project_path to make them relative to module root
+        if let Some(project_path) = &self.options.project_path {
+            for input in &task_inputs {
+                paths.insert(format!("{project_path}/{input}"));
+            }
+        } else {
+            paths.extend(task_inputs.clone());
+        }
+
+        // If no task inputs were collected, use the project directory as fallback
+        // This ensures workflows trigger on any file change within the project
+        if task_inputs.is_empty() {
+            if let Some(project_path) = &self.options.project_path {
+                paths.insert(format!("{project_path}/**"));
+            } else {
+                // Root project with no inputs - use wildcard for all files
+                paths.insert("**".to_string());
+            }
         }
 
         // Add implicit CUE inputs (changes here should always trigger)
-        paths.insert("env.cue".to_string());
-        paths.insert("schema/**".to_string());
+        // Prefix with project_path if set
+        if let Some(project_path) = &self.options.project_path {
+            paths.insert(format!("{project_path}/env.cue"));
+            paths.insert(format!("{project_path}/schema/**"));
+        } else {
+            paths.insert("env.cue".to_string());
+            paths.insert("schema/**".to_string());
+        }
+        // cue.mod is always at module root, not prefixed with project_path
         paths.insert("cue.mod/**".to_string());
 
         // Sort for deterministic output
@@ -950,5 +994,239 @@ mod tests {
         assert_eq!(runtime.flake, "github:NixOS/nixpkgs");
         assert!(runtime.digest.starts_with("sha256:"));
         assert_eq!(runtime.purity, PurityMode::Strict);
+    }
+
+    #[test]
+    fn test_derive_trigger_paths_with_project_path() {
+        use cuenv_core::ci::{Pipeline, PipelineCondition, PipelineTask, StringOrVec, CI};
+
+        let mut project = Project::new("test-project");
+        project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["build".to_string()],
+                inputs: vec![
+                    cuenv_core::tasks::Input::Path("src/**/*.rs".to_string()),
+                    cuenv_core::tasks::Input::Path("Cargo.toml".to_string()),
+                ],
+                ..Default::default()
+            })),
+        );
+
+        let pipeline = Pipeline {
+            name: "default".to_string(),
+            environment: None,
+            tasks: vec![PipelineTask::Simple("build".to_string())],
+            when: Some(PipelineCondition {
+                branch: Some(StringOrVec::String("main".to_string())),
+                pull_request: None,
+                tag: None,
+                default_branch: None,
+                scheduled: None,
+                manual: None,
+                release: None,
+            }),
+            derive_paths: None,
+            provider: None,
+        };
+
+        // Add CI config with a pipeline
+        project.ci = Some(CI {
+            pipelines: vec![pipeline.clone()],
+            ..Default::default()
+        });
+
+        let options = CompilerOptions {
+            pipeline: Some(pipeline),
+            project_path: Some("projects/api".to_string()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let ir = compiler.compile().unwrap();
+
+        let trigger = ir.pipeline.trigger.expect("should have trigger");
+
+        // Task inputs should be prefixed with project_path
+        assert!(trigger.paths.contains(&"projects/api/src/**/*.rs".to_string()));
+        assert!(trigger.paths.contains(&"projects/api/Cargo.toml".to_string()));
+
+        // CUE implicit paths should also be prefixed
+        assert!(trigger.paths.contains(&"projects/api/env.cue".to_string()));
+        assert!(trigger.paths.contains(&"projects/api/schema/**".to_string()));
+
+        // cue.mod should NOT be prefixed (it's at module root)
+        assert!(trigger.paths.contains(&"cue.mod/**".to_string()));
+    }
+
+    #[test]
+    fn test_derive_trigger_paths_fallback_to_project_dir() {
+        use cuenv_core::ci::{Pipeline, PipelineCondition, PipelineTask, StringOrVec, CI};
+
+        let mut project = Project::new("test-project");
+        // Task with NO inputs
+        project.tasks.insert(
+            "deploy".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "kubectl".to_string(),
+                args: vec!["apply".to_string()],
+                ..Default::default()
+            })),
+        );
+
+        let pipeline = Pipeline {
+            name: "default".to_string(),
+            environment: None,
+            tasks: vec![PipelineTask::Simple("deploy".to_string())],
+            when: Some(PipelineCondition {
+                branch: Some(StringOrVec::String("main".to_string())),
+                pull_request: None,
+                tag: None,
+                default_branch: None,
+                scheduled: None,
+                manual: None,
+                release: None,
+            }),
+            derive_paths: None,
+            provider: None,
+        };
+
+        project.ci = Some(CI {
+            pipelines: vec![pipeline.clone()],
+            ..Default::default()
+        });
+
+        let options = CompilerOptions {
+            pipeline: Some(pipeline),
+            project_path: Some("projects/rawkode.academy/api".to_string()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let ir = compiler.compile().unwrap();
+
+        let trigger = ir.pipeline.trigger.expect("should have trigger");
+
+        // When no task inputs, should fallback to project directory
+        assert!(
+            trigger
+                .paths
+                .contains(&"projects/rawkode.academy/api/**".to_string()),
+            "Should contain fallback path. Paths: {:?}",
+            trigger.paths
+        );
+    }
+
+    #[test]
+    fn test_derive_trigger_paths_root_project() {
+        use cuenv_core::ci::{Pipeline, PipelineCondition, PipelineTask, StringOrVec, CI};
+
+        let mut project = Project::new("test-project");
+        project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["build".to_string()],
+                inputs: vec![cuenv_core::tasks::Input::Path("src/**".to_string())],
+                ..Default::default()
+            })),
+        );
+
+        let pipeline = Pipeline {
+            name: "default".to_string(),
+            environment: None,
+            tasks: vec![PipelineTask::Simple("build".to_string())],
+            when: Some(PipelineCondition {
+                branch: Some(StringOrVec::String("main".to_string())),
+                pull_request: None,
+                tag: None,
+                default_branch: None,
+                scheduled: None,
+                manual: None,
+                release: None,
+            }),
+            derive_paths: None,
+            provider: None,
+        };
+
+        project.ci = Some(CI {
+            pipelines: vec![pipeline.clone()],
+            ..Default::default()
+        });
+
+        // No project_path = root project
+        let options = CompilerOptions {
+            pipeline: Some(pipeline),
+            project_path: None,
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let ir = compiler.compile().unwrap();
+
+        let trigger = ir.pipeline.trigger.expect("should have trigger");
+
+        // Paths should NOT be prefixed for root projects
+        assert!(trigger.paths.contains(&"src/**".to_string()));
+        assert!(trigger.paths.contains(&"env.cue".to_string()));
+        assert!(trigger.paths.contains(&"schema/**".to_string()));
+    }
+
+    #[test]
+    fn test_derive_trigger_paths_root_project_no_inputs_fallback() {
+        use cuenv_core::ci::{Pipeline, PipelineCondition, PipelineTask, StringOrVec, CI};
+
+        let mut project = Project::new("test-project");
+        // Task with NO inputs
+        project.tasks.insert(
+            "deploy".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "kubectl".to_string(),
+                args: vec!["apply".to_string()],
+                ..Default::default()
+            })),
+        );
+
+        let pipeline = Pipeline {
+            name: "default".to_string(),
+            environment: None,
+            tasks: vec![PipelineTask::Simple("deploy".to_string())],
+            when: Some(PipelineCondition {
+                branch: Some(StringOrVec::String("main".to_string())),
+                pull_request: None,
+                tag: None,
+                default_branch: None,
+                scheduled: None,
+                manual: None,
+                release: None,
+            }),
+            derive_paths: None,
+            provider: None,
+        };
+
+        project.ci = Some(CI {
+            pipelines: vec![pipeline.clone()],
+            ..Default::default()
+        });
+
+        // No project_path = root project
+        let options = CompilerOptions {
+            pipeline: Some(pipeline),
+            project_path: None,
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let ir = compiler.compile().unwrap();
+
+        let trigger = ir.pipeline.trigger.expect("should have trigger");
+
+        // Root project with no inputs should fallback to **
+        assert!(
+            trigger.paths.contains(&"**".to_string()),
+            "Root project with no inputs should fallback to **. Paths: {:?}",
+            trigger.paths
+        );
     }
 }
