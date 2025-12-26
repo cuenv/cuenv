@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredCIProject {
+    /// Full path to the env.cue file
     pub path: PathBuf,
+    /// Relative path within the CUE module (for working-directory in CI)
+    pub relative_path: PathBuf,
     pub config: Project,
 }
 
@@ -71,6 +74,7 @@ pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
 
                 DiscoveredCIProject {
                     path: env_cue_path,
+                    relative_path: instance.path.clone(),
                     config,
                 }
             })
@@ -98,9 +102,106 @@ pub fn discover_projects_from_module(module: &ModuleEvaluation) -> Vec<Discovere
 
                 DiscoveredCIProject {
                     path: env_cue_path,
+                    relative_path: instance.path.clone(),
                     config,
                 }
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_discovered_ci_project_has_relative_path_field() {
+        // Verify the struct has the relative_path field with correct type
+        let project = DiscoveredCIProject {
+            path: PathBuf::from("/module/root/services/api/env.cue"),
+            relative_path: PathBuf::from("services/api"),
+            config: Project::default(),
+        };
+
+        assert_eq!(
+            project.relative_path,
+            PathBuf::from("services/api"),
+            "relative_path should be set correctly"
+        );
+        assert_eq!(
+            project.path,
+            PathBuf::from("/module/root/services/api/env.cue"),
+            "full path should be set correctly"
+        );
+    }
+
+    #[test]
+    fn test_discovered_ci_project_root_relative_path() {
+        // Root projects should have "." as relative_path
+        let project = DiscoveredCIProject {
+            path: PathBuf::from("/module/root/env.cue"),
+            relative_path: PathBuf::from("."),
+            config: Project::default(),
+        };
+
+        assert_eq!(
+            project.relative_path,
+            PathBuf::from("."),
+            "Root project should have '.' as relative_path"
+        );
+    }
+
+    #[test]
+    fn test_discovered_ci_project_nested_relative_path() {
+        // Deeply nested projects should preserve full relative path
+        let project = DiscoveredCIProject {
+            path: PathBuf::from("/repo/projects/rawkode.academy/platform/email-preferences/env.cue"),
+            relative_path: PathBuf::from("projects/rawkode.academy/platform/email-preferences"),
+            config: Project::default(),
+        };
+
+        assert_eq!(
+            project.relative_path,
+            PathBuf::from("projects/rawkode.academy/platform/email-preferences"),
+            "Nested project should have full relative path"
+        );
+    }
+
+    #[test]
+    fn test_find_cue_module_root_from_nested_dir() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Create cue.mod at root
+        fs::create_dir_all(root.join("cue.mod")).expect("Failed to create cue.mod");
+
+        // Create nested directory
+        let nested = root.join("services").join("api");
+        fs::create_dir_all(&nested).expect("Failed to create nested dir");
+
+        // find_cue_module_root should find the root from nested
+        let found = find_cue_module_root(&nested);
+        assert!(found.is_some(), "Should find module root from nested dir");
+
+        let found_path = found.unwrap();
+        assert_eq!(
+            found_path.canonicalize().unwrap(),
+            root.canonicalize().unwrap(),
+            "Found root should match actual root"
+        );
+    }
+
+    #[test]
+    fn test_find_cue_module_root_not_found() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        // No cue.mod directory
+
+        let found = find_cue_module_root(temp_dir.path());
+        assert!(found.is_none(), "Should not find module root without cue.mod");
+    }
 }
