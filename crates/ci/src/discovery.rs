@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 pub struct DiscoveredCIProject {
     /// Full path to the env.cue file
     pub path: PathBuf,
-    /// Relative path within the CUE module (for working-directory in CI)
+    /// Module root (repo root where cue.mod/ lives)
+    pub module_root: PathBuf,
+    /// Relative path from module root to project (for working-directory in CI)
     pub relative_path: PathBuf,
     pub config: Project,
 }
@@ -74,6 +76,7 @@ pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
 
                 DiscoveredCIProject {
                     path: env_cue_path,
+                    module_root: module_root.clone(),
                     relative_path: instance.path.clone(),
                     config,
                 }
@@ -102,6 +105,7 @@ pub fn discover_projects_from_module(module: &ModuleEvaluation) -> Vec<Discovere
 
                 DiscoveredCIProject {
                     path: env_cue_path,
+                    module_root: module.root.clone(),
                     relative_path: instance.path.clone(),
                     config,
                 }
@@ -115,23 +119,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_discovered_ci_project_has_relative_path_field() {
-        // Verify the struct has the relative_path field with correct type
+    fn test_discovered_ci_project_fields() {
         let project = DiscoveredCIProject {
             path: PathBuf::from("/module/root/services/api/env.cue"),
+            module_root: PathBuf::from("/module/root"),
             relative_path: PathBuf::from("services/api"),
             config: Project::default(),
         };
 
         assert_eq!(
-            project.relative_path,
-            PathBuf::from("services/api"),
-            "relative_path should be set correctly"
-        );
-        assert_eq!(
             project.path,
             PathBuf::from("/module/root/services/api/env.cue"),
             "full path should be set correctly"
+        );
+        assert_eq!(
+            project.module_root,
+            PathBuf::from("/module/root"),
+            "module_root should be set correctly"
+        );
+        assert_eq!(
+            project.relative_path,
+            PathBuf::from("services/api"),
+            "relative_path should be set correctly"
         );
     }
 
@@ -140,6 +149,7 @@ mod tests {
         // Root projects should have "." as relative_path
         let project = DiscoveredCIProject {
             path: PathBuf::from("/module/root/env.cue"),
+            module_root: PathBuf::from("/module/root"),
             relative_path: PathBuf::from("."),
             config: Project::default(),
         };
@@ -158,6 +168,7 @@ mod tests {
             path: PathBuf::from(
                 "/repo/projects/rawkode.academy/platform/email-preferences/env.cue",
             ),
+            module_root: PathBuf::from("/repo"),
             relative_path: PathBuf::from("projects/rawkode.academy/platform/email-preferences"),
             config: Project::default(),
         };
