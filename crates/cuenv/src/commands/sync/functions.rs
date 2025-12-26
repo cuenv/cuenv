@@ -694,10 +694,19 @@ fn build_project_pipeline_context(
     // Detect release pipelines by checking if they have release event triggers
     let is_release = pipeline.when.as_ref().is_some_and(|w| w.release.is_some());
 
+    // Compute project_path for compiler (None if root, i.e., ".")
+    let project_path_for_compiler = if project.relative_path == Path::new(".") {
+        None
+    } else {
+        Some(project.relative_path.to_string_lossy().to_string())
+    };
+
     let options = CompilerOptions {
         pipeline: Some(pipeline.clone()),
         contributor_factory: Some(github_contributor_factory),
         ci_mode: true,
+        module_root: Some(project.module_root.clone()),
+        project_path: project_path_for_compiler.clone(),
         ..Default::default()
     };
     let compiler = Compiler::with_options(project.config.clone(), options);
@@ -713,20 +722,18 @@ fn build_project_pipeline_context(
         .collect();
     let tasks = cuenv_ci::pipeline::filter_tasks(&pipeline_task_names, ir.tasks);
 
-    // Convert relative_path to string for working-directory
-    // Only set if not the root directory (i.e., not ".")
-    let project_path = if project.relative_path == Path::new(".") {
-        None
-    } else {
-        Some(project.relative_path.to_string_lossy().to_string())
-    };
+    // Use the compiler-derived trigger which includes paths from task inputs
+    let trigger = ir
+        .pipeline
+        .trigger
+        .unwrap_or_else(|| build_github_trigger_condition(pipeline, ci));
 
     Ok(PipelineContext {
         is_release,
         github_config: ci.github_config_for_pipeline(&pipeline.name),
-        trigger: build_github_trigger_condition(pipeline, ci),
+        trigger,
         project_name: Some(project.config.name.clone()),
-        project_path,
+        project_path: project_path_for_compiler,
         environment: pipeline.environment.clone(),
         stages: ir.stages,
         runtimes: ir.runtimes,
