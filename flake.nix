@@ -224,6 +224,7 @@
           src = srcArtifacts;
           preBuild = "";
           buildInputs = platformBuildInputs;
+          cargoExtraArgs = "--package cuenv";
         });
 
         # Main package build
@@ -241,7 +242,7 @@
           buildPhaseCargoCommand = ''
             export XDG_CACHE_HOME="$TMPDIR/xdg_cache"
             export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/zigbuild_cache"
-            cargo zigbuild --release --target ${zigbuildTarget}
+            cargo zigbuild --release --package cuenv --target ${zigbuildTarget}
           '';
           installPhaseCommand = ''
             mkdir -p $out/bin
@@ -252,7 +253,7 @@
           doNotPostBuildInstallCargoBinaries = true;
           buildPhaseCargoCommand = ''
             export MACOSX_DEPLOYMENT_TARGET="11.0"
-            cargo build --release
+            cargo build --release --package cuenv
           '';
           installPhaseCommand = ''
             mkdir -p $out/bin
