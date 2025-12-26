@@ -15,9 +15,9 @@ pub mod digest;
 
 use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
 use crate::ir::{
-    CachePolicy, IntermediateRepresentation, IrValidator, ManualTriggerConfig, OutputDeclaration,
-    OutputType, PurityMode, Runtime, SecretConfig, Task as IrTask, TriggerCondition,
-    WorkflowDispatchInputDef,
+    ArtifactDownload, CachePolicy, IntermediateRepresentation, IrValidator, ManualTriggerConfig,
+    OutputDeclaration, OutputType, PurityMode, Runtime, SecretConfig, Task as IrTask,
+    TriggerCondition, WorkflowDispatchInputDef,
 };
 use crate::stages;
 use cuenv_core::ci::{CI, ManualTrigger, Pipeline, PipelineTask};
@@ -94,6 +94,13 @@ pub struct CompilerOptions {
     /// If None, uses `stages::default_contributors()`.
     /// Set this to include provider-specific contributors (e.g., Cachix for GitHub).
     pub contributor_factory: Option<ContributorFactory>,
+
+    /// Enable CI mode for orchestrator artifact handling.
+    ///
+    /// When true:
+    /// - Task outputs use `OutputType::Orchestrator` for cross-job artifact sharing
+    /// - Task input references (`inputs: [{task: "..."}]`) are converted to `artifact_downloads`
+    pub ci_mode: bool,
 }
 
 impl std::fmt::Debug for CompilerOptions {
@@ -110,6 +117,7 @@ impl std::fmt::Debug for CompilerOptions {
                 "contributor_factory",
                 &self.contributor_factory.map(|_| "Some(<fn>)"),
             )
+            .field("ci_mode", &self.ci_mode)
             .finish()
     }
 }
@@ -575,15 +583,37 @@ impl Compiler {
         // Convert inputs (path globs only for now)
         let inputs: Vec<String> = task.iter_path_inputs().cloned().collect();
 
-        // Convert outputs
+        // Convert outputs - use Orchestrator in CI mode for cross-job artifact sharing
+        let output_type = if self.options.ci_mode {
+            OutputType::Orchestrator
+        } else {
+            OutputType::Cas
+        };
         let outputs: Vec<OutputDeclaration> = task
             .outputs
             .iter()
             .map(|path| OutputDeclaration {
                 path: path.clone(),
-                output_type: OutputType::Cas, // Default to CAS
+                output_type,
             })
             .collect();
+
+        // Convert task output references to artifact downloads (CI mode only)
+        let artifact_downloads: Vec<ArtifactDownload> = if self.options.ci_mode {
+            task.iter_task_outputs()
+                .map(|task_ref| {
+                    // Use the task name to construct artifact name
+                    // The path should match where the artifact was uploaded from
+                    ArtifactDownload {
+                        name: format!("{}-artifacts", task_ref.task.replace('.', "-")),
+                        path: task_ref.task.replace('.', "/"),
+                        filter: String::new(),
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         // Determine cache policy
         let cache_policy = if task.labels.contains(&"deployment".to_string()) {
@@ -611,7 +641,7 @@ impl Compiler {
             deployment,
             manual_approval: false, // Would come from task metadata
             matrix: None,
-            artifact_downloads: vec![],
+            artifact_downloads,
             params: HashMap::new(),
         })
     }

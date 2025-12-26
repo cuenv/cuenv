@@ -38,6 +38,10 @@ package schema
 		paths?:          [...string]
 		ifNoFilesFound?: "warn" | "error" | "ignore"
 	})
+	// Trusted publishing via OIDC (no secrets needed)
+	trustedPublishing?: close({
+		cratesIo?: bool // Enable trusted publishing for crates.io
+	})
 	pathsIgnore?: [...string]
 	permissions?: [string]: string
 })

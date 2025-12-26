@@ -21,10 +21,26 @@ pub struct GitHubConfig {
     pub cachix: Option<CachixConfig>,
     /// Artifact upload configuration
     pub artifacts: Option<ArtifactsConfig>,
+    /// Trusted publishing configuration (OIDC-based, no secrets needed)
+    pub trusted_publishing: Option<TrustedPublishingConfig>,
     /// Paths to ignore for trigger conditions
     pub paths_ignore: Option<Vec<String>>,
     /// Workflow permissions
     pub permissions: Option<HashMap<String, String>>,
+}
+
+/// Trusted publishing configuration for OIDC-based package publishing.
+///
+/// Enables publishing to package registries without storing long-lived tokens.
+/// Uses short-lived tokens obtained via OIDC from the CI platform.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TrustedPublishingConfig {
+    /// Enable trusted publishing for crates.io
+    ///
+    /// When enabled, uses `rust-lang/crates-io-auth-action` to obtain
+    /// a short-lived token via OIDC for publishing to crates.io.
+    pub crates_io: Option<bool>,
 }
 
 /// Cachix caching configuration.
@@ -84,6 +100,10 @@ impl GitHubConfigExt for CI {
                 runners: pipeline.runners.clone().or(global.runners),
                 cachix: pipeline.cachix.clone().or(global.cachix),
                 artifacts: pipeline.artifacts.clone().or(global.artifacts),
+                trusted_publishing: pipeline
+                    .trusted_publishing
+                    .clone()
+                    .or(global.trusted_publishing),
                 paths_ignore: pipeline.paths_ignore.clone().or(global.paths_ignore),
                 permissions: pipeline.permissions.clone().or(global.permissions),
             },
