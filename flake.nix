@@ -155,7 +155,7 @@
               # CUE files needed for tests (schema definitions, examples, module config)
               isCueFile = pkgs.lib.hasSuffix ".cue" path;
               isInSchemaDir = builtins.match ".*/schema/.*" path != null || baseName == "schema";
-              isInExamplesDir = builtins.match ".*/examples/.*" path != null || baseName == "examples";
+              isInExamplesDir = builtins.match ".*/_examples/.*" path != null || baseName == "_examples";
               isInCueModDir = builtins.match ".*/cue\\.mod/.*" path != null || baseName == "cue.mod";
               isLlmsTxt = baseName == "llms.txt";
               isEnvCue = baseName == "env.cue";
