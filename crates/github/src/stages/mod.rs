@@ -7,12 +7,15 @@
 //!
 //! - [`CachixContributor`] - Configures Cachix for Nix caching (uses GitHub secrets)
 //! - [`GhModelsContributor`] - Installs GitHub Models CLI extension
+//! - [`TrustedPublishingContributor`] - Enables OIDC-based trusted publishing for crates.io
 
 mod cachix;
 mod gh_models;
+mod trusted_publishing;
 
 pub use cachix::CachixContributor;
 pub use gh_models::GhModelsContributor;
+pub use trusted_publishing::TrustedPublishingContributor;
 
 use cuenv_ci::StageContributor;
 
@@ -22,5 +25,9 @@ use cuenv_ci::StageContributor;
 /// when compiling for GitHub Actions.
 #[must_use]
 pub fn github_contributors() -> Vec<Box<dyn StageContributor>> {
-    vec![Box::new(CachixContributor), Box::new(GhModelsContributor)]
+    vec![
+        Box::new(CachixContributor),
+        Box::new(GhModelsContributor),
+        Box::new(TrustedPublishingContributor),
+    ]
 }

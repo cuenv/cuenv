@@ -65,6 +65,10 @@ schema.#Project & {
 				pushFilter: "(-source$|nixpkgs\\.tar\\.gz$)"
 			}
 
+			trustedPublishing: {
+				cratesIo: true
+			}
+
 			pathsIgnore: [
 				"docs/**",
 				"examples/**",
@@ -118,7 +122,7 @@ schema.#Project & {
 					{
 						task: "nix.build"
 						matrix: {
-							arch: ["linux-x64", "linux-arm64", "darwin-arm64"]
+							arch: ["linux-x64", "darwin-arm64"]
 						}
 					},
 					{
@@ -353,7 +357,14 @@ schema.#Project & {
 
 		publish: github: {
 			command: "bash"
-			args: ["-c", "gh release upload $TAG $PATHS"]
+			args: ["-c", """
+				for dir in dist/*/; do
+					platform=$(basename "$dir")
+					mv "$dir/cuenv" "dist/cuenv-$platform"
+				done
+				rm -rf dist/*/
+				gh release upload $TAG dist/cuenv-*
+				"""]
 		}
 
 		publish: crates: {
