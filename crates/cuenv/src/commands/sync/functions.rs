@@ -1015,6 +1015,8 @@ struct PipelineContext {
     github_config: cuenv_github::config::GitHubConfig,
     trigger: cuenv_ci::ir::TriggerCondition,
     project_name: Option<String>,
+    /// Relative path to project directory (for working-directory in monorepos)
+    project_path: Option<String>,
     environment: Option<String>,
     stages: cuenv_ci::ir::StageConfiguration,
     runtimes: Vec<cuenv_ci::ir::Runtime>,
@@ -1098,11 +1100,20 @@ fn build_project_pipeline_context(
         .collect();
     let tasks = cuenv_ci::pipeline::filter_tasks(&pipeline_task_names, ir.tasks);
 
+    // Convert relative_path to string for working-directory
+    // Only set if not the root directory (i.e., not ".")
+    let project_path = if project.relative_path == Path::new(".") {
+        None
+    } else {
+        Some(project.relative_path.to_string_lossy().to_string())
+    };
+
     Ok(PipelineContext {
         is_release,
         github_config: ci.github_config_for_pipeline(&pipeline.name),
         trigger: build_github_trigger_condition(pipeline, ci),
         project_name: Some(project.config.name.clone()),
+        project_path,
         environment: pipeline.environment.clone(),
         stages: ir.stages,
         runtimes: ir.runtimes,
@@ -1151,34 +1162,84 @@ fn emit_release_workflow(
 }
 
 /// Emit a standard workflow using the `GitHubActionsEmitter`.
+///
+/// Builds jobs directly using `build_simple_job` which supports `project_path`
+/// for setting working-directory in monorepo workflows.
 fn emit_standard_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
+    use cuenv_ci::ir::OutputType;
     use cuenv_github::workflow::GitHubActionsEmitter;
+    use cuenv_github::workflow::schema::{Concurrency, PermissionLevel, Permissions, Workflow};
+    use indexmap::IndexMap;
 
-    let ir = IntermediateRepresentation {
-        version: "1.4".to_string(),
-        pipeline: PipelineMetadata {
-            name: pipeline_name.to_string(),
-            environment: ctx.environment.clone(),
-            requires_onepassword: false,
-            project_name: ctx.project_name.clone(),
-            trigger: Some(ctx.trigger.clone()),
-            pipeline_tasks: vec![],
-        },
-        runtimes: ctx.runtimes.clone(),
-        stages: ctx.stages.clone(),
-        tasks: ctx.tasks.clone(),
+    let workflow_name = match &ctx.project_name {
+        Some(project) => format!("{project}-{pipeline_name}"),
+        None => pipeline_name.to_string(),
     };
 
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let workflows = emitter.emit_workflows(&ir).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to emit GitHub workflow: {e}"))
+
+    // Build jobs using build_simple_job (which supports project_path for working-directory)
+    let mut jobs = IndexMap::new();
+    for task in &ctx.tasks {
+        let mut job = emitter.build_simple_job(
+            task,
+            &ctx.stages,
+            ctx.environment.as_ref(),
+            ctx.project_path.as_deref(),
+        );
+        job.needs = task
+            .depends_on
+            .iter()
+            .map(|d| d.replace(['.', ' '], "-"))
+            .collect();
+        jobs.insert(task.id.replace(['.', ' '], "-"), job);
+    }
+
+    // Build permissions based on task requirements
+    let has_deployments = ctx.tasks.iter().any(|t| t.deployment);
+    let has_outputs = ctx.tasks.iter().any(|t| {
+        t.outputs
+            .iter()
+            .any(|o| o.output_type == OutputType::Orchestrator)
+    });
+
+    let permissions = Permissions {
+        contents: Some(if has_deployments {
+            PermissionLevel::Write
+        } else {
+            PermissionLevel::Read
+        }),
+        checks: Some(PermissionLevel::Write),
+        pull_requests: Some(PermissionLevel::Write),
+        packages: if has_outputs {
+            Some(PermissionLevel::Write)
+        } else {
+            None
+        },
+        ..Default::default()
+    };
+
+    let workflow = Workflow {
+        name: workflow_name.clone(),
+        on: build_workflow_triggers(&ctx.trigger, &emitter),
+        concurrency: Some(Concurrency {
+            group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
+            cancel_in_progress: Some(true),
+        }),
+        permissions: Some(permissions),
+        env: IndexMap::new(),
+        jobs,
+    };
+
+    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+    let yaml = workflow.to_yaml().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
     })?;
 
-    Ok(workflows.into_iter().collect())
+    Ok(vec![(filename, yaml)])
 }
 
 /// Build jobs from expanded pipeline tasks, tracking artifact sources.
@@ -1205,8 +1266,12 @@ fn build_pipeline_jobs(
             cuenv_core::ci::PipelineTask::Simple(_) => {
                 if let Some(ir_task) = ctx.tasks.iter().find(|t| t.id == task_name) {
                     // Use emitter method directly
-                    let mut job =
-                        emitter.build_simple_job(ir_task, &ctx.stages, ctx.environment.as_ref());
+                    let mut job = emitter.build_simple_job(
+                        ir_task,
+                        &ctx.stages,
+                        ctx.environment.as_ref(),
+                        ctx.project_path.as_deref(),
+                    );
                     job.needs = ir_task
                         .depends_on
                         .iter()
@@ -1239,6 +1304,7 @@ fn build_pipeline_jobs(
                         &ctx.stages,
                         ctx.environment.as_ref(),
                         &combined_needs,
+                        ctx.project_path.as_deref(),
                     );
                     jobs.insert(job_id, job);
                 } else {
@@ -1256,6 +1322,7 @@ fn build_pipeline_jobs(
                         ctx.environment.as_ref(),
                         arch_runners.as_ref(),
                         &[],
+                        ctx.project_path.as_deref(),
                     );
 
                     for (id, job) in expanded_jobs {
@@ -1280,7 +1347,12 @@ fn build_pipeline_jobs(
         }
 
         // Use emitter method directly
-        let mut job = emitter.build_simple_job(ir_task, &ctx.stages, ctx.environment.as_ref());
+        let mut job = emitter.build_simple_job(
+            ir_task,
+            &ctx.stages,
+            ctx.environment.as_ref(),
+            ctx.project_path.as_deref(),
+        );
         job.needs = ir_task
             .depends_on
             .iter()
