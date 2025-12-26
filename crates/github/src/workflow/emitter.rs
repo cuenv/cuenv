@@ -634,12 +634,20 @@ impl GitHubActionsEmitter {
     /// 3. Runs the task with `--skip-dependencies` (since CI handles job dependencies)
     ///
     /// Use `build_matrix_jobs` for tasks with matrix configurations.
+    ///
+    /// # Arguments
+    ///
+    /// * `task` - IR task to build job for
+    /// * `stages` - Stage configuration for bootstrap/setup steps
+    /// * `environment` - Optional environment name for the task
+    /// * `project_path` - Optional working directory (for monorepo projects)
     #[must_use]
     pub fn build_simple_job(
         &self,
         task: &Task,
         stages: &StageConfiguration,
         environment: Option<&String>,
+        project_path: Option<&str>,
     ) -> Job {
         let mut steps = Vec::new();
 
@@ -672,6 +680,11 @@ impl GitHubActionsEmitter {
         let mut task_step = Step::run(task_command)
             .with_name(task.id.clone())
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+
+        // Set working directory for monorepo projects
+        if let Some(path) = project_path {
+            task_step = task_step.with_working_directory(path);
+        }
 
         // Add secret env vars from setup stages to the task step
         for (key, value) in secret_env_vars {
@@ -737,6 +750,14 @@ impl GitHubActionsEmitter {
     /// 4. Runs the task with params and `--skip-dependencies`
     ///
     /// Use this for tasks that aggregate outputs from matrix jobs (e.g., publish).
+    ///
+    /// # Arguments
+    ///
+    /// * `task` - IR task to build job for
+    /// * `stages` - Stage configuration for bootstrap/setup steps
+    /// * `environment` - Optional environment name for the task
+    /// * `previous_jobs` - Jobs that must complete before this job
+    /// * `project_path` - Optional working directory (for monorepo projects)
     #[must_use]
     pub fn build_artifact_aggregation_job(
         &self,
@@ -744,6 +765,7 @@ impl GitHubActionsEmitter {
         stages: &StageConfiguration,
         environment: Option<&String>,
         previous_jobs: &[String],
+        project_path: Option<&str>,
     ) -> Job {
         let mut steps = Vec::new();
 
@@ -797,6 +819,11 @@ impl GitHubActionsEmitter {
             .with_name(task.id.clone())
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
 
+        // Set working directory for monorepo projects
+        if let Some(path) = project_path {
+            task_step = task_step.with_working_directory(path);
+        }
+
         // Add params as environment variables
         for (key, value) in &task.params {
             task_step.env.insert(key.to_uppercase(), value.clone());
@@ -838,6 +865,7 @@ impl GitHubActionsEmitter {
     /// * `environment` - Optional environment name for the task
     /// * `arch_runners` - Optional mapping of arch -> runner label
     /// * `previous_jobs` - Jobs that must complete before these matrix jobs
+    /// * `project_path` - Optional working directory (for monorepo projects)
     #[must_use]
     pub fn build_matrix_jobs(
         &self,
@@ -846,6 +874,7 @@ impl GitHubActionsEmitter {
         environment: Option<&String>,
         arch_runners: Option<&HashMap<String, String>>,
         previous_jobs: &[String],
+        project_path: Option<&str>,
     ) -> IndexMap<String, Job> {
         let mut jobs = IndexMap::new();
         let base_job_id = task.id.replace(['.', ' '], "-");
@@ -886,6 +915,11 @@ impl GitHubActionsEmitter {
                 let mut task_step = Step::run(&task_command)
                     .with_name(format!("{} ({arch})", task.id))
                     .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+
+                // Set working directory for monorepo projects
+                if let Some(path) = project_path {
+                    task_step = task_step.with_working_directory(path);
+                }
 
                 // Add arch as an environment variable for the task
                 task_step.env.insert("CUENV_ARCH".to_string(), arch.clone());
@@ -1619,7 +1653,7 @@ mod tests {
         let task = make_task("build", &["cargo", "build"]);
         let stages = StageConfiguration::default();
 
-        let job = emitter.build_simple_job(&task, &stages, None);
+        let job = emitter.build_simple_job(&task, &stages, None, None);
 
         assert_eq!(job.name, Some("build".to_string()));
         assert!(matches!(job.runs_on, RunsOn::Label(ref l) if l == "ubuntu-latest"));
@@ -1639,7 +1673,7 @@ mod tests {
         let stages = StageConfiguration::default();
         let env = "production".to_string();
 
-        let job = emitter.build_simple_job(&task, &stages, Some(&env));
+        let job = emitter.build_simple_job(&task, &stages, Some(&env), None);
 
         // Find the task step and check command includes environment
         let task_step = job
@@ -1650,6 +1684,26 @@ mod tests {
         let run_cmd = task_step.unwrap().run.as_ref().unwrap();
         assert!(run_cmd.contains("-e production"));
         assert!(run_cmd.contains("--skip-dependencies"));
+    }
+
+    #[test]
+    fn test_build_simple_job_with_working_directory() {
+        let emitter = GitHubActionsEmitter::new();
+        let task = make_task("build", &["cargo", "build"]);
+        let stages = StageConfiguration::default();
+
+        let job = emitter.build_simple_job(&task, &stages, None, Some("platform/my-project"));
+
+        // Find the task step and check working-directory is set
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("build"));
+        assert!(task_step.is_some());
+        assert_eq!(
+            task_step.unwrap().working_directory,
+            Some("platform/my-project".to_string())
+        );
     }
 
     #[test]
@@ -1669,7 +1723,7 @@ mod tests {
         });
         let stages = StageConfiguration::default();
 
-        let jobs = emitter.build_matrix_jobs(&task, &stages, None, None, &[]);
+        let jobs = emitter.build_matrix_jobs(&task, &stages, None, None, &[], None);
 
         // Should create 2 jobs, one per arch
         assert_eq!(jobs.len(), 2);
@@ -1718,7 +1772,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let jobs = emitter.build_matrix_jobs(&task, &stages, None, Some(&arch_runners), &[]);
+        let jobs = emitter.build_matrix_jobs(&task, &stages, None, Some(&arch_runners), &[], None);
 
         // Check runners are correctly mapped
         let linux_job = jobs.get("build-linux-x64").unwrap();
@@ -1748,7 +1802,8 @@ mod tests {
             "release-build-darwin-arm64".to_string(),
         ];
 
-        let job = emitter.build_artifact_aggregation_job(&task, &stages, None, &previous_jobs);
+        let job =
+            emitter.build_artifact_aggregation_job(&task, &stages, None, &previous_jobs, None);
 
         assert_eq!(job.name, Some("release.publish".to_string()));
         assert_eq!(job.needs, previous_jobs);
@@ -1847,6 +1902,217 @@ mod tests {
         assert_eq!(
             secret_env_vars.get("MY_VAR"),
             Some(&"${MY_SECRET}".to_string())
+        );
+    }
+
+    // =========================================================================
+    // Working Directory Tests - Comprehensive coverage for monorepo support
+    // =========================================================================
+
+    #[test]
+    fn test_build_simple_job_without_working_directory() {
+        let emitter = GitHubActionsEmitter::new();
+        let task = make_task("build", &["cargo", "build"]);
+        let stages = StageConfiguration::default();
+
+        // project_path = None means root project, no working-directory
+        let job = emitter.build_simple_job(&task, &stages, None, None);
+
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("build"));
+        assert!(task_step.is_some());
+        assert_eq!(
+            task_step.unwrap().working_directory,
+            None,
+            "Root project should NOT have working-directory"
+        );
+    }
+
+    #[test]
+    fn test_build_simple_job_with_nested_working_directory() {
+        let emitter = GitHubActionsEmitter::new();
+        let task = make_task("deploy", &["./deploy.sh"]);
+        let stages = StageConfiguration::default();
+
+        // Deeply nested project path
+        let job = emitter.build_simple_job(
+            &task,
+            &stages,
+            None,
+            Some("projects/rawkode.academy/platform/email-preferences"),
+        );
+
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("deploy"));
+        assert!(task_step.is_some());
+        assert_eq!(
+            task_step.unwrap().working_directory,
+            Some("projects/rawkode.academy/platform/email-preferences".to_string()),
+            "Nested project should have correct working-directory"
+        );
+    }
+
+    #[test]
+    fn test_build_matrix_jobs_with_working_directory() {
+        use cuenv_ci::ir::MatrixConfig;
+
+        let emitter = GitHubActionsEmitter::new();
+        let mut task = make_task("release.build", &["cargo", "build"]);
+        task.matrix = Some(MatrixConfig {
+            dimensions: [("arch".to_string(), vec!["linux-x64".to_string()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        let stages = StageConfiguration::default();
+
+        let jobs =
+            emitter.build_matrix_jobs(&task, &stages, None, None, &[], Some("apps/my-service"));
+
+        assert_eq!(jobs.len(), 1);
+        let job = jobs.get("release-build-linux-x64").unwrap();
+
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("release.build (linux-x64)"));
+        assert!(task_step.is_some());
+        assert_eq!(
+            task_step.unwrap().working_directory,
+            Some("apps/my-service".to_string()),
+            "Matrix job should have working-directory"
+        );
+    }
+
+    #[test]
+    fn test_build_matrix_jobs_without_working_directory() {
+        use cuenv_ci::ir::MatrixConfig;
+
+        let emitter = GitHubActionsEmitter::new();
+        let mut task = make_task("build", &["cargo", "build"]);
+        task.matrix = Some(MatrixConfig {
+            dimensions: [("arch".to_string(), vec!["linux-x64".to_string()])]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
+        let stages = StageConfiguration::default();
+
+        // project_path = None
+        let jobs = emitter.build_matrix_jobs(&task, &stages, None, None, &[], None);
+
+        let job = jobs.get("build-linux-x64").unwrap();
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("build (linux-x64)"));
+        assert!(task_step.is_some());
+        assert_eq!(
+            task_step.unwrap().working_directory,
+            None,
+            "Root project matrix job should NOT have working-directory"
+        );
+    }
+
+    #[test]
+    fn test_build_artifact_aggregation_job_with_working_directory() {
+        use cuenv_ci::ir::ArtifactDownload;
+
+        let emitter = GitHubActionsEmitter::new();
+        let mut task = make_task("publish", &["./publish.sh"]);
+        task.artifact_downloads = vec![ArtifactDownload {
+            name: "build".to_string(),
+            path: "./out".to_string(),
+            filter: String::new(),
+        }];
+        let stages = StageConfiguration::default();
+
+        let job = emitter.build_artifact_aggregation_job(
+            &task,
+            &stages,
+            None,
+            &["build-linux-x64".to_string()],
+            Some("services/api"),
+        );
+
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("publish"));
+        assert!(task_step.is_some());
+        assert_eq!(
+            task_step.unwrap().working_directory,
+            Some("services/api".to_string()),
+            "Artifact aggregation job should have working-directory"
+        );
+    }
+
+    #[test]
+    fn test_build_artifact_aggregation_job_without_working_directory() {
+        use cuenv_ci::ir::ArtifactDownload;
+
+        let emitter = GitHubActionsEmitter::new();
+        let mut task = make_task("publish", &["./publish.sh"]);
+        task.artifact_downloads = vec![ArtifactDownload {
+            name: "build".to_string(),
+            path: "./out".to_string(),
+            filter: String::new(),
+        }];
+        let stages = StageConfiguration::default();
+
+        let job = emitter.build_artifact_aggregation_job(
+            &task,
+            &stages,
+            None,
+            &["build-linux-x64".to_string()],
+            None,
+        );
+
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("publish"));
+        assert!(task_step.is_some());
+        assert_eq!(
+            task_step.unwrap().working_directory,
+            None,
+            "Root project aggregation job should NOT have working-directory"
+        );
+    }
+
+    #[test]
+    fn test_working_directory_yaml_serialization() {
+        let emitter = GitHubActionsEmitter::new();
+        let task = make_task("test", &["cargo", "test"]);
+        let stages = StageConfiguration::default();
+
+        let job = emitter.build_simple_job(&task, &stages, None, Some("my-project"));
+
+        // Serialize job to YAML and verify working-directory appears
+        let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");
+        assert!(
+            yaml.contains("working-directory: my-project"),
+            "YAML should contain working-directory field. Got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_working_directory_not_in_yaml_when_none() {
+        let emitter = GitHubActionsEmitter::new();
+        let task = make_task("test", &["cargo", "test"]);
+        let stages = StageConfiguration::default();
+
+        let job = emitter.build_simple_job(&task, &stages, None, None);
+
+        // Serialize job to YAML and verify working-directory does NOT appear
+        let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");
+        assert!(
+            !yaml.contains("working-directory"),
+            "YAML should NOT contain working-directory field. Got:\n{yaml}"
         );
     }
 }
