@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use aws_sdk_secretsmanager::Client;
+use aws_smithy_http_client::{tls, Builder as SmithyHttpClientBuilder};
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -74,7 +75,14 @@ impl AwsResolver {
     /// Returns error if AWS configuration cannot be loaded.
     pub async fn new() -> Result<Self, SecretError> {
         let http_client = if Self::http_credentials_available() {
+            // Force the ring-backed rustls provider to avoid aws-lc in zig builds.
+            let http_client = SmithyHttpClientBuilder::new()
+                .tls_provider(tls::Provider::Rustls(
+                    tls::rustls_provider::CryptoMode::Ring,
+                ))
+                .build_https();
             let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .http_client(http_client)
                 .load()
                 .await;
             Some(Client::new(&config))

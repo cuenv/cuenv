@@ -203,7 +203,7 @@
         commonArgs = {
           inherit src;
           strictDeps = true;
-          nativeBuildInputs = with pkgs; [ go pkg-config cue git zig cmake ];
+          nativeBuildInputs = with pkgs; [ go pkg-config cue git zig ];
           buildInputs = platformBuildInputs;
           preBuild = ''
             ${setupBridge}
@@ -241,7 +241,6 @@
           buildPhaseCargoCommand = ''
             export XDG_CACHE_HOME="$TMPDIR/xdg_cache"
             export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/zigbuild_cache"
-            export AWS_LC_SYS_NO_ASM=1
             cargo zigbuild --release --target ${zigbuildTarget}
           '';
           installPhaseCommand = ''

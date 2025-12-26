@@ -1606,6 +1606,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-secretsmanager",
+ "aws-smithy-http-client",
  "cuenv-secrets",
  "futures",
  "serde",

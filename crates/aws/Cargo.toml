@@ -24,8 +24,9 @@ tracing = { workspace = true }
 futures = { workspace = true }
 
 # AWS SDK
-aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest"] }
 aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["behavior-version-latest", "rustls"] }
+aws-smithy-http-client = { version = "1", default-features = false, features = ["rustls-ring"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
