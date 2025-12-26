@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use aws_sdk_secretsmanager::Client;
-use aws_smithy_http_client::{tls, Builder as SmithyHttpClientBuilder};
+use aws_smithy_http_client::{Builder as SmithyHttpClientBuilder, tls};
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
