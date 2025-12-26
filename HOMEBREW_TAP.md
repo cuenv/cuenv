@@ -4,15 +4,14 @@ This repository contains the Homebrew formula for installing cuenv.
 
 ## Installation
 
-### Tap this repository
+```bash
+brew install cuenv/cuenv/cuenv
+```
+
+Or tap the repository first:
 
 ```bash
 brew tap cuenv/cuenv
-```
-
-### Install cuenv
-
-```bash
 brew install cuenv
 ```
 
