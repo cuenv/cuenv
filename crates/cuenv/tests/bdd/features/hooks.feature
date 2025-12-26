@@ -9,9 +9,9 @@ Feature: Background Hook Execution with Environment Loading
     And the shell integration is configured
 
   Scenario: Background Hooks Load into Active Shell
-    Given I am in the "examples" directory
-    And cuenv is allowed in "examples/hook" directory
-    When I change directory to "examples/hook"
+    Given I am in the "_examples" directory
+    And cuenv is allowed in "_examples/hook" directory
+    When I change directory to "_examples/hook"
     Then hooks should be spawned in the background
     When I wait for hooks to complete
     Then the environment variables should be loaded in my shell
@@ -19,9 +19,9 @@ Feature: Background Hook Execution with Environment Loading
     Then I should see "loaded_successfully"
 
   Scenario: Hook Execution Status Check
-    Given I am in the "examples" directory
-    And cuenv is allowed in "examples/hook" directory
-    When I change directory to "examples/hook"
+    Given I am in the "_examples" directory
+    And cuenv is allowed in "_examples/hook" directory
+    When I change directory to "_examples/hook"
     Then hooks should be spawned in the background
     When I check the hook execution status
     Then I should see hooks are running
@@ -30,9 +30,9 @@ Feature: Background Hook Execution with Environment Loading
     Then I should see hooks have completed successfully
 
   Scenario: Environment Variables Persist After Hook Completion
-    Given I am in the "examples" directory
-    And cuenv is allowed in "examples/hook" directory
-    When I change directory to "examples/hook"
+    Given I am in the "_examples" directory
+    And cuenv is allowed in "_examples/hook" directory
+    When I change directory to "_examples/hook"
     And I wait for hooks to complete
     Then the environment variable "CUENV_TEST" should equal "loaded_successfully"
     And the environment variable "API_ENDPOINT" should equal "http://localhost:8080/api"
@@ -40,7 +40,7 @@ Feature: Background Hook Execution with Environment Loading
     Then the command should have access to the loaded environment
 
   Scenario: Failed Hooks Do Not Load Environment
-    Given I am in the "examples" directory
+    Given I am in the "_examples" directory
     And cuenv is allowed in "hook-failure" directory with failing hooks
     When I change directory to "hook-failure"
     And I wait for hooks to complete or fail
@@ -48,8 +48,8 @@ Feature: Background Hook Execution with Environment Loading
     And I should see an error message about hook failure
 
   Scenario: Changing Away From Directory Preserves State
-    Given I am in the "examples/hook" directory with completed hooks
+    Given I am in the "_examples/hook" directory with completed hooks
     When I change directory to "../"
     Then the environment variables from hooks should still be set
-    When I change back to "examples/hook"
+    When I change back to "_examples/hook"
     Then hooks should not re-execute since configuration hasn't changed

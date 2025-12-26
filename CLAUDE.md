@@ -103,8 +103,8 @@ cuenv task test.bdd
 ```bash
 # Test CLI functionality
 cuenv exec -- cargo run -- version
-cuenv exec -- cargo run -- env print --path examples/env-basic --package _examples
-cuenv exec -- cargo run -- env print --path examples/env-basic --package _examples --output-format json
+cuenv exec -- cargo run -- env print --path _examples/env-basic --package _examples
+cuenv exec -- cargo run -- env print --path _examples/env-basic --package _examples --output-format json
 ```
 
 ## Code Quality Checklist
@@ -130,7 +130,7 @@ cuenv task test.unit
 - `crates/cuengine/src/lib.rs` - Rust FFI wrapper
 - `crates/core/src/manifest/` - Configuration types
 - `crates/core/src/tasks/` - Task graph and execution
-- `examples/env-basic/env.cue` - Test configuration
+- `_examples/env-basic/env.cue` - Test configuration
 - `schema/` - CUE schema definitions
 
 ## Troubleshooting

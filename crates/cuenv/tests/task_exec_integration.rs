@@ -488,7 +488,7 @@ mod test_examples {
         // Get the project root
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let project_root = Path::new(manifest_dir).parent().unwrap().parent().unwrap();
-        let example_path = project_root.join("examples/task-basic");
+        let example_path = project_root.join("_examples/task-basic");
 
         // Skip if example doesn't exist
         if !example_path.exists() {

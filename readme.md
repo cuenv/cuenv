@@ -505,7 +505,7 @@ cuenv/
 │   ├── bitbucket/      # Bitbucket provider
 │   └── dagger/         # Dagger task execution backend
 ├── schema/             # CUE schema definitions
-├── examples/           # CUE configuration examples
+├── _examples/          # CUE configuration examples
 └── docs/               # Documentation
 ```
 
