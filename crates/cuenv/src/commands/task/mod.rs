@@ -2,7 +2,8 @@
 
 mod arguments;
 mod discovery;
-mod normalization;
+pub mod list_builder;
+pub mod normalization;
 mod rendering;
 mod resolution;
 mod types;
@@ -14,7 +15,8 @@ pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection
 
 use arguments::{apply_args_to_task, resolve_task_args};
 use discovery::{evaluate_manifest, find_tasks_with_labels, format_label_root, normalize_labels};
-use normalization::task_fqdn;
+use list_builder::prepare_task_index;
+use normalization::{compute_project_id, task_fqdn};
 use rendering::{
     collect_workspace_tasks, format_task_detail, get_task_cli_help, render_task_tree,
     render_workspace_task_list,
@@ -27,7 +29,7 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
-    BackendFactory, ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, TaskIndex, Tasks,
+    BackendFactory, ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, Tasks,
 };
 
 use super::CommandExecutor;
@@ -144,8 +146,7 @@ async fn execute_task_legacy(
     );
 
     // Evaluate CUE to get tasks and environment using module-wide evaluation
-    let manifest: Project =
-        evaluate_manifest(Path::new(path), package, executor)?.with_implicit_tasks();
+    let mut manifest: Project = evaluate_manifest(Path::new(path), package, executor)?;
     tracing::debug!("CUE evaluation successful");
 
     tracing::debug!(
@@ -158,8 +159,37 @@ async fn execute_task_legacy(
         std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
     let cue_module_root = find_cue_module_root(&project_root);
 
-    // Build a canonical index to support nested task paths
-    let task_index = TaskIndex::build(&manifest.tasks)?;
+    // Build TaskDiscovery for synthetic task injection (workspace hooks)
+    // Use executor's cached module if available, otherwise skip discovery
+    let discovery = if let Some(exec) = executor {
+        if let Some(cue_mod_root) = cue_module_root.as_ref() {
+            if let Ok(module) = exec.get_module(cue_mod_root) {
+                let mut disc = TaskDiscovery::new(cue_mod_root.clone());
+                for instance in module.projects() {
+                    if let Ok(project) = instance.deserialize::<Project>() {
+                        let proj_root = module.root.join(&instance.path);
+                        disc.add_project(proj_root, project);
+                    }
+                }
+                Some(disc)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Compute project ID for workspace setup injection
+    let project_id = cue_module_root
+        .as_ref()
+        .map(|root| compute_project_id(&manifest, &project_root, root))
+        .unwrap_or_default();
+
+    // Build a canonical index to support nested task paths (with synthetic tasks injected)
+    let task_index = prepare_task_index(&mut manifest, discovery.as_ref(), &project_id)?;
     let local_tasks = task_index.to_tasks();
 
     // Handle workspace-wide task listing for IDE completions
@@ -207,7 +237,7 @@ async fn execute_task_legacy(
             }
         }
 
-        let workspace_tasks = collect_workspace_tasks(&discovery);
+        let workspace_tasks = collect_workspace_tasks(&discovery, cue_mod_root);
 
         if format == "json" {
             return serde_json::to_string(&workspace_tasks).map_err(|e| {
