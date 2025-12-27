@@ -4,6 +4,7 @@ pub mod env;
 pub mod env_file;
 pub mod exec;
 pub mod export;
+pub mod git_hooks;
 pub mod handler;
 pub mod hooks;
 pub mod info;

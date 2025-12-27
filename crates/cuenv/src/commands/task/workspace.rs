@@ -400,9 +400,10 @@ pub fn build_global_tasks(
         |p| p.id.clone(),
     );
 
-    // Inject workspace setup tasks and resolve TaskRefs (hooks)
+    // Inject workspace setup tasks, pre-push hooks, and resolve TaskRefs
     for p in &mut projects {
         inject_workspace_setup_tasks(&mut p.manifest, &discovery, &p.id)?;
+        inject_pre_push_hook_tasks(&mut p.manifest);
         resolve_task_refs_in_manifest(&mut p.manifest, &discovery, &p.id, &project_id_by_name);
     }
 
@@ -425,4 +426,119 @@ pub fn build_global_tasks(
     }
 
     Ok((Tasks { tasks: global }, current_project_id))
+}
+
+/// Inject pre-push hook tasks into a project manifest.
+///
+/// For each hook defined in `hooks.prePush`, creates a synthetic task
+/// `hooks.pre-push.<name>` that:
+/// - Runs the hook command
+/// - Checks inputs against CUENV_CHANGED_FILES environment variable
+/// - Skips if no matching files
+///
+/// Also creates an aggregator task `hooks.pre-push` that depends on all
+/// individual hook tasks.
+pub fn inject_pre_push_hook_tasks(manifest: &mut Project) {
+    let Some(hooks) = &manifest.hooks else {
+        return;
+    };
+
+    let Some(pre_push) = &hooks.pre_push else {
+        return;
+    };
+
+    if pre_push.is_empty() {
+        return;
+    }
+
+    // Collect and sort hooks by (order, name) for deterministic behavior
+    let mut sorted_hooks: Vec<(&String, &cuenv_core::hooks::Hook)> = pre_push.iter().collect();
+    sorted_hooks.sort_by(|a, b| a.1.order.cmp(&b.1.order).then(a.0.cmp(b.0)));
+
+    let mut hook_task_names: Vec<String> = Vec::new();
+
+    // Create a task for each pre-push hook
+    for (name, hook) in sorted_hooks {
+        let task_name = format!("hooks.pre-push.{name}");
+
+        // Build command with args
+        let command = if hook.args.is_empty() {
+            hook.command.clone()
+        } else {
+            format!("{} {}", hook.command, hook.args.join(" "))
+        };
+
+        // Create a wrapper script that:
+        // 1. Checks if any changed files match the hook's inputs
+        // 2. Runs the hook command if there are matches
+        // 3. Skips if no matches
+        let script = if hook.inputs.is_empty() {
+            // No inputs filter - always run
+            format!(
+                r#"echo "Running pre-push hook: {name}"
+{command}"#
+            )
+        } else {
+            // Filter by inputs
+            let patterns: Vec<String> = hook
+                .inputs
+                .iter()
+                .map(|p| format!("-e '{p}'"))
+                .collect();
+            let grep_patterns = patterns.join(" ");
+
+            format!(
+                r#"# Check if any changed files match the inputs
+if [ -z "$CUENV_CHANGED_FILES" ]; then
+    echo "No changed files. Skipping {name}."
+    exit 0
+fi
+
+matching_files=$(echo "$CUENV_CHANGED_FILES" | tr ' ' '\n' | grep {grep_patterns} || true)
+
+if [ -z "$matching_files" ]; then
+    echo "No matching files for {name}. Skipping."
+    exit 0
+fi
+
+echo "Running pre-push hook: {name}"
+echo "Matching files: $(echo "$matching_files" | wc -l | tr -d ' ') file(s)"
+{command}"#
+            )
+        };
+
+        // Convert hook inputs (Vec<String>) to task inputs (Vec<Input>)
+        let task_inputs: Vec<cuenv_core::tasks::Input> = hook
+            .inputs
+            .iter()
+            .map(|s| cuenv_core::tasks::Input::Path(s.clone()))
+            .collect();
+
+        let task = cuenv_core::tasks::Task {
+            script: Some(script),
+            hermetic: false,
+            project_root: None,
+            directory: hook.dir.clone(),
+            inputs: task_inputs,
+            ..Default::default()
+        };
+
+        manifest
+            .tasks
+            .insert(task_name.clone(), TaskDefinition::Single(Box::new(task)));
+        hook_task_names.push(task_name);
+    }
+
+    // Create aggregator task that depends on all hook tasks
+    let aggregator_task = cuenv_core::tasks::Task {
+        script: Some("echo 'All pre-push hooks completed successfully.'".to_string()),
+        hermetic: false,
+        depends_on: hook_task_names,
+        ..Default::default()
+    };
+
+    manifest.tasks.insert(
+        "hooks.pre-push".to_string(),
+        TaskDefinition::Single(Box::new(aggregator_task)),
+    );
 }

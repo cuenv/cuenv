@@ -834,6 +834,7 @@ mod tests {
             hooks: Some(Hooks {
                 on_enter: Some(on_enter),
                 on_exit: None,
+                pre_push: None,
             }),
             workspaces: None,
             ci: None,
@@ -876,6 +877,7 @@ mod tests {
             hooks: Some(Hooks {
                 on_enter: Some(on_enter),
                 on_exit: None,
+                pre_push: None,
             }),
             workspaces: None,
             ci: None,
