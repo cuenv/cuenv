@@ -10,7 +10,7 @@ use cuenv_core::Result;
 use crate::cli::{ShellType, StatusFormat};
 use crate::events::Event;
 
-use super::{CommandExecutor, ci, env, exec, export, hooks, sync, task};
+use super::{CommandExecutor, ci, env, exec, export, git_hooks, hooks, sync, task};
 
 /// Trait for commands with lifecycle events.
 ///
@@ -597,5 +597,50 @@ impl ShellInitHandler {
             success: true,
             output,
         });
+    }
+}
+
+/// Handler for `git-hooks pre-push` command
+pub struct GitHooksPrePushHandler {
+    pub path: String,
+    pub package: String,
+    pub remote: String,
+    pub local_ref: Option<String>,
+    pub remote_ref: Option<String>,
+}
+
+#[async_trait]
+impl CommandHandler for GitHooksPrePushHandler {
+    fn command_name(&self) -> &'static str {
+        "git-hooks pre-push"
+    }
+
+    async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
+        git_hooks::execute_pre_push(
+            &self.path,
+            &self.package,
+            &self.remote,
+            self.local_ref.as_deref(),
+            self.remote_ref.as_deref(),
+            Some(executor),
+        )
+        .await
+    }
+}
+
+/// Handler for `git-hooks install` command
+pub struct GitHooksInstallHandler {
+    pub path: String,
+    pub force: bool,
+}
+
+#[async_trait]
+impl CommandHandler for GitHooksInstallHandler {
+    fn command_name(&self) -> &'static str {
+        "git-hooks install"
+    }
+
+    async fn execute(&self, _executor: &CommandExecutor) -> Result<String> {
+        git_hooks::execute_install(&self.path, self.force).await
     }
 }

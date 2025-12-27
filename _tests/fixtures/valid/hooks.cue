@@ -28,5 +28,29 @@ schema.#Project & {
 				args: ["Environment deactivated"]
 			}
 		}
+
+		// Pre-push hooks run before git push, filtered by changed files
+		prePush: {
+			"lint": {
+				command: "cuenv"
+				args: ["task", "lint"]
+				// Only run if source files changed
+				inputs: ["src/**/*.rs", "crates/**/*.rs"]
+			}
+			"test": {
+				command: "cuenv"
+				args: ["task", "test.unit"]
+				// Run tests if any Rust files or Cargo.toml changed
+				inputs: ["**/*.rs", "Cargo.toml", "Cargo.lock"]
+				order:  200 // Run after lint
+			}
+			"format-check": {
+				command: "cuenv"
+				args: ["task", "fmt.check"]
+				// Check formatting for any changed files
+				inputs: ["**/*.rs", "**/*.go", "**/*.cue"]
+				order:  50 // Run first
+			}
+		}
 	}
 }

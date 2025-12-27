@@ -4,6 +4,7 @@ pub mod env;
 pub mod env_file;
 pub mod exec;
 pub mod export;
+pub mod git_hooks;
 pub mod handler;
 pub mod hooks;
 pub mod info;
@@ -185,6 +186,17 @@ pub enum Command {
     SecretsSetup {
         provider: crate::cli::SecretsProvider,
         wasm_url: Option<String>,
+    },
+    GitHooksPrePush {
+        path: String,
+        package: String,
+        remote: String,
+        local_ref: Option<String>,
+        remote_ref: Option<String>,
+    },
+    GitHooksInstall {
+        path: String,
+        force: bool,
     },
 }
 
@@ -486,6 +498,27 @@ impl CommandExecutor {
             Command::ShellInit { shell } => {
                 handler::ShellInitHandler { shell }.execute_sync(self);
                 Ok(())
+            }
+
+            Command::GitHooksPrePush {
+                path,
+                package,
+                remote,
+                local_ref,
+                remote_ref,
+            } => {
+                self.run_command(handler::GitHooksPrePushHandler {
+                    path,
+                    package,
+                    remote,
+                    local_ref,
+                    remote_ref,
+                })
+                .await
+            }
+            Command::GitHooksInstall { path, force } => {
+                self.run_command(handler::GitHooksInstallHandler { path, force })
+                    .await
             }
 
             // Commands handled directly in main.rs

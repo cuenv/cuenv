@@ -677,6 +677,7 @@ mod tests {
         let hooks = Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
+            pre_push: None,
         };
 
         let mut config1 = base_project();
@@ -709,6 +710,7 @@ mod tests {
         config3.hooks = Some(Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
+            pre_push: None,
         });
 
         let hash3 = compute_approval_hash(&config3);
@@ -724,6 +726,7 @@ mod tests {
         config1.hooks = Some(Hooks {
             on_enter: Some(hooks_map.clone()),
             on_exit: None,
+            pre_push: None,
         });
         config1.tasks.insert("build".to_string(), make_task("npm"));
 
@@ -731,6 +734,7 @@ mod tests {
         config2.hooks = Some(Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
+            pre_push: None,
         });
 
         let hash1 = compute_approval_hash(&config1);
@@ -791,6 +795,7 @@ mod tests {
         config.hooks = Some(Hooks {
             on_enter: Some(on_enter),
             on_exit: Some(on_exit),
+            pre_push: None,
         });
         config.tasks.insert("build".to_string(), make_task("npm"));
         config.tasks.insert("test".to_string(), make_task("npm"));
@@ -1132,6 +1137,7 @@ mod tests {
         config.hooks = Some(Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
+            pre_push: None,
         });
 
         // In CI environment, should be auto-approved
