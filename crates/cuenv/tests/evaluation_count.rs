@@ -58,4 +58,3 @@ fn test_sync_all_evaluates_module_once() {
          This indicates a regression in module caching."
     );
 }
-

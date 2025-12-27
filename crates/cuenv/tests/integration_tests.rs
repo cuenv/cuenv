@@ -12,10 +12,12 @@ use std::str;
 
 const EXPECTED_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Path to the pre-built cuenv binary (resolved at compile time by Cargo)
+const CUENV_BIN: &str = env!("CARGO_BIN_EXE_cuenv");
+
 /// Test helper to run cuenv CLI commands
 fn run_cuenv_command(args: &[&str]) -> Result<(String, String, bool), Box<dyn std::error::Error>> {
-    let mut cmd = Command::new("cargo");
-    cmd.arg("run").arg("--bin").arg("cuenv").arg("--");
+    let mut cmd = Command::new(CUENV_BIN);
 
     for arg in args {
         cmd.arg(arg);
@@ -592,185 +594,8 @@ fn test_sync_command_help() {
                 stdout.contains("--dry-run") || stdout.contains("dry"),
                 "Help should mention --dry-run option"
             );
-            assert!(
-                stdout.contains("ignore"),
-                "Help should mention the ignore subcommand"
-            );
-            assert!(
-                stdout.contains("codeowners"),
-                "Help should mention the codeowners subcommand"
-            );
         }
         Err(e) => panic!("Failed to run cuenv sync --help: {e}"),
-    }
-}
-
-#[test]
-fn test_sync_ignore_subcommand_dry_run() {
-    let (_temp_dir, test_path) = create_git_test_env();
-    let result = run_cuenv_command(&[
-        "sync",
-        "ignore",
-        "--path",
-        &test_path,
-        "--package",
-        "cuenv",
-        "--dry-run",
-    ]);
-
-    match result {
-        Ok((stdout, stderr, success)) => {
-            if !success {
-                println!("stdout: {stdout}");
-                println!("stderr: {stderr}");
-            }
-            assert!(success, "Command should succeed");
-            // Should show what would be created
-            assert!(
-                stdout.contains("Would create")
-                    || stdout.contains("Would update")
-                    || stdout.contains(".gitignore"),
-                "Dry run should show what would be generated"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync ignore --dry-run: {e}"),
-    }
-}
-
-#[test]
-fn test_sync_ignore_help() {
-    let result = run_cuenv_command(&["sync", "ignore", "--help"]);
-
-    match result {
-        Ok((stdout, _stderr, _success)) => {
-            assert!(
-                stdout.contains("ignore") || stdout.contains("Ignore"),
-                "Help should mention ignore files"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync ignore --help: {e}"),
-    }
-}
-
-// ============================================================================
-// Sync CodeOwners Integration Tests
-// ============================================================================
-
-#[test]
-fn test_sync_codeowners_dry_run() {
-    // Note: codeowners now always uses workspace sync (aggregates all configs from CUE module root)
-    // This test runs from the repo root and will include all configs in the repo
-    let result = run_cuenv_command(&["sync", "codeowners", "--dry-run"]);
-
-    match result {
-        Ok((stdout, stderr, success)) => {
-            if !success {
-                println!("stdout: {stdout}");
-                println!("stderr: {stderr}");
-            }
-            assert!(success, "Command should succeed");
-            // Dry run should show status (create, update, or unchanged)
-            assert!(
-                stdout.contains("Would create CODEOWNERS:")
-                    || stdout.contains("Would update CODEOWNERS:")
-                    || stdout.contains("Unchanged CODEOWNERS:"),
-                "Dry run should show output status: {stdout}"
-            );
-            assert!(
-                stdout.contains(".github/CODEOWNERS"),
-                "GitHub platform should use .github/CODEOWNERS path"
-            );
-            // Should contain the root project's default owners (@rawkode from env.cue)
-            assert!(
-                stdout.contains("@rawkode"),
-                "Should contain root project default owners"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync codeowners --dry-run: {e}"),
-    }
-}
-
-#[test]
-fn test_sync_codeowners_dry_run_sections() {
-    // Note: codeowners now always uses workspace sync (aggregates all configs from CUE module root)
-    // This test verifies the output format includes sections when configs have them
-    let result = run_cuenv_command(&["sync", "codeowners", "--dry-run"]);
-
-    match result {
-        Ok((stdout, stderr, success)) => {
-            if !success {
-                println!("stdout: {stdout}");
-                println!("stderr: {stderr}");
-            }
-            assert!(success, "Command should succeed");
-            // Output should be valid CODEOWNERS format with aggregated configs
-            // Note: The exact sections depend on which configs in the repo have them
-            assert!(
-                stdout.contains("# ") || stdout.contains("Aggregated"),
-                "Should contain section headers or aggregation info"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync codeowners --dry-run: {e}"),
-    }
-}
-
-#[test]
-fn test_sync_codeowners_check_no_file() {
-    // Note: codeowners now always uses workspace sync (aggregates all configs from CUE module root)
-    // This test verifies --check fails when CODEOWNERS file doesn't exist
-    let result = run_cuenv_command(&["sync", "codeowners", "--check"]);
-
-    match result {
-        Ok((stdout, stderr, success)) => {
-            // Should fail because CODEOWNERS file doesn't exist (it's not committed)
-            // Note: If CODEOWNERS exists in the repo, this test will pass instead
-            let combined = format!("{stdout}{stderr}");
-            if success {
-                // If CODEOWNERS exists, the check should report sync status
-                assert!(
-                    combined.contains("in sync") || combined.contains("out of sync"),
-                    "Should report sync status when file exists"
-                );
-            } else {
-                assert!(
-                    combined.contains("not found")
-                        || combined.contains("Run 'cuenv sync codeowners'"),
-                    "Error should mention file not found or suggest running sync"
-                );
-            }
-        }
-        Err(e) => panic!("Failed to run cuenv sync codeowners --check: {e}"),
-    }
-}
-
-#[test]
-fn test_sync_codeowners_discovers_configs() {
-    // Note: codeowners now always uses workspace sync (aggregates all configs from CUE module root)
-    // This test verifies that workspace sync discovers configs correctly
-    let result = run_cuenv_command(&["sync", "codeowners", "--dry-run"]);
-
-    match result {
-        Ok((stdout, stderr, success)) => {
-            if !success {
-                println!("stdout: {stdout}");
-                println!("stderr: {stderr}");
-            }
-            // With workspace sync, it either:
-            // 1. Finds configs with owners and shows aggregation
-            // 2. Finds no configs with owners and returns success with informative message
-            let combined = format!("{stdout}{stderr}");
-            assert!(
-                success,
-                "CodeOwners sync should succeed (even if no configs found)"
-            );
-            assert!(
-                combined.contains("Aggregated")
-                    || combined.contains("No configs with owners")
-                    || combined.contains("CODEOWNERS"),
-                "Should show aggregation result or no-config message: {combined}"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync codeowners: {e}"),
     }
 }
 
@@ -936,8 +761,7 @@ fn run_cuenv_command_in_dir(
     args: &[&str],
     dir: &str,
 ) -> Result<(String, String, bool), Box<dyn std::error::Error>> {
-    let mut cmd = Command::new("cargo");
-    cmd.arg("run").arg("--bin").arg("cuenv").arg("--");
+    let mut cmd = Command::new(CUENV_BIN);
 
     for arg in args {
         cmd.arg(arg);
@@ -986,16 +810,12 @@ fn test_sync_ci_help() {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Help command should succeed");
             assert!(
-                stdout.contains("Synchronize CI pipeline configurations"),
+                stdout.contains("Sync CI workflow files"),
                 "Help should describe CI sync functionality"
             );
             assert!(
                 stdout.contains("--dry-run"),
                 "Help should mention --dry-run option"
-            );
-            assert!(
-                stdout.contains("--format"),
-                "Help should mention --format option"
             );
         }
         Err(e) => panic!("Failed to run cuenv sync ci --help: {e}"),

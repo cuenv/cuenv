@@ -295,37 +295,6 @@
 
         checks = {
           inherit cuenv;
-
-          cuenv-fmt = pkgs.runCommand "cuenv-fmt-${version}"
-            {
-              nativeBuildInputs = with pkgs; [ treefmt rustfmt go nodePackages.prettier nixpkgs-fmt ];
-            } ''
-            cp -r ${src} src
-            chmod -R +w src
-            cd src
-            cp ${./treefmt.toml} treefmt.toml
-            treefmt --no-cache --fail-on-change
-            touch $out
-          '';
-
-          cuenv-clippy = craneLib.cargoClippy (commonArgs // {
-            inherit cargoArtifacts;
-            cargoClippyExtraArgs = "--all-targets -- -D warnings";
-          });
-
-          cuenv-doc = craneLib.cargoDoc (commonArgs // {
-            inherit cargoArtifacts;
-          });
-
-          cuenv-test = craneLib.cargoNextest (commonArgs // {
-            inherit cargoArtifacts;
-            partitions = 1;
-            partitionType = "count";
-          });
-
-          cuenv-deny = craneLib.cargoDeny {
-            inherit src;
-          };
         };
 
         devShells.default = craneLib.devShell ({

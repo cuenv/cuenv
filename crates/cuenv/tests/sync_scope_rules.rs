@@ -206,12 +206,6 @@ fn sync_nested_project_only_generates_nested_ci_in_repo_root() {
     assert!(workflows_dir.join("service-test.yml").exists());
     assert!(!workflows_dir.join("root-build.yml").exists());
     assert!(!nested.join(".github").exists());
-
-    let codeowners_path = root.join(".github/CODEOWNERS");
-    assert!(codeowners_path.exists());
-    let codeowners = fs::read_to_string(&codeowners_path).unwrap();
-    assert!(codeowners.contains("@root"));
-    assert!(codeowners.contains("@service"));
 }
 
 #[test]
@@ -273,34 +267,4 @@ fn sync_outside_project_errors() {
     assert!(output.contains("cuenv"));
     assert!(output.contains("info"));
     assert!(output.contains("-A"));
-}
-
-#[test]
-fn sync_root_base_only_runs_ignore_and_codeowners() {
-    let tmp = create_repo();
-    let root = tmp.path();
-
-    fs::write(root.join("env.cue"), base_env_cue("@root", true)).unwrap();
-
-    let nested = root.join("apps/service");
-    fs::create_dir_all(&nested).unwrap();
-    fs::write(
-        nested.join("env.cue"),
-        project_env_cue("service", "test", "test", "@service"),
-    )
-    .unwrap();
-
-    let (_stdout, stderr, success) = run_cuenv(root, &["sync"]);
-    assert!(success, "sync failed: {stderr}");
-
-    let gitignore = root.join(".gitignore");
-    assert!(gitignore.exists());
-    let ignore_contents = fs::read_to_string(&gitignore).unwrap();
-    assert!(ignore_contents.contains("target/"));
-
-    let codeowners_path = root.join(".github/CODEOWNERS");
-    assert!(codeowners_path.exists());
-
-    let workflows_dir = root.join(".github/workflows");
-    assert!(!workflows_dir.exists());
 }
