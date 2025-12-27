@@ -99,8 +99,15 @@ impl SyncCapability for CiProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
+        let path_str = path.to_str().ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "Path contains invalid UTF-8: {}",
+                path.display()
+            ))
+        })?;
+
         let output = functions::execute_sync_ci(
-            path.to_str().unwrap_or("."),
+            path_str,
             package,
             dry_run,
             check,

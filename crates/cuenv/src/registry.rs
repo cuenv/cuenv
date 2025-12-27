@@ -3,18 +3,10 @@
 //! The [`ProviderRegistry`] stores all registered providers and provides methods
 //! to query providers by their capabilities.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::provider::{Provider, RuntimeCapability, SecretCapability, SyncCapability};
-
-/// Storage wrapper for generic providers (base Provider trait only).
-///
-/// For capability-specific storage, use the typed vectors in ProviderRegistry.
-struct ProviderEntry {
-    /// The provider instance.
-    #[allow(dead_code)] // Reserved for future use with dynamic capability detection
-    provider: Box<dyn Provider>,
-}
+use crate::provider::{RuntimeCapability, SecretCapability, SyncCapability};
 
 /// Registry for managing providers.
 ///
@@ -32,14 +24,15 @@ struct ProviderEntry {
 /// }
 /// ```
 pub struct ProviderRegistry {
-    /// All registered providers with their capabilities.
-    entries: Vec<ProviderEntry>,
-    /// Sync providers (indexed separately for efficient access).
+    /// Sync providers with O(1) name lookup.
     sync_providers: Vec<Arc<dyn SyncCapability>>,
-    /// Runtime providers (indexed separately for efficient access).
+    sync_by_name: HashMap<&'static str, usize>,
+    /// Runtime providers with O(1) name lookup.
     runtime_providers: Vec<Arc<dyn RuntimeCapability>>,
-    /// Secret providers (indexed separately for efficient access).
+    runtime_by_name: HashMap<&'static str, usize>,
+    /// Secret providers with O(1) name lookup.
     secret_providers: Vec<Arc<dyn SecretCapability>>,
+    secret_by_name: HashMap<&'static str, usize>,
 }
 
 impl ProviderRegistry {
@@ -47,20 +40,13 @@ impl ProviderRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            entries: Vec::new(),
             sync_providers: Vec::new(),
+            sync_by_name: HashMap::new(),
             runtime_providers: Vec::new(),
+            runtime_by_name: HashMap::new(),
             secret_providers: Vec::new(),
+            secret_by_name: HashMap::new(),
         }
-    }
-
-    /// Register a generic provider (base trait only).
-    ///
-    /// For capability-specific registration, use `register_sync`, `register_runtime`, or `register_secret`.
-    pub fn register<P: Provider>(&mut self, provider: P) {
-        self.entries.push(ProviderEntry {
-            provider: Box::new(provider),
-        });
     }
 
     /// Register a provider that implements SyncCapability.
@@ -70,7 +56,10 @@ impl ProviderRegistry {
     where
         P: SyncCapability + 'static,
     {
+        let name = provider.name();
+        let index = self.sync_providers.len();
         self.sync_providers.push(Arc::new(provider));
+        self.sync_by_name.insert(name, index);
     }
 
     /// Register a provider that implements RuntimeCapability.
@@ -80,7 +69,10 @@ impl ProviderRegistry {
     where
         P: RuntimeCapability + 'static,
     {
+        let name = provider.name();
+        let index = self.runtime_providers.len();
         self.runtime_providers.push(Arc::new(provider));
+        self.runtime_by_name.insert(name, index);
     }
 
     /// Register a provider that implements SecretCapability.
@@ -90,12 +82,10 @@ impl ProviderRegistry {
     where
         P: SecretCapability + 'static,
     {
+        let name = provider.name();
+        let index = self.secret_providers.len();
         self.secret_providers.push(Arc::new(provider));
-    }
-
-    /// Get all registered providers.
-    pub fn all(&self) -> impl Iterator<Item = &dyn Provider> {
-        self.entries.iter().map(|e| e.provider.as_ref())
+        self.secret_by_name.insert(name, index);
     }
 
     /// Get all providers that implement SyncCapability.
@@ -113,47 +103,52 @@ impl ProviderRegistry {
         self.secret_providers.iter()
     }
 
-    /// Get a sync provider by name.
+    /// Get a sync provider by name (O(1) lookup).
     #[must_use]
     pub fn get_sync_provider(&self, name: &str) -> Option<&Arc<dyn SyncCapability>> {
-        self.sync_providers.iter().find(|p| p.name() == name)
+        self.sync_by_name
+            .get(name)
+            .map(|&idx| &self.sync_providers[idx])
     }
 
-    /// Get a runtime provider by name.
+    /// Get a runtime provider by name (O(1) lookup).
     #[must_use]
     pub fn get_runtime_provider(&self, name: &str) -> Option<&Arc<dyn RuntimeCapability>> {
-        self.runtime_providers.iter().find(|p| p.name() == name)
+        self.runtime_by_name
+            .get(name)
+            .map(|&idx| &self.runtime_providers[idx])
     }
 
-    /// Get a secret provider by name.
+    /// Get a secret provider by name (O(1) lookup).
     #[must_use]
     pub fn get_secret_provider(&self, name: &str) -> Option<&Arc<dyn SecretCapability>> {
-        self.secret_providers.iter().find(|p| p.name() == name)
+        self.secret_by_name
+            .get(name)
+            .map(|&idx| &self.secret_providers[idx])
     }
 
     /// Get all sync provider names.
     #[must_use]
     pub fn sync_provider_names(&self) -> Vec<&'static str> {
-        self.sync_providers.iter().map(|p| p.name()).collect()
+        self.sync_by_name.keys().copied().collect()
     }
 
     /// Get all runtime provider names.
     #[must_use]
     pub fn runtime_provider_names(&self) -> Vec<&'static str> {
-        self.runtime_providers.iter().map(|p| p.name()).collect()
+        self.runtime_by_name.keys().copied().collect()
     }
 
     /// Get all secret provider names.
     #[must_use]
     pub fn secret_provider_names(&self) -> Vec<&'static str> {
-        self.secret_providers.iter().map(|p| p.name()).collect()
+        self.secret_by_name.keys().copied().collect()
     }
 
     /// Check if the registry is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-            && self.sync_providers.is_empty()
+        self.sync_providers.is_empty()
             && self.runtime_providers.is_empty()
             && self.secret_providers.is_empty()
     }
@@ -161,10 +156,7 @@ impl ProviderRegistry {
     /// Get the total number of registered providers.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.len()
-            + self.sync_providers.len()
-            + self.runtime_providers.len()
-            + self.secret_providers.len()
+        self.sync_providers.len() + self.runtime_providers.len() + self.secret_providers.len()
     }
 
     /// Get the number of sync providers.

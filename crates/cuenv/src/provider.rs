@@ -126,7 +126,8 @@ pub trait SyncCapability: Provider {
 
     /// Parse provider-specific args from CLI matches.
     ///
-    /// Override to handle custom arguments.
+    /// The default implementation handles common flags (`--dry-run`, `--check`).
+    /// Override to handle provider-specific arguments like `--diff` or `--provider`.
     fn parse_sync_args(&self, matches: &clap::ArgMatches) -> SyncOptions {
         let mode = if matches.get_flag("dry-run") {
             SyncMode::DryRun
@@ -138,8 +139,18 @@ pub trait SyncCapability: Provider {
 
         SyncOptions {
             mode,
-            show_diff: matches.get_flag("diff"),
-            ci_provider: matches.get_one::<String>("provider").cloned(),
+            // Provider-specific flags - only set if present
+            show_diff: matches
+                .try_get_one::<bool>("diff")
+                .ok()
+                .flatten()
+                .copied()
+                .unwrap_or(false),
+            ci_provider: matches
+                .try_get_one::<String>("provider")
+                .ok()
+                .flatten()
+                .cloned(),
         }
     }
 }
@@ -155,11 +166,7 @@ pub trait SyncCapability: Provider {
 #[async_trait]
 pub trait RuntimeCapability: Provider {
     /// Execute a task and return the output.
-    async fn execute_task(
-        &self,
-        task_name: &str,
-        executor: &CommandExecutor,
-    ) -> Result<String>;
+    async fn execute_task(&self, task_name: &str, executor: &CommandExecutor) -> Result<String>;
 
     /// Check if this runtime can handle the given task.
     fn can_handle(&self, task_name: &str) -> bool;
@@ -183,40 +190,6 @@ pub trait SecretCapability: Provider {
 
     /// Check if this provider can handle the given reference.
     fn can_resolve(&self, reference: &str) -> bool;
-}
-
-/// Macro to implement `as_any` methods for a provider.
-///
-/// This is a convenience macro to avoid boilerplate in provider implementations.
-///
-/// # Example
-///
-/// ```ignore
-/// use cuenv::impl_provider_any;
-///
-/// pub struct MyProvider;
-///
-/// impl_provider_any!(MyProvider);
-///
-/// impl Provider for MyProvider {
-///     fn name(&self) -> &'static str { "my-provider" }
-///     fn description(&self) -> &'static str { "My custom provider" }
-///     // as_any and as_any_mut are implemented by the macro
-/// }
-/// ```
-#[macro_export]
-macro_rules! impl_provider_any {
-    ($t:ty) => {
-        impl $t {
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-
-            fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-                self
-            }
-        }
-    };
 }
 
 #[cfg(test)]

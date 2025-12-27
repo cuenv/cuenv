@@ -11,16 +11,16 @@
 //! fn main() -> cuenv::Result<()> {
 //!     Cuenv::builder()
 //!         .with_defaults()
-//!         // .with_provider(my_provider::CustomProvider)
+//!         // .with_sync_provider(my_provider::CustomProvider::new())
 //!         .build()
 //!         .run()
 //! }
 //! ```
 
-use crate::provider::{Provider, RuntimeCapability, SecretCapability, SyncCapability};
+use crate::Cuenv;
+use crate::provider::{RuntimeCapability, SecretCapability, SyncCapability};
 use crate::providers::{CiProvider, CubesProvider, RulesProvider};
 use crate::registry::ProviderRegistry;
-use crate::Cuenv;
 
 /// Builder for configuring and creating a [`Cuenv`] instance.
 ///
@@ -36,19 +36,6 @@ impl CuenvBuilder {
         Self {
             registry: ProviderRegistry::new(),
         }
-    }
-
-    /// Register a provider that implements [`Provider`].
-    ///
-    /// This is the base registration method. For providers that implement
-    /// specific capabilities, use the type-safe registration methods:
-    /// - [`with_sync_provider()`](Self::with_sync_provider)
-    /// - [`with_runtime_provider()`](Self::with_runtime_provider)
-    /// - [`with_secret_provider()`](Self::with_secret_provider)
-    #[must_use]
-    pub fn with_provider<P: Provider>(mut self, provider: P) -> Self {
-        self.registry.register(provider);
-        self
     }
 
     /// Register a provider that implements [`SyncCapability`].

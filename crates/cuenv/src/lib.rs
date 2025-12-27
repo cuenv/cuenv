@@ -153,17 +153,21 @@ impl Cuenv {
         sync_cmd
     }
 
-    /// Run the cuenv CLI.
+    /// Run the cuenv CLI (placeholder).
     ///
-    /// This parses command-line arguments, initializes tracing, and executes
-    /// the requested command.
+    /// **Note**: This method is a placeholder for future library-driven CLI execution.
+    /// Currently, the full CLI logic remains in the binary (`main.rs`).
+    ///
+    /// For now, use the `cuenv` binary directly or the individual provider APIs
+    /// like [`build_sync_command()`](Self::build_sync_command).
     ///
     /// # Errors
     ///
     /// Returns an error if command execution fails.
+    #[doc(hidden)]
     pub fn run(self) -> Result<()> {
-        // For now, delegate to the main binary logic
-        // TODO: In the future, this will use the registry to build CLI dynamically
+        // Placeholder: In the future, this will parse args using build_sync_command()
+        // and dispatch to providers. For now, return success as the binary handles CLI.
         let exit_code = run_cli_with_registry(self);
         if exit_code == EXIT_OK {
             Ok(())

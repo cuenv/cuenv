@@ -93,8 +93,15 @@ impl SyncCapability for CubesProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
+        let path_str = path.to_str().ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "Path contains invalid UTF-8: {}",
+                path.display()
+            ))
+        })?;
+
         let output = functions::execute_sync_cubes(
-            path.to_str().unwrap_or("."),
+            path_str,
             package,
             dry_run,
             check,
@@ -140,8 +147,20 @@ impl SyncCapability for CubesProvider {
         let mut had_error = false;
 
         for (full_path, display_path) in project_paths {
+            let path_str = match full_path.to_str() {
+                Some(s) => s,
+                None => {
+                    outputs.push(format!(
+                        "{}: Error: Path contains invalid UTF-8",
+                        full_path.display()
+                    ));
+                    had_error = true;
+                    continue;
+                }
+            };
+
             let result = functions::execute_sync_cubes(
-                full_path.to_str().unwrap_or("."),
+                path_str,
                 package,
                 dry_run,
                 check,
