@@ -15,12 +15,12 @@ pub mod digest;
 
 use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
 use crate::ir::{
-    ArtifactDownload, CachePolicy, IntermediateRepresentation, IrValidator, ManualTriggerConfig,
-    OutputDeclaration, OutputType, PurityMode, Runtime, SecretConfig, Task as IrTask,
-    TriggerCondition, WorkflowDispatchInputDef,
+    ArtifactDownload, BuildStage, CachePolicy, IntermediateRepresentation, IrValidator,
+    ManualTriggerConfig, OutputDeclaration, OutputType, PurityMode, Runtime, SecretConfig,
+    StageTask, Task as IrTask, TriggerCondition, WorkflowDispatchInputDef,
 };
 use crate::stages;
-use cuenv_core::ci::{CI, ManualTrigger, Pipeline, PipelineTask};
+use cuenv_core::ci::{CI, Contributor, ManualTrigger, Pipeline, PipelineTask, SetupStep};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
 use digest::DigestBuilder;
@@ -334,6 +334,11 @@ impl Compiler {
         // Compile tasks
         self.compile_tasks(&self.project.tasks, &mut ir)?;
 
+        // Fix artifact download paths to use actual upstream task outputs
+        // (artifact_downloads are initially created with paths derived from task names,
+        // but should use the actual output paths from the upstream tasks)
+        Self::fix_artifact_download_paths(&mut ir);
+
         // Apply stage contributors with fixed-point iteration
         // Contributors self-detect their requirements and report modifications.
         // Loop continues until no contributor reports changes (stable state).
@@ -357,6 +362,9 @@ impl Compiler {
                 break;
             }
         }
+
+        // Apply CUE-defined setup steps and contributors
+        self.apply_cue_setup_steps(&mut ir);
 
         // Validate the IR
         let validator = IrValidator::new(&ir);
@@ -689,6 +697,180 @@ impl Compiler {
             params: HashMap::new(),
         })
     }
+
+    /// Fix artifact download paths to use actual upstream task output paths.
+    ///
+    /// During initial compilation, artifact_downloads are created with paths derived
+    /// from task names (e.g., "docs.build" → "docs/build"). This post-processing step
+    /// updates those paths to use the actual output paths from the upstream tasks
+    /// (e.g., "docs/dist" if that's what docs.build outputs).
+    fn fix_artifact_download_paths(ir: &mut IntermediateRepresentation) {
+        // Build a lookup map: task_id → first output path
+        // We use the first output path as the download destination
+        let task_outputs: HashMap<String, String> = ir
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                task.outputs
+                    .first()
+                    .map(|output| (task.id.clone(), output.path.clone()))
+            })
+            .collect();
+
+        // Update artifact downloads to use actual upstream output paths
+        for task in &mut ir.tasks {
+            for download in &mut task.artifact_downloads {
+                // Extract task ID from artifact name (e.g., "docs-build-artifacts" → "docs.build")
+                let upstream_task_id = download
+                    .name
+                    .strip_suffix("-artifacts")
+                    .map(|s| s.replace('-', "."))
+                    .unwrap_or_default();
+
+                // If we have the upstream task's output path, use it
+                if let Some(output_path) = task_outputs.get(&upstream_task_id) {
+                    download.path.clone_from(output_path);
+                }
+            }
+        }
+    }
+
+    /// Apply CUE-defined setup steps and contributors to the IR
+    ///
+    /// This processes:
+    /// 1. Inline setup steps defined on the pipeline
+    /// 2. CUE contributors whose `when` condition matches pipeline tasks
+    fn apply_cue_setup_steps(&self, ir: &mut IntermediateRepresentation) {
+        // 1. Add pipeline-level setup steps
+        if let Some(ref pipeline) = self.options.pipeline {
+            for step in &pipeline.setup {
+                let stage_task = Self::setup_step_to_stage_task(step, "pipeline");
+                ir.stages.add(BuildStage::Setup, stage_task);
+            }
+        }
+
+        // 2. Apply CUE contributors
+        if let Some(ref ci_config) = self.project.ci {
+            for (name, contributor) in &ci_config.contributors {
+                if self.contributor_matches(contributor) {
+                    for step in &contributor.setup {
+                        let stage_task = Self::setup_step_to_stage_task(step, name);
+                        ir.stages.add(BuildStage::Setup, stage_task);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Convert a CUE SetupStep to an IR StageTask
+    fn setup_step_to_stage_task(step: &SetupStep, provider: &str) -> StageTask {
+        // Build command array from command+args or script
+        let (command, shell) = if let Some(ref cmd) = step.command {
+            let mut cmd_vec = vec![cmd.clone()];
+            cmd_vec.extend(step.args.clone());
+            (cmd_vec, false)
+        } else if let Some(ref script) = step.script {
+            (
+                vec!["/bin/sh".to_string(), "-c".to_string(), script.clone()],
+                true,
+            )
+        } else {
+            // Empty command - shouldn't happen with valid CUE
+            (vec![], false)
+        };
+
+        // Convert env values (filter to strings only)
+        let env: HashMap<String, String> = step
+            .env
+            .iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect();
+
+        StageTask {
+            id: format!("cue-setup-{}", step.name.to_lowercase().replace(' ', "-")),
+            provider: format!("cue:{provider}"),
+            label: Some(step.name.clone()),
+            command,
+            shell,
+            env,
+            secrets: HashMap::new(),
+            depends_on: vec![],
+            priority: 50, // CUE setup steps run after Rust contributors (which use 10-30)
+            provider_hints: None,
+        }
+    }
+
+    /// Check if a CUE contributor's `when` condition matches any pipeline task
+    fn contributor_matches(&self, contributor: &Contributor) -> bool {
+        let Some(ref when) = contributor.when else {
+            // No `when` condition = always active
+            return true;
+        };
+
+        // Get the pipeline tasks we're checking against
+        let Some(ref pipeline) = self.options.pipeline else {
+            return false;
+        };
+
+        // Check if any pipeline task matches the contributor's conditions
+        for pipeline_task in &pipeline.tasks {
+            let task_name = pipeline_task.task_name();
+            if let Some(task) = self.find_task(task_name)
+                && Self::task_matches_condition(task, when)
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if a task matches a TaskMatcher condition
+    fn task_matches_condition(task: &Task, condition: &cuenv_core::manifest::TaskMatcher) -> bool {
+        // Check labels (all must match)
+        if let Some(ref required_labels) = condition.labels {
+            let has_all_labels = required_labels
+                .iter()
+                .all(|label| task.labels.contains(label));
+            if !has_all_labels {
+                return false;
+            }
+        }
+
+        // Check command
+        if let Some(ref required_cmd) = condition.command
+            && &task.command != required_cmd
+        {
+            return false;
+        }
+
+        // Check args patterns
+        if let Some(ref arg_matchers) = condition.args {
+            for arg_cond in arg_matchers {
+                let is_match = if let Some(ref contains) = arg_cond.contains {
+                    task.args.iter().any(|arg| arg.contains(contains))
+                } else if let Some(ref pattern) = arg_cond.matches {
+                    // Regex pattern matching
+                    if let Ok(re) = regex::Regex::new(pattern) {
+                        task.args.iter().any(|arg| re.is_match(arg))
+                    } else {
+                        false
+                    }
+                } else {
+                    true // No conditions = matches
+                };
+
+                if !is_match {
+                    return false;
+                }
+            }
+        }
+
+        // Note: workspaces matching would require additional context
+        // For now, we only match on labels, command, and args
+
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1017,6 +1199,7 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
+            setup: vec![],
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1090,6 +1273,7 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
+            setup: vec![],
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1148,6 +1332,7 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
+            setup: vec![],
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1203,6 +1388,7 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
+            setup: vec![],
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
