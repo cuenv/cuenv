@@ -187,17 +187,6 @@ pub enum Command {
         provider: crate::cli::SecretsProvider,
         wasm_url: Option<String>,
     },
-    GitHooksPrePush {
-        path: String,
-        package: String,
-        remote: String,
-        local_ref: Option<String>,
-        remote_ref: Option<String>,
-    },
-    GitHooksInstall {
-        path: String,
-        force: bool,
-    },
 }
 
 /// Executes CLI commands with centralized module evaluation and event handling.
@@ -498,27 +487,6 @@ impl CommandExecutor {
             Command::ShellInit { shell } => {
                 handler::ShellInitHandler { shell }.execute_sync(self);
                 Ok(())
-            }
-
-            Command::GitHooksPrePush {
-                path,
-                package,
-                remote,
-                local_ref,
-                remote_ref,
-            } => {
-                self.run_command(handler::GitHooksPrePushHandler {
-                    path,
-                    package,
-                    remote,
-                    local_ref,
-                    remote_ref,
-                })
-                .await
-            }
-            Command::GitHooksInstall { path, force } => {
-                self.run_command(handler::GitHooksInstallHandler { path, force })
-                    .await
             }
 
             // Commands handled directly in main.rs

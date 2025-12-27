@@ -560,11 +560,6 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: SecretsCommands,
     },
-    #[command(about = "Git hook operations (pre-push, pre-commit)")]
-    GitHooks {
-        #[command(subcommand)]
-        subcommand: GitHooksCommands,
-    },
 }
 
 /// Sync subcommands for generating different types of files
@@ -652,45 +647,6 @@ pub enum SecretsCommands {
 pub enum SecretsProvider {
     /// 1Password (downloads WASM SDK for HTTP mode)
     Onepassword,
-}
-
-/// Git hook subcommands
-#[derive(Subcommand, Debug, Clone)]
-pub enum GitHooksCommands {
-    #[command(about = "Run pre-push hooks with files changed between local and remote")]
-    PrePush {
-        #[arg(
-            long,
-            short = 'p',
-            help = "Path to directory containing CUE files",
-            default_value = "."
-        )]
-        path: String,
-        #[arg(
-            long,
-            help = "Name of the CUE package to evaluate",
-            default_value = "cuenv"
-        )]
-        package: String,
-        #[arg(long, help = "Remote name to compare against", default_value = "origin")]
-        remote: String,
-        #[arg(long, help = "Local ref (defaults to HEAD)")]
-        local_ref: Option<String>,
-        #[arg(long, help = "Remote ref to compare against")]
-        remote_ref: Option<String>,
-    },
-    #[command(about = "Install git hooks into .git/hooks directory")]
-    Install {
-        #[arg(
-            long,
-            short = 'p',
-            help = "Path to directory containing CUE files",
-            default_value = "."
-        )]
-        path: String,
-        #[arg(long, help = "Overwrite existing hooks")]
-        force: bool,
-    },
 }
 
 /// Output format for status command
@@ -990,12 +946,6 @@ impl Commands {
                 | EnvCommands::Inspect { package, .. }
                 | EnvCommands::Check { package, .. }
                 | EnvCommands::List { package, .. } => package,
-            },
-
-            // Nested git-hooks subcommands with --package
-            Self::GitHooks { subcommand } => match subcommand {
-                GitHooksCommands::PrePush { package, .. } => package,
-                GitHooksCommands::Install { .. } => "cuenv",
             },
 
             // Commands that don't use CUE evaluation or have no package param
@@ -1315,24 +1265,6 @@ impl Commands {
             Self::Secrets { subcommand } => match subcommand {
                 SecretsCommands::Setup { provider, wasm_url } => {
                     Command::SecretsSetup { provider, wasm_url }
-                }
-            },
-            Self::GitHooks { subcommand } => match subcommand {
-                GitHooksCommands::PrePush {
-                    path,
-                    package,
-                    remote,
-                    local_ref,
-                    remote_ref,
-                } => Command::GitHooksPrePush {
-                    path,
-                    package,
-                    remote,
-                    local_ref,
-                    remote_ref,
-                },
-                GitHooksCommands::Install { path, force } => {
-                    Command::GitHooksInstall { path, force }
                 }
             },
         }
