@@ -32,6 +32,7 @@ mod events;
 mod performance;
 #[allow(dead_code)] // Shared with library; not all items used in binary
 mod provider;
+#[allow(dead_code)] // Shared with library; not all items used in binary
 mod providers;
 #[allow(dead_code)] // Shared with library; not all items used in binary
 mod registry;

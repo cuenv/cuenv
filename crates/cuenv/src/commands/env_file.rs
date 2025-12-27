@@ -96,6 +96,7 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Walk up from `start` collecting directories containing env.cue files.
+///
 /// Stops at the CUE module root (directory containing `cue.mod/`) or filesystem root.
 /// Returns directories in order from root to leaf (ancestor first).
 pub fn find_ancestor_env_files(start: &Path, expected_package: &str) -> Result<Vec<PathBuf>> {

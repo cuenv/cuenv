@@ -1516,7 +1516,7 @@ version.workspace = true
     /// Helper function to initialize and configure a git repository for testing
     fn init_git_repo(path: &str) {
         let out = Command::new("git")
-            .args(["init", "--ref-format=files"])
+            .args(["init"])
             .current_dir(path)
             .output()
             .unwrap();
