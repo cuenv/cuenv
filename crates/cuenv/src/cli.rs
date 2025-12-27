@@ -565,63 +565,6 @@ pub enum Commands {
 /// Sync subcommands for generating different types of files
 #[derive(Subcommand, Debug, Clone)]
 pub enum SyncCommands {
-    #[command(about = "Generate ignore files (.gitignore, .dockerignore, etc.)")]
-    Ignore {
-        #[arg(
-            long,
-            short = 'p',
-            help = "Path to directory containing CUE files",
-            default_value = "."
-        )]
-        path: String,
-        #[arg(
-            long,
-            help = "Name of the CUE package to evaluate",
-            default_value = "cuenv"
-        )]
-        package: String,
-        #[arg(long, help = "Show what would be generated without writing files")]
-        dry_run: bool,
-        #[arg(long, help = "Check if files are in sync without making changes")]
-        check: bool,
-        #[arg(
-            long = "all",
-            short = 'A',
-            help = "Sync ignore files for all projects in the workspace"
-        )]
-        all: bool,
-    },
-    #[command(
-        name = "codeowners",
-        about = "Sync CODEOWNERS file from CUE configuration (always aggregates all configs)"
-    )]
-    CodeOwners {
-        #[arg(
-            long,
-            short = 'p',
-            help = "Ignored - codeowners always scans from CUE module root",
-            default_value = ".",
-            hide = true
-        )]
-        path: String,
-        #[arg(
-            long,
-            help = "Name of the CUE package to evaluate",
-            default_value = "cuenv"
-        )]
-        package: String,
-        #[arg(long, help = "Show what would be generated without writing files")]
-        dry_run: bool,
-        #[arg(long, help = "Check if CODEOWNERS is in sync without making changes")]
-        check: bool,
-        #[arg(
-            long = "all",
-            short = 'A',
-            help = "Deprecated: codeowners always aggregates all configs",
-            hide = true
-        )]
-        all: bool,
-    },
     #[command(about = "Sync files from CUE cube configurations in projects")]
     Cubes {
         #[arg(
@@ -1267,36 +1210,6 @@ impl Commands {
                     show_diff,
                     ci_provider,
                 ) = match subcommand {
-                    Some(SyncCommands::Ignore {
-                        path: sub_path,
-                        package: sub_package,
-                        dry_run: sub_dry_run,
-                        check: sub_check,
-                        all: sub_all,
-                    }) => (
-                        Some("ignore".to_string()),
-                        sub_path,
-                        sub_package,
-                        to_mode(sub_dry_run, sub_check),
-                        to_scope(sub_all || all),
-                        false,
-                        None,
-                    ),
-                    Some(SyncCommands::CodeOwners {
-                        path: sub_path,
-                        package: sub_package,
-                        dry_run: sub_dry_run,
-                        check: sub_check,
-                        all: sub_all,
-                    }) => (
-                        Some("codeowners".to_string()),
-                        sub_path,
-                        sub_package,
-                        to_mode(sub_dry_run, sub_check),
-                        to_scope(sub_all || all),
-                        false,
-                        None,
-                    ),
                     Some(SyncCommands::Cubes {
                         path: sub_path,
                         package: sub_package,

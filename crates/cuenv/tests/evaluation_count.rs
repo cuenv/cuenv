@@ -59,24 +59,3 @@ fn test_sync_all_evaluates_module_once() {
     );
 }
 
-/// Test that `sync codeowners` evaluates the CUE module exactly once.
-#[test]
-fn test_sync_codeowners_evaluates_module_once() {
-    let eval_count = count_evaluate_module_calls_in_repo(&["sync", "codeowners"]);
-
-    assert_eq!(
-        eval_count, 1,
-        "sync codeowners should evaluate the CUE module exactly once, but it was evaluated {eval_count} times."
-    );
-}
-
-/// Test that `sync ignore` evaluates the CUE module exactly once.
-#[test]
-fn test_sync_ignore_evaluates_module_once() {
-    let eval_count = count_evaluate_module_calls_in_repo(&["sync", "ignore"]);
-
-    assert_eq!(
-        eval_count, 1,
-        "sync ignore should evaluate the CUE module exactly once, but it was evaluated {eval_count} times."
-    );
-}
