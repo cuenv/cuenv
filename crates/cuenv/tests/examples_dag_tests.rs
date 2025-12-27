@@ -1,6 +1,6 @@
 //! Integration tests for DAG building from example environments
 //!
-//! This module tests that all examples in the `examples/` directory can be
+//! This module tests that all examples in the `_examples/` directory can be
 //! loaded and produce valid task DAGs.
 
 // Integration tests can use unwrap/expect for cleaner assertions
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Expected properties for each example directory
 struct ExampleExpectations {
-    /// Directory name under examples/
+    /// Directory name under _examples/
     name: &'static str,
     /// Minimum number of top-level tasks expected
     min_task_count: usize,
@@ -34,7 +34,7 @@ fn get_examples_dir() -> PathBuf {
         .parent() // crates
         .and_then(|p| p.parent()) // project root
         .expect("Failed to find project root")
-        .join("examples")
+        .join("_examples")
 }
 
 /// Load a Project manifest from an example directory.

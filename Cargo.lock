@@ -1714,6 +1714,7 @@ dependencies = [
  "sha2",
  "sysinfo",
  "tar",
+ "temp-env",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
