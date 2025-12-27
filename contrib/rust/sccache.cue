@@ -25,6 +25,6 @@ import "github.com/cuenv/cuenv/schema"
 			"""
 		env: RUSTC_WRAPPER: "sccache"
 		// GitHub-specific: use action instead of shell for better caching
-		provider: github: uses: "Mozilla-Actions/sccache-action@v0.2"
+		provider: github: uses: "mozilla-actions/sccache-action@v0.0.9"
 	}]
 }
