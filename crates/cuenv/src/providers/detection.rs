@@ -1,4 +1,4 @@
-//! Provider detection and registration.
+//! Provider detection functions.
 //!
 //! This module provides functions to detect and instantiate the appropriate
 //! providers based on the repository structure and CI environment.

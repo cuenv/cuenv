@@ -1,9 +1,24 @@
 //! cuenv CLI Application
-
-//! cuenv CLI Application - Production-grade CUE environment toolchain
 //!
-//! This binary provides command-line interface for CUE package evaluation,
-//! environment variable management, and task orchestration.
+//! Production-grade CUE environment toolchain providing command-line interface
+//! for CUE package evaluation, environment variable management, and task orchestration.
+//!
+//! ## Future Direction
+//!
+//! This binary is transitioning to a library-first architecture (ADR-0006).
+//! The eventual goal is:
+//!
+//! ```ignore
+//! fn main() -> cuenv::Result<()> {
+//!     cuenv::Cuenv::builder()
+//!         .with_defaults()
+//!         .build()
+//!         .run()
+//! }
+//! ```
+//!
+//! Currently, the CLI logic remains here while the library infrastructure
+//! is being developed. See `cuenv::Cuenv` for the library API.
 
 // CLI binary needs to output to stdout/stderr - this is intentional
 // expect_used is allowed for infallible operations like writing to strings
@@ -15,7 +30,11 @@ mod completions;
 mod coordinator;
 mod events;
 mod performance;
+#[allow(dead_code)] // Shared with library; not all items used in binary
+mod provider;
 mod providers;
+#[allow(dead_code)] // Shared with library; not all items used in binary
+mod registry;
 mod tracing;
 mod tui;
 

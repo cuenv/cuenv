@@ -12,6 +12,10 @@ categories = ["command-line-utilities", "config", "development-tools"]
 readme = "../../readme.md"
 description = "Event-driven CLI with inline TUI for cuenv"
 
+[lib]
+name = "cuenv"
+path = "src/lib.rs"
+
 [[bin]]
 name = "cuenv"
 path = "src/main.rs"
