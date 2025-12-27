@@ -7,6 +7,7 @@ on:
     branches:
     - main
     paths:
+    - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.toml
     - _examples
@@ -24,6 +25,7 @@ on:
     branches:
     - main
     paths:
+    - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.toml
     - _examples
@@ -44,6 +46,7 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
+  id-token: write
 jobs:
   check:
     name: check
@@ -57,16 +60,21 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Build cuenv
-      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && cuenv sync -A
     - name: Setup Cachix (cuenv)
-      run: ''
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
       env:
-        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix develop -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
     - name: check
       run: cuenv task check --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        RUSTC_WRAPPER: sccache
