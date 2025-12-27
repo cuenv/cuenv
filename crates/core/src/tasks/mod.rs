@@ -178,9 +178,12 @@ pub struct Task {
     #[serde(default)]
     pub outputs: Vec<String>,
 
-    /// Workspaces to mount/enable for this task
-    #[serde(default)]
-    pub workspaces: Vec<String>,
+    /// Workspaces to mount/enable for this task.
+    /// - None: auto-associate based on command if workspace declares matching commands
+    /// - Some([]): opt-out, no auto-association
+    /// - Some(["ws"]): explicit workspace
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspaces: Option<Vec<String>>,
 
     /// Description of the task
     #[serde(default)]
@@ -250,7 +253,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default)]
             outputs: Vec<String>,
             #[serde(default)]
-            workspaces: Vec<String>,
+            workspaces: Option<Vec<String>>,
             #[serde(default)]
             description: Option<String>,
             #[serde(default)]
@@ -458,7 +461,7 @@ impl Default for Task {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
-            workspaces: vec![],
+            workspaces: None,
             description: None,
             params: None,
             labels: vec![],
@@ -635,7 +638,10 @@ impl TaskDefinition {
     /// in groups) has the specified workspace in its `workspaces` field.
     pub fn uses_workspace(&self, workspace_name: &str) -> bool {
         match self {
-            TaskDefinition::Single(task) => task.workspaces.contains(&workspace_name.to_string()),
+            TaskDefinition::Single(task) => task
+                .workspaces
+                .as_ref()
+                .is_some_and(|ws| ws.contains(&workspace_name.to_string())),
             TaskDefinition::Group(group) => match group {
                 TaskGroup::Sequential(tasks) => {
                     tasks.iter().any(|t| t.uses_workspace(workspace_name))
