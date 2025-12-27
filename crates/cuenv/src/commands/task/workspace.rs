@@ -60,7 +60,11 @@ pub fn inject_workspace_setup_tasks(
 
         match task_def {
             TaskDefinition::Single(task) => {
-                if !task.workspaces.iter().any(|w| w == ws_name) {
+                if !task
+                    .workspaces
+                    .as_ref()
+                    .is_some_and(|ws| ws.iter().any(|w| w == ws_name))
+                {
                     return;
                 }
 

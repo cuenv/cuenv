@@ -28,6 +28,14 @@ package schema
 
 	// Workspace lifecycle hooks
 	hooks?: #WorkspaceHooks
+
+	// Commands that trigger auto-association to this workspace.
+	// Any task with a matching command will automatically use this workspace.
+	commands?: [...string]
+
+	// Tasks to inject automatically when this workspace is enabled.
+	// Keys become task names prefixed with workspace name (e.g., "bun.install").
+	inject?: [string]: #Command
 })
 
 // Workspace lifecycle hooks for pre/post install
