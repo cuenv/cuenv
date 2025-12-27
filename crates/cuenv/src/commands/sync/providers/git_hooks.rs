@@ -34,52 +34,14 @@ impl SyncProvider for GitHooksSyncProvider {
 
     async fn sync_path(
         &self,
-        path: &Path,
-        _package: &str,
+        _path: &Path,
+        package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
-
-        // Find git root
-        let git_root = match find_git_root(path) {
-            Ok(root) => root,
-            Err(_) => {
-                return Ok(SyncResult::success(
-                    "Not in a git repository. Skipping git hooks sync.",
-                ));
-            }
-        };
-
-        // Get project config to check for pre-push hooks
-        let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(path.to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        })?;
-
-        let module = executor.get_module(&target_path)?;
-        let rel_path = crate::commands::relative_path_from_root(&module.root, &target_path);
-
-        let instance = module.get(&rel_path).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "No CUE instance found at path: {}",
-                target_path.display()
-            ))
-        })?;
-
-        let project: cuenv_core::manifest::Project = instance.deserialize()?;
-        let pre_push_hooks = project.pre_push_hooks_map();
-
-        if pre_push_hooks.is_empty() {
-            return Ok(SyncResult::success("No pre-push hooks configured."));
-        }
-
-        // Generate the pre-push hook script
-        let output = sync_pre_push_hook(&git_root, &pre_push_hooks, dry_run, check)?;
-
-        Ok(SyncResult::success(output))
+        // Git hooks always aggregate from all projects (like CODEOWNERS)
+        // since there's only one .git/hooks/pre-push per repo
+        self.sync_workspace(package, options, executor).await
     }
 
     async fn sync_workspace(
