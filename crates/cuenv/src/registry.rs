@@ -187,6 +187,7 @@ impl Default for ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::{CiProvider, CubesProvider, RulesProvider};
 
     #[test]
     fn test_empty_registry() {
@@ -200,5 +201,85 @@ mod tests {
         let registry = ProviderRegistry::new();
         let names = registry.sync_provider_names();
         assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_register_and_retrieve_sync_provider() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_sync(CiProvider::new());
+
+        assert_eq!(registry.sync_provider_count(), 1);
+        assert!(!registry.is_empty());
+
+        let provider = registry.get_sync_provider("ci");
+        assert!(provider.is_some());
+        assert_eq!(provider.unwrap().name(), "ci");
+    }
+
+    #[test]
+    fn test_get_nonexistent_provider() {
+        let registry = ProviderRegistry::new();
+        assert!(registry.get_sync_provider("nonexistent").is_none());
+        assert!(registry.get_runtime_provider("nonexistent").is_none());
+        assert!(registry.get_secret_provider("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_multiple_sync_providers() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_sync(CiProvider::new());
+        registry.register_sync(CubesProvider::new());
+        registry.register_sync(RulesProvider::new());
+
+        assert_eq!(registry.sync_provider_count(), 3);
+        assert_eq!(registry.len(), 3);
+
+        // Verify all can be retrieved by name
+        assert!(registry.get_sync_provider("ci").is_some());
+        assert!(registry.get_sync_provider("cubes").is_some());
+        assert!(registry.get_sync_provider("rules").is_some());
+    }
+
+    #[test]
+    fn test_sync_provider_names_returns_all() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_sync(CiProvider::new());
+        registry.register_sync(CubesProvider::new());
+
+        let names = registry.sync_provider_names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"ci"));
+        assert!(names.contains(&"cubes"));
+    }
+
+    #[test]
+    fn test_sync_providers_iterator() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_sync(CiProvider::new());
+        registry.register_sync(CubesProvider::new());
+
+        let providers: Vec<_> = registry.sync_providers().collect();
+        assert_eq!(providers.len(), 2);
+    }
+
+    #[test]
+    fn test_capability_counts_are_independent() {
+        let mut registry = ProviderRegistry::new();
+        registry.register_sync(CiProvider::new());
+        registry.register_sync(CubesProvider::new());
+
+        // Only sync providers registered
+        assert_eq!(registry.sync_provider_count(), 2);
+        assert_eq!(registry.runtime_provider_count(), 0);
+        assert_eq!(registry.secret_provider_count(), 0);
+
+        // Total is sum of all capabilities
+        assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn test_default_registry() {
+        let registry = ProviderRegistry::default();
+        assert!(registry.is_empty());
     }
 }

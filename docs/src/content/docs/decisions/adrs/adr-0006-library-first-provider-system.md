@@ -20,6 +20,7 @@ The cuenv CLI currently has a tightly coupled architecture:
 4. **Single-Capability Providers**: Each provider type (sync, runtime, secret) has a separate registration mechanism
 
 This prevents:
+
 - External crates from extending cuenv without forking
 - Building custom cuenv distributions with different provider sets
 - Providers that offer multiple capabilities (e.g., Dagger providing both sync and runtime)
@@ -41,6 +42,7 @@ path = "src/main.rs"
 ```
 
 The binary becomes a thin wrapper:
+
 ```rust
 fn main() -> cuenv::Result<()> {
     cuenv::Cuenv::builder()
@@ -59,49 +61,79 @@ A provider is a unit that implements one or more capability traits:
 pub trait Provider: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
-    fn as_any(&self) -> &dyn Any;  // For capability detection
+    fn as_any(&self) -> &dyn Any;           // For capability detection
+    fn as_any_mut(&mut self) -> &mut dyn Any; // For mutable capability detection
 }
 
 /// Capability: Sync files from CUE configuration
 #[async_trait]
 pub trait SyncCapability: Provider {
     fn build_sync_command(&self) -> clap::Command;
-    async fn sync_path(&self, path: &Path, options: &SyncOptions) -> Result<SyncResult>;
-    async fn sync_workspace(&self, options: &SyncOptions) -> Result<SyncResult>;
+    async fn sync_path(
+        &self,
+        path: &Path,
+        package: &str,
+        options: &SyncOptions,
+        executor: &CommandExecutor,
+    ) -> Result<SyncResult>;
+    async fn sync_workspace(
+        &self,
+        package: &str,
+        options: &SyncOptions,
+        executor: &CommandExecutor,
+    ) -> Result<SyncResult>;
+    fn has_config(&self, manifest: &Base) -> bool;
+    fn parse_sync_args(&self, matches: &ArgMatches) -> SyncOptions; // Has default impl
 }
 
-/// Capability: Execute tasks
+/// Capability: Execute tasks (future)
 #[async_trait]
 pub trait RuntimeCapability: Provider {
-    async fn execute(&self, task: &Task) -> Result<Output>;
+    async fn execute_task(&self, task_name: &str, executor: &CommandExecutor) -> Result<String>;
+    fn can_handle(&self, task_name: &str) -> bool;
 }
 
-/// Capability: Resolve secrets
+/// Capability: Resolve secrets (future)
 #[async_trait]
 pub trait SecretCapability: Provider {
-    async fn resolve(&self, reference: &str) -> Result<Secret>;
+    async fn resolve(&self, reference: &str) -> Result<String>;
+    fn can_resolve(&self, reference: &str) -> bool;
 }
 ```
 
-### 3. Unified Registration via Builder Pattern
+### 3. Type-Safe Registration via Builder Pattern
 
-A single `with_provider()` method registers providers:
+Separate builder methods provide compile-time type safety for each capability:
 
 ```rust
 Cuenv::builder()
-    .with_provider(CiProvider)           // SyncCapability
-    .with_provider(DaggerProvider::new()) // SyncCapability + RuntimeCapability
-    .with_provider(VaultProvider::new())  // SecretCapability
+    .with_sync_provider(CiProvider::new())      // SyncCapability
+    .with_sync_provider(CubesProvider::new())   // SyncCapability
+    .with_runtime_provider(DaggerRuntime::new()) // RuntimeCapability
+    .with_secret_provider(VaultProvider::new())  // SecretCapability
     .build()
     .run()
 ```
 
-The `ProviderRegistry` filters by capability:
+For multi-capability providers, register them for each capability they implement:
+
+```rust
+let dagger = Arc::new(DaggerProvider::new());
+Cuenv::builder()
+    .with_sync_provider(dagger.clone())    // Dagger as SyncCapability
+    .with_runtime_provider(dagger)          // Dagger as RuntimeCapability
+    .build()
+```
+
+The `ProviderRegistry` provides O(1) lookup by name and iteration by capability:
+
 ```rust
 impl ProviderRegistry {
-    pub fn sync_providers(&self) -> impl Iterator<Item = &dyn SyncCapability>;
-    pub fn runtime_providers(&self) -> impl Iterator<Item = &dyn RuntimeCapability>;
-    pub fn secret_providers(&self) -> impl Iterator<Item = &dyn SecretCapability>;
+    pub fn sync_providers(&self) -> impl Iterator<Item = &Arc<dyn SyncCapability>>;
+    pub fn runtime_providers(&self) -> impl Iterator<Item = &Arc<dyn RuntimeCapability>>;
+    pub fn secret_providers(&self) -> impl Iterator<Item = &Arc<dyn SecretCapability>>;
+    pub fn get_sync_provider(&self, name: &str) -> Option<&Arc<dyn SyncCapability>>;
+    // ... similar for other capabilities
 }
 ```
 
@@ -144,15 +176,16 @@ impl Cuenv {
 
 ## Alternatives Considered
 
-### 1. Separate Builder Methods Per Capability
+### 1. Unified `with_provider()` Method with Runtime Capability Detection
 
 ```rust
-.with_sync_provider(CiProvider)
-.with_runtime_provider(DaggerRuntime)
-.with_secret_provider(VaultProvider)
+Cuenv::builder()
+    .with_provider(CiProvider)           // Auto-detect SyncCapability
+    .with_provider(DaggerProvider::new()) // Auto-detect Sync + Runtime
+    .build()
 ```
 
-**Rejected**: Prevents multi-capability providers and requires separate registration for each capability a provider supports.
+**Rejected**: Rust's type system doesn't allow ergonomic runtime trait detection via `as_any()` downcasting for this use case. The `dyn Provider` cannot be downcast to `dyn SyncCapability` without concrete type knowledge. Separate type-safe methods provide better compile-time guarantees.
 
 ### 2. Plugin System with Dynamic Loading
 
@@ -178,14 +211,14 @@ static _: &dyn Provider = &CiProvider;
 
 ## Status
 
-Accepted — implementation in progress on feature branch.
+Accepted — implemented in PR #234.
 
 ## Implementation Order
 
-1. Add library target to Cargo.toml
-2. Create `Provider` base trait and capability traits
-3. Create `ProviderRegistry` with capability filtering
-4. Create `CuenvBuilder` with `with_provider()`
-5. Refactor existing providers (ci, cubes, rules)
-6. Dynamic CLI generation
-7. Simplify main.rs
+1. ✅ Add library target to Cargo.toml
+2. ✅ Create `Provider` base trait and capability traits (`provider.rs`)
+3. ✅ Create `ProviderRegistry` with O(1) lookup (`registry.rs`)
+4. ✅ Create `CuenvBuilder` with type-safe `with_sync_provider()` etc. (`builder.rs`)
+5. ✅ Refactor existing providers (ci, cubes, rules) to `providers/` module
+6. ✅ Dynamic CLI generation via `build_sync_command()`
+7. ✅ Main binary uses builder pattern
