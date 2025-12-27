@@ -91,10 +91,28 @@ package schema
 // Pipeline task reference - either a simple task name or a matrix task
 #PipelineTask: string | #MatrixTask
 
+// Setup step for CI pipelines
+#SetupStep: close({
+	name!:    string
+	command?: string
+	script?:  string
+	args?: [...string]
+	env?: [string]: #EnvironmentVariable
+})
+
+// CUE-defined contributor that injects setup steps based on task matching
+#Contributor: close({
+	when?:  #TaskMatcher       // Reuse existing task matcher
+	setup?: [...#SetupStep]
+})
+
 #Pipeline: close({
 	name:         string
 	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
+
+	// Setup steps to run before tasks
+	setup?: [...#SetupStep]
 
 	// Tasks to run - can be simple task names or matrix task objects
 	tasks?: [...#PipelineTask]
@@ -106,4 +124,7 @@ package schema
 #CI: close({
 	pipelines: [...#Pipeline]
 	provider?: #ProviderConfig
+
+	// CUE-defined contributors that inject setup steps
+	contributors?: [string]: #Contributor
 })

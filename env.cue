@@ -3,6 +3,7 @@ package cuenv
 import (
 	"list"
 	"github.com/cuenv/cuenv/schema"
+	nixcontrib "github.com/cuenv/cuenv/contrib/nix"
 )
 
 schema.#Project & {
@@ -10,7 +11,7 @@ schema.#Project & {
 
 	// runtime: nix should provide hooks?
 	runtime: schema.#NixRuntime
-	hooks: onEnter: nix: schema.#NixFlake
+	hooks: onEnter: nix: nixcontrib.#NixFlake
 
 	// Build cuenv from source instead of using released binaries
 	// We really need to find a way to speed this up later.
@@ -20,11 +21,11 @@ schema.#Project & {
 		CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
 
 		environment: production: {
-			CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
-			CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
-			CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
-			CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
-			VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
+			CACHIX_AUTH_TOKEN:     schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
+			CLOUDFLARE_API_TOKEN:  schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
+			CODECOV_TOKEN:         schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
+			CUE_REGISTRY_TOKEN:    schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
+			VSCE_PAT:              schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
 		}
 	}
 
@@ -41,7 +42,6 @@ schema.#Project & {
 
 			cachix: {
 				name:       "cuenv"
-				pushFilter: "(-source$|nixpkgs\\.tar\\.gz$)"
 			}
 
 			trustedPublishing: {
@@ -134,7 +134,7 @@ schema.#Project & {
 				command: "cuenv"
 				args: ["sync", "ci", "--check"]
 				description: "Verify CI workflows are in sync with CUE configuration"
-				inputs: ["env.cue", "schema", "cue.mod"]
+				inputs: ["env.cue", "schema", "cue.mod", "contrib"]
 			}
 		}
 

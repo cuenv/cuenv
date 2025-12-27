@@ -7,7 +7,7 @@ schema.#Project
 name: "ci-cachix"
 
 // Nix runtime (required for Cachix)
-runtime: schema.#NixFlake & {
+runtime: schema.#NixRuntime & {
 	flake:  "."
 	output: "devShells.x86_64-linux.default"
 }
