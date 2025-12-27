@@ -190,9 +190,9 @@ impl TaskExecutor {
                     .clone()
                     .unwrap_or_else(|| self.config.project_root.clone())
             }
-        } else if !task.hermetic && !task.workspaces.is_empty() {
+        } else if !task.hermetic && task.workspaces.as_ref().is_some_and(|ws| !ws.is_empty()) {
             // Find workspace root for install tasks
-            let workspace_name = &task.workspaces[0];
+            let workspace_name = &task.workspaces.as_ref().unwrap()[0];
             let manager = match workspace_name.as_str() {
                 "bun" => PackageManager::Bun,
                 "npm" => PackageManager::Npm,
@@ -1000,6 +1000,8 @@ mod tests {
                 package_manager: Some("bun".to_string()),
                 root: None,
                 hooks: None,
+                commands: vec!["bun".to_string()],
+                inject: HashMap::new(),
             },
         );
 
@@ -1018,7 +1020,7 @@ mod tests {
                 "find ../.. -maxdepth 4 -type d | sort".to_string(),
             ],
             inputs: vec![Input::Path("package.json".to_string())],
-            workspaces: vec!["bun".to_string()],
+            workspaces: Some(vec!["bun".to_string()]),
             ..Default::default()
         };
 

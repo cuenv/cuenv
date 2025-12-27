@@ -55,7 +55,11 @@ pub fn create_workspace_task(name: &str, deps: Vec<&str>, workspaces: Vec<&str>)
     Task {
         command: format!("echo {}", name),
         depends_on: deps.into_iter().map(String::from).collect(),
-        workspaces: workspaces.into_iter().map(String::from).collect(),
+        workspaces: if workspaces.is_empty() {
+            None
+        } else {
+            Some(workspaces.into_iter().map(String::from).collect())
+        },
         ..Default::default()
     }
 }
