@@ -826,7 +826,7 @@ fn emit_standard_workflow(
             .any(|o| o.output_type == OutputType::Orchestrator)
     });
 
-    let permissions = Permissions {
+    let base_permissions = Permissions {
         contents: Some(if has_deployments {
             PermissionLevel::Write
         } else {
@@ -841,6 +841,9 @@ fn emit_standard_workflow(
         },
         ..Default::default()
     };
+
+    // Apply configured permissions from the manifest
+    let permissions = emitter.apply_configured_permissions(base_permissions);
 
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 

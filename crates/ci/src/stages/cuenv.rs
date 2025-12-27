@@ -154,8 +154,7 @@ impl StageContributor for CuenvContributor {
         let has_sccache = project
             .ci
             .as_ref()
-            .map(|ci| ci.contributors.contains_key("sccache"))
-            .unwrap_or(false);
+            .is_some_and(|ci| ci.contributors.contains_key("sccache"));
 
         let (command, label, depends_on, priority) = match source {
             CuenvSource::Release => (

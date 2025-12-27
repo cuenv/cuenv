@@ -52,6 +52,8 @@ pub struct GitHubActionsEmitter {
     pub build_cuenv: bool,
     /// Environment name for manual approval tasks
     pub approval_environment: String,
+    /// Configured permissions from the manifest
+    pub configured_permissions: HashMap<String, String>,
 }
 
 impl Default for GitHubActionsEmitter {
@@ -71,6 +73,7 @@ impl Default for GitHubActionsEmitter {
             ],
             build_cuenv: true,
             approval_environment: "production".to_string(),
+            configured_permissions: HashMap::new(),
         }
     }
 }
@@ -108,6 +111,11 @@ impl GitHubActionsEmitter {
             emitter.default_paths_ignore.clone_from(paths_ignore);
         }
 
+        // Apply configured permissions
+        if let Some(permissions) = &config.permissions {
+            emitter.configured_permissions.clone_from(permissions);
+        }
+
         emitter
     }
 
@@ -115,6 +123,38 @@ impl GitHubActionsEmitter {
     #[must_use]
     pub fn runner_as_runs_on(&self) -> RunsOn {
         RunsOn::Label(self.runner.clone())
+    }
+
+    /// Apply configured permissions to a base Permissions struct
+    #[must_use]
+    pub fn apply_configured_permissions(&self, mut permissions: Permissions) -> Permissions {
+        // Helper to parse permission level from string
+        let parse_level = |s: &str| -> Option<PermissionLevel> {
+            match s.to_lowercase().as_str() {
+                "write" => Some(PermissionLevel::Write),
+                "read" => Some(PermissionLevel::Read),
+                "none" => Some(PermissionLevel::None),
+                _ => None,
+            }
+        };
+
+        // Apply configured permissions (override calculated)
+        for (key, value) in &self.configured_permissions {
+            if let Some(level) = parse_level(value) {
+                match key.as_str() {
+                    "contents" => permissions.contents = Some(level),
+                    "checks" => permissions.checks = Some(level),
+                    "pull-requests" => permissions.pull_requests = Some(level),
+                    "issues" => permissions.issues = Some(level),
+                    "packages" => permissions.packages = Some(level),
+                    "id-token" => permissions.id_token = Some(level),
+                    "actions" => permissions.actions = Some(level),
+                    _ => {}
+                }
+            }
+        }
+
+        permissions
     }
 
     /// Set the default runner for jobs
@@ -212,7 +252,7 @@ impl GitHubActionsEmitter {
     fn build_workflow(&self, ir: &IntermediateRepresentation, workflow_name: &str) -> Workflow {
         let workflow_filename = format!("{}.yml", sanitize_filename(workflow_name));
         let triggers = self.build_triggers(ir, &workflow_filename);
-        let permissions = Self::build_permissions(ir);
+        let permissions = self.build_permissions(ir);
         let jobs = self.build_jobs(ir);
 
         Workflow {
@@ -383,8 +423,8 @@ impl GitHubActionsEmitter {
         })
     }
 
-    /// Build permissions based on task requirements
-    fn build_permissions(ir: &IntermediateRepresentation) -> Permissions {
+    /// Build permissions based on task requirements and configured permissions
+    fn build_permissions(&self, ir: &IntermediateRepresentation) -> Permissions {
         let has_deployments = ir.tasks.iter().any(|t| t.deployment);
         let has_outputs = ir.tasks.iter().any(|t| {
             t.outputs
@@ -392,7 +432,18 @@ impl GitHubActionsEmitter {
                 .any(|o| o.output_type == OutputType::Orchestrator)
         });
 
-        Permissions {
+        // Helper to parse permission level from string
+        let parse_level = |s: &str| -> Option<PermissionLevel> {
+            match s.to_lowercase().as_str() {
+                "write" => Some(PermissionLevel::Write),
+                "read" => Some(PermissionLevel::Read),
+                "none" => Some(PermissionLevel::None),
+                _ => None,
+            }
+        };
+
+        // Start with calculated permissions
+        let mut permissions = Permissions {
             contents: Some(if has_deployments {
                 PermissionLevel::Write
             } else {
@@ -406,7 +457,25 @@ impl GitHubActionsEmitter {
                 None
             },
             ..Default::default()
+        };
+
+        // Apply configured permissions (override calculated)
+        for (key, value) in &self.configured_permissions {
+            if let Some(level) = parse_level(value) {
+                match key.as_str() {
+                    "contents" => permissions.contents = Some(level),
+                    "checks" => permissions.checks = Some(level),
+                    "pull-requests" => permissions.pull_requests = Some(level),
+                    "issues" => permissions.issues = Some(level),
+                    "packages" => permissions.packages = Some(level),
+                    "id-token" => permissions.id_token = Some(level),
+                    "actions" => permissions.actions = Some(level),
+                    _ => {}
+                }
+            }
         }
+
+        permissions
     }
 
     /// Build jobs from IR tasks
