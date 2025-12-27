@@ -46,14 +46,20 @@ package schema
 	afterInstall?: [...(#Command | #Script | #TaskRef | #MatchHook)]
 })
 
-// Reference a task from another env.cue project by its name property
+// Reference a task from another env.cue project by its name property.
+// NOTE: Only matches explicitly declared tasks in env.cue files.
+// Implicit tasks (like auto-injected bun.install from workspace config)
+// are not visible to TaskRef.
 #TaskRef: close({
 	// Format: "#project-name:task-name" where project-name is the `name` field in env.cue
 	// Example: "#projen-generator:bun.install"
 	ref!: =~"^#[a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+$"
 })
 
-// Match tasks across workspace by metadata for discovery-based execution
+// Match tasks across workspace by metadata for discovery-based execution.
+// NOTE: Only matches explicitly declared tasks in env.cue files.
+// Implicit tasks (like auto-injected bun.install from workspace config)
+// are not visible to matchers.
 #TaskMatcher: close({
 	// Limit to specific workspaces (by name)
 	workspaces?: [...string]

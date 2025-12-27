@@ -5,9 +5,13 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
+use std::path::Path;
 
 use cuenv_core::tasks::discovery::TaskDiscovery;
-use cuenv_core::tasks::{TaskDefinition, TaskIndex, WorkspaceTask};
+use cuenv_core::tasks::{TaskDefinition, WorkspaceTask};
+
+use super::list_builder::prepare_task_index;
+use super::normalization::compute_project_id;
 
 /// Node in a hierarchical task tree for display purposes
 #[derive(Default)]
@@ -118,7 +122,10 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
 }
 
 /// Collect all tasks from discovered projects into `WorkspaceTask` format
-pub fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<WorkspaceTask> {
+///
+/// The `module_root` parameter is used to compute stable project IDs for
+/// workspace setup task injection.
+pub fn collect_workspace_tasks(discovery: &TaskDiscovery, module_root: &Path) -> Vec<WorkspaceTask> {
     let mut result = Vec::new();
 
     for project in discovery.projects() {
@@ -127,7 +134,20 @@ pub fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<WorkspaceTask> 
             continue;
         }
 
-        if let Ok(index) = TaskIndex::build(&project.manifest.tasks) {
+        // Clone manifest for mutation during prepare_task_index
+        let mut manifest = project.manifest.clone();
+        let project_id = compute_project_id(&manifest, &project.project_root, module_root);
+
+        // Build task index with synthetic tasks injected
+        // Best-effort: if injection fails, fall back to basic index without hooks
+        let task_index = prepare_task_index(&mut manifest, Some(discovery), &project_id)
+            .or_else(|_| {
+                // Fall back to basic index with implicit tasks but no hook injection
+                let manifest_with_implicit = manifest.clone().with_implicit_tasks();
+                cuenv_core::tasks::TaskIndex::build(&manifest_with_implicit.tasks)
+            });
+
+        if let Ok(index) = task_index {
             for entry in index.list() {
                 // Get description from task definition (only available for single tasks)
                 let description = entry.definition.as_single().and_then(|t| {
