@@ -47,10 +47,6 @@ schema.#Project & {
 				name: "cuenv"
 			}
 
-			trustedPublishing: {
-				cratesIo: true
-			}
-
 			pathsIgnore: [
 				"docs/**",
 				"_examples/**",
@@ -353,12 +349,6 @@ schema.#Project & {
 				rm -rf dist/*/
 				gh release upload $TAG dist/cuenv-*
 				"""]
-		}
-
-		publish: crates: {
-			command: "cargo"
-			args: ["publish", "-p", "cuenv"]
-			dependsOn: ["publish.cue"]
 		}
 
 		publish: cue: {
