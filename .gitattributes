@@ -1,6 +1,2 @@
-
-# Use bd merge for beads JSONL files
-.beads/issues.jsonl merge=beads
-
 # Generated workflow files - always regenerate after merge, don't try to merge
-.github/workflows/*.yml merge=ours -diff
+.github/workflows/*.yml merge=ours
