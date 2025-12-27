@@ -22,11 +22,11 @@ schema.#Project & {
 		CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
 
 		environment: production: {
-			CACHIX_AUTH_TOKEN:     schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
-			CLOUDFLARE_API_TOKEN:  schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
-			CODECOV_TOKEN:         schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
-			CUE_REGISTRY_TOKEN:    schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
-			VSCE_PAT:              schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
+			CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
+			CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
+			CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
+			CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
+			VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
 		}
 	}
 
@@ -44,7 +44,7 @@ schema.#Project & {
 			}
 
 			cachix: {
-				name:       "cuenv"
+				name: "cuenv"
 			}
 
 			trustedPublishing: {
@@ -73,6 +73,9 @@ schema.#Project & {
 					branch:      "main"
 					pullRequest: true
 				}
+				provider: github: permissions: {
+					"id-token": "write"
+				}
 				tasks: ["ci.sync-check"]
 			},
 			{
@@ -80,6 +83,9 @@ schema.#Project & {
 				when: {
 					branch:      "main"
 					pullRequest: true
+				}
+				provider: github: permissions: {
+					"id-token": "write"
 				}
 				tasks: ["check"]
 			},
