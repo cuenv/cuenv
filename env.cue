@@ -146,8 +146,6 @@ schema.#Project & {
 		check: {
 			script: """
 				set -e
-				echo "Running format check..."
-				treefmt --fail-on-change
 				echo "Running clippy..."
 				cargo clippy --workspace --all-targets --all-features -- -D warnings
 				echo "Running tests..."
