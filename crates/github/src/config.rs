@@ -132,7 +132,7 @@ mod tests {
                 }))
                 .unwrap(),
             ),
-            contributors: Default::default(),
+            contributors: HashMap::default(),
             pipelines: vec![
                 Pipeline {
                     name: "ci".to_string(),

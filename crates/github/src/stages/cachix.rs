@@ -138,7 +138,7 @@ mod tests {
             name: "test".to_string(),
             ci: Some(CI {
                 pipelines: vec![],
-                contributors: Default::default(),
+                contributors: HashMap::default(),
                 provider: Some(
                     serde_json::from_value(json!({
                         "github": {
@@ -159,7 +159,7 @@ mod tests {
             name: "test".to_string(),
             ci: Some(CI {
                 pipelines: vec![],
-                contributors: Default::default(),
+                contributors: HashMap::default(),
                 provider: Some(
                     serde_json::from_value(json!({
                         "github": {
