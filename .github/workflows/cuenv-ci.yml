@@ -5,38 +5,38 @@ name: cuenv-ci
 on:
   push:
     branches:
-      - main
+    - main
     paths:
-      - Cargo.lock
-      - Cargo.toml
-      - _examples
-      - _tests
-      - crates
-      - cue.mod
-      - cue.mod/**
-      - deny.toml
-      - env.cue
-      - features
-      - schema
-      - schema/**
-      - treefmt.toml
+    - Cargo.lock
+    - Cargo.toml
+    - _examples
+    - _tests
+    - crates
+    - cue.mod
+    - cue.mod/**
+    - deny.toml
+    - env.cue
+    - features
+    - schema
+    - schema/**
+    - treefmt.toml
   pull_request:
     branches:
-      - main
+    - main
     paths:
-      - Cargo.lock
-      - Cargo.toml
-      - _examples
-      - _tests
-      - crates
-      - cue.mod
-      - cue.mod/**
-      - deny.toml
-      - env.cue
-      - features
-      - schema
-      - schema/**
-      - treefmt.toml
+    - Cargo.lock
+    - Cargo.toml
+    - _examples
+    - _tests
+    - crates
+    - cue.mod
+    - cue.mod/**
+    - deny.toml
+    - env.cue
+    - features
+    - schema
+    - schema/**
+    - treefmt.toml
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
@@ -49,26 +49,31 @@ jobs:
     name: check
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v16
-        with:
-          extra-conf: accept-flake-config = true
-      - name: Build cuenv
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config && { echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && cuenv sync -A
-      - name: Setup Cachix (cuenv)
-        run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
-        env:
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-      - name: Authenticate with crates.io
-        uses: rust-lang/crates-io-auth-action@v1
-      - name: check
-        run: cuenv task check --skip-dependencies
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CACHIX_CACHE_NAME: cuenv
-          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix develop -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && cuenv sync -A
+    - name: Setup Cachix (cuenv)
+      run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
+      env:
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    - name: Authenticate with crates.io
+      uses: rust-lang/crates-io-auth-action@v1
+    - name: Setup sccache
+      uses: Mozilla-Actions/sccache-action@v0.2
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: check
+      run: cuenv task check --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CACHIX_CACHE_NAME: cuenv
+        CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        RUSTC_WRAPPER: sccache

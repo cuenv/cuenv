@@ -151,6 +151,27 @@ impl PipelineTask {
 /// ```
 pub type ProviderConfig = HashMap<String, serde_json::Value>;
 
+/// GitHub Action configuration for setup steps
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubActionConfig {
+    /// Action reference (e.g., "Mozilla-Actions/sccache-action@v0.2")
+    pub uses: String,
+
+    /// Action inputs (optional)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty", rename = "with")]
+    pub inputs: HashMap<String, serde_json::Value>,
+}
+
+/// Provider-specific setup step overrides
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStepProviderConfig {
+    /// GitHub Action to use instead of shell command
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github: Option<GitHubActionConfig>,
+}
+
 /// Setup step for CI pipelines - runs before main tasks
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -173,6 +194,10 @@ pub struct SetupStep {
     /// Environment variables for this step
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, serde_json::Value>,
+
+    /// Provider-specific overrides (e.g., GitHub Action instead of shell)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<SetupStepProviderConfig>,
 }
 
 /// CUE-defined contributor that injects setup steps based on task matching

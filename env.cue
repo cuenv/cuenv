@@ -4,6 +4,7 @@ import (
 	"list"
 	"github.com/cuenv/cuenv/schema"
 	nixcontrib "github.com/cuenv/cuenv/contrib/nix"
+	rustcontrib "github.com/cuenv/cuenv/contrib/rust"
 )
 
 schema.#Project & {
@@ -30,6 +31,8 @@ schema.#Project & {
 	}
 
 	ci: {
+		contributors: sccache: rustcontrib.#Sccache
+
 		provider: github: {
 			runner: "blacksmith-8vcpu-ubuntu-2404"
 			runners: {
