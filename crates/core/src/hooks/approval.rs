@@ -14,6 +14,51 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info, warn};
 
+/// Check if the current process is running in a CI environment.
+///
+/// This checks for common CI environment variables used by popular CI/CD systems:
+/// - `CI` - Generic CI indicator (GitHub Actions, GitLab CI, CircleCI, Travis CI, etc.)
+/// - `GITHUB_ACTIONS` - GitHub Actions
+/// - `GITLAB_CI` - GitLab CI
+/// - `BUILDKITE` - Buildkite
+/// - `JENKINS_URL` - Jenkins
+/// - `CIRCLECI` - CircleCI
+/// - `TRAVIS` - Travis CI
+/// - `BITBUCKET_PIPELINES` - Bitbucket Pipelines
+/// - `AZURE_PIPELINES` - Azure Pipelines
+/// - `TF_BUILD` - Azure DevOps / Team Foundation Build
+/// - `DRONE` - Drone CI
+/// - `TEAMCITY_VERSION` - TeamCity
+///
+/// Returns `true` if any of these environment variables are set to a truthy value.
+#[must_use]
+pub fn is_ci() -> bool {
+    // Check for the generic CI variable first (most CI systems set this)
+    if std::env::var("CI")
+        .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    // Check for specific CI provider variables
+    const CI_VARS: &[&str] = &[
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "CIRCLECI",
+        "TRAVIS",
+        "BITBUCKET_PIPELINES",
+        "AZURE_PIPELINES",
+        "TF_BUILD",
+        "DRONE",
+        "TEAMCITY_VERSION",
+    ];
+
+    CI_VARS.iter().any(|var| std::env::var(var).is_ok())
+}
+
 /// Manages approval of configurations before hook execution
 #[derive(Debug, Clone)]
 pub struct ApprovalManager {
@@ -328,12 +373,24 @@ fn sorted_hooks_map(map: &HashMap<String, Hook>) -> BTreeMap<String, Hook> {
         .collect()
 }
 
-/// Check the approval status for a configuration
+/// Check the approval status for a configuration.
+///
+/// In CI environments (detected via [`is_ci`]), hooks are always auto-approved
+/// since CI environments are typically non-interactive and already secured.
 pub fn check_approval_status(
     manager: &ApprovalManager,
     directory_path: &Path,
     config: &Project,
 ) -> Result<ApprovalStatus> {
+    // Auto-approve in CI environments - they are non-interactive and already secured
+    if is_ci() {
+        debug!(
+            "Auto-approving hooks in CI environment for {}",
+            directory_path.display()
+        );
+        return Ok(ApprovalStatus::Approved);
+    }
+
     let current_hash = compute_approval_hash(config);
 
     if manager.is_approved(directory_path, &current_hash)? {
@@ -942,5 +999,173 @@ mod tests {
         let removed = manager.cleanup_expired().await.unwrap();
         assert_eq!(removed, 1);
         assert_eq!(manager.approvals.len(), 0);
+    }
+
+    #[test]
+    fn test_is_ci_with_ci_env_var() {
+        // Test with CI=true
+        temp_env::with_var("CI", Some("true"), || {
+            assert!(is_ci());
+        });
+
+        // Test with CI=1
+        temp_env::with_var("CI", Some("1"), || {
+            assert!(is_ci());
+        });
+
+        // Test with CI=yes (any non-empty, non-false value)
+        temp_env::with_var("CI", Some("yes"), || {
+            assert!(is_ci());
+        });
+
+        // Test with CI=false (should NOT be detected as CI)
+        temp_env::with_var("CI", Some("false"), || {
+            // Clear other CI vars to isolate the test
+            temp_env::with_vars_unset(
+                vec![
+                    "GITHUB_ACTIONS",
+                    "GITLAB_CI",
+                    "BUILDKITE",
+                    "JENKINS_URL",
+                    "CIRCLECI",
+                    "TRAVIS",
+                    "BITBUCKET_PIPELINES",
+                    "AZURE_PIPELINES",
+                    "TF_BUILD",
+                    "DRONE",
+                    "TEAMCITY_VERSION",
+                ],
+                || {
+                    assert!(!is_ci());
+                },
+            );
+        });
+
+        // Test with CI=0 (should NOT be detected as CI)
+        temp_env::with_var("CI", Some("0"), || {
+            temp_env::with_vars_unset(
+                vec![
+                    "GITHUB_ACTIONS",
+                    "GITLAB_CI",
+                    "BUILDKITE",
+                    "JENKINS_URL",
+                    "CIRCLECI",
+                    "TRAVIS",
+                    "BITBUCKET_PIPELINES",
+                    "AZURE_PIPELINES",
+                    "TF_BUILD",
+                    "DRONE",
+                    "TEAMCITY_VERSION",
+                ],
+                || {
+                    assert!(!is_ci());
+                },
+            );
+        });
+    }
+
+    #[test]
+    fn test_is_ci_with_provider_specific_vars() {
+        // Test GitHub Actions
+        temp_env::with_var_unset("CI", || {
+            temp_env::with_var("GITHUB_ACTIONS", Some("true"), || {
+                assert!(is_ci());
+            });
+        });
+
+        // Test GitLab CI
+        temp_env::with_var_unset("CI", || {
+            temp_env::with_var("GITLAB_CI", Some("true"), || {
+                assert!(is_ci());
+            });
+        });
+
+        // Test Buildkite
+        temp_env::with_var_unset("CI", || {
+            temp_env::with_var("BUILDKITE", Some("true"), || {
+                assert!(is_ci());
+            });
+        });
+
+        // Test Jenkins
+        temp_env::with_var_unset("CI", || {
+            temp_env::with_var("JENKINS_URL", Some("http://jenkins.example.com"), || {
+                assert!(is_ci());
+            });
+        });
+    }
+
+    #[test]
+    fn test_is_ci_not_detected() {
+        // Clear all CI-related environment variables
+        temp_env::with_vars_unset(
+            vec![
+                "CI",
+                "GITHUB_ACTIONS",
+                "GITLAB_CI",
+                "BUILDKITE",
+                "JENKINS_URL",
+                "CIRCLECI",
+                "TRAVIS",
+                "BITBUCKET_PIPELINES",
+                "AZURE_PIPELINES",
+                "TF_BUILD",
+                "DRONE",
+                "TEAMCITY_VERSION",
+            ],
+            || {
+                assert!(!is_ci());
+            },
+        );
+    }
+
+    #[test]
+    fn test_approval_status_auto_approved_in_ci() {
+        let manager = ApprovalManager::new(PathBuf::from("/tmp/test"));
+        let directory = Path::new("/test/ci_dir");
+
+        // Create a config with hooks that would normally require approval
+        let mut hooks_map = HashMap::new();
+        hooks_map.insert("setup".to_string(), make_hook("echo", &["hello"]));
+
+        let mut config = base_project();
+        config.hooks = Some(Hooks {
+            on_enter: Some(hooks_map),
+            on_exit: None,
+        });
+
+        // In CI environment, should be auto-approved
+        temp_env::with_var("CI", Some("true"), || {
+            let status = check_approval_status(&manager, directory, &config).unwrap();
+            assert!(
+                matches!(status, ApprovalStatus::Approved),
+                "Hooks should be auto-approved in CI"
+            );
+        });
+
+        // Outside CI environment, should require approval
+        temp_env::with_vars_unset(
+            vec![
+                "CI",
+                "GITHUB_ACTIONS",
+                "GITLAB_CI",
+                "BUILDKITE",
+                "JENKINS_URL",
+                "CIRCLECI",
+                "TRAVIS",
+                "BITBUCKET_PIPELINES",
+                "AZURE_PIPELINES",
+                "TF_BUILD",
+                "DRONE",
+                "TEAMCITY_VERSION",
+            ],
+            || {
+                let status = check_approval_status(&manager, directory, &config).unwrap();
+                assert!(
+                    matches!(status, ApprovalStatus::NotApproved { .. }),
+                    "Hooks should require approval outside CI"
+                );
+            },
+        );
     }
 }
