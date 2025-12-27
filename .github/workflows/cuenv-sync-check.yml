@@ -7,6 +7,7 @@ on:
     branches:
       - main
     paths:
+      - .github/workflows/cuenv-sync-check.yml
       - contrib
       - cue.mod
       - cue.mod/**
@@ -17,6 +18,7 @@ on:
     branches:
       - main
     paths:
+      - .github/workflows/cuenv-sync-check.yml
       - contrib
       - cue.mod
       - cue.mod/**

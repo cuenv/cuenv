@@ -195,8 +195,8 @@ jobs:
         run: cuenv task publish.cue -e production --skip-dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PATHS: dist/**/*
           TAG: ${{ github.ref_name }}
+          PATHS: dist/**/*
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
@@ -248,8 +248,8 @@ jobs:
         run: cuenv task publish.github -e production --skip-dependencies
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PATHS: dist/**/*
           TAG: ${{ github.ref_name }}
+          PATHS: dist/**/*
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
           CACHIX_CACHE_NAME: cuenv
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
