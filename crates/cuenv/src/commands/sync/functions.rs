@@ -842,9 +842,11 @@ fn emit_standard_workflow(
         ..Default::default()
     };
 
+    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+
     let workflow = Workflow {
         name: workflow_name.clone(),
-        on: build_workflow_triggers(&ctx.trigger, &emitter),
+        on: build_workflow_triggers(&ctx.trigger, &filename, &emitter),
         concurrency: Some(Concurrency {
             group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
             cancel_in_progress: Some(true),
@@ -853,8 +855,6 @@ fn emit_standard_workflow(
         env: IndexMap::new(),
         jobs,
     };
-
-    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
     let yaml = workflow.to_yaml().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
     })?;
@@ -1099,9 +1099,11 @@ fn emit_matrix_workflow(
 
     let jobs = build_pipeline_jobs(&expanded_tasks, ctx, &emitter);
 
+    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+
     let workflow = Workflow {
         name: workflow_name.clone(),
-        on: build_workflow_triggers(&ctx.trigger, &emitter),
+        on: build_workflow_triggers(&ctx.trigger, &filename, &emitter),
         concurrency: Some(Concurrency {
             group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
             cancel_in_progress: Some(true),
@@ -1114,8 +1116,6 @@ fn emit_matrix_workflow(
         env: indexmap::IndexMap::new(),
         jobs,
     };
-
-    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
     let yaml = workflow.to_yaml().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
     })?;
@@ -1124,8 +1124,12 @@ fn emit_matrix_workflow(
 }
 
 /// Build workflow triggers from the trigger condition.
+///
+/// Adds the workflow file itself to the paths if paths are non-empty,
+/// ensuring workflows trigger when their own definition changes.
 fn build_workflow_triggers(
     trigger: &cuenv_ci::ir::TriggerCondition,
+    workflow_filename: &str,
     _emitter: &cuenv_github::workflow::GitHubActionsEmitter,
 ) -> cuenv_github::workflow::schema::WorkflowTriggers {
     use cuenv_github::workflow::schema::{
@@ -1133,12 +1137,25 @@ fn build_workflow_triggers(
         WorkflowInput, WorkflowTriggers,
     };
 
+    // Add workflow file to paths so changes to the workflow itself trigger a run
+    let paths = if trigger.paths.is_empty() {
+        Vec::new()
+    } else {
+        let workflow_path = format!(".github/workflows/{workflow_filename}");
+        let mut paths = trigger.paths.clone();
+        if !paths.contains(&workflow_path) {
+            paths.push(workflow_path);
+            paths.sort();
+        }
+        paths
+    };
+
     let push = if trigger.branches.is_empty() {
         None
     } else {
         Some(PushTrigger {
             branches: trigger.branches.clone(),
-            paths: trigger.paths.clone(),
+            paths: paths.clone(),
             paths_ignore: trigger.paths_ignore.clone(),
             ..Default::default()
         })
@@ -1147,7 +1164,7 @@ fn build_workflow_triggers(
     let pull_request = if trigger.pull_request == Some(true) {
         Some(PullRequestTrigger {
             branches: trigger.branches.clone(),
-            paths: trigger.paths.clone(),
+            paths,
             paths_ignore: trigger.paths_ignore.clone(),
             ..Default::default()
         })
