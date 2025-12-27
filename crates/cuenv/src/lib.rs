@@ -47,7 +47,17 @@
 
 // CLI binary needs to output to stdout/stderr - this is intentional
 // expect_used is allowed for infallible operations like writing to strings
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)]
+// missing_docs: CLI internals don't need public documentation
+// missing_errors_doc: Internal functions don't need error documentation
+// must_use_candidate: CLI internal functions don't need must_use
+#![allow(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    clippy::expect_used,
+    missing_docs,
+    clippy::missing_errors_doc,
+    clippy::must_use_candidate
+)]
 
 mod builder;
 pub mod cli;

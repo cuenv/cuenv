@@ -14,6 +14,9 @@
 //! - [`detect_ci_provider`] - Detect the appropriate CI provider
 //! - [`detect_code_owners_provider`] - Detect the appropriate CODEOWNERS provider
 
+// Re-exports are used by the library but not by the binary
+#![allow(unused_imports)]
+
 mod ci;
 mod cubes;
 mod detection;
