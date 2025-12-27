@@ -210,7 +210,8 @@ impl GitHubActionsEmitter {
 
     /// Build a workflow from the IR
     fn build_workflow(&self, ir: &IntermediateRepresentation, workflow_name: &str) -> Workflow {
-        let triggers = self.build_triggers(ir);
+        let workflow_filename = format!("{}.yml", sanitize_filename(workflow_name));
+        let triggers = self.build_triggers(ir, &workflow_filename);
         let permissions = Self::build_permissions(ir);
         let jobs = self.build_jobs(ir);
 
@@ -228,12 +229,16 @@ impl GitHubActionsEmitter {
     }
 
     /// Build workflow triggers from IR
-    fn build_triggers(&self, ir: &IntermediateRepresentation) -> WorkflowTriggers {
+    fn build_triggers(
+        &self,
+        ir: &IntermediateRepresentation,
+        workflow_filename: &str,
+    ) -> WorkflowTriggers {
         let trigger = ir.pipeline.trigger.as_ref();
 
         WorkflowTriggers {
-            push: self.build_push_trigger(trigger),
-            pull_request: self.build_pr_trigger(trigger),
+            push: self.build_push_trigger(trigger, workflow_filename),
+            pull_request: self.build_pr_trigger(trigger, workflow_filename),
             release: Self::build_release_trigger(trigger),
             workflow_dispatch: Self::build_manual_trigger(trigger),
             schedule: Self::build_schedule_trigger(trigger),
@@ -241,7 +246,11 @@ impl GitHubActionsEmitter {
     }
 
     /// Build push trigger from IR trigger condition
-    fn build_push_trigger(&self, trigger: Option<&TriggerCondition>) -> Option<PushTrigger> {
+    fn build_push_trigger(
+        &self,
+        trigger: Option<&TriggerCondition>,
+        workflow_filename: &str,
+    ) -> Option<PushTrigger> {
         let trigger = trigger?;
 
         // Only emit push trigger if we have branch conditions
@@ -249,9 +258,11 @@ impl GitHubActionsEmitter {
             return None;
         }
 
+        let paths = Self::build_trigger_paths(&trigger.paths, workflow_filename);
+
         Some(PushTrigger {
             branches: trigger.branches.clone(),
-            paths: trigger.paths.clone(),
+            paths,
             paths_ignore: if trigger.paths_ignore.is_empty() {
                 self.default_paths_ignore.clone()
             } else {
@@ -262,14 +273,20 @@ impl GitHubActionsEmitter {
     }
 
     /// Build pull request trigger from IR trigger condition
-    fn build_pr_trigger(&self, trigger: Option<&TriggerCondition>) -> Option<PullRequestTrigger> {
+    fn build_pr_trigger(
+        &self,
+        trigger: Option<&TriggerCondition>,
+        workflow_filename: &str,
+    ) -> Option<PullRequestTrigger> {
         let trigger = trigger?;
 
         // Only emit PR trigger if explicitly enabled - never default to running on PRs
         if trigger.pull_request == Some(true) {
+            let paths = Self::build_trigger_paths(&trigger.paths, workflow_filename);
+
             Some(PullRequestTrigger {
                 branches: trigger.branches.clone(),
-                paths: trigger.paths.clone(),
+                paths,
                 paths_ignore: if trigger.paths_ignore.is_empty() {
                     self.default_paths_ignore.clone()
                 } else {
@@ -310,6 +327,27 @@ impl GitHubActionsEmitter {
                 .map(|cron| ScheduleTrigger { cron: cron.clone() })
                 .collect(),
         )
+    }
+
+    /// Build trigger paths, adding the workflow file itself when path filtering is active.
+    ///
+    /// When a workflow has path-based triggers (e.g., only trigger on changes to `src/**`),
+    /// this ensures the workflow also triggers when its own definition file changes.
+    fn build_trigger_paths(paths: &[String], workflow_filename: &str) -> Vec<String> {
+        if paths.is_empty() {
+            return Vec::new();
+        }
+
+        let workflow_path = format!(".github/workflows/{workflow_filename}");
+
+        if paths.contains(&workflow_path) {
+            return paths.to_vec();
+        }
+
+        let mut result = paths.to_vec();
+        result.push(workflow_path);
+        result.sort();
+        result
     }
 
     /// Build manual (`workflow_dispatch`) trigger from IR trigger condition
@@ -1368,6 +1406,7 @@ mod tests {
     use super::*;
     use cuenv_ci::ir::{
         CachePolicy, PipelineMetadata, ResourceRequirements, StageConfiguration, StageTask,
+        TriggerCondition,
     };
 
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
@@ -2114,5 +2153,124 @@ mod tests {
             !yaml.contains("working-directory"),
             "YAML should NOT contain working-directory field. Got:\n{yaml}"
         );
+    }
+
+    // =========================================================================
+    // Workflow Self-Path Trigger Tests
+    // =========================================================================
+
+    #[test]
+    fn test_workflow_includes_own_path_in_triggers() {
+        let emitter = GitHubActionsEmitter::new()
+            .without_nix()
+            .without_cuenv_build();
+
+        let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        ir.pipeline.trigger = Some(TriggerCondition {
+            branches: vec!["main".to_string()],
+            paths: vec!["src/**".to_string(), "Cargo.toml".to_string()],
+            pull_request: Some(true),
+            ..Default::default()
+        });
+
+        let yaml = emitter.emit(&ir).unwrap();
+
+        // Workflow should trigger on its own file path
+        assert!(
+            yaml.contains(".github/workflows/test-pipeline.yml"),
+            "Workflow should include its own path in triggers. Got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_workflow_path_not_added_when_paths_empty() {
+        let emitter = GitHubActionsEmitter::new()
+            .without_nix()
+            .without_cuenv_build();
+
+        let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        ir.pipeline.trigger = Some(TriggerCondition {
+            branches: vec!["main".to_string()],
+            paths: vec![], // Empty paths = no path filtering
+            ..Default::default()
+        });
+
+        let yaml = emitter.emit(&ir).unwrap();
+
+        // Workflow should NOT add path when there's no path filtering
+        assert!(
+            !yaml.contains(".github/workflows/test-pipeline.yml"),
+            "Workflow should NOT include its own path when no path filtering. Got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_workflow_path_added_to_both_push_and_pr_triggers() {
+        let emitter = GitHubActionsEmitter::new()
+            .without_nix()
+            .without_cuenv_build();
+
+        let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        ir.pipeline.trigger = Some(TriggerCondition {
+            branches: vec!["main".to_string()],
+            paths: vec!["src/**".to_string()],
+            pull_request: Some(true),
+            ..Default::default()
+        });
+
+        let yaml = emitter.emit(&ir).unwrap();
+
+        // Count occurrences of the workflow path (should appear in both push and PR triggers)
+        let workflow_path_count = yaml.matches(".github/workflows/test-pipeline.yml").count();
+        assert_eq!(
+            workflow_path_count, 2,
+            "Workflow path should appear in both push and PR triggers. Got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_build_trigger_paths_adds_workflow_path() {
+        let paths = vec!["src/**".to_string(), "Cargo.toml".to_string()];
+
+        let result = GitHubActionsEmitter::build_trigger_paths(&paths, "ci.yml");
+
+        assert!(result.contains(&".github/workflows/ci.yml".to_string()));
+        assert!(result.contains(&"src/**".to_string()));
+        assert!(result.contains(&"Cargo.toml".to_string()));
+    }
+
+    #[test]
+    fn test_build_trigger_paths_empty_input() {
+        let paths: Vec<String> = vec![];
+
+        let result = GitHubActionsEmitter::build_trigger_paths(&paths, "ci.yml");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_build_trigger_paths_deduplication() {
+        let paths = vec![".github/workflows/ci.yml".to_string(), "src/**".to_string()];
+
+        let result = GitHubActionsEmitter::build_trigger_paths(&paths, "ci.yml");
+
+        // Should not duplicate the workflow path
+        let count = result
+            .iter()
+            .filter(|p| *p == ".github/workflows/ci.yml")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_build_trigger_paths_sorted() {
+        let paths = vec!["z-file".to_string(), "a-file".to_string()];
+
+        let result = GitHubActionsEmitter::build_trigger_paths(&paths, "ci.yml");
+
+        // Result should be sorted
+        let mut sorted = result.clone();
+        sorted.sort();
+        assert_eq!(result, sorted);
     }
 }
