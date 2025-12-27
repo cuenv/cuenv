@@ -82,34 +82,12 @@ pub fn evaluate_manifest(
         operation: "canonicalize path".to_string(),
     })?;
 
-    // Use executor's cached module if available
-    if let Some(exec) = executor {
-        tracing::debug!("Using cached module evaluation from executor");
-        let module = exec.get_module(&target_path)?;
-        let rel_path = relative_path_from_root(&module.root, &target_path);
-
-        let instance = module.get(&rel_path).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "No CUE instance found at path: {} (relative: {})",
-                target_path.display(),
-                rel_path.display()
-            ))
-        })?;
-
-        // Check if this is a Project (has name field) or Base (no name)
-        return match instance.kind {
-            cuenv_core::InstanceKind::Project => instance.deserialize(),
-            cuenv_core::InstanceKind::Base => {
-                // Valid Base config, but this command needs Project
-                Err(cuenv_core::Error::configuration(
-                    "This directory uses schema.#Base which doesn't support tasks.\n\
-                     To use tasks, update your env.cue to use schema.#Project:\n\n\
-                     schema.#Project\n\
-                     name: \"your-project-name\"",
-                ))
-            }
-        };
-    }
+    // Note: We intentionally don't use the executor's cached module here.
+    // The executor evaluates the entire module with recursive: true, which fails
+    // when the target directory uses a different CUE package than the module root.
+    // Instead, we use fresh evaluation with target_dir to evaluate only the
+    // specific directory requested.
+    let _ = executor; // Acknowledge but don't use
 
     // Legacy path: fresh evaluation
     tracing::debug!("Using fresh module evaluation (no executor)");
@@ -122,7 +100,8 @@ pub fn evaluate_manifest(
     })?;
 
     let options = ModuleEvalOptions {
-        recursive: true,
+        recursive: false,
+        target_dir: Some(target_path.to_string_lossy().to_string()),
         ..Default::default()
     };
     let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
@@ -135,6 +114,7 @@ pub fn evaluate_manifest(
     );
 
     let rel_path = relative_path_from_root(&module_root, &target_path);
+
     let instance = module.get(&rel_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "No CUE instance found at path: {} (relative: {})",

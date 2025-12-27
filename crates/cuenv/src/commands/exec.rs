@@ -47,35 +47,15 @@ pub async fn execute_exec(
             operation: "canonicalize path".to_string(),
         })?;
 
-    // Use executor's cached module if available
-    let manifest: Project = if let Some(exec) = executor {
-        tracing::debug!("Using cached module evaluation from executor");
-        let module = exec.get_module(&target_path)?;
-        let rel_path = relative_path_from_root(&module.root, &target_path);
+    // Note: We intentionally don't use the executor's cached module here.
+    // The executor evaluates the entire module with `package cuenv`, which fails
+    // to find instances in directories using a different CUE package (e.g., _examples).
+    // Instead, we use fresh evaluation with the target-specific package.
+    let _ = executor; // Acknowledge but don't use
 
-        let instance = module.get(&rel_path).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "No CUE instance found at path: {} (relative: {})",
-                target_path.display(),
-                rel_path.display()
-            ))
-        })?;
-
-        // Check if this is a Project (has name field) or Base (no name)
-        match instance.kind {
-            cuenv_core::InstanceKind::Project => instance.deserialize()?,
-            cuenv_core::InstanceKind::Base => {
-                return Err(cuenv_core::Error::configuration(
-                    "This directory uses schema.#Base which doesn't support exec.\n\
-                     To use exec, update your env.cue to use schema.#Project:\n\n\
-                     schema.#Project\n\
-                     name: \"your-project-name\"",
-                ));
-            }
-        }
-    } else {
-        // Legacy path: fresh evaluation
-        tracing::debug!("Using fresh module evaluation (no executor)");
+    // Fresh evaluation with target-specific package
+    tracing::debug!("Using fresh module evaluation (target package: {})", package);
+    let manifest: Project = {
 
         let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
             cuenv_core::Error::configuration(format!(
@@ -85,7 +65,8 @@ pub async fn execute_exec(
         })?;
 
         let options = ModuleEvalOptions {
-            recursive: true,
+            recursive: false,
+            target_dir: Some(target_path.to_string_lossy().to_string()),
             ..Default::default()
         };
         let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
