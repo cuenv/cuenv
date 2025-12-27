@@ -150,30 +150,58 @@ impl StageContributor for CuenvContributor {
 
         let (source, version) = Self::get_config(project);
 
-        let (command, label, depends_on) = match source {
+        // Check if sccache contributor is present (for Git/Nix modes that use cargo)
+        let has_sccache = project
+            .ci
+            .as_ref()
+            .map(|ci| ci.contributors.contains_key("sccache"))
+            .unwrap_or(false);
+
+        let (command, label, depends_on, priority) = match source {
             CuenvSource::Release => (
                 Self::with_sync(&Self::release_command(&version)),
                 "Setup cuenv (release)",
                 vec![], // No Nix dependency
+                10,     // Default priority
             ),
-            CuenvSource::Git => (
-                Self::with_sync(&Self::git_command(&version)),
-                if version == "self" {
-                    "Build cuenv"
-                } else {
-                    "Build cuenv (versioned)"
-                },
-                vec!["install-nix".to_string()],
-            ),
-            CuenvSource::Nix => (
-                Self::with_sync(&Self::nix_command(&version)),
-                "Setup cuenv (nix)",
-                vec!["install-nix".to_string()],
-            ),
+            CuenvSource::Git => {
+                let mut deps = vec!["install-nix".to_string()];
+                // If sccache contributor is present, depend on it for cargo build caching
+                if has_sccache {
+                    deps.push("cue-setup-setup-sccache".to_string());
+                }
+                (
+                    Self::with_sync(&Self::git_command(&version)),
+                    if version == "self" {
+                        "Build cuenv"
+                    } else {
+                        "Build cuenv (versioned)"
+                    },
+                    deps,
+                    // Run after sccache (priority 50) when it's present
+                    if has_sccache { 55 } else { 10 },
+                )
+            }
+            CuenvSource::Nix => {
+                let mut deps = vec!["install-nix".to_string()];
+                // Nix self mode also uses cargo build
+                let uses_cargo = version == "self";
+                if uses_cargo && has_sccache {
+                    deps.push("cue-setup-setup-sccache".to_string());
+                }
+                (
+                    Self::with_sync(&Self::nix_command(&version)),
+                    "Setup cuenv (nix)",
+                    deps,
+                    // Run after sccache when using cargo build
+                    if uses_cargo && has_sccache { 55 } else { 10 },
+                )
+            }
             CuenvSource::Homebrew => (
                 Self::with_sync(&Self::homebrew_command()),
                 "Setup cuenv (homebrew)",
                 vec![], // No Nix dependency!
+                10,     // Default priority
             ),
         };
 
@@ -187,7 +215,7 @@ impl StageContributor for CuenvContributor {
                     command: vec![command],
                     shell: true,
                     depends_on,
-                    priority: 10,
+                    priority,
                     ..Default::default()
                 },
             )],
@@ -431,5 +459,81 @@ mod tests {
         let (contributions, modified) = contributor.contribute(&ir, &project);
         assert!(!modified);
         assert!(contributions.is_empty());
+    }
+
+    #[test]
+    fn test_git_mode_depends_on_sccache_when_present() {
+        use cuenv_core::ci::{CI, Contributor};
+        use std::collections::HashMap;
+
+        let contributor = CuenvContributor;
+        let ir = make_ir();
+
+        // Create a project with git source AND sccache contributor
+        let mut contributors = HashMap::new();
+        contributors.insert(
+            "sccache".to_string(),
+            Contributor {
+                when: None,
+                setup: vec![],
+            },
+        );
+
+        let project = Project {
+            name: "test".to_string(),
+            config: Some(Config {
+                ci: Some(CIConfig {
+                    cuenv: Some(CuenvConfig {
+                        source: CuenvSource::Git,
+                        version: "self".to_string(),
+                    }),
+                }),
+                ..Default::default()
+            }),
+            ci: Some(CI {
+                pipelines: vec![],
+                provider: None,
+                contributors,
+            }),
+            ..Default::default()
+        };
+
+        let (contributions, _) = contributor.contribute(&ir, &project);
+        let (_, task) = &contributions[0];
+
+        // Should depend on both install-nix AND sccache
+        assert!(
+            task.depends_on.contains(&"install-nix".to_string()),
+            "Should depend on install-nix"
+        );
+        assert!(
+            task.depends_on
+                .contains(&"cue-setup-setup-sccache".to_string()),
+            "Should depend on sccache when contributor is present"
+        );
+        // Priority should be 55 (after sccache at 50) when sccache is present
+        assert_eq!(
+            task.priority, 55,
+            "Priority should be 55 to run after sccache (priority 50)"
+        );
+    }
+
+    #[test]
+    fn test_git_mode_no_sccache_dependency_without_contributor() {
+        let contributor = CuenvContributor;
+        let ir = make_ir();
+        let project = make_project_with_source(CuenvSource::Git, "self");
+
+        let (contributions, _) = contributor.contribute(&ir, &project);
+        let (_, task) = &contributions[0];
+
+        // Should depend on install-nix but NOT sccache (no contributor)
+        assert!(task.depends_on.contains(&"install-nix".to_string()));
+        assert!(
+            !task
+                .depends_on
+                .contains(&"cue-setup-setup-sccache".to_string()),
+            "Should not depend on sccache when contributor is absent"
+        );
     }
 }

@@ -366,6 +366,9 @@ impl Compiler {
         // Apply CUE-defined setup steps and contributors
         self.apply_cue_setup_steps(&mut ir);
 
+        // Re-sort by priority after adding CUE setup steps
+        ir.stages.sort_by_priority();
+
         // Validate the IR
         let validator = IrValidator::new(&ir);
         validator.validate().map_err(|errors| {
