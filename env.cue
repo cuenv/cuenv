@@ -138,20 +138,20 @@ schema.#Project & {
 			}
 		}
 
-		// Shared Modules should provide: schema.#NixFlakeCheck
 		check: {
-			command: "nix"
-			args: ["flake", "check"]
-			inputs: [
-				"flake.nix",
-				"flake.lock",
-				"Cargo.toml",
-				"Cargo.lock",
-				"crates",
-				"schema",
-				"cue.mod",
-				"deny.toml",
-			]
+			script: """
+				set -e
+				echo "Running format check..."
+				treefmt --fail-on-change
+				echo "Running clippy..."
+				cargo clippy --workspace --all-targets --all-features -- -D warnings
+				echo "Running tests..."
+				cargo nextest run --workspace --all-features
+				echo "Running security checks..."
+				cargo deny check bans licenses advisories
+				echo "All checks passed!"
+				"""
+			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests", "features", "_examples", "schema", "cue.mod"]])
 		}
 
 		// schema.#Rust.#Lint?
