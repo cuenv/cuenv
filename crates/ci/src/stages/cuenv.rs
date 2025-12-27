@@ -76,27 +76,29 @@ impl CuenvContributor {
         )
     }
 
-    /// Git mode: Build from checkout
+    /// Git mode: Build from checkout using nix develop + cargo
+    ///
+    /// Uses `nix develop -c cargo build` instead of `nix build` for:
+    /// - Faster builds with sccache caching
+    /// - Consistent behavior with NixRuntime (which also uses nix develop)
     fn git_command(version: &str) -> String {
         if version == "self" {
-            // Build from current checkout
-            // Note: PATH-setting is grouped with its own || true so build failures propagate
+            // Build from current checkout using cargo within nix develop shell
             format!(
                 ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-                nix build .#cuenv --accept-flake-config && \
+                nix develop -c cargo build --release -p cuenv && \
                 {path_export}",
-                path_export = path_export_command("$(pwd)/result/bin")
+                path_export = path_export_command("$(pwd)/target/release")
             )
         } else {
-            // Clone specific version and build
-            // Note: PATH-setting is grouped with its own || true so build failures propagate
+            // Clone specific version and build with cargo
             format!(
                 ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
                 git clone --depth 1 --branch {version} https://github.com/cuenv/cuenv.git /tmp/cuenv && \
                 cd /tmp/cuenv && \
-                nix build .#cuenv --accept-flake-config && \
+                nix develop -c cargo build --release -p cuenv && \
                 {path_export}",
-                path_export = path_export_command("/tmp/cuenv/result/bin")
+                path_export = path_export_command("/tmp/cuenv/target/release")
             )
         }
     }
@@ -294,7 +296,9 @@ mod tests {
         let (_, task) = &contributions[0];
 
         assert_eq!(task.label, Some("Build cuenv".to_string()));
-        assert!(task.command[0].contains("nix build .#cuenv"));
+        // Uses nix develop + cargo build instead of nix build
+        assert!(task.command[0].contains("nix develop -c cargo build --release"));
+        assert!(task.command[0].contains("target/release"));
         assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
@@ -310,7 +314,9 @@ mod tests {
 
         assert_eq!(task.label, Some("Build cuenv (versioned)".to_string()));
         assert!(task.command[0].contains("git clone --depth 1 --branch 0.17.0"));
-        assert!(task.command[0].contains("nix build .#cuenv"));
+        // Uses nix develop + cargo build instead of nix build
+        assert!(task.command[0].contains("nix develop -c cargo build --release"));
+        assert!(task.command[0].contains("target/release"));
         assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
@@ -325,8 +331,9 @@ mod tests {
         let (_, task) = &contributions[0];
 
         assert_eq!(task.label, Some("Setup cuenv (nix)".to_string()));
-        // Nix self mode uses same command as git self
-        assert!(task.command[0].contains("nix build .#cuenv"));
+        // Nix self mode uses same command as git self (cargo build)
+        assert!(task.command[0].contains("nix develop -c cargo build --release"));
+        assert!(task.command[0].contains("target/release"));
         assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }

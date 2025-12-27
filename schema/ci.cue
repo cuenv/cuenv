@@ -91,6 +91,17 @@ package schema
 // Pipeline task reference - either a simple task name or a matrix task
 #PipelineTask: string | #MatrixTask
 
+// GitHub Action configuration for setup steps
+#GitHubActionConfig: close({
+	uses!: string        // Action reference (e.g., "Mozilla-Actions/sccache-action@v0.2")
+	with?: [string]: _   // Action inputs
+})
+
+// Provider-specific setup step overrides
+#SetupStepProviderConfig: close({
+	github?: #GitHubActionConfig
+})
+
 // Setup step for CI pipelines
 #SetupStep: close({
 	name!:    string
@@ -98,6 +109,8 @@ package schema
 	script?:  string
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
+	// Provider-specific replacements (e.g., GitHub Action instead of shell command)
+	provider?: #SetupStepProviderConfig
 })
 
 // CUE-defined contributor that injects setup steps based on task matching

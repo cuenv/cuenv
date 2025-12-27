@@ -786,6 +786,35 @@ impl Compiler {
             .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
             .collect();
 
+        // Convert provider-specific overrides to provider_hints
+        let provider_hints = step.provider.as_ref().and_then(|p| {
+            p.github.as_ref().map(|gh| {
+                let mut github_action = serde_json::Map::new();
+                github_action.insert(
+                    "uses".to_string(),
+                    serde_json::Value::String(gh.uses.clone()),
+                );
+                if !gh.inputs.is_empty() {
+                    github_action.insert(
+                        "inputs".to_string(),
+                        serde_json::Value::Object(
+                            gh.inputs
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
+                        ),
+                    );
+                }
+
+                let mut hints = serde_json::Map::new();
+                hints.insert(
+                    "github_action".to_string(),
+                    serde_json::Value::Object(github_action),
+                );
+                serde_json::Value::Object(hints)
+            })
+        });
+
         StageTask {
             id: format!("cue-setup-{}", step.name.to_lowercase().replace(' ', "-")),
             provider: format!("cue:{provider}"),
@@ -796,7 +825,7 @@ impl Compiler {
             secrets: HashMap::new(),
             depends_on: vec![],
             priority: 50, // CUE setup steps run after Rust contributors (which use 10-30)
-            provider_hints: None,
+            provider_hints,
         }
     }
 
