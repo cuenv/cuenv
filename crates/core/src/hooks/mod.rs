@@ -11,7 +11,7 @@ pub mod executor;
 pub mod state;
 pub mod types;
 
-pub use approval::{ApprovalManager, ApprovalStatus};
+pub use approval::{ApprovalManager, ApprovalStatus, is_ci};
 pub use executor::{HookExecutor, execute_hooks};
 pub use state::{HookExecutionState, StateManager};
 pub use types::*;
