@@ -131,7 +131,7 @@ schema.#Project & {
 		_baseInputs: [
 			"Cargo.toml",
 			"Cargo.lock",
-			"crates",
+			"crates/**",
 		]
 
 		ci: {
@@ -139,7 +139,7 @@ schema.#Project & {
 				command: "cuenv"
 				args: ["sync", "ci", "--check"]
 				description: "Verify CI workflows are in sync with CUE configuration"
-				inputs: ["env.cue", "schema", "cue.mod", "contrib"]
+				inputs: ["env.cue", "schema/**", "cue.mod/**", "contrib/**"]
 			}
 		}
 
@@ -154,7 +154,7 @@ schema.#Project & {
 				cargo deny check bans licenses advisories
 				echo "All checks passed!"
 				"""
-			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests", "features", "_examples", "schema", "cue.mod"]])
+			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
 		}
 
 		// schema.#Rust.#Lint?
@@ -166,23 +166,23 @@ schema.#Project & {
 
 		fmt: {
 			_inputs: [
-				".config",
+				".config/**",
 				".gitignore",
 				".release-please-manifest.json",
 				"AGENTS.md",
 				"bun.lock",
 				"Cargo.lock",
 				"Cargo.toml",
-				"crates",
-				"cue.mod",
+				"crates/**",
+				"cue.mod/**",
 				"deny.toml",
-				"docs",
+				"docs/**",
 				"env.cue",
-				"_examples",
-				"features",
+				"_examples/**",
+				"features/**",
 				"flake.lock",
 				"flake.nix",
-				"Formula",
+				"Formula/**",
 				"GEMINI.md",
 				"HOMEBREW_TAP.md",
 				"license.md",
@@ -190,8 +190,8 @@ schema.#Project & {
 				"readme.md",
 				"release-please-config.json",
 				"release.toml",
-				"schema",
-				"_tests",
+				"schema/**",
+				"_tests/**",
 				"treefmt.toml",
 			]
 			fix: {
@@ -209,7 +209,7 @@ schema.#Project & {
 			unit: {
 				command: "cargo"
 				args: ["nextest", "run", "--workspace", "--all-features"]
-				inputs: list.Concat([_baseInputs, ["_tests", "features", "_examples", "schema", "cue.mod"]])
+				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
 			}
 			doc: {
 				command: "cargo"
@@ -219,7 +219,7 @@ schema.#Project & {
 			bdd: {
 				command: "cargo"
 				args: ["test", "--test", "bdd"]
-				inputs: list.Concat([_baseInputs, ["_tests", "features", "schema", "cue.mod"]])
+				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "schema/**", "cue.mod/**"]])
 				outputs: [".test"]
 			}
 		}
@@ -276,7 +276,7 @@ schema.#Project & {
 		coverage: {
 			command: "cargo"
 			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-			inputs: list.Concat([_baseInputs, ["_tests", "features", "_examples", "schema", "cue.mod"]])
+			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
 			outputs: ["lcov.info"]
 
 		}
@@ -294,7 +294,7 @@ schema.#Project & {
 				inputs: [
 					"package.json",
 					"bun.lock",
-					"docs",
+					"docs/**",
 				]
 				outputs: ["docs/dist"]
 			}
@@ -307,7 +307,7 @@ schema.#Project & {
 		}
 
 		eval: {
-			_inputs: ["llms.txt", "schema", "prompts"]
+			_inputs: ["llms.txt", "schema/**", "prompts/**"]
 
 			"task-gen": {
 				command: "gh"
@@ -359,7 +359,7 @@ schema.#Project & {
 				fi
 				cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish v$TAG
 				"""]
-			inputs: ["cue.mod", "schema"]
+			inputs: ["cue.mod/**", "schema/**"]
 		}
 
 		cargo: install: {
