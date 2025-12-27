@@ -10,15 +10,13 @@ on:
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.toml
-    - _examples
-    - _tests
-    - crates
-    - cue.mod
+    - _examples/**
+    - _tests/**
+    - crates/**
     - cue.mod/**
     - deny.toml
     - env.cue
-    - features
-    - schema
+    - features/**
     - schema/**
     - treefmt.toml
   pull_request:
@@ -28,15 +26,13 @@ on:
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.toml
-    - _examples
-    - _tests
-    - crates
-    - cue.mod
+    - _examples/**
+    - _tests/**
+    - crates/**
     - cue.mod/**
     - deny.toml
     - env.cue
-    - features
-    - schema
+    - features/**
     - schema/**
     - treefmt.toml
 concurrency:

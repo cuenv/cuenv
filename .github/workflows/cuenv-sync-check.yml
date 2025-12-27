@@ -8,22 +8,18 @@ on:
     - main
     paths:
     - .github/workflows/cuenv-sync-check.yml
-    - contrib
-    - cue.mod
+    - contrib/**
     - cue.mod/**
     - env.cue
-    - schema
     - schema/**
   pull_request:
     branches:
     - main
     paths:
     - .github/workflows/cuenv-sync-check.yml
-    - contrib
-    - cue.mod
+    - contrib/**
     - cue.mod/**
     - env.cue
-    - schema
     - schema/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
