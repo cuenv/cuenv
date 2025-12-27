@@ -122,9 +122,12 @@ impl CuenvContributor {
         "brew install cuenv/cuenv/cuenv".to_string()
     }
 
-    /// Wrap a command with `cuenv sync -A` to ensure project synchronization
-    fn with_sync(command: &str) -> String {
-        format!("{command} && cuenv sync -A")
+    /// Wrap a command with `cuenv sync -A` to ensure project synchronization.
+    ///
+    /// Uses the explicit binary path because `$GITHUB_PATH` changes only take
+    /// effect in subsequent steps, not within the same step.
+    fn with_sync(command: &str, cuenv_path: &str) -> String {
+        format!("{command} && {cuenv_path} sync -A")
     }
 }
 
@@ -158,7 +161,7 @@ impl StageContributor for CuenvContributor {
 
         let (command, label, depends_on, priority) = match source {
             CuenvSource::Release => (
-                Self::with_sync(&Self::release_command(&version)),
+                Self::with_sync(&Self::release_command(&version), "/usr/local/bin/cuenv"),
                 "Setup cuenv (release)",
                 vec![], // No Nix dependency
                 10,     // Default priority
@@ -169,8 +172,13 @@ impl StageContributor for CuenvContributor {
                 if has_sccache {
                     deps.push("cue-setup-setup-sccache".to_string());
                 }
+                let cuenv_path = if version == "self" {
+                    "./target/release/cuenv"
+                } else {
+                    "/tmp/cuenv/target/release/cuenv"
+                };
                 (
-                    Self::with_sync(&Self::git_command(&version)),
+                    Self::with_sync(&Self::git_command(&version), cuenv_path),
                     if version == "self" {
                         "Build cuenv"
                     } else {
@@ -188,8 +196,14 @@ impl StageContributor for CuenvContributor {
                 if uses_cargo && has_sccache {
                     deps.push("cue-setup-setup-sccache".to_string());
                 }
+                // Self mode uses cargo build, versioned mode uses nix profile (which adds to PATH)
+                let cuenv_path = if version == "self" {
+                    "./target/release/cuenv"
+                } else {
+                    "cuenv"
+                };
                 (
-                    Self::with_sync(&Self::nix_command(&version)),
+                    Self::with_sync(&Self::nix_command(&version), cuenv_path),
                     "Setup cuenv (nix)",
                     deps,
                     // Run after sccache when using cargo build
@@ -197,7 +211,8 @@ impl StageContributor for CuenvContributor {
                 )
             }
             CuenvSource::Homebrew => (
-                Self::with_sync(&Self::homebrew_command()),
+                // Homebrew adds to PATH immediately
+                Self::with_sync(&Self::homebrew_command(), "cuenv"),
                 "Setup cuenv (homebrew)",
                 vec![], // No Nix dependency!
                 10,     // Default priority
@@ -293,7 +308,7 @@ mod tests {
         assert_eq!(task.id, "setup-cuenv");
         assert_eq!(task.label, Some("Setup cuenv (release)".to_string()));
         assert!(task.command[0].contains("releases/latest/download"));
-        assert!(task.command[0].contains("&& cuenv sync -A"));
+        assert!(task.command[0].contains("&& /usr/local/bin/cuenv sync -A"));
         // Release mode has no Nix dependency
         assert!(task.depends_on.is_empty());
     }
@@ -309,7 +324,7 @@ mod tests {
 
         assert_eq!(task.label, Some("Setup cuenv (release)".to_string()));
         assert!(task.command[0].contains("releases/download/0.17.0"));
-        assert!(task.command[0].contains("&& cuenv sync -A"));
+        assert!(task.command[0].contains("&& /usr/local/bin/cuenv sync -A"));
         assert!(task.depends_on.is_empty());
     }
 
@@ -326,7 +341,7 @@ mod tests {
         // Uses nix develop + cargo build instead of nix build
         assert!(task.command[0].contains("nix develop -c cargo build --release"));
         assert!(task.command[0].contains("target/release"));
-        assert!(task.command[0].contains("&& cuenv sync -A"));
+        assert!(task.command[0].contains("&& ./target/release/cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 
@@ -344,7 +359,7 @@ mod tests {
         // Uses nix develop + cargo build instead of nix build
         assert!(task.command[0].contains("nix develop -c cargo build --release"));
         assert!(task.command[0].contains("target/release"));
-        assert!(task.command[0].contains("&& cuenv sync -A"));
+        assert!(task.command[0].contains("&& /tmp/cuenv/target/release/cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 
@@ -361,7 +376,7 @@ mod tests {
         // Nix self mode uses same command as git self (cargo build)
         assert!(task.command[0].contains("nix develop -c cargo build --release"));
         assert!(task.command[0].contains("target/release"));
-        assert!(task.command[0].contains("&& cuenv sync -A"));
+        assert!(task.command[0].contains("&& ./target/release/cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
 
@@ -376,6 +391,7 @@ mod tests {
 
         assert_eq!(task.label, Some("Setup cuenv (nix)".to_string()));
         assert!(task.command[0].contains("nix profile install github:cuenv/cuenv/0.17.0#cuenv"));
+        // Versioned nix mode uses nix profile which updates PATH immediately
         assert!(task.command[0].contains("&& cuenv sync -A"));
         assert!(task.depends_on.contains(&"install-nix".to_string()));
     }
