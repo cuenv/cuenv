@@ -234,6 +234,7 @@
           inherit cargoArtifacts;
           pname = "cuenv";
           inherit version;
+          doCheck = false; # Tests run via cuenv task check, not nix build
           nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-zigbuild ];
         } // (if pkgs.stdenv.isLinux then {
           # Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
@@ -293,12 +294,7 @@
           inherit cuenv cue-bridge;
         };
 
-        checks = {
-          inherit cuenv;
-        };
-
         devShells.default = craneLib.devShell ({
-          checks = self.checks.${system};
           packages = devTools;
 
           RUST_BACKTRACE = "1";

@@ -73,6 +73,15 @@ impl StageContributor for CachixContributor {
             format!("${{{}}}", config.auth_token_secret),
         );
 
+        // Build the cachix setup command
+        // Note: The actual cachix binary is installed via nix, so we just configure and use
+        let command = format!(
+            ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+             nix-env -iA cachix -f https://cachix.org/api/v1/install && \
+             cachix use {}",
+            config.name
+        );
+
         (
             vec![(
                 BuildStage::Setup,
@@ -80,8 +89,8 @@ impl StageContributor for CachixContributor {
                     id: "setup-cachix".to_string(),
                     provider: "cachix".to_string(),
                     label: Some(format!("Setup Cachix ({})", config.name)),
-                    command: vec![],
-                    shell: false,
+                    command: vec![command],
+                    shell: true,
                     env,
                     depends_on: vec!["install-nix".to_string()],
                     priority: 15, // After Nix install but before cuenv
@@ -129,6 +138,7 @@ mod tests {
             name: "test".to_string(),
             ci: Some(CI {
                 pipelines: vec![],
+                contributors: Default::default(),
                 provider: Some(
                     serde_json::from_value(json!({
                         "github": {
@@ -149,6 +159,7 @@ mod tests {
             name: "test".to_string(),
             ci: Some(CI {
                 pipelines: vec![],
+                contributors: Default::default(),
                 provider: Some(
                     serde_json::from_value(json!({
                         "github": {

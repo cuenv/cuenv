@@ -1,3 +1,4 @@
+use crate::manifest::TaskMatcher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -150,6 +151,43 @@ impl PipelineTask {
 /// ```
 pub type ProviderConfig = HashMap<String, serde_json::Value>;
 
+/// Setup step for CI pipelines - runs before main tasks
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStep {
+    /// Name of the setup step (for display)
+    pub name: String,
+
+    /// Command to execute (mutually exclusive with script)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+
+    /// Inline script to execute (mutually exclusive with command)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+
+    /// Arguments for the command
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+
+    /// Environment variables for this step
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, serde_json::Value>,
+}
+
+/// CUE-defined contributor that injects setup steps based on task matching
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Contributor {
+    /// Condition for when this contributor should be active
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub when: Option<TaskMatcher>,
+
+    /// Setup steps to inject when active
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<SetupStep>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
@@ -157,6 +195,9 @@ pub struct Pipeline {
     /// Environment for secret resolution (e.g., "production")
     pub environment: Option<String>,
     pub when: Option<PipelineCondition>,
+    /// Setup steps to run before tasks
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<SetupStep>,
     /// Tasks to run - can be simple task names or matrix task objects
     #[serde(default)]
     pub tasks: Vec<PipelineTask>,
@@ -172,6 +213,9 @@ pub struct CI {
     pub pipelines: Vec<Pipeline>,
     /// Global provider configuration defaults
     pub provider: Option<ProviderConfig>,
+    /// CUE-defined contributors that inject setup steps
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub contributors: HashMap<String, Contributor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

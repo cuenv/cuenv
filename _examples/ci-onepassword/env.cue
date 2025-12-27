@@ -10,7 +10,7 @@ name: "ci-onepassword"
 // This triggers the OnePasswordContributor to inject setup steps
 env: {
 	production: {
-		API_TOKEN: schema.#OnePasswordRef & {ref: "op://vault/api/token"}
+		API_TOKEN:  schema.#OnePasswordRef & {ref: "op://vault/api/token"}
 		DEPLOY_KEY: schema.#OnePasswordRef & {ref: "op://vault/deploy/key"}
 	}
 }
