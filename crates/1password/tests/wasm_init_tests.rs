@@ -6,8 +6,6 @@
 //!
 //! In CI (Nix builds), the WASM is provided via `ONEPASSWORD_WASM_PATH` env var.
 //! For local development, run `cuenv secrets setup onepassword` to download it.
-//!
-//! Tests are skipped if WASM is not available (common in CI without 1Password setup).
 
 // Integration tests can use unwrap/expect for cleaner assertions
 #![allow(clippy::expect_used)]
@@ -15,16 +13,20 @@
 use cuenv_1password::secrets::{core, wasm};
 use std::path::PathBuf;
 
-/// Ensure WASM is available (from env var or cache).
-/// Returns None if WASM is not available, allowing tests to skip gracefully.
-fn ensure_wasm_available() -> Option<PathBuf> {
-    let path = wasm::onepassword_wasm_path().ok()?;
+/// Ensure WASM is available (from env var or cache)
+fn ensure_wasm_available() -> PathBuf {
+    let path = wasm::onepassword_wasm_path().expect("Should get WASM path");
 
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
+    assert!(
+        path.exists(),
+        "1Password WASM not found at {}.\n\
+        Either:\n\
+        - Set ONEPASSWORD_WASM_PATH env var (done automatically in Nix builds), or\n\
+        - Run: cuenv secrets setup onepassword",
+        path.display()
+    );
+
+    path
 }
 
 /// Test that the WASM file can be loaded and the Extism plugin initializes
@@ -38,10 +40,7 @@ fn ensure_wasm_available() -> Option<PathBuf> {
 #[test]
 #[allow(unsafe_code)]
 fn test_wasm_loads_and_plugin_initializes() {
-    let Some(path) = ensure_wasm_available() else {
-        eprintln!("Skipping test: 1Password WASM not available");
-        return;
-    };
+    let path = ensure_wasm_available();
 
     // Set HOME to a temp directory for wasmtime's bytecode cache.
     let temp_home = std::env::temp_dir().join("cuenv-wasm-test-home");
@@ -94,10 +93,7 @@ fn test_wasm_loads_and_plugin_initializes() {
 /// Test that WASM size is reasonable (catches incomplete downloads)
 #[test]
 fn test_wasm_file_size() {
-    let Some(path) = ensure_wasm_available() else {
-        eprintln!("Skipping test: 1Password WASM not available");
-        return;
-    };
+    let path = ensure_wasm_available();
     let metadata = std::fs::metadata(&path).expect("Should get file metadata");
 
     // The WASM file should be around 8-10 MB
@@ -118,10 +114,7 @@ fn test_wasm_file_size() {
 #[test]
 #[allow(unsafe_code, clippy::significant_drop_tightening)]
 fn test_shared_core_initializes() {
-    let Some(_path) = ensure_wasm_available() else {
-        eprintln!("Skipping test: 1Password WASM not available");
-        return;
-    };
+    let _path = ensure_wasm_available();
 
     // Set HOME to a temp directory for wasmtime's bytecode cache.
     let temp_home = std::env::temp_dir().join("cuenv-wasm-test-home");
