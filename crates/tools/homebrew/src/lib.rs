@@ -18,6 +18,14 @@ use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
 
+/// Sanitize a formula name for use in an OCI image reference.
+///
+/// Homebrew versioned formulas like "python@3.14" are published with the `@` replaced
+/// by `/` in the OCI path, e.g., `ghcr.io/homebrew/core/python/3.14:version`.
+fn sanitize_formula_for_oci(name: &str) -> String {
+    name.replace('@', "/")
+}
+
 /// Tool provider for Homebrew bottles.
 ///
 /// Fetches pre-built binaries from ghcr.io/homebrew/core using OCI registry protocol.
@@ -102,13 +110,17 @@ impl ToolProvider for HomebrewToolProvider {
             ))
         })?;
 
-        // Check if the requested version matches (or if we should use stable)
-        let actual_version = if version == "latest" || version == formula_info.versions.stable {
-            formula_info.versions.stable.clone()
-        } else {
-            // TODO: Support specific version resolution via GitHub API
-            version.to_string()
-        };
+        // Homebrew only publishes bottles for the current stable version.
+        // Always use the stable version - historical versions are not available.
+        let actual_version = formula_info.versions.stable.clone();
+
+        if version != "latest" && version != actual_version {
+            debug!(
+                requested = %version,
+                stable = %actual_version,
+                "Requested version differs from stable; using stable version"
+            );
+        }
 
         // Verify bottle exists for platform
         if formula_info.get_bottle(&homebrew_platform).is_none() {
@@ -120,8 +132,9 @@ impl ToolProvider for HomebrewToolProvider {
             )));
         }
 
-        // Build OCI image reference
-        let image_ref = format!("ghcr.io/homebrew/core/{}:{}", formula, actual_version);
+        // Build OCI image reference (sanitize formula name for versioned formulas like python@3.14)
+        let sanitized_formula = sanitize_formula_for_oci(formula);
+        let image_ref = format!("ghcr.io/homebrew/core/{}:{}", sanitized_formula, actual_version);
 
         debug!(%image_ref, %homebrew_platform, "Resolved to OCI image");
 
@@ -185,6 +198,14 @@ impl ToolProvider for HomebrewToolProvider {
             cuenv_core::Error::platform(format!("Invalid platform: {}", platform_str))
         })?;
 
+        // Get homebrew platform for bottle availability checks
+        let homebrew_platform = to_homebrew_platform(&platform_str).ok_or_else(|| {
+            cuenv_core::Error::platform(format!(
+                "Platform '{}' not supported by Homebrew",
+                platform_str
+            ))
+        })?;
+
         for f in &formulas {
             let formula_dir = homebrew_cache.join(&f.name).join(&f.versions.stable);
 
@@ -194,8 +215,19 @@ impl ToolProvider for HomebrewToolProvider {
                 continue;
             }
 
-            // Pull the bottle
-            let f_image_ref = format!("ghcr.io/homebrew/core/{}:{}", f.name, f.versions.stable);
+            // Skip formulas without bottles for this platform (e.g., ca-certificates on some platforms)
+            if f.get_bottle(&homebrew_platform).is_none() {
+                debug!(
+                    name = %f.name,
+                    %homebrew_platform,
+                    "No bottle for platform, skipping dependency"
+                );
+                continue;
+            }
+
+            // Pull the bottle (sanitize formula name for versioned formulas like python@3.14)
+            let sanitized_name = sanitize_formula_for_oci(&f.name);
+            let f_image_ref = format!("ghcr.io/homebrew/core/{}:{}", sanitized_name, f.versions.stable);
             debug!(image = %f_image_ref, "Pulling bottle");
 
             let resolved_image = self
@@ -248,40 +280,66 @@ impl ToolProvider for HomebrewToolProvider {
         }
 
         // Verify the tool binary exists
-        if !binary_path.exists() {
-            // Binary might have a different name than the formula
-            // Try to find it in bin/
+        let mut actual_binary_path = binary_path.clone();
+
+        if !actual_binary_path.exists() {
+            // Binary might have a different name than the tool
+            // Search for any executable in bin/
             let bin_dir = cache_dir.join("bin");
+            let mut found = false;
+
             if bin_dir.exists() {
                 for entry in std::fs::read_dir(&bin_dir)? {
                     let entry = entry?;
                     let path = entry.path();
                     if path.is_file() {
-                        debug!(
-                            binary = ?path.file_name(),
-                            "Found binary (tool name may differ from formula)"
-                        );
+                        // Check if it's executable (on Unix)
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = path.metadata() {
+                                if metadata.permissions().mode() & 0o111 != 0 {
+                                    debug!(
+                                        expected = %resolved.name,
+                                        found = ?path.file_name(),
+                                        "Using alternative binary name"
+                                    );
+                                    actual_binary_path = path;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            actual_binary_path = path;
+                            found = true;
+                            break;
+                        }
                     }
                 }
             }
-            return Err(cuenv_core::Error::tool_resolution(format!(
-                "Binary '{}' not found in extracted bottle",
-                resolved.name
-            )));
+
+            if !found {
+                return Err(cuenv_core::Error::tool_resolution(format!(
+                    "Binary '{}' not found in extracted bottle (checked: {:?})",
+                    resolved.name, bin_dir
+                )));
+            }
         }
 
-        let sha256 = compute_file_sha256(&binary_path).await?;
+        let sha256 = compute_file_sha256(&actual_binary_path).await?;
 
         info!(
             tool = %resolved.name,
-            binary = ?binary_path,
+            binary = ?actual_binary_path,
             sha256 = %sha256,
             "Fetched Homebrew tool"
         );
 
         Ok(FetchedTool {
             name: resolved.name.clone(),
-            binary_path,
+            binary_path: actual_binary_path,
             sha256,
         })
     }
@@ -293,7 +351,25 @@ impl ToolProvider for HomebrewToolProvider {
 
         let cache_dir = self.formula_cache_dir(options, formula, &resolved.version);
         let binary_path = cache_dir.join("bin").join(&resolved.name);
-        binary_path.exists()
+
+        // Check exact name first
+        if binary_path.exists() {
+            return true;
+        }
+
+        // Check if any binary exists in bin/ (alternative binary names)
+        let bin_dir = cache_dir.join("bin");
+        if bin_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&bin_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().is_file() {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
     }
 }
 

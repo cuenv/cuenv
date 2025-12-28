@@ -376,16 +376,25 @@ async fn execute_lock_sync(
                 );
 
                 // Add to lockfile
+                // Use resolved.source instead of original config to capture expanded templates
+                // (e.g., GitHub tag "bun-v{version}" becomes "bun-v1.3.5")
+                let resolved_source = serde_json::to_value(&resolved.source).map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to serialize resolved source for '{}': {}",
+                        tool.name, e
+                    ))
+                })?;
                 let locked_platform = LockedToolPlatform {
                     provider: provider_name.clone(),
                     digest: format!("sha256:{}", compute_tool_digest(&resolved)),
-                    source: config,
+                    source: resolved_source,
                     size: None,
                     dependencies: vec![],
                 };
 
+                // Use the resolved version (may differ from requested for Homebrew)
                 lockfile
-                    .upsert_tool_platform(&tool.name, &tool.version, platform_str, locked_platform)
+                    .upsert_tool_platform(&tool.name, &resolved.version, platform_str, locked_platform)
                     .map_err(|e| {
                         cuenv_core::Error::configuration(format!(
                             "Failed to add tool '{}' to lockfile: {}",
