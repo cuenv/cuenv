@@ -21,6 +21,10 @@ use super::export::{extract_static_env_vars, get_environment_with_hooks};
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+///
+/// # Errors
+///
+/// Returns an error if CUE evaluation fails or command execution fails.
 #[allow(clippy::too_many_lines)]
 pub async fn execute_exec(
     path: &str,

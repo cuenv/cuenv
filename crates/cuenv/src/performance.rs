@@ -18,12 +18,19 @@ use uuid::Uuid;
 /// Performance metrics for a single operation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationMetrics {
+    /// Unique identifier for this operation instance
     pub operation_id: Uuid,
+    /// Human-readable name describing the operation
     pub operation_name: String,
+    /// Wall-clock time when the operation started
     pub start_time: std::time::SystemTime,
+    /// How long the operation took to complete
     pub duration: Duration,
+    /// Whether the operation completed successfully
     pub success: bool,
+    /// Resident memory usage in bytes at completion, if available
     pub memory_usage_bytes: Option<u64>,
+    /// Additional key-value pairs for operation-specific context
     pub metadata: HashMap<String, String>,
 }
 
@@ -34,12 +41,15 @@ pub struct PerformanceRegistry {
 }
 
 impl PerformanceRegistry {
+    /// Creates a new empty performance registry.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             operations: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
+    /// Records a completed operation's metrics to the registry.
     pub fn record_operation(&self, metrics: OperationMetrics) {
         if let Ok(mut ops) = self.operations.lock() {
             info!(
@@ -53,7 +63,11 @@ impl PerformanceRegistry {
         }
     }
 
+    /// Returns an aggregated summary of all recorded operations.
+    ///
+    /// Recovers from poisoned mutex state to ensure metrics are never lost.
     #[allow(dead_code)]
+    #[must_use]
     pub fn get_summary(&self) -> PerformanceSummary {
         // If the mutex is poisoned, recover the data anyway since metrics are non-critical
         let ops = self
@@ -86,18 +100,27 @@ impl PerformanceRegistry {
 /// Performance summary with aggregated metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerformanceSummary {
+    /// Total number of operations recorded
     pub total_operations: usize,
+    /// Number of operations that completed successfully
     pub successful_operations: usize,
+    /// Number of operations that failed
     pub failed_operations: usize,
+    /// Combined duration of all operations
     pub total_duration: Duration,
+    /// Mean duration across all operations
     pub average_duration: Duration,
+    /// Complete list of individual operation metrics
     pub operations: Vec<OperationMetrics>,
 }
 
 /// Global performance registry instance
 static PERFORMANCE_REGISTRY: std::sync::OnceLock<PerformanceRegistry> = std::sync::OnceLock::new();
 
-/// Get the global performance registry
+/// Returns a reference to the global performance registry.
+///
+/// The registry is lazily initialized on first access.
+#[must_use]
 pub fn registry() -> &'static PerformanceRegistry {
     PERFORMANCE_REGISTRY.get_or_init(PerformanceRegistry::new)
 }
@@ -112,6 +135,10 @@ pub struct PerformanceGuard {
 }
 
 impl PerformanceGuard {
+    /// Creates a new performance guard and starts timing the operation.
+    ///
+    /// The guard will automatically record metrics when dropped.
+    #[must_use]
     pub fn new(operation_name: impl Into<String>) -> Self {
         let operation_name = operation_name.into();
         let operation_id = Uuid::new_v4();
@@ -131,10 +158,14 @@ impl PerformanceGuard {
         }
     }
 
+    /// Adds a key-value metadata pair to this operation's metrics.
     pub fn add_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.metadata.insert(key.into(), value.into());
     }
 
+    /// Explicitly finishes the operation and records metrics with the given success status.
+    ///
+    /// This consumes the guard, preventing the `Drop` implementation from recording again.
     pub fn finish(self, success: bool) {
         let duration = self.start_time.elapsed();
 

@@ -2,26 +2,44 @@ use std::fmt;
 use tokio::sync::mpsc;
 use tracing::{Level, event};
 
+/// Represents events that can occur within the cuenv system.
+///
+/// Events are used to communicate between different parts of the application,
+/// such as user input, command execution progress, and system lifecycle events.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum Event {
+    /// User-initiated input event.
     UserInput {
+        /// The raw input string from the user.
         input: String,
     },
+    /// Indicates a command has started execution.
     CommandStart {
+        /// The command being executed.
         command: String,
     },
+    /// Reports progress during command execution.
     CommandProgress {
+        /// The command being executed.
         command: String,
+        /// Progress value between 0.0 and 1.0.
         progress: f32,
+        /// Human-readable progress message.
         message: String,
     },
+    /// Indicates a command has finished execution.
     CommandComplete {
+        /// The command that was executed.
         command: String,
+        /// Whether the command completed successfully.
         success: bool,
+        /// The command output or error message.
         output: String,
     },
+    /// System shutdown signal.
     SystemShutdown,
+    /// Request to refresh the TUI display.
     TuiRefresh,
 }
 
@@ -59,32 +77,57 @@ impl fmt::Display for Event {
     }
 }
 
+/// Sender half of an unbounded event channel.
 #[allow(dead_code)]
 pub type EventSender = mpsc::UnboundedSender<Event>;
+
+/// Receiver half of an unbounded event channel.
 #[allow(dead_code)]
 pub type EventReceiver = mpsc::UnboundedReceiver<Event>;
 
+/// A message bus for broadcasting events between components.
+///
+/// The `EventBus` provides an unbounded channel for sending and receiving
+/// events asynchronously. It can be split into separate sender and receiver
+/// handles for use across different tasks.
 #[allow(dead_code)]
 pub struct EventBus {
+    /// The sender half of the event channel.
     sender: EventSender,
+    /// The receiver half of the event channel.
     receiver: EventReceiver,
 }
 
 #[allow(dead_code)]
 impl EventBus {
+    /// Creates a new event bus with an unbounded channel.
+    #[must_use]
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
         Self { sender, receiver }
     }
 
+    /// Returns a clone of the sender handle.
+    ///
+    /// This allows multiple producers to send events to the same bus.
+    #[must_use]
     pub fn sender(&self) -> EventSender {
         self.sender.clone()
     }
 
+    /// Consumes the event bus and returns the sender and receiver handles.
+    ///
+    /// Use this when you need separate ownership of the sender and receiver,
+    /// typically for distributing them across different tasks.
+    #[must_use]
     pub fn split(self) -> (EventSender, EventReceiver) {
         (self.sender, self.receiver)
     }
 
+    /// Sends an event through the bus, logging any errors.
+    ///
+    /// This method logs at DEBUG level when sending and ERROR level if
+    /// the send fails (which can happen if all receivers are dropped).
     pub fn send_event(&self, event: Event) {
         event!(Level::DEBUG, "Sending event: {}", event);
         if let Err(e) = self.sender.send(event) {

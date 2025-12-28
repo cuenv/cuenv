@@ -59,6 +59,10 @@ use super::export::get_environment_with_hooks;
 /// `TaskExecutionRequest` which groups all parameters into a structured
 /// format with type-safe selection modes.
 ///
+/// # Errors
+///
+/// Returns an error if task resolution, validation, or execution fails.
+///
 /// # Example
 ///
 /// ```ignore

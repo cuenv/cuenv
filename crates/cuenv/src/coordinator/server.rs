@@ -80,6 +80,10 @@ impl EventCoordinator {
     }
 
     /// Run the coordinator, listening for connections.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the socket cannot be created or client handling fails.
     pub async fn run(&self) -> io::Result<()> {
         let socket = socket_path();
 

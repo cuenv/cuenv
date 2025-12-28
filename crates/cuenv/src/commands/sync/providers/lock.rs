@@ -98,9 +98,8 @@ async fn execute_lock_sync(
             };
 
             // Check if project uses OCI runtime
-            let oci_runtime = match &project.runtime {
-                Some(Runtime::Oci(oci)) => oci,
-                _ => continue,
+            let Some(Runtime::Oci(oci_runtime)) = &project.runtime else {
+                continue;
             };
 
             // Collect platforms from this project's config
@@ -192,7 +191,7 @@ async fn execute_lock_sync(
             }
 
             let artifact =
-                resolve_homebrew_formula(&client, &formula, platforms, &all_platforms).await?;
+                resolve_homebrew_formula(&client, &formula, platforms, &all_platforms)?;
             artifacts.push(artifact);
             resolved_formulas.insert(formula.name.clone());
         }
@@ -282,7 +281,7 @@ async fn execute_lock_sync(
 /// Resolve a Homebrew formula to a lockfile artifact.
 ///
 /// Uses the bottle SHA256 from formula metadata as the digest.
-async fn resolve_homebrew_formula(
+fn resolve_homebrew_formula(
     _client: &OciClient,
     formula: &HomebrewFormula,
     requested_platforms: &[String],
@@ -299,16 +298,13 @@ async fn resolve_homebrew_formula(
 
     for platform_str in requested_platforms {
         // Convert cuenv platform to Homebrew platform
-        let homebrew_platform = match to_homebrew_platform(platform_str) {
-            Some(p) => p,
-            None => {
-                warn!(
-                    %platform_str,
-                    formula = %formula.name,
-                    "Platform not supported by Homebrew, skipping"
-                );
-                continue;
-            }
+        let Some(homebrew_platform) = to_homebrew_platform(platform_str) else {
+            warn!(
+                %platform_str,
+                formula = %formula.name,
+                "Platform not supported by Homebrew, skipping"
+            );
+            continue;
         };
 
         // Get bottle info from formula metadata

@@ -1,4 +1,10 @@
-//! Hook-related command implementations
+//! Hook-related command implementations.
+//!
+//! This module provides commands for managing environment hooks:
+//! - Loading environments and executing hooks
+//! - Checking hook execution status
+//! - Approving and denying hook configurations
+//! - Shell integration for automatic environment loading
 
 use super::env_file::{self, EnvFileStatus, find_cue_module_root};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
@@ -223,10 +229,18 @@ fn format_starship_status(state: &HookExecutionState) -> String {
     }
 }
 
-/// Execute env load command - evaluates config, checks approval, starts hook execution
+/// Execute env load command - evaluates config, checks approval, starts hook execution.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The directory cannot be resolved
+/// - CUE evaluation fails
+/// - Approval manager cannot be initialized
+/// - Hook execution fails to start
 pub async fn execute_env_load(
     path: &str,
     package: &str,
@@ -293,13 +307,20 @@ pub async fn execute_env_load(
     }
 }
 
-/// Execute env status command - show current hook execution status
+/// Execute env status command - show current hook execution status.
 ///
 /// Uses a fast path for non-wait mode that skips config hash computation entirely.
 /// This reduces latency from ~300ms to <20ms for Starship integration.
 ///
 /// When a `cmd_executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The directory cannot be resolved
+/// - Hook executor cannot be initialized
+/// - Config hash computation fails (in wait mode)
 pub async fn execute_env_status(
     path: &str,
     package: &str,
@@ -360,8 +381,13 @@ pub async fn execute_env_status(
 }
 
 /// Synchronous version of `execute_env_status` for the fast path.
+///
 /// This skips the tokio runtime entirely for shell prompt integration.
 /// Only supports non-wait mode.
+///
+/// # Errors
+///
+/// Returns an error if the hook executor cannot be initialized.
 pub fn execute_env_status_sync(path: &str, package: &str, format: StatusFormat) -> Result<String> {
     // Check env.cue and canonicalize path
     let directory = match env_file::find_env_file(Path::new(path), package)? {
@@ -384,10 +410,16 @@ pub fn execute_env_status_sync(path: &str, package: &str, format: StatusFormat) 
     }
 }
 
-/// Inspect cached hook state and captured environment
+/// Inspect cached hook state and captured environment.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The env.cue file is missing or has wrong package
+/// - Approval manager or state manager cannot be initialized
 pub async fn execute_env_inspect(
     path: &str,
     package: &str,
@@ -506,10 +538,17 @@ pub async fn execute_env_inspect(
     Ok(output)
 }
 
-/// Execute allow command - approve current directory's configuration
+/// Execute allow command - approve current directory's configuration.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The env.cue file is missing or has wrong package
+/// - CUE evaluation fails
+/// - Approval manager cannot write the approval
 pub async fn execute_allow(
     path: &str,
     package: &str,
@@ -588,7 +627,13 @@ pub async fn execute_allow(
     ))
 }
 
-/// Execute deny command - revoke approval for a directory
+/// Execute deny command - revoke approval for a directory.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The directory path cannot be resolved
+/// - Approval manager cannot be initialized or updated
 pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<String> {
     // Resolve directory path, but don't strictly require env.cue to exist
     // (user might want to deny a directory they deleted)
@@ -620,10 +665,17 @@ pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<Strin
     }
 }
 
-/// Execute env check command - check hook status and output env for shell
+/// Execute env check command - check hook status and output env for shell.
 ///
 /// When a `cmd_executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Approval manager cannot be initialized
+/// - Config hash computation fails
+/// - Hook executor cannot be initialized
 pub async fn execute_env_check(
     path: &str,
     package: &str,
@@ -693,7 +745,10 @@ pub async fn execute_env_check(
     Ok(String::new())
 }
 
-/// Generate shell integration script
+/// Generate shell integration script.
+///
+/// Returns the shell-specific script that integrates cuenv with the user's shell.
+#[must_use]
 pub fn execute_shell_init(shell: crate::cli::ShellType) -> String {
     match shell {
         crate::cli::ShellType::Fish => generate_fish_integration(),

@@ -26,22 +26,40 @@ use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 use tracing::{Level, event};
 
+/// An inline terminal user interface that renders within the current terminal session.
+///
+/// This TUI renders progress and output information in a fixed region of the terminal,
+/// allowing for interactive display without taking over the entire screen.
 #[allow(dead_code)]
 pub struct InlineTui {
+    /// The ratatui terminal instance for rendering widgets.
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    /// The starting line position in the terminal where the TUI begins.
     start_line: u16,
+    /// The height in lines reserved for the TUI display area.
     height: u16,
+    /// Timestamp of the last render, used for rate limiting.
     last_render: Instant,
 }
 
+/// Represents the current state of the TUI display.
+///
+/// This struct holds all the information needed to render the TUI,
+/// including command progress, messages, and output.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct TuiState {
+    /// The name of the currently executing command, if any.
     pub command: Option<String>,
+    /// Progress value between 0.0 and 1.0 indicating completion percentage.
     pub progress: f32,
+    /// A status message to display to the user.
     pub message: String,
+    /// Accumulated output lines from the command execution.
     pub output: Vec<String>,
+    /// Whether the command has finished executing.
     pub is_complete: bool,
+    /// The success status of the command, `None` if still running.
     pub success: Option<bool>,
 }
 
@@ -60,6 +78,15 @@ impl Default for TuiState {
 
 #[allow(dead_code)]
 impl InlineTui {
+    /// Creates a new inline TUI instance.
+    ///
+    /// Initializes the terminal backend and determines the current cursor position
+    /// to use as the starting line for the TUI display area.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal initialization fails or if the cursor
+    /// position cannot be determined.
     pub fn new() -> io::Result<Self> {
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
@@ -76,6 +103,14 @@ impl InlineTui {
         })
     }
 
+    /// Shows the inline TUI by reserving screen space and hiding the cursor.
+    ///
+    /// Moves the cursor to the starting position, reserves vertical space
+    /// for the TUI display, and hides the cursor for cleaner rendering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal cursor operations fail.
     pub fn show(&mut self) -> io::Result<()> {
         let mut stdout = io::stdout();
 
@@ -95,6 +130,14 @@ impl InlineTui {
         Ok(())
     }
 
+    /// Hides the inline TUI and restores the cursor.
+    ///
+    /// Shows the cursor again and moves it below the TUI display area
+    /// so subsequent output appears after the TUI region.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal cursor operations fail.
     pub fn hide(&mut self) -> io::Result<()> {
         let mut stdout = io::stdout();
         stdout.execute(Show)?;
@@ -103,6 +146,14 @@ impl InlineTui {
         Ok(())
     }
 
+    /// Renders the TUI with the given state.
+    ///
+    /// Draws the progress gauge and output sections based on the current state.
+    /// Renders are rate-limited to 50ms intervals to avoid flickering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal drawing operations fail.
     pub fn render(&mut self, state: &TuiState) -> io::Result<()> {
         // Rate limit renders to avoid flicker
         if self.last_render.elapsed() < Duration::from_millis(50) {
@@ -164,6 +215,11 @@ impl InlineTui {
         Ok(())
     }
 
+    /// Prints an inline message with a cyan arrow prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal output operations fail.
     pub fn print_inline(message: &str) -> io::Result<()> {
         let mut stdout = io::stdout();
         stdout.execute(SetForegroundColor(CrosstermColor::Cyan))?;
@@ -173,6 +229,11 @@ impl InlineTui {
         Ok(())
     }
 
+    /// Prints a success message with a green checkmark prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal output operations fail.
     pub fn print_success(message: &str) -> io::Result<()> {
         let mut stdout = io::stdout();
         stdout.execute(SetForegroundColor(CrosstermColor::Green))?;
@@ -182,6 +243,11 @@ impl InlineTui {
         Ok(())
     }
 
+    /// Prints an error message with a red X prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal output operations fail.
     pub fn print_error(message: &str) -> io::Result<()> {
         let mut stdout = io::stdout();
         stdout.execute(SetForegroundColor(CrosstermColor::Red))?;
@@ -203,7 +269,14 @@ impl Drop for TerminalGuard {
     }
 }
 
-/// Run the TUI event viewer that displays events from the coordinator
+/// Run the TUI event viewer that displays events from the coordinator.
+///
+/// Opens an alternate screen terminal that displays a live stream of events
+/// received from the coordinator. Press 'q', Esc, or Ctrl+C to exit.
+///
+/// # Errors
+///
+/// Returns an error if terminal initialization, rendering, or cleanup fails.
 pub async fn run_event_viewer(client: &mut CoordinatorClient) -> io::Result<()> {
     // Set up terminal with guard for cleanup on any exit path
     enable_raw_mode()?;
@@ -368,14 +441,25 @@ fn format_cuenv_event(event: &CuenvEvent) -> String {
     }
 }
 
+/// High-level manager for the inline TUI that handles events and state updates.
+///
+/// Wraps `InlineTui` and `TuiState` to provide a unified interface for
+/// displaying command progress and handling UI events.
 #[allow(dead_code)]
 pub struct TuiManager {
+    /// The underlying inline TUI renderer.
     tui: InlineTui,
+    /// The current display state.
     state: TuiState,
 }
 
 #[allow(dead_code)]
 impl TuiManager {
+    /// Creates a new TUI manager with default state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `InlineTui` fails to initialize.
     pub fn new() -> io::Result<Self> {
         let tui = InlineTui::new()?;
         let state = TuiState::default();
@@ -383,14 +467,32 @@ impl TuiManager {
         Ok(Self { tui, state })
     }
 
+    /// Shows the TUI display.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal operations fail.
     pub fn show(&mut self) -> io::Result<()> {
         self.tui.show()
     }
 
+    /// Hides the TUI display and restores the terminal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal operations fail.
     pub fn hide(&mut self) -> io::Result<()> {
         self.tui.hide()
     }
 
+    /// Handles an incoming event by updating state and re-rendering.
+    ///
+    /// Updates the internal state based on the event type (command start,
+    /// progress, or completion) and triggers a render.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if rendering fails.
     pub fn handle_event(&mut self, event: &Event) -> io::Result<()> {
         match event {
             Event::CommandStart { command } => {

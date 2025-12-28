@@ -256,6 +256,9 @@ impl<E> ErrorEnvelope<E> {
     }
 }
 
+/// Main CLI entry point for cuenv.
+///
+/// A modern application build toolchain with typed environments and CUE-powered task orchestration.
 #[derive(Parser, Debug)]
 #[command(name = "cuenv")]
 #[command(
@@ -264,9 +267,11 @@ impl<E> ErrorEnvelope<E> {
 #[command(long_about = None)]
 #[command(version)]
 pub struct Cli {
+    /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Option<Commands>,
 
+    /// Logging verbosity level.
     #[arg(
         short = 'L',
         long,
@@ -277,9 +282,11 @@ pub struct Cli {
     )]
     pub level: crate::tracing::LogLevel,
 
+    /// Emit JSON envelope regardless of format.
     #[arg(long, global = true, help = "Emit JSON envelope regardless of format")]
     pub json: bool,
 
+    /// Environment-specific overrides (e.g., development, production).
     #[arg(
         long = "env",
         short = 'e',
@@ -288,14 +295,18 @@ pub struct Cli {
     )]
     pub environment: Option<String>,
 
+    /// Print LLM context information (llms.txt).
     #[arg(long, global = true, help = "Print LLM context information (llms.txt)")]
     pub llms: bool,
 }
 
+/// Available CLI subcommands.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Show version information.
     #[command(about = "Show version information")]
     Version {
+        /// Output format for version information.
         #[arg(
             long = "output",
             short = 'o',
@@ -305,28 +316,34 @@ pub enum Commands {
         )]
         output_format: OutputFormat,
     },
+    /// Show module information (bases, projects).
     #[command(about = "Show module information (bases, projects)")]
     Info {
         /// Path to a specific directory to evaluate. If omitted, evaluates the entire module recursively.
         #[arg(value_name = "PATH")]
         path: Option<String>,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Include _meta source location for all values (JSON output).
         #[arg(
             long,
             help = "Include _meta source location for all values (JSON output)"
         )]
         meta: bool,
     },
+    /// Environment variable operations.
     #[command(about = "Environment variable operations")]
     Env {
+        /// Environment subcommand to execute.
         #[command(subcommand)]
         subcommand: EnvCommands,
     },
+    /// Execute a task defined in CUE configuration.
     #[command(
         about = "Execute a task defined in CUE configuration",
         visible_alias = "t",
@@ -334,8 +351,10 @@ pub enum Commands {
         trailing_var_arg = true
     )]
     Task {
+        /// Name of the task to execute (list tasks if not provided).
         #[arg(help = "Name of the task to execute (list tasks if not provided)", add = task_completer())]
         name: Option<String>,
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -343,12 +362,14 @@ pub enum Commands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Execute all tasks matching the given label (repeatable).
         #[arg(
             long = "label",
             short = 'l',
@@ -357,6 +378,7 @@ pub enum Commands {
             value_name = "LABEL"
         )]
         labels: Vec<String>,
+        /// Output format (only used when listing tasks).
         #[arg(
             long = "output",
             short = 'o',
@@ -365,34 +387,41 @@ pub enum Commands {
             default_value_t = OutputFormat::Text
         )]
         output_format: OutputFormat,
+        /// Materialize cached outputs to this directory on cache hit.
         #[arg(
             long = "materialize-outputs",
             help = "Materialize cached outputs to this directory on cache hit (off by default)",
             value_name = "DIR"
         )]
         materialize_outputs: Option<String>,
+        /// Print the cache path for this task key.
         #[arg(
             long = "show-cache-path",
             help = "Print the cache path for this task key",
             default_value_t = false
         )]
         show_cache_path: bool,
+        /// Force specific execution backend (e.g., 'host', 'dagger').
         #[arg(
             long = "backend",
             help = "Force specific execution backend (e.g., 'host', 'dagger')",
             value_name = "BACKEND"
         )]
         backend: Option<String>,
+        /// Use rich TUI for task execution.
         #[arg(long, help = "Use rich TUI for task execution")]
         tui: bool,
+        /// Interactive task picker - select a task to run.
         #[arg(
             long,
             short = 'i',
             help = "Interactive task picker - select a task to run"
         )]
         interactive: bool,
+        /// Print help.
         #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
         help: bool,
+        /// List tasks from all projects in the workspace (for IDE completions).
         #[arg(
             long = "all",
             short = 'A',
@@ -400,6 +429,7 @@ pub enum Commands {
             default_value_t = false
         )]
         all: bool,
+        /// Skip executing task dependencies (for CI orchestrators that handle deps externally).
         #[arg(
             long = "skip-dependencies",
             short = 'S',
@@ -407,18 +437,23 @@ pub enum Commands {
             default_value_t = false
         )]
         skip_dependencies: bool,
+        /// Arguments to pass to the task (positional and --named values).
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,
     },
+    /// Execute a command with CUE environment variables.
     #[command(
         about = "Execute a command with CUE environment variables",
         visible_alias = "x"
     )]
     Exec {
+        /// Command to execute.
         #[arg(help = "Command to execute")]
         command: String,
+        /// Arguments for the command.
         #[arg(help = "Arguments for the command", trailing_var_arg = true)]
         args: Vec<String>,
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -426,6 +461,7 @@ pub enum Commands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
@@ -433,13 +469,17 @@ pub enum Commands {
         )]
         package: String,
     },
+    /// Shell integration commands.
     #[command(about = "Shell integration commands")]
     Shell {
+        /// Shell subcommand to execute.
         #[command(subcommand)]
         subcommand: ShellCommands,
     },
+    /// Approve configuration for hook execution.
     #[command(about = "Approve configuration for hook execution")]
     Allow {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -447,19 +487,24 @@ pub enum Commands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Optional note about this approval.
         #[arg(long, help = "Optional note about this approval")]
         note: Option<String>,
+        /// Approve without prompting.
         #[arg(long, short = 'y', help = "Approve without prompting")]
         yes: bool,
     },
+    /// Revoke approval for hook execution.
     #[command(about = "Revoke approval for hook execution")]
     Deny {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -467,25 +512,30 @@ pub enum Commands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Revoke all approvals for this directory.
         #[arg(
             long,
             help = "Revoke all approvals for this directory (default behavior currently)"
         )]
         all: bool,
     },
+    /// Export environment variables for shell evaluation.
     #[command(
         about = "Export environment variables for shell evaluation",
         hide = true
     )]
     Export {
+        /// Shell type (bash, zsh, fish, powershell).
         #[arg(long, short = 's', help = "Shell type (bash, zsh, fish, powershell)")]
         shell: Option<String>,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
@@ -493,48 +543,66 @@ pub enum Commands {
         )]
         package: String,
     },
+    /// Run CI pipelines.
     #[command(about = "Run CI pipelines")]
     Ci {
+        /// Show what would be executed without running it.
         #[arg(long, help = "Show what would be executed without running it")]
         dry_run: bool,
+        /// Force a specific pipeline to run.
         #[arg(long, help = "Force a specific pipeline to run")]
         pipeline: Option<String>,
+        /// Output dynamic pipeline YAML to stdout.
         #[arg(
             long,
             help = "Output dynamic pipeline YAML to stdout (e.g., 'buildkite' for buildkite-agent pipeline upload)"
         )]
         dynamic: Option<String>,
+        /// Base ref to compare against (branch name or commit SHA).
         #[arg(long, help = "Base ref to compare against (branch name or commit SHA)")]
         from: Option<String>,
     },
+    /// Start interactive TUI dashboard for monitoring cuenv events.
     #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
     Tui,
+    /// Start web server for streaming cuenv events.
     #[command(about = "Start web server for streaming cuenv events")]
     Web {
+        /// Port to listen on.
         #[arg(long, short = 'p', help = "Port to listen on", default_value = "3000")]
         port: u16,
+        /// Host to bind to.
         #[arg(long, help = "Host to bind to", default_value = "127.0.0.1")]
         host: String,
     },
+    /// Manage changesets for release.
     #[command(about = "Manage changesets for release")]
     Changeset {
+        /// Changeset subcommand to execute.
         #[command(subcommand)]
         subcommand: ChangesetCommands,
     },
+    /// Release management operations.
     #[command(about = "Release management operations")]
     Release {
+        /// Release subcommand to execute.
         #[command(subcommand)]
         subcommand: ReleaseCommands,
     },
+    /// Generate shell completions.
     #[command(about = "Generate shell completions")]
     Completions {
+        /// Shell type to generate completions for.
         #[arg(help = "Shell type", value_enum)]
         shell: Shell,
     },
+    /// Sync generated files from CUE configuration.
     #[command(about = "Sync generated files from CUE configuration")]
     Sync {
+        /// Sync subcommand to execute.
         #[command(subcommand)]
         subcommand: Option<SyncCommands>,
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -542,36 +610,46 @@ pub enum Commands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Show what would be generated without writing files.
         #[arg(long, help = "Show what would be generated without writing files")]
         dry_run: bool,
+        /// Check if files are in sync without making changes.
         #[arg(long, help = "Check if files are in sync without making changes")]
         check: bool,
+        /// Sync all projects in the workspace.
         #[arg(long = "all", short = 'A', help = "Sync all projects in the workspace")]
         all: bool,
     },
+    /// Secret provider management.
     #[command(about = "Secret provider management")]
     Secrets {
+        /// Secrets subcommand to execute.
         #[command(subcommand)]
         subcommand: SecretsCommands,
     },
+    /// Runtime management commands.
     #[command(about = "Runtime management commands")]
     Runtime {
+        /// Runtime subcommand to execute.
         #[command(subcommand)]
         subcommand: RuntimeCommands,
     },
 }
 
-/// Sync subcommands for generating different types of files
+/// Sync subcommands for generating different types of files.
 #[derive(Subcommand, Debug, Clone)]
 pub enum SyncCommands {
+    /// Resolve OCI images and update lockfile.
     #[command(about = "Resolve OCI images and update lockfile")]
     Lock {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -579,16 +657,20 @@ pub enum SyncCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Show what would be resolved without writing lockfile.
         #[arg(long, help = "Show what would be resolved without writing lockfile")]
         dry_run: bool,
+        /// Check if lockfile is up-to-date.
         #[arg(long, help = "Check if lockfile is up-to-date")]
         check: bool,
+        /// Sync lock for all projects in the workspace.
         #[arg(
             long = "all",
             short = 'A',
@@ -596,8 +678,10 @@ pub enum SyncCommands {
         )]
         all: bool,
     },
+    /// Sync files from CUE cube configurations in projects.
     #[command(about = "Sync files from CUE cube configurations in projects")]
     Cubes {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -605,18 +689,23 @@ pub enum SyncCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Show what would be generated without writing files.
         #[arg(long, help = "Show what would be generated without writing files")]
         dry_run: bool,
+        /// Check if files are in sync without making changes.
         #[arg(long, help = "Check if files are in sync without making changes")]
         check: bool,
+        /// Show diff for files that would change.
         #[arg(long, help = "Show diff for files that would change")]
         diff: bool,
+        /// Sync cubes for all projects in the workspace.
         #[arg(
             long = "all",
             short = 'A',
@@ -624,8 +713,10 @@ pub enum SyncCommands {
         )]
         all: bool,
     },
+    /// Sync CI workflow files from CUE configuration.
     #[command(about = "Sync CI workflow files from CUE configuration")]
     Ci {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -633,37 +724,45 @@ pub enum SyncCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Show what would be generated without writing files.
         #[arg(long, help = "Show what would be generated without writing files")]
         dry_run: bool,
+        /// Check if CI workflows are in sync without making changes.
         #[arg(
             long,
             help = "Check if CI workflows are in sync without making changes"
         )]
         check: bool,
+        /// Sync CI workflows for all projects in the workspace.
         #[arg(
             long = "all",
             short = 'A',
             help = "Sync CI workflows for all projects in the workspace"
         )]
         all: bool,
+        /// Filter to specific provider (github, buildkite).
         #[arg(long, help = "Filter to specific provider (github, buildkite)")]
         provider: Option<String>,
     },
 }
 
-/// Secrets subcommands for managing secret providers
+/// Secrets subcommands for managing secret providers.
 #[derive(Subcommand, Debug, Clone)]
 pub enum SecretsCommands {
+    /// Set up a secret provider (download required components).
     #[command(about = "Set up a secret provider (download required components)")]
     Setup {
+        /// Provider to set up.
         #[arg(help = "Provider to set up", value_enum)]
         provider: SecretsProvider,
+        /// Override the default WASM URL (for 1Password).
         #[arg(
             long,
             help = "Override the default WASM URL (for 1Password)",
@@ -673,40 +772,43 @@ pub enum SecretsCommands {
     },
 }
 
-/// Supported secret providers that require setup
+/// Supported secret providers that require setup.
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum SecretsProvider {
-    /// 1Password (downloads WASM SDK for HTTP mode)
+    /// 1Password (downloads WASM SDK for HTTP mode).
     Onepassword,
 }
 
-/// Runtime subcommands for managing runtime environments
+/// Runtime subcommands for managing runtime environments.
 #[derive(Subcommand, Debug, Clone)]
 pub enum RuntimeCommands {
+    /// OCI runtime management.
     #[command(about = "OCI runtime management")]
     Oci {
+        /// OCI subcommand to execute.
         #[command(subcommand)]
         subcommand: OciCommands,
     },
 }
 
-/// OCI runtime subcommands
+/// OCI runtime subcommands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum OciCommands {
+    /// Activate OCI binaries for the current environment.
     #[command(about = "Activate OCI binaries for the current environment")]
     Activate,
 }
 
-/// Output format for status command
+/// Output format for status command.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, ValueEnum, Serialize, Deserialize, Default)]
 #[must_use]
 pub enum StatusFormat {
-    /// Default detailed text format
+    /// Default detailed text format.
     #[default]
     Text,
-    /// Short format (e.g., "[3/5]")
+    /// Short format (e.g., "[3/5]").
     Short,
-    /// Starship module format (JSON)
+    /// Starship module format (JSON).
     Starship,
 }
 
@@ -721,10 +823,13 @@ impl std::fmt::Display for StatusFormat {
     }
 }
 
+/// Environment variable subcommands.
 #[derive(Subcommand, Debug)]
 pub enum EnvCommands {
+    /// Print environment variables from CUE package.
     #[command(about = "Print environment variables from CUE package")]
     Print {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -732,12 +837,14 @@ pub enum EnvCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Output format for environment variables.
         #[arg(
             long = "output",
             short = 'o',
@@ -747,8 +854,10 @@ pub enum EnvCommands {
         )]
         output_format: OutputFormat,
     },
+    /// Load environment and execute hooks in background.
     #[command(about = "Load environment and execute hooks in background")]
     Load {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -756,6 +865,7 @@ pub enum EnvCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
@@ -763,8 +873,10 @@ pub enum EnvCommands {
         )]
         package: String,
     },
+    /// Show hook execution status.
     #[command(about = "Show hook execution status")]
     Status {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -772,16 +884,20 @@ pub enum EnvCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Wait for hooks to complete before returning.
         #[arg(long, help = "Wait for hooks to complete before returning")]
         wait: bool,
+        /// Timeout in seconds for waiting.
         #[arg(long, help = "Timeout in seconds for waiting", default_value = "300")]
         timeout: u64,
+        /// Output format for status information.
         #[arg(
             long = "output",
             short = 'o',
@@ -791,8 +907,10 @@ pub enum EnvCommands {
         )]
         output_format: StatusFormat,
     },
+    /// Inspect cached hook state for the current config.
     #[command(about = "Inspect cached hook state for the current config")]
     Inspect {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -800,6 +918,7 @@ pub enum EnvCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
@@ -807,8 +926,10 @@ pub enum EnvCommands {
         )]
         package: String,
     },
+    /// Check hook status and output environment for shell.
     #[command(about = "Check hook status and output environment for shell")]
     Check {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -816,12 +937,14 @@ pub enum EnvCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Shell type for export format.
         #[arg(
             long,
             help = "Shell type for export format",
@@ -830,8 +953,10 @@ pub enum EnvCommands {
         )]
         shell: ShellType,
     },
+    /// List available environments.
     #[command(about = "List available environments")]
     List {
+        /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
@@ -839,12 +964,14 @@ pub enum EnvCommands {
             default_value = "."
         )]
         path: String,
+        /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
             default_value = "cuenv"
         )]
         package: String,
+        /// Output format for the environment list.
         #[arg(
             long = "output",
             short = 'o',
@@ -856,36 +983,49 @@ pub enum EnvCommands {
     },
 }
 
+/// Shell integration subcommands.
 #[derive(Subcommand, Debug)]
 pub enum ShellCommands {
+    /// Generate shell integration script.
     #[command(about = "Generate shell integration script")]
     Init {
+        /// Shell type to generate integration for.
         #[arg(help = "Shell type", value_enum)]
         shell: ShellType,
     },
 }
 
+/// Supported shell types for integration.
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum ShellType {
+    /// Fish shell.
     Fish,
+    /// Bash shell.
     Bash,
+    /// Zsh shell.
     Zsh,
 }
 
+/// Changeset management subcommands.
 #[derive(Subcommand, Debug)]
 pub enum ChangesetCommands {
+    /// Add a new changeset (interactive if no args provided).
     #[command(about = "Add a new changeset (interactive if no args provided)")]
     Add {
+        /// Path to project root.
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
+        /// Summary of the change (interactive if omitted).
         #[arg(
             long,
             short = 's',
             help = "Summary of the change (interactive if omitted)"
         )]
         summary: Option<String>,
+        /// Detailed description of the change.
         #[arg(long, short = 'd', help = "Detailed description of the change")]
         description: Option<String>,
+        /// Package and bump type (format: package:bump).
         #[arg(
             long,
             short = 'P',
@@ -894,75 +1034,103 @@ pub enum ChangesetCommands {
         )]
         packages: Vec<String>,
     },
+    /// Show pending changesets.
     #[command(about = "Show pending changesets")]
     Status {
+        /// Path to project root.
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
+        /// Output in JSON format for CI consumption.
         #[arg(long, help = "Output in JSON format for CI consumption")]
         json: bool,
     },
+    /// Generate changeset from conventional commits.
     #[command(about = "Generate changeset from conventional commits")]
     FromCommits {
+        /// Path to project root.
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
+        /// Tag to start from (default: latest).
         #[arg(long, short = 's', help = "Tag to start from (default: latest)")]
         since: Option<String>,
     },
 }
 
+/// Release management subcommands.
 #[derive(Subcommand, Debug)]
 pub enum ReleaseCommands {
+    /// Prepare a release: analyze commits, bump versions, generate changelog, create PR.
     #[command(
         about = "Prepare a release: analyze commits, bump versions, generate changelog, create PR"
     )]
     Prepare {
+        /// Path to project root.
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
+        /// Git tag or ref to analyze commits from.
         #[arg(long, short = 's', help = "Git tag or ref to analyze commits from")]
         since: Option<String>,
+        /// Preview changes without applying.
         #[arg(long, help = "Preview changes without applying")]
         dry_run: bool,
+        /// Branch name for the release.
         #[arg(
             long,
             default_value = "release/next",
             help = "Branch name for the release"
         )]
         branch: String,
+        /// Skip creating the pull request.
         #[arg(long, help = "Skip creating the pull request")]
         no_pr: bool,
     },
+    /// Calculate and apply version bumps from changesets.
     #[command(
         about = "Calculate and apply version bumps from changesets (manifest reading not yet implemented)"
     )]
     Version {
+        /// Path to project root.
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
+        /// Show what would change without making changes.
         #[arg(long, help = "Show what would change without making changes")]
         dry_run: bool,
     },
+    /// Publish workspace packages to crates.io in dependency order.
     #[command(about = "Publish workspace packages to crates.io in dependency order")]
     Publish {
+        /// Path to project root.
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
+        /// Show what would be published without publishing.
         #[arg(long, help = "Show what would be published without publishing")]
         dry_run: bool,
     },
+    /// Build, package, and publish binary releases to configured backends.
     #[command(about = "Build, package, and publish binary releases to configured backends")]
     Binaries {
+        /// Path to project root.
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]
         path: String,
+        /// Preview without making changes.
         #[arg(long, help = "Preview without making changes")]
         dry_run: bool,
+        /// Only run specific backend(s).
         #[arg(long, help = "Only run specific backend(s)", value_delimiter = ',')]
         backend: Option<Vec<String>>,
+        /// Build only, don't publish.
         #[arg(long, help = "Build only, don't publish")]
         build_only: bool,
+        /// Package only, don't publish (assumes binaries exist).
         #[arg(long, help = "Package only, don't publish (assumes binaries exist)")]
         package_only: bool,
+        /// Publish only (requires existing artifacts).
         #[arg(long, help = "Publish only (requires existing artifacts)")]
         publish_only: bool,
+        /// Target platform(s) to build.
         #[arg(long, help = "Target platform(s) to build", value_delimiter = ',')]
         target: Option<Vec<String>>,
+        /// Version to release (default: from Cargo.toml).
         #[arg(long, help = "Version to release (default: from Cargo.toml)")]
         version: Option<String>,
     },
@@ -1398,6 +1566,8 @@ pub fn try_complete() -> bool {
     false
 }
 
+/// Parse command line arguments into a CLI structure.
+#[must_use]
 pub fn parse() -> Cli {
     Cli::parse()
 }

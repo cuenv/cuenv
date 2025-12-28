@@ -4,7 +4,8 @@ use cuenv_core::ModuleEvaluation;
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 
-/// Convert cuengine error to `cuenv_core` error
+/// Convert cuengine error to `cuenv_core` error.
+#[must_use]
 pub fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error {
     match err {
         cuengine::CueEngineError::Configuration { message } => {
@@ -25,6 +26,7 @@ pub fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error 
 ///
 /// Returns the path suitable for looking up instances in `ModuleEvaluation`.
 /// Returns `"."` for the module root itself.
+#[must_use]
 pub fn relative_path_from_root(module_root: &Path, target: &Path) -> PathBuf {
     target.strip_prefix(module_root).map_or_else(
         |_| PathBuf::from("."),

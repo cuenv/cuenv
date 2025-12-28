@@ -147,16 +147,13 @@ impl SyncCapability for CubesProvider {
         let mut had_error = false;
 
         for (full_path, display_path) in project_paths {
-            let path_str = match full_path.to_str() {
-                Some(s) => s,
-                None => {
-                    outputs.push(format!(
-                        "{}: Error: Path contains invalid UTF-8",
-                        full_path.display()
-                    ));
-                    had_error = true;
-                    continue;
-                }
+            let Some(path_str) = full_path.to_str() else {
+                outputs.push(format!(
+                    "{}: Error: Path contains invalid UTF-8",
+                    full_path.display()
+                ));
+                had_error = true;
+                continue;
             };
 
             let result = functions::execute_sync_cubes(
