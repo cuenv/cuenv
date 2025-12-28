@@ -168,17 +168,14 @@ schema.#Project & {
 		check: {
 			script: """
 				set -e
+				echo "Setting up 1Password WASM..."
+				cuenv secrets setup onepassword
 				echo "Running clippy..."
 				cargo clippy --workspace --all-targets --all-features -- -D warnings
 				echo "Running tests..."
 				cargo test --workspace --all-features
 				echo "Running security checks..."
-				if command -v cargo-deny >/dev/null 2>&1; then
-					cargo deny check bans licenses advisories
-				else
-					echo "Warning: cargo-deny not found, skipping security checks"
-					echo "Install with: cargo install cargo-deny"
-				fi
+				cargo deny check bans licenses advisories
 				echo "All checks passed!"
 				"""
 			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
