@@ -41,11 +41,7 @@ impl OciClient {
     /// Resolve an image reference to a digest for a specific platform.
     ///
     /// Returns the manifest digest for the platform-specific image.
-    pub async fn resolve_digest(
-        &self,
-        image: &str,
-        platform: &Platform,
-    ) -> Result<ResolvedImage> {
+    pub async fn resolve_digest(&self, image: &str, platform: &Platform) -> Result<ResolvedImage> {
         let reference = parse_reference(image)?;
         info!(%image, %platform, "Resolving image digest");
 

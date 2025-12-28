@@ -96,9 +96,8 @@ impl Lockfile {
             return Ok(None);
         }
 
-        let content = std::fs::read_to_string(path).map_err(|e| {
-            crate::Error::configuration(format!("Failed to read lockfile: {}", e))
-        })?;
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| crate::Error::configuration(format!("Failed to read lockfile: {}", e)))?;
 
         let lockfile: Self = toml::from_str(&content).map_err(|e| {
             crate::Error::configuration(format!(
@@ -125,9 +124,8 @@ impl Lockfile {
             crate::Error::configuration(format!("Failed to serialize lockfile: {}", e))
         })?;
 
-        std::fs::write(path, content).map_err(|e| {
-            crate::Error::configuration(format!("Failed to write lockfile: {}", e))
-        })?;
+        std::fs::write(path, content)
+            .map_err(|e| crate::Error::configuration(format!("Failed to write lockfile: {}", e)))?;
 
         Ok(())
     }
@@ -135,17 +133,17 @@ impl Lockfile {
     /// Find an image artifact by image reference.
     #[must_use]
     pub fn find_image_artifact(&self, image: &str) -> Option<&LockedArtifact> {
-        self.artifacts.iter().find(|a| {
-            matches!(&a.kind, ArtifactKind::Image { image: img } if img == image)
-        })
+        self.artifacts
+            .iter()
+            .find(|a| matches!(&a.kind, ArtifactKind::Image { image: img } if img == image))
     }
 
     /// Find a Homebrew artifact by formula name.
     #[must_use]
     pub fn find_homebrew_artifact(&self, name: &str) -> Option<&LockedArtifact> {
-        self.artifacts.iter().find(|a| {
-            matches!(&a.kind, ArtifactKind::Homebrew { name: n, .. } if n == name)
-        })
+        self.artifacts
+            .iter()
+            .find(|a| matches!(&a.kind, ArtifactKind::Homebrew { name: n, .. } if n == name))
     }
 
     /// Get all Homebrew artifacts.
@@ -176,8 +174,9 @@ impl Lockfile {
     /// Returns an error if the tool fails validation (empty platforms or
     /// invalid digest format).
     pub fn upsert_tool(&mut self, name: String, tool: LockedTool) -> crate::Result<()> {
-        tool.validate()
-            .map_err(|msg| crate::Error::configuration(format!("Invalid tool '{}': {}", name, msg)))?;
+        tool.validate().map_err(|msg| {
+            crate::Error::configuration(format!("Invalid tool '{}': {}", name, msg))
+        })?;
 
         self.tools.insert(name, tool);
         Ok(())
@@ -205,10 +204,13 @@ impl Lockfile {
             )));
         }
 
-        let tool = self.tools.entry(name.to_string()).or_insert_with(|| LockedTool {
-            version: version.to_string(),
-            platforms: HashMap::new(),
-        });
+        let tool = self
+            .tools
+            .entry(name.to_string())
+            .or_insert_with(|| LockedTool {
+                version: version.to_string(),
+                platforms: HashMap::new(),
+            });
 
         // Update version if it changed
         if tool.version != version {
@@ -235,17 +237,20 @@ impl Lockfile {
             .map_err(|msg| crate::Error::configuration(format!("Invalid artifact: {}", msg)))?;
 
         // Find existing artifact with same identity
-        let existing_idx = self.artifacts.iter().position(|a| match (&a.kind, &artifact.kind) {
-            // Match Homebrew by name (ignore version/deps as they may change)
-            (
-                ArtifactKind::Homebrew { name: n1, .. },
-                ArtifactKind::Homebrew { name: n2, .. },
-            ) => n1 == n2,
-            // Match Image by full reference
-            (ArtifactKind::Image { image: i1 }, ArtifactKind::Image { image: i2 }) => i1 == i2,
-            // Different kinds never match
-            _ => false,
-        });
+        let existing_idx = self
+            .artifacts
+            .iter()
+            .position(|a| match (&a.kind, &artifact.kind) {
+                // Match Homebrew by name (ignore version/deps as they may change)
+                (
+                    ArtifactKind::Homebrew { name: n1, .. },
+                    ArtifactKind::Homebrew { name: n2, .. },
+                ) => n1 == n2,
+                // Match Image by full reference
+                (ArtifactKind::Image { image: i1 }, ArtifactKind::Image { image: i2 }) => i1 == i2,
+                // Different kinds never match
+                _ => false,
+            });
 
         if let Some(idx) = existing_idx {
             self.artifacts[idx] = artifact;
@@ -642,10 +647,12 @@ mod tests {
 
         let result = lockfile.upsert_artifact(artifact);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("at least one platform"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("at least one platform")
+        );
     }
 
     #[test]
@@ -669,10 +676,12 @@ mod tests {
 
         let result = lockfile.upsert_artifact(artifact);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid digest format"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid digest format")
+        );
     }
 
     #[test]
@@ -842,10 +851,12 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid digest format"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid digest format")
+        );
     }
 
     #[test]
@@ -859,10 +870,12 @@ mod tests {
 
         let result = lockfile.upsert_tool("jq".to_string(), tool);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("at least one platform"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("at least one platform")
+        );
     }
 
     #[test]

@@ -4,10 +4,10 @@
 //! Supports automatic dependency resolution and binary relocation.
 
 use async_trait::async_trait;
+use cuenv_core::Result;
 use cuenv_core::tools::{
     FetchedTool, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
 };
-use cuenv_core::Result;
 use cuenv_tools_oci::{
     OciCache, OciClient, extract_homebrew_bottle, fetch_formula, relocate_homebrew_bottle,
     resolve_with_deps, to_homebrew_platform,
@@ -43,7 +43,11 @@ impl HomebrewToolProvider {
 
     /// Get the cache directory for a formula.
     fn formula_cache_dir(&self, options: &ToolOptions, name: &str, version: &str) -> PathBuf {
-        options.cache_dir().join("homebrew").join(name).join(version)
+        options
+            .cache_dir()
+            .join("homebrew")
+            .join(name)
+            .join(version)
     }
 
     /// Get the homebrew root cache directory.
@@ -92,7 +96,10 @@ impl ToolProvider for HomebrewToolProvider {
 
         // Verify formula exists and has a bottle for this platform
         let formula_info = fetch_formula(formula).await.map_err(|e| {
-            cuenv_core::Error::tool_resolution(format!("Failed to fetch formula '{}': {}", formula, e))
+            cuenv_core::Error::tool_resolution(format!(
+                "Failed to fetch formula '{}': {}",
+                formula, e
+            ))
         })?;
 
         // Check if the requested version matches (or if we should use stable)
@@ -174,8 +181,9 @@ impl ToolProvider for HomebrewToolProvider {
         // Fetch all formulas (dependencies first)
         let homebrew_cache = self.homebrew_cache_dir(options);
         let platform_str = format!("{}", resolved.platform);
-        let oci_platform = cuenv_tools_oci::Platform::parse(&platform_str)
-            .ok_or_else(|| cuenv_core::Error::platform(format!("Invalid platform: {}", platform_str)))?;
+        let oci_platform = cuenv_tools_oci::Platform::parse(&platform_str).ok_or_else(|| {
+            cuenv_core::Error::platform(format!("Invalid platform: {}", platform_str))
+        })?;
 
         for f in &formulas {
             let formula_dir = homebrew_cache.join(&f.name).join(&f.versions.stable);

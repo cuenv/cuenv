@@ -50,9 +50,7 @@ impl ToolRegistry {
     /// Find a provider that can handle the given source.
     #[must_use]
     pub fn find_for_source(&self, source: &ToolSource) -> Option<&Arc<dyn ToolProvider>> {
-        self.providers
-            .values()
-            .find(|p| p.can_handle(source))
+        self.providers.values().find(|p| p.can_handle(source))
     }
 
     /// Iterate over all registered providers.
@@ -90,9 +88,7 @@ impl std::fmt::Debug for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::provider::{
-        FetchedTool, Platform, ResolvedTool, ToolOptions,
-    };
+    use crate::tools::provider::{FetchedTool, Platform, ResolvedTool, ToolOptions};
     use async_trait::async_trait;
 
     struct MockProvider {

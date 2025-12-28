@@ -139,15 +139,9 @@ impl std::fmt::Display for Arch {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ToolSource {
     /// Homebrew bottle from ghcr.io/homebrew.
-    Homebrew {
-        formula: String,
-        image_ref: String,
-    },
+    Homebrew { formula: String, image_ref: String },
     /// Binary extracted from an OCI container image.
-    Oci {
-        image: String,
-        path: String,
-    },
+    Oci { image: String, path: String },
     /// Asset from a GitHub release.
     GitHub {
         repo: String,

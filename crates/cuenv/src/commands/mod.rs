@@ -29,10 +29,10 @@ pub mod sync;
 pub mod task;
 /// Task listing and discovery utilities.
 pub mod task_list;
-/// Tools command for multi-source tool management.
-pub mod tools;
 /// Interactive task picker for selecting tasks to run.
 pub mod task_picker;
+/// Tools command for multi-source tool management.
+pub mod tools;
 /// Version information and display.
 pub mod version;
 

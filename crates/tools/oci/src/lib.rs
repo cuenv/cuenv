@@ -31,9 +31,12 @@ mod registry;
 
 pub use cache::OciCache;
 pub use error::{Error, Result};
-pub use extract::{extract_homebrew_binary, extract_homebrew_bottle, extract_from_layers, relocate_homebrew_bottle};
+pub use extract::{
+    extract_from_layers, extract_homebrew_binary, extract_homebrew_bottle, relocate_homebrew_bottle,
+};
 pub use homebrew::{
-    HomebrewFormula, fetch_formula, formula_name_from_image, resolve_with_deps, to_homebrew_platform,
+    HomebrewFormula, fetch_formula, formula_name_from_image, resolve_with_deps,
+    to_homebrew_platform,
 };
 pub use platform::{Platform, current_platform, normalize_platform};
 pub use registry::OciClient;

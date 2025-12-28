@@ -35,7 +35,7 @@ mod provider;
 mod registry;
 
 pub use provider::{
-    default_cache_dir, Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider,
-    ToolSource,
+    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
+    default_cache_dir,
 };
 pub use registry::ToolRegistry;
