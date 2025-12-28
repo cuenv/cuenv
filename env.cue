@@ -3,21 +3,23 @@ package cuenv
 import (
 	"list"
 	"github.com/cuenv/cuenv/schema"
-	rustcontrib "github.com/cuenv/cuenv/contrib/rust"
+	xBun "github.com/cuenv/cuenv/contrib/bun"
+	xRust "github.com/cuenv/cuenv/contrib/rust"
 )
 
 schema.#Project & {
 	name: "cuenv"
 
-	runtime: schema.#OCIRuntime & {
+	runtime: schema.#ToolsRuntime & {
 		platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
-		images: [
-			{image: "ghcr.io/homebrew/core/jq:1.7.1"},
-			{image: "ghcr.io/homebrew/core/yq:4.44.6"},
-		]
+		tools: {
+			jq: "1.7.1"
+			yq: "4.44.6"
+			bun: xBun.#Bun & {version: "1.3.5"}
+		}
 	}
 
-	hooks: onEnter: oci: schema.#OCIActivate
+	hooks: onEnter: tools: schema.#ToolsActivate
 
 	// Build cuenv from source instead of using released binaries
 	// We really need to find a way to speed this up later.
@@ -36,7 +38,7 @@ schema.#Project & {
 	}
 
 	ci: {
-		contributors: sccache: rustcontrib.#Sccache
+		contributors: sccache: xRust.#Sccache
 
 		provider: github: {
 			runner: "blacksmith-8vcpu-ubuntu-2404"
