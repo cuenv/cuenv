@@ -394,7 +394,12 @@ async fn execute_lock_sync(
 
                 // Use the resolved version (may differ from requested for Homebrew)
                 lockfile
-                    .upsert_tool_platform(&tool.name, &resolved.version, platform_str, locked_platform)
+                    .upsert_tool_platform(
+                        &tool.name,
+                        &resolved.version,
+                        platform_str,
+                        locked_platform,
+                    )
                     .map_err(|e| {
                         cuenv_core::Error::configuration(format!(
                             "Failed to add tool '{}' to lockfile: {}",

@@ -431,11 +431,19 @@ mod tests {
 
     #[test]
     fn test_find_lockfile_not_found() {
+        // Save and restore CWD to avoid breaking parallel tests
+        let original_cwd = std::env::current_dir().unwrap();
+
         // Create temp dir without lockfile
         let temp = tempfile::tempdir().unwrap();
         std::env::set_current_dir(temp.path()).unwrap();
 
         // Should return None
-        assert!(find_lockfile().is_none());
+        let result = find_lockfile();
+
+        // Restore CWD before assertions (in case of panic)
+        std::env::set_current_dir(&original_cwd).unwrap();
+
+        assert!(result.is_none());
     }
 }

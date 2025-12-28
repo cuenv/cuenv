@@ -134,7 +134,10 @@ impl ToolProvider for HomebrewToolProvider {
 
         // Build OCI image reference (sanitize formula name for versioned formulas like python@3.14)
         let sanitized_formula = sanitize_formula_for_oci(formula);
-        let image_ref = format!("ghcr.io/homebrew/core/{}:{}", sanitized_formula, actual_version);
+        let image_ref = format!(
+            "ghcr.io/homebrew/core/{}:{}",
+            sanitized_formula, actual_version
+        );
 
         debug!(%image_ref, %homebrew_platform, "Resolved to OCI image");
 
@@ -227,7 +230,10 @@ impl ToolProvider for HomebrewToolProvider {
 
             // Pull the bottle (sanitize formula name for versioned formulas like python@3.14)
             let sanitized_name = sanitize_formula_for_oci(&f.name);
-            let f_image_ref = format!("ghcr.io/homebrew/core/{}:{}", sanitized_name, f.versions.stable);
+            let f_image_ref = format!(
+                "ghcr.io/homebrew/core/{}:{}",
+                sanitized_name, f.versions.stable
+            );
             debug!(image = %f_image_ref, "Pulling bottle");
 
             let resolved_image = self

@@ -117,9 +117,7 @@ hooks: {
             );
         }
         other => {
-            panic!(
-                "Unexpected exit code {other:?}. stdout: {stdout}, stderr: {stderr}"
-            );
+            panic!("Unexpected exit code {other:?}. stdout: {stdout}, stderr: {stderr}");
         }
     }
 }

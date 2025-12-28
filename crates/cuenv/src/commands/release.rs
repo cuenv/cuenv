@@ -1338,6 +1338,18 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
+    /// Create a test directory with proper prefix (non-hidden) for gix compatibility.
+    ///
+    /// gix has stricter checks on temp directories that start with `.` (hidden directories).
+    /// The default `TempDir::new()` creates hidden directories like `.tmpXXXXX`, which can
+    /// cause gix to fail with "does not appear to be a git repository".
+    fn create_test_dir() -> TempDir {
+        tempfile::Builder::new()
+            .prefix("cuenv_test_")
+            .tempdir()
+            .expect("Failed to create temp directory")
+    }
+
     fn create_test_workspace(temp: &TempDir) -> String {
         let root = temp.path();
 
@@ -1526,6 +1538,20 @@ version.workspace = true
             String::from_utf8_lossy(&out.stderr)
         );
 
+        // Verify .git directory and HEAD file were created (ensures git init fully completed)
+        let git_dir = std::path::Path::new(path).join(".git");
+        let git_head = git_dir.join("HEAD");
+        assert!(
+            git_dir.exists(),
+            "git init did not create .git directory at {}",
+            git_dir.display()
+        );
+        assert!(
+            git_head.exists(),
+            "git init did not create .git/HEAD at {}",
+            git_head.display()
+        );
+
         let out = Command::new("git")
             .args(["config", "user.name", "Test User"])
             .current_dir(path)
@@ -1584,12 +1610,9 @@ version.workspace = true
         assert!(result.is_err());
     }
 
-    // This test requires gix to open a temp git repo, which fails on some CI runners
-    // Run locally with: cargo test -- --ignored
     #[test]
-    #[ignore = "gix has issues with temp dirs on CI runners"]
     fn test_changeset_from_commits_with_workspace() {
-        let temp = TempDir::new().unwrap();
+        let temp = create_test_dir();
         let path = create_test_workspace(&temp);
 
         init_git_repo(&path);
@@ -1603,12 +1626,9 @@ version.workspace = true
         assert!(output.contains("conventional commit"));
     }
 
-    // This test requires gix to open a temp git repo, which fails on some CI runners
-    // Run locally with: cargo test -- --ignored
     #[test]
-    #[ignore = "gix has issues with temp dirs on CI runners"]
     fn test_changeset_from_commits_no_version_bumps() {
-        let temp = TempDir::new().unwrap();
+        let temp = create_test_dir();
         let path = create_test_workspace(&temp);
 
         init_git_repo(&path);
@@ -1621,12 +1641,9 @@ version.workspace = true
         assert!(output.contains("No version-bumping commits"));
     }
 
-    // This test requires gix to open a temp git repo, which fails on some CI runners
-    // Run locally with: cargo test -- --ignored
     #[test]
-    #[ignore = "gix has issues with temp dirs on CI runners"]
     fn test_changeset_from_commits_with_since_tag() {
-        let temp = TempDir::new().unwrap();
+        let temp = create_test_dir();
         let path = create_test_workspace(&temp);
 
         init_git_repo(&path);
@@ -1657,12 +1674,9 @@ version.workspace = true
         assert!(output.contains("foo"));
     }
 
-    // This test requires gix to open a temp git repo, which fails on some CI runners
-    // Run locally with: cargo test -- --ignored
     #[test]
-    #[ignore = "gix has issues with temp dirs on CI runners"]
     fn test_changeset_from_commits_with_nonexistent_tag() {
-        let temp = TempDir::new().unwrap();
+        let temp = create_test_dir();
         let path = create_test_workspace(&temp);
 
         init_git_repo(&path);
