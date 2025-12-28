@@ -1719,6 +1719,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",
+ "toml 0.8.23",
  "tracing",
  "walkdir",
  "zstd",

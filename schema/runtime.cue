@@ -8,7 +8,8 @@ package schema
 //   runtime: #DevenvRuntime
 //   runtime: #ContainerRuntime & {image: "node:20"}
 //   runtime: #DaggerRuntime & {image: "rust:1.75"}
-#Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #DaggerRuntime
+//   runtime: #OCIRuntime & {registry: "ghcr.io/homebrew/core", binaries: [{name: "jq", version: "1.7"}]}
+#Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #DaggerRuntime | #OCIRuntime
 
 // #NixRuntime activates a Nix flake devShell
 #NixRuntime: {
@@ -54,4 +55,49 @@ package schema
 	// Cache volumes to mount for persistent build caching.
 	// Cache volumes persist across task runs and speed up builds.
 	cache?: [...#DaggerCacheMount]
+}
+
+// #OCIRuntime fetches binaries from OCI images.
+// Provides hermetic binary management with content-addressed caching.
+//
+// Homebrew bottles are auto-detected and extracted automatically.
+// Other images require explicit `extract` paths.
+//
+// Example:
+//   runtime: #OCIRuntime & {
+//       platforms: ["darwin-arm64", "linux-x86_64"]
+//       images: [
+//           { image: "ghcr.io/homebrew/core/jq:1.7.1" },
+//           { image: "ghcr.io/homebrew/core/ripgrep:14.1.0", as: "rg" },
+//           { image: "nginx:1.25-alpine", extract: [{ path: "/usr/sbin/nginx" }] },
+//       ]
+//   }
+#OCIRuntime: {
+	type: "oci"
+	// Platforms to resolve and lock (e.g., "darwin-arm64", "linux-x86_64")
+	platforms!: [...string]
+	// OCI images to fetch binaries from
+	images!: [...#OCIImage]
+	// Cache directory (defaults to ~/.cache/cuenv/oci)
+	cacheDir?: string
+}
+
+// #OCIImage specifies an OCI image to extract binaries from.
+// Homebrew bottles (ghcr.io/homebrew/*) are auto-detected and extracted.
+// Other images require explicit `extract` paths.
+#OCIImage: {
+	// Full image reference (e.g., "ghcr.io/homebrew/core/jq:1.7.1", "nginx:1.25-alpine")
+	image!: string
+	// Rename the extracted binary (for Homebrew bottles where package != binary name)
+	as?: string
+	// Explicit extraction paths (required for non-Homebrew images)
+	extract?: [...#OCIExtract]
+}
+
+// #OCIExtract specifies a binary to extract from a container image
+#OCIExtract: {
+	// Path to the binary inside the container (e.g., "/usr/sbin/nginx")
+	path!: string
+	// Name to expose the binary as in PATH (defaults to filename from path)
+	as?: string
 }

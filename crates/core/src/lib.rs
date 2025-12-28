@@ -41,6 +41,7 @@ pub mod ci;
 pub mod config;
 pub mod environment;
 pub mod hooks;
+pub mod lockfile;
 pub mod manifest;
 pub mod module;
 pub mod owners;

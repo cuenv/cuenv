@@ -409,6 +409,8 @@ pub enum Runtime {
     Container(ContainerRuntime),
     /// Advanced container with caching, secrets, chaining
     Dagger(DaggerRuntime),
+    /// OCI-based binary fetching (e.g., Homebrew bottles)
+    Oci(OciRuntime),
 }
 
 /// Nix runtime configuration
@@ -489,6 +491,51 @@ pub struct DaggerCacheMount {
     pub path: String,
     /// Unique name for the cache volume
     pub name: String,
+}
+
+/// OCI-based binary runtime configuration.
+///
+/// Fetches binaries from OCI images for hermetic, content-addressed binary management.
+/// Homebrew bottles (ghcr.io/homebrew/*) are auto-detected and extracted.
+/// Other images require explicit `extract` paths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OciRuntime {
+    /// Platforms to resolve and lock (e.g., "darwin-arm64", "linux-x86_64")
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    /// OCI images to fetch binaries from
+    #[serde(default)]
+    pub images: Vec<OciImage>,
+    /// Cache directory (defaults to ~/.cache/cuenv/oci)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
+}
+
+/// An OCI image to extract binaries from.
+///
+/// Homebrew bottles (ghcr.io/homebrew/*) are auto-detected and extracted.
+/// Other images require explicit `extract` paths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OciImage {
+    /// Full image reference (e.g., "ghcr.io/homebrew/core/jq:1.7.1", "nginx:1.25-alpine")
+    pub image: String,
+    /// Rename the extracted binary (for Homebrew bottles where package != binary name)
+    #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
+    /// Explicit extraction paths (required for non-Homebrew images)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extract: Vec<OciExtract>,
+}
+
+/// A binary to extract from a container image.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OciExtract {
+    /// Path to the binary inside the container (e.g., "/usr/sbin/nginx")
+    pub path: String,
+    /// Name to expose the binary as in PATH (defaults to filename from path)
+    #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
 }
 
 // ============================================================================
