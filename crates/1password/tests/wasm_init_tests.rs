@@ -16,34 +16,68 @@ use std::path::PathBuf;
 const ONEPASSWORD_WASM_URL: &str =
     "https://github.com/1Password/onepassword-sdk-go/raw/refs/tags/v0.3.1/internal/wasm/core.wasm";
 
-/// Ensure WASM is available, downloading if necessary
+/// Minimum expected size for the 1Password WASM file (5 MB)
+const MIN_WASM_SIZE: u64 = 5_000_000;
+
+/// Ensure WASM is available, downloading if necessary.
+/// Uses atomic file operations to handle concurrent test execution safely.
 #[allow(clippy::print_stderr)]
 fn ensure_wasm_available() -> PathBuf {
     let path = wasm::onepassword_wasm_path().expect("Should get WASM path");
 
-    if !path.exists() {
-        // Download the WASM file
-        eprintln!("Downloading 1Password WASM SDK to {}...", path.display());
-
-        // Create parent directory
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("Should create cache directory");
-        }
-
-        // Download using reqwest blocking client
-        let response = reqwest::blocking::get(ONEPASSWORD_WASM_URL)
-            .expect("Should download WASM");
-        assert!(
-            response.status().is_success(),
-            "Failed to download WASM: HTTP {}",
-            response.status()
-        );
-
-        let bytes = response.bytes().expect("Should read response body");
-        std::fs::write(&path, &bytes).expect("Should write WASM file");
-
-        eprintln!("Downloaded {} bytes", bytes.len());
+    // Check if file already exists with valid size (another test may have downloaded it)
+    if let Ok(metadata) = std::fs::metadata(&path)
+        && metadata.len() >= MIN_WASM_SIZE
+    {
+        return path;
     }
+
+    // Create parent directory
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("Should create cache directory");
+    }
+
+    // Use a temp file with process ID to avoid conflicts between parallel tests
+    let temp_path = path.with_extension(format!("wasm.tmp.{}", std::process::id()));
+
+    eprintln!("Downloading 1Password WASM SDK to {}...", path.display());
+
+    // Download using reqwest blocking client
+    let response = reqwest::blocking::get(ONEPASSWORD_WASM_URL).expect("Should download WASM");
+    assert!(
+        response.status().is_success(),
+        "Failed to download WASM: HTTP {}",
+        response.status()
+    );
+
+    let bytes = response.bytes().expect("Should read response body");
+    assert!(
+        bytes.len() as u64 >= MIN_WASM_SIZE,
+        "Downloaded WASM too small: {} bytes",
+        bytes.len()
+    );
+
+    // Write to temp file first
+    std::fs::write(&temp_path, &bytes).expect("Should write temp WASM file");
+
+    // Atomically rename to final path (handles concurrent downloads safely)
+    // If another process already created the file, this may fail on some platforms,
+    // but the file should still be valid from the other process
+    if let Err(e) = std::fs::rename(&temp_path, &path) {
+        eprintln!("Rename failed (likely concurrent download): {e}");
+        // Clean up temp file
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    eprintln!("Downloaded {} bytes", bytes.len());
+
+    // Verify final file exists and has valid size
+    let final_metadata = std::fs::metadata(&path).expect("WASM file should exist after download");
+    assert!(
+        final_metadata.len() >= MIN_WASM_SIZE,
+        "Final WASM file too small: {} bytes",
+        final_metadata.len()
+    );
 
     path
 }
