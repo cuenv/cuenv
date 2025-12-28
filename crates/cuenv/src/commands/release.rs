@@ -1594,7 +1594,7 @@ version.workspace = true
 
         // Now test the function
         let result = execute_changeset_from_commits(&path, None);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
         let output = result.unwrap();
         assert!(output.contains("Created changeset"));
         assert!(output.contains("conventional commit"));
@@ -1610,7 +1610,7 @@ version.workspace = true
 
         // Should return message about no version-bumping commits
         let result = execute_changeset_from_commits(&path, None);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
         let output = result.unwrap();
         assert!(output.contains("No version-bumping commits"));
     }
@@ -1638,7 +1638,7 @@ version.workspace = true
 
         // Test with since_tag - should only process commits after the tag
         let result = execute_changeset_from_commits(&path, Some("v0.1.0"));
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
         let output = result.unwrap();
         assert!(output.contains("Created changeset"));
         assert!(output.contains("conventional commit"));
