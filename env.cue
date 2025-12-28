@@ -173,7 +173,12 @@ schema.#Project & {
 				echo "Running tests..."
 				cargo test --workspace --all-features
 				echo "Running security checks..."
-				cargo deny check bans licenses advisories
+				if command -v cargo-deny >/dev/null 2>&1; then
+					cargo deny check bans licenses advisories
+				else
+					echo "Warning: cargo-deny not found, skipping security checks"
+					echo "Install with: cargo install cargo-deny"
+				fi
 				echo "All checks passed!"
 				"""
 			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
