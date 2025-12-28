@@ -171,7 +171,7 @@ schema.#Project & {
 				echo "Running clippy..."
 				cargo clippy --workspace --all-targets --all-features -- -D warnings
 				echo "Running tests..."
-				cargo nextest run --workspace --all-features
+				cargo test --workspace --all-features
 				echo "Running security checks..."
 				cargo deny check bans licenses advisories
 				echo "All checks passed!"
