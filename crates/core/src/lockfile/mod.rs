@@ -33,7 +33,7 @@
 //! image = "nginx:1.25-alpine"
 //!
 //!   [artifacts.platforms]
-//!   "linux-amd64" = { digest = "sha256:ghi...", size = 9876543 }
+//!   "linux-x86_64" = { digest = "sha256:ghi...", size = 9876543 }
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -86,7 +86,11 @@ impl Lockfile {
         })?;
 
         let lockfile: Self = toml::from_str(&content).map_err(|e| {
-            crate::Error::configuration(format!("Failed to parse lockfile: {}", e))
+            crate::Error::configuration(format!(
+                "Failed to parse lockfile at {}: {}",
+                path.display(),
+                e
+            ))
         })?;
 
         // Version check for future migrations
@@ -142,7 +146,17 @@ impl Lockfile {
     ///
     /// For Homebrew artifacts, matches by formula name.
     /// For Image artifacts, matches by image reference.
-    pub fn upsert_artifact(&mut self, artifact: LockedArtifact) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the artifact fails validation (empty platforms or
+    /// invalid digest format).
+    pub fn upsert_artifact(&mut self, artifact: LockedArtifact) -> crate::Result<()> {
+        // Validate the artifact before inserting
+        artifact
+            .validate()
+            .map_err(|msg| crate::Error::configuration(format!("Invalid artifact: {}", msg)))?;
+
         // Find existing artifact with same identity
         let existing_idx = self.artifacts.iter().position(|a| match (&a.kind, &artifact.kind) {
             // Match Homebrew by name (ignore version/deps as they may change)
@@ -161,6 +175,8 @@ impl Lockfile {
         } else {
             self.artifacts.push(artifact);
         }
+
+        Ok(())
     }
 }
 
@@ -188,6 +204,28 @@ impl LockedArtifact {
     pub fn platform_data(&self) -> Option<&PlatformData> {
         let platform = current_platform();
         self.platforms.get(&platform)
+    }
+
+    /// Validate the artifact has valid data.
+    ///
+    /// Checks:
+    /// - At least one platform is present
+    /// - All digests have valid format (sha256: or sha512: prefix)
+    fn validate(&self) -> Result<(), String> {
+        if self.platforms.is_empty() {
+            return Err("Artifact must have at least one platform".to_string());
+        }
+
+        for (platform, data) in &self.platforms {
+            if !data.digest.starts_with("sha256:") && !data.digest.starts_with("sha512:") {
+                return Err(format!(
+                    "Invalid digest format for platform '{}': must start with 'sha256:' or 'sha512:'",
+                    platform
+                ));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -378,7 +416,7 @@ mod tests {
             )]),
         };
 
-        lockfile.upsert_artifact(artifact1);
+        lockfile.upsert_artifact(artifact1).unwrap();
         assert_eq!(lockfile.artifacts.len(), 1);
 
         // Update with new digest and dependencies
@@ -397,7 +435,7 @@ mod tests {
             )]),
         };
 
-        lockfile.upsert_artifact(artifact2);
+        lockfile.upsert_artifact(artifact2).unwrap();
         assert_eq!(lockfile.artifacts.len(), 1);
         assert_eq!(
             lockfile.artifacts[0].platforms["darwin-arm64"].digest,
@@ -452,5 +490,82 @@ mod tests {
         assert_eq!(normalize_platform("macos-amd64"), "darwin-x86_64");
         assert_eq!(normalize_platform("linux-aarch64"), "linux-arm64");
         assert_eq!(normalize_platform("Darwin-ARM64"), "darwin-arm64");
+    }
+
+    #[test]
+    fn test_upsert_artifact_validation_empty_platforms() {
+        let mut lockfile = Lockfile::new();
+
+        let artifact = LockedArtifact {
+            kind: ArtifactKind::Homebrew {
+                name: "jq".to_string(),
+                version: "1.7.1".to_string(),
+                dependencies: vec![],
+            },
+            platforms: HashMap::new(), // Empty - should fail
+        };
+
+        let result = lockfile.upsert_artifact(artifact);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("at least one platform"));
+    }
+
+    #[test]
+    fn test_upsert_artifact_validation_invalid_digest() {
+        let mut lockfile = Lockfile::new();
+
+        let artifact = LockedArtifact {
+            kind: ArtifactKind::Homebrew {
+                name: "jq".to_string(),
+                version: "1.7.1".to_string(),
+                dependencies: vec![],
+            },
+            platforms: HashMap::from([(
+                "darwin-arm64".to_string(),
+                PlatformData {
+                    digest: "invalid-no-prefix".to_string(), // Missing sha256: prefix
+                    size: None,
+                },
+            )]),
+        };
+
+        let result = lockfile.upsert_artifact(artifact);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid digest format"));
+    }
+
+    #[test]
+    fn test_artifact_validate_valid() {
+        let artifact = LockedArtifact {
+            kind: ArtifactKind::Homebrew {
+                name: "jq".to_string(),
+                version: "1.7.1".to_string(),
+                dependencies: vec![],
+            },
+            platforms: HashMap::from([
+                (
+                    "darwin-arm64".to_string(),
+                    PlatformData {
+                        digest: "sha256:abc123".to_string(),
+                        size: Some(1234),
+                    },
+                ),
+                (
+                    "linux-x86_64".to_string(),
+                    PlatformData {
+                        digest: "sha512:def456".to_string(),
+                        size: None,
+                    },
+                ),
+            ]),
+        };
+
+        assert!(artifact.validate().is_ok());
     }
 }

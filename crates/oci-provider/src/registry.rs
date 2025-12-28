@@ -6,8 +6,9 @@ use oci_distribution::client::{ClientConfig, ClientProtocol};
 use oci_distribution::manifest::OciDescriptor;
 use oci_distribution::secrets::RegistryAuth;
 use oci_distribution::{Client, Reference};
+use sha2::{Digest, Sha256};
 use std::path::Path;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info, trace};
 
 use crate::cache::OciCache;
@@ -82,6 +83,10 @@ impl OciClient {
     }
 
     /// Pull a blob (layer) to a file using its descriptor.
+    ///
+    /// After downloading, the blob's SHA256 digest is verified against the
+    /// expected digest from the descriptor. If verification fails, the file
+    /// is deleted and an error is returned.
     pub async fn pull_blob_by_descriptor(
         &self,
         reference: &Reference,
@@ -89,8 +94,6 @@ impl OciClient {
         dest: &Path,
     ) -> Result<()> {
         debug!(digest = %descriptor.digest, ?dest, "Pulling blob");
-
-        let _auth = self.get_auth(reference);
 
         // Create parent directories
         if let Some(parent) = dest.parent() {
@@ -107,7 +110,15 @@ impl OciClient {
 
         file.flush().await?;
 
-        debug!(digest = %descriptor.digest, ?dest, "Pulled blob");
+        // Verify the digest matches
+        let computed_digest = compute_file_digest(dest).await?;
+        if computed_digest != descriptor.digest {
+            // Remove the corrupted/invalid file
+            tokio::fs::remove_file(dest).await.ok();
+            return Err(Error::digest_mismatch(&descriptor.digest, &computed_digest));
+        }
+
+        debug!(digest = %descriptor.digest, ?dest, "Pulled and verified blob");
         Ok(())
     }
 
@@ -176,9 +187,29 @@ fn parse_reference(image: &str) -> Result<Reference> {
         .map_err(|e: oci_distribution::ParseError| Error::invalid_reference(image, e.to_string()))
 }
 
+/// Compute the SHA256 digest of a file.
+///
+/// Returns the digest in OCI format: `sha256:<hex>`.
+async fn compute_file_digest(path: &Path) -> Result<String> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 8192];
+
+    loop {
+        let n = file.read(&mut buffer).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_parse_reference() {
@@ -200,5 +231,37 @@ mod tests {
     fn test_parse_reference_invalid() {
         let r = parse_reference("not a valid reference!!!");
         assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_compute_file_digest() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("test.txt");
+
+        // Write known content - empty file has a known SHA256
+        std::fs::write(&file_path, b"").unwrap();
+        let digest = compute_file_digest(&file_path).await.unwrap();
+        // SHA256 of empty string
+        assert_eq!(
+            digest,
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+
+        // Write "hello" and verify
+        std::fs::write(&file_path, b"hello").unwrap();
+        let digest = compute_file_digest(&file_path).await.unwrap();
+        // SHA256 of "hello"
+        assert_eq!(
+            digest,
+            "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn test_digest_mismatch_error() {
+        let err = Error::digest_mismatch("sha256:expected", "sha256:actual");
+        let msg = err.to_string();
+        assert!(msg.contains("expected"));
+        assert!(msg.contains("actual"));
     }
 }

@@ -61,6 +61,18 @@ pub fn extract_homebrew_bottle(bottle_path: &Path, dest_dir: &Path) -> Result<()
 
         // Build relative path without name/version prefix
         let relative: PathBuf = components[2..].iter().collect();
+
+        // Validate no path traversal (e.g., "../../../etc/passwd")
+        if relative
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(Error::ExtractionFailed {
+                binary: path_str.to_string(),
+                message: "Archive entry contains path traversal".to_string(),
+            });
+        }
+
         let dest_path = dest_dir.join(&relative);
 
         // Handle directories
@@ -87,7 +99,13 @@ pub fn extract_homebrew_bottle(bottle_path: &Path, dest_dir: &Path) -> Result<()
                 // Add execute permission if it's a regular file
                 if mode & 0o100 == 0 {
                     perms.set_mode(mode | 0o111);
-                    let _ = std::fs::set_permissions(&dest_path, perms);
+                    if let Err(e) = std::fs::set_permissions(&dest_path, perms) {
+                        tracing::warn!(
+                            path = %dest_path.display(),
+                            error = %e,
+                            "Failed to set executable permission"
+                        );
+                    }
                 }
             }
         }
@@ -528,5 +546,118 @@ mod tests {
         let result = extract_homebrew_binary(&bottle, "jq", &dest);
 
         assert!(matches!(result, Err(Error::BinaryNotFound(_))));
+    }
+
+    /// Helper to create a tarball with raw path bytes (bypassing tar's path validation).
+    fn create_tarball_with_raw_path(dir: &Path, path_bytes: &[u8], content: &[u8]) -> PathBuf {
+        use std::io::Write;
+
+        let tarball_path = dir.join("malicious.tar.gz");
+        let file = File::create(&tarball_path).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+
+        // Create a GNU tar header manually
+        let mut header = [0u8; 512];
+
+        // Name field (first 100 bytes)
+        let name_len = std::cmp::min(path_bytes.len(), 100);
+        header[..name_len].copy_from_slice(&path_bytes[..name_len]);
+
+        // Mode (octal string, 8 bytes at offset 100)
+        header[100..107].copy_from_slice(b"0000755");
+
+        // UID (octal string, 8 bytes at offset 108)
+        header[108..115].copy_from_slice(b"0000000");
+
+        // GID (octal string, 8 bytes at offset 116)
+        header[116..123].copy_from_slice(b"0000000");
+
+        // Size (octal string, 12 bytes at offset 124)
+        let size_str = format!("{:011o}", content.len());
+        header[124..135].copy_from_slice(size_str.as_bytes());
+
+        // Mtime (octal string, 12 bytes at offset 136)
+        header[136..147].copy_from_slice(b"00000000000");
+
+        // Typeflag (1 byte at offset 156): '0' for regular file
+        header[156] = b'0';
+
+        // Magic (6 bytes at offset 257): "ustar\0"
+        header[257..263].copy_from_slice(b"ustar\0");
+
+        // Version (2 bytes at offset 263)
+        header[263..265].copy_from_slice(b"00");
+
+        // Calculate and set checksum (8 bytes at offset 148)
+        // First, fill checksum field with spaces for calculation
+        header[148..156].copy_from_slice(b"        ");
+        let checksum: u32 = header.iter().map(|&b| b as u32).sum();
+        let checksum_str = format!("{:06o}\0 ", checksum);
+        header[148..156].copy_from_slice(checksum_str.as_bytes());
+
+        encoder.write_all(&header).unwrap();
+
+        // Write content (padded to 512 bytes)
+        encoder.write_all(content).unwrap();
+        let padding = 512 - (content.len() % 512);
+        if padding < 512 {
+            encoder.write_all(&vec![0u8; padding]).unwrap();
+        }
+
+        // Write two empty blocks to end the archive
+        encoder.write_all(&[0u8; 1024]).unwrap();
+
+        encoder.finish().unwrap();
+        tarball_path
+    }
+
+    #[test]
+    fn test_path_traversal_rejected() {
+        let temp = TempDir::new().unwrap();
+
+        // Create a tarball with a path traversal attempt using raw bytes
+        // Path: "jq/1.7.1/../../../etc/passwd" - this bypasses tar's validation
+        let malicious_path = b"jq/1.7.1/../../../etc/passwd";
+        let bottle = create_tarball_with_raw_path(temp.path(), malicious_path, b"malicious");
+
+        let dest_dir = temp.path().join("output");
+        let result = extract_homebrew_bottle(&bottle, &dest_dir);
+
+        // Should fail due to path traversal
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("path traversal"),
+            "Expected path traversal error, got: {}",
+            err
+        );
+
+        // Ensure the malicious file was not created outside dest_dir
+        assert!(!temp.path().join("etc/passwd").exists());
+    }
+
+    #[test]
+    fn test_extract_bottle_normal_paths() -> Result<()> {
+        let temp = TempDir::new()?;
+
+        // Create a normal bottle structure
+        let bottle = create_test_tarball(
+            temp.path(),
+            &[
+                ("jq/1.7.1/bin/jq", b"binary"),
+                ("jq/1.7.1/lib/libjq.dylib", b"library"),
+                ("jq/1.7.1/share/doc/README", b"docs"),
+            ],
+        );
+
+        let dest_dir = temp.path().join("output");
+        extract_homebrew_bottle(&bottle, &dest_dir)?;
+
+        // Verify files were extracted correctly
+        assert!(dest_dir.join("bin/jq").exists());
+        assert!(dest_dir.join("lib/libjq.dylib").exists());
+        assert!(dest_dir.join("share/doc/README").exists());
+
+        Ok(())
     }
 }

@@ -19,6 +19,9 @@ oci-distribution = { version = "0.11", default-features = false, features = ["ru
 flate2 = "1.0"
 tar = "0.4"
 
+# Cryptography (for digest verification)
+sha2 = "0.10"
+
 # Async runtime
 tokio = { workspace = true, features = ["fs", "io-util"] }
 

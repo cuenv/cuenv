@@ -70,6 +70,15 @@ pub enum Error {
     /// Homebrew API or formula error.
     #[error("Homebrew error: {0}")]
     Homebrew(String),
+
+    /// Digest mismatch after download.
+    #[error("Digest mismatch for blob: expected {expected}, got {actual}")]
+    DigestMismatch {
+        /// The expected digest.
+        expected: String,
+        /// The computed digest.
+        actual: String,
+    },
 }
 
 impl Error {
@@ -103,6 +112,15 @@ impl Error {
         Self::BlobPullFailed {
             digest: digest.into(),
             message: message.into(),
+        }
+    }
+
+    /// Create a digest mismatch error.
+    #[must_use]
+    pub fn digest_mismatch(expected: impl Into<String>, actual: impl Into<String>) -> Self {
+        Self::DigestMismatch {
+            expected: expected.into(),
+            actual: actual.into(),
         }
     }
 }
