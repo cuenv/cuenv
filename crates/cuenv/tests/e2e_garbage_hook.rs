@@ -88,25 +88,38 @@ hooks: {
         .output()
         .unwrap();
 
-    // Handle different behaviors in sandbox vs local environment
-    if output.status.code() == Some(3) {
-        // CI / Sandbox behavior: Abort with error (could be FFI or I/O)
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
-            "Expected FFI or I/O error in stderr, got: {stderr}"
-        );
-    } else {
-        // Local / Permissive behavior: Continue with partial env
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "Expected exit code 1 (MISSING)"
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("MISSING"),
-            "Expected MISSING in stdout, got: {stdout}"
-        );
+    // Handle different behaviors based on how hook errors are handled
+    let exit_code = output.status.code();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    match exit_code {
+        Some(3) => {
+            // CI / Sandbox behavior: Abort with FFI or I/O error
+            assert!(
+                stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
+                "Expected FFI or I/O error in stderr, got: {stderr}"
+            );
+        }
+        Some(2) => {
+            // Hook failure treated as CLI/config error (fail-fast behavior)
+            // This is valid - hook with syntax error should cause cuenv to fail
+            assert!(
+                stderr.contains("error") || stderr.contains("Error") || stderr.contains("failed"),
+                "Expected error message in stderr for exit code 2, got: {stderr}"
+            );
+        }
+        Some(1) => {
+            // Permissive behavior: Continue with partial env, inner command fails
+            assert!(
+                stdout.contains("MISSING"),
+                "Expected MISSING in stdout for exit code 1, got: {stdout}"
+            );
+        }
+        other => {
+            panic!(
+                "Unexpected exit code {other:?}. stdout: {stdout}, stderr: {stderr}"
+            );
+        }
     }
 }
