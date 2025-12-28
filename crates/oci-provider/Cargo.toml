@@ -8,7 +8,7 @@ description = "OCI registry client and binary extraction for cuenv"
 
 [dependencies]
 # OCI registry operations
-oci-distribution = "0.11"
+oci-distribution = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 
 # Compression and archiving
 flate2 = "1.0"
