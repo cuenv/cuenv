@@ -1,52 +1,38 @@
 version = 2
 
-[tools.yq]
-version = "4.44.6"
+[tools.rust]
+version = "1.92.0"
 
-[tools.yq.platforms.linux-x86_64]
+[tools.rust.platforms.darwin-arm64]
 provider = "homebrew"
-digest = "sha256:8a2d5beacad725ba84118c51ba7e1bdb7b17aa4a80d4d7e01562cfb95625e752"
+digest = "sha256:f9993409d0e93abf552a92d5be1d32da109c6a3fa4fa68370f087eb9f40abcae"
 
-[tools.yq.platforms.linux-x86_64.source]
-formula = "yq"
+[tools.rust.platforms.darwin-arm64.source]
+formula = "rust"
 
-[tools.yq.platforms.darwin-x86_64]
+[tools.rust.platforms.linux-x86_64]
 provider = "homebrew"
-digest = "sha256:696ff8afd636b19c5f085c9597794370bf9120f9a0b48e9c4ecbb749024d7033"
+digest = "sha256:9b238900df790e8f2a546e5ecae0d5e11a3f9a23585a8bffbcddc22fe660a0f0"
 
-[tools.yq.platforms.darwin-x86_64.source]
-formula = "yq"
+[tools.rust.platforms.linux-x86_64.source]
+formula = "rust"
 
-[tools.yq.platforms.linux-arm64]
+[tools.rust.platforms.darwin-x86_64]
 provider = "homebrew"
-digest = "sha256:64b35035c97519dc59b2c21b38e2d40aef9825d02deaa8faab9cea29b88df577"
+digest = "sha256:f917b66a2d4c9a9420d6efd7b9698d46d42511c57314affc9088bdbc818f4569"
 
-[tools.yq.platforms.linux-arm64.source]
-formula = "yq"
+[tools.rust.platforms.darwin-x86_64.source]
+formula = "rust"
 
-[tools.yq.platforms.darwin-arm64]
+[tools.rust.platforms.linux-arm64]
 provider = "homebrew"
-digest = "sha256:0d777346ca998475928060af588873e9c98f019610700f9cdc9c60b6d0597dad"
+digest = "sha256:bd10da1c938b0fdb54879457a3d2329a87b07fc0318d90f1b958b32cfacd60ba"
 
-[tools.yq.platforms.darwin-arm64.source]
-formula = "yq"
+[tools.rust.platforms.linux-arm64.source]
+formula = "rust"
 
 [tools.jq]
 version = "1.7.1"
-
-[tools.jq.platforms.darwin-x86_64]
-provider = "homebrew"
-digest = "sha256:48f0c4dce0840a6b73d7649cf518db54594fe150e27a0886488f749937b4d884"
-
-[tools.jq.platforms.darwin-x86_64.source]
-formula = "jq"
-
-[tools.jq.platforms.linux-arm64]
-provider = "homebrew"
-digest = "sha256:850a3ccbdf5f5cacb6e77cdc69dfd8723788dbd0c04bf16099e591d67d346bda"
-
-[tools.jq.platforms.linux-arm64.source]
-formula = "jq"
 
 [tools.jq.platforms.linux-x86_64]
 provider = "homebrew"
@@ -62,6 +48,20 @@ digest = "sha256:efbb14c3880e261d2f62540b1f25befe04f749e1e96646199c07eb9c8471aae
 [tools.jq.platforms.darwin-arm64.source]
 formula = "jq"
 
+[tools.jq.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:48f0c4dce0840a6b73d7649cf518db54594fe150e27a0886488f749937b4d884"
+
+[tools.jq.platforms.darwin-x86_64.source]
+formula = "jq"
+
+[tools.jq.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:850a3ccbdf5f5cacb6e77cdc69dfd8723788dbd0c04bf16099e591d67d346bda"
+
+[tools.jq.platforms.linux-arm64.source]
+formula = "jq"
+
 [tools.bun]
 version = "1.3.5"
 
@@ -72,16 +72,6 @@ digest = "sha256:15dd00fb3156a8c84f1c9c5317c62cf8944e1663f9cd1e88713c79a9e45a33a
 [tools.bun.platforms.darwin-x86_64.source]
 asset = "bun-darwin-x64.zip"
 path = "bun-darwin-x64/bun"
-repo = "oven-sh/bun"
-tag = "bun-v{version}"
-
-[tools.bun.platforms.linux-x86_64]
-provider = "github"
-digest = "sha256:0085249b13a8be13b9ecc62119e6e9b723b0fa71001de3977f5b12862a278dab"
-
-[tools.bun.platforms.linux-x86_64.source]
-asset = "bun-linux-x64.zip"
-path = "bun-linux-x64/bun"
 repo = "oven-sh/bun"
 tag = "bun-v{version}"
 
@@ -104,3 +94,292 @@ asset = "bun-linux-aarch64.zip"
 path = "bun-linux-aarch64/bun"
 repo = "oven-sh/bun"
 tag = "bun-v{version}"
+
+[tools.bun.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:0085249b13a8be13b9ecc62119e6e9b723b0fa71001de3977f5b12862a278dab"
+
+[tools.bun.platforms.linux-x86_64.source]
+asset = "bun-linux-x64.zip"
+path = "bun-linux-x64/bun"
+repo = "oven-sh/bun"
+tag = "bun-v{version}"
+
+[tools.zig]
+version = "0.15.2"
+
+[tools.zig.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:0cce5a04a3da6ac1af9f38a066f69e97799a545549a9b4c34fce99ef29bdfd15"
+
+[tools.zig.platforms.linux-x86_64.source]
+formula = "zig"
+
+[tools.zig.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:1b81bf91b9fbb31c98c5cc0d7b0e3684561f1bb649dfd201de16728a934f3561"
+
+[tools.zig.platforms.darwin-arm64.source]
+formula = "zig"
+
+[tools.zig.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:d9c64278595b260547acabddc9b0226979c147b28ad9ba56e8f3b5a8c6b61b03"
+
+[tools.zig.platforms.darwin-x86_64.source]
+formula = "zig"
+
+[tools.zig.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:7939e344950ced5ba3c9758c5adf8f70129c07e35dd3e31df0d7f3facdc2de43"
+
+[tools.zig.platforms.linux-arm64.source]
+formula = "zig"
+
+[tools.cargo-deny]
+version = "0.18.9"
+
+[tools.cargo-deny.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:a64460a627c8a247161474ade6ca8b35ea282d27c0a70a5107ebffb7e4ea7b70"
+
+[tools.cargo-deny.platforms.darwin-x86_64.source]
+formula = "cargo-deny"
+
+[tools.cargo-deny.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:d397591cfb0af77359fd1d630a04c5e113c51133660a36281788bd969dfd60ba"
+
+[tools.cargo-deny.platforms.darwin-arm64.source]
+formula = "cargo-deny"
+
+[tools.cargo-deny.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:33acd24eac159ca1260bef3f92cb6ea53eb225b43eed5c1835de2615cc298d8d"
+
+[tools.cargo-deny.platforms.linux-arm64.source]
+formula = "cargo-deny"
+
+[tools.cargo-deny.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:7013d1b2abdd711628f6be66d2b9167f1176070b819087b051321788707fe9a9"
+
+[tools.cargo-deny.platforms.linux-x86_64.source]
+formula = "cargo-deny"
+
+[tools.rust-analyzer]
+version = "2025-12-22"
+
+[tools.rust-analyzer.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:23ba02ef68dcb02b7efb80b4e3cfa22b7b42ca812b952eb1f7b4ae69ca1e8006"
+
+[tools.rust-analyzer.platforms.darwin-arm64.source]
+formula = "rust-analyzer"
+
+[tools.rust-analyzer.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:3c34768a173049d4e5ac59654a9498bdcfa12de8cd2125f2ad8c715cc59c4a77"
+
+[tools.rust-analyzer.platforms.darwin-x86_64.source]
+formula = "rust-analyzer"
+
+[tools.rust-analyzer.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:f8ee2ede7802ab655326635a02021ac32389a374f9ffd9663e6fa6d85c3d9bce"
+
+[tools.rust-analyzer.platforms.linux-x86_64.source]
+formula = "rust-analyzer"
+
+[tools.rust-analyzer.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:5f73899e783ea40b7600cbccb66a82734affdec9398fbff1ba6aad6fa9f72331"
+
+[tools.rust-analyzer.platforms.linux-arm64.source]
+formula = "rust-analyzer"
+
+[tools.sccache]
+version = "0.12.0"
+
+[tools.sccache.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:ff0bee5cdcf3ac5afa5eec7c0c35d434cdb9b25edfb0ee642a99c0bc093934df"
+
+[tools.sccache.platforms.darwin-arm64.source]
+formula = "sccache"
+
+[tools.sccache.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:66fec22d39c9fdc6cefda990b8ba8afae3226252755e3312382e5d8f2cad7d52"
+
+[tools.sccache.platforms.darwin-x86_64.source]
+formula = "sccache"
+
+[tools.sccache.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:542a564447866d6e18daf341c7bfcca5089f4a9f20881f41a304fe14b217f4f3"
+
+[tools.sccache.platforms.linux-x86_64.source]
+formula = "sccache"
+
+[tools.sccache.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:7b85c64f2a5165746e43bb80708abb9d5e92d4e36ccc9c00618c1ef1fd238f0c"
+
+[tools.sccache.platforms.linux-arm64.source]
+formula = "sccache"
+
+[tools.cargo-cyclonedx]
+version = "0.5.7"
+
+[tools.cargo-cyclonedx.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:1cd6b78032060d6dcd2c7b9425d51ff1c17342ff6fe4a5de2728533e80fa9dae"
+
+[tools.cargo-cyclonedx.platforms.darwin-x86_64.source]
+formula = "cargo-cyclonedx"
+
+[tools.cargo-cyclonedx.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:60f1d0869251c64565a234ded0c4253df6896406ae2c3325c0d939cb655da9d3"
+
+[tools.cargo-cyclonedx.platforms.darwin-arm64.source]
+formula = "cargo-cyclonedx"
+
+[tools.cargo-cyclonedx.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:653923a2eb100d295ad01d00ca104faa1f53f149eb0876743aa15e65fd2d42f7"
+
+[tools.cargo-cyclonedx.platforms.linux-x86_64.source]
+formula = "cargo-cyclonedx"
+
+[tools.cargo-cyclonedx.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:c450af3fc97b01a3c28638f467a24f419c560487fbafc1a1a1f7f1b1552a19bf"
+
+[tools.cargo-cyclonedx.platforms.linux-arm64.source]
+formula = "cargo-cyclonedx"
+
+[tools.cargo-zigbuild]
+version = "0.20.1"
+
+[tools.cargo-zigbuild.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:c0054318ef86005ed3e554c72d6b493036605a9cbb160daa79c79bfc0beb51f5"
+
+[tools.cargo-zigbuild.platforms.darwin-arm64.source]
+formula = "cargo-zigbuild"
+
+[tools.cargo-zigbuild.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:0231e614a52c74e058e9294f1505a9c4169111d6ea0d9a9a13781c2ac47bbcb7"
+
+[tools.cargo-zigbuild.platforms.linux-arm64.source]
+formula = "cargo-zigbuild"
+
+[tools.cargo-zigbuild.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:4b402a4ed31992ce185e6fb22149d53ff47aa24b1ee6f6f4876e3902fd755266"
+
+[tools.cargo-zigbuild.platforms.darwin-x86_64.source]
+formula = "cargo-zigbuild"
+
+[tools.cargo-zigbuild.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:1db99b9035e7fee95c0a9e1984238030adabbec285edb28da73ef87d4dada5e4"
+
+[tools.cargo-zigbuild.platforms.linux-x86_64.source]
+formula = "cargo-zigbuild"
+
+[tools.cargo-llvm-cov]
+version = "0.6.21"
+
+[tools.cargo-llvm-cov.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:34046232dcaf145f4d60f8b13defc204b426f0b184bd8a50f2e40b3652c0cc76"
+
+[tools.cargo-llvm-cov.platforms.darwin-arm64.source]
+formula = "cargo-llvm-cov"
+
+[tools.cargo-llvm-cov.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:6cfd2e8fef2acdfa288eb8ccc8c7151fca65ee03d7d5ac74af95a1badb798cfa"
+
+[tools.cargo-llvm-cov.platforms.darwin-x86_64.source]
+formula = "cargo-llvm-cov"
+
+[tools.cargo-llvm-cov.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:45e8d1003af907ee90b3d5d1da7b499b3364d8e3ef54e2f1b66b8c883685fd20"
+
+[tools.cargo-llvm-cov.platforms.linux-x86_64.source]
+formula = "cargo-llvm-cov"
+
+[tools.cargo-llvm-cov.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:9e35dff71cce4d788d75140157091bdfd5720dcc0aa098a750472d28e482acc4"
+
+[tools.cargo-llvm-cov.platforms.linux-arm64.source]
+formula = "cargo-llvm-cov"
+
+[tools.cargo-nextest]
+version = "0.9.116"
+
+[tools.cargo-nextest.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:060358098301ba39da29241f0cfa5c421746236f8d6a9329a3ec02d9a04722de"
+
+[tools.cargo-nextest.platforms.darwin-x86_64.source]
+formula = "cargo-nextest"
+
+[tools.cargo-nextest.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:0c2191f7566afd5c40a4ef56235ce6b998387f31e72f75468df7bfbb421f4937"
+
+[tools.cargo-nextest.platforms.linux-arm64.source]
+formula = "cargo-nextest"
+
+[tools.cargo-nextest.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:2847688459b1c2e20f99d12d05d20b47bf68f5efdaddf97dce980588fdd994ea"
+
+[tools.cargo-nextest.platforms.darwin-arm64.source]
+formula = "cargo-nextest"
+
+[tools.cargo-nextest.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:8292d531d4da22f257fbbd5a7d8b0a0e08c8417fa3fc074e188970bc81b6db7d"
+
+[tools.cargo-nextest.platforms.linux-x86_64.source]
+formula = "cargo-nextest"
+
+[tools.yq]
+version = "4.44.6"
+
+[tools.yq.platforms.darwin-x86_64]
+provider = "homebrew"
+digest = "sha256:696ff8afd636b19c5f085c9597794370bf9120f9a0b48e9c4ecbb749024d7033"
+
+[tools.yq.platforms.darwin-x86_64.source]
+formula = "yq"
+
+[tools.yq.platforms.linux-x86_64]
+provider = "homebrew"
+digest = "sha256:8a2d5beacad725ba84118c51ba7e1bdb7b17aa4a80d4d7e01562cfb95625e752"
+
+[tools.yq.platforms.linux-x86_64.source]
+formula = "yq"
+
+[tools.yq.platforms.linux-arm64]
+provider = "homebrew"
+digest = "sha256:64b35035c97519dc59b2c21b38e2d40aef9825d02deaa8faab9cea29b88df577"
+
+[tools.yq.platforms.linux-arm64.source]
+formula = "yq"
+
+[tools.yq.platforms.darwin-arm64]
+provider = "homebrew"
+digest = "sha256:0d777346ca998475928060af588873e9c98f019610700f9cdc9c60b6d0597dad"
+
+[tools.yq.platforms.darwin-arm64.source]
+formula = "yq"

@@ -180,7 +180,7 @@ cuenv/
 │   └── cuenv-release/     # Release management
 ├── integrations/          # Editor integrations (VSCode)
 ├── docs/                  # Documentation source
-├── _examples/             # Example configurations
+├── examples/             # Example configurations
 ├── schema/                # CUE schemas
 └── _tests/                # Integration tests
 ```

@@ -235,6 +235,64 @@ impl Environment {
         merged
     }
 
+    /// Essential system variables to preserve in hermetic mode.
+    /// These are required for basic process operation but don't pollute PATH.
+    const HERMETIC_ALLOWED_VARS: &'static [&'static str] = &[
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "COLORTERM",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "XDG_RUNTIME_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+    ];
+
+    /// Merge with only essential system environment variables (hermetic mode).
+    ///
+    /// Unlike `merge_with_system()`, this excludes PATH and other potentially
+    /// polluting variables. PATH should come from cuenv tools activation.
+    ///
+    /// Included variables:
+    /// - User identity: HOME, USER, LOGNAME, SHELL
+    /// - Terminal: TERM, COLORTERM
+    /// - Locale: LANG, LC_* variables
+    /// - Temp directories: TMPDIR, TMP, TEMP
+    /// - XDG directories: XDG_RUNTIME_DIR, XDG_CONFIG_HOME, etc.
+    pub fn merge_with_system_hermetic(&self) -> HashMap<String, String> {
+        let mut merged: HashMap<String, String> = HashMap::new();
+
+        // Only include allowed system variables
+        for var in Self::HERMETIC_ALLOWED_VARS {
+            if let Ok(value) = env::var(var) {
+                merged.insert((*var).to_string(), value);
+            }
+        }
+
+        // Also include any LC_* variables (locale settings)
+        for (key, value) in env::vars() {
+            if key.starts_with("LC_") {
+                merged.insert(key, value);
+            }
+        }
+
+        // Override with CUE environment variables (including cuenv-constructed PATH)
+        for (key, value) in &self.vars {
+            merged.insert(key.clone(), value.clone());
+        }
+
+        merged
+    }
+
     /// Convert to a vector of key=value strings including system environment
     pub fn to_full_env_vec(&self) -> Vec<String> {
         self.merge_with_system()

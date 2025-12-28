@@ -305,7 +305,7 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
 #[given(expr = "cuenv is allowed in {string} directory")]
 async fn cuenv_allowed_in_dir(world: &mut TestWorld, dir: String) {
     // Create a valid CUE file for the hook test
-    let cue_content = r#"package _examples
+    let cue_content = r#"package examples
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -359,7 +359,7 @@ tasks: {
 
     // Pre-approve the configuration
     let package = if dir.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -383,7 +383,7 @@ async fn change_directory(world: &mut TestWorld, dir: String) {
 
     // Trigger cuenv env load (simulating shell integration)
     let package = if new_path.to_str().unwrap().contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -454,7 +454,7 @@ async fn wait_for_hooks(world: &mut TestWorld) {
             // Run the new env check command to get environment variables
             let dir_path = world.current_dir.to_str().unwrap().to_string();
             let package = if dir_path.contains("examples") {
-                "_examples"
+                "examples"
             } else {
                 "cuenv"
             };
@@ -567,7 +567,7 @@ fn should_see_output(world: &mut TestWorld, expected: String) {
 async fn check_hook_status(world: &mut TestWorld) {
     let dir_path = world.current_dir.to_str().unwrap().to_string();
     let package = if dir_path.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -594,7 +594,7 @@ fn hooks_are_running(world: &mut TestWorld) {
 async fn check_hook_status_again(world: &mut TestWorld) {
     let dir_path = world.current_dir.to_str().unwrap().to_string();
     let package = if dir_path.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -681,7 +681,7 @@ tasks: {}
 
     // Pre-approve the configuration
     let package = if dir.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -704,7 +704,7 @@ async fn wait_for_hooks_or_failure(world: &mut TestWorld) {
     for _ in 0..10 {
         let dir_path = world.current_dir.to_str().unwrap().to_string();
         let package = if dir_path.contains("examples") {
-            "_examples"
+            "examples"
         } else {
             "cuenv"
         };
@@ -739,7 +739,7 @@ fn env_vars_not_loaded(world: &mut TestWorld) {
 async fn see_hook_failure_message(world: &mut TestWorld) {
     let dir_path = world.current_dir.to_str().unwrap().to_string();
     let package = if dir_path.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };

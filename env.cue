@@ -13,9 +13,24 @@ schema.#Project & {
 	runtime: schema.#ToolsRuntime & {
 		platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
 		tools: {
-			jq: "1.7.1"
-			yq: "4.44.6"
+			jq:  "1.7.1"
+			yq:  "4.44.6"
 			bun: xBun.#Bun & {version: "1.3.5"}
+
+			// Rust toolchain
+			rust:              xRust.#Rust & {version: "1.92.0"}
+			"rust-analyzer":   xRust.#RustAnalyzer & {version: "2025-12-22"}
+
+			// Cargo extensions
+			"cargo-nextest":   xRust.#CargoNextest & {version: "0.9.116"}
+			"cargo-deny":      xRust.#CargoDeny & {version: "0.18.9"}
+			"cargo-llvm-cov":  xRust.#CargoLlvmCov & {version: "0.6.21"}
+			"cargo-cyclonedx": xRust.#CargoCyclonedx & {version: "0.5.7"}
+			"cargo-zigbuild":  xRust.#CargoZigbuild & {version: "0.20.1"}
+			sccache:           xRust.#SccacheTool & {version: "0.12.0"}
+
+			// Build tools
+			zig: xRust.#Zig & {version: "0.15.2"}
 		}
 	}
 
@@ -56,7 +71,7 @@ schema.#Project & {
 
 			pathsIgnore: [
 				"docs/**",
-				"_examples/**",
+				"examples/**",
 				"*.md",
 				"LICENSE",
 				".vscode/**",
@@ -161,7 +176,7 @@ schema.#Project & {
 				cargo deny check bans licenses advisories
 				echo "All checks passed!"
 				"""
-			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
+			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 		}
 
 		// schema.#Rust.#Lint?
@@ -185,7 +200,7 @@ schema.#Project & {
 				"deny.toml",
 				"docs/**",
 				"env.cue",
-				"_examples/**",
+				"examples/**",
 				"features/**",
 				"flake.lock",
 				"flake.nix",
@@ -216,7 +231,7 @@ schema.#Project & {
 			unit: {
 				command: "cargo"
 				args: ["nextest", "run", "--workspace", "--all-features"]
-				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
+				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 			}
 			doc: {
 				command: "cargo"
@@ -283,7 +298,7 @@ schema.#Project & {
 		coverage: {
 			command: "cargo"
 			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
+			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 			outputs: ["lcov.info"]
 
 		}

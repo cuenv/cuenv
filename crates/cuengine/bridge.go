@@ -784,11 +784,15 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 
 	// Pre-filter valid instances (cheap filtering before parallelization)
 	var validInstances []*build.Instance
+	var loadErrors []string
+	var packageMismatches []string
 	for _, inst := range loadedInstances {
 		if inst.Err != nil {
+			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", inst.Dir, inst.Err))
 			continue
 		}
 		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
+			packageMismatches = append(packageMismatches, fmt.Sprintf("%s has package '%s'", inst.Dir, inst.PkgName))
 			continue
 		}
 		validInstances = append(validInstances, inst)
@@ -908,8 +912,9 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	}
 
 	if len(instances) == 0 {
-		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, loadedInstances=%d, validInstances=%d, builtInstances=%d, errors=%v",
-			evalDir, goModuleRoot, loadPattern, len(loadedInstances), len(validInstances), len(builtInstances), buildErrors)
+		allErrors := append(loadErrors, buildErrors...)
+		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, loadedInstances=%d, validInstances=%d, builtInstances=%d, errors=%v, packageMismatches=%v",
+			evalDir, goModuleRoot, loadPattern, effectivePackageName, len(loadedInstances), len(validInstances), len(builtInstances), allErrors, packageMismatches)
 		result = createErrorResponse(ErrorCodeBuildValue, "No instances could be evaluated", &hint)
 		return result
 	}

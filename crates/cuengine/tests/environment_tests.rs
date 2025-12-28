@@ -20,9 +20,9 @@ fn test_parse_task_basic_example() {
         return;
     }
 
-    // Evaluate from project root - the _examples package is in examples/task-basic
+    // Evaluate from project root - the examples package is in examples/task-basic
     // but imports require module root resolution
-    let result = evaluate_cue_package(project_root, "_examples");
+    let result = evaluate_cue_package(project_root, "examples");
 
     // Handle both success and failure cases gracefully (FFI may be unavailable in CI)
     let json = match result {
