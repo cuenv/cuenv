@@ -5,12 +5,17 @@
 //!
 //! For Homebrew images, this also resolves transitive dependencies and
 //! includes them in the lockfile.
+//!
+//! For `#ToolsRuntime`, uses ToolProvider to resolve tools from multiple sources.
 
 use async_trait::async_trait;
-use cuenv_core::lockfile::{ArtifactKind, LockedArtifact, Lockfile, PlatformData, LOCKFILE_NAME};
-use cuenv_core::manifest::{Base, Project, Runtime};
+use cuenv_core::lockfile::{
+    ArtifactKind, LockedArtifact, LockedToolPlatform, Lockfile, PlatformData, LOCKFILE_NAME,
+};
+use cuenv_core::manifest::{Base, Project, Runtime, SourceConfig, ToolSpec};
+use cuenv_core::tools::{Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolSource};
 use cuenv_core::Result;
-use cuenv_oci_provider::{
+use cuenv_tools_oci::{
     formula_name_from_image, is_homebrew_image, resolve_with_deps, to_homebrew_platform,
     HomebrewFormula, OciClient, Platform,
 };
@@ -20,6 +25,22 @@ use tracing::{debug, info, warn};
 
 use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
 use crate::commands::CommandExecutor;
+
+/// Create a tool registry with available providers.
+fn create_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+
+    // Register Homebrew provider (uses OCI crate internally for ghcr.io/homebrew)
+    registry.register(cuenv_tools_homebrew::HomebrewToolProvider::new());
+
+    // Register Nix provider
+    registry.register(cuenv_tools_nix::NixToolProvider::new());
+
+    // Register GitHub provider
+    registry.register(cuenv_tools_github::GitHubToolProvider::new());
+
+    registry
+}
 
 /// Sync provider for OCI lockfile resolution.
 pub struct LockSyncProvider;
@@ -66,6 +87,16 @@ impl SyncProvider for LockSyncProvider {
     }
 }
 
+/// Collected tool specification from manifest.
+#[derive(Debug, Clone)]
+struct CollectedTool {
+    name: String,
+    version: String,
+    source: Option<SourceConfig>,
+    overrides: Vec<cuenv_core::manifest::SourceOverride>,
+    platforms: Vec<String>,
+}
+
 /// Execute lock synchronization for a path.
 ///
 /// Scans all projects in the CUE module, collects OCI image references,
@@ -73,22 +104,26 @@ impl SyncProvider for LockSyncProvider {
 ///
 /// For Homebrew images, this also fetches formula metadata and resolves
 /// transitive dependencies, adding them to the lockfile.
+///
+/// For Tools runtime, uses ToolProvider to resolve each tool.
 async fn execute_lock_sync(
     path: &Path,
     _package: &str,
     check: bool,
     executor: &CommandExecutor,
 ) -> Result<String> {
-    // Collect all OCI artifacts from projects (image -> platforms needed)
+    // Collect all OCI artifacts and tools from projects
     // Note: We collect all data before async operations to avoid holding
     // the module guard across await points (MutexGuard is not Send).
-    let (lockfile_path, image_platforms, all_platforms) = {
+    let (lockfile_path, image_platforms, all_platforms, collected_tools, tools_platforms) = {
         let module = executor.get_module(path)?;
         let module_root = module.root.clone();
         let lockfile_path = module_root.join(LOCKFILE_NAME);
 
         let mut image_platforms: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_platforms: Vec<String> = Vec::new();
+        let mut collected_tools: Vec<CollectedTool> = Vec::new();
+        let mut tools_platforms: Vec<String> = Vec::new();
 
         for instance in module.projects() {
             // Deserialize the instance to get the Project struct
@@ -97,46 +132,90 @@ async fn execute_lock_sync(
                 Err(_) => continue,
             };
 
-            // Check if project uses OCI runtime
-            let Some(Runtime::Oci(oci_runtime)) = &project.runtime else {
-                continue;
-            };
+            match &project.runtime {
+                // Handle OCI runtime (legacy)
+                Some(Runtime::Oci(oci_runtime)) => {
+                    // Collect platforms from this project's config
+                    let resolve_platforms = &oci_runtime.platforms;
+                    if resolve_platforms.is_empty() {
+                        return Err(cuenv_core::Error::configuration(format!(
+                            "Project '{}' uses OCI runtime but has no platforms configured",
+                            project.name
+                        )));
+                    }
 
-            // Collect platforms from this project's config
-            let resolve_platforms = &oci_runtime.platforms;
-            if resolve_platforms.is_empty() {
-                return Err(cuenv_core::Error::configuration(format!(
-                    "Project '{}' uses OCI runtime but has no platforms configured",
-                    project.name
-                )));
-            }
+                    // Track all platforms for summary
+                    for platform in resolve_platforms {
+                        if !all_platforms.contains(platform) {
+                            all_platforms.push(platform.clone());
+                        }
+                    }
 
-            // Track all platforms for summary
-            for platform in resolve_platforms {
-                if !all_platforms.contains(platform) {
-                    all_platforms.push(platform.clone());
-                }
-            }
+                    // Process all images (unified API - everything is an image)
+                    for image_spec in &oci_runtime.images {
+                        let image = &image_spec.image;
 
-            // Process all images (unified API - everything is an image)
-            for image_spec in &oci_runtime.images {
-                let image = &image_spec.image;
-
-                let platforms = image_platforms.entry(image.clone()).or_default();
-                for platform in resolve_platforms {
-                    if !platforms.contains(platform) {
-                        platforms.push(platform.clone());
+                        let platforms = image_platforms.entry(image.clone()).or_default();
+                        for platform in resolve_platforms {
+                            if !platforms.contains(platform) {
+                                platforms.push(platform.clone());
+                            }
+                        }
                     }
                 }
+                // Handle Tools runtime (new)
+                Some(Runtime::Tools(tools_runtime)) => {
+                    let resolve_platforms = &tools_runtime.platforms;
+                    if resolve_platforms.is_empty() {
+                        return Err(cuenv_core::Error::configuration(format!(
+                            "Project '{}' uses Tools runtime but has no platforms configured",
+                            project.name
+                        )));
+                    }
+
+                    // Track all platforms for summary
+                    for platform in resolve_platforms {
+                        if !tools_platforms.contains(platform) {
+                            tools_platforms.push(platform.clone());
+                        }
+                    }
+
+                    // Collect all tools
+                    for (name, spec) in &tools_runtime.tools {
+                        let (version, source, overrides) = match spec {
+                            ToolSpec::Version(v) => (v.clone(), None, vec![]),
+                            ToolSpec::Full(config) => (
+                                config.version.clone(),
+                                config.source.clone(),
+                                config.overrides.clone(),
+                            ),
+                        };
+
+                        collected_tools.push(CollectedTool {
+                            name: name.clone(),
+                            version,
+                            source,
+                            overrides,
+                            platforms: resolve_platforms.clone(),
+                        });
+                    }
+                }
+                _ => continue,
             }
         }
 
-        (lockfile_path, image_platforms, all_platforms)
+        (
+            lockfile_path,
+            image_platforms,
+            all_platforms,
+            collected_tools,
+            tools_platforms,
+        )
     };
     // Module guard is now dropped, we can safely use async operations
 
-    if image_platforms.is_empty() {
-        return Ok("No OCI artifacts found in any project.".to_string());
+    if image_platforms.is_empty() && collected_tools.is_empty() {
+        return Ok("No OCI artifacts or tools found in any project.".to_string());
     }
 
     // Separate Homebrew images from regular images
@@ -236,8 +315,93 @@ async fn execute_lock_sync(
         });
     }
 
-    // Create lockfile
+    // Process Tools runtime
     let mut lockfile = Lockfile::new();
+
+    if !collected_tools.is_empty() {
+        info!(
+            "Resolving {} tools for {} platforms",
+            collected_tools.len(),
+            tools_platforms.len()
+        );
+
+        let registry = create_registry();
+
+        for tool in &collected_tools {
+            debug!(name = %tool.name, version = %tool.version, "Resolving tool");
+
+            for platform_str in &tool.platforms {
+                let platform = ToolPlatform::parse(platform_str).ok_or_else(|| {
+                    cuenv_core::Error::configuration(format!(
+                        "Invalid platform '{}': expected format 'os-arch' (e.g., 'darwin-arm64')",
+                        platform_str
+                    ))
+                })?;
+
+                // Determine source for this platform
+                let source_config = resolve_source_for_platform(
+                    &tool.source,
+                    &tool.overrides,
+                    &platform,
+                );
+
+                // Convert SourceConfig to ToolSource
+                let (provider_name, _tool_source, config) =
+                    source_config_to_tool_source(&tool.name, &tool.version, &source_config)?;
+
+                // Get the provider
+                let Some(provider) = registry.get(&provider_name) else {
+                    return Err(cuenv_core::Error::configuration(format!(
+                        "No provider '{}' registered for tool '{}'",
+                        provider_name, tool.name
+                    )));
+                };
+
+                // Resolve the tool
+                let resolved = provider
+                    .resolve(&tool.name, &tool.version, &platform, &config)
+                    .await
+                    .map_err(|e| {
+                        cuenv_core::Error::configuration(format!(
+                            "Failed to resolve tool '{}' for platform '{}': {}",
+                            tool.name, platform_str, e
+                        ))
+                    })?;
+
+                debug!(
+                    tool = %tool.name,
+                    %platform_str,
+                    provider = %provider_name,
+                    "Resolved tool"
+                );
+
+                // Add to lockfile
+                let locked_platform = LockedToolPlatform {
+                    provider: provider_name.clone(),
+                    digest: format!("sha256:{}", compute_tool_digest(&resolved)),
+                    source: config,
+                    size: None,
+                    dependencies: vec![],
+                };
+
+                lockfile
+                    .upsert_tool_platform(
+                        &tool.name,
+                        &tool.version,
+                        platform_str,
+                        locked_platform,
+                    )
+                    .map_err(|e| {
+                        cuenv_core::Error::configuration(format!(
+                            "Failed to add tool '{}' to lockfile: {}",
+                            tool.name, e
+                        ))
+                    })?;
+            }
+        }
+    }
+
+    // Add legacy artifacts
     lockfile.artifacts = artifacts;
 
     if check {
@@ -266,16 +430,150 @@ async fn execute_lock_sync(
             .filter(|a| matches!(a.kind, ArtifactKind::Homebrew { .. }))
             .count();
         let image_count = lockfile.artifacts.len() - homebrew_count;
-        let platform_str = all_platforms.join(", ");
+        let tools_count = lockfile.tools.len();
+
+        let mut summary = Vec::new();
+        if homebrew_count > 0 || image_count > 0 {
+            summary.push(format!(
+                "{} Homebrew formulas + {} images for [{}]",
+                homebrew_count,
+                image_count,
+                all_platforms.join(", ")
+            ));
+        }
+        if tools_count > 0 {
+            summary.push(format!(
+                "{} tools for [{}]",
+                tools_count,
+                tools_platforms.join(", ")
+            ));
+        }
 
         Ok(format!(
-            "Wrote {} Homebrew formulas + {} images for platform(s) [{}] to {}",
-            homebrew_count,
-            image_count,
-            platform_str,
+            "Wrote {} to {}",
+            summary.join(", "),
             lockfile_path.display()
         ))
     }
+}
+
+/// Resolve the source configuration for a specific platform.
+///
+/// Applies overrides based on OS and architecture, returning the
+/// appropriate source configuration.
+fn resolve_source_for_platform(
+    default_source: &Option<SourceConfig>,
+    overrides: &[cuenv_core::manifest::SourceOverride],
+    platform: &ToolPlatform,
+) -> SourceConfig {
+    // Check overrides first (most specific match wins)
+    let mut best_match: Option<&SourceConfig> = None;
+    let mut best_specificity = 0;
+
+    for override_config in overrides {
+        let os_matches = override_config
+            .os
+            .as_ref()
+            .map_or(true, |os| os == &platform.os.to_string());
+        let arch_matches = override_config
+            .arch
+            .as_ref()
+            .map_or(true, |arch| arch == &platform.arch.to_string());
+
+        if os_matches && arch_matches {
+            let specificity = override_config.os.is_some() as u8 + override_config.arch.is_some() as u8;
+            if specificity > best_specificity {
+                best_specificity = specificity;
+                best_match = Some(&override_config.source);
+            }
+        }
+    }
+
+    best_match
+        .cloned()
+        .or_else(|| default_source.clone())
+        .unwrap_or(SourceConfig::Homebrew { formula: None })
+}
+
+/// Convert SourceConfig to ToolSource and provider config.
+fn source_config_to_tool_source(
+    tool_name: &str,
+    version: &str,
+    config: &SourceConfig,
+) -> Result<(String, ToolSource, serde_json::Value)> {
+    match config {
+        SourceConfig::Homebrew { formula } => {
+            let formula_name = formula.clone().unwrap_or_else(|| tool_name.to_string());
+            let image_ref = format!("ghcr.io/homebrew/core/{}:{}", formula_name, version);
+            Ok((
+                "homebrew".to_string(),
+                ToolSource::Homebrew {
+                    formula: formula_name.clone(),
+                    image_ref,
+                },
+                serde_json::json!({ "formula": formula_name }),
+            ))
+        }
+        SourceConfig::Oci { image, path } => Ok((
+            "oci".to_string(),
+            ToolSource::Oci {
+                image: image.clone(),
+                path: path.clone(),
+            },
+            serde_json::json!({ "image": image, "path": path }),
+        )),
+        SourceConfig::GitHub {
+            repo,
+            tag,
+            asset,
+            path,
+        } => {
+            let resolved_tag = tag.clone().unwrap_or_else(|| format!("v{}", version));
+            Ok((
+                "github".to_string(),
+                ToolSource::GitHub {
+                    repo: repo.clone(),
+                    tag: resolved_tag.clone(),
+                    asset: asset.clone(),
+                    path: path.clone(),
+                },
+                serde_json::json!({
+                    "repo": repo,
+                    "tag": resolved_tag,
+                    "asset": asset,
+                    "path": path,
+                }),
+            ))
+        }
+        SourceConfig::Nix {
+            flake,
+            package,
+            output,
+        } => Ok((
+            "nix".to_string(),
+            ToolSource::Nix {
+                flake: flake.clone(),
+                package: package.clone(),
+                output: output.clone(),
+            },
+            serde_json::json!({
+                "flake": flake,
+                "package": package,
+                "output": output,
+            }),
+        )),
+    }
+}
+
+/// Compute a simple digest for a resolved tool (for lockfile).
+/// In a real implementation, this would be the actual content hash.
+fn compute_tool_digest(resolved: &ResolvedTool) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    resolved.name.hash(&mut hasher);
+    resolved.version.hash(&mut hasher);
+    resolved.platform.to_string().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Resolve a Homebrew formula to a lockfile artifact.

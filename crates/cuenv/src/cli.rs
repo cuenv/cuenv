@@ -138,6 +138,15 @@ impl From<cuenv_core::Error> for CliError {
             cuenv_core::Error::Execution { message, .. } => {
                 Self::eval_with_help(message, "Check the task output above for details")
             }
+            // Tool resolution and platform errors are user-facing tool issues
+            cuenv_core::Error::ToolResolution { message, help } => {
+                if let Some(h) = help {
+                    Self::eval_with_help(message, h)
+                } else {
+                    Self::eval(message)
+                }
+            }
+            cuenv_core::Error::Platform { message } => Self::eval(message),
             // I/O, encoding, and timeout errors are unexpected runtime errors
             cuenv_core::Error::Io { .. }
             | cuenv_core::Error::Utf8 { .. }
@@ -641,6 +650,13 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: RuntimeCommands,
     },
+    /// Multi-source tool management.
+    #[command(about = "Multi-source tool management (Homebrew, OCI, GitHub, Nix)")]
+    Tools {
+        /// Tools subcommand to execute.
+        #[command(subcommand)]
+        subcommand: ToolsCommands,
+    },
 }
 
 /// Sync subcommands for generating different types of files.
@@ -797,6 +813,20 @@ pub enum OciCommands {
     /// Activate OCI binaries for the current environment.
     #[command(about = "Activate OCI binaries for the current environment")]
     Activate,
+}
+
+/// Tools subcommands for multi-source tool management.
+#[derive(Subcommand, Debug, Clone)]
+pub enum ToolsCommands {
+    /// Download tools for the current platform.
+    #[command(about = "Download tools for the current platform from lockfile")]
+    Download,
+    /// Activate tools (output shell exports for PATH).
+    #[command(about = "Activate tools (output shell exports for PATH)")]
+    Activate,
+    /// List configured tools.
+    #[command(about = "List configured tools from lockfile")]
+    List,
 }
 
 /// Output format for status command.
@@ -1174,7 +1204,8 @@ impl Commands {
             | Self::Changeset { .. }
             | Self::Release { .. }
             | Self::Secrets { .. }
-            | Self::Runtime { .. } => "cuenv",
+            | Self::Runtime { .. }
+            | Self::Tools { .. } => "cuenv",
         }
     }
 
@@ -1503,6 +1534,11 @@ impl Commands {
                 RuntimeCommands::Oci { subcommand } => match subcommand {
                     OciCommands::Activate => Command::RuntimeOciActivate,
                 },
+            },
+            Self::Tools { subcommand } => match subcommand {
+                ToolsCommands::Download => Command::ToolsDownload,
+                ToolsCommands::Activate => Command::ToolsActivate,
+                ToolsCommands::List => Command::ToolsList,
             },
         }
     }

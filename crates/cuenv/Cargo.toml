@@ -58,8 +58,11 @@ cuenv-gitlab = { workspace = true, optional = true }
 cuenv-bitbucket = { workspace = true, optional = true }
 cuenv-buildkite = { workspace = true, optional = true }
 cuenv-homebrew = { workspace = true, optional = true }
-# OCI binary provider
-cuenv-oci-provider = { workspace = true }
+# Tool providers (multi-source tool management)
+cuenv-tools-oci = { workspace = true }
+cuenv-tools-homebrew = { workspace = true }
+cuenv-tools-github = { workspace = true }
+cuenv-tools-nix = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }
 tokio-util = "0.7"

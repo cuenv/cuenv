@@ -1,15 +1,11 @@
 [package]
-name = "cuenv-oci-provider"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
-readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
-description = "OCI registry client and binary extraction for cuenv"
+name = "cuenv-tools-oci"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT"
+repository = "https://github.com/cuenv/cuenv"
+description = "OCI registry tool provider for cuenv"
 
 [dependencies]
 # OCI registry operations
@@ -42,7 +38,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 dirs = "5.0"
 
 # Core types
-cuenv-core = { path = "../core" }
+cuenv-core = { path = "../../core" }
+
+# Async trait
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

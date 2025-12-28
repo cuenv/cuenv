@@ -29,6 +29,8 @@ pub mod sync;
 pub mod task;
 /// Task listing and discovery utilities.
 pub mod task_list;
+/// Tools command for multi-source tool management.
+pub mod tools;
 /// Interactive task picker for selecting tasks to run.
 pub mod task_picker;
 /// Version information and display.
@@ -324,6 +326,12 @@ pub enum Command {
     },
     /// Activate OCI runtime binaries.
     RuntimeOciActivate,
+    /// Download tools for current platform.
+    ToolsDownload,
+    /// Activate tools (output shell exports).
+    ToolsActivate,
+    /// List configured tools.
+    ToolsList,
 }
 
 /// Executes CLI commands with centralized module evaluation and event handling.
@@ -664,7 +672,10 @@ impl CommandExecutor {
             | Command::ReleasePublish { .. }
             | Command::ReleaseBinaries { .. }
             | Command::SecretsSetup { .. }
-            | Command::RuntimeOciActivate => Ok(()),
+            | Command::RuntimeOciActivate
+            | Command::ToolsDownload
+            | Command::ToolsActivate
+            | Command::ToolsList => Ok(()),
         }
     }
 

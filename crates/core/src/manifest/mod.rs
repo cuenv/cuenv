@@ -411,6 +411,8 @@ pub enum Runtime {
     Dagger(DaggerRuntime),
     /// OCI-based binary fetching (e.g., Homebrew bottles)
     Oci(OciRuntime),
+    /// Multi-source tool management (Homebrew, GitHub, OCI, Nix)
+    Tools(ToolsRuntime),
 }
 
 /// Nix runtime configuration
@@ -536,6 +538,122 @@ pub struct OciExtract {
     /// Name to expose the binary as in PATH (defaults to filename from path)
     #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
     pub as_name: Option<String>,
+}
+
+/// Multi-source tool runtime configuration.
+///
+/// Provides ergonomic tool management with platform-specific overrides.
+/// Simple case: `jq: "1.7.1"` uses Homebrew.
+/// Complex case: Platform-specific sources with overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsRuntime {
+    /// Platforms to resolve and lock (e.g., "darwin-arm64", "linux-x86_64")
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    /// Named Nix flake references for pinning
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub flakes: HashMap<String, String>,
+    /// Tool specifications (version string or full Tool config)
+    #[serde(default)]
+    pub tools: HashMap<String, ToolSpec>,
+    /// Cache directory (defaults to ~/.cache/cuenv/tools)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
+}
+
+/// Tool specification - either a simple version or full config.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ToolSpec {
+    /// Simple version string (uses Homebrew by default)
+    Version(String),
+    /// Full tool configuration with source and overrides
+    Full(ToolConfig),
+}
+
+impl ToolSpec {
+    /// Get the version string.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        match self {
+            Self::Version(v) => v,
+            Self::Full(c) => &c.version,
+        }
+    }
+}
+
+/// Full tool configuration with source and platform overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolConfig {
+    /// Version string (e.g., "1.7.1", "latest")
+    pub version: String,
+    /// Rename the binary in PATH
+    #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
+    /// Default source for all platforms
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceConfig>,
+    /// Platform-specific source overrides
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<SourceOverride>,
+}
+
+/// Platform-specific source override.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceOverride {
+    /// Match by OS (darwin, linux)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    /// Match by architecture (arm64, x86_64)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    /// Source for matching platforms
+    pub source: SourceConfig,
+}
+
+/// Source configuration for fetching a tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SourceConfig {
+    /// Fetch from Homebrew bottles (ghcr.io/homebrew)
+    Homebrew {
+        /// Formula name (defaults to tool name)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        formula: Option<String>,
+    },
+    /// Extract from OCI container image
+    Oci {
+        /// Image reference with optional {version}, {os}, {arch} templates
+        image: String,
+        /// Path to binary inside the container
+        path: String,
+    },
+    /// Download from GitHub Releases
+    #[serde(rename = "github")]
+    GitHub {
+        /// Repository (owner/repo)
+        repo: String,
+        /// Release tag (defaults to "v{version}")
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+        /// Asset name with optional {version}, {os}, {arch} templates
+        asset: String,
+        /// Path to binary within archive (if archived)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// Build from Nix flake
+    Nix {
+        /// Named flake reference (key in runtime.flakes)
+        flake: String,
+        /// Package attribute (e.g., "jq", "python3")
+        package: String,
+        /// Output path if binary can't be auto-detected
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
 }
 
 // ============================================================================

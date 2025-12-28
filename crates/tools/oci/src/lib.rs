@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use cuenv_oci_provider::{OciClient, OciCache};
+//! use cuenv_tools_oci::{OciClient, OciCache};
 //!
 //! let client = OciClient::new()?;
 //! let cache = OciCache::default();

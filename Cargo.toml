@@ -25,8 +25,11 @@ members = [
     "crates/gcp",
     "crates/vault",
     "crates/1password",
-    # OCI binary provider
-    "crates/oci-provider",
+    # Tool provider crates
+    "crates/tools/oci",
+    "crates/tools/homebrew",
+    "crates/tools/github",
+    "crates/tools/nix",
 ]
 
 [workspace.package]
@@ -65,8 +68,11 @@ cuenv-aws = { path = "crates/aws", version = "0.20.0" }
 cuenv-gcp = { path = "crates/gcp", version = "0.20.0" }
 cuenv-vault = { path = "crates/vault", version = "0.20.0" }
 cuenv-1password = { path = "crates/1password", version = "0.20.0" }
-# OCI binary provider
-cuenv-oci-provider = { path = "crates/oci-provider", version = "0.20.0" }
+# Tool provider crates
+cuenv-tools-oci = { path = "crates/tools/oci", version = "0.1.0" }
+cuenv-tools-homebrew = { path = "crates/tools/homebrew", version = "0.1.0" }
+cuenv-tools-github = { path = "crates/tools/github", version = "0.1.0" }
+cuenv-tools-nix = { path = "crates/tools/nix", version = "0.1.0" }
 schemars = "1.0.4"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }

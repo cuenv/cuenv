@@ -157,6 +157,11 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             | cli::Commands::Deny { .. }
             | cli::Commands::Sync { .. }
             | cli::Commands::Runtime { .. } => true,
+            // Tools commands - download/activate need async, list is sync
+            cli::Commands::Tools { subcommand } => match subcommand {
+                cli::ToolsCommands::Download | cli::ToolsCommands::Activate => true,
+                cli::ToolsCommands::List => false,
+            },
         },
     }
 }
@@ -511,6 +516,8 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             commands::secrets::execute_secrets_setup(provider, wasm_url.as_deref())
         }
 
+        Command::ToolsList => commands::tools::execute_tools_list(),
+
         Command::Export { shell, package } => {
             // Try sync fast path first (handles no-env-cue, running, failed states)
             match commands::export::execute_export_sync(shell.as_deref(), &package) {
@@ -829,6 +836,15 @@ async fn execute_command_safe(
         Command::RuntimeOciActivate => {
             return run_oci_activate().await;
         }
+        Command::ToolsDownload => {
+            return commands::tools::execute_tools_download().await;
+        }
+        Command::ToolsActivate => {
+            return commands::tools::execute_tools_activate().await;
+        }
+        Command::ToolsList => {
+            return commands::tools::execute_tools_list();
+        }
         // Info command needs special handling for json_mode and output
         Command::Info {
             path,
@@ -1031,7 +1047,7 @@ async fn run_coordinator() -> Result<(), CliError> {
 /// `schema/oci.cue` to add OCI-managed binaries to the PATH.
 async fn run_oci_activate() -> Result<(), CliError> {
     use cuenv_core::lockfile::{ArtifactKind, Lockfile};
-    use cuenv_oci_provider::{
+    use cuenv_tools_oci::{
         OciCache, OciClient, current_platform, extract_homebrew_binary, extract_homebrew_bottle,
         is_homebrew_image, relocate_homebrew_bottle, to_homebrew_platform,
     };

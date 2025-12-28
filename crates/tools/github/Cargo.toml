@@ -1,0 +1,26 @@
+[package]
+name = "cuenv-tools-github"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+description = "GitHub Releases tool provider for cuenv"
+license = "MIT"
+repository = "https://github.com/cuenv/cuenv"
+
+[dependencies]
+async-trait = "0.1"
+cuenv-core = { path = "../../core" }
+cuenv-github = { path = "../../github" }
+flate2 = "1"
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+tokio = { version = "1", features = ["fs", "io-util"] }
+tracing = "0.1"
+zip = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

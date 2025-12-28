@@ -1,0 +1,21 @@
+[package]
+name = "cuenv-tools-nix"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+description = "Nix flake tool provider for cuenv"
+license = "MIT"
+repository = "https://github.com/cuenv/cuenv"
+
+[dependencies]
+async-trait = "0.1"
+cuenv-core = { path = "../../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "process"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

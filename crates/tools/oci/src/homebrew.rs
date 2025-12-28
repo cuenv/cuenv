@@ -174,7 +174,7 @@ pub async fn resolve_with_deps(name: &str) -> Result<Vec<HomebrewFormula>> {
 /// # Examples
 ///
 /// ```
-/// use cuenv_oci_provider::homebrew::formula_name_from_image;
+/// use cuenv_tools_oci::formula_name_from_image;
 ///
 /// assert_eq!(formula_name_from_image("ghcr.io/homebrew/core/jq:1.7.1"), Some("jq".to_string()));
 /// assert_eq!(formula_name_from_image("nginx:1.25"), None);

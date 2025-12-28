@@ -51,6 +51,7 @@ pub mod secrets;
 pub mod shell;
 pub mod sync;
 pub mod tasks;
+pub mod tools;
 
 // Re-export module types for convenience
 pub use module::{Instance, InstanceKind, ModuleEvaluation};
@@ -152,6 +153,21 @@ pub enum Error {
         #[help]
         help: Option<String>,
     },
+
+    #[error("Tool resolution failed: {message}")]
+    #[diagnostic(code(cuenv::tool::resolution))]
+    ToolResolution {
+        message: String,
+        #[help]
+        help: Option<String>,
+    },
+
+    #[error("Platform error: {message}")]
+    #[diagnostic(
+        code(cuenv::platform::error),
+        help("This platform may not be supported by the tool provider")
+    )]
+    Platform { message: String },
 }
 
 impl Error {
@@ -264,6 +280,29 @@ impl Error {
         Error::Execution {
             message: msg.into(),
             help: Some(help.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn tool_resolution(msg: impl Into<String>) -> Self {
+        Error::ToolResolution {
+            message: msg.into(),
+            help: None,
+        }
+    }
+
+    #[must_use]
+    pub fn tool_resolution_with_help(msg: impl Into<String>, help: impl Into<String>) -> Self {
+        Error::ToolResolution {
+            message: msg.into(),
+            help: Some(help.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn platform(msg: impl Into<String>) -> Self {
+        Error::Platform {
+            message: msg.into(),
         }
     }
 }
