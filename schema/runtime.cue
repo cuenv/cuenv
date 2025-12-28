@@ -8,7 +8,7 @@ package schema
 //   runtime: #DevenvRuntime
 //   runtime: #ContainerRuntime & {image: "node:20"}
 //   runtime: #DaggerRuntime & {image: "rust:1.75"}
-//   runtime: #OCIRuntime & {registry: "ghcr.io/homebrew/core", binaries: [{name: "jq", version: "1.7"}]}
+//   runtime: #OCIRuntime & {platforms: ["darwin-arm64"], images: [{image: "ghcr.io/homebrew/core/jq:1.7.1"}]}
 //   runtime: #ToolsRuntime & {platforms: ["darwin-arm64"], tools: {jq: "1.7.1"}}
 #Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #DaggerRuntime | #OCIRuntime | #ToolsRuntime
 

@@ -4,10 +4,10 @@
 //! Supports named flake references for pinning different nixpkgs versions.
 
 use async_trait::async_trait;
+use cuenv_core::Result;
 use cuenv_core::tools::{
     FetchedTool, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
 };
-use cuenv_core::Result;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -97,9 +97,7 @@ impl ToolProvider for NixToolProvider {
         let package = config
             .get("package")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                cuenv_core::Error::tool_resolution("Missing 'package' in config")
-            })?;
+            .ok_or_else(|| cuenv_core::Error::tool_resolution("Missing 'package' in config"))?;
 
         let output = config.get("output").and_then(|v| v.as_str());
 
@@ -135,7 +133,12 @@ impl ToolProvider for NixToolProvider {
     }
 
     async fn fetch(&self, resolved: &ResolvedTool, options: &ToolOptions) -> Result<FetchedTool> {
-        let ToolSource::Nix { flake, package, output } = &resolved.source else {
+        let ToolSource::Nix {
+            flake,
+            package,
+            output,
+        } = &resolved.source
+        else {
             return Err(cuenv_core::Error::tool_resolution(
                 "NixToolProvider received non-Nix source".to_string(),
             ));
@@ -170,7 +173,9 @@ impl ToolProvider for NixToolProvider {
             .args(["build", "--no-link", "--print-out-paths", &flake_attr])
             .output()
             .await
-            .map_err(|e| cuenv_core::Error::tool_resolution(format!("Failed to run nix build: {}", e)))?;
+            .map_err(|e| {
+                cuenv_core::Error::tool_resolution(format!("Failed to run nix build: {}", e))
+            })?;
 
         if !output_result.status.success() {
             let stderr = String::from_utf8_lossy(&output_result.stderr);
@@ -196,14 +201,11 @@ impl ToolProvider for NixToolProvider {
                 PathBuf::from(&store_path).join("bin").join(package),
             ];
 
-            candidates
-                .into_iter()
-                .find(|p| p.exists())
-                .ok_or_else(|| {
-                    cuenv_core::Error::tool_resolution(
-                        "Binary not found in Nix output. Try specifying 'output' in config."
-                    )
-                })?
+            candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
+                cuenv_core::Error::tool_resolution(
+                    "Binary not found in Nix output. Try specifying 'output' in config.",
+                )
+            })?
         };
 
         if !bin_path.exists() {
@@ -299,8 +301,14 @@ mod tests {
     #[test]
     fn test_resolve_flake() {
         let mut flakes = std::collections::HashMap::new();
-        flakes.insert("stable".to_string(), "github:NixOS/nixpkgs/nixos-24.11".to_string());
-        flakes.insert("unstable".to_string(), "github:NixOS/nixpkgs/nixos-unstable".to_string());
+        flakes.insert(
+            "stable".to_string(),
+            "github:NixOS/nixpkgs/nixos-24.11".to_string(),
+        );
+        flakes.insert(
+            "unstable".to_string(),
+            "github:NixOS/nixpkgs/nixos-unstable".to_string(),
+        );
 
         let provider = NixToolProvider::with_flakes(flakes);
 
@@ -320,15 +328,15 @@ mod tests {
         let provider = NixToolProvider::new();
 
         let nix_source = ToolSource::Nix {
-            flake: "github:NixOS/nixpkgs",
-            package: "jq",
+            flake: "github:NixOS/nixpkgs".into(),
+            package: "jq".into(),
             output: None,
         };
         assert!(provider.can_handle(&nix_source));
 
         let homebrew_source = ToolSource::Homebrew {
-            formula: "jq",
-            image_ref: "ghcr.io/homebrew/core/jq:1.7.1",
+            formula: "jq".into(),
+            image_ref: "ghcr.io/homebrew/core/jq:1.7.1".into(),
         };
         assert!(!provider.can_handle(&homebrew_source));
     }

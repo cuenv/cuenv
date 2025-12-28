@@ -6,10 +6,10 @@
 //! - Path-based binary extraction from archives
 
 use async_trait::async_trait;
+use cuenv_core::Result;
 use cuenv_core::tools::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
 };
-use cuenv_core::Result;
 use flate2::read::GzDecoder;
 use reqwest::Client;
 use serde::Deserialize;
@@ -51,13 +51,23 @@ impl Default for GitHubToolProvider {
 
 impl GitHubToolProvider {
     /// Create a new GitHub tool provider.
+    ///
+    /// # Panics
+    ///
+    /// This function uses `expect` internally because `reqwest::Client::builder().build()`
+    /// only fails with invalid TLS configuration, which cannot happen with default settings.
+    /// The panic is acceptable here as it indicates a fundamental environment issue.
     #[must_use]
     pub fn new() -> Self {
+        // SAFETY: Client::builder().build() only fails if:
+        // 1. TLS backend fails to initialize (system-level issue)
+        // 2. Invalid proxy configuration (we don't set any)
+        // With default settings and user_agent only, this cannot fail.
         Self {
             client: Client::builder()
                 .user_agent("cuenv")
                 .build()
-                .expect("Failed to create HTTP client"),
+                .expect("Failed to create HTTP client - TLS backend initialization failed"),
         }
     }
 
@@ -85,7 +95,10 @@ impl GitHubToolProvider {
 
     /// Fetch release information from GitHub API.
     async fn fetch_release(&self, repo: &str, tag: &str) -> Result<Release> {
-        let url = format!("https://api.github.com/repos/{}/releases/tags/{}", repo, tag);
+        let url = format!(
+            "https://api.github.com/repos/{}/releases/tags/{}",
+            repo, tag
+        );
         debug!(%url, "Fetching GitHub release");
 
         let mut request = self.client.get(&url);
@@ -139,9 +152,11 @@ impl GitHubToolProvider {
             )));
         }
 
-        response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-            cuenv_core::Error::tool_resolution(format!("Failed to read asset: {}", e))
-        })
+        response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| cuenv_core::Error::tool_resolution(format!("Failed to read asset: {}", e)))
     }
 
     /// Extract a binary from an archive.
@@ -183,6 +198,9 @@ impl GitHubToolProvider {
     }
 
     /// Extract from a zip archive.
+    ///
+    /// Uses a temporary directory for atomic extraction - if extraction fails
+    /// partway through, no partial files are left in the destination.
     fn extract_from_zip(
         &self,
         data: &[u8],
@@ -194,9 +212,7 @@ impl GitHubToolProvider {
             cuenv_core::Error::tool_resolution(format!("Failed to open zip: {}", e))
         })?;
 
-        std::fs::create_dir_all(dest)?;
-
-        // If a specific path is requested, extract just that file
+        // If a specific path is requested, extract just that file (no temp dir needed)
         if let Some(path) = binary_path {
             for i in 0..archive.len() {
                 let mut file = archive.by_index(i).map_err(|e| {
@@ -205,6 +221,7 @@ impl GitHubToolProvider {
 
                 let name = file.name().to_string();
                 if name.ends_with(path) || name == path {
+                    std::fs::create_dir_all(dest)?;
                     let file_name = std::path::Path::new(&name)
                         .file_name()
                         .and_then(|s| s.to_str())
@@ -233,36 +250,65 @@ impl GitHubToolProvider {
             )));
         }
 
-        // Extract all files
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i).map_err(|e| {
-                cuenv_core::Error::tool_resolution(format!("Failed to read zip entry: {}", e))
-            })?;
+        // Extract all files to a temp directory first for atomic operation
+        let temp_dir = dest.with_file_name(format!(
+            ".{}.tmp",
+            dest.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("extract")
+        ));
 
-            let outpath = match file.enclosed_name() {
-                Some(path) => dest.join(path),
-                None => continue,
-            };
+        // Clean up any previous failed extraction
+        if temp_dir.exists() {
+            std::fs::remove_dir_all(&temp_dir)?;
+        }
+        std::fs::create_dir_all(&temp_dir)?;
 
-            if file.is_dir() {
-                std::fs::create_dir_all(&outpath)?;
-            } else {
-                if let Some(p) = outpath.parent() {
-                    std::fs::create_dir_all(p)?;
-                }
-                let mut content = Vec::new();
-                file.read_to_end(&mut content)?;
-                std::fs::write(&outpath, &content)?;
+        // Extract to temp directory
+        let extract_result = (|| -> Result<()> {
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i).map_err(|e| {
+                    cuenv_core::Error::tool_resolution(format!("Failed to read zip entry: {}", e))
+                })?;
 
-                #[cfg(unix)]
-                if let Some(mode) = file.unix_mode() {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = std::fs::metadata(&outpath)?.permissions();
-                    perms.set_mode(mode);
-                    std::fs::set_permissions(&outpath, perms)?;
+                let outpath = match file.enclosed_name() {
+                    Some(path) => temp_dir.join(path),
+                    None => continue,
+                };
+
+                if file.is_dir() {
+                    std::fs::create_dir_all(&outpath)?;
+                } else {
+                    if let Some(p) = outpath.parent() {
+                        std::fs::create_dir_all(p)?;
+                    }
+                    let mut content = Vec::new();
+                    file.read_to_end(&mut content)?;
+                    std::fs::write(&outpath, &content)?;
+
+                    #[cfg(unix)]
+                    if let Some(mode) = file.unix_mode() {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mut perms = std::fs::metadata(&outpath)?.permissions();
+                        perms.set_mode(mode);
+                        std::fs::set_permissions(&outpath, perms)?;
+                    }
                 }
             }
+            Ok(())
+        })();
+
+        // On failure, clean up temp directory
+        if let Err(e) = extract_result {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(e);
         }
+
+        // Atomic move: remove destination if exists, then rename temp to dest
+        if dest.exists() {
+            std::fs::remove_dir_all(dest)?;
+        }
+        std::fs::rename(&temp_dir, dest)?;
 
         // Find the main binary (first executable in bin/ or root)
         self.find_main_binary(dest)
@@ -449,7 +495,13 @@ impl ToolProvider for GitHubToolProvider {
     }
 
     async fn fetch(&self, resolved: &ResolvedTool, options: &ToolOptions) -> Result<FetchedTool> {
-        let ToolSource::GitHub { repo, tag, asset, path } = &resolved.source else {
+        let ToolSource::GitHub {
+            repo,
+            tag,
+            asset,
+            path,
+        } = &resolved.source
+        else {
             return Err(cuenv_core::Error::tool_resolution(
                 "GitHubToolProvider received non-GitHub source".to_string(),
             ));
@@ -487,7 +539,9 @@ impl ToolProvider for GitHubToolProvider {
                 cuenv_core::Error::tool_resolution(format!("Asset '{}' not found", asset))
             })?;
 
-        let data = self.download_asset(&found_asset.browser_download_url).await?;
+        let data = self
+            .download_asset(&found_asset.browser_download_url)
+            .await?;
 
         // Extract binary
         let extracted = self.extract_binary(&data, asset, path.as_deref(), &cache_dir)?;
@@ -572,16 +626,16 @@ mod tests {
         let provider = GitHubToolProvider::new();
 
         let github_source = ToolSource::GitHub {
-            repo: "org/repo",
-            tag: "v1",
-            asset: "file.zip",
+            repo: "org/repo".into(),
+            tag: "v1".into(),
+            asset: "file.zip".into(),
             path: None,
         };
         assert!(provider.can_handle(&github_source));
 
         let homebrew_source = ToolSource::Homebrew {
-            formula: "jq",
-            image_ref: "ghcr.io/homebrew/core/jq:1.7.1",
+            formula: "jq".into(),
+            image_ref: "ghcr.io/homebrew/core/jq:1.7.1".into(),
         };
         assert!(!provider.can_handle(&homebrew_source));
     }

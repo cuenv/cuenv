@@ -25,11 +25,11 @@
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)]
 
 // Import everything from the library
+use crossterm::ExecutableCommand;
 use cuenv::cli::{self, CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, render_error};
 use cuenv::commands::{self, Command, CommandExecutor};
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
 use cuenv::{coordinator, tui};
-use crossterm::ExecutableCommand;
 use cuenv_core::hooks::execute_hooks;
 use cuenv_core::hooks::state::StateManager;
 use cuenv_core::hooks::{ExecutionStatus, Hook, HookExecutionConfig};
@@ -766,10 +766,7 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
     };
 
     // Check if TUI mode is enabled (Task command with --tui flag)
-    let tui_mode = matches!(
-        &cli.command,
-        Some(cli::Commands::Task { tui: true, .. })
-    );
+    let tui_mode = matches!(&cli.command, Some(cli::Commands::Task { tui: true, .. }));
 
     // Spawn appropriate renderer based on output mode
     // Skip CLI renderer in TUI mode - TUI handles its own event rendering
@@ -840,7 +837,7 @@ async fn execute_command_safe(
             return commands::tools::execute_tools_download().await;
         }
         Command::ToolsActivate => {
-            return commands::tools::execute_tools_activate().await;
+            return commands::tools::execute_tools_activate();
         }
         Command::ToolsList => {
             return commands::tools::execute_tools_list();
@@ -1003,10 +1000,7 @@ async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
 
 /// Execute shell init command safely
 #[instrument(name = "cuenv_execute_shell_init_safe")]
-fn execute_shell_init_command_safe(
-    shell: cli::ShellType,
-    json_mode: bool,
-) -> Result<(), CliError> {
+fn execute_shell_init_command_safe(shell: cli::ShellType, json_mode: bool) -> Result<(), CliError> {
     let output = commands::hooks::execute_shell_init(shell);
 
     if json_mode {
@@ -1078,9 +1072,9 @@ async fn run_oci_activate() -> Result<(), CliError> {
     // Initialize OCI client and cache
     let client = OciClient::new();
     let cache = OciCache::default();
-    cache.ensure_dirs().map_err(|e| {
-        CliError::other(format!("Failed to create cache directories: {e}"))
-    })?;
+    cache
+        .ensure_dirs()
+        .map_err(|e| CliError::other(format!("Failed to create cache directories: {e}")))?;
 
     // Track directories to add to PATH and library paths
     let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
@@ -1105,9 +1099,7 @@ async fn run_oci_activate() -> Result<(), CliError> {
         };
 
         match &artifact.kind {
-            ArtifactKind::Homebrew {
-                name, version, ..
-            } => {
+            ArtifactKind::Homebrew { name, version, .. } => {
                 // Check if formula is already extracted
                 if cache.has_formula(name, version) {
                     let bin = cache.formula_bin(name, version);
@@ -1137,14 +1129,13 @@ async fn run_oci_activate() -> Result<(), CliError> {
                 let resolved = client
                     .resolve_digest(&image, &platform)
                     .await
-                    .map_err(|e| CliError::other(format!("Failed to resolve '{}': {}", image, e)))?;
-
-                let layer_paths = client
-                    .pull_layers(&resolved, &cache)
-                    .await
                     .map_err(|e| {
-                        CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
+                        CliError::other(format!("Failed to resolve '{}': {}", image, e))
                     })?;
+
+                let layer_paths = client.pull_layers(&resolved, &cache).await.map_err(|e| {
+                    CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
+                })?;
 
                 // Extract the full bottle to formula directory
                 let dest_dir = cache.formula_dir(name, version);
@@ -1184,17 +1175,13 @@ async fn run_oci_activate() -> Result<(), CliError> {
                 }
 
                 // Need to pull and extract
-                let resolved = client
-                    .resolve_digest(image, &platform)
-                    .await
-                    .map_err(|e| CliError::other(format!("Failed to resolve '{}': {}", image, e)))?;
+                let resolved = client.resolve_digest(image, &platform).await.map_err(|e| {
+                    CliError::other(format!("Failed to resolve '{}': {}", image, e))
+                })?;
 
-                let layer_paths = client
-                    .pull_layers(&resolved, &cache)
-                    .await
-                    .map_err(|e| {
-                        CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
-                    })?;
+                let layer_paths = client.pull_layers(&resolved, &cache).await.map_err(|e| {
+                    CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
+                })?;
 
                 // Extract binary based on image type
                 let dest = cache.binary_path(digest, &binary_name);
@@ -1230,13 +1217,19 @@ async fn run_oci_activate() -> Result<(), CliError> {
     let homebrew_cache = cache.root().join("homebrew");
     for (name, version) in &formulas_to_relocate {
         let formula_dir = cache.formula_dir(name, version);
-        relocate_homebrew_bottle(&formula_dir, &homebrew_cache, name, version, &formula_versions)
-            .map_err(|e| {
-                CliError::other(format!(
-                    "Failed to relocate Homebrew bottle '{}': {}",
-                    name, e
-                ))
-            })?;
+        relocate_homebrew_bottle(
+            &formula_dir,
+            &homebrew_cache,
+            name,
+            version,
+            &formula_versions,
+        )
+        .map_err(|e| {
+            CliError::other(format!(
+                "Failed to relocate Homebrew bottle '{}': {}",
+                name, e
+            ))
+        })?;
     }
 
     // Output library path modification first (dependencies must be available)
@@ -1246,18 +1239,22 @@ async fn run_oci_activate() -> Result<(), CliError> {
 
         // Use appropriate library path variable for the platform
         #[cfg(target_os = "macos")]
-        println!("export DYLD_LIBRARY_PATH=\"{}:$DYLD_LIBRARY_PATH\"", lib_path_str);
+        println!(
+            "export DYLD_LIBRARY_PATH=\"{}:$DYLD_LIBRARY_PATH\"",
+            lib_path_str
+        );
 
         #[cfg(not(target_os = "macos"))]
-        println!("export LD_LIBRARY_PATH=\"{}:$LD_LIBRARY_PATH\"", lib_path_str);
+        println!(
+            "export LD_LIBRARY_PATH=\"{}:$LD_LIBRARY_PATH\"",
+            lib_path_str
+        );
     }
 
     // Output PATH modification
     if !bin_dirs.is_empty() {
-        let path_additions: Vec<String> = bin_dirs
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect();
+        let path_additions: Vec<String> =
+            bin_dirs.iter().map(|p| p.display().to_string()).collect();
         println!("export PATH=\"{}:$PATH\"", path_additions.join(":"));
     }
 

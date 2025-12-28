@@ -6,6 +6,9 @@ rust-version = "1.85.0"
 description = "GitHub Releases tool provider for cuenv"
 license = "MIT"
 repository = "https://github.com/cuenv/cuenv"
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 async-trait = "0.1"

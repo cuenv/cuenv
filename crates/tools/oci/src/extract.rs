@@ -142,9 +142,7 @@ pub fn relocate_homebrew_bottle(
 
     debug!(
         ?formula_dir,
-        formula_name,
-        formula_version,
-        "Relocating Homebrew bottle"
+        formula_name, formula_version, "Relocating Homebrew bottle"
     );
 
     let bin_dir = formula_dir.join("bin");
@@ -179,10 +177,7 @@ pub fn relocate_homebrew_bottle(
     // Process each file
     for file_path in &files_to_process {
         // Get current install names
-        let output = Command::new("otool")
-            .arg("-L")
-            .arg(file_path)
-            .output()?;
+        let output = Command::new("otool").arg("-L").arg(file_path).output()?;
 
         if !output.status.success() {
             // Not a Mach-O binary, skip
@@ -200,7 +195,8 @@ pub fn relocate_homebrew_bottle(
             let new_path = if lib_path.contains("@@HOMEBREW_CELLAR@@") {
                 // @@HOMEBREW_CELLAR@@/jq/1.8.1/lib/libjq.1.dylib
                 // -> /cache/homebrew/jq/1.8.1/lib/libjq.1.dylib
-                let cellar_path = lib_path.replace("@@HOMEBREW_CELLAR@@", &homebrew_cache.to_string_lossy());
+                let cellar_path =
+                    lib_path.replace("@@HOMEBREW_CELLAR@@", &homebrew_cache.to_string_lossy());
                 Some(cellar_path)
             } else if lib_path.contains("@@HOMEBREW_PREFIX@@") {
                 // @@HOMEBREW_PREFIX@@/opt/oniguruma/lib/libonig.5.dylib
@@ -270,12 +266,32 @@ pub fn relocate_homebrew_bottle(
 
     // Re-sign binaries (required on Apple Silicon)
     for file_path in &files_to_process {
-        let _ = Command::new("codesign")
+        let status = Command::new("codesign")
             .arg("--force")
             .arg("--sign")
             .arg("-")
             .arg(file_path)
             .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                trace!(file = ?file_path, "Re-signed binary");
+            }
+            Ok(s) => {
+                tracing::warn!(
+                    file = ?file_path,
+                    exit_code = ?s.code(),
+                    "codesign failed - binary may not execute on Apple Silicon"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    file = ?file_path,
+                    error = %e,
+                    "codesign command failed to run - binary may not execute on Apple Silicon"
+                );
+            }
+        }
     }
 
     debug!(?formula_dir, "Relocation complete");
@@ -383,7 +399,12 @@ pub fn extract_homebrew_binary(
 /// * `file_path` - Path to extract (e.g., "/usr/bin/nginx")
 /// * `dest` - Destination path for extracted file
 pub fn extract_from_layers(layers: &[PathBuf], file_path: &str, dest: &Path) -> Result<PathBuf> {
-    debug!(?file_path, ?dest, layer_count = layers.len(), "Extracting from layers");
+    debug!(
+        ?file_path,
+        ?dest,
+        layer_count = layers.len(),
+        "Extracting from layers"
+    );
 
     // Normalize the path (remove leading slash for tar matching)
     let normalized_path = file_path.trim_start_matches('/');
@@ -452,8 +473,8 @@ pub fn list_archive_contents(archive_path: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use tar::Builder;
     use tempfile::TempDir;
 
@@ -509,10 +530,7 @@ mod tests {
         // Create two layers
         let layer1 = create_test_tarball(
             temp.path(),
-            &[
-                ("usr/bin/app", b"version 1"),
-                ("etc/config", b"config 1"),
-            ],
+            &[("usr/bin/app", b"version 1"), ("etc/config", b"config 1")],
         );
 
         // Rename to layer2 path

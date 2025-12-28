@@ -6,6 +6,9 @@ rust-version = "1.85.0"
 license = "MIT"
 repository = "https://github.com/cuenv/cuenv"
 description = "OCI registry tool provider for cuenv"
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 # OCI registry operations

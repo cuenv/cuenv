@@ -9,22 +9,22 @@
 //! For `#ToolsRuntime`, uses ToolProvider to resolve tools from multiple sources.
 
 use async_trait::async_trait;
+use cuenv_core::Result;
 use cuenv_core::lockfile::{
-    ArtifactKind, LockedArtifact, LockedToolPlatform, Lockfile, PlatformData, LOCKFILE_NAME,
+    ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedToolPlatform, Lockfile, PlatformData,
 };
 use cuenv_core::manifest::{Base, Project, Runtime, SourceConfig, ToolSpec};
 use cuenv_core::tools::{Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolSource};
-use cuenv_core::Result;
 use cuenv_tools_oci::{
-    formula_name_from_image, is_homebrew_image, resolve_with_deps, to_homebrew_platform,
-    HomebrewFormula, OciClient, Platform,
+    HomebrewFormula, OciClient, Platform, formula_name_from_image, is_homebrew_image,
+    resolve_with_deps, to_homebrew_platform,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tracing::{debug, info, warn};
 
-use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
 use crate::commands::CommandExecutor;
+use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
 
 /// Create a tool registry with available providers.
 fn create_registry() -> ToolRegistry {
@@ -129,7 +129,10 @@ async fn execute_lock_sync(
             // Deserialize the instance to get the Project struct
             let project: Project = match instance.deserialize() {
                 Ok(p) => p,
-                Err(_) => continue,
+                Err(e) => {
+                    warn!(error = %e, "Failed to deserialize project, skipping");
+                    continue;
+                }
             };
 
             match &project.runtime {
@@ -200,7 +203,8 @@ async fn execute_lock_sync(
                         });
                     }
                 }
-                _ => continue,
+                // Skip projects without OCI/Tools runtime
+                Some(_) | None => {}
             }
         }
 
@@ -269,8 +273,7 @@ async fn execute_lock_sync(
                 continue;
             }
 
-            let artifact =
-                resolve_homebrew_formula(&client, &formula, platforms, &all_platforms)?;
+            let artifact = resolve_homebrew_formula(&client, &formula, platforms, &all_platforms)?;
             artifacts.push(artifact);
             resolved_formulas.insert(formula.name.clone());
         }
@@ -339,15 +342,12 @@ async fn execute_lock_sync(
                 })?;
 
                 // Determine source for this platform
-                let source_config = resolve_source_for_platform(
-                    &tool.source,
-                    &tool.overrides,
-                    &platform,
-                );
+                let source_config =
+                    resolve_source_for_platform(tool.source.as_ref(), &tool.overrides, &platform);
 
                 // Convert SourceConfig to ToolSource
                 let (provider_name, _tool_source, config) =
-                    source_config_to_tool_source(&tool.name, &tool.version, &source_config)?;
+                    source_config_to_tool_source(&tool.name, &tool.version, &source_config);
 
                 // Get the provider
                 let Some(provider) = registry.get(&provider_name) else {
@@ -385,12 +385,7 @@ async fn execute_lock_sync(
                 };
 
                 lockfile
-                    .upsert_tool_platform(
-                        &tool.name,
-                        &tool.version,
-                        platform_str,
-                        locked_platform,
-                    )
+                    .upsert_tool_platform(&tool.name, &tool.version, platform_str, locked_platform)
                     .map_err(|e| {
                         cuenv_core::Error::configuration(format!(
                             "Failed to add tool '{}' to lockfile: {}",
@@ -462,7 +457,7 @@ async fn execute_lock_sync(
 /// Applies overrides based on OS and architecture, returning the
 /// appropriate source configuration.
 fn resolve_source_for_platform(
-    default_source: &Option<SourceConfig>,
+    default_source: Option<&SourceConfig>,
     overrides: &[cuenv_core::manifest::SourceOverride],
     platform: &ToolPlatform,
 ) -> SourceConfig {
@@ -481,7 +476,8 @@ fn resolve_source_for_platform(
             .map_or(true, |arch| arch == &platform.arch.to_string());
 
         if os_matches && arch_matches {
-            let specificity = override_config.os.is_some() as u8 + override_config.arch.is_some() as u8;
+            let specificity =
+                u8::from(override_config.os.is_some()) + u8::from(override_config.arch.is_some());
             if specificity > best_specificity {
                 best_specificity = specificity;
                 best_match = Some(&override_config.source);
@@ -491,7 +487,7 @@ fn resolve_source_for_platform(
 
     best_match
         .cloned()
-        .or_else(|| default_source.clone())
+        .or_else(|| default_source.cloned())
         .unwrap_or(SourceConfig::Homebrew { formula: None })
 }
 
@@ -500,28 +496,28 @@ fn source_config_to_tool_source(
     tool_name: &str,
     version: &str,
     config: &SourceConfig,
-) -> Result<(String, ToolSource, serde_json::Value)> {
+) -> (String, ToolSource, serde_json::Value) {
     match config {
         SourceConfig::Homebrew { formula } => {
             let formula_name = formula.clone().unwrap_or_else(|| tool_name.to_string());
             let image_ref = format!("ghcr.io/homebrew/core/{}:{}", formula_name, version);
-            Ok((
+            (
                 "homebrew".to_string(),
                 ToolSource::Homebrew {
                     formula: formula_name.clone(),
                     image_ref,
                 },
                 serde_json::json!({ "formula": formula_name }),
-            ))
+            )
         }
-        SourceConfig::Oci { image, path } => Ok((
+        SourceConfig::Oci { image, path } => (
             "oci".to_string(),
             ToolSource::Oci {
                 image: image.clone(),
                 path: path.clone(),
             },
             serde_json::json!({ "image": image, "path": path }),
-        )),
+        ),
         SourceConfig::GitHub {
             repo,
             tag,
@@ -529,7 +525,7 @@ fn source_config_to_tool_source(
             path,
         } => {
             let resolved_tag = tag.clone().unwrap_or_else(|| format!("v{}", version));
-            Ok((
+            (
                 "github".to_string(),
                 ToolSource::GitHub {
                     repo: repo.clone(),
@@ -543,13 +539,13 @@ fn source_config_to_tool_source(
                     "asset": asset,
                     "path": path,
                 }),
-            ))
+            )
         }
         SourceConfig::Nix {
             flake,
             package,
             output,
-        } => Ok((
+        } => (
             "nix".to_string(),
             ToolSource::Nix {
                 flake: flake.clone(),
@@ -561,19 +557,26 @@ fn source_config_to_tool_source(
                 "package": package,
                 "output": output,
             }),
-        )),
+        ),
     }
 }
 
-/// Compute a simple digest for a resolved tool (for lockfile).
-/// In a real implementation, this would be the actual content hash.
+/// Compute a SHA256 digest for a resolved tool (for lockfile).
+///
+/// This creates a deterministic content hash based on the tool's
+/// identifying information (name, version, platform, source).
 fn compute_tool_digest(resolved: &ResolvedTool) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    resolved.name.hash(&mut hasher);
-    resolved.version.hash(&mut hasher);
-    resolved.platform.to_string().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(resolved.name.as_bytes());
+    hasher.update(b":");
+    hasher.update(resolved.version.as_bytes());
+    hasher.update(b":");
+    hasher.update(resolved.platform.to_string().as_bytes());
+    hasher.update(b":");
+    // Include source info for uniqueness
+    hasher.update(format!("{:?}", resolved.source).as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// Resolve a Homebrew formula to a lockfile artifact.
@@ -625,13 +628,7 @@ fn resolve_homebrew_formula(
             "Resolved bottle digest"
         );
 
-        platforms_map.insert(
-            platform_str.clone(),
-            PlatformData {
-                digest,
-                size: None,
-            },
-        );
+        platforms_map.insert(platform_str.clone(), PlatformData { digest, size: None });
     }
 
     Ok(LockedArtifact {

@@ -4,7 +4,7 @@
 //! from multiple sources (Homebrew, OCI, GitHub, Nix).
 
 use crate::cli::CliError;
-use cuenv_core::lockfile::{Lockfile, LOCKFILE_NAME};
+use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::tools::{Platform, ToolOptions, ToolRegistry, ToolSource};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -66,7 +66,7 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
 
     // Check prerequisites for all providers we'll use
     let mut providers_used = HashSet::new();
-    for (_name, tool) in &lockfile.tools {
+    for tool in lockfile.tools.values() {
         if let Some(locked) = tool.platforms.get(&platform_str) {
             providers_used.insert(locked.provider.clone());
         }
@@ -174,7 +174,10 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
                 }
             }
             _ => {
-                eprintln!("Warning: Unknown provider '{}' for tool '{}'", locked.provider, name);
+                eprintln!(
+                    "Warning: Unknown provider '{}' for tool '{}'",
+                    locked.provider, name
+                );
                 continue;
             }
         };
@@ -220,7 +223,10 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
     }
 
     println!();
-    println!("Downloaded {} tools, {} already cached", downloaded, skipped);
+    println!(
+        "Downloaded {} tools, {} already cached",
+        downloaded, skipped
+    );
 
     Ok(())
 }
@@ -232,7 +238,7 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found.
-pub async fn execute_tools_activate() -> Result<(), CliError> {
+pub fn execute_tools_activate() -> Result<(), CliError> {
     // Find the lockfile
     let lockfile_path = find_lockfile().ok_or_else(|| {
         CliError::config_with_help(
@@ -305,7 +311,8 @@ pub async fn execute_tools_activate() -> Result<(), CliError> {
 
     // Output PATH modification
     if !bin_dirs.is_empty() {
-        let path_additions: Vec<String> = bin_dirs.iter().map(|p| p.display().to_string()).collect();
+        let path_additions: Vec<String> =
+            bin_dirs.iter().map(|p| p.display().to_string()).collect();
         println!("export PATH=\"{}:$PATH\"", path_additions.join(":"));
     }
 
@@ -375,7 +382,10 @@ pub fn execute_tools_list() -> Result<(), CliError> {
             };
             println!(
                 "    - {}: {} ({}){}",
-                platform, locked.provider, &locked.digest[..20], marker
+                platform,
+                locked.provider,
+                &locked.digest[..20],
+                marker
             );
         }
     }
