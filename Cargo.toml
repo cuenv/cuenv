@@ -25,6 +25,8 @@ members = [
     "crates/gcp",
     "crates/vault",
     "crates/1password",
+    # OCI binary provider
+    "crates/oci-provider",
 ]
 
 [workspace.package]

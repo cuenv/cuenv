@@ -1,0 +1,38 @@
+[package]
+name = "cuenv-oci-provider"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OCI registry client and binary extraction for cuenv"
+
+[dependencies]
+# OCI registry operations
+oci-distribution = "0.11"
+
+# Compression and archiving
+flate2 = "1.0"
+tar = "0.4"
+
+# Async runtime
+tokio = { workspace = true, features = ["fs", "io-util"] }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Serialization (for manifest parsing)
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Directories
+dirs = "5.0"
+
+# Core types
+cuenv-core = { path = "../core" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }
