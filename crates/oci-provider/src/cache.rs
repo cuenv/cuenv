@@ -59,11 +59,20 @@ impl OciCache {
         self.root.join("blobs").join(algo).join(hash)
     }
 
-    /// Get the path for a cached binary.
+    /// Get the directory for a cached binary (by digest).
+    ///
+    /// Binaries are stored as `bin/<algo>/<hash>/<binary_name>` so that
+    /// the directory can be added to PATH and the binary called by name.
     #[must_use]
-    pub fn binary_path(&self, digest: &str) -> PathBuf {
+    pub fn binary_dir(&self, digest: &str) -> PathBuf {
         let (algo, hash) = parse_digest(digest);
         self.root.join("bin").join(algo).join(hash)
+    }
+
+    /// Get the full path for a cached binary with its name.
+    #[must_use]
+    pub fn binary_path(&self, digest: &str, binary_name: &str) -> PathBuf {
+        self.binary_dir(digest).join(binary_name)
     }
 
     /// Check if a blob is cached.
@@ -74,14 +83,14 @@ impl OciCache {
 
     /// Check if a binary is cached.
     #[must_use]
-    pub fn has_binary(&self, digest: &str) -> bool {
-        self.binary_path(digest).exists()
+    pub fn has_binary(&self, digest: &str, binary_name: &str) -> bool {
+        self.binary_path(digest, binary_name).exists()
     }
 
     /// Get a cached binary if it exists.
     #[must_use]
-    pub fn get_binary(&self, digest: &str) -> Option<PathBuf> {
-        let path = self.binary_path(digest);
+    pub fn get_binary(&self, digest: &str, binary_name: &str) -> Option<PathBuf> {
+        let path = self.binary_path(digest, binary_name);
         if path.exists() {
             trace!(digest, ?path, "Cache hit for binary");
             Some(path)
@@ -103,11 +112,11 @@ impl OciCache {
 
     /// Store a binary in the cache.
     ///
-    /// The binary is copied to the cache location.
-    pub fn store_binary(&self, digest: &str, source: &Path) -> Result<PathBuf> {
-        let dest = self.binary_path(digest);
+    /// The binary is copied to the cache location with its proper name.
+    pub fn store_binary(&self, digest: &str, binary_name: &str, source: &Path) -> Result<PathBuf> {
+        let dest = self.binary_path(digest, binary_name);
         self.store_file(source, &dest)?;
-        debug!(digest, ?dest, "Stored binary in cache");
+        debug!(digest, binary_name, ?dest, "Stored binary in cache");
         Ok(dest)
     }
 
@@ -124,7 +133,36 @@ impl OciCache {
     pub fn ensure_dirs(&self) -> Result<()> {
         std::fs::create_dir_all(self.root.join("blobs").join("sha256"))?;
         std::fs::create_dir_all(self.root.join("bin").join("sha256"))?;
+        std::fs::create_dir_all(self.root.join("homebrew"))?;
         Ok(())
+    }
+
+    // --- Homebrew formula caching ---
+
+    /// Get path for a formula's extracted contents.
+    ///
+    /// Structure: `~/.cache/cuenv/oci/homebrew/<name>/<version>/`
+    #[must_use]
+    pub fn formula_dir(&self, name: &str, version: &str) -> PathBuf {
+        self.root.join("homebrew").join(name).join(version)
+    }
+
+    /// Get path for a formula's bin directory.
+    #[must_use]
+    pub fn formula_bin(&self, name: &str, version: &str) -> PathBuf {
+        self.formula_dir(name, version).join("bin")
+    }
+
+    /// Get path for a formula's lib directory.
+    #[must_use]
+    pub fn formula_lib(&self, name: &str, version: &str) -> PathBuf {
+        self.formula_dir(name, version).join("lib")
+    }
+
+    /// Check if a formula is extracted.
+    #[must_use]
+    pub fn has_formula(&self, name: &str, version: &str) -> bool {
+        self.formula_dir(name, version).exists()
     }
 }
 
@@ -155,8 +193,12 @@ mod tests {
             PathBuf::from("/tmp/cache/blobs/sha256/abc123")
         );
         assert_eq!(
-            cache.binary_path("sha256:def456"),
+            cache.binary_dir("sha256:def456"),
             PathBuf::from("/tmp/cache/bin/sha256/def456")
+        );
+        assert_eq!(
+            cache.binary_path("sha256:def456", "jq"),
+            PathBuf::from("/tmp/cache/bin/sha256/def456/jq")
         );
     }
 
@@ -170,16 +212,17 @@ mod tests {
         let test_file = temp.path().join("test_binary");
         std::fs::write(&test_file, b"test content")?;
 
-        // Store as binary
+        // Store as binary with name
         let digest = "sha256:abc123";
-        let cached_path = cache.store_binary(digest, &test_file)?;
+        let binary_name = "jq";
+        let cached_path = cache.store_binary(digest, binary_name, &test_file)?;
 
         // Verify cache hit
-        assert!(cache.has_binary(digest));
-        assert_eq!(cache.get_binary(digest), Some(cached_path));
+        assert!(cache.has_binary(digest, binary_name));
+        assert_eq!(cache.get_binary(digest, binary_name), Some(cached_path));
 
         // Verify content
-        let content = std::fs::read(cache.binary_path(digest))?;
+        let content = std::fs::read(cache.binary_path(digest, binary_name))?;
         assert_eq!(content, b"test content");
 
         Ok(())

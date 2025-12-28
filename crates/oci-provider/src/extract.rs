@@ -3,6 +3,10 @@
 //! Supports:
 //! - Homebrew bottles (tar.gz with `{name}/{version}/bin/{binary}` structure)
 //! - Generic container images (extract specific paths from layers)
+//!
+//! For Homebrew bottles, this module also handles binary relocation by
+//! patching `@@HOMEBREW_PREFIX@@` and `@@HOMEBREW_CELLAR@@` placeholders
+//! in Mach-O binaries with actual paths.
 
 use flate2::read::GzDecoder;
 use std::fs::File;
@@ -13,7 +17,268 @@ use tracing::{debug, trace};
 
 use crate::{Error, Result};
 
-/// Extract a binary from a Homebrew bottle.
+/// Extract a full Homebrew bottle (preserving bin/, lib/, share/, etc.).
+///
+/// This extracts the entire bottle contents, which is necessary for
+/// dynamically linked binaries that depend on libraries in lib/.
+///
+/// Homebrew bottles are gzip-compressed tarballs with structure:
+/// ```text
+/// {name}/{version}/
+/// ├── bin/
+/// │   └── {binary}
+/// ├── lib/
+/// │   └── {libraries}
+/// └── share/
+/// ```
+///
+/// The bottle contents are extracted to `dest_dir`, stripping the
+/// `{name}/{version}/` prefix from paths.
+pub fn extract_homebrew_bottle(bottle_path: &Path, dest_dir: &Path) -> Result<()> {
+    debug!(?bottle_path, ?dest_dir, "Extracting full Homebrew bottle");
+
+    let file = File::open(bottle_path)?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = Archive::new(decoder);
+
+    // Create destination directory
+    std::fs::create_dir_all(dest_dir)?;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        let path_str = path.to_string_lossy();
+
+        trace!(path = %path_str, "Processing archive entry");
+
+        // Bottles have structure: <name>/<version>/...
+        // Skip the first two components and extract the rest
+        let components: Vec<_> = path.components().collect();
+        if components.len() <= 2 {
+            // Skip the root directory entries
+            continue;
+        }
+
+        // Build relative path without name/version prefix
+        let relative: PathBuf = components[2..].iter().collect();
+        let dest_path = dest_dir.join(&relative);
+
+        // Handle directories
+        if entry.header().entry_type().is_dir() {
+            std::fs::create_dir_all(&dest_path)?;
+            continue;
+        }
+
+        // Handle files
+        if let Some(parent) = dest_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Extract the file
+        entry.unpack(&dest_path)?;
+
+        // Make binaries executable
+        #[cfg(unix)]
+        if relative.starts_with("bin") || relative.starts_with("libexec") {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(&dest_path) {
+                let mut perms = metadata.permissions();
+                let mode = perms.mode();
+                // Add execute permission if it's a regular file
+                if mode & 0o100 == 0 {
+                    perms.set_mode(mode | 0o111);
+                    let _ = std::fs::set_permissions(&dest_path, perms);
+                }
+            }
+        }
+    }
+
+    debug!(?dest_dir, "Extracted bottle");
+    Ok(())
+}
+
+/// Relocate Homebrew bottle binaries by patching placeholder paths.
+///
+/// Homebrew bottles contain placeholder paths:
+/// - `@@HOMEBREW_PREFIX@@/opt/<dep>/lib/...`
+/// - `@@HOMEBREW_CELLAR@@/<name>/<version>/lib/...`
+///
+/// This function patches these to point to actual cache paths.
+///
+/// # Arguments
+///
+/// * `formula_dir` - Path to the extracted formula (e.g., `~/.cache/cuenv/oci/homebrew/jq/1.8.1/`)
+/// * `homebrew_cache` - Root of the homebrew cache (e.g., `~/.cache/cuenv/oci/homebrew/`)
+/// * `formula_name` - Name of the formula (e.g., "jq")
+/// * `formula_version` - Version of the formula (e.g., "1.8.1")
+/// * `dependencies` - Map of dependency name to version
+#[cfg(target_os = "macos")]
+pub fn relocate_homebrew_bottle(
+    formula_dir: &Path,
+    homebrew_cache: &Path,
+    formula_name: &str,
+    formula_version: &str,
+    dependencies: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    use std::process::Command;
+
+    debug!(
+        ?formula_dir,
+        formula_name,
+        formula_version,
+        "Relocating Homebrew bottle"
+    );
+
+    let bin_dir = formula_dir.join("bin");
+    let lib_dir = formula_dir.join("lib");
+
+    // Collect all binaries and dylibs to process
+    let mut files_to_process = Vec::new();
+
+    if bin_dir.exists() {
+        for entry in std::fs::read_dir(&bin_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                files_to_process.push(path);
+            }
+        }
+    }
+
+    if lib_dir.exists() {
+        for entry in std::fs::read_dir(&lib_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.ends_with(".dylib") {
+                    files_to_process.push(path);
+                }
+            }
+        }
+    }
+
+    // Process each file
+    for file_path in &files_to_process {
+        // Get current install names
+        let output = Command::new("otool")
+            .arg("-L")
+            .arg(file_path)
+            .output()?;
+
+        if !output.status.success() {
+            // Not a Mach-O binary, skip
+            continue;
+        }
+
+        let output_str = String::from_utf8_lossy(&output.stdout);
+
+        for line in output_str.lines().skip(1) {
+            let line = line.trim();
+            let Some(lib_path) = line.split_whitespace().next() else {
+                continue;
+            };
+
+            let new_path = if lib_path.contains("@@HOMEBREW_CELLAR@@") {
+                // @@HOMEBREW_CELLAR@@/jq/1.8.1/lib/libjq.1.dylib
+                // -> /cache/homebrew/jq/1.8.1/lib/libjq.1.dylib
+                let cellar_path = lib_path.replace("@@HOMEBREW_CELLAR@@", &homebrew_cache.to_string_lossy());
+                Some(cellar_path)
+            } else if lib_path.contains("@@HOMEBREW_PREFIX@@") {
+                // @@HOMEBREW_PREFIX@@/opt/oniguruma/lib/libonig.5.dylib
+                // -> /cache/homebrew/oniguruma/<version>/lib/libonig.5.dylib
+
+                // Extract dependency name from path
+                // Format: @@HOMEBREW_PREFIX@@/opt/<name>/lib/<lib>
+                let parts: Vec<&str> = lib_path.split('/').collect();
+                if parts.len() >= 4 && parts[1] == "opt" {
+                    let dep_name = parts[2];
+                    if let Some(dep_version) = dependencies.get(dep_name) {
+                        // Reconstruct path with our cache structure
+                        let remainder: String = parts[3..].join("/");
+                        let new = format!(
+                            "{}/{}/{}/{}",
+                            homebrew_cache.display(),
+                            dep_name,
+                            dep_version,
+                            remainder
+                        );
+                        Some(new)
+                    } else {
+                        trace!(lib_path, dep_name, "Dependency version not found, skipping");
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            if let Some(new_path) = new_path {
+                let status = Command::new("install_name_tool")
+                    .arg("-change")
+                    .arg(lib_path)
+                    .arg(&new_path)
+                    .arg(file_path)
+                    .status();
+
+                match status {
+                    Ok(s) if s.success() => {
+                        trace!(
+                            file = ?file_path,
+                            old = lib_path,
+                            new = new_path,
+                            "Relocated library path"
+                        );
+                    }
+                    Ok(_) => {
+                        debug!(
+                            file = ?file_path,
+                            lib = lib_path,
+                            "install_name_tool failed (may need codesign)"
+                        );
+                    }
+                    Err(e) => {
+                        return Err(Error::ExtractionFailed {
+                            binary: file_path.display().to_string(),
+                            message: format!("install_name_tool failed: {}", e),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Re-sign binaries (required on Apple Silicon)
+    for file_path in &files_to_process {
+        let _ = Command::new("codesign")
+            .arg("--force")
+            .arg("--sign")
+            .arg("-")
+            .arg(file_path)
+            .status();
+    }
+
+    debug!(?formula_dir, "Relocation complete");
+    Ok(())
+}
+
+/// Stub for non-macOS platforms.
+#[cfg(not(target_os = "macos"))]
+pub fn relocate_homebrew_bottle(
+    _formula_dir: &Path,
+    _homebrew_cache: &Path,
+    _formula_name: &str,
+    _formula_version: &str,
+    _dependencies: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    // Linux Homebrew bottles use different relocation (patchelf)
+    // For now, we rely on LD_LIBRARY_PATH
+    Ok(())
+}
+
+/// Extract a single binary from a Homebrew bottle.
 ///
 /// Homebrew bottles are gzip-compressed tarballs with structure:
 /// ```text
@@ -32,6 +297,9 @@ use crate::{Error, Result};
 /// └── share/
 ///     └── man/
 /// ```
+///
+/// **Note**: For dynamically linked binaries, use `extract_homebrew_bottle`
+/// instead to also extract lib/ dependencies.
 pub fn extract_homebrew_binary(
     bottle_path: &Path,
     binary_name: &str,

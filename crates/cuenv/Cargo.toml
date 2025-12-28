@@ -58,6 +58,8 @@ cuenv-gitlab = { workspace = true, optional = true }
 cuenv-bitbucket = { workspace = true, optional = true }
 cuenv-buildkite = { workspace = true, optional = true }
 cuenv-homebrew = { workspace = true, optional = true }
+# OCI binary provider
+cuenv-oci-provider = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }
 tokio-util = "0.7"

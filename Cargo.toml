@@ -65,6 +65,8 @@ cuenv-aws = { path = "crates/aws", version = "0.20.0" }
 cuenv-gcp = { path = "crates/gcp", version = "0.20.0" }
 cuenv-vault = { path = "crates/vault", version = "0.20.0" }
 cuenv-1password = { path = "crates/1password", version = "0.20.0" }
+# OCI binary provider
+cuenv-oci-provider = { path = "crates/oci-provider", version = "0.20.0" }
 schemars = "1.0.4"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }

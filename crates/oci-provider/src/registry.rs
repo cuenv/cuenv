@@ -90,7 +90,7 @@ impl OciClient {
     ) -> Result<()> {
         debug!(digest = %descriptor.digest, ?dest, "Pulling blob");
 
-        let auth = self.get_auth(reference);
+        let _auth = self.get_auth(reference);
 
         // Create parent directories
         if let Some(parent) = dest.parent() {

@@ -22,15 +22,30 @@ pub enum Error {
 
     /// Platform not available for image.
     #[error("Platform '{platform}' not available for image '{image}'")]
-    PlatformNotAvailable { image: String, platform: String },
+    PlatformNotAvailable {
+        /// The image reference.
+        image: String,
+        /// The requested platform.
+        platform: String,
+    },
 
     /// Failed to pull blob from registry.
     #[error("Failed to pull blob {digest}: {message}")]
-    BlobPullFailed { digest: String, message: String },
+    BlobPullFailed {
+        /// The blob digest.
+        digest: String,
+        /// Error message.
+        message: String,
+    },
 
     /// Failed to extract binary from archive.
     #[error("Failed to extract binary '{binary}' from archive: {message}")]
-    ExtractionFailed { binary: String, message: String },
+    ExtractionFailed {
+        /// The binary name.
+        binary: String,
+        /// Error message.
+        message: String,
+    },
 
     /// Binary not found in archive.
     #[error("Binary '{0}' not found in archive")]
@@ -51,6 +66,10 @@ pub enum Error {
     /// JSON parsing error.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// Homebrew API or formula error.
+    #[error("Homebrew error: {0}")]
+    Homebrew(String),
 }
 
 impl Error {

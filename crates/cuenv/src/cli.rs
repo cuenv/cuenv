@@ -560,11 +560,42 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: SecretsCommands,
     },
+    #[command(about = "Runtime management commands")]
+    Runtime {
+        #[command(subcommand)]
+        subcommand: RuntimeCommands,
+    },
 }
 
 /// Sync subcommands for generating different types of files
 #[derive(Subcommand, Debug, Clone)]
 pub enum SyncCommands {
+    #[command(about = "Resolve OCI images and update lockfile")]
+    Lock {
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        #[arg(long, help = "Show what would be resolved without writing lockfile")]
+        dry_run: bool,
+        #[arg(long, help = "Check if lockfile is up-to-date")]
+        check: bool,
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync lock for all projects in the workspace"
+        )]
+        all: bool,
+    },
     #[command(about = "Sync files from CUE cube configurations in projects")]
     Cubes {
         #[arg(
@@ -647,6 +678,23 @@ pub enum SecretsCommands {
 pub enum SecretsProvider {
     /// 1Password (downloads WASM SDK for HTTP mode)
     Onepassword,
+}
+
+/// Runtime subcommands for managing runtime environments
+#[derive(Subcommand, Debug, Clone)]
+pub enum RuntimeCommands {
+    #[command(about = "OCI runtime management")]
+    Oci {
+        #[command(subcommand)]
+        subcommand: OciCommands,
+    },
+}
+
+/// OCI runtime subcommands
+#[derive(Subcommand, Debug, Clone)]
+pub enum OciCommands {
+    #[command(about = "Activate OCI binaries for the current environment")]
+    Activate,
 }
 
 /// Output format for status command
@@ -957,7 +1005,8 @@ impl Commands {
             | Self::Web { .. }
             | Self::Changeset { .. }
             | Self::Release { .. }
-            | Self::Secrets { .. } => "cuenv",
+            | Self::Secrets { .. }
+            | Self::Runtime { .. } => "cuenv",
         }
     }
 
@@ -1210,6 +1259,21 @@ impl Commands {
                     show_diff,
                     ci_provider,
                 ) = match subcommand {
+                    Some(SyncCommands::Lock {
+                        path: sub_path,
+                        package: sub_package,
+                        dry_run: sub_dry_run,
+                        check: sub_check,
+                        all: sub_all,
+                    }) => (
+                        Some("lock".to_string()),
+                        sub_path,
+                        sub_package,
+                        to_mode(sub_dry_run, sub_check),
+                        to_scope(sub_all || all),
+                        false,
+                        None,
+                    ),
                     Some(SyncCommands::Cubes {
                         path: sub_path,
                         package: sub_package,
@@ -1266,6 +1330,11 @@ impl Commands {
                 SecretsCommands::Setup { provider, wasm_url } => {
                     Command::SecretsSetup { provider, wasm_url }
                 }
+            },
+            Self::Runtime { subcommand } => match subcommand {
+                RuntimeCommands::Oci { subcommand } => match subcommand {
+                    OciCommands::Activate => Command::RuntimeOciActivate,
+                },
             },
         }
     }

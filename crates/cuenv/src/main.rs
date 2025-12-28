@@ -167,7 +167,8 @@ const fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
             | crate::cli::Commands::Web { .. }
             | crate::cli::Commands::Allow { .. }
             | crate::cli::Commands::Deny { .. }
-            | crate::cli::Commands::Sync { .. } => true,
+            | crate::cli::Commands::Sync { .. }
+            | crate::cli::Commands::Runtime { .. } => true,
         },
     }
 }
@@ -837,6 +838,9 @@ async fn execute_command_safe(
             // Secrets setup is handled early in real_main, this is just for exhaustiveness
             return commands::secrets::execute_secrets_setup(*provider, wasm_url.as_deref());
         }
+        Command::RuntimeOciActivate => {
+            return run_oci_activate().await;
+        }
         // Info command needs special handling for json_mode and output
         Command::Info {
             path,
@@ -1024,6 +1028,276 @@ async fn run_coordinator() -> Result<(), CliError> {
         .run()
         .await
         .map_err(|e| CliError::other(format!("Coordinator failed: {e}")))
+}
+
+/// Run OCI binary activation (`cuenv runtime oci activate`).
+///
+/// Reads the lockfile, pulls/extracts binaries for the current platform,
+/// and outputs PATH and library path modifications to stdout (to be sourced
+/// by the hook system).
+///
+/// For Homebrew formulas, extracts full bottles (bin/ + lib/) and outputs
+/// both PATH and DYLD_LIBRARY_PATH/LD_LIBRARY_PATH for dynamic linking.
+///
+/// This command is typically invoked by the `#OCIActivate` hook defined in
+/// `schema/oci.cue` to add OCI-managed binaries to the PATH.
+async fn run_oci_activate() -> Result<(), CliError> {
+    use cuenv_core::lockfile::{ArtifactKind, Lockfile};
+    use cuenv_oci_provider::{
+        OciCache, OciClient, current_platform, extract_homebrew_binary, extract_homebrew_bottle,
+        is_homebrew_image, relocate_homebrew_bottle, to_homebrew_platform,
+    };
+    use std::collections::{HashMap, HashSet};
+
+    // Find the lockfile by walking up from current directory
+    let lockfile_path = find_lockfile().ok_or_else(|| {
+        CliError::config_with_help(
+            "No cuenv.lock found",
+            "Run 'cuenv sync lock' to create the lockfile",
+        )
+    })?;
+
+    // Load the lockfile
+    let lockfile = Lockfile::load(&lockfile_path)
+        .map_err(|e| CliError::other(format!("Failed to load lockfile: {e}")))?
+        .ok_or_else(|| {
+            CliError::config_with_help(
+                "Lockfile is empty",
+                "Run 'cuenv sync lock' to populate the lockfile",
+            )
+        })?;
+
+    // Get current platform
+    let platform = current_platform();
+    let platform_str = platform.to_string();
+
+    // Initialize OCI client and cache
+    let client = OciClient::new();
+    let cache = OciCache::default();
+    cache.ensure_dirs().map_err(|e| {
+        CliError::other(format!("Failed to create cache directories: {e}"))
+    })?;
+
+    // Track directories to add to PATH and library paths
+    let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
+    let mut lib_dirs: HashSet<PathBuf> = HashSet::new();
+
+    // Build a map of formula name -> version for dependency resolution
+    let mut formula_versions: HashMap<String, String> = HashMap::new();
+    for artifact in &lockfile.artifacts {
+        if let ArtifactKind::Homebrew { name, version, .. } = &artifact.kind {
+            formula_versions.insert(name.clone(), version.clone());
+        }
+    }
+
+    // Track formulas that need relocation (extracted this run)
+    let mut formulas_to_relocate: Vec<(String, String)> = Vec::new();
+
+    for artifact in &lockfile.artifacts {
+        // Check if this artifact has data for our platform
+        let Some(platform_data) = artifact.platforms.get(&platform_str) else {
+            // Skip artifacts not available for this platform
+            continue;
+        };
+
+        match &artifact.kind {
+            ArtifactKind::Homebrew {
+                name, version, ..
+            } => {
+                // Check if formula is already extracted
+                if cache.has_formula(name, version) {
+                    let bin = cache.formula_bin(name, version);
+                    let lib = cache.formula_lib(name, version);
+                    if bin.exists() {
+                        bin_dirs.insert(bin);
+                    }
+                    if lib.exists() {
+                        lib_dirs.insert(lib);
+                    }
+                    continue;
+                }
+
+                // Need to fetch and extract the bottle
+                // Verify platform is supported by Homebrew
+                let _homebrew_platform = to_homebrew_platform(&platform_str).ok_or_else(|| {
+                    CliError::other(format!(
+                        "Platform '{}' not supported by Homebrew",
+                        platform_str
+                    ))
+                })?;
+
+                // Build the bottle image reference
+                let image = format!("ghcr.io/homebrew/core/{}:{}", name, version);
+
+                // Pull the bottle
+                let resolved = client
+                    .resolve_digest(&image, &platform)
+                    .await
+                    .map_err(|e| CliError::other(format!("Failed to resolve '{}': {}", image, e)))?;
+
+                let layer_paths = client
+                    .pull_layers(&resolved, &cache)
+                    .await
+                    .map_err(|e| {
+                        CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
+                    })?;
+
+                // Extract the full bottle to formula directory
+                let dest_dir = cache.formula_dir(name, version);
+                if let Some(layer_path) = layer_paths.first() {
+                    extract_homebrew_bottle(layer_path, &dest_dir).map_err(|e| {
+                        CliError::other(format!(
+                            "Failed to extract Homebrew bottle '{}': {}",
+                            name, e
+                        ))
+                    })?;
+
+                    // Mark for relocation
+                    formulas_to_relocate.push((name.clone(), version.clone()));
+                }
+
+                // Add bin and lib directories if they exist
+                let bin = cache.formula_bin(name, version);
+                let lib = cache.formula_lib(name, version);
+                if bin.exists() {
+                    bin_dirs.insert(bin);
+                }
+                if lib.exists() {
+                    lib_dirs.insert(lib);
+                }
+            }
+
+            ArtifactKind::Image { image } => {
+                let digest = &platform_data.digest;
+                let binary_name = extract_binary_name_from_image(image);
+
+                // Check if binary is already cached
+                if let Some(cached_path) = cache.get_binary(digest, &binary_name) {
+                    if let Some(parent) = cached_path.parent() {
+                        bin_dirs.insert(parent.to_path_buf());
+                    }
+                    continue;
+                }
+
+                // Need to pull and extract
+                let resolved = client
+                    .resolve_digest(image, &platform)
+                    .await
+                    .map_err(|e| CliError::other(format!("Failed to resolve '{}': {}", image, e)))?;
+
+                let layer_paths = client
+                    .pull_layers(&resolved, &cache)
+                    .await
+                    .map_err(|e| {
+                        CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
+                    })?;
+
+                // Extract binary based on image type
+                let dest = cache.binary_path(digest, &binary_name);
+
+                if is_homebrew_image(image) {
+                    // Legacy: Homebrew bottle via Image artifact (for backwards compat)
+                    if let Some(layer_path) = layer_paths.first() {
+                        extract_homebrew_binary(layer_path, &binary_name, &dest).map_err(|e| {
+                            CliError::other(format!(
+                                "Failed to extract '{}' from Homebrew bottle: {}",
+                                binary_name, e
+                            ))
+                        })?;
+                    }
+                } else {
+                    // Non-Homebrew image - would need extract config from CUE
+                    // For now, skip with warning
+                    eprintln!(
+                        "Warning: Non-Homebrew image '{}' requires explicit extract paths",
+                        image
+                    );
+                    continue;
+                }
+
+                if let Some(parent) = dest.parent() {
+                    bin_dirs.insert(parent.to_path_buf());
+                }
+            }
+        }
+    }
+
+    // Relocate newly extracted formulas (patch Homebrew placeholder paths)
+    let homebrew_cache = cache.root().join("homebrew");
+    for (name, version) in &formulas_to_relocate {
+        let formula_dir = cache.formula_dir(name, version);
+        relocate_homebrew_bottle(&formula_dir, &homebrew_cache, name, version, &formula_versions)
+            .map_err(|e| {
+                CliError::other(format!(
+                    "Failed to relocate Homebrew bottle '{}': {}",
+                    name, e
+                ))
+            })?;
+    }
+
+    // Output library path modification first (dependencies must be available)
+    if !lib_dirs.is_empty() {
+        let lib_path: Vec<String> = lib_dirs.iter().map(|p| p.display().to_string()).collect();
+        let lib_path_str = lib_path.join(":");
+
+        // Use appropriate library path variable for the platform
+        #[cfg(target_os = "macos")]
+        println!("export DYLD_LIBRARY_PATH=\"{}:$DYLD_LIBRARY_PATH\"", lib_path_str);
+
+        #[cfg(not(target_os = "macos"))]
+        println!("export LD_LIBRARY_PATH=\"{}:$LD_LIBRARY_PATH\"", lib_path_str);
+    }
+
+    // Output PATH modification
+    if !bin_dirs.is_empty() {
+        let path_additions: Vec<String> = bin_dirs
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        println!("export PATH=\"{}:$PATH\"", path_additions.join(":"));
+    }
+
+    Ok(())
+}
+
+/// Find the lockfile by walking up from current directory
+fn find_lockfile() -> Option<PathBuf> {
+    use cuenv_core::lockfile::LOCKFILE_NAME;
+
+    let mut current = std::env::current_dir().ok()?;
+    loop {
+        let lockfile_path = current.join(LOCKFILE_NAME);
+        if lockfile_path.exists() {
+            return Some(lockfile_path);
+        }
+
+        // Also check in cue.mod directory
+        let cue_mod_lockfile = current.join("cue.mod").join(LOCKFILE_NAME);
+        if cue_mod_lockfile.exists() {
+            return Some(cue_mod_lockfile);
+        }
+
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+/// Extract binary name from image reference
+///
+/// For Homebrew bottles: `ghcr.io/homebrew/core/jq:1.7.1` -> `jq`
+/// For other images: extract the last path component before the tag
+fn extract_binary_name_from_image(image: &str) -> String {
+    // Remove tag/digest suffix
+    let without_tag = image.split(':').next().unwrap_or(image);
+    let without_digest = without_tag.split('@').next().unwrap_or(without_tag);
+
+    // Get last path component
+    without_digest
+        .rsplit('/')
+        .next()
+        .unwrap_or("binary")
+        .to_string()
 }
 
 /// Run as a hook supervisor process

@@ -77,7 +77,10 @@ impl fmt::Display for Platform {
 /// Get the current platform.
 #[must_use]
 pub fn current_platform() -> Platform {
-    let os = std::env::consts::OS;
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         other => other,

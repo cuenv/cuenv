@@ -10,14 +10,23 @@
 //! version = 1
 //!
 //! [[artifacts]]
-//! kind = "registry"
-//! registry = "ghcr.io/homebrew/core"
+//! kind = "homebrew"
 //! name = "jq"
 //! version = "1.7.1"
+//! dependencies = ["oniguruma"]
 //!
 //!   [artifacts.platforms]
 //!   "darwin-arm64" = { digest = "sha256:abc...", size = 1234567 }
 //!   "linux-x86_64" = { digest = "sha256:def...", size = 1345678 }
+//!
+//! [[artifacts]]
+//! kind = "homebrew"
+//! name = "oniguruma"
+//! version = "6.9.9"
+//! dependencies = []
+//!
+//!   [artifacts.platforms]
+//!   "darwin-arm64" = { digest = "sha256:xyz...", size = 456789 }
 //!
 //! [[artifacts]]
 //! kind = "image"
@@ -112,10 +121,40 @@ impl Lockfile {
         })
     }
 
+    /// Find a Homebrew artifact by formula name.
+    #[must_use]
+    pub fn find_homebrew_artifact(&self, name: &str) -> Option<&LockedArtifact> {
+        self.artifacts.iter().find(|a| {
+            matches!(&a.kind, ArtifactKind::Homebrew { name: n, .. } if n == name)
+        })
+    }
+
+    /// Get all Homebrew artifacts.
+    #[must_use]
+    pub fn homebrew_artifacts(&self) -> Vec<&LockedArtifact> {
+        self.artifacts
+            .iter()
+            .filter(|a| matches!(&a.kind, ArtifactKind::Homebrew { .. }))
+            .collect()
+    }
+
     /// Add or update an artifact in the lockfile.
+    ///
+    /// For Homebrew artifacts, matches by formula name.
+    /// For Image artifacts, matches by image reference.
     pub fn upsert_artifact(&mut self, artifact: LockedArtifact) {
-        // Find existing artifact with same kind
-        let existing_idx = self.artifacts.iter().position(|a| a.kind == artifact.kind);
+        // Find existing artifact with same identity
+        let existing_idx = self.artifacts.iter().position(|a| match (&a.kind, &artifact.kind) {
+            // Match Homebrew by name (ignore version/deps as they may change)
+            (
+                ArtifactKind::Homebrew { name: n1, .. },
+                ArtifactKind::Homebrew { name: n2, .. },
+            ) => n1 == n2,
+            // Match Image by full reference
+            (ArtifactKind::Image { image: i1 }, ArtifactKind::Image { image: i2 }) => i1 == i2,
+            // Different kinds never match
+            _ => false,
+        });
 
         if let Some(idx) = existing_idx {
             self.artifacts[idx] = artifact;
@@ -156,9 +195,19 @@ impl LockedArtifact {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ArtifactKind {
-    /// An OCI image (Homebrew bottles or container images).
+    /// A Homebrew formula (with dependency tracking).
+    Homebrew {
+        /// Formula name (e.g., "jq", "oniguruma").
+        name: String,
+        /// Version string (e.g., "1.7.1").
+        version: String,
+        /// Runtime dependencies (other formula names).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        dependencies: Vec<String>,
+    },
+    /// An OCI image (container images).
     Image {
-        /// Full image reference (e.g., "ghcr.io/homebrew/core/jq:1.7.1", "nginx:1.25-alpine").
+        /// Full image reference (e.g., "nginx:1.25-alpine").
         image: String,
     },
 }
@@ -213,9 +262,12 @@ mod tests {
     fn test_lockfile_serialization() {
         let mut lockfile = Lockfile::new();
 
+        // Homebrew artifact with dependencies
         lockfile.artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Image {
-                image: "ghcr.io/homebrew/core/jq:1.7.1".to_string(),
+            kind: ArtifactKind::Homebrew {
+                name: "jq".to_string(),
+                version: "1.7.1".to_string(),
+                dependencies: vec!["oniguruma".to_string()],
             },
             platforms: HashMap::from([
                 (
@@ -235,6 +287,23 @@ mod tests {
             ]),
         });
 
+        // Dependency artifact
+        lockfile.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Homebrew {
+                name: "oniguruma".to_string(),
+                version: "6.9.9".to_string(),
+                dependencies: vec![],
+            },
+            platforms: HashMap::from([(
+                "darwin-arm64".to_string(),
+                PlatformData {
+                    digest: "sha256:xyz789".to_string(),
+                    size: Some(456789),
+                },
+            )]),
+        });
+
+        // Container image
         lockfile.artifacts.push(LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
@@ -250,7 +319,9 @@ mod tests {
 
         let toml_str = toml::to_string_pretty(&lockfile).unwrap();
         assert!(toml_str.contains("version = 1"));
-        assert!(toml_str.contains("ghcr.io/homebrew/core/jq:1.7.1"));
+        assert!(toml_str.contains("kind = \"homebrew\""));
+        assert!(toml_str.contains("name = \"jq\""));
+        assert!(toml_str.contains("dependencies = [\"oniguruma\"]"));
         assert!(toml_str.contains("nginx:1.25-alpine"));
 
         // Round-trip test
@@ -273,12 +344,30 @@ mod tests {
     }
 
     #[test]
+    fn test_find_homebrew_artifact() {
+        let mut lockfile = Lockfile::new();
+        lockfile.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Homebrew {
+                name: "jq".to_string(),
+                version: "1.7.1".to_string(),
+                dependencies: vec!["oniguruma".to_string()],
+            },
+            platforms: HashMap::new(),
+        });
+
+        assert!(lockfile.find_homebrew_artifact("jq").is_some());
+        assert!(lockfile.find_homebrew_artifact("yq").is_none());
+    }
+
+    #[test]
     fn test_upsert_artifact() {
         let mut lockfile = Lockfile::new();
 
         let artifact1 = LockedArtifact {
-            kind: ArtifactKind::Image {
-                image: "ghcr.io/homebrew/core/jq:1.7.1".to_string(),
+            kind: ArtifactKind::Homebrew {
+                name: "jq".to_string(),
+                version: "1.7.1".to_string(),
+                dependencies: vec![],
             },
             platforms: HashMap::from([(
                 "darwin-arm64".to_string(),
@@ -292,10 +381,12 @@ mod tests {
         lockfile.upsert_artifact(artifact1);
         assert_eq!(lockfile.artifacts.len(), 1);
 
-        // Update with new digest
+        // Update with new digest and dependencies
         let artifact2 = LockedArtifact {
-            kind: ArtifactKind::Image {
-                image: "ghcr.io/homebrew/core/jq:1.7.1".to_string(),
+            kind: ArtifactKind::Homebrew {
+                name: "jq".to_string(),
+                version: "1.7.1".to_string(),
+                dependencies: vec!["oniguruma".to_string()],
             },
             platforms: HashMap::from([(
                 "darwin-arm64".to_string(),
@@ -312,6 +403,39 @@ mod tests {
             lockfile.artifacts[0].platforms["darwin-arm64"].digest,
             "sha256:new"
         );
+    }
+
+    #[test]
+    fn test_homebrew_artifacts() {
+        let mut lockfile = Lockfile::new();
+
+        lockfile.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Homebrew {
+                name: "jq".to_string(),
+                version: "1.7.1".to_string(),
+                dependencies: vec!["oniguruma".to_string()],
+            },
+            platforms: HashMap::new(),
+        });
+
+        lockfile.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Homebrew {
+                name: "oniguruma".to_string(),
+                version: "6.9.9".to_string(),
+                dependencies: vec![],
+            },
+            platforms: HashMap::new(),
+        });
+
+        lockfile.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
+            },
+            platforms: HashMap::new(),
+        });
+
+        let homebrew = lockfile.homebrew_artifacts();
+        assert_eq!(homebrew.len(), 2);
     }
 
     #[test]

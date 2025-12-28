@@ -101,3 +101,22 @@ package schema
 	// Name to expose the binary as in PATH (defaults to filename from path)
 	as?: string
 }
+
+// #OCIActivate is a pre-configured hook that fetches OCI binaries
+// and adds them to PATH before executing tasks.
+//
+// The hook runs `cuenv runtime oci activate` which:
+// 1. Reads `cuenv.lock` to find artifacts for the current platform
+// 2. Pulls and extracts binaries (if not already cached)
+// 3. Outputs `export PATH=...` to add binaries to PATH
+//
+// Usage:
+//   hooks: onEnter: oci: #OCIActivate
+#OCIActivate: #ExecHook & {
+	order:     10
+	propagate: false
+	command:   "cuenv"
+	args: ["runtime", "oci", "activate"]
+	source: true
+	inputs: ["cuenv.lock"]
+}

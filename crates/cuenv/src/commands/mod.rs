@@ -186,6 +186,8 @@ pub enum Command {
         provider: crate::cli::SecretsProvider,
         wasm_url: Option<String>,
     },
+    /// Activate OCI runtime binaries
+    RuntimeOciActivate,
 }
 
 /// Executes CLI commands with centralized module evaluation and event handling.
@@ -500,7 +502,8 @@ impl CommandExecutor {
             | Command::ReleaseVersion { .. }
             | Command::ReleasePublish { .. }
             | Command::ReleaseBinaries { .. }
-            | Command::SecretsSetup { .. } => Ok(()),
+            | Command::SecretsSetup { .. }
+            | Command::RuntimeOciActivate => Ok(()),
         }
     }
 

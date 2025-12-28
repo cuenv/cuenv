@@ -1,0 +1,53 @@
+version = 1
+
+[[artifacts]]
+kind = "homebrew"
+name = "oniguruma"
+version = "6.9.10"
+
+[artifacts.platforms.darwin-x86_64]
+digest = "sha256:174fa500f45c9421915e22c34f51abc2849cbce2c05b64f013e4949bf2edd7e0"
+
+[artifacts.platforms.linux-x86_64]
+digest = "sha256:49eb885ab9a80ce30edc0aaa5f531fc0079a17e5cf41c2b6c34be0e53e763993"
+
+[artifacts.platforms.linux-arm64]
+digest = "sha256:b9c6066f02e365ccac0ca20cbcb8ca5d586c0ae781977d363bd411594946d944"
+
+[artifacts.platforms.darwin-arm64]
+digest = "sha256:86beadf2205c134bfc642be07b663476532c10591743461c2c64bc85be51afc8"
+
+[[artifacts]]
+kind = "homebrew"
+name = "jq"
+version = "1.8.1"
+dependencies = ["oniguruma"]
+
+[artifacts.platforms.darwin-x86_64]
+digest = "sha256:a1a5f487f1840d9a18abdecdf1c6c5a5385917725c6ba88f7f819ac5f4cfa801"
+
+[artifacts.platforms.darwin-arm64]
+digest = "sha256:147e512951120ec6f10a36a857c84f5f3300fd33b3d6bcce2f2162b10b0481aa"
+
+[artifacts.platforms.linux-arm64]
+digest = "sha256:274b391020473ad15697b0eaf0dc7e44a57312e7eaa7642e1bc8426ca9c0a54d"
+
+[artifacts.platforms.linux-x86_64]
+digest = "sha256:82883e1f3b674759d0e3d0c37e6805c0f91e3886f3e40c7ebc57f1e0174dfbe7"
+
+[[artifacts]]
+kind = "homebrew"
+name = "yq"
+version = "4.50.1"
+
+[artifacts.platforms.linux-x86_64]
+digest = "sha256:30f7cd9bfd97992c037ac97acc79c2c60e0d21e9eac71d058d3cca74efdbcc58"
+
+[artifacts.platforms.linux-arm64]
+digest = "sha256:368c356c2a72688627a215e6f0eeee28b436918287eab74c7f81b2ceeb843a51"
+
+[artifacts.platforms.darwin-arm64]
+digest = "sha256:8f7ae016708d84e1f5a5033affe7aa2682c1ac86c3e0b705494fcf2b117f0da3"
+
+[artifacts.platforms.darwin-x86_64]
+digest = "sha256:78c1b4d3c399ca3a901837181b89cd900177e5461b3ed39ed36fae5af45bc441"

@@ -3,16 +3,21 @@ package cuenv
 import (
 	"list"
 	"github.com/cuenv/cuenv/schema"
-	nixcontrib "github.com/cuenv/cuenv/contrib/nix"
 	rustcontrib "github.com/cuenv/cuenv/contrib/rust"
 )
 
 schema.#Project & {
 	name: "cuenv"
 
-	// runtime: nix should provide hooks?
-	runtime: schema.#NixRuntime
-	hooks: onEnter: nix: nixcontrib.#NixFlake
+	runtime: schema.#OCIRuntime & {
+		platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
+		images: [
+			{image: "ghcr.io/homebrew/core/jq:1.7.1"},
+			{image: "ghcr.io/homebrew/core/yq:4.44.6"},
+		]
+	}
+
+	hooks: onEnter: oci: schema.#OCIActivate
 
 	// Build cuenv from source instead of using released binaries
 	// We really need to find a way to speed this up later.
