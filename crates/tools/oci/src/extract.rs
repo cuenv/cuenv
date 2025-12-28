@@ -62,14 +62,15 @@ pub fn extract_homebrew_bottle(bottle_path: &Path, dest_dir: &Path) -> Result<()
         // Build relative path without name/version prefix
         let relative: PathBuf = components[2..].iter().collect();
 
-        // Validate no path traversal (e.g., "../../../etc/passwd")
-        if relative
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
+        // Validate no path traversal (e.g., "../../../etc/passwd" or absolute paths like "/etc/passwd")
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
         {
             return Err(Error::ExtractionFailed {
                 binary: path_str.to_string(),
-                message: "Archive entry contains path traversal".to_string(),
+                message: "Archive entry contains path traversal or absolute path".to_string(),
             });
         }
 
