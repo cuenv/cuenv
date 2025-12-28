@@ -4,8 +4,7 @@
 //! plugin can be initialized. This catches platform/runtime compatibility issues
 //! that would otherwise only appear at secret resolution time.
 //!
-//! In CI (Nix builds), the WASM is provided via `ONEPASSWORD_WASM_PATH` env var.
-//! For local development, run `cuenv secrets setup onepassword` to download it.
+//! The WASM is automatically downloaded if not present in the cache.
 
 // Integration tests can use unwrap/expect for cleaner assertions
 #![allow(clippy::expect_used)]
@@ -13,18 +12,38 @@
 use cuenv_1password::secrets::{core, wasm};
 use std::path::PathBuf;
 
-/// Ensure WASM is available (from env var or cache)
+/// 1Password WASM SDK URL (pinned to v0.3.1)
+const ONEPASSWORD_WASM_URL: &str =
+    "https://github.com/1Password/onepassword-sdk-go/raw/refs/tags/v0.3.1/internal/wasm/core.wasm";
+
+/// Ensure WASM is available, downloading if necessary
+#[allow(clippy::print_stderr)]
 fn ensure_wasm_available() -> PathBuf {
     let path = wasm::onepassword_wasm_path().expect("Should get WASM path");
 
-    assert!(
-        path.exists(),
-        "1Password WASM not found at {}.\n\
-        Either:\n\
-        - Set ONEPASSWORD_WASM_PATH env var (done automatically in Nix builds), or\n\
-        - Run: cuenv secrets setup onepassword",
-        path.display()
-    );
+    if !path.exists() {
+        // Download the WASM file
+        eprintln!("Downloading 1Password WASM SDK to {}...", path.display());
+
+        // Create parent directory
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("Should create cache directory");
+        }
+
+        // Download using reqwest blocking client
+        let response = reqwest::blocking::get(ONEPASSWORD_WASM_URL)
+            .expect("Should download WASM");
+        assert!(
+            response.status().is_success(),
+            "Failed to download WASM: HTTP {}",
+            response.status()
+        );
+
+        let bytes = response.bytes().expect("Should read response body");
+        std::fs::write(&path, &bytes).expect("Should write WASM file");
+
+        eprintln!("Downloaded {} bytes", bytes.len());
+    }
 
     path
 }
@@ -110,18 +129,24 @@ fn test_wasm_file_size() {
 
 /// Test using `SharedCore` directly (same code path as production)
 ///
-/// Note: Uses unsafe to set HOME env var for wasmtime's bytecode cache.
-/// In Nix sandbox, HOME=/homeless-shelter which is unwritable.
+/// Note: Uses unsafe to set HOME and ONEPASSWORD_WASM_PATH env vars.
+/// HOME is changed for wasmtime's bytecode cache (in Nix sandbox, HOME=/homeless-shelter).
+/// ONEPASSWORD_WASM_PATH ensures SharedCore finds the WASM after HOME is changed.
 #[test]
 #[allow(unsafe_code, clippy::significant_drop_tightening)]
 fn test_shared_core_initializes() {
-    let _path = ensure_wasm_available();
+    let wasm_path = ensure_wasm_available();
+
+    // SAFETY: This test runs in isolation and no other threads are reading
+    // environment variables concurrently during this initialization.
+
+    // Set ONEPASSWORD_WASM_PATH before changing HOME, so SharedCore can find the WASM
+    // (changing HOME affects dirs::cache_dir() which onepassword_wasm_path() uses).
+    unsafe { std::env::set_var("ONEPASSWORD_WASM_PATH", &wasm_path) };
 
     // Set HOME to a temp directory for wasmtime's bytecode cache.
     let temp_home = std::env::temp_dir().join("cuenv-wasm-test-home");
     std::fs::create_dir_all(&temp_home).expect("Should create temp home");
-    // SAFETY: This test runs in isolation and no other threads are reading
-    // environment variables concurrently during this initialization.
     unsafe { std::env::set_var("HOME", &temp_home) };
 
     // This tests the full SharedCore initialization path

@@ -109,8 +109,8 @@ jobs:
     name: publish.cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-    - nix-build-darwin-arm64
     - nix-build-linux-x64
+    - nix-build-darwin-arm64
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -136,16 +136,16 @@ jobs:
         RUSTC_WRAPPER: sccache
     - name: Build cuenv
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix develop -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
-    - name: Download nix-build-darwin-arm64
-      uses: actions/download-artifact@v4
-      with:
-        name: nix-build-darwin-arm64
-        path: dist/darwin-arm64
     - name: Download nix-build-linux-x64
       uses: actions/download-artifact@v4
       with:
         name: nix-build-linux-x64
         path: dist/linux-x64
+    - name: Download nix-build-darwin-arm64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-darwin-arm64
+        path: dist/darwin-arm64
     - name: publish.cue
       run: cuenv task publish.cue -e production --skip-dependencies
       env:
@@ -160,8 +160,8 @@ jobs:
     name: publish.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-    - nix-build-darwin-arm64
     - nix-build-linux-x64
+    - nix-build-darwin-arm64
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -187,16 +187,16 @@ jobs:
         RUSTC_WRAPPER: sccache
     - name: Build cuenv
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix develop -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
-    - name: Download nix-build-darwin-arm64
-      uses: actions/download-artifact@v4
-      with:
-        name: nix-build-darwin-arm64
-        path: dist/darwin-arm64
     - name: Download nix-build-linux-x64
       uses: actions/download-artifact@v4
       with:
         name: nix-build-linux-x64
         path: dist/linux-x64
+    - name: Download nix-build-darwin-arm64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-darwin-arm64
+        path: dist/darwin-arm64
     - name: publish.github
       run: cuenv task publish.github -e production --skip-dependencies
       env:

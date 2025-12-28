@@ -168,8 +168,6 @@ schema.#Project & {
 		check: {
 			script: """
 				set -e
-				echo "Setting up 1Password WASM..."
-				cuenv secrets setup onepassword
 				echo "Running clippy..."
 				cargo clippy --workspace --all-targets --all-features -- -D warnings
 				echo "Running tests..."
