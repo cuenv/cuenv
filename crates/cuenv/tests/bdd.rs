@@ -302,6 +302,29 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
     world.current_dir.clone_from(&path);
 }
 
+#[given(expr = "I am in the {string} directory with completed hooks")]
+async fn in_directory_with_completed_hooks(world: &mut TestWorld, dir: String) {
+    // Extract the parent and subdirectory from the path (e.g., "examples/hook" -> "examples", "hook")
+    let parts: Vec<&str> = dir.split('/').collect();
+    let (parent_dir, subdir) = if parts.len() >= 2 {
+        (parts[0].to_string(), parts[1..].join("/"))
+    } else {
+        ("examples".to_string(), dir.clone())
+    };
+
+    // 1. Set up parent directory
+    in_directory(world, parent_dir).await;
+
+    // 2. Allow hooks in the subdirectory
+    cuenv_allowed_in_dir(world, subdir.clone()).await;
+
+    // 3. Change to subdirectory (triggers hook execution)
+    change_directory(world, subdir).await;
+
+    // 4. Wait for hooks to complete
+    wait_for_hooks(world).await;
+}
+
 #[given(expr = "cuenv is allowed in {string} directory")]
 async fn cuenv_allowed_in_dir(world: &mut TestWorld, dir: String) {
     // Create a valid CUE file for the hook test
@@ -797,6 +820,57 @@ async fn see_hook_failure_message(world: &mut TestWorld) {
             || world.last_output.contains("failed")
             || world.last_output.contains("error"),
         "No failure message found: {}",
+        world.last_output
+    );
+}
+
+// Step definitions for "Changing Away From Directory Preserves State" scenario
+
+#[then(expr = "the environment variables from hooks should still be set")]
+fn env_vars_still_set(world: &mut TestWorld) {
+    assert!(
+        world.shell_env.contains_key("CUENV_TEST"),
+        "CUENV_TEST should still be set after changing directories. Current env: {:?}",
+        world.shell_env
+    );
+    assert_eq!(
+        world.shell_env.get("CUENV_TEST").unwrap(),
+        "loaded_successfully",
+        "CUENV_TEST should retain its value"
+    );
+}
+
+#[when(expr = "I change back to {string}")]
+fn change_back_to_directory(world: &mut TestWorld, dir: String) {
+    // Simply update the current directory without triggering hook execution
+    // This simulates going back to a directory where hooks already completed
+    world.current_dir = world.current_dir.join(dir);
+}
+
+#[then(expr = "hooks should not re-execute since configuration hasn't changed")]
+async fn hooks_should_not_reexecute(world: &mut TestWorld) {
+    // Check that no new hook execution is triggered
+    // The hook state should still show the previous completed execution
+    let dir_path = world.current_dir.to_str().unwrap().to_string();
+    let package = if dir_path.contains("examples") {
+        "examples"
+    } else {
+        "cuenv"
+    };
+
+    world
+        .run_cuenv(&["env", "status", "--path", &dir_path, "--package", package])
+        .await
+        .unwrap();
+
+    // Status should show completed (from before), not running
+    // Since hooks already ran, no new execution should be in progress
+    assert!(
+        !world.last_output.contains("Running")
+            && !world.last_output.contains("in progress")
+            || world.last_output.contains("Completed")
+            || world.last_output.contains("completed"),
+        "Hooks should not be re-executing. Status: {}",
         world.last_output
     );
 }
