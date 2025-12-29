@@ -46,20 +46,24 @@ import "github.com/cuenv/cuenv/schema"
 	version!: string
 	overrides: [
 		{os: "darwin", arch: "arm64", source: schema.#GitHub & {
-			repo:  "mikefarah/yq"
-			asset: "yq_darwin_arm64"
+			repo:      "mikefarah/yq"
+			tagPrefix: "v"
+			asset:     "yq_darwin_arm64"
 		}},
 		{os: "darwin", arch: "x86_64", source: schema.#GitHub & {
-			repo:  "mikefarah/yq"
-			asset: "yq_darwin_amd64"
+			repo:      "mikefarah/yq"
+			tagPrefix: "v"
+			asset:     "yq_darwin_amd64"
 		}},
 		{os: "linux", arch: "x86_64", source: schema.#GitHub & {
-			repo:  "mikefarah/yq"
-			asset: "yq_linux_amd64"
+			repo:      "mikefarah/yq"
+			tagPrefix: "v"
+			asset:     "yq_linux_amd64"
 		}},
 		{os: "linux", arch: "arm64", source: schema.#GitHub & {
-			repo:  "mikefarah/yq"
-			asset: "yq_linux_arm64"
+			repo:      "mikefarah/yq"
+			tagPrefix: "v"
+			asset:     "yq_linux_arm64"
 		}},
 	]
 }
@@ -75,24 +79,28 @@ import "github.com/cuenv/cuenv/schema"
 	version!: string
 	overrides: [
 		{os: "darwin", arch: "arm64", source: schema.#GitHub & {
-			repo:  "numtide/treefmt"
-			asset: "treefmt_{version}_darwin_arm64.tar.gz"
-			path:  "treefmt"
+			repo:      "numtide/treefmt"
+			tagPrefix: "v"
+			asset:     "treefmt_{version}_darwin_arm64.tar.gz"
+			path:      "treefmt"
 		}},
 		{os: "darwin", arch: "x86_64", source: schema.#GitHub & {
-			repo:  "numtide/treefmt"
-			asset: "treefmt_{version}_darwin_amd64.tar.gz"
-			path:  "treefmt"
+			repo:      "numtide/treefmt"
+			tagPrefix: "v"
+			asset:     "treefmt_{version}_darwin_amd64.tar.gz"
+			path:      "treefmt"
 		}},
 		{os: "linux", arch: "x86_64", source: schema.#GitHub & {
-			repo:  "numtide/treefmt"
-			asset: "treefmt_{version}_linux_amd64.tar.gz"
-			path:  "treefmt"
+			repo:      "numtide/treefmt"
+			tagPrefix: "v"
+			asset:     "treefmt_{version}_linux_amd64.tar.gz"
+			path:      "treefmt"
 		}},
 		{os: "linux", arch: "arm64", source: schema.#GitHub & {
-			repo:  "numtide/treefmt"
-			asset: "treefmt_{version}_linux_arm64.tar.gz"
-			path:  "treefmt"
+			repo:      "numtide/treefmt"
+			tagPrefix: "v"
+			asset:     "treefmt_{version}_linux_arm64.tar.gz"
+			path:      "treefmt"
 		}},
 	]
 }

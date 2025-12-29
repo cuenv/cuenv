@@ -142,19 +142,20 @@ import "github.com/cuenv/cuenv/schema"
 }
 
 // #CargoZigbuild enables cross-compilation using Zig from GitHub releases.
+// Note: macOS uses a universal binary (apple-darwin), not arch-specific binaries.
 #CargoZigbuild: schema.#Tool & {
 	version!: string
 	overrides: [
 		{os: "darwin", arch: "arm64", source: schema.#GitHub & {
 			repo:      "rust-cross/cargo-zigbuild"
 			tagPrefix: "v"
-			asset:     "cargo-zigbuild-v{version}.aarch64-apple-darwin.tar.gz"
+			asset:     "cargo-zigbuild-v{version}.apple-darwin.tar.gz"
 			path:      "cargo-zigbuild"
 		}},
 		{os: "darwin", arch: "x86_64", source: schema.#GitHub & {
 			repo:      "rust-cross/cargo-zigbuild"
 			tagPrefix: "v"
-			asset:     "cargo-zigbuild-v{version}.x86_64-apple-darwin.tar.gz"
+			asset:     "cargo-zigbuild-v{version}.apple-darwin.tar.gz"
 			path:      "cargo-zigbuild"
 		}},
 		{os: "linux", arch: "x86_64", source: schema.#GitHub & {
@@ -203,29 +204,13 @@ import "github.com/cuenv/cuenv/schema"
 	]
 }
 
-// #Zig provides the Zig toolchain from GitHub releases (required by cargo-zigbuild).
+// #Zig provides the Zig toolchain via Nix (required by cargo-zigbuild).
+// Note: Zig distributes prebuilt binaries via ziglang.org, not GitHub Releases.
+// GitHub only hosts bootstrap tarballs, so we use Nix for reliable distribution.
 #Zig: schema.#Tool & {
 	version!: string
-	overrides: [
-		{os: "darwin", arch: "arm64", source: schema.#GitHub & {
-			repo:  "ziglang/zig"
-			asset: "zig-macos-aarch64-{version}.tar.xz"
-			path:  "zig-macos-aarch64-{version}/zig"
-		}},
-		{os: "darwin", arch: "x86_64", source: schema.#GitHub & {
-			repo:  "ziglang/zig"
-			asset: "zig-macos-x86_64-{version}.tar.xz"
-			path:  "zig-macos-x86_64-{version}/zig"
-		}},
-		{os: "linux", arch: "x86_64", source: schema.#GitHub & {
-			repo:  "ziglang/zig"
-			asset: "zig-linux-x86_64-{version}.tar.xz"
-			path:  "zig-linux-x86_64-{version}/zig"
-		}},
-		{os: "linux", arch: "arm64", source: schema.#GitHub & {
-			repo:  "ziglang/zig"
-			asset: "zig-linux-aarch64-{version}.tar.xz"
-			path:  "zig-linux-aarch64-{version}/zig"
-		}},
-	]
+	source: schema.#Nix & {
+		flake:   "nixpkgs"
+		package: "zig"
+	}
 }

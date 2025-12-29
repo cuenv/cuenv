@@ -16,6 +16,7 @@ schema.#Project & {
 		flakes: {
 			nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
 		}
+		github: token: schema.#OnePasswordRef & {ref: "op://Private/GitHub/api-tokens/no-permissions-just-auth"}
 		tools: {
 			jq: xTools.#Jq & {version: "1.7.1"}
 			yq: xTools.#Yq & {version: "4.44.6"}
@@ -42,8 +43,8 @@ schema.#Project & {
 			"cargo-zigbuild": xRust.#CargoZigbuild & {version: "0.20.1"}
 			sccache: xRust.#SccacheTool & {version: "0.12.0"}
 
-			// Build tools
-			zig: xRust.#Zig & {version: "0.15.1"}
+			// Build tools (version tied to nixpkgs flake)
+			zig: xRust.#Zig & {version: "nixos-unstable"}
 
 			"nixpkgs-fmt": schema.#Tool & {
 				version: "nixos-unstable"

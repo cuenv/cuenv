@@ -1,0 +1,654 @@
+version = 2
+
+[tools.rust]
+version = "1.92.0"
+
+[tools.rust.platforms.linux-arm64]
+provider = "nix"
+digest = "sha256:70e7d0a884f94cd95f1b1f2166a2022affcc356822f7109b690318a28241e74a"
+
+[tools.rust.platforms.linux-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "cargo"
+type = "nix"
+
+[tools.rust.platforms.darwin-arm64]
+provider = "nix"
+digest = "sha256:1b7f89c1ab0088cb0c0d2ad6ebefb126497a7bc86de350e7355457fc1255928f"
+
+[tools.rust.platforms.darwin-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "cargo"
+type = "nix"
+
+[tools.rust.platforms.darwin-x86_64]
+provider = "nix"
+digest = "sha256:3da49bf803c1034788fd90142ef34e19167443d6da7306d5a79b11bbb6f25c32"
+
+[tools.rust.platforms.darwin-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "cargo"
+type = "nix"
+
+[tools.rust.platforms.linux-x86_64]
+provider = "nix"
+digest = "sha256:0612606912e10fba4be143a2f926dd04651a046ffee1dc110ec6d0dfc432d2b5"
+
+[tools.rust.platforms.linux-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "cargo"
+type = "nix"
+
+[tools.cargo-nextest]
+version = "0.9.116"
+
+[tools.cargo-nextest.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:bf10e1adca9997b3c52f5df5da19cb6e0ff95e8a051be30f1570d97585d38665"
+
+[tools.cargo-nextest.platforms.darwin-arm64.source]
+asset = "cargo-nextest-0.9.116-universal-apple-darwin.tar.gz"
+path = "cargo-nextest"
+repo = "nextest-rs/nextest"
+tag = "cargo-nextest-0.9.116"
+type = "github"
+
+[tools.cargo-nextest.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:5d2e22fba6bd1dd1c05633c054b4ecfa20118445b542384ab7f45fa94c7def5b"
+
+[tools.cargo-nextest.platforms.darwin-x86_64.source]
+asset = "cargo-nextest-0.9.116-universal-apple-darwin.tar.gz"
+path = "cargo-nextest"
+repo = "nextest-rs/nextest"
+tag = "cargo-nextest-0.9.116"
+type = "github"
+
+[tools.cargo-nextest.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:0491daa50eb836e6dfe71a32d177a9b739e28b6b581b120ba2d232d828108bba"
+
+[tools.cargo-nextest.platforms.linux-x86_64.source]
+asset = "cargo-nextest-0.9.116-x86_64-unknown-linux-gnu.tar.gz"
+path = "cargo-nextest"
+repo = "nextest-rs/nextest"
+tag = "cargo-nextest-0.9.116"
+type = "github"
+
+[tools.cargo-nextest.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:01bb2c7b56092935638ecd258a59016fab87395c1ec2f02790c2de9eb97c9083"
+
+[tools.cargo-nextest.platforms.linux-arm64.source]
+asset = "cargo-nextest-0.9.116-aarch64-unknown-linux-gnu.tar.gz"
+path = "cargo-nextest"
+repo = "nextest-rs/nextest"
+tag = "cargo-nextest-0.9.116"
+type = "github"
+
+[tools.cargo-llvm-cov]
+version = "0.6.21"
+
+[tools.cargo-llvm-cov.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:e4159ecfc174e69e05d6861b8abe1ad53e2fe904895deb36c6ea345793df99fd"
+
+[tools.cargo-llvm-cov.platforms.darwin-x86_64.source]
+asset = "cargo-llvm-cov-x86_64-apple-darwin.tar.gz"
+path = "cargo-llvm-cov"
+repo = "taiki-e/cargo-llvm-cov"
+tag = "v0.6.21"
+type = "github"
+
+[tools.cargo-llvm-cov.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:cfd629a1684b6fbd977645bd602a6fd30f8b33016d0c078987ce470145e9ee77"
+
+[tools.cargo-llvm-cov.platforms.linux-arm64.source]
+asset = "cargo-llvm-cov-aarch64-unknown-linux-gnu.tar.gz"
+path = "cargo-llvm-cov"
+repo = "taiki-e/cargo-llvm-cov"
+tag = "v0.6.21"
+type = "github"
+
+[tools.cargo-llvm-cov.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:b7a0c9b2bd0296fa457d3a18038d48b42bfda0144417dfae187912ee6ee65a75"
+
+[tools.cargo-llvm-cov.platforms.linux-x86_64.source]
+asset = "cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
+path = "cargo-llvm-cov"
+repo = "taiki-e/cargo-llvm-cov"
+tag = "v0.6.21"
+type = "github"
+
+[tools.cargo-llvm-cov.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:223ae08261972e556f3905cd0ff9909237fa3c181c95a2e9aa91be5ab0618160"
+
+[tools.cargo-llvm-cov.platforms.darwin-arm64.source]
+asset = "cargo-llvm-cov-aarch64-apple-darwin.tar.gz"
+path = "cargo-llvm-cov"
+repo = "taiki-e/cargo-llvm-cov"
+tag = "v0.6.21"
+type = "github"
+
+[tools.cargo-cyclonedx]
+version = "0.5.7"
+
+[tools.cargo-cyclonedx.platforms.darwin-x86_64]
+provider = "nix"
+digest = "sha256:c5634e02bbd91a3384e4eafb7d3757eb9a09f65d4c9c0f4aaf661e314c8ee1e9"
+
+[tools.cargo-cyclonedx.platforms.darwin-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "cargo-cyclonedx"
+type = "nix"
+
+[tools.cargo-cyclonedx.platforms.linux-arm64]
+provider = "nix"
+digest = "sha256:bb1c6a243afc1a08a4141034bfc5183c90dc55b73b1b6d0c7034214779f05177"
+
+[tools.cargo-cyclonedx.platforms.linux-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "cargo-cyclonedx"
+type = "nix"
+
+[tools.cargo-cyclonedx.platforms.linux-x86_64]
+provider = "nix"
+digest = "sha256:5eb3bd01881f0e72a32ed2a33ea82d45d3068c3df50da912017fd2fbacd92a50"
+
+[tools.cargo-cyclonedx.platforms.linux-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "cargo-cyclonedx"
+type = "nix"
+
+[tools.cargo-cyclonedx.platforms.darwin-arm64]
+provider = "nix"
+digest = "sha256:6ad13659870116920b96b681b549e65993bfad343263a3d7c0a0db611477252a"
+
+[tools.cargo-cyclonedx.platforms.darwin-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "cargo-cyclonedx"
+type = "nix"
+
+[tools.prettier]
+version = "3.7.4"
+
+[tools.prettier.platforms.linux-arm64]
+provider = "nix"
+digest = "sha256:2c6857ccec2794e8bfc80af8ce3d105f2d1b9f3ea6cbbf525772d9cdad97c3e7"
+
+[tools.prettier.platforms.linux-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "nodePackages.prettier"
+type = "nix"
+
+[tools.prettier.platforms.linux-x86_64]
+provider = "nix"
+digest = "sha256:e0ae5ae5a0d293627c61bfcd1b570af611dc421e5a60bbfb04ae2a39dcea5a86"
+
+[tools.prettier.platforms.linux-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "nodePackages.prettier"
+type = "nix"
+
+[tools.prettier.platforms.darwin-arm64]
+provider = "nix"
+digest = "sha256:3a7a2e183c48c2e2baf185a027b75b03a95a73503f51501dc5526fdd79994125"
+
+[tools.prettier.platforms.darwin-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "nodePackages.prettier"
+type = "nix"
+
+[tools.prettier.platforms.darwin-x86_64]
+provider = "nix"
+digest = "sha256:7e5a4dd623f5812e2ebea8296b50b9cd5a208e7e95941138c72cc33f77a88348"
+
+[tools.prettier.platforms.darwin-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "nodePackages.prettier"
+type = "nix"
+
+[tools.jq]
+version = "1.7.1"
+
+[tools.jq.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:d59bf590fe28999b1bdc7d6b2824e0e0c0226f783173e1fd00c6bca60a0f5000"
+
+[tools.jq.platforms.darwin-arm64.source]
+asset = "jq-macos-arm64"
+repo = "jqlang/jq"
+tag = "jq-1.7.1"
+type = "github"
+
+[tools.jq.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:459f45f50a98d4940028bab2f1786867b619d096431ffb5b98e57f5e146a7567"
+
+[tools.jq.platforms.darwin-x86_64.source]
+asset = "jq-macos-amd64"
+repo = "jqlang/jq"
+tag = "jq-1.7.1"
+type = "github"
+
+[tools.jq.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:6434673e28b41a1e654302c3c1315cc1ead7c95d7079ff52b42a696d8e05970c"
+
+[tools.jq.platforms.linux-arm64.source]
+asset = "jq-linux-arm64"
+repo = "jqlang/jq"
+tag = "jq-1.7.1"
+type = "github"
+
+[tools.jq.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:561cec6e8b28fd13ffe3602829cad3c9c8bf9e60202dc700c20bd112e8761086"
+
+[tools.jq.platforms.linux-x86_64.source]
+asset = "jq-linux-amd64"
+repo = "jqlang/jq"
+tag = "jq-1.7.1"
+type = "github"
+
+[tools.nixpkgs-fmt]
+version = "nixos-unstable"
+
+[tools.nixpkgs-fmt.platforms.linux-arm64]
+provider = "nix"
+digest = "sha256:e515264d57287b4218639979b37ae5e387783d9046a62318410ae12be853fa0d"
+
+[tools.nixpkgs-fmt.platforms.linux-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "nixpkgs-fmt"
+type = "nix"
+
+[tools.nixpkgs-fmt.platforms.darwin-x86_64]
+provider = "nix"
+digest = "sha256:3df57ff6396f081387fb423fe1c51ae816cf3f5f574646c35070a63b03c27446"
+
+[tools.nixpkgs-fmt.platforms.darwin-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "nixpkgs-fmt"
+type = "nix"
+
+[tools.nixpkgs-fmt.platforms.linux-x86_64]
+provider = "nix"
+digest = "sha256:204cc393976d8d4a8d6626fb91875943508be5f41d59b8b1df8a187a63771fb4"
+
+[tools.nixpkgs-fmt.platforms.linux-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "nixpkgs-fmt"
+type = "nix"
+
+[tools.nixpkgs-fmt.platforms.darwin-arm64]
+provider = "nix"
+digest = "sha256:7807dabc212d9db8d717135b41dbcaee1c8bb9b4b3a9803df3e6d10bbbc45017"
+
+[tools.nixpkgs-fmt.platforms.darwin-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "nixpkgs-fmt"
+type = "nix"
+
+[tools.cargo-zigbuild]
+version = "0.20.1"
+
+[tools.cargo-zigbuild.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:b33bae661c5149883666dc3f8cd20350317a2ecfd72657026fa0cdfc8ea787a5"
+
+[tools.cargo-zigbuild.platforms.linux-arm64.source]
+asset = "cargo-zigbuild-v0.20.1.aarch64-unknown-linux-musl.tar.gz"
+path = "cargo-zigbuild"
+repo = "rust-cross/cargo-zigbuild"
+tag = "v0.20.1"
+type = "github"
+
+[tools.cargo-zigbuild.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:81a274fc6d8d1128475e9f1785057f1defb4d9863bc8d87910db331f6cc1121b"
+
+[tools.cargo-zigbuild.platforms.darwin-arm64.source]
+asset = "cargo-zigbuild-v0.20.1.apple-darwin.tar.gz"
+path = "cargo-zigbuild"
+repo = "rust-cross/cargo-zigbuild"
+tag = "v0.20.1"
+type = "github"
+
+[tools.cargo-zigbuild.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:ad7236afdabb0769e46ca8194e82cf01e0a0d019dcce2fe8dbb1c404fd69c460"
+
+[tools.cargo-zigbuild.platforms.darwin-x86_64.source]
+asset = "cargo-zigbuild-v0.20.1.apple-darwin.tar.gz"
+path = "cargo-zigbuild"
+repo = "rust-cross/cargo-zigbuild"
+tag = "v0.20.1"
+type = "github"
+
+[tools.cargo-zigbuild.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:14b3a41c516165156d7c615fbe2fc7f541b71d060bdd84f8eb0a86e17ee861f3"
+
+[tools.cargo-zigbuild.platforms.linux-x86_64.source]
+asset = "cargo-zigbuild-v0.20.1.x86_64-unknown-linux-musl.tar.gz"
+path = "cargo-zigbuild"
+repo = "rust-cross/cargo-zigbuild"
+tag = "v0.20.1"
+type = "github"
+
+[tools.sccache]
+version = "0.12.0"
+
+[tools.sccache.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:28007eb4bedcb6ceab42176c013f28f277a51bad5fd21a90ab8606d4408e2a63"
+
+[tools.sccache.platforms.linux-x86_64.source]
+asset = "sccache-v0.12.0-x86_64-unknown-linux-musl.tar.gz"
+path = "sccache-v0.12.0-x86_64-unknown-linux-musl/sccache"
+repo = "mozilla/sccache"
+tag = "v0.12.0"
+type = "github"
+
+[tools.sccache.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:5669a6c6dac6146bf526695916f80a19512b3f403018dfee8ceb39fc2bd0ce40"
+
+[tools.sccache.platforms.darwin-arm64.source]
+asset = "sccache-v0.12.0-aarch64-apple-darwin.tar.gz"
+path = "sccache-v0.12.0-aarch64-apple-darwin/sccache"
+repo = "mozilla/sccache"
+tag = "v0.12.0"
+type = "github"
+
+[tools.sccache.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:4d66e7defd71873717fa789133e8f7368d00db0b945cc43ed6856dd55b55af37"
+
+[tools.sccache.platforms.linux-arm64.source]
+asset = "sccache-v0.12.0-aarch64-unknown-linux-musl.tar.gz"
+path = "sccache-v0.12.0-aarch64-unknown-linux-musl/sccache"
+repo = "mozilla/sccache"
+tag = "v0.12.0"
+type = "github"
+
+[tools.sccache.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:9eaca96ea109d0c4359045f4812fb24969d46fbfc1afdf9f3e2701b2e27030c6"
+
+[tools.sccache.platforms.darwin-x86_64.source]
+asset = "sccache-v0.12.0-x86_64-apple-darwin.tar.gz"
+path = "sccache-v0.12.0-x86_64-apple-darwin/sccache"
+repo = "mozilla/sccache"
+tag = "v0.12.0"
+type = "github"
+
+[tools.yq]
+version = "4.44.6"
+
+[tools.yq.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:469b1b69b872d9a1e4f2b84b3dfab0daa39de39358a8e90024e8d3fd651ad8e9"
+
+[tools.yq.platforms.linux-x86_64.source]
+asset = "yq_linux_amd64"
+repo = "mikefarah/yq"
+tag = "v4.44.6"
+type = "github"
+
+[tools.yq.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:da95a3c76b4777900c47a3cd193bddff0b85b2667281f38d1b95078786c3968a"
+
+[tools.yq.platforms.darwin-x86_64.source]
+asset = "yq_darwin_amd64"
+repo = "mikefarah/yq"
+tag = "v4.44.6"
+type = "github"
+
+[tools.yq.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:0094444d5cbf0427f29b9ffa2fcdc0cf96214188064daa70c6af5caf102d03af"
+
+[tools.yq.platforms.darwin-arm64.source]
+asset = "yq_darwin_arm64"
+repo = "mikefarah/yq"
+tag = "v4.44.6"
+type = "github"
+
+[tools.yq.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:f516d81620774918d4651511096d11bd841a847dbbf465f63deba5f4536c518a"
+
+[tools.yq.platforms.linux-arm64.source]
+asset = "yq_linux_arm64"
+repo = "mikefarah/yq"
+tag = "v4.44.6"
+type = "github"
+
+[tools.treefmt]
+version = "2.4.0"
+
+[tools.treefmt.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:6b2964d238817448f1a11b9475d8c5e5c6c4b4f3ed5e9f9be3876f6199948b87"
+
+[tools.treefmt.platforms.darwin-x86_64.source]
+asset = "treefmt_2.4.0_darwin_amd64.tar.gz"
+path = "treefmt"
+repo = "numtide/treefmt"
+tag = "v2.4.0"
+type = "github"
+
+[tools.treefmt.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:8de3fa62465eec6aa236fc4a40b35c4e44dc45e9c1ff71b30f2272720d866b9b"
+
+[tools.treefmt.platforms.linux-arm64.source]
+asset = "treefmt_2.4.0_linux_arm64.tar.gz"
+path = "treefmt"
+repo = "numtide/treefmt"
+tag = "v2.4.0"
+type = "github"
+
+[tools.treefmt.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:bbb28b0aac5499af0a3daf36c54ac5c4a2d8dfe756c0991539dbc0868b3178ae"
+
+[tools.treefmt.platforms.linux-x86_64.source]
+asset = "treefmt_2.4.0_linux_amd64.tar.gz"
+path = "treefmt"
+repo = "numtide/treefmt"
+tag = "v2.4.0"
+type = "github"
+
+[tools.treefmt.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:d50ec4d90f96d9dbcaf5bd4d68e285de9e5b21e5e05a851ca570eafffc5baa11"
+
+[tools.treefmt.platforms.darwin-arm64.source]
+asset = "treefmt_2.4.0_darwin_arm64.tar.gz"
+path = "treefmt"
+repo = "numtide/treefmt"
+tag = "v2.4.0"
+type = "github"
+
+[tools.cargo-deny]
+version = "0.18.9"
+
+[tools.cargo-deny.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:5024d651d84ac4ed8c70a4427a3f7fedaafac7995769137374f97cfcede06db2"
+
+[tools.cargo-deny.platforms.linux-x86_64.source]
+asset = "cargo-deny-0.18.9-x86_64-unknown-linux-musl.tar.gz"
+path = "cargo-deny-0.18.9-x86_64-unknown-linux-musl/cargo-deny"
+repo = "EmbarkStudios/cargo-deny"
+tag = "0.18.9"
+type = "github"
+
+[tools.cargo-deny.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:7c7b5a8317f5ae58c1a33d0cea28c82515c04b5cc42b30a5cf5a30dde92c3ec3"
+
+[tools.cargo-deny.platforms.linux-arm64.source]
+asset = "cargo-deny-0.18.9-aarch64-unknown-linux-musl.tar.gz"
+path = "cargo-deny-0.18.9-aarch64-unknown-linux-musl/cargo-deny"
+repo = "EmbarkStudios/cargo-deny"
+tag = "0.18.9"
+type = "github"
+
+[tools.cargo-deny.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:938a39703a2fc725db5aae835347b522937900f936bbe66581ed59168ac19711"
+
+[tools.cargo-deny.platforms.darwin-arm64.source]
+asset = "cargo-deny-0.18.9-aarch64-apple-darwin.tar.gz"
+path = "cargo-deny-0.18.9-aarch64-apple-darwin/cargo-deny"
+repo = "EmbarkStudios/cargo-deny"
+tag = "0.18.9"
+type = "github"
+
+[tools.cargo-deny.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:9540032bbca7083b142de7e96bdca80451413762a696ef4fb31a7b72ad7c9384"
+
+[tools.cargo-deny.platforms.darwin-x86_64.source]
+asset = "cargo-deny-0.18.9-x86_64-apple-darwin.tar.gz"
+path = "cargo-deny-0.18.9-x86_64-apple-darwin/cargo-deny"
+repo = "EmbarkStudios/cargo-deny"
+tag = "0.18.9"
+type = "github"
+
+[tools.zig]
+version = "nixos-unstable"
+
+[tools.zig.platforms.darwin-x86_64]
+provider = "nix"
+digest = "sha256:d508dedc10f38286c1af0ae7d082cd53b4148c2de70033c457c49c555fbeb3d3"
+
+[tools.zig.platforms.darwin-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "zig"
+type = "nix"
+
+[tools.zig.platforms.linux-x86_64]
+provider = "nix"
+digest = "sha256:e8fef00c5723a05ffb90d6fd25a3394712f030c29ec2ecbd86ea128a63692563"
+
+[tools.zig.platforms.linux-x86_64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "zig"
+type = "nix"
+
+[tools.zig.platforms.darwin-arm64]
+provider = "nix"
+digest = "sha256:57945eb64eda33ae316dac26997dd34d5596edd283335f221785d57f9ab68996"
+
+[tools.zig.platforms.darwin-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "zig"
+type = "nix"
+
+[tools.zig.platforms.linux-arm64]
+provider = "nix"
+digest = "sha256:11a753e3178cc4637c3b48aa48bc8f6d0995f3ff4c26e7269289860521109a3d"
+
+[tools.zig.platforms.linux-arm64.source]
+flake = "github:NixOS/nixpkgs/nixos-unstable"
+package = "zig"
+type = "nix"
+
+[tools.rust-analyzer]
+version = "2025-12-22"
+
+[tools.rust-analyzer.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:357426f332ada2f8961df3182a4891292143891e9037803bf97be156f287435c"
+
+[tools.rust-analyzer.platforms.darwin-x86_64.source]
+asset = "rust-analyzer-x86_64-apple-darwin.gz"
+repo = "rust-lang/rust-analyzer"
+tag = "2025-12-22"
+type = "github"
+
+[tools.rust-analyzer.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:745e353e4c1313198c2a38baf151a295021f6929bf488046af1f288c358662fe"
+
+[tools.rust-analyzer.platforms.linux-x86_64.source]
+asset = "rust-analyzer-x86_64-unknown-linux-gnu.gz"
+repo = "rust-lang/rust-analyzer"
+tag = "2025-12-22"
+type = "github"
+
+[tools.rust-analyzer.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:3861a01efe3c6dae94809fd8bf6d3a2da60205e918cfefb78e0e8ff5add6c41d"
+
+[tools.rust-analyzer.platforms.linux-arm64.source]
+asset = "rust-analyzer-aarch64-unknown-linux-gnu.gz"
+repo = "rust-lang/rust-analyzer"
+tag = "2025-12-22"
+type = "github"
+
+[tools.rust-analyzer.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:bd7375a9a43b897cd37a2021c50566dce0debce9b34a1ff75d8cc7b2d540763b"
+
+[tools.rust-analyzer.platforms.darwin-arm64.source]
+asset = "rust-analyzer-aarch64-apple-darwin.gz"
+repo = "rust-lang/rust-analyzer"
+tag = "2025-12-22"
+type = "github"
+
+[tools.bun]
+version = "1.3.5"
+
+[tools.bun.platforms.linux-arm64]
+provider = "github"
+digest = "sha256:62c8624eead3e87b858c5f74420e1453c8acfa1023fd3cd64d31108b25e7194b"
+
+[tools.bun.platforms.linux-arm64.source]
+asset = "bun-linux-aarch64.zip"
+path = "bun-linux-aarch64/bun"
+repo = "oven-sh/bun"
+tag = "bun-v1.3.5"
+type = "github"
+
+[tools.bun.platforms.linux-x86_64]
+provider = "github"
+digest = "sha256:0085249b13a8be13b9ecc62119e6e9b723b0fa71001de3977f5b12862a278dab"
+
+[tools.bun.platforms.linux-x86_64.source]
+asset = "bun-linux-x64.zip"
+path = "bun-linux-x64/bun"
+repo = "oven-sh/bun"
+tag = "bun-v1.3.5"
+type = "github"
+
+[tools.bun.platforms.darwin-x86_64]
+provider = "github"
+digest = "sha256:15dd00fb3156a8c84f1c9c5317c62cf8944e1663f9cd1e88713c79a9e45a33aa"
+
+[tools.bun.platforms.darwin-x86_64.source]
+asset = "bun-darwin-x64.zip"
+path = "bun-darwin-x64/bun"
+repo = "oven-sh/bun"
+tag = "bun-v1.3.5"
+type = "github"
+
+[tools.bun.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:627932cdd0a4ea67325512474f5bca7e8ea690a3c320d9f23afb0d8c83076641"
+
+[tools.bun.platforms.darwin-arm64.source]
+asset = "bun-darwin-aarch64.zip"
+path = "bun-darwin-aarch64/bun"
+repo = "oven-sh/bun"
+tag = "bun-v1.3.5"
+type = "github"

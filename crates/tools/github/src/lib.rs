@@ -481,6 +481,7 @@ impl ToolProvider for GitHubToolProvider {
         // Expand templates
         let tag = self.expand_template(&tag_template, version, platform);
         let asset = self.expand_template(asset_template, version, platform);
+        let expanded_path = path.map(|p| self.expand_template(p, version, platform));
 
         // Fetch release to verify it exists (no runtime token for backward compat)
         let release = self.fetch_release(repo, &tag, None).await?;
@@ -505,7 +506,7 @@ impl ToolProvider for GitHubToolProvider {
                 repo: repo.to_string(),
                 tag,
                 asset,
-                path: path.map(String::from),
+                path: expanded_path,
             },
         })
     }
@@ -548,6 +549,7 @@ impl ToolProvider for GitHubToolProvider {
         // Expand templates
         let tag = self.expand_template(&tag_template, version, platform);
         let asset = self.expand_template(asset_template, version, platform);
+        let expanded_path = path.map(|p| self.expand_template(p, version, platform));
 
         // Fetch release to verify it exists (uses runtime token if provided)
         let release = self.fetch_release(repo, &tag, token).await?;
@@ -572,7 +574,7 @@ impl ToolProvider for GitHubToolProvider {
                 repo: repo.to_string(),
                 tag,
                 asset,
-                path: path.map(String::from),
+                path: expanded_path,
             },
         })
     }
