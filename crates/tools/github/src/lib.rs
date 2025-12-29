@@ -93,8 +93,21 @@ impl GitHubToolProvider {
             .replace("{arch}", arch_str)
     }
 
+    /// Get the effective token: runtime token > GITHUB_TOKEN > GH_TOKEN
+    fn get_effective_token(runtime_token: Option<&str>) -> Option<String> {
+        runtime_token
+            .map(String::from)
+            .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+            .or_else(|| std::env::var("GH_TOKEN").ok())
+    }
+
     /// Fetch release information from GitHub API.
-    async fn fetch_release(&self, repo: &str, tag: &str) -> Result<Release> {
+    async fn fetch_release(
+        &self,
+        repo: &str,
+        tag: &str,
+        token: Option<&str>,
+    ) -> Result<Release> {
         let url = format!(
             "https://api.github.com/repos/{}/releases/tags/{}",
             repo, tag
@@ -103,10 +116,8 @@ impl GitHubToolProvider {
 
         let mut request = self.client.get(&url);
 
-        // Add auth token if available
-        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-            request = request.header("Authorization", format!("Bearer {}", token));
-        } else if let Ok(token) = std::env::var("GH_TOKEN") {
+        // Add auth token if available (runtime token > env vars)
+        if let Some(token) = Self::get_effective_token(token) {
             request = request.header("Authorization", format!("Bearer {}", token));
         }
 
@@ -129,15 +140,13 @@ impl GitHubToolProvider {
     }
 
     /// Download an asset from GitHub.
-    async fn download_asset(&self, url: &str) -> Result<Vec<u8>> {
+    async fn download_asset(&self, url: &str, token: Option<&str>) -> Result<Vec<u8>> {
         debug!(%url, "Downloading GitHub asset");
 
         let mut request = self.client.get(url);
 
-        // Add auth token if available
-        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-            request = request.header("Authorization", format!("Bearer {}", token));
-        } else if let Ok(token) = std::env::var("GH_TOKEN") {
+        // Add auth token if available (runtime token > env vars)
+        if let Some(token) = Self::get_effective_token(token) {
             request = request.header("Authorization", format!("Bearer {}", token));
         }
 
@@ -456,18 +465,92 @@ impl ToolProvider for GitHubToolProvider {
         let tag_template = config
             .get("tag")
             .and_then(|v| v.as_str())
-            .unwrap_or("v{version}");
+            .map(String::from)
+            .unwrap_or_else(|| {
+                let prefix = config
+                    .get("tagPrefix")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                format!("{prefix}{{version}}")
+            });
 
         let path = config.get("path").and_then(|v| v.as_str());
 
         info!(%tool_name, %repo, %version, %platform, "Resolving GitHub release");
 
         // Expand templates
-        let tag = self.expand_template(tag_template, version, platform);
+        let tag = self.expand_template(&tag_template, version, platform);
         let asset = self.expand_template(asset_template, version, platform);
 
-        // Fetch release to verify it exists
-        let release = self.fetch_release(repo, &tag).await?;
+        // Fetch release to verify it exists (no runtime token for backward compat)
+        let release = self.fetch_release(repo, &tag, None).await?;
+
+        // Find the asset
+        let found_asset = release.assets.iter().find(|a| a.name == asset);
+        if found_asset.is_none() {
+            let available: Vec<_> = release.assets.iter().map(|a| &a.name).collect();
+            return Err(cuenv_core::Error::tool_resolution(format!(
+                "Asset '{}' not found in release. Available: {:?}",
+                asset, available
+            )));
+        }
+
+        debug!(%tag, %asset, "Resolved GitHub release");
+
+        Ok(ResolvedTool {
+            name: tool_name.to_string(),
+            version: version.to_string(),
+            platform: platform.clone(),
+            source: ToolSource::GitHub {
+                repo: repo.to_string(),
+                tag,
+                asset,
+                path: path.map(String::from),
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_with_token(
+        &self,
+        tool_name: &str,
+        version: &str,
+        platform: &Platform,
+        config: &serde_json::Value,
+        token: Option<&str>,
+    ) -> Result<ResolvedTool> {
+        let repo = config
+            .get("repo")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| cuenv_core::Error::tool_resolution("Missing 'repo' in config"))?;
+
+        let asset_template = config
+            .get("asset")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| cuenv_core::Error::tool_resolution("Missing 'asset' in config"))?;
+
+        let tag_template = config
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| {
+                let prefix = config
+                    .get("tagPrefix")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                format!("{prefix}{{version}}")
+            });
+
+        let path = config.get("path").and_then(|v| v.as_str());
+
+        info!(%tool_name, %repo, %version, %platform, "Resolving GitHub release with token");
+
+        // Expand templates
+        let tag = self.expand_template(&tag_template, version, platform);
+        let asset = self.expand_template(asset_template, version, platform);
+
+        // Fetch release to verify it exists (uses runtime token if provided)
+        let release = self.fetch_release(repo, &tag, token).await?;
 
         // Find the asset
         let found_asset = release.assets.iter().find(|a| a.name == asset);
@@ -530,8 +613,8 @@ impl ToolProvider for GitHubToolProvider {
             });
         }
 
-        // Fetch release and download asset
-        let release = self.fetch_release(repo, tag).await?;
+        // Fetch release and download asset (no runtime token for fetch - uses env vars)
+        let release = self.fetch_release(repo, tag, None).await?;
         let found_asset = release
             .assets
             .iter()
@@ -541,7 +624,7 @@ impl ToolProvider for GitHubToolProvider {
             })?;
 
         let data = self
-            .download_asset(&found_asset.browser_download_url)
+            .download_asset(&found_asset.browser_download_url, None)
             .await?;
 
         // Ensure bin directory exists

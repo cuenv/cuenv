@@ -296,6 +296,35 @@ pub trait ToolProvider: Send + Sync {
         config: &serde_json::Value,
     ) -> Result<ResolvedTool>;
 
+    /// Resolve a tool with optional runtime token.
+    ///
+    /// This variant accepts a runtime-level authentication token that can be
+    /// used by providers that require authentication (e.g., GitHub for rate limiting).
+    ///
+    /// # Default Implementation
+    ///
+    /// Ignores the token and calls `resolve()`. Providers that support tokens
+    /// should override this method.
+    ///
+    /// # Arguments
+    ///
+    /// * `tool_name` - Name of the tool (e.g., "jq")
+    /// * `version` - Version string from the manifest
+    /// * `platform` - Target platform
+    /// * `config` - Provider-specific configuration from CUE
+    /// * `token` - Optional authentication token from runtime config
+    #[allow(clippy::too_many_arguments)]
+    async fn resolve_with_token(
+        &self,
+        tool_name: &str,
+        version: &str,
+        platform: &Platform,
+        config: &serde_json::Value,
+        _token: Option<&str>,
+    ) -> Result<ResolvedTool> {
+        self.resolve(tool_name, version, platform, config).await
+    }
+
     /// Fetch and cache a resolved tool.
     ///
     /// Downloads the artifact, extracts binaries, and returns the local path.

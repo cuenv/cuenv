@@ -31,10 +31,18 @@ package schema
 	platforms!: [...#Platform]
 	// Named Nix flake references for pinning
 	flakes?: [string]: string
+	// GitHub provider configuration
+	github?: #GitHubProvider
 	// Tool specifications (version string or full #Tool)
 	tools!: [string]: string | #Tool
 	// Cache directory (defaults to ~/.cache/cuenv/tools)
 	cacheDir?: string
+}
+
+// GitHub provider configuration
+#GitHubProvider: {
+	// Authentication token (must use secret resolver)
+	token?: #Secret
 }
 
 // Supported platforms
@@ -85,7 +93,9 @@ package schema
 	type: "github"
 	// Repository (owner/repo)
 	repo!: string
-	// Release tag (defaults to "v{version}")
+	// Tag prefix (prepended to version, defaults to "")
+	tagPrefix: string | *""
+	// Release tag override (if set, ignores tagPrefix and uses this template directly)
 	tag?: string
 	// Asset name with optional {version}, {os}, {arch} templates
 	asset!: string

@@ -43,7 +43,7 @@ schema.#Project & {
 			sccache: xRust.#SccacheTool & {version: "0.12.0"}
 
 			// Build tools
-			zig: xRust.#Zig & {version: "0.15.2"}
+			zig: xRust.#Zig & {version: "0.15.1"}
 
 			"nixpkgs-fmt": schema.#Tool & {
 				version: "nixos-unstable"

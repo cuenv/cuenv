@@ -11,7 +11,7 @@ use cuenv_core::Result;
 use cuenv_core::lockfile::{
     ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedToolPlatform, Lockfile, PlatformData,
 };
-use cuenv_core::manifest::{Base, Project, Runtime, SourceConfig, ToolSpec};
+use cuenv_core::manifest::{Base, GitHubProviderConfig, Project, Runtime, SourceConfig, ToolSpec};
 use cuenv_core::tools::{Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolSource};
 use cuenv_tools_oci::{OciClient, Platform};
 use std::collections::HashMap;
@@ -105,7 +105,7 @@ async fn execute_lock_sync(
     // Collect all OCI artifacts and tools from projects
     // Note: We collect all data before async operations to avoid holding
     // the module guard across await points (MutexGuard is not Send).
-    let (lockfile_path, image_platforms, all_platforms, collected_tools, tools_platforms, collected_flakes) = {
+    let (lockfile_path, image_platforms, all_platforms, collected_tools, tools_platforms, collected_flakes, github_config) = {
         let module = executor.get_module(path)?;
         let module_root = module.root.clone();
         let lockfile_path = module_root.join(LOCKFILE_NAME);
@@ -115,6 +115,7 @@ async fn execute_lock_sync(
         let mut collected_tools: Vec<CollectedTool> = Vec::new();
         let mut tools_platforms: Vec<String> = Vec::new();
         let mut collected_flakes: HashMap<String, String> = HashMap::new();
+        let mut github_config: Option<GitHubProviderConfig> = None;
 
         for instance in module.projects() {
             // Deserialize the instance to get the Project struct
@@ -179,6 +180,11 @@ async fn execute_lock_sync(
                         collected_flakes.insert(name.clone(), url.clone());
                     }
 
+                    // Collect GitHub provider config (first one wins)
+                    if github_config.is_none() {
+                        github_config.clone_from(&tools_runtime.github);
+                    }
+
                     // Collect all tools
                     for (name, spec) in &tools_runtime.tools {
                         let (version, source, overrides) = match spec {
@@ -211,9 +217,27 @@ async fn execute_lock_sync(
             collected_tools,
             tools_platforms,
             collected_flakes,
+            github_config,
         )
     };
     // Module guard is now dropped, we can safely use async operations
+
+    // Resolve GitHub token if configured
+    let github_token = if let Some(ref cfg) = github_config {
+        if let Some(ref secret) = cfg.token {
+            match secret.resolve().await {
+                Ok(token) => Some(token),
+                Err(e) => {
+                    warn!(error = %e, "Failed to resolve GitHub token, continuing without authentication");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     if image_platforms.is_empty() && collected_tools.is_empty() {
         return Ok("No OCI artifacts or tools found in any project.".to_string());
@@ -313,9 +337,15 @@ async fn execute_lock_sync(
                     )));
                 };
 
-                // Resolve the tool
+                // Resolve the tool (pass GitHub token for authenticated API access)
                 let resolved = provider
-                    .resolve(&tool.name, &tool.version, &platform, &config)
+                    .resolve_with_token(
+                        &tool.name,
+                        &tool.version,
+                        &platform,
+                        &config,
+                        github_token.as_deref(),
+                    )
                     .await
                     .map_err(|e| {
                         cuenv_core::Error::configuration(format!(
@@ -469,11 +499,14 @@ fn source_config_to_tool_source(
         ),
         SourceConfig::GitHub {
             repo,
+            tag_prefix,
             tag,
             asset,
             path,
         } => {
-            let resolved_tag = tag.clone().unwrap_or_else(|| format!("v{}", version));
+            let resolved_tag = tag
+                .clone()
+                .unwrap_or_else(|| format!("{}{}", tag_prefix, version));
             (
                 "github".to_string(),
                 ToolSource::GitHub {

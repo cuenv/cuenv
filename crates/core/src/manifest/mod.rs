@@ -9,6 +9,7 @@ use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
+use crate::secrets::Secret;
 use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 
@@ -538,6 +539,14 @@ pub struct OciExtract {
     pub as_name: Option<String>,
 }
 
+/// GitHub provider configuration for runtime-level authentication.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct GitHubProviderConfig {
+    /// Authentication token (must use secret resolver like 1Password or exec)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<Secret>,
+}
+
 /// Multi-source tool runtime configuration.
 ///
 /// Provides ergonomic tool management with platform-specific overrides.
@@ -552,6 +561,9 @@ pub struct ToolsRuntime {
     /// Named Nix flake references for pinning
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub flakes: HashMap<String, String>,
+    /// GitHub provider configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github: Option<GitHubProviderConfig>,
     /// Tool specifications (version string or full Tool config)
     #[serde(default)]
     pub tools: HashMap<String, ToolSpec>,
@@ -627,7 +639,10 @@ pub enum SourceConfig {
     GitHub {
         /// Repository (owner/repo)
         repo: String,
-        /// Release tag (defaults to "v{version}")
+        /// Tag prefix (prepended to version, defaults to "")
+        #[serde(default, rename = "tagPrefix")]
+        tag_prefix: String,
+        /// Release tag override (if set, ignores tagPrefix)
         #[serde(skip_serializing_if = "Option::is_none")]
         tag: Option<String>,
         /// Asset name with optional {version}, {os}, {arch} templates
