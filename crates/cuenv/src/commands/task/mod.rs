@@ -34,6 +34,7 @@ use cuenv_core::tasks::{
 
 use super::CommandExecutor;
 use super::env_file::find_cue_module_root;
+use super::tools::get_tool_paths;
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
 
@@ -628,6 +629,67 @@ async fn execute_task_legacy(
         // No manifest env, just use hook-generated environment
         for (key, value) in base_env_vars {
             runtime_env.set(key, value);
+        }
+    }
+
+    // Activate tools from lockfile by prepending to PATH and library path.
+    // This happens automatically without requiring hook approval since tool
+    // activation is a controlled, safe operation (just adds paths to the environment).
+    if let Ok(Some(tool_paths)) = get_tool_paths() {
+        tracing::debug!(
+            "Activating {} tool bin directories and {} lib directories for task execution",
+            tool_paths.bin_dirs.len(),
+            tool_paths.lib_dirs.len()
+        );
+
+        // Prepend tool bin directories to PATH
+        if let Some(path_prepend) = tool_paths.path_prepend() {
+            let current_path = runtime_env
+                .get("PATH")
+                .map(ToString::to_string)
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            let new_path = if current_path.is_empty() {
+                path_prepend
+            } else {
+                format!("{path_prepend}:{current_path}")
+            };
+            runtime_env.set("PATH".to_string(), new_path);
+        }
+
+        // Prepend tool lib directories to library path
+        if let Some(lib_prepend) = tool_paths.lib_path_prepend() {
+            #[cfg(target_os = "macos")]
+            {
+                let lib_var = "DYLD_LIBRARY_PATH";
+                let current = runtime_env
+                    .get(lib_var)
+                    .map(ToString::to_string)
+                    .or_else(|| std::env::var(lib_var).ok())
+                    .unwrap_or_default();
+                let new_path = if current.is_empty() {
+                    lib_prepend
+                } else {
+                    format!("{lib_prepend}:{current}")
+                };
+                runtime_env.set(lib_var.to_string(), new_path);
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let lib_var = "LD_LIBRARY_PATH";
+                let current = runtime_env
+                    .get(lib_var)
+                    .map(ToString::to_string)
+                    .or_else(|| std::env::var(lib_var).ok())
+                    .unwrap_or_default();
+                let new_path = if current.is_empty() {
+                    lib_prepend
+                } else {
+                    format!("{lib_prepend}:{current}")
+                };
+                runtime_env.set(lib_var.to_string(), new_path);
+            }
         }
     }
 

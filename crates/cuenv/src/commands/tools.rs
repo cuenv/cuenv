@@ -231,31 +231,83 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
     Ok(())
 }
 
-/// Execute the `tools activate` command.
+/// Tool environment paths for activation.
+#[derive(Debug, Clone, Default)]
+pub struct ToolPaths {
+    /// Directories to prepend to PATH.
+    pub bin_dirs: Vec<PathBuf>,
+    /// Directories to prepend to library path (DYLD_LIBRARY_PATH or LD_LIBRARY_PATH).
+    pub lib_dirs: Vec<PathBuf>,
+}
+
+impl ToolPaths {
+    /// Check if there are any paths to add.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bin_dirs.is_empty() && self.lib_dirs.is_empty()
+    }
+
+    /// Get the PATH string to prepend (colon-separated).
+    #[must_use]
+    pub fn path_prepend(&self) -> Option<String> {
+        if self.bin_dirs.is_empty() {
+            None
+        } else {
+            Some(
+                self.bin_dirs
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(":"),
+            )
+        }
+    }
+
+    /// Get the library path string to prepend (colon-separated).
+    #[must_use]
+    pub fn lib_path_prepend(&self) -> Option<String> {
+        if self.lib_dirs.is_empty() {
+            None
+        } else {
+            Some(
+                self.lib_dirs
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(":"),
+            )
+        }
+    }
+}
+
+/// Get tool paths from the lockfile for the current platform.
 ///
-/// Outputs shell export statements to add tool binaries to PATH.
+/// This function finds the lockfile, reads it, and returns the bin/lib directories
+/// that should be added to PATH and library path for tool activation.
+///
+/// Returns `Ok(None)` if no lockfile is found (not an error - just no tools to activate).
 ///
 /// # Errors
 ///
-/// Returns an error if the lockfile is not found.
-pub fn execute_tools_activate() -> Result<(), CliError> {
-    // Find the lockfile
-    let lockfile_path = find_lockfile().ok_or_else(|| {
-        CliError::config_with_help(
-            "No cuenv.lock found",
-            "Run 'cuenv sync lock' to create the lockfile",
-        )
-    })?;
+/// Returns an error if the lockfile exists but cannot be read or parsed.
+pub fn get_tool_paths() -> Result<Option<ToolPaths>, CliError> {
+    // Find the lockfile - not finding one is not an error
+    let Some(lockfile_path) = find_lockfile() else {
+        return Ok(None);
+    };
 
     // Load the lockfile
     let lockfile = Lockfile::load(&lockfile_path)
-        .map_err(|e| CliError::other(format!("Failed to load lockfile: {e}")))?
-        .ok_or_else(|| {
-            CliError::config_with_help(
-                "Lockfile is empty",
-                "Run 'cuenv sync lock' to populate the lockfile",
-            )
-        })?;
+        .map_err(|e| CliError::other(format!("Failed to load lockfile: {e}")))?;
+
+    let Some(lockfile) = lockfile else {
+        // Empty lockfile - no tools to activate
+        return Ok(None);
+    };
+
+    if lockfile.tools.is_empty() {
+        return Ok(None);
+    }
 
     // Get current platform
     let platform = Platform::current();
@@ -290,30 +342,44 @@ pub fn execute_tools_activate() -> Result<(), CliError> {
         }
     }
 
-    // Output library path modification first (dependencies must be available)
-    if !lib_dirs.is_empty() {
-        let lib_path: Vec<String> = lib_dirs.iter().map(|p| p.display().to_string()).collect();
-        let lib_path_str = lib_path.join(":");
+    if bin_dirs.is_empty() && lib_dirs.is_empty() {
+        return Ok(None);
+    }
 
+    Ok(Some(ToolPaths {
+        bin_dirs: bin_dirs.into_iter().collect(),
+        lib_dirs: lib_dirs.into_iter().collect(),
+    }))
+}
+
+/// Execute the `tools activate` command.
+///
+/// Outputs shell export statements to add tool binaries to PATH.
+///
+/// # Errors
+///
+/// Returns an error if the lockfile is not found.
+pub fn execute_tools_activate() -> Result<(), CliError> {
+    let tool_paths = get_tool_paths()?.ok_or_else(|| {
+        CliError::config_with_help(
+            "No cuenv.lock found or no tools configured",
+            "Run 'cuenv sync lock' to create the lockfile",
+        )
+    })?;
+
+    // Output library path modification first (dependencies must be available)
+    if let Some(lib_path) = tool_paths.lib_path_prepend() {
         // Use appropriate library path variable for the platform
         #[cfg(target_os = "macos")]
-        println!(
-            "export DYLD_LIBRARY_PATH=\"{}:$DYLD_LIBRARY_PATH\"",
-            lib_path_str
-        );
+        println!("export DYLD_LIBRARY_PATH=\"{lib_path}:$DYLD_LIBRARY_PATH\"");
 
         #[cfg(not(target_os = "macos"))]
-        println!(
-            "export LD_LIBRARY_PATH=\"{}:$LD_LIBRARY_PATH\"",
-            lib_path_str
-        );
+        println!("export LD_LIBRARY_PATH=\"{lib_path}:$LD_LIBRARY_PATH\"");
     }
 
     // Output PATH modification
-    if !bin_dirs.is_empty() {
-        let path_additions: Vec<String> =
-            bin_dirs.iter().map(|p| p.display().to_string()).collect();
-        println!("export PATH=\"{}:$PATH\"", path_additions.join(":"));
+    if let Some(path) = tool_paths.path_prepend() {
+        println!("export PATH=\"{path}:$PATH\"");
     }
 
     Ok(())

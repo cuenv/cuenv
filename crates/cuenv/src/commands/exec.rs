@@ -1,6 +1,7 @@
 //! Exec command implementation for running arbitrary commands with CUE environment
 
 use super::env_file::find_cue_module_root;
+use super::tools::get_tool_paths;
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
@@ -197,6 +198,55 @@ pub async fn execute_exec(
         && !token.is_empty()
     {
         secrets_for_redaction.push(token);
+    }
+
+    // Activate tools from lockfile by prepending to PATH and library path.
+    // This happens automatically without requiring hook approval since tool
+    // activation is a controlled, safe operation (just adds paths to the environment).
+    if let Ok(Some(tool_paths)) = get_tool_paths() {
+        tracing::debug!(
+            "Activating {} tool bin directories and {} lib directories",
+            tool_paths.bin_dirs.len(),
+            tool_paths.lib_dirs.len()
+        );
+
+        // Prepend tool bin directories to PATH
+        if let Some(path_prepend) = tool_paths.path_prepend() {
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = if current_path.is_empty() {
+                path_prepend
+            } else {
+                format!("{path_prepend}:{current_path}")
+            };
+            runtime_env.set("PATH".to_string(), new_path);
+        }
+
+        // Prepend tool lib directories to library path
+        if let Some(lib_prepend) = tool_paths.lib_path_prepend() {
+            #[cfg(target_os = "macos")]
+            {
+                let lib_var = "DYLD_LIBRARY_PATH";
+                let current = std::env::var(lib_var).unwrap_or_default();
+                let new_path = if current.is_empty() {
+                    lib_prepend
+                } else {
+                    format!("{lib_prepend}:{current}")
+                };
+                runtime_env.set(lib_var.to_string(), new_path);
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let lib_var = "LD_LIBRARY_PATH";
+                let current = std::env::var(lib_var).unwrap_or_default();
+                let new_path = if current.is_empty() {
+                    lib_prepend
+                } else {
+                    format!("{lib_prepend}:{current}")
+                };
+                runtime_env.set(lib_var.to_string(), new_path);
+            }
+        }
     }
 
     // Execute the command with the environment, redacting any secrets from output

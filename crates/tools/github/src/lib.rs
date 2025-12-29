@@ -515,9 +515,10 @@ impl ToolProvider for GitHubToolProvider {
             "Fetching GitHub release"
         );
 
-        // Check cache
+        // Check cache - binaries go in bin/ subdirectory for consistency with other providers
         let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
-        let binary_path = cache_dir.join(&resolved.name);
+        let bin_dir = cache_dir.join("bin");
+        let binary_path = bin_dir.join(&resolved.name);
 
         if binary_path.exists() && !options.force_refetch {
             debug!(?binary_path, "Tool already cached");
@@ -543,17 +544,21 @@ impl ToolProvider for GitHubToolProvider {
             .download_asset(&found_asset.browser_download_url)
             .await?;
 
-        // Extract binary
+        // Ensure bin directory exists
+        std::fs::create_dir_all(&bin_dir)?;
+
+        // Extract binary to a temp location first, then move to bin/
         let extracted = self.extract_binary(&data, asset, path.as_deref(), &cache_dir)?;
 
-        // Rename to tool name if different
-        let final_path = if extracted.file_name().and_then(|s| s.to_str()) != Some(&resolved.name) {
-            let dest = cache_dir.join(&resolved.name);
-            std::fs::rename(&extracted, &dest)?;
-            dest
-        } else {
-            extracted
-        };
+        // Move to bin/<tool_name> for consistency with other providers
+        let final_path = bin_dir.join(&resolved.name);
+        if extracted != final_path {
+            // If extracted to a different location, move it
+            if final_path.exists() {
+                std::fs::remove_file(&final_path)?;
+            }
+            std::fs::rename(&extracted, &final_path)?;
+        }
 
         let sha256 = compute_file_sha256(&final_path).await?;
 
@@ -573,7 +578,7 @@ impl ToolProvider for GitHubToolProvider {
 
     fn is_cached(&self, resolved: &ResolvedTool, options: &ToolOptions) -> bool {
         let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
-        let binary_path = cache_dir.join(&resolved.name);
+        let binary_path = cache_dir.join("bin").join(&resolved.name);
         binary_path.exists()
     }
 }
