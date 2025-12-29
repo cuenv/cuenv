@@ -147,10 +147,24 @@ impl From<cuenv_core::Error> for CliError {
                 }
             }
             cuenv_core::Error::Platform { message } => Self::eval(message),
-            // I/O, encoding, and timeout errors are unexpected runtime errors
-            cuenv_core::Error::Io { .. }
-            | cuenv_core::Error::Utf8 { .. }
-            | cuenv_core::Error::Timeout { .. } => Self::other(err.to_string()),
+            // I/O errors - include full context for debugging
+            cuenv_core::Error::Io {
+                source,
+                path,
+                operation,
+            } => {
+                let path_str = path
+                    .as_ref()
+                    .map_or(String::new(), |p| format!(" on {}", p.display()));
+                Self::other_with_help(
+                    format!("I/O {operation} failed{path_str}: {source}"),
+                    "Check file permissions and ensure the path exists",
+                )
+            }
+            // Encoding and timeout errors are unexpected runtime errors
+            cuenv_core::Error::Utf8 { .. } | cuenv_core::Error::Timeout { .. } => {
+                Self::other(err.to_string())
+            }
         }
     }
 }

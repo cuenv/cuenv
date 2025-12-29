@@ -34,7 +34,7 @@ use cuenv_core::tasks::{
 
 use super::CommandExecutor;
 use super::env_file::find_cue_module_root;
-use super::tools::get_tool_paths;
+use super::tools::{ensure_tools_downloaded, get_tool_paths};
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
 
@@ -632,9 +632,12 @@ async fn execute_task_legacy(
         }
     }
 
-    // Activate tools from lockfile by prepending to PATH and library path.
+    // Download and activate tools from lockfile by prepending to PATH and library path.
     // This happens automatically without requiring hook approval since tool
     // activation is a controlled, safe operation (just adds paths to the environment).
+    if let Err(e) = ensure_tools_downloaded().await {
+        tracing::warn!("Failed to download tools: {} - continuing anyway", e);
+    }
     if let Ok(Some(tool_paths)) = get_tool_paths() {
         tracing::debug!(
             "Activating {} tool bin directories and {} lib directories for task execution",

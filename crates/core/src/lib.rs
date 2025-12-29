@@ -104,7 +104,7 @@ pub enum Error {
         suggestions: Option<Vec<String>>,
     },
 
-    #[error("I/O operation failed")]
+    #[error("I/O {operation} failed{}", path.as_ref().map_or(String::new(), |p| format!(": {}", p.display())))]
     #[diagnostic(
         code(cuenv::io::error),
         help("Check file permissions and ensure the path exists")

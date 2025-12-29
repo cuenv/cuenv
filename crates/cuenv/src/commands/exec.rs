@@ -1,7 +1,7 @@
 //! Exec command implementation for running arbitrary commands with CUE environment
 
 use super::env_file::find_cue_module_root;
-use super::tools::get_tool_paths;
+use super::tools::{ensure_tools_downloaded, get_tool_paths};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
@@ -200,9 +200,12 @@ pub async fn execute_exec(
         secrets_for_redaction.push(token);
     }
 
-    // Activate tools from lockfile by prepending to PATH and library path.
+    // Download and activate tools from lockfile by prepending to PATH and library path.
     // This happens automatically without requiring hook approval since tool
     // activation is a controlled, safe operation (just adds paths to the environment).
+    if let Err(e) = ensure_tools_downloaded().await {
+        tracing::warn!("Failed to download tools: {} - continuing anyway", e);
+    }
     if let Ok(Some(tool_paths)) = get_tool_paths() {
         tracing::debug!(
             "Activating {} tool bin directories and {} lib directories",

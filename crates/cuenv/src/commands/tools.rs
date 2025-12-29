@@ -231,6 +231,212 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
     Ok(())
 }
 
+/// Ensure all tools from the lockfile are downloaded for the current platform.
+///
+/// This is called automatically before tool activation in exec/task commands.
+/// If no lockfile exists or tools are already cached, this is a no-op.
+///
+/// # Errors
+///
+/// Returns an error if tools cannot be downloaded due to provider issues.
+pub async fn ensure_tools_downloaded() -> Result<(), CliError> {
+    // Find the lockfile - not finding one is not an error
+    let Some(lockfile_path) = find_lockfile() else {
+        tracing::debug!("No lockfile found - skipping tool download");
+        return Ok(());
+    };
+
+    // Load the lockfile
+    let Some(lockfile) = Lockfile::load(&lockfile_path)
+        .map_err(|e| CliError::other(format!("Failed to load lockfile: {e}")))?
+    else {
+        tracing::debug!("Empty lockfile - skipping tool download");
+        return Ok(());
+    };
+
+    if lockfile.tools.is_empty() {
+        tracing::debug!("No tools in lockfile - skipping download");
+        return Ok(());
+    }
+
+    // Get current platform
+    let platform = Platform::current();
+    let platform_str = platform.to_string();
+
+    // Create tool options
+    let options = ToolOptions::default();
+
+    // Create the registry
+    let registry = create_registry();
+
+    // Check prerequisites for all providers we'll use
+    let mut providers_used = HashSet::new();
+    for tool in lockfile.tools.values() {
+        if let Some(locked) = tool.platforms.get(&platform_str) {
+            providers_used.insert(locked.provider.clone());
+        }
+    }
+
+    for provider_name in &providers_used {
+        if let Some(provider) = registry.get(provider_name)
+            && let Err(e) = provider.check_prerequisites().await
+        {
+            tracing::warn!(
+                "Provider '{}' prerequisites check failed: {} - skipping tools from this provider",
+                provider_name,
+                e
+            );
+        }
+    }
+
+    // Download tools that aren't cached
+    let mut downloaded = 0;
+
+    for (name, tool) in &lockfile.tools {
+        let Some(locked) = tool.platforms.get(&platform_str) else {
+            // Tool not available for this platform
+            continue;
+        };
+
+        // Convert lockfile data to ToolSource
+        let Some(source) = lockfile_entry_to_source(name, &tool.version, locked) else {
+            tracing::debug!("Unknown provider '{}' for tool '{}' - skipping", locked.provider, name);
+            continue;
+        };
+
+        // Get the provider
+        let Some(provider) = registry.find_for_source(&source) else {
+            tracing::debug!("No provider found for tool '{}' - skipping", name);
+            continue;
+        };
+
+        // Create resolved tool
+        let resolved = cuenv_core::tools::ResolvedTool {
+            name: name.clone(),
+            version: tool.version.clone(),
+            platform: platform.clone(),
+            source,
+        };
+
+        // Check if already cached
+        if provider.is_cached(&resolved, &options) {
+            continue;
+        }
+
+        // Fetch the tool
+        tracing::info!("Downloading {} v{}...", name, tool.version);
+        match provider.fetch(&resolved, &options).await {
+            Ok(fetched) => {
+                tracing::info!(
+                    "Downloaded {} -> {} ({})",
+                    name,
+                    fetched.binary_path.display(),
+                    fetched.sha256
+                );
+                downloaded += 1;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to download '{}': {} - continuing anyway", name, e);
+            }
+        }
+    }
+
+    if downloaded > 0 {
+        tracing::info!("Downloaded {} tools", downloaded);
+    }
+
+    Ok(())
+}
+
+/// Convert a lockfile entry to a ToolSource.
+fn lockfile_entry_to_source(
+    name: &str,
+    version: &str,
+    locked: &cuenv_core::lockfile::LockedToolPlatform,
+) -> Option<ToolSource> {
+    match locked.provider.as_str() {
+        "homebrew" => {
+            let formula = locked
+                .source
+                .get("formula")
+                .and_then(|v| v.as_str())
+                .unwrap_or(name);
+            let image_ref = format!("ghcr.io/homebrew/core/{}:{}", formula, version);
+            Some(ToolSource::Homebrew {
+                formula: formula.to_string(),
+                image_ref,
+            })
+        }
+        "oci" => {
+            let image = locked
+                .source
+                .get("image")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let path = locked
+                .source
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            Some(ToolSource::Oci {
+                image: image.to_string(),
+                path: path.to_string(),
+            })
+        }
+        "github" => {
+            let repo = locked
+                .source
+                .get("repo")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let tag = locked
+                .source
+                .get("tag")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let asset = locked
+                .source
+                .get("asset")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let path = locked
+                .source
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            Some(ToolSource::GitHub {
+                repo: repo.to_string(),
+                tag: tag.to_string(),
+                asset: asset.to_string(),
+                path,
+            })
+        }
+        "nix" => {
+            let flake = locked
+                .source
+                .get("flake")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let package = locked
+                .source
+                .get("package")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let output = locked
+                .source
+                .get("output")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            Some(ToolSource::Nix {
+                flake: flake.to_string(),
+                package: package.to_string(),
+                output,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Tool environment paths for activation.
 #[derive(Debug, Clone, Default)]
 pub struct ToolPaths {
