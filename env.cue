@@ -12,9 +12,14 @@ schema.#Project & {
 
 	runtime: schema.#ToolsRuntime & {
 		platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
+		flakes: {
+			nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
+		}
 		tools: {
 			jq:  "1.7.1"
 			yq:  "4.44.6"
+			prettier: "3.7.4"
+			treefmt: "2.4.0"
 			bun: xBun.#Bun & {version: "1.3.5"}
 
 			// Rust toolchain
@@ -31,6 +36,14 @@ schema.#Project & {
 
 			// Build tools
 			zig: xRust.#Zig & {version: "0.15.2"}
+
+			"nixpkgs-fmt": schema.#Tool & {
+				version: "nixos-unstable"
+				source: schema.#Nix & {
+					flake:   "nixpkgs"
+					package: "nixpkgs-fmt"
+				}
+			}
 		}
 	}
 

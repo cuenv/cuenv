@@ -27,14 +27,14 @@ use crate::commands::CommandExecutor;
 use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
 
 /// Create a tool registry with available providers.
-fn create_registry() -> ToolRegistry {
+fn create_registry(flakes: HashMap<String, String>) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
     // Register Homebrew provider (uses OCI crate internally for ghcr.io/homebrew)
     registry.register(cuenv_tools_homebrew::HomebrewToolProvider::new());
 
-    // Register Nix provider
-    registry.register(cuenv_tools_nix::NixToolProvider::new());
+    // Register Nix provider with flake references from config
+    registry.register(cuenv_tools_nix::NixToolProvider::with_flakes(flakes));
 
     // Register GitHub provider
     registry.register(cuenv_tools_github::GitHubToolProvider::new());
@@ -115,7 +115,7 @@ async fn execute_lock_sync(
     // Collect all OCI artifacts and tools from projects
     // Note: We collect all data before async operations to avoid holding
     // the module guard across await points (MutexGuard is not Send).
-    let (lockfile_path, image_platforms, all_platforms, collected_tools, tools_platforms) = {
+    let (lockfile_path, image_platforms, all_platforms, collected_tools, tools_platforms, collected_flakes) = {
         let module = executor.get_module(path)?;
         let module_root = module.root.clone();
         let lockfile_path = module_root.join(LOCKFILE_NAME);
@@ -124,6 +124,7 @@ async fn execute_lock_sync(
         let mut all_platforms: Vec<String> = Vec::new();
         let mut collected_tools: Vec<CollectedTool> = Vec::new();
         let mut tools_platforms: Vec<String> = Vec::new();
+        let mut collected_flakes: HashMap<String, String> = HashMap::new();
 
         for instance in module.projects() {
             // Deserialize the instance to get the Project struct
@@ -183,6 +184,11 @@ async fn execute_lock_sync(
                         }
                     }
 
+                    // Collect flakes for Nix tool resolution
+                    for (name, url) in &tools_runtime.flakes {
+                        collected_flakes.insert(name.clone(), url.clone());
+                    }
+
                     // Collect all tools
                     for (name, spec) in &tools_runtime.tools {
                         let (version, source, overrides) = match spec {
@@ -214,6 +220,7 @@ async fn execute_lock_sync(
             all_platforms,
             collected_tools,
             tools_platforms,
+            collected_flakes,
         )
     };
     // Module guard is now dropped, we can safely use async operations
@@ -328,7 +335,7 @@ async fn execute_lock_sync(
             tools_platforms.len()
         );
 
-        let registry = create_registry();
+        let registry = create_registry(collected_flakes);
 
         for tool in &collected_tools {
             debug!(name = %tool.name, version = %tool.version, "Resolving tool");
