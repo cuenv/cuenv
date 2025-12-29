@@ -405,6 +405,25 @@ async fn change_directory(world: &mut TestWorld, dir: String) {
 
 #[then(expr = "hooks should be spawned in the background")]
 async fn hooks_spawned(world: &mut TestWorld) {
+    // The env load command doesn't print to stdout (by design, to avoid terminal clutter).
+    // Instead, we verify hooks were started by checking the hook execution status.
+
+    // Give the supervisor a moment to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Check hook status using env status command
+    let dir_path = world.current_dir.to_str().unwrap().to_string();
+    let package = if dir_path.contains("examples") {
+        "examples"
+    } else {
+        "cuenv"
+    };
+
+    world
+        .run_cuenv(&["env", "status", "--path", &dir_path, "--package", package])
+        .await
+        .unwrap();
+
     // Debug: write output to file
     let _ = tokio::fs::write(
         world
@@ -416,12 +435,13 @@ async fn hooks_spawned(world: &mut TestWorld) {
     )
     .await;
 
-    // Check that the command reported starting hooks
+    // Hooks are running or completed (status shows something other than "No hook execution")
+    let hooks_active = !world.last_output.contains("No hook execution in progress")
+        && !world.last_output.is_empty();
+
     assert!(
-        world.last_output.contains("Starting background execution")
-            || world.last_output.contains("hooks in background")
-            || world.last_output.contains("Started execution"),
-        "Hooks were not started in background: {}",
+        hooks_active,
+        "Hooks were not started in background. Status output: {}",
         world.last_output
     );
 }
