@@ -203,10 +203,11 @@ pub async fn execute_exec(
     // Download and activate tools from lockfile by prepending to PATH and library path.
     // This happens automatically without requiring hook approval since tool
     // activation is a controlled, safe operation (just adds paths to the environment).
-    if let Err(e) = ensure_tools_downloaded().await {
+    // Use the target_path to scope tool activation to this project only.
+    if let Err(e) = ensure_tools_downloaded(Some(&target_path)).await {
         tracing::warn!("Failed to download tools: {} - continuing anyway", e);
     }
-    if let Ok(Some(tool_paths)) = get_tool_paths() {
+    if let Ok(Some(tool_paths)) = get_tool_paths(Some(&target_path)) {
         tracing::debug!(
             "Activating {} tool bin directories and {} lib directories",
             tool_paths.bin_dirs.len(),
@@ -214,8 +215,12 @@ pub async fn execute_exec(
         );
 
         // Prepend tool bin directories to PATH
+        // Use runtime_env PATH (from CUE), NOT host PATH - this ensures hermetic isolation
         if let Some(path_prepend) = tool_paths.path_prepend() {
-            let current_path = std::env::var("PATH").unwrap_or_default();
+            let current_path = runtime_env
+                .get("PATH")
+                .map(ToString::to_string)
+                .unwrap_or_default();
             let new_path = if current_path.is_empty() {
                 path_prepend
             } else {
@@ -225,11 +230,15 @@ pub async fn execute_exec(
         }
 
         // Prepend tool lib directories to library path
+        // Use runtime_env lib path (from CUE), NOT host lib path - hermetic isolation
         if let Some(lib_prepend) = tool_paths.lib_path_prepend() {
             #[cfg(target_os = "macos")]
             {
                 let lib_var = "DYLD_LIBRARY_PATH";
-                let current = std::env::var(lib_var).unwrap_or_default();
+                let current = runtime_env
+                    .get(lib_var)
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
                 let new_path = if current.is_empty() {
                     lib_prepend
                 } else {
@@ -241,7 +250,10 @@ pub async fn execute_exec(
             #[cfg(not(target_os = "macos"))]
             {
                 let lib_var = "LD_LIBRARY_PATH";
-                let current = std::env::var(lib_var).unwrap_or_default();
+                let current = runtime_env
+                    .get(lib_var)
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
                 let new_path = if current.is_empty() {
                     lib_prepend
                 } else {
@@ -252,9 +264,13 @@ pub async fn execute_exec(
         }
     }
 
+    // Resolve the command path using the runtime environment's PATH (with host fallback)
+    // This is necessary because the child process will have hermetic PATH
+    let resolved_command = runtime_env.resolve_command(command);
+
     // Execute the command with the environment, redacting any secrets from output
     let exit_code =
-        execute_command_with_redaction(command, args, &runtime_env, &secrets_for_redaction).await?;
+        execute_command_with_redaction(&resolved_command, args, &runtime_env, &secrets_for_redaction).await?;
 
     Ok(exit_code)
 }

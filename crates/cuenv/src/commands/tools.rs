@@ -7,7 +7,7 @@ use crate::cli::CliError;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::tools::{Platform, ToolOptions, ToolRegistry, ToolSource};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Create a tool registry with available providers.
 fn create_registry() -> ToolRegistry {
@@ -37,7 +37,7 @@ fn create_registry() -> ToolRegistry {
 /// Returns an error if the lockfile is not found or if any tool download fails.
 pub async fn execute_tools_download() -> Result<(), CliError> {
     // Find the lockfile
-    let lockfile_path = find_lockfile().ok_or_else(|| {
+    let lockfile_path = find_lockfile(None).ok_or_else(|| {
         CliError::config_with_help(
             "No cuenv.lock found",
             "Run 'cuenv sync lock' to create the lockfile",
@@ -236,12 +236,15 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
 /// This is called automatically before tool activation in exec/task commands.
 /// If no lockfile exists or tools are already cached, this is a no-op.
 ///
+/// If `project_path` is provided, the lockfile search starts from that directory.
+/// Otherwise, it starts from the current working directory.
+///
 /// # Errors
 ///
 /// Returns an error if tools cannot be downloaded due to provider issues.
-pub async fn ensure_tools_downloaded() -> Result<(), CliError> {
+pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), CliError> {
     // Find the lockfile - not finding one is not an error
-    let Some(lockfile_path) = find_lockfile() else {
+    let Some(lockfile_path) = find_lockfile(project_path) else {
         tracing::debug!("No lockfile found - skipping tool download");
         return Ok(());
     };
@@ -491,14 +494,17 @@ impl ToolPaths {
 /// This function finds the lockfile, reads it, and returns the bin/lib directories
 /// that should be added to PATH and library path for tool activation.
 ///
+/// If `project_path` is provided, the lockfile search starts from that directory.
+/// Otherwise, it starts from the current working directory.
+///
 /// Returns `Ok(None)` if no lockfile is found (not an error - just no tools to activate).
 ///
 /// # Errors
 ///
 /// Returns an error if the lockfile exists but cannot be read or parsed.
-pub fn get_tool_paths() -> Result<Option<ToolPaths>, CliError> {
+pub fn get_tool_paths(project_path: Option<&Path>) -> Result<Option<ToolPaths>, CliError> {
     // Find the lockfile - not finding one is not an error
-    let Some(lockfile_path) = find_lockfile() else {
+    let Some(lockfile_path) = find_lockfile(project_path) else {
         return Ok(None);
     };
 
@@ -566,7 +572,7 @@ pub fn get_tool_paths() -> Result<Option<ToolPaths>, CliError> {
 ///
 /// Returns an error if the lockfile is not found.
 pub fn execute_tools_activate() -> Result<(), CliError> {
-    let tool_paths = get_tool_paths()?.ok_or_else(|| {
+    let tool_paths = get_tool_paths(None)?.ok_or_else(|| {
         CliError::config_with_help(
             "No cuenv.lock found or no tools configured",
             "Run 'cuenv sync lock' to create the lockfile",
@@ -600,7 +606,7 @@ pub fn execute_tools_activate() -> Result<(), CliError> {
 /// Returns an error if the lockfile is not found.
 pub fn execute_tools_list() -> Result<(), CliError> {
     // Find the lockfile
-    let lockfile_path = find_lockfile().ok_or_else(|| {
+    let lockfile_path = find_lockfile(None).ok_or_else(|| {
         CliError::config_with_help(
             "No cuenv.lock found",
             "Run 'cuenv sync lock' to create the lockfile",
@@ -676,9 +682,11 @@ pub fn execute_tools_list() -> Result<(), CliError> {
     Ok(())
 }
 
-/// Find the lockfile by walking up from current directory.
-fn find_lockfile() -> Option<PathBuf> {
-    let mut current = std::env::current_dir().ok()?;
+/// Find the lockfile by walking up from the given directory (or current directory).
+fn find_lockfile(start_path: Option<&Path>) -> Option<PathBuf> {
+    let mut current = start_path
+        .map(|p| p.to_path_buf())
+        .or_else(|| std::env::current_dir().ok())?;
     loop {
         let lockfile_path = current.join(LOCKFILE_NAME);
         if lockfile_path.exists() {
@@ -710,8 +718,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::env::set_current_dir(temp.path()).unwrap();
 
-        // Should return None
-        let result = find_lockfile();
+        // Should return None when searching from temp dir
+        let result = find_lockfile(None);
 
         // Restore CWD before assertions (in case of panic)
         std::env::set_current_dir(&original_cwd).unwrap();

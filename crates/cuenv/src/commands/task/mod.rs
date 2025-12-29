@@ -635,10 +635,11 @@ async fn execute_task_legacy(
     // Download and activate tools from lockfile by prepending to PATH and library path.
     // This happens automatically without requiring hook approval since tool
     // activation is a controlled, safe operation (just adds paths to the environment).
-    if let Err(e) = ensure_tools_downloaded().await {
+    // Use project_root to scope tool activation to this project only.
+    if let Err(e) = ensure_tools_downloaded(Some(&project_root)).await {
         tracing::warn!("Failed to download tools: {} - continuing anyway", e);
     }
-    if let Ok(Some(tool_paths)) = get_tool_paths() {
+    if let Ok(Some(tool_paths)) = get_tool_paths(Some(&project_root)) {
         tracing::debug!(
             "Activating {} tool bin directories and {} lib directories for task execution",
             tool_paths.bin_dirs.len(),
@@ -646,11 +647,11 @@ async fn execute_task_legacy(
         );
 
         // Prepend tool bin directories to PATH
+        // Use runtime_env PATH (from CUE), NOT host PATH - this ensures hermetic isolation
         if let Some(path_prepend) = tool_paths.path_prepend() {
             let current_path = runtime_env
                 .get("PATH")
                 .map(ToString::to_string)
-                .or_else(|| std::env::var("PATH").ok())
                 .unwrap_or_default();
             let new_path = if current_path.is_empty() {
                 path_prepend
@@ -661,6 +662,7 @@ async fn execute_task_legacy(
         }
 
         // Prepend tool lib directories to library path
+        // Use runtime_env lib path (from CUE), NOT host lib path - hermetic isolation
         if let Some(lib_prepend) = tool_paths.lib_path_prepend() {
             #[cfg(target_os = "macos")]
             {
@@ -668,7 +670,6 @@ async fn execute_task_legacy(
                 let current = runtime_env
                     .get(lib_var)
                     .map(ToString::to_string)
-                    .or_else(|| std::env::var(lib_var).ok())
                     .unwrap_or_default();
                 let new_path = if current.is_empty() {
                     lib_prepend
@@ -684,7 +685,6 @@ async fn execute_task_legacy(
                 let current = runtime_env
                     .get(lib_var)
                     .map(ToString::to_string)
-                    .or_else(|| std::env::var(lib_var).ok())
                     .unwrap_or_default();
                 let new_path = if current.is_empty() {
                     lib_prepend

@@ -375,7 +375,51 @@ impl Environment {
             }
         }
 
-        // Command not found in PATH, return original (spawn will fail with proper error)
+        // Command not found in environment PATH - try system PATH as fallback
+        // This is necessary when the environment has tool paths but not system paths,
+        // since we still need to find system commands like echo, bash, etc.
+        if self.vars.contains_key("PATH")
+            && let Ok(system_path) = env::var("PATH")
+        {
+            tracing::debug!(
+                command = %command,
+                "Command not found in env PATH, trying system PATH"
+            );
+            for dir in system_path.split(':') {
+                if dir.is_empty() {
+                    continue;
+                }
+                let candidate = std::path::Path::new(dir).join(command);
+                if candidate.is_file() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = std::fs::metadata(&candidate) {
+                            let permissions = metadata.permissions();
+                            if permissions.mode() & 0o111 != 0 {
+                                tracing::debug!(
+                                    command = %command,
+                                    resolved = %candidate.display(),
+                                    "Command resolved from system PATH"
+                                );
+                                return candidate.to_string_lossy().to_string();
+                            }
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        tracing::debug!(
+                            command = %command,
+                            resolved = %candidate.display(),
+                            "Command resolved from system PATH"
+                        );
+                        return candidate.to_string_lossy().to_string();
+                    }
+                }
+            }
+        }
+
+        // Command not found in any PATH, return original (spawn will fail with proper error)
         tracing::warn!(
             command = %command,
             env_path_set = self.vars.contains_key("PATH"),
