@@ -495,8 +495,9 @@ async fn wait_for_hooks(world: &mut TestWorld) {
             )
             .await;
 
+            // Use 'export' command which outputs shell eval statements
             world
-                .run_cuenv(&["env", "check", "--path", &dir_path, "--package", package])
+                .run_cuenv(&["export", "--shell", "bash", "--package", package])
                 .await
                 .unwrap();
 
