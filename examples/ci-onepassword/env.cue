@@ -9,7 +9,7 @@ name: "ci-onepassword"
 // Environment with 1Password secret references
 // This triggers the OnePasswordContributor to inject setup steps
 env: {
-	production: {
+	environment: production: {
 		API_TOKEN:  schema.#OnePasswordRef & {ref: "op://vault/api/token"}
 		DEPLOY_KEY: schema.#OnePasswordRef & {ref: "op://vault/deploy/key"}
 	}
