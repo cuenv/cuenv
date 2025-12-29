@@ -60,7 +60,6 @@ cuenv-buildkite = { workspace = true, optional = true }
 cuenv-homebrew = { workspace = true, optional = true }
 # Tool providers (multi-source tool management)
 cuenv-tools-oci = { workspace = true }
-cuenv-tools-homebrew = { workspace = true }
 cuenv-tools-github = { workspace = true }
 cuenv-tools-nix = { workspace = true }
 toml = { workspace = true }

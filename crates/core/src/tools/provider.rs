@@ -1,8 +1,8 @@
 //! Tool provider trait for extensible tool fetching.
 //!
 //! This module defines the `ToolProvider` trait that allows different sources
-//! (Homebrew, Docker, GitHub, Nix) to be registered and used uniformly for
-//! fetching development tools.
+//! (GitHub releases, Nix packages, OCI images) to be registered and used
+//! uniformly for fetching development tools.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -138,8 +138,6 @@ impl std::fmt::Display for Arch {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ToolSource {
-    /// Homebrew bottle from ghcr.io/homebrew.
-    Homebrew { formula: String, image_ref: String },
     /// Binary extracted from an OCI container image.
     Oci { image: String, path: String },
     /// Asset from a GitHub release.
@@ -164,7 +162,6 @@ impl ToolSource {
     #[must_use]
     pub fn provider_type(&self) -> &'static str {
         match self {
-            Self::Homebrew { .. } => "homebrew",
             Self::Oci { .. } => "oci",
             Self::GitHub { .. } => "github",
             Self::Nix { .. } => "nix",
@@ -245,7 +242,7 @@ pub fn default_cache_dir() -> PathBuf {
         .join("tools")
 }
 
-/// Trait for tool providers (Homebrew, Docker, GitHub, Nix).
+/// Trait for tool providers (GitHub, OCI, Nix).
 ///
 /// Each provider implements this trait to handle resolution and fetching
 /// of tools from a specific source type. Providers are registered with
@@ -254,18 +251,18 @@ pub fn default_cache_dir() -> PathBuf {
 /// # Example
 ///
 /// ```ignore
-/// pub struct HomebrewToolProvider { /* ... */ }
+/// pub struct GitHubToolProvider { /* ... */ }
 ///
 /// #[async_trait]
-/// impl ToolProvider for HomebrewToolProvider {
-///     fn name(&self) -> &'static str { "homebrew" }
-///     fn description(&self) -> &'static str { "Fetch tools from Homebrew bottles" }
+/// impl ToolProvider for GitHubToolProvider {
+///     fn name(&self) -> &'static str { "github" }
+///     fn description(&self) -> &'static str { "Fetch tools from GitHub releases" }
 ///     // ...
 /// }
 /// ```
 #[async_trait]
 pub trait ToolProvider: Send + Sync {
-    /// Provider name (e.g., "homebrew", "github", "nix").
+    /// Provider name (e.g., "github", "nix", "oci").
     ///
     /// This should match the `type` field in the CUE schema.
     fn name(&self) -> &'static str;
@@ -378,10 +375,19 @@ mod tests {
 
     #[test]
     fn test_tool_source_provider_type() {
-        let s = ToolSource::Homebrew {
-            formula: "jq".into(),
-            image_ref: "ghcr.io/homebrew/core/jq:1.7.1".into(),
+        let s = ToolSource::GitHub {
+            repo: "jqlang/jq".into(),
+            tag: "jq-1.7.1".into(),
+            asset: "jq-macos-arm64".into(),
+            path: None,
         };
-        assert_eq!(s.provider_type(), "homebrew");
+        assert_eq!(s.provider_type(), "github");
+
+        let s = ToolSource::Nix {
+            flake: "nixpkgs".into(),
+            package: "jq".into(),
+            output: None,
+        };
+        assert_eq!(s.provider_type(), "nix");
     }
 }

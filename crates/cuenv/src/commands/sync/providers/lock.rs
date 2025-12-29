@@ -3,10 +3,8 @@
 //! Resolves OCI image references to content-addressed digests and writes
 //! them to `cuenv.lock` for hermetic binary resolution.
 //!
-//! For Homebrew images, this also resolves transitive dependencies and
-//! includes them in the lockfile.
-//!
-//! For `#ToolsRuntime`, uses ToolProvider to resolve tools from multiple sources.
+//! For `#ToolsRuntime`, uses ToolProvider to resolve tools from multiple sources
+//! (GitHub releases, Nix packages).
 
 use async_trait::async_trait;
 use cuenv_core::Result;
@@ -15,11 +13,8 @@ use cuenv_core::lockfile::{
 };
 use cuenv_core::manifest::{Base, Project, Runtime, SourceConfig, ToolSpec};
 use cuenv_core::tools::{Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolSource};
-use cuenv_tools_oci::{
-    HomebrewFormula, OciClient, Platform, formula_name_from_image, is_homebrew_image,
-    resolve_with_deps, to_homebrew_platform,
-};
-use std::collections::{HashMap, HashSet};
+use cuenv_tools_oci::{OciClient, Platform};
+use std::collections::HashMap;
 use std::path::Path;
 use tracing::{debug, info, warn};
 
@@ -29,9 +24,6 @@ use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncR
 /// Create a tool registry with available providers.
 fn create_registry(flakes: HashMap<String, String>) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
-
-    // Register Homebrew provider (uses OCI crate internally for ghcr.io/homebrew)
-    registry.register(cuenv_tools_homebrew::HomebrewToolProvider::new());
 
     // Register Nix provider with flake references from config
     registry.register(cuenv_tools_nix::NixToolProvider::with_flakes(flakes));
@@ -102,10 +94,8 @@ struct CollectedTool {
 /// Scans all projects in the CUE module, collects OCI image references,
 /// resolves them to digests, and writes `cuenv.lock`.
 ///
-/// For Homebrew images, this also fetches formula metadata and resolves
-/// transitive dependencies, adding them to the lockfile.
-///
-/// For Tools runtime, uses ToolProvider to resolve each tool.
+/// For Tools runtime, uses ToolProvider to resolve each tool from
+/// GitHub releases or Nix packages.
 async fn execute_lock_sync(
     path: &Path,
     _package: &str,
@@ -229,69 +219,21 @@ async fn execute_lock_sync(
         return Ok("No OCI artifacts or tools found in any project.".to_string());
     }
 
-    // Separate Homebrew images from regular images
-    let (homebrew_images, regular_images): (Vec<_>, Vec<_>) = image_platforms
-        .iter()
-        .partition(|(image, _)| is_homebrew_image(image));
-
     info!(
-        "Resolving {} Homebrew formulas + {} regular images for {} platforms",
-        homebrew_images.len(),
-        regular_images.len(),
+        "Resolving {} images for {} platforms",
+        image_platforms.len(),
         all_platforms.len()
     );
 
     let client = OciClient::new();
     let mut artifacts: Vec<LockedArtifact> = Vec::new();
 
-    // Process Homebrew images with dependency resolution
-    let mut resolved_formulas: HashSet<String> = HashSet::new();
-    for (image, platforms) in &homebrew_images {
-        let formula_name = formula_name_from_image(image).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "Failed to extract formula name from '{}'",
-                image
-            ))
-        })?;
-
-        // Skip if already resolved as a dependency
-        if resolved_formulas.contains(&formula_name) {
-            continue;
-        }
-
-        // Resolve formula with all transitive dependencies
-        info!(%formula_name, "Resolving Homebrew formula with dependencies");
-        let formulas = resolve_with_deps(&formula_name).await.map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "Failed to resolve Homebrew formula '{}': {}",
-                formula_name, e
-            ))
-        })?;
-
-        debug!(
-            formula = %formula_name,
-            deps = ?formulas.iter().map(|f| &f.name).collect::<Vec<_>>(),
-            "Resolved dependency tree"
-        );
-
-        // Create artifacts for each formula (including dependencies)
-        for formula in formulas {
-            if resolved_formulas.contains(&formula.name) {
-                continue;
-            }
-
-            let artifact = resolve_homebrew_formula(&client, &formula, platforms, &all_platforms)?;
-            artifacts.push(artifact);
-            resolved_formulas.insert(formula.name.clone());
-        }
-    }
-
-    // Process regular (non-Homebrew) images
-    for (image, platforms) in &regular_images {
+    // Process OCI images
+    for (image, platforms) in &image_platforms {
         debug!(%image, ?platforms, "Resolving image");
 
         let mut platforms_map = HashMap::new();
-        for platform_str in *platforms {
+        for platform_str in platforms {
             let platform = Platform::parse(platform_str).ok_or_else(|| {
                 cuenv_core::Error::configuration(format!(
                     "Invalid platform '{}': expected format 'os-arch' (e.g., 'darwin-arm64')",
@@ -350,7 +292,14 @@ async fn execute_lock_sync(
 
                 // Determine source for this platform
                 let source_config =
-                    resolve_source_for_platform(tool.source.as_ref(), &tool.overrides, &platform);
+                    resolve_source_for_platform(tool.source.as_ref(), &tool.overrides, &platform)
+                        .ok_or_else(|| {
+                            cuenv_core::Error::configuration(format!(
+                                "Tool '{}' has no source configured for platform '{}'. \
+                                 Specify a source (github, nix, or oci) in your tool definition.",
+                                tool.name, platform_str
+                            ))
+                        })?;
 
                 // Convert SourceConfig to ToolSource
                 let (provider_name, _tool_source, config) =
@@ -399,7 +348,7 @@ async fn execute_lock_sync(
                     dependencies: vec![],
                 };
 
-                // Use the resolved version (may differ from requested for Homebrew)
+                // Use the resolved version from the provider
                 lockfile
                     .upsert_tool_platform(
                         &tool.name,
@@ -440,19 +389,13 @@ async fn execute_lock_sync(
         // Write mode: save the lockfile
         lockfile.save(&lockfile_path)?;
 
-        let homebrew_count = lockfile
-            .artifacts
-            .iter()
-            .filter(|a| matches!(a.kind, ArtifactKind::Homebrew { .. }))
-            .count();
-        let image_count = lockfile.artifacts.len() - homebrew_count;
+        let image_count = lockfile.artifacts.len();
         let tools_count = lockfile.tools.len();
 
         let mut summary = Vec::new();
-        if homebrew_count > 0 || image_count > 0 {
+        if image_count > 0 {
             summary.push(format!(
-                "{} Homebrew formulas + {} images for [{}]",
-                homebrew_count,
+                "{} images for [{}]",
                 image_count,
                 all_platforms.join(", ")
             ));
@@ -476,12 +419,12 @@ async fn execute_lock_sync(
 /// Resolve the source configuration for a specific platform.
 ///
 /// Applies overrides based on OS and architecture, returning the
-/// appropriate source configuration.
+/// appropriate source configuration. Returns None if no source is configured.
 fn resolve_source_for_platform(
     default_source: Option<&SourceConfig>,
     overrides: &[cuenv_core::manifest::SourceOverride],
     platform: &ToolPlatform,
-) -> SourceConfig {
+) -> Option<SourceConfig> {
     // Check overrides first (most specific match wins)
     let mut best_match: Option<&SourceConfig> = None;
     let mut best_specificity = 0;
@@ -506,31 +449,16 @@ fn resolve_source_for_platform(
         }
     }
 
-    best_match
-        .cloned()
-        .or_else(|| default_source.cloned())
-        .unwrap_or(SourceConfig::Homebrew { formula: None })
+    best_match.cloned().or_else(|| default_source.cloned())
 }
 
 /// Convert SourceConfig to ToolSource and provider config.
 fn source_config_to_tool_source(
-    tool_name: &str,
+    _tool_name: &str,
     version: &str,
     config: &SourceConfig,
 ) -> (String, ToolSource, serde_json::Value) {
     match config {
-        SourceConfig::Homebrew { formula } => {
-            let formula_name = formula.clone().unwrap_or_else(|| tool_name.to_string());
-            let image_ref = format!("ghcr.io/homebrew/core/{}:{}", formula_name, version);
-            (
-                "homebrew".to_string(),
-                ToolSource::Homebrew {
-                    formula: formula_name.clone(),
-                    image_ref,
-                },
-                serde_json::json!({ "formula": formula_name }),
-            )
-        }
         SourceConfig::Oci { image, path } => (
             "oci".to_string(),
             ToolSource::Oci {
@@ -600,64 +528,3 @@ fn compute_tool_digest(resolved: &ResolvedTool) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Resolve a Homebrew formula to a lockfile artifact.
-///
-/// Uses the bottle SHA256 from formula metadata as the digest.
-fn resolve_homebrew_formula(
-    _client: &OciClient,
-    formula: &HomebrewFormula,
-    requested_platforms: &[String],
-    _all_platforms: &[String],
-) -> Result<LockedArtifact> {
-    debug!(
-        name = %formula.name,
-        version = %formula.versions.stable,
-        deps = ?formula.dependencies,
-        "Resolving Homebrew bottle"
-    );
-
-    let mut platforms_map = HashMap::new();
-
-    for platform_str in requested_platforms {
-        // Convert cuenv platform to Homebrew platform
-        let Some(homebrew_platform) = to_homebrew_platform(platform_str) else {
-            warn!(
-                %platform_str,
-                formula = %formula.name,
-                "Platform not supported by Homebrew, skipping"
-            );
-            continue;
-        };
-
-        // Get bottle info from formula metadata
-        let bottle_file = formula.get_bottle(&homebrew_platform).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "Homebrew formula '{}' has no bottle for platform '{}' (Homebrew: '{}')",
-                formula.name, platform_str, homebrew_platform
-            ))
-        })?;
-
-        // The bottle URL is the OCI reference
-        // ghcr.io/v2/homebrew/core/<name>/blobs/sha256:<digest>
-        // We use the sha256 from the bottle file as the digest
-        let digest = format!("sha256:{}", bottle_file.sha256);
-
-        debug!(
-            formula = %formula.name,
-            %platform_str,
-            %digest,
-            "Resolved bottle digest"
-        );
-
-        platforms_map.insert(platform_str.clone(), PlatformData { digest, size: None });
-    }
-
-    Ok(LockedArtifact {
-        kind: ArtifactKind::Homebrew {
-            name: formula.name.clone(),
-            version: formula.versions.stable.clone(),
-            dependencies: formula.dependencies.clone(),
-        },
-        platforms: platforms_map,
-    })
-}

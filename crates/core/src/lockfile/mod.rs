@@ -2,49 +2,42 @@
 //!
 //! The lockfile (`cuenv.lock`) stores resolved tool digests for
 //! reproducible, hermetic builds. It supports multiple tool sources:
-//! Homebrew, OCI images, GitHub releases, and Nix flakes.
+//! GitHub releases, Nix flakes, and OCI images.
 //!
 //! ## Structure (v2)
 //!
 //! ```toml
 //! version = 2
 //!
-//! # Tools section (new in v2) - multi-source tool management
+//! # Tools section - multi-source tool management
 //! [tools.jq]
 //! version = "1.7.1"
 //!
 //!   [tools.jq.platforms."darwin-arm64"]
-//!   provider = "homebrew"
+//!   provider = "github"
 //!   digest = "sha256:abc..."
-//!   source = { formula = "jq" }
+//!   source = { repo = "jqlang/jq", tag = "jq-1.7.1", asset = "jq-macos-arm64" }
 //!
 //!   [tools.jq.platforms."linux-x86_64"]
-//!   provider = "homebrew"
-//!   digest = "sha256:def..."
-//!   source = { formula = "jq" }
-//!
-//! [tools.bun]
-//! version = "1.3.5"
-//!
-//!   [tools.bun.platforms."darwin-arm64"]
 //!   provider = "github"
+//!   digest = "sha256:def..."
+//!   source = { repo = "jqlang/jq", tag = "jq-1.7.1", asset = "jq-linux-amd64" }
+//!
+//! [tools.rust]
+//! version = "1.83.0"
+//!
+//!   [tools.rust.platforms."darwin-arm64"]
+//!   provider = "nix"
 //!   digest = "sha256:ghi..."
-//!   source = { url = "https://github.com/oven-sh/bun/releases/..." }
+//!   source = { flake = "nixpkgs", package = "rustc" }
 //!
-//!   [tools.bun.platforms."linux-x86_64"]
-//!   provider = "oci"
-//!   digest = "sha256:jkl..."
-//!   source = { image = "oven/bun:1.3.5@sha256:..." }
-//!
-//! # Legacy artifacts section (for backward compatibility)
+//! # Legacy artifacts section (for OCI images)
 //! [[artifacts]]
-//! kind = "homebrew"
-//! name = "jq"
-//! version = "1.7.1"
-//! dependencies = ["oniguruma"]
+//! kind = "image"
+//! image = "nginx:1.25-alpine"
 //!
 //!   [artifacts.platforms]
-//!   "darwin-arm64" = { digest = "sha256:abc...", size = 1234567 }
+//!   "linux-x86_64" = { digest = "sha256:abc...", size = 1234567 }
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -138,23 +131,6 @@ impl Lockfile {
             .find(|a| matches!(&a.kind, ArtifactKind::Image { image: img } if img == image))
     }
 
-    /// Find a Homebrew artifact by formula name.
-    #[must_use]
-    pub fn find_homebrew_artifact(&self, name: &str) -> Option<&LockedArtifact> {
-        self.artifacts
-            .iter()
-            .find(|a| matches!(&a.kind, ArtifactKind::Homebrew { name: n, .. } if n == name))
-    }
-
-    /// Get all Homebrew artifacts.
-    #[must_use]
-    pub fn homebrew_artifacts(&self) -> Vec<&LockedArtifact> {
-        self.artifacts
-            .iter()
-            .filter(|a| matches!(&a.kind, ArtifactKind::Homebrew { .. }))
-            .collect()
-    }
-
     /// Find a tool by name.
     #[must_use]
     pub fn find_tool(&self, name: &str) -> Option<&LockedTool> {
@@ -223,8 +199,7 @@ impl Lockfile {
 
     /// Add or update an artifact in the lockfile (legacy v1 format).
     ///
-    /// For Homebrew artifacts, matches by formula name.
-    /// For Image artifacts, matches by image reference.
+    /// Matches artifacts by image reference.
     ///
     /// # Errors
     ///
@@ -236,20 +211,12 @@ impl Lockfile {
             .validate()
             .map_err(|msg| crate::Error::configuration(format!("Invalid artifact: {}", msg)))?;
 
-        // Find existing artifact with same identity
+        // Find existing artifact with same identity (match Image by full reference)
         let existing_idx = self
             .artifacts
             .iter()
             .position(|a| match (&a.kind, &artifact.kind) {
-                // Match Homebrew by name (ignore version/deps as they may change)
-                (
-                    ArtifactKind::Homebrew { name: n1, .. },
-                    ArtifactKind::Homebrew { name: n2, .. },
-                ) => n1 == n2,
-                // Match Image by full reference
                 (ArtifactKind::Image { image: i1 }, ArtifactKind::Image { image: i2 }) => i1 == i2,
-                // Different kinds never match
-                _ => false,
             });
 
         if let Some(idx) = existing_idx {
@@ -315,16 +282,6 @@ impl LockedArtifact {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ArtifactKind {
-    /// A Homebrew formula (with dependency tracking).
-    Homebrew {
-        /// Formula name (e.g., "jq", "oniguruma").
-        name: String,
-        /// Version string (e.g., "1.7.1").
-        version: String,
-        /// Runtime dependencies (other formula names).
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        dependencies: Vec<String>,
-    },
     /// An OCI image (container images).
     Image {
         /// Full image reference (e.g., "nginx:1.25-alpine").
@@ -382,15 +339,14 @@ impl LockedTool {
 /// Platform-specific tool resolution data (v2+).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockedToolPlatform {
-    /// Provider that resolved this tool (e.g., "homebrew", "github", "oci", "nix").
+    /// Provider that resolved this tool (e.g., "github", "nix", "oci").
     pub provider: String,
     /// Content-addressable digest (e.g., "sha256:abc123...").
     pub digest: String,
     /// Provider-specific source data (serialized as inline table).
-    /// For Homebrew: `{ formula = "jq" }`
-    /// For GitHub: `{ url = "https://..." }`
-    /// For OCI: `{ image = "..." }`
+    /// For GitHub: `{ repo = "...", tag = "...", asset = "..." }`
     /// For Nix: `{ flake = "...", package = "..." }`
+    /// For OCI: `{ image = "...", path = "..." }`
     pub source: serde_json::Value,
     /// Size in bytes (for progress reporting).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -440,12 +396,10 @@ mod tests {
     fn test_lockfile_serialization() {
         let mut lockfile = Lockfile::new();
 
-        // Homebrew artifact with dependencies
+        // OCI image artifact
         lockfile.artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "jq".to_string(),
-                version: "1.7.1".to_string(),
-                dependencies: vec!["oniguruma".to_string()],
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
             },
             platforms: HashMap::from([
                 (
@@ -465,41 +419,9 @@ mod tests {
             ]),
         });
 
-        // Dependency artifact
-        lockfile.artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "oniguruma".to_string(),
-                version: "6.9.9".to_string(),
-                dependencies: vec![],
-            },
-            platforms: HashMap::from([(
-                "darwin-arm64".to_string(),
-                PlatformData {
-                    digest: "sha256:xyz789".to_string(),
-                    size: Some(456789),
-                },
-            )]),
-        });
-
-        // Container image
-        lockfile.artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Image {
-                image: "nginx:1.25-alpine".to_string(),
-            },
-            platforms: HashMap::from([(
-                "linux-x86_64".to_string(),
-                PlatformData {
-                    digest: "sha256:ghi789".to_string(),
-                    size: Some(9876543),
-                },
-            )]),
-        });
-
         let toml_str = toml::to_string_pretty(&lockfile).unwrap();
         assert!(toml_str.contains("version = 2"));
-        assert!(toml_str.contains("kind = \"homebrew\""));
-        assert!(toml_str.contains("name = \"jq\""));
-        assert!(toml_str.contains("dependencies = [\"oniguruma\"]"));
+        assert!(toml_str.contains("kind = \"image\""));
         assert!(toml_str.contains("nginx:1.25-alpine"));
 
         // Round-trip test
@@ -522,30 +444,12 @@ mod tests {
     }
 
     #[test]
-    fn test_find_homebrew_artifact() {
-        let mut lockfile = Lockfile::new();
-        lockfile.artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "jq".to_string(),
-                version: "1.7.1".to_string(),
-                dependencies: vec!["oniguruma".to_string()],
-            },
-            platforms: HashMap::new(),
-        });
-
-        assert!(lockfile.find_homebrew_artifact("jq").is_some());
-        assert!(lockfile.find_homebrew_artifact("yq").is_none());
-    }
-
-    #[test]
     fn test_upsert_artifact() {
         let mut lockfile = Lockfile::new();
 
         let artifact1 = LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "jq".to_string(),
-                version: "1.7.1".to_string(),
-                dependencies: vec![],
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
             },
             platforms: HashMap::from([(
                 "darwin-arm64".to_string(),
@@ -559,12 +463,10 @@ mod tests {
         lockfile.upsert_artifact(artifact1).unwrap();
         assert_eq!(lockfile.artifacts.len(), 1);
 
-        // Update with new digest and dependencies
+        // Update with new digest
         let artifact2 = LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "jq".to_string(),
-                version: "1.7.1".to_string(),
-                dependencies: vec!["oniguruma".to_string()],
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
             },
             platforms: HashMap::from([(
                 "darwin-arm64".to_string(),
@@ -581,39 +483,6 @@ mod tests {
             lockfile.artifacts[0].platforms["darwin-arm64"].digest,
             "sha256:new"
         );
-    }
-
-    #[test]
-    fn test_homebrew_artifacts() {
-        let mut lockfile = Lockfile::new();
-
-        lockfile.artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "jq".to_string(),
-                version: "1.7.1".to_string(),
-                dependencies: vec!["oniguruma".to_string()],
-            },
-            platforms: HashMap::new(),
-        });
-
-        lockfile.artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "oniguruma".to_string(),
-                version: "6.9.9".to_string(),
-                dependencies: vec![],
-            },
-            platforms: HashMap::new(),
-        });
-
-        lockfile.artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Image {
-                image: "nginx:1.25-alpine".to_string(),
-            },
-            platforms: HashMap::new(),
-        });
-
-        let homebrew = lockfile.homebrew_artifacts();
-        assert_eq!(homebrew.len(), 2);
     }
 
     #[test]
@@ -637,10 +506,8 @@ mod tests {
         let mut lockfile = Lockfile::new();
 
         let artifact = LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "jq".to_string(),
-                version: "1.7.1".to_string(),
-                dependencies: vec![],
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
             },
             platforms: HashMap::new(), // Empty - should fail
         };
@@ -660,10 +527,8 @@ mod tests {
         let mut lockfile = Lockfile::new();
 
         let artifact = LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "jq".to_string(),
-                version: "1.7.1".to_string(),
-                dependencies: vec![],
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
             },
             platforms: HashMap::from([(
                 "darwin-arm64".to_string(),
@@ -687,10 +552,8 @@ mod tests {
     #[test]
     fn test_artifact_validate_valid() {
         let artifact = LockedArtifact {
-            kind: ArtifactKind::Homebrew {
-                name: "jq".to_string(),
-                version: "1.7.1".to_string(),
-                dependencies: vec![],
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
             },
             platforms: HashMap::from([
                 (
@@ -723,11 +586,11 @@ mod tests {
                 "1.7.1",
                 "darwin-arm64",
                 LockedToolPlatform {
-                    provider: "homebrew".to_string(),
+                    provider: "github".to_string(),
                     digest: "sha256:abc123".to_string(),
-                    source: serde_json::json!({ "formula": "jq" }),
+                    source: serde_json::json!({ "repo": "jqlang/jq", "tag": "jq-1.7.1", "asset": "jq-macos-arm64" }),
                     size: Some(1234567),
-                    dependencies: vec!["oniguruma".to_string()],
+                    dependencies: vec![],
                 },
             )
             .unwrap();
@@ -738,11 +601,11 @@ mod tests {
                 "1.7.1",
                 "linux-x86_64",
                 LockedToolPlatform {
-                    provider: "homebrew".to_string(),
+                    provider: "github".to_string(),
                     digest: "sha256:def456".to_string(),
-                    source: serde_json::json!({ "formula": "jq" }),
+                    source: serde_json::json!({ "repo": "jqlang/jq", "tag": "jq-1.7.1", "asset": "jq-linux-amd64" }),
                     size: Some(1345678),
-                    dependencies: vec!["oniguruma".to_string()],
+                    dependencies: vec![],
                 },
             )
             .unwrap();
@@ -750,7 +613,7 @@ mod tests {
         let toml_str = toml::to_string_pretty(&lockfile).unwrap();
         assert!(toml_str.contains("version = 2"));
         assert!(toml_str.contains("[tools.jq]"));
-        assert!(toml_str.contains("provider = \"homebrew\""));
+        assert!(toml_str.contains("provider = \"github\""));
         assert!(toml_str.contains("digest = \"sha256:abc123\""));
 
         // Round-trip test
@@ -769,9 +632,9 @@ mod tests {
                 "1.7.1",
                 "darwin-arm64",
                 LockedToolPlatform {
-                    provider: "homebrew".to_string(),
+                    provider: "github".to_string(),
                     digest: "sha256:abc123".to_string(),
-                    source: serde_json::json!({}),
+                    source: serde_json::json!({ "repo": "jqlang/jq", "tag": "jq-1.7.1", "asset": "jq-macos-arm64" }),
                     size: None,
                     dependencies: vec![],
                 },
@@ -842,7 +705,7 @@ mod tests {
             "1.7.1",
             "darwin-arm64",
             LockedToolPlatform {
-                provider: "homebrew".to_string(),
+                provider: "github".to_string(),
                 digest: "invalid".to_string(), // Missing sha256: prefix
                 source: serde_json::json!({}),
                 size: None,
@@ -888,7 +751,7 @@ mod tests {
                 "1.7.1",
                 "darwin-arm64",
                 LockedToolPlatform {
-                    provider: "homebrew".to_string(),
+                    provider: "github".to_string(),
                     digest: "sha256:abc".to_string(),
                     source: serde_json::json!({}),
                     size: None,
@@ -903,7 +766,7 @@ mod tests {
                 "4.44.6",
                 "darwin-arm64",
                 LockedToolPlatform {
-                    provider: "homebrew".to_string(),
+                    provider: "github".to_string(),
                     digest: "sha256:def".to_string(),
                     source: serde_json::json!({}),
                     size: None,

@@ -133,36 +133,7 @@ impl OciCache {
     pub fn ensure_dirs(&self) -> Result<()> {
         std::fs::create_dir_all(self.root.join("blobs").join("sha256"))?;
         std::fs::create_dir_all(self.root.join("bin").join("sha256"))?;
-        std::fs::create_dir_all(self.root.join("homebrew"))?;
         Ok(())
-    }
-
-    // --- Homebrew formula caching ---
-
-    /// Get path for a formula's extracted contents.
-    ///
-    /// Structure: `~/.cache/cuenv/oci/homebrew/<name>/<version>/`
-    #[must_use]
-    pub fn formula_dir(&self, name: &str, version: &str) -> PathBuf {
-        self.root.join("homebrew").join(name).join(version)
-    }
-
-    /// Get path for a formula's bin directory.
-    #[must_use]
-    pub fn formula_bin(&self, name: &str, version: &str) -> PathBuf {
-        self.formula_dir(name, version).join("bin")
-    }
-
-    /// Get path for a formula's lib directory.
-    #[must_use]
-    pub fn formula_lib(&self, name: &str, version: &str) -> PathBuf {
-        self.formula_dir(name, version).join("lib")
-    }
-
-    /// Check if a formula is extracted.
-    #[must_use]
-    pub fn has_formula(&self, name: &str, version: &str) -> bool {
-        self.formula_dir(name, version).exists()
     }
 }
 

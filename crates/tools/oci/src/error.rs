@@ -67,10 +67,6 @@ pub enum Error {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// Homebrew API or formula error.
-    #[error("Homebrew error: {0}")]
-    Homebrew(String),
-
     /// Digest mismatch after download.
     #[error("Digest mismatch for blob: expected {expected}, got {actual}")]
     DigestMismatch {

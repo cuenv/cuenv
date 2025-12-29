@@ -27,7 +27,6 @@ members = [
     "crates/1password",
     # Tool provider crates
     "crates/tools/oci",
-    "crates/tools/homebrew",
     "crates/tools/github",
     "crates/tools/nix",
 ]
@@ -70,7 +69,6 @@ cuenv-vault = { path = "crates/vault", version = "0.20.0" }
 cuenv-1password = { path = "crates/1password", version = "0.20.0" }
 # Tool provider crates
 cuenv-tools-oci = { path = "crates/tools/oci", version = "0.1.0" }
-cuenv-tools-homebrew = { path = "crates/tools/homebrew", version = "0.1.0" }
 cuenv-tools-github = { path = "crates/tools/github", version = "0.1.0" }
 cuenv-tools-nix = { path = "crates/tools/nix", version = "0.1.0" }
 schemars = "1.0.4"

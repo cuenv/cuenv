@@ -106,7 +106,7 @@ mod tests {
         }
 
         fn can_handle(&self, source: &ToolSource) -> bool {
-            matches!(source, ToolSource::Homebrew { .. }) && self.name == "homebrew"
+            matches!(source, ToolSource::GitHub { .. }) && self.name == "github"
         }
 
         async fn resolve(
@@ -135,22 +135,16 @@ mod tests {
     #[test]
     fn test_registry_register_and_get() {
         let mut registry = ToolRegistry::new();
-        registry.register(MockProvider { name: "homebrew" });
+        registry.register(MockProvider { name: "github" });
 
-        assert!(registry.get("homebrew").is_some());
-        assert!(registry.get("github").is_none());
+        assert!(registry.get("github").is_some());
+        assert!(registry.get("nix").is_none());
     }
 
     #[test]
     fn test_registry_find_for_source() {
         let mut registry = ToolRegistry::new();
-        registry.register(MockProvider { name: "homebrew" });
-
-        let source = ToolSource::Homebrew {
-            formula: "jq".into(),
-            image_ref: "test".into(),
-        };
-        assert!(registry.find_for_source(&source).is_some());
+        registry.register(MockProvider { name: "github" });
 
         let source = ToolSource::GitHub {
             repo: "org/repo".into(),
@@ -158,20 +152,27 @@ mod tests {
             asset: "file.zip".into(),
             path: None,
         };
+        assert!(registry.find_for_source(&source).is_some());
+
+        let source = ToolSource::Nix {
+            flake: "nixpkgs".into(),
+            package: "jq".into(),
+            output: None,
+        };
         assert!(registry.find_for_source(&source).is_none());
     }
 
     #[test]
     fn test_registry_iter() {
         let mut registry = ToolRegistry::new();
-        registry.register(MockProvider { name: "homebrew" });
         registry.register(MockProvider { name: "github" });
+        registry.register(MockProvider { name: "nix" });
 
         assert_eq!(registry.len(), 2);
         assert!(!registry.is_empty());
 
         let names: Vec<_> = registry.iter().map(|p| p.name()).collect();
-        assert!(names.contains(&"homebrew"));
         assert!(names.contains(&"github"));
+        assert!(names.contains(&"nix"));
     }
 }

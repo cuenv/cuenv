@@ -1,14 +1,14 @@
 //! Tool provider system for fetching development tools.
 //!
 //! This module provides a pluggable system for fetching development tools from
-//! various sources (Homebrew, Docker, GitHub, Nix). Each source is implemented
+//! various sources (GitHub, OCI, Nix). Each source is implemented
 //! as a `ToolProvider` that can resolve and fetch tools.
 //!
 //! # Architecture
 //!
 //! The tool system consists of:
 //!
-//! - [`ToolProvider`] - Trait implemented by each source (Homebrew, GitHub, etc.)
+//! - [`ToolProvider`] - Trait implemented by each source (GitHub, Nix, etc.)
 //! - [`ToolRegistry`] - Collection of registered providers
 //! - [`Platform`], [`Os`], [`Arch`] - Platform identification types
 //! - [`ToolSource`] - Source-specific resolution data
@@ -22,11 +22,11 @@
 //!
 //! // Create registry with providers
 //! let mut registry = ToolRegistry::new();
-//! registry.register(HomebrewToolProvider::new());
 //! registry.register(GitHubToolProvider::new());
+//! registry.register(NixToolProvider::new());
 //!
 //! // Resolve and fetch a tool
-//! let provider = registry.get("homebrew").unwrap();
+//! let provider = registry.get("github").unwrap();
 //! let resolved = provider.resolve("jq", "1.7.1", &Platform::current(), &config).await?;
 //! let fetched = provider.fetch(&resolved, &ToolOptions::default()).await?;
 //! ```

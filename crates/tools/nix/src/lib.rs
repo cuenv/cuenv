@@ -334,10 +334,12 @@ mod tests {
         };
         assert!(provider.can_handle(&nix_source));
 
-        let homebrew_source = ToolSource::Homebrew {
-            formula: "jq".into(),
-            image_ref: "ghcr.io/homebrew/core/jq:1.7.1".into(),
+        let github_source = ToolSource::GitHub {
+            repo: "jqlang/jq".into(),
+            tag: "v1.7.1".into(),
+            asset: "jq-linux-amd64".into(),
+            path: None,
         };
-        assert!(!provider.can_handle(&homebrew_source));
+        assert!(!provider.can_handle(&github_source));
     }
 }

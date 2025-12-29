@@ -1,31 +1,28 @@
 package schema
 
 // #ToolsRuntime provides multi-source tool management with platform overrides.
-// Replaces #OCIRuntime with a more ergonomic API supporting:
-// - Homebrew bottles (default, 80% case)
-// - OCI container images
-// - GitHub Releases
-// - Nix flakes
+// Supports fetching tools from:
+// - GitHub Releases (static binaries)
+// - Nix flakes (complex toolchains)
+// - OCI container images (custom distributions)
 //
 // Example:
 //   runtime: #ToolsRuntime & {
 //       platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64"]
+//       flakes: nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
 //       tools: {
-//           // Simple Homebrew (most common)
-//           jq: "1.7.1"
-//           yq: "4.44.6"
-//
-//           // Homebrew with formula override
-//           go: {version: "1.24.0", source: #Homebrew & {formula: "go@1.24"}}
-//
-//           // Platform-specific sources
-//           bun: {
-//               version: "1.3.5"
-//               source: #Homebrew
+//           // GitHub releases with platform overrides
+//           jq: {
+//               version: "1.7.1"
 //               overrides: [
-//                   {os: "linux", source: #Oci & {image: "oven/bun:1.3.5", path: "/usr/local/bin/bun"}},
+//                   {os: "darwin", arch: "arm64", source: #GitHub & {repo: "jqlang/jq", asset: "jq-macos-arm64"}},
+//                   {os: "darwin", arch: "x86_64", source: #GitHub & {repo: "jqlang/jq", asset: "jq-macos-amd64"}},
+//                   {os: "linux", arch: "x86_64", source: #GitHub & {repo: "jqlang/jq", asset: "jq-linux-amd64"}},
 //               ]
 //           }
+//
+//           // Nix package
+//           rust: {version: "1.83.0", source: #Nix & {flake: "nixpkgs", package: "rustc"}}
 //       }
 //   }
 #ToolsRuntime: {
@@ -72,14 +69,7 @@ package schema
 }
 
 // #Source is a union of all supported tool sources
-#Source: #Homebrew | #Oci | #GitHub | #Nix
-
-// #Homebrew fetches from Homebrew bottles (ghcr.io/homebrew)
-#Homebrew: {
-	type: "homebrew"
-	// Formula name (defaults to tool name)
-	formula?: string
-}
+#Source: #Oci | #GitHub | #Nix
 
 // #Oci extracts binaries from OCI container images
 #Oci: {

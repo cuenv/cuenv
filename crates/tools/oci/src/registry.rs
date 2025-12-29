@@ -209,10 +209,10 @@ mod tests {
 
     #[test]
     fn test_parse_reference() {
-        let r = parse_reference("ghcr.io/homebrew/core/jq:1.7.1").unwrap();
+        let r = parse_reference("ghcr.io/distroless/static:nonroot").unwrap();
         assert_eq!(r.registry(), "ghcr.io");
-        assert_eq!(r.repository(), "homebrew/core/jq");
-        assert_eq!(r.tag(), Some("1.7.1"));
+        assert_eq!(r.repository(), "distroless/static");
+        assert_eq!(r.tag(), Some("nonroot"));
     }
 
     #[test]

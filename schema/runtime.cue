@@ -8,7 +8,7 @@ package schema
 //   runtime: #DevenvRuntime
 //   runtime: #ContainerRuntime & {image: "node:20"}
 //   runtime: #DaggerRuntime & {image: "rust:1.75"}
-//   runtime: #OCIRuntime & {platforms: ["darwin-arm64"], images: [{image: "ghcr.io/homebrew/core/jq:1.7.1"}]}
+//   runtime: #OCIRuntime & {platforms: ["darwin-arm64"], images: [{image: "nginx:1.25-alpine", extract: [{path: "/usr/sbin/nginx"}]}]}
 //   runtime: #ToolsRuntime & {platforms: ["darwin-arm64"], tools: {jq: "1.7.1"}}
 #Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #DaggerRuntime | #OCIRuntime | #ToolsRuntime
 
@@ -61,16 +61,14 @@ package schema
 // #OCIRuntime fetches binaries from OCI images.
 // Provides hermetic binary management with content-addressed caching.
 //
-// Homebrew bottles are auto-detected and extracted automatically.
-// Other images require explicit `extract` paths.
+// Images require explicit `extract` paths to specify which binaries to extract.
 //
 // Example:
 //   runtime: #OCIRuntime & {
 //       platforms: ["darwin-arm64", "linux-x86_64"]
 //       images: [
-//           { image: "ghcr.io/homebrew/core/jq:1.7.1" },
-//           { image: "ghcr.io/homebrew/core/ripgrep:14.1.0", as: "rg" },
 //           { image: "nginx:1.25-alpine", extract: [{ path: "/usr/sbin/nginx" }] },
+//           { image: "busybox:latest", extract: [{ path: "/bin/sh", as: "busybox-sh" }] },
 //       ]
 //   }
 #OCIRuntime: {
@@ -84,14 +82,13 @@ package schema
 }
 
 // #OCIImage specifies an OCI image to extract binaries from.
-// Homebrew bottles (ghcr.io/homebrew/*) are auto-detected and extracted.
-// Other images require explicit `extract` paths.
+// Images require explicit `extract` paths to specify which binaries to extract.
 #OCIImage: {
-	// Full image reference (e.g., "ghcr.io/homebrew/core/jq:1.7.1", "nginx:1.25-alpine")
+	// Full image reference (e.g., "nginx:1.25-alpine", "gcr.io/distroless/static:latest")
 	image!: string
-	// Rename the extracted binary (for Homebrew bottles where package != binary name)
+	// Rename the extracted binary (when package name differs from binary name)
 	as?: string
-	// Explicit extraction paths (required for non-Homebrew images)
+	// Extraction paths specifying which binaries to extract from the image
 	extract?: [...#OCIExtract]
 }
 

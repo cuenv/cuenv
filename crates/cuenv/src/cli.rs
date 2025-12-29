@@ -665,7 +665,7 @@ pub enum Commands {
         subcommand: RuntimeCommands,
     },
     /// Multi-source tool management.
-    #[command(about = "Multi-source tool management (Homebrew, OCI, GitHub, Nix)")]
+    #[command(about = "Multi-source tool management (GitHub, OCI, Nix)")]
     Tools {
         /// Tools subcommand to execute.
         #[command(subcommand)]

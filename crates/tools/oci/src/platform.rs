@@ -3,7 +3,6 @@
 //! Handles mapping between:
 //! - cuenv platform strings (e.g., "darwin-arm64", "linux-x86_64")
 //! - OCI platform specs (os/arch, e.g., "darwin/arm64", "linux/amd64")
-//! - Homebrew platform names (e.g., "arm64_sonoma", "x86_64_linux")
 
 use std::fmt;
 
@@ -47,24 +46,6 @@ impl Platform {
             other => other,
         };
         format!("{}/{}", self.os, arch)
-    }
-
-    /// Convert to Homebrew bottle platform suffix.
-    ///
-    /// Homebrew uses platform suffixes like:
-    /// - `arm64_sonoma` (macOS 14 on Apple Silicon)
-    /// - `x86_64_sonoma` (macOS 14 on Intel)
-    /// - `x86_64_linux` (Linux on x86_64)
-    /// - `aarch64_linux` (Linux on ARM64)
-    #[must_use]
-    pub fn to_homebrew_suffix(&self) -> Option<String> {
-        match (self.os.as_str(), self.arch.as_str()) {
-            ("darwin", "arm64") => Some("arm64_sonoma".to_string()),
-            ("darwin", "x86_64") => Some("x86_64_sonoma".to_string()),
-            ("linux", "x86_64") => Some("x86_64_linux".to_string()),
-            ("linux", "arm64") => Some("aarch64_linux".to_string()),
-            _ => None,
-        }
     }
 }
 
@@ -123,15 +104,6 @@ mod tests {
 
         let p = Platform::new("linux", "x86_64");
         assert_eq!(p.to_oci_platform(), "linux/amd64");
-    }
-
-    #[test]
-    fn test_platform_to_homebrew() {
-        let p = Platform::new("darwin", "arm64");
-        assert_eq!(p.to_homebrew_suffix(), Some("arm64_sonoma".to_string()));
-
-        let p = Platform::new("linux", "x86_64");
-        assert_eq!(p.to_homebrew_suffix(), Some("x86_64_linux".to_string()));
     }
 
     #[test]

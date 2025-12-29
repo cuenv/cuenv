@@ -1,7 +1,7 @@
 //! Tools command implementations for multi-source tool management.
 //!
 //! This module provides commands for downloading, activating, and listing tools
-//! from multiple sources (Homebrew, OCI, GitHub, Nix).
+//! from multiple sources (GitHub releases, Nix packages, OCI images).
 
 use crate::cli::CliError;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
@@ -13,17 +13,11 @@ use std::path::{Path, PathBuf};
 fn create_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
-    // Register Homebrew provider (uses OCI crate internally for ghcr.io/homebrew)
-    registry.register(cuenv_tools_homebrew::HomebrewToolProvider::new());
-
     // Register Nix provider
     registry.register(cuenv_tools_nix::NixToolProvider::new());
 
     // Register GitHub provider
     registry.register(cuenv_tools_github::GitHubToolProvider::new());
-
-    // Note: OCI provider for generic images is not yet implemented.
-    // The homebrew provider handles ghcr.io/homebrew/* images.
 
     registry
 }
@@ -95,18 +89,6 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
 
         // Convert lockfile data to ToolSource
         let source = match locked.provider.as_str() {
-            "homebrew" => {
-                let formula = locked
-                    .source
-                    .get("formula")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(name);
-                let image_ref = format!("ghcr.io/homebrew/core/{}:{}", formula, tool.version);
-                ToolSource::Homebrew {
-                    formula: formula.to_string(),
-                    image_ref,
-                }
-            }
             "oci" => {
                 let image = locked
                     .source
@@ -353,23 +335,11 @@ pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), 
 
 /// Convert a lockfile entry to a ToolSource.
 fn lockfile_entry_to_source(
-    name: &str,
-    version: &str,
+    _name: &str,
+    _version: &str,
     locked: &cuenv_core::lockfile::LockedToolPlatform,
 ) -> Option<ToolSource> {
     match locked.provider.as_str() {
-        "homebrew" => {
-            let formula = locked
-                .source
-                .get("formula")
-                .and_then(|v| v.as_str())
-                .unwrap_or(name);
-            let image_ref = format!("ghcr.io/homebrew/core/{}:{}", formula, version);
-            Some(ToolSource::Homebrew {
-                formula: formula.to_string(),
-                image_ref,
-            })
-        }
         "oci" => {
             let image = locked
                 .source

@@ -5,6 +5,7 @@ import (
 	"github.com/cuenv/cuenv/schema"
 	xBun "github.com/cuenv/cuenv/contrib/bun"
 	xRust "github.com/cuenv/cuenv/contrib/rust"
+	xTools "github.com/cuenv/cuenv/contrib/tools"
 )
 
 schema.#Project & {
@@ -16,23 +17,30 @@ schema.#Project & {
 			nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
 		}
 		tools: {
-			jq:  "1.7.1"
-			yq:  "4.44.6"
-			prettier: "3.7.4"
-			treefmt: "2.4.0"
+			jq: xTools.#Jq & {version: "1.7.1"}
+			yq: xTools.#Yq & {version: "4.44.6"}
+			treefmt: xTools.#Treefmt & {version: "2.4.0"}
 			bun: xBun.#Bun & {version: "1.3.5"}
 
+			prettier: schema.#Tool & {
+				version: "3.7.4"
+				source: schema.#Nix & {
+					flake:   "nixpkgs"
+					package: "nodePackages.prettier"
+				}
+			}
+
 			// Rust toolchain
-			rust:              xRust.#Rust & {version: "1.92.0"}
-			"rust-analyzer":   xRust.#RustAnalyzer & {version: "2025-12-22"}
+			rust: xRust.#Rust & {version: "1.92.0"}
+			"rust-analyzer": xRust.#RustAnalyzer & {version: "2025-12-22"}
 
 			// Cargo extensions
-			"cargo-nextest":   xRust.#CargoNextest & {version: "0.9.116"}
-			"cargo-deny":      xRust.#CargoDeny & {version: "0.18.9"}
-			"cargo-llvm-cov":  xRust.#CargoLlvmCov & {version: "0.6.21"}
+			"cargo-nextest": xRust.#CargoNextest & {version: "0.9.116"}
+			"cargo-deny": xRust.#CargoDeny & {version: "0.18.9"}
+			"cargo-llvm-cov": xRust.#CargoLlvmCov & {version: "0.6.21"}
 			"cargo-cyclonedx": xRust.#CargoCyclonedx & {version: "0.5.7"}
-			"cargo-zigbuild":  xRust.#CargoZigbuild & {version: "0.20.1"}
-			sccache:           xRust.#SccacheTool & {version: "0.12.0"}
+			"cargo-zigbuild": xRust.#CargoZigbuild & {version: "0.20.1"}
+			sccache: xRust.#SccacheTool & {version: "0.12.0"}
 
 			// Build tools
 			zig: xRust.#Zig & {version: "0.15.2"}

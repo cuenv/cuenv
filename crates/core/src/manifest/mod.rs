@@ -409,9 +409,9 @@ pub enum Runtime {
     Container(ContainerRuntime),
     /// Advanced container with caching, secrets, chaining
     Dagger(DaggerRuntime),
-    /// OCI-based binary fetching (e.g., Homebrew bottles)
+    /// OCI-based binary fetching from container images
     Oci(OciRuntime),
-    /// Multi-source tool management (Homebrew, GitHub, OCI, Nix)
+    /// Multi-source tool management (GitHub, OCI, Nix)
     Tools(ToolsRuntime),
 }
 
@@ -498,8 +498,7 @@ pub struct DaggerCacheMount {
 /// OCI-based binary runtime configuration.
 ///
 /// Fetches binaries from OCI images for hermetic, content-addressed binary management.
-/// Homebrew bottles (ghcr.io/homebrew/*) are auto-detected and extracted.
-/// Other images require explicit `extract` paths.
+/// Images require explicit `extract` paths to specify which binaries to extract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct OciRuntime {
@@ -516,16 +515,15 @@ pub struct OciRuntime {
 
 /// An OCI image to extract binaries from.
 ///
-/// Homebrew bottles (ghcr.io/homebrew/*) are auto-detected and extracted.
-/// Other images require explicit `extract` paths.
+/// Images require explicit `extract` paths to specify which binaries to extract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OciImage {
-    /// Full image reference (e.g., "ghcr.io/homebrew/core/jq:1.7.1", "nginx:1.25-alpine")
+    /// Full image reference (e.g., "nginx:1.25-alpine", "gcr.io/distroless/static:latest")
     pub image: String,
-    /// Rename the extracted binary (for Homebrew bottles where package != binary name)
+    /// Rename the extracted binary (when package name differs from binary name)
     #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
     pub as_name: Option<String>,
-    /// Explicit extraction paths (required for non-Homebrew images)
+    /// Extraction paths specifying which binaries to extract from the image
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extract: Vec<OciExtract>,
 }
@@ -543,7 +541,7 @@ pub struct OciExtract {
 /// Multi-source tool runtime configuration.
 ///
 /// Provides ergonomic tool management with platform-specific overrides.
-/// Simple case: `jq: "1.7.1"` uses Homebrew.
+/// Simple case: `jq: "1.7.1"` requires a source to be defined.
 /// Complex case: Platform-specific sources with overrides.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -566,7 +564,7 @@ pub struct ToolsRuntime {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum ToolSpec {
-    /// Simple version string (uses Homebrew by default)
+    /// Simple version string (requires explicit source configuration)
     Version(String),
     /// Full tool configuration with source and overrides
     Full(ToolConfig),
@@ -617,12 +615,6 @@ pub struct SourceOverride {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SourceConfig {
-    /// Fetch from Homebrew bottles (ghcr.io/homebrew)
-    Homebrew {
-        /// Formula name (defaults to tool name)
-        #[serde(skip_serializing_if = "Option::is_none")]
-        formula: Option<String>,
-    },
     /// Extract from OCI container image
     Oci {
         /// Image reference with optional {version}, {os}, {arch} templates

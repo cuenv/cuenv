@@ -1626,7 +1626,6 @@ dependencies = [
  "cuenv-ignore",
  "cuenv-release",
  "cuenv-tools-github",
- "cuenv-tools-homebrew",
  "cuenv-tools-nix",
  "cuenv-tools-oci",
  "dirs 6.0.0",
@@ -1989,21 +1988,6 @@ dependencies = [
  "tokio",
  "tracing",
  "zip",
-]
-
-[[package]]
-name = "cuenv-tools-homebrew"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "cuenv-core",
- "cuenv-tools-oci",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
