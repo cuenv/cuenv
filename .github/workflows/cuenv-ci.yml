@@ -59,8 +59,8 @@ jobs:
     - name: Setup Cachix (cuenv)
       run: . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use cuenv
       env:
-        CACHIX_CACHE_NAME: cuenv
         CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        CACHIX_CACHE_NAME: cuenv
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -71,6 +71,6 @@ jobs:
       run: cuenv task check --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        CACHIX_CACHE_NAME: cuenv
         CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        CACHIX_CACHE_NAME: cuenv
         RUSTC_WRAPPER: sccache
