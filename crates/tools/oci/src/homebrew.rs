@@ -57,9 +57,15 @@ impl HomebrewFormula {
     /// Get the bottle file for a specific platform.
     ///
     /// Platform names are like "arm64_sonoma", "x86_64_linux", etc.
+    /// Falls back to "all" for platform-independent packages (e.g., node-based tools).
     #[must_use]
     pub fn get_bottle(&self, platform: &str) -> Option<&BottleFile> {
-        self.bottle.as_ref()?.stable.files.get(platform)
+        self.bottle.as_ref().and_then(|b| {
+            b.stable
+                .files
+                .get(platform)
+                .or_else(|| b.stable.files.get("all"))
+        })
     }
 
     /// Get all available bottle platforms.
