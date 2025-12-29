@@ -299,8 +299,178 @@ pub fn relocate_homebrew_bottle(
     Ok(())
 }
 
-/// Stub for non-macOS platforms.
-#[cfg(not(target_os = "macos"))]
+/// Relocate Homebrew bottle binaries on Linux using patchelf.
+///
+/// Linux Homebrew bottles contain `@@HOMEBREW_PREFIX@@` placeholder paths
+/// in their RPATH and interpreter fields. This function uses patchelf to:
+/// - Set the interpreter to the cached glibc's ld.so
+/// - Set RPATH to include all dependency lib directories
+#[cfg(target_os = "linux")]
+pub fn relocate_homebrew_bottle(
+    formula_dir: &Path,
+    homebrew_cache: &Path,
+    formula_name: &str,
+    formula_version: &str,
+    dependencies: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    use std::process::Command;
+
+    // Check patchelf is available
+    if Command::new("patchelf").arg("--version").output().is_err() {
+        tracing::warn!(
+            "patchelf not found - Linux binaries may not work correctly. \
+             Install with: apt install patchelf / dnf install patchelf"
+        );
+        return Ok(());
+    }
+
+    debug!(
+        ?formula_dir,
+        formula_name, formula_version, "Relocating Homebrew bottle (Linux)"
+    );
+
+    // Get glibc path for interpreter
+    let glibc_version = match dependencies.get("glibc") {
+        Some(v) => v,
+        None => {
+            // glibc not in dependencies - this is fine for some packages
+            debug!(formula_name, "No glibc dependency, skipping interpreter patching");
+            return Ok(());
+        }
+    };
+
+    // Interpreter name varies by architecture
+    let interpreter_name = if cfg!(target_arch = "x86_64") {
+        "ld-linux-x86-64.so.2"
+    } else if cfg!(target_arch = "aarch64") {
+        "ld-linux-aarch64.so.1"
+    } else {
+        tracing::warn!("Unsupported Linux architecture for binary relocation");
+        return Ok(());
+    };
+    let interpreter = format!(
+        "{}/glibc/{}/lib/{}",
+        homebrew_cache.display(),
+        glibc_version,
+        interpreter_name
+    );
+
+    // Collect files to process
+    let mut files_to_process = Vec::new();
+    collect_elf_files(&formula_dir.join("bin"), &mut files_to_process)?;
+    collect_elf_files(&formula_dir.join("lib"), &mut files_to_process)?;
+    collect_elf_files(&formula_dir.join("libexec"), &mut files_to_process)?;
+
+    // Build RPATH with all dependency lib directories
+    let mut rpath_dirs = vec![
+        "$ORIGIN/../lib".to_string(),
+        format!("{}/glibc/{}/lib", homebrew_cache.display(), glibc_version),
+    ];
+    for (dep_name, dep_version) in dependencies {
+        if dep_name != "glibc" {
+            rpath_dirs.push(format!(
+                "{}/{}/{}/lib",
+                homebrew_cache.display(),
+                dep_name,
+                dep_version
+            ));
+        }
+    }
+    let rpath = rpath_dirs.join(":");
+
+    for file_path in &files_to_process {
+        if !is_elf_file(file_path)? {
+            continue;
+        }
+
+        // Only executables need interpreter patching (not .so files)
+        if is_elf_executable(file_path)? {
+            let status = Command::new("patchelf")
+                .arg("--set-interpreter")
+                .arg(&interpreter)
+                .arg(file_path)
+                .status();
+
+            match status {
+                Ok(s) if s.success() => {
+                    trace!(file = ?file_path, %interpreter, "Set interpreter");
+                }
+                Ok(_) => {
+                    debug!(file = ?file_path, "patchelf --set-interpreter failed");
+                }
+                Err(e) => {
+                    debug!(file = ?file_path, error = %e, "patchelf command failed");
+                }
+            }
+        }
+
+        // All ELF files need RPATH
+        let status = Command::new("patchelf")
+            .arg("--set-rpath")
+            .arg(&rpath)
+            .arg(file_path)
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                trace!(file = ?file_path, "Set RPATH");
+            }
+            Ok(_) => {
+                debug!(file = ?file_path, "patchelf --set-rpath failed");
+            }
+            Err(e) => {
+                debug!(file = ?file_path, error = %e, "patchelf command failed");
+            }
+        }
+    }
+
+    debug!(?formula_dir, "Relocation complete");
+    Ok(())
+}
+
+/// Recursively collect all files from a directory.
+#[cfg(target_os = "linux")]
+fn collect_elf_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_elf_files(&path, files)?;
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Check if a file is an ELF binary by reading its magic bytes.
+#[cfg(target_os = "linux")]
+fn is_elf_file(path: &Path) -> Result<bool> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut magic = [0u8; 4];
+    if file.read(&mut magic)? < 4 {
+        return Ok(false);
+    }
+    // ELF magic: 0x7F 'E' 'L' 'F'
+    Ok(magic == [0x7F, b'E', b'L', b'F'])
+}
+
+/// Check if an ELF file is an executable (needs interpreter patching).
+/// Shared libraries (.so) don't have interpreters.
+#[cfg(target_os = "linux")]
+fn is_elf_executable(path: &Path) -> Result<bool> {
+    // Heuristic: files in bin/ or libexec/ are executables
+    // This avoids complex ELF header parsing for .interp section detection
+    let path_str = path.to_string_lossy();
+    Ok(path_str.contains("/bin/") || path_str.contains("/libexec/"))
+}
+
+/// Stub for non-Linux, non-macOS platforms.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn relocate_homebrew_bottle(
     _formula_dir: &Path,
     _homebrew_cache: &Path,
@@ -308,8 +478,7 @@ pub fn relocate_homebrew_bottle(
     _formula_version: &str,
     _dependencies: &std::collections::HashMap<String, String>,
 ) -> Result<()> {
-    // Linux Homebrew bottles use different relocation (patchelf)
-    // For now, we rely on LD_LIBRARY_PATH
+    // Unsupported platform - rely on environment variables
     Ok(())
 }
 

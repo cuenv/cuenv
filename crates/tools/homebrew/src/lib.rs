@@ -185,6 +185,21 @@ impl ToolProvider for HomebrewToolProvider {
             cuenv_core::Error::tool_resolution(format!("Failed to resolve dependencies: {}", e))
         })?;
 
+        // On Linux, add glibc as an implicit dependency for all Homebrew bottles.
+        // Homebrew bottles are built against Homebrew's glibc and require its ld.so.
+        #[cfg(target_os = "linux")]
+        let formulas = {
+            let mut formulas = formulas;
+            if !formulas.iter().any(|f| f.name == "glibc") {
+                let glibc = fetch_formula("glibc").await.map_err(|e| {
+                    cuenv_core::Error::tool_resolution(format!("Failed to fetch glibc: {}", e))
+                })?;
+                // Insert at beginning so glibc is fetched first
+                formulas.insert(0, glibc);
+            }
+            formulas
+        };
+
         // Build dependency version map for relocation
         let mut dep_versions: HashMap<String, String> = HashMap::new();
         for f in &formulas {
