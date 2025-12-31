@@ -31,6 +31,9 @@ fn create_registry(flakes: HashMap<String, String>) -> ToolRegistry {
     // Register GitHub provider
     registry.register(cuenv_tools_github::GitHubToolProvider::new());
 
+    // Register Rustup provider
+    registry.register(cuenv_tools_rustup::RustupToolProvider::new());
+
     registry
 }
 
