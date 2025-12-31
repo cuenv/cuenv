@@ -27,6 +27,7 @@
 //! registry.sync_provider("cubes", &path, "cuenv", &options, true, &executor).await?;
 //! ```
 
+pub mod formatters;
 pub mod functions;
 pub mod provider;
 pub mod providers;

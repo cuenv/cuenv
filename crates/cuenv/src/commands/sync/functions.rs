@@ -145,7 +145,29 @@ fn execute_sync_cubes_local(
         return Ok("No cube configuration found in this project.".to_string());
     };
 
-    sync_cube_files(dir_path, &manifest.name, cube_config, dry_run, check, diff)
+    let sync_result = sync_cube_files(dir_path, &manifest.name, cube_config, dry_run, check, diff)?;
+
+    // Run formatters on generated files if configured
+    let format_result = if let Some(ref formatters) = manifest.formatters {
+        // Collect file paths from cube config
+        let file_paths: Vec<std::path::PathBuf> = cube_config
+            .files
+            .keys()
+            .map(|p| dir_path.join(p))
+            .collect();
+        let file_refs: Vec<&Path> = file_paths.iter().map(|p| p.as_path()).collect();
+
+        super::formatters::format_generated_files(&file_refs, formatters, dir_path, dry_run, check)?
+    } else {
+        String::new()
+    };
+
+    // Combine results
+    if format_result.is_empty() {
+        Ok(sync_result)
+    } else {
+        Ok(format!("{sync_result}\n\n{format_result}"))
+    }
 }
 
 /// Sync cube files for a single project
