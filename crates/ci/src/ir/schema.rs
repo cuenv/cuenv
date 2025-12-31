@@ -542,7 +542,9 @@ impl StageConfiguration {
     }
 
     /// Sort all stages by priority (lower priority = earlier)
-    #[deprecated(note = "Use sort_by_dependencies instead, which respects depends_on relationships")]
+    #[deprecated(
+        note = "Use sort_by_dependencies instead, which respects depends_on relationships"
+    )]
     pub fn sort_by_priority(&mut self) {
         self.bootstrap.sort_by_key(|t| t.priority);
         self.setup.sort_by_key(|t| t.priority);

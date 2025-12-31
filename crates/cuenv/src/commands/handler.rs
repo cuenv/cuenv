@@ -321,7 +321,13 @@ impl CommandHandler for ExportHandler {
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        export::execute_export(self.shell.as_deref(), &self.path, &self.package, Some(executor)).await
+        export::execute_export(
+            self.shell.as_deref(),
+            &self.path,
+            &self.package,
+            Some(executor),
+        )
+        .await
     }
 }
 
