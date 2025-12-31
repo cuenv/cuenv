@@ -70,8 +70,7 @@ impl CuenvContributor {
             format!("https://github.com/cuenv/cuenv/releases/download/{version}")
         };
         format!(
-            "curl -sSL {url}/cuenv-x86_64-linux.tar.gz | \
-             tar -xzf - -C /usr/local/bin && \
+            "curl -sSL -o /usr/local/bin/cuenv {url}/cuenv-linux-x64 && \
              chmod +x /usr/local/bin/cuenv"
         )
     }
