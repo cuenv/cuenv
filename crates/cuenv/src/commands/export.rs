@@ -130,26 +130,24 @@ fn evaluate_project(
 /// # Errors
 ///
 /// Returns an error if state management fails.
-pub fn execute_export_sync(shell_type: Option<&str>, package: &str) -> Result<Option<String>> {
+pub fn execute_export_sync(shell_type: Option<&str>, path: &str, package: &str) -> Result<Option<String>> {
     let shell = Shell::detect(shell_type);
-    let current_dir = std::env::current_dir().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-    })?;
+    let target_dir = Path::new(path);
 
     // Fast check: does env.cue exist with matching package?
-    let directory = match env_file::find_env_file(&current_dir, package)? {
+    let directory = match env_file::find_env_file(target_dir, package)? {
         EnvFileStatus::Match(dir) => dir,
         EnvFileStatus::Missing => {
             debug!(
                 "No env.cue found in {} (sync fast path)",
-                current_dir.display()
+                target_dir.display()
             );
             return Ok(Some(format_no_op(shell)));
         }
         EnvFileStatus::PackageMismatch { found_package } => {
             debug!(
                 "env.cue package mismatch in {}: found {:?}, expected {} (sync fast path)",
-                current_dir.display(),
+                target_dir.display(),
                 found_package,
                 package
             );
@@ -217,25 +215,24 @@ pub fn execute_export_sync(shell_type: Option<&str>, package: &str) -> Result<Op
 #[allow(clippy::too_many_lines, clippy::uninlined_format_args)]
 pub async fn execute_export(
     shell_type: Option<&str>,
+    path: &str,
     package: &str,
     executor: Option<&CommandExecutor>,
 ) -> Result<String> {
     let shell = Shell::detect(shell_type);
-    let current_dir = std::env::current_dir().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-    })?;
+    let target_dir = Path::new(path);
 
     // Check if env.cue exists with matching package
-    let directory = match env_file::find_env_file(&current_dir, package)? {
+    let directory = match env_file::find_env_file(target_dir, package)? {
         EnvFileStatus::Match(dir) => dir,
         EnvFileStatus::Missing => {
-            debug!("No env.cue found in {}", current_dir.display());
+            debug!("No env.cue found in {}", target_dir.display());
             return Ok(format_no_op(shell));
         }
         EnvFileStatus::PackageMismatch { found_package } => {
             debug!(
                 "env.cue package mismatch in {}: found {:?}, expected {}",
-                current_dir.display(),
+                target_dir.display(),
                 found_package,
                 package
             );

@@ -285,7 +285,11 @@ pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), 
 
         // Convert lockfile data to ToolSource
         let Some(source) = lockfile_entry_to_source(name, &tool.version, locked) else {
-            tracing::debug!("Unknown provider '{}' for tool '{}' - skipping", locked.provider, name);
+            tracing::debug!(
+                "Unknown provider '{}' for tool '{}' - skipping",
+                locked.provider,
+                name
+            );
             continue;
         };
 
@@ -502,10 +506,29 @@ pub fn get_tool_paths(project_path: Option<&Path>) -> Result<Option<ToolPaths>, 
     let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
     let mut lib_dirs: HashSet<PathBuf> = HashSet::new();
 
+    // 1. Check for Nix profile in XDG cache (for Nix tools)
+    let lockfile_dir = lockfile_path.parent().unwrap_or(Path::new("."));
+    if let Ok(profile_path) = cuenv_tools_nix::profile::profile_path_for_project(lockfile_dir) {
+        let bin = profile_path.join("bin");
+        if bin.exists() {
+            bin_dirs.insert(bin);
+        }
+        let lib = profile_path.join("lib");
+        if lib.exists() {
+            lib_dirs.insert(lib);
+        }
+    }
+
+    // 2. Process non-Nix tools (cache-based)
     for (name, tool) in &lockfile.tools {
         let Some(locked) = tool.platforms.get(&platform_str) else {
             continue;
         };
+
+        // Skip Nix tools - they use profile, not cache
+        if locked.provider == "nix" {
+            continue;
+        }
 
         // Construct the tool directory based on provider
         let tool_dir = cache_dir

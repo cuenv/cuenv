@@ -558,6 +558,14 @@ pub enum Commands {
         /// Shell type (bash, zsh, fish, powershell).
         #[arg(long, short = 's', help = "Shell type (bash, zsh, fish, powershell)")]
         shell: Option<String>,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
         /// Name of the CUE package to evaluate.
         #[arg(
             long,
@@ -1345,7 +1353,7 @@ impl Commands {
                 yes,
             },
             Self::Deny { path, package, all } => Command::Deny { path, package, all },
-            Self::Export { shell, package } => Command::Export { shell, package },
+            Self::Export { shell, path, package } => Command::Export { shell, path, package },
             Self::Ci {
                 dry_run,
                 pipeline,

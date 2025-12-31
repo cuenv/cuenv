@@ -1313,7 +1313,10 @@ mod tests {
             .wait_for_completion(&directory_path, &config_hash, Some(15))
             .await
         {
-            eprintln!("Warning: wait_for_completion timed out: {}, skipping test", e);
+            eprintln!(
+                "Warning: wait_for_completion timed out: {}, skipping test",
+                e
+            );
             return;
         }
 
@@ -1741,7 +1744,11 @@ mod tests {
                 .wait_for_completion(dir, config_hash, Some(15))
                 .await
             {
-                eprintln!("Warning: wait_for_completion failed for {}: {}", dir.display(), e);
+                eprintln!(
+                    "Warning: wait_for_completion failed for {}: {}",
+                    dir.display(),
+                    e
+                );
                 continue;
             }
 
@@ -1921,7 +1928,10 @@ mod tests {
             .wait_for_completion(&directory_path, &config_hash1, Some(15))
             .await
         {
-            eprintln!("Warning: wait_for_completion config1 timed out: {}, skipping test", e);
+            eprintln!(
+                "Warning: wait_for_completion config1 timed out: {}, skipping test",
+                e
+            );
             return;
         }
 
@@ -1929,7 +1939,10 @@ mod tests {
             .wait_for_completion(&directory_path, &config_hash2, Some(15))
             .await
         {
-            eprintln!("Warning: wait_for_completion config2 timed out: {}, skipping test", e);
+            eprintln!(
+                "Warning: wait_for_completion config2 timed out: {}, skipping test",
+                e
+            );
             return;
         }
 

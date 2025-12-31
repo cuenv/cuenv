@@ -304,22 +304,23 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
 
 #[given(expr = "I am in the {string} directory with completed hooks")]
 async fn in_directory_with_completed_hooks(world: &mut TestWorld, dir: String) {
-    // Extract the parent and subdirectory from the path (e.g., "examples/hook" -> "examples", "hook")
+    // Extract the parent directory from the path (e.g., "examples/hook" -> "examples")
     let parts: Vec<&str> = dir.split('/').collect();
-    let (parent_dir, subdir) = if parts.len() >= 2 {
-        (parts[0].to_string(), parts[1..].join("/"))
+    let parent_dir = if parts.len() >= 2 {
+        parts[0].to_string()
     } else {
-        ("examples".to_string(), dir.clone())
+        "examples".to_string()
     };
 
-    // 1. Set up parent directory
+    // 1. Set up parent directory (creates test_base_dir and sets current_dir)
     in_directory(world, parent_dir).await;
 
-    // 2. Allow hooks in the subdirectory
-    cuenv_allowed_in_dir(world, subdir.clone()).await;
+    // 2. Allow hooks in the directory (use FULL path to ensure "examples" is in path)
+    // This ensures package detection works correctly (looks for "examples" in path)
+    cuenv_allowed_in_dir(world, dir.clone()).await;
 
-    // 3. Change to subdirectory (triggers hook execution)
-    change_directory(world, subdir).await;
+    // 3. Change to directory (triggers hook execution) - use FULL path
+    change_directory(world, dir).await;
 
     // 4. Wait for hooks to complete
     wait_for_hooks(world).await;
@@ -520,7 +521,15 @@ async fn wait_for_hooks(world: &mut TestWorld) {
 
             // Use 'export' command which outputs shell eval statements
             world
-                .run_cuenv(&["export", "--shell", "bash", "--package", package])
+                .run_cuenv(&[
+                    "export",
+                    "--shell",
+                    "bash",
+                    "--path",
+                    &dir_path,
+                    "--package",
+                    package,
+                ])
                 .await
                 .unwrap();
 
@@ -844,7 +853,12 @@ fn env_vars_still_set(world: &mut TestWorld) {
 fn change_back_to_directory(world: &mut TestWorld, dir: String) {
     // Simply update the current directory without triggering hook execution
     // This simulates going back to a directory where hooks already completed
-    world.current_dir = world.current_dir.join(dir);
+    // Use just the last component of the path to avoid doubling "examples"
+    let target = std::path::Path::new(&dir)
+        .file_name()
+        .map(|s| s.to_str().unwrap())
+        .unwrap_or(&dir);
+    world.current_dir = world.current_dir.join(target);
 }
 
 #[then(expr = "hooks should not re-execute since configuration hasn't changed")]
@@ -866,8 +880,7 @@ async fn hooks_should_not_reexecute(world: &mut TestWorld) {
     // Status should show completed (from before), not running
     // Since hooks already ran, no new execution should be in progress
     assert!(
-        !world.last_output.contains("Running")
-            && !world.last_output.contains("in progress")
+        !world.last_output.contains("Running") && !world.last_output.contains("in progress")
             || world.last_output.contains("Completed")
             || world.last_output.contains("completed"),
         "Hooks should not be re-executing. Status: {}",
@@ -889,6 +902,6 @@ async fn main() {
     }
 
     TestWorld::cucumber()
-        .run("tests/bdd/features/hooks.feature")
+        .run_and_exit("tests/bdd/features/hooks.feature")
         .await;
 }

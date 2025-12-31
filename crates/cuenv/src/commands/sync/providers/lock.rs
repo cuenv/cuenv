@@ -105,7 +105,15 @@ async fn execute_lock_sync(
     // Collect all OCI artifacts and tools from projects
     // Note: We collect all data before async operations to avoid holding
     // the module guard across await points (MutexGuard is not Send).
-    let (lockfile_path, image_platforms, all_platforms, collected_tools, tools_platforms, collected_flakes, github_config) = {
+    let (
+        lockfile_path,
+        image_platforms,
+        all_platforms,
+        collected_tools,
+        tools_platforms,
+        collected_flakes,
+        github_config,
+    ) = {
         let module = executor.get_module(path)?;
         let module_root = module.root.clone();
         let lockfile_path = module_root.join(LOCKFILE_NAME);
@@ -318,12 +326,12 @@ async fn execute_lock_sync(
                 let source_config =
                     resolve_source_for_platform(tool.source.as_ref(), &tool.overrides, &platform)
                         .ok_or_else(|| {
-                            cuenv_core::Error::configuration(format!(
-                                "Tool '{}' has no source configured for platform '{}'. \
+                        cuenv_core::Error::configuration(format!(
+                            "Tool '{}' has no source configured for platform '{}'. \
                                  Specify a source (github, nix, or oci) in your tool definition.",
-                                tool.name, platform_str
-                            ))
-                        })?;
+                            tool.name, platform_str
+                        ))
+                    })?;
 
                 // Convert SourceConfig to ToolSource
                 let (provider_name, _tool_source, config) =
@@ -419,6 +427,12 @@ async fn execute_lock_sync(
         // Write mode: save the lockfile
         lockfile.save(&lockfile_path)?;
 
+        // Ensure Nix profile is populated for current platform
+        let lockfile_dir = lockfile_path.parent().unwrap_or(Path::new("."));
+        if has_nix_tools(&lockfile) {
+            cuenv_tools_nix::profile::ensure_profile(lockfile_dir, &lockfile).await?;
+        }
+
         let image_count = lockfile.artifacts.len();
         let tools_count = lockfile.tools.len();
 
@@ -444,6 +458,16 @@ async fn execute_lock_sync(
             lockfile_path.display()
         ))
     }
+}
+
+/// Check if the lockfile contains any Nix tools for the current platform.
+fn has_nix_tools(lockfile: &Lockfile) -> bool {
+    let platform = ToolPlatform::current().to_string();
+    lockfile.tools.values().any(|tool| {
+        tool.platforms
+            .get(&platform)
+            .is_some_and(|p| p.provider == "nix")
+    })
 }
 
 /// Resolve the source configuration for a specific platform.
@@ -560,4 +584,3 @@ fn compute_tool_digest(resolved: &ResolvedTool) -> String {
     hasher.update(format!("{:?}", resolved.source).as_bytes());
     format!("{:x}", hasher.finalize())
 }
-

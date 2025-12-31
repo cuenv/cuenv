@@ -201,6 +201,8 @@ pub enum Command {
     Export {
         /// Target shell format (e.g., "bash", "zsh", "fish").
         shell: Option<String>,
+        /// Path to the CUE module or project directory.
+        path: String,
         /// CUE package name to evaluate.
         package: String,
     },
@@ -564,8 +566,8 @@ impl CommandExecutor {
                 self.run_command(handler::DenyHandler { path, package, all })
                     .await
             }
-            Command::Export { shell, package } => {
-                self.run_command(handler::ExportHandler { shell, package })
+            Command::Export { shell, path, package } => {
+                self.run_command(handler::ExportHandler { shell, path, package })
                     .await
             }
             Command::Exec {

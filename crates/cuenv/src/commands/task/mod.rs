@@ -637,9 +637,9 @@ async fn execute_task_legacy(
     // activation is a controlled, safe operation (just adds paths to the environment).
     // Use project_root to scope tool activation to this project only.
     // Tool activation failures are fatal - tasks require their tools to run.
-    ensure_tools_downloaded(Some(&project_root)).await.map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to download tools: {e}"))
-    })?;
+    ensure_tools_downloaded(Some(&project_root))
+        .await
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to download tools: {e}")))?;
     if let Ok(Some(tool_paths)) = get_tool_paths(Some(&project_root)) {
         tracing::debug!(
             "Activating {} tool bin directories and {} lib directories for task execution",

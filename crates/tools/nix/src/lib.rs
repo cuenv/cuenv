@@ -1,24 +1,26 @@
 //! Nix flake tool provider for cuenv.
 //!
-//! Fetches development tools from Nix flakes using `nix build`.
-//! Supports named flake references for pinning different nixpkgs versions.
+//! Provides Nix-based tool resolution using flakes. Tools are installed into
+//! per-project Nix profiles (managed by the `profile` module) rather than
+//! copying individual binaries, ensuring full Nix closures are available.
+
+pub mod commands;
+pub mod profile;
 
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::tools::{
     FetchedTool, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
 };
-use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tracing::{debug, info};
 
 /// Tool provider for Nix flakes.
 ///
-/// Builds and caches tools from Nix flakes. Supports named flake references
-/// that are resolved from the runtime configuration.
+/// Resolves tools from Nix flakes. Actual installation into per-project
+/// Nix profiles is handled by the `profile` module during sync.
 pub struct NixToolProvider {
     /// Named flake references (e.g., "stable" -> "github:NixOS/nixpkgs/nixos-24.11").
     flakes: std::collections::HashMap<String, String>,
@@ -43,11 +45,6 @@ impl NixToolProvider {
     #[must_use]
     pub fn with_flakes(flakes: std::collections::HashMap<String, String>) -> Self {
         Self { flakes }
-    }
-
-    /// Get the cache directory for a tool.
-    fn tool_cache_dir(&self, options: &ToolOptions, name: &str, version: &str) -> PathBuf {
-        options.cache_dir().join("nix").join(name).join(version)
     }
 
     /// Resolve a flake name to its full reference.
@@ -132,121 +129,56 @@ impl ToolProvider for NixToolProvider {
         })
     }
 
-    async fn fetch(&self, resolved: &ResolvedTool, options: &ToolOptions) -> Result<FetchedTool> {
-        let ToolSource::Nix {
-            flake,
-            package,
-            output,
-        } = &resolved.source
-        else {
+    async fn fetch(&self, resolved: &ResolvedTool, _options: &ToolOptions) -> Result<FetchedTool> {
+        let ToolSource::Nix { flake, package, .. } = &resolved.source else {
             return Err(cuenv_core::Error::tool_resolution(
                 "NixToolProvider received non-Nix source".to_string(),
             ));
         };
 
-        info!(
-            tool = %resolved.name,
-            %flake,
-            %package,
-            "Building Nix package"
-        );
+        // For Nix, we don't fetch/cache binaries - profiles handle this.
+        // Just validate the package exists by checking if it can be evaluated.
+        let flake_ref = format!("{flake}#{package}");
+        debug!(%flake_ref, "Validating Nix package exists");
 
-        // Check cache
-        let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
-        let binary_path = cache_dir.join(&resolved.name);
-
-        if binary_path.exists() && !options.force_refetch {
-            debug!(?binary_path, "Tool already cached");
-            let sha256 = compute_file_sha256(&binary_path).await?;
-            return Ok(FetchedTool {
-                name: resolved.name.clone(),
-                binary_path,
-                sha256,
-            });
-        }
-
-        // Build the package
-        let flake_attr = format!("{}#{}", flake, package);
-        debug!(%flake_attr, "Running nix build");
-
-        let output_result = Command::new("nix")
-            .args(["build", "--no-link", "--print-out-paths", &flake_attr])
+        // Use nix eval to quickly check if the package exists (no build required)
+        let output = Command::new("nix")
+            .args(["eval", "--raw", &format!("{flake_ref}.name")])
             .output()
             .await
-            .map_err(|e| {
-                cuenv_core::Error::tool_resolution(format!("Failed to run nix build: {}", e))
-            })?;
+            .map_err(|e| cuenv_core::Error::tool_resolution(format!("Failed to run nix: {e}")))?;
 
-        if !output_result.status.success() {
-            let stderr = String::from_utf8_lossy(&output_result.stderr);
-            return Err(cuenv_core::Error::tool_resolution(format!(
-                "nix build failed: {}",
-                stderr
-            )));
+        if !output.status.success() {
+            // Package might not have a .name attribute, try just evaluating the derivation
+            let output2 = Command::new("nix")
+                .args(["eval", "--raw", &format!("{flake_ref}.type")])
+                .output()
+                .await
+                .map_err(|e| {
+                    cuenv_core::Error::tool_resolution(format!("Failed to run nix: {e}"))
+                })?;
+
+            if !output2.status.success() {
+                return Err(cuenv_core::Error::tool_resolution(format!(
+                    "Nix package {flake_ref} not found or cannot be evaluated"
+                )));
+            }
         }
 
-        let store_path = String::from_utf8_lossy(&output_result.stdout)
-            .trim()
-            .to_string();
+        info!(tool = %resolved.name, %flake_ref, "Validated Nix package");
 
-        debug!(%store_path, "Built Nix package");
-
-        // Find the binary
-        let bin_path = if let Some(out) = output {
-            PathBuf::from(&store_path).join(out.trim_start_matches('/'))
-        } else {
-            // Try common locations
-            let candidates = [
-                PathBuf::from(&store_path).join("bin").join(&resolved.name),
-                PathBuf::from(&store_path).join("bin").join(package),
-            ];
-
-            candidates.into_iter().find(|p| p.exists()).ok_or_else(|| {
-                cuenv_core::Error::tool_resolution(
-                    "Binary not found in Nix output. Try specifying 'output' in config.",
-                )
-            })?
-        };
-
-        if !bin_path.exists() {
-            return Err(cuenv_core::Error::tool_resolution(format!(
-                "Binary not found at '{}'",
-                bin_path.display()
-            )));
-        }
-
-        // Copy to cache directory
-        std::fs::create_dir_all(&cache_dir)?;
-        std::fs::copy(&bin_path, &binary_path)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&binary_path)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&binary_path, perms)?;
-        }
-
-        let sha256 = compute_file_sha256(&binary_path).await?;
-
-        info!(
-            tool = %resolved.name,
-            binary = ?binary_path,
-            %sha256,
-            "Fetched Nix tool"
-        );
-
+        // Return placeholder - actual binary comes from profile
         Ok(FetchedTool {
             name: resolved.name.clone(),
-            binary_path,
-            sha256,
+            binary_path: PathBuf::new(), // Profile manages the actual path
+            sha256: "nix-profile-managed".to_string(),
         })
     }
 
-    fn is_cached(&self, resolved: &ResolvedTool, options: &ToolOptions) -> bool {
-        let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
-        let binary_path = cache_dir.join(&resolved.name);
-        binary_path.exists()
+    fn is_cached(&self, _resolved: &ResolvedTool, _options: &ToolOptions) -> bool {
+        // Nix tools are always "cached" via the Nix store.
+        // Profile installation is handled by profile::ensure_profile() during sync.
+        true
     }
 
     async fn check_prerequisites(&self) -> Result<()> {
@@ -269,23 +201,6 @@ impl ToolProvider for NixToolProvider {
             )),
         }
     }
-}
-
-/// Compute SHA256 hash of a file.
-async fn compute_file_sha256(path: &std::path::Path) -> Result<String> {
-    let mut file = tokio::fs::File::open(path).await?;
-    let mut hasher = Sha256::new();
-    let mut buffer = vec![0u8; 8192];
-
-    loop {
-        let n = file.read(&mut buffer).await?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 #[cfg(test)]

@@ -102,12 +102,7 @@ impl GitHubToolProvider {
     }
 
     /// Fetch release information from GitHub API.
-    async fn fetch_release(
-        &self,
-        repo: &str,
-        tag: &str,
-        token: Option<&str>,
-    ) -> Result<Release> {
+    async fn fetch_release(&self, repo: &str, tag: &str, token: Option<&str>) -> Result<Release> {
         let url = format!(
             "https://api.github.com/repos/{}/releases/tags/{}",
             repo, tag

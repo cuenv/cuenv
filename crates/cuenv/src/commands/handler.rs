@@ -304,6 +304,8 @@ impl CommandHandler for DenyHandler {
 pub struct ExportHandler {
     /// Optional shell type override for export format.
     pub shell: Option<String>,
+    /// Path to the cuenv project directory.
+    pub path: String,
     /// Name of the CUE package to evaluate.
     pub package: String,
 }
@@ -319,7 +321,7 @@ impl CommandHandler for ExportHandler {
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        export::execute_export(self.shell.as_deref(), &self.package, Some(executor)).await
+        export::execute_export(self.shell.as_deref(), &self.path, &self.package, Some(executor)).await
     }
 }
 
