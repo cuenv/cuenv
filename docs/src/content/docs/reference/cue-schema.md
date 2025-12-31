@@ -649,6 +649,61 @@ source: schema.#Nix & {
 | `package` | `string` | Yes      | Package attribute                     |
 | `output`  | `string` | No       | Output path if auto-detection fails   |
 
+#### #Rustup
+
+Manages Rust toolchains via rustup. Supports version pinning, installation profiles, components, and cross-compilation targets.
+
+```cue
+source: schema.#Rustup & {
+    toolchain: "1.83.0"
+    profile: "default"
+    components: ["clippy", "rustfmt", "rust-src"]
+    targets: ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+}
+```
+
+**Fields:**
+
+| Field        | Type          | Required | Default     | Description                                                 |
+| ------------ | ------------- | -------- | ----------- | ----------------------------------------------------------- |
+| `toolchain`  | `string`      | Yes      | -           | Toolchain identifier (e.g., "stable", "1.83.0", "nightly")  |
+| `profile`    | `string`      | No       | `"default"` | Installation profile                                        |
+| `components` | `[...string]` | No       | `[]`        | Additional components to install                            |
+| `targets`    | `[...string]` | No       | `[]`        | Cross-compilation targets                                   |
+
+**Profiles:**
+
+| Profile    | Included Components                    |
+| ---------- | -------------------------------------- |
+| `minimal`  | rustc, rust-std, cargo                 |
+| `default`  | minimal + rustfmt, clippy              |
+| `complete` | All available components               |
+
+**Common Components:**
+
+| Component            | Description                        |
+| -------------------- | ---------------------------------- |
+| `clippy`             | Lint tool                          |
+| `rustfmt`            | Code formatter                     |
+| `rust-src`           | Source code (for IDE support)      |
+| `llvm-tools-preview` | LLVM tools (for code coverage)     |
+| `rust-analyzer`      | LSP server (bundled with toolchain)|
+
+**Common Targets:**
+
+| Target                        | Description       |
+| ----------------------------- | ----------------- |
+| `x86_64-unknown-linux-gnu`    | Linux x86_64      |
+| `aarch64-unknown-linux-gnu`   | Linux ARM64       |
+| `x86_64-apple-darwin`         | macOS x86_64      |
+| `aarch64-apple-darwin`        | macOS ARM64       |
+| `wasm32-unknown-unknown`      | WebAssembly       |
+| `x86_64-pc-windows-msvc`      | Windows x86_64    |
+
+:::note[Prerequisite]
+Rustup must be installed on the system. Install via: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+:::
+
 ### #ToolsActivate
 
 Hook for shell integration that activates tools on directory entry.
@@ -682,5 +737,6 @@ For `cuenv exec` and `cuenv task`, tools are activated automatically without req
 
 - [Configuration Guide](/how-to/configure-a-project/) - Usage patterns
 - [Tools Guide](/how-to/tools/) - Tools configuration and usage
+- [Tools Architecture](/explanation/tools/) - How the tools system works internally
 - [API Reference](/reference/rust-api/) - Rust API documentation
 - [Examples](/reference/examples/) - Complete examples
