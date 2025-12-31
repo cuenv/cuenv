@@ -1048,7 +1048,7 @@ mod tests {
             },
         );
 
-        config.sort_by_priority();
+        config.sort_by_dependencies();
 
         assert_eq!(config.setup[0].id, "setup-cachix");
         assert_eq!(config.setup[1].id, "setup-cuenv");
