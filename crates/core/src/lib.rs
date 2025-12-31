@@ -35,6 +35,9 @@
 //! };
 //! ```
 
+// Allow false positives from clippy lint that doesn't understand thiserror patterns
+#![allow(unused_assignments)]
+
 pub mod base;
 pub mod cache;
 pub mod ci;

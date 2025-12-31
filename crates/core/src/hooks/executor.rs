@@ -1617,11 +1617,10 @@ mod tests {
         let result = executor.execute_single_hook(hook_with_invalid_dir).await;
         // This might succeed or fail depending on the implementation
         // The important part is it doesn't panic
-        if result.is_ok() {
+        if let Ok(output) = result {
             // If it succeeds, the command might have handled the missing directory
             assert!(
-                !result
-                    .unwrap()
+                !output
                     .stdout
                     .contains("/nonexistent/directory/that/does/not/exist")
             );
