@@ -896,6 +896,7 @@ mod tests {
             name: "test".to_string(),
             cube: None,
             runtime: None,
+            formatters: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -938,6 +939,7 @@ mod tests {
             name: "test".to_string(),
             cube: None,
             runtime: None,
+            formatters: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -960,6 +962,7 @@ mod tests {
             name: "test".to_string(),
             cube: None,
             runtime: None,
+            formatters: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
