@@ -564,6 +564,26 @@ fn source_config_to_tool_source(
                 "output": output,
             }),
         ),
+        SourceConfig::Rustup {
+            toolchain,
+            profile,
+            components,
+            targets,
+        } => (
+            "rustup".to_string(),
+            ToolSource::Rustup {
+                toolchain: toolchain.clone(),
+                profile: Some(profile.clone()),
+                components: components.clone(),
+                targets: targets.clone(),
+            },
+            serde_json::json!({
+                "toolchain": toolchain,
+                "profile": profile,
+                "components": components,
+                "targets": targets,
+            }),
+        ),
     }
 }
 

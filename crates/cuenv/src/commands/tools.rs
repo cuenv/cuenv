@@ -574,13 +574,14 @@ pub fn get_tool_paths(project_path: Option<&Path>) -> Result<Option<ToolPaths>, 
         // Handle rustup tools specially - they live in ~/.rustup/toolchains/
         if locked.provider == "rustup" {
             if let Some(toolchain) = locked.source.get("toolchain").and_then(|v| v.as_str()) {
-                let rustup_home = std::env::var("RUSTUP_HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|_| {
+                let rustup_home = std::env::var("RUSTUP_HOME").map_or_else(
+                    |_| {
                         dirs::home_dir()
                             .unwrap_or_else(|| PathBuf::from("."))
                             .join(".rustup")
-                    });
+                    },
+                    PathBuf::from,
+                );
 
                 // Construct toolchain name with host triple
                 let host_triple = format!(

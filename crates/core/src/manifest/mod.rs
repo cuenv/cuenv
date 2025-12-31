@@ -661,6 +661,24 @@ pub enum SourceConfig {
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
+    /// Install via rustup
+    Rustup {
+        /// Toolchain identifier (e.g., "stable", "1.83.0", "nightly-2024-01-01")
+        toolchain: String,
+        /// Installation profile: minimal, default, complete
+        #[serde(default = "default_rustup_profile")]
+        profile: String,
+        /// Additional components to install (e.g., "clippy", "rustfmt", "rust-src")
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        components: Vec<String>,
+        /// Additional targets to install (e.g., "x86_64-unknown-linux-gnu")
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<String>,
+    },
+}
+
+fn default_rustup_profile() -> String {
+    "default".to_string()
 }
 
 // ============================================================================
