@@ -518,7 +518,11 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
 
         Command::ToolsList => commands::tools::execute_tools_list(),
 
-        Command::Export { shell, path, package } => {
+        Command::Export {
+            shell,
+            path,
+            package,
+        } => {
             // Try sync fast path first (handles no-env-cue, running, failed states)
             match commands::export::execute_export_sync(shell.as_deref(), &path, &package) {
                 Ok(Some(output)) => {
@@ -535,8 +539,13 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                         .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
                     rt.block_on(async {
-                        match commands::export::execute_export(shell.as_deref(), &path, &package, None)
-                            .await
+                        match commands::export::execute_export(
+                            shell.as_deref(),
+                            &path,
+                            &package,
+                            None,
+                        )
+                        .await
                         {
                             Ok(result) => {
                                 print!("{result}");

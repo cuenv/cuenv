@@ -504,11 +504,7 @@ impl GitHubActionsEmitter {
             }
 
             // Map task dependencies to sanitized job IDs
-            job.needs = task
-                .depends_on
-                .iter()
-                .map(|d| sanitize_job_id(d))
-                .collect();
+            job.needs = task.depends_on.iter().map(|d| sanitize_job_id(d)).collect();
 
             // Handle manual approval via environment
             if task.manual_approval {

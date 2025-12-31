@@ -93,12 +93,12 @@ impl GitHubToolProvider {
             .replace("{arch}", arch_str)
     }
 
-    /// Get the effective token: runtime token > GITHUB_TOKEN > GH_TOKEN
+    /// Get the effective token: GITHUB_TOKEN > GH_TOKEN > runtime token
     fn get_effective_token(runtime_token: Option<&str>) -> Option<String> {
-        runtime_token
-            .map(String::from)
-            .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+        std::env::var("GITHUB_TOKEN")
+            .ok()
             .or_else(|| std::env::var("GH_TOKEN").ok())
+            .or_else(|| runtime_token.map(String::from))
     }
 
     /// Fetch release information from GitHub API.
