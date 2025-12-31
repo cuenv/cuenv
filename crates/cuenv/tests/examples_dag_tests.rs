@@ -1,6 +1,6 @@
 //! Integration tests for DAG building from example environments
 //!
-//! This module tests that all examples in the `_examples/` directory can be
+//! This module tests that all examples in the `examples/` directory can be
 //! loaded and produce valid task DAGs.
 
 // Integration tests can use unwrap/expect for cleaner assertions
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 /// Expected properties for each example directory
 struct ExampleExpectations {
-    /// Directory name under _examples/
+    /// Directory name under examples/
     name: &'static str,
     /// Minimum number of top-level tasks expected
     min_task_count: usize,
@@ -28,13 +28,13 @@ struct ExampleExpectations {
 }
 
 /// Get the path to the examples directory
-fn get_examples_dir() -> PathBuf {
+fn getexamples_dir() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest_dir)
         .parent() // crates
         .and_then(|p| p.parent()) // project root
         .expect("Failed to find project root")
-        .join("_examples")
+        .join("examples")
 }
 
 /// Load a Project manifest from an example directory.
@@ -44,14 +44,14 @@ fn get_examples_dir() -> PathBuf {
 /// the main project module. This function may fail in test environments where the module
 /// structure isn't fully available.
 fn load_example_manifest(example_path: &Path) -> Result<Project, String> {
-    evaluate_cue_package_typed::<Project>(example_path, "_examples")
+    evaluate_cue_package_typed::<Project>(example_path, "examples")
         .map_err(|e| format!("Failed to load manifest: {e}"))
 }
 
 /// Check if the FFI/module evaluation is available for these tests.
 /// Returns false if examples can't be evaluated due to module root requirements.
 fn ffi_available() -> bool {
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let test_path = examples_dir.join("env-basic");
     load_example_manifest(&test_path).is_ok()
 }
@@ -190,10 +190,10 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
 }
 
 #[test]
-fn test_all_examples_load_successfully() {
+fn test_allexamples_load_successfully() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
@@ -219,10 +219,10 @@ fn test_all_examples_load_successfully() {
 }
 
 #[test]
-fn test_all_examples_build_valid_dag() {
+fn test_allexamples_build_valid_dag() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
@@ -273,10 +273,10 @@ fn test_all_examples_build_valid_dag() {
 }
 
 #[test]
-fn test_all_examples_have_expected_hooks() {
+fn test_allexamples_have_expected_hooks() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
@@ -303,10 +303,10 @@ fn test_all_examples_have_expected_hooks() {
 }
 
 #[test]
-fn test_all_examples_have_expected_env() {
+fn test_allexamples_have_expected_env() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
@@ -332,7 +332,7 @@ fn test_all_examples_have_expected_env() {
 
 #[test]
 fn test_no_unexpected_example_directories() {
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let expectations = get_example_expectations();
     let expected_names: Vec<&str> = expectations.iter().map(|e| e.name).collect();
 
@@ -362,7 +362,7 @@ fn test_no_unexpected_example_directories() {
 fn test_task_basic_specific_tasks() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("task-basic");
     let manifest = load_example_manifest(&example_path).expect("Failed to load task-basic");
 
@@ -389,7 +389,7 @@ fn test_dagger_task_loads_successfully() {
 
     // The dagger-task example uses shorthand task references in the `inputs` field
     // (e.g., `{task: "build.deps"}`) using the #TaskOutput type.
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("dagger-task");
     let manifest = load_example_manifest(&example_path).expect("Failed to load dagger-task");
 
@@ -408,7 +408,7 @@ fn test_dagger_task_loads_successfully() {
 fn test_ci_pipeline_has_pipeline_config() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-pipeline");
     let manifest = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
 
@@ -429,7 +429,7 @@ fn test_ci_pipeline_has_pipeline_config() {
 fn test_hook_delayed_has_ordered_hooks() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("hook-delayed");
     let manifest = load_example_manifest(&example_path).expect("Failed to load hook-delayed");
 

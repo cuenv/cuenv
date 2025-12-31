@@ -1,9 +1,15 @@
+//! env.cue file detection and package validation.
+//!
+//! Provides utilities for finding and validating env.cue files
+//! within a CUE module hierarchy.
+
 use cuenv_core::{Error, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Status for env.cue detection
+/// Status of env.cue file detection.
 #[derive(Debug)]
+#[allow(missing_docs)]
 pub enum EnvFileStatus {
     /// No env.cue present in the directory
     Missing,
@@ -14,6 +20,10 @@ pub enum EnvFileStatus {
 }
 
 /// Locate env.cue in `path` and ensure it declares the expected package.
+///
+/// # Errors
+///
+/// Returns an error if the env.cue file cannot be read or path canonicalization fails.
 pub fn find_env_file(path: &Path, expected_package: &str) -> Result<EnvFileStatus> {
     let directory = if path.is_absolute() {
         path.to_path_buf()
@@ -71,8 +81,11 @@ fn detect_package_name(env_file: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
-/// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
-/// Returns None if no cue.mod is found (will walk to filesystem root).
+/// Find the CUE module root by walking up from `start`.
+///
+/// Looks for a `cue.mod/` directory. Returns `None` if no cue.mod is found
+/// (will walk to filesystem root).
+#[must_use]
 pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
     let mut current = if start.is_absolute() {
         start.to_path_buf()
@@ -96,8 +109,13 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 }
 
 /// Walk up from `start` collecting directories containing env.cue files.
+///
 /// Stops at the CUE module root (directory containing `cue.mod/`) or filesystem root.
 /// Returns directories in order from root to leaf (ancestor first).
+///
+/// # Errors
+///
+/// Returns an error if the current directory cannot be obtained or paths cannot be resolved.
 pub fn find_ancestor_env_files(start: &Path, expected_package: &str) -> Result<Vec<PathBuf>> {
     let start_canonical = if start.is_absolute() {
         start.to_path_buf()

@@ -13,6 +13,10 @@ use cuenv_core::Result;
 /// - `pipeline`: Force a specific pipeline to run
 /// - `dynamic`: Output dynamic pipeline YAML to stdout (e.g., "buildkite")
 /// - `from`: Base ref for affected task detection
+///
+/// # Errors
+///
+/// Returns an error if CI execution fails or provider is not supported.
 #[allow(clippy::print_stdout)]
 pub async fn execute_ci(
     dry_run: bool,

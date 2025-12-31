@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Rules
 
 - Never allow clippy warnings, fix the root cause
+- It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
 
 ## Project Overview
 
@@ -103,8 +104,8 @@ cuenv task test.bdd
 ```bash
 # Test CLI functionality
 cuenv exec -- cargo run -- version
-cuenv exec -- cargo run -- env print --path _examples/env-basic --package _examples
-cuenv exec -- cargo run -- env print --path _examples/env-basic --package _examples --output-format json
+cuenv exec -- cargo run -- env print --path examples/env-basic --package examples
+cuenv exec -- cargo run -- env print --path examples/env-basic --package examples --output-format json
 ```
 
 ## Code Quality Checklist
@@ -130,7 +131,7 @@ cuenv task test.unit
 - `crates/cuengine/src/lib.rs` - Rust FFI wrapper
 - `crates/core/src/manifest/` - Configuration types
 - `crates/core/src/tasks/` - Task graph and execution
-- `_examples/env-basic/env.cue` - Test configuration
+- `examples/env-basic/env.cue` - Test configuration
 - `schema/` - CUE schema definitions
 
 ## Troubleshooting

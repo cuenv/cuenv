@@ -1,4 +1,4 @@
-//! Export command - the heart of cuenv's shell integration
+//! Export command - the heart of cuenv's shell integration.
 //!
 //! This command is called by the shell hook on every prompt to:
 //! 1. Check if environment is ready (instant)
@@ -126,26 +126,28 @@ fn evaluate_project(
 ///
 /// Returns `Ok(Some(output))` if the fast path handled the request,
 /// or `Ok(None)` if the async path is needed (for CUE evaluation or hook startup).
-pub fn execute_export_sync(shell_type: Option<&str>, package: &str) -> Result<Option<String>> {
+///
+/// # Errors
+///
+/// Returns an error if state management fails.
+pub fn execute_export_sync(shell_type: Option<&str>, path: &str, package: &str) -> Result<Option<String>> {
     let shell = Shell::detect(shell_type);
-    let current_dir = std::env::current_dir().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-    })?;
+    let target_dir = Path::new(path);
 
     // Fast check: does env.cue exist with matching package?
-    let directory = match env_file::find_env_file(&current_dir, package)? {
+    let directory = match env_file::find_env_file(target_dir, package)? {
         EnvFileStatus::Match(dir) => dir,
         EnvFileStatus::Missing => {
             debug!(
                 "No env.cue found in {} (sync fast path)",
-                current_dir.display()
+                target_dir.display()
             );
             return Ok(Some(format_no_op(shell)));
         }
         EnvFileStatus::PackageMismatch { found_package } => {
             debug!(
                 "env.cue package mismatch in {}: found {:?}, expected {} (sync fast path)",
-                current_dir.display(),
+                target_dir.display(),
                 found_package,
                 package
             );
@@ -202,32 +204,35 @@ pub fn execute_export_sync(shell_type: Option<&str>, package: &str) -> Result<Op
     Ok(None)
 }
 
-/// Execute the export command - the main entry point for shell integration
+/// Execute the export command - the main entry point for shell integration.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+///
+/// # Errors
+///
+/// Returns an error if CUE evaluation fails or approval management fails.
 #[allow(clippy::too_many_lines, clippy::uninlined_format_args)]
 pub async fn execute_export(
     shell_type: Option<&str>,
+    path: &str,
     package: &str,
     executor: Option<&CommandExecutor>,
 ) -> Result<String> {
     let shell = Shell::detect(shell_type);
-    let current_dir = std::env::current_dir().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-    })?;
+    let target_dir = Path::new(path);
 
     // Check if env.cue exists with matching package
-    let directory = match env_file::find_env_file(&current_dir, package)? {
+    let directory = match env_file::find_env_file(target_dir, package)? {
         EnvFileStatus::Match(dir) => dir,
         EnvFileStatus::Missing => {
-            debug!("No env.cue found in {}", current_dir.display());
+            debug!("No env.cue found in {}", target_dir.display());
             return Ok(format_no_op(shell));
         }
         EnvFileStatus::PackageMismatch { found_package } => {
             debug!(
                 "env.cue package mismatch in {}: found {:?}, expected {}",
-                current_dir.display(),
+                target_dir.display(),
                 found_package,
                 package
             );
@@ -375,7 +380,10 @@ fn extract_hooks_with_resolved_dirs(
     hooks
 }
 
-/// Extract static environment variables from CUE config
+/// Extract static environment variables from CUE config.
+///
+/// Secrets are excluded from the returned map.
+#[must_use]
 pub fn extract_static_env_vars(config: &Project) -> HashMap<String, String> {
     let mut env_vars = HashMap::new();
 
@@ -528,7 +536,7 @@ fn collect_hooks_from_ancestors(
     Ok(all_hooks)
 }
 
-/// Get environment variables with hook-generated vars merged in
+/// Get environment variables with hook-generated vars merged in.
 ///
 /// This function checks if hooks have completed and merges their environment
 /// with the static environment from the CUE manifest. This is used by
@@ -540,6 +548,10 @@ fn collect_hooks_from_ancestors(
 /// and executes hooks in root-to-leaf order.
 ///
 /// This function ensures hooks are running and waits for their completion.
+///
+/// # Errors
+///
+/// Returns an error if hook execution fails or state management fails.
 #[allow(clippy::too_many_lines)]
 pub async fn get_environment_with_hooks(
     directory: &Path,

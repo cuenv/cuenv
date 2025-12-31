@@ -70,10 +70,10 @@ nix develop --command treefmt --fail-on-change  # Format all files
 ```bash
 # Test basic CLI functionality
 cargo run -- version
-cargo run -- env print --path _examples/env-basic --package _examples
+cargo run -- env print --path examples/env-basic --package examples
 
 # Test JSON output format
-cargo run -- env print --path _examples/env-basic --package _examples --output-format json
+cargo run -- env print --path examples/env-basic --package examples --output-format json
 
 # Test error handling with invalid path
 cargo run -- env print --path /nonexistent
@@ -116,7 +116,7 @@ cuenv/
 │   │   └── src/           # Rust FFI wrapper and caching
 │   ├── cuenv-core/        # Shared types, errors, validation
 │   └── cuenv-cli/         # CLI interface with TUI support
-├── _examples/
+├── examples/
 │   └── env-basic/         # Example CUE configuration files
 ├── .github/workflows/     # CI/CD configuration
 └── flake.nix             # Nix flake configuration
@@ -130,13 +130,13 @@ cuenv evaluates CUE configuration files to extract environment variables:
 
 ```bash
 # List what's in the examples directory
-ls _examples/env-basic/
+ls examples/env-basic/
 
 # View example CUE file
-cat _examples/env-basic/env.cue
+cat examples/env-basic/env.cue
 
 # Test with the example
-cargo run -- env print --path _examples/env-basic --package _examples
+cargo run -- env print --path examples/env-basic --package examples
 ```
 
 ### Testing Changes to Core Engine
@@ -207,7 +207,7 @@ When making changes, always check these files:
 - `Cargo.toml` (workspace configuration)
 - `crates/cuengine/bridge.go` (Go FFI implementation)
 - `crates/cuengine/src/lib.rs` (Rust FFI wrapper)
-- `_examples/env-basic/env.cue` (test CUE configuration)
+- `examples/env-basic/env.cue` (test CUE configuration)
 
 ## Security and Dependencies
 

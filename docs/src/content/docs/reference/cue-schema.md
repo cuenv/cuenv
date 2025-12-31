@@ -500,8 +500,187 @@ workspaces: {
 - `bun`
 - `cargo`
 
+## Runtimes
+
+### #ToolsRuntime
+
+Tool management runtime for hermetic, reproducible CLI tools.
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+runtime: schema.#ToolsRuntime & {
+    platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64"]
+    tools: {
+        jq: "1.7.1"
+        yq: "4.44.6"
+    }
+}
+```
+
+**Fields:**
+
+| Field       | Type                        | Required | Description                                     |
+| ----------- | --------------------------- | -------- | ----------------------------------------------- |
+| `platforms` | `[...#Platform]`            | Yes      | Platforms to resolve and lock                   |
+| `tools`     | `{[string]: string\|#Tool}` | Yes      | Tool specifications                             |
+| `flakes`    | `{[string]: string}`        | No       | Named Nix flake references                      |
+| `cacheDir`  | `string`                    | No       | Cache directory (default: ~/.cache/cuenv/tools) |
+
+**Platforms:** `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, `linux-arm64`
+
+### #Tool
+
+Full tool specification with source and platform overrides.
+
+```cue
+tools: {
+    bun: {
+        version: "1.3.5"
+        source: schema.#Homebrew
+        overrides: [
+            {os: "linux", source: schema.#Oci & {image: "oven/bun:1.3.5", path: "/usr/local/bin/bun"}}
+        ]
+    }
+}
+```
+
+**Fields:**
+
+| Field       | Type             | Required | Description                          |
+| ----------- | ---------------- | -------- | ------------------------------------ |
+| `version`   | `string`         | Yes      | Tool version                         |
+| `as`        | `string`         | No       | Rename binary in PATH                |
+| `source`    | `#Source`        | No       | Default source (Homebrew if omitted) |
+| `overrides` | `[...#Override]` | No       | Platform-specific sources            |
+
+### #Override
+
+Platform-specific source override.
+
+```cue
+overrides: [
+    {os: "linux", arch: "arm64", source: schema.#GitHub & {...}}
+]
+```
+
+**Fields:**
+
+| Field    | Type      | Required | Description                   |
+| -------- | --------- | -------- | ----------------------------- |
+| `os`     | `#OS`     | No       | Match by OS (darwin, linux)   |
+| `arch`   | `#Arch`   | No       | Match by arch (arm64, x86_64) |
+| `source` | `#Source` | Yes      | Source for matching platforms |
+
+### Tool Sources
+
+#### #Homebrew
+
+Fetches from Homebrew bottles (ghcr.io/homebrew). This is the default source.
+
+```cue
+source: schema.#Homebrew & {
+    formula: "go@1.24"  // Optional: override formula name
+}
+```
+
+**Fields:**
+
+| Field     | Type     | Required | Description                          |
+| --------- | -------- | -------- | ------------------------------------ |
+| `formula` | `string` | No       | Formula name (defaults to tool name) |
+
+#### #GitHub
+
+Downloads from GitHub Releases. Supports template variables: `{version}`, `{os}`, `{arch}`.
+
+```cue
+source: schema.#GitHub & {
+    repo: "oven-sh/bun"
+    tag: "bun-v{version}"
+    asset: "bun-darwin-aarch64.zip"
+    path: "bun-darwin-aarch64/bun"
+}
+```
+
+**Fields:**
+
+| Field   | Type     | Required | Description                                 |
+| ------- | -------- | -------- | ------------------------------------------- |
+| `repo`  | `string` | Yes      | Repository (owner/repo)                     |
+| `tag`   | `string` | No       | Release tag (default: "v{version}")         |
+| `asset` | `string` | Yes      | Asset name (supports template variables)    |
+| `path`  | `string` | No       | Path to binary within archive (if archived) |
+
+#### #Oci
+
+Extracts binaries from OCI container images.
+
+```cue
+source: schema.#Oci & {
+    image: "ghcr.io/org/tool:{version}"
+    path: "/usr/local/bin/tool"
+}
+```
+
+**Fields:**
+
+| Field   | Type     | Required | Description                          |
+| ------- | -------- | -------- | ------------------------------------ |
+| `image` | `string` | Yes      | Image reference (supports templates) |
+| `path`  | `string` | Yes      | Path to binary inside the container  |
+
+#### #Nix
+
+Builds from a Nix flake.
+
+```cue
+source: schema.#Nix & {
+    flake: "nixpkgs"  // Key from runtime.flakes
+    package: "jq"
+}
+```
+
+**Fields:**
+
+| Field     | Type     | Required | Description                           |
+| --------- | -------- | -------- | ------------------------------------- |
+| `flake`   | `string` | Yes      | Named flake reference (key in flakes) |
+| `package` | `string` | Yes      | Package attribute                     |
+| `output`  | `string` | No       | Output path if auto-detection fails   |
+
+### #ToolsActivate
+
+Hook for shell integration that activates tools on directory entry.
+
+```cue
+hooks: {
+    onEnter: {
+        tools: schema.#ToolsActivate
+    }
+}
+```
+
+**Definition:**
+
+```cue
+#ToolsActivate: #ExecHook & {
+    order:     10
+    propagate: false
+    command:   "cuenv"
+    args:      ["tools", "activate"]
+    source:    true
+    inputs:    ["cuenv.lock"]
+}
+```
+
+:::note
+For `cuenv exec` and `cuenv task`, tools are activated automatically without requiring this hook. Use `#ToolsActivate` for interactive shell integration.
+:::
+
 ## See Also
 
 - [Configuration Guide](/how-to/configure-a-project/) - Usage patterns
+- [Tools Guide](/how-to/tools/) - Tools configuration and usage
 - [API Reference](/reference/rust-api/) - Rust API documentation
 - [Examples](/reference/examples/) - Complete examples

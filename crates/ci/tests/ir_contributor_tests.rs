@@ -16,7 +16,7 @@ use cuenv_core::manifest::Project;
 use std::path::{Path, PathBuf};
 
 /// Get the path to the examples directory
-fn get_examples_dir() -> PathBuf {
+fn getexamples_dir() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     Path::new(manifest_dir)
         .parent() // crates
@@ -27,13 +27,13 @@ fn get_examples_dir() -> PathBuf {
 
 /// Load a Project manifest from an example directory.
 fn load_example_manifest(example_path: &Path) -> Result<Project, String> {
-    evaluate_cue_package_typed::<Project>(example_path, "_examples")
+    evaluate_cue_package_typed::<Project>(example_path, "examples")
         .map_err(|e| format!("Failed to load manifest: {e}"))
 }
 
 /// Check if the FFI/module evaluation is available for these tests.
 fn ffi_available() -> bool {
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let test_path = examples_dir.join("env-basic");
     load_example_manifest(&test_path).is_ok()
 }
@@ -89,7 +89,7 @@ fn compile_without_pipeline(project: Project) -> Result<IntermediateRepresentati
 fn test_nix_contributor_active_with_nix_runtime() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-cachix");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
 
@@ -116,7 +116,7 @@ fn test_nix_contributor_active_with_nix_runtime() {
 fn test_nix_contributor_inactive_without_nix_runtime() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-gh-models");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-gh-models");
 
@@ -138,7 +138,7 @@ fn test_nix_contributor_inactive_without_nix_runtime() {
 fn test_cuenv_contributor_active_with_nix_runtime() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-cachix");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
 
@@ -171,7 +171,7 @@ fn test_cuenv_contributor_active_with_nix_runtime() {
 fn test_onepassword_contributor_active_with_op_refs() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-onepassword");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-onepassword");
 
@@ -201,7 +201,7 @@ fn test_onepassword_contributor_active_with_op_refs() {
 fn test_onepassword_contributor_inactive_without_op_refs() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-pipeline");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
 
@@ -223,7 +223,7 @@ fn test_onepassword_contributor_inactive_without_op_refs() {
 fn test_cachix_contributor_active_with_config() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-cachix");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
 
@@ -253,7 +253,7 @@ fn test_cachix_contributor_active_with_config() {
 fn test_cachix_contributor_inactive_without_config() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-pipeline");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
 
@@ -275,7 +275,7 @@ fn test_cachix_contributor_inactive_without_config() {
 fn test_gh_models_contributor_active_with_gh_models_task() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-gh-models");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-gh-models");
 
@@ -305,7 +305,7 @@ fn test_gh_models_contributor_active_with_gh_models_task() {
 fn test_gh_models_contributor_inactive_without_gh_models_task() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-pipeline");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
 
@@ -327,7 +327,7 @@ fn test_gh_models_contributor_inactive_without_gh_models_task() {
 fn test_stages_are_sorted_by_priority() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-cachix");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
 
@@ -360,7 +360,7 @@ fn test_stages_are_sorted_by_priority() {
 fn test_nix_contributor_provides_github_action_hints() {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = get_examples_dir();
+    let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-cachix");
     let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
 

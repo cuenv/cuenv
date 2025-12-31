@@ -131,7 +131,7 @@ fn test_validate_package_name_first_character() {
     assert!(validate_package_name("valid", &limits).is_ok());
     assert!(validate_package_name("Valid", &limits).is_ok());
     assert!(validate_package_name("_hidden", &limits).is_ok());
-    assert!(validate_package_name("_examples", &limits).is_ok());
+    assert!(validate_package_name("examples", &limits).is_ok());
 }
 
 #[test]

@@ -279,9 +279,9 @@ impl TaskExecutor {
             }
         };
 
-        // Set working directory and environment
+        // Set working directory and environment (hermetic - no host PATH pollution)
         cmd.current_dir(&workdir);
-        let env_vars = self.config.environment.merge_with_system();
+        let env_vars = self.config.environment.merge_with_system_hermetic();
         for (k, v) in &env_vars {
             cmd.env(k, v);
         }
@@ -770,7 +770,8 @@ pub async fn execute_command_with_redaction(
     tracing::info!("Executing command: {} {:?}", command, args);
     let mut cmd = Command::new(command);
     cmd.args(args);
-    let env_vars = environment.merge_with_system();
+    // Use hermetic environment - no host PATH pollution
+    let env_vars = environment.merge_with_system_hermetic();
     for (key, value) in env_vars {
         cmd.env(key, value);
     }

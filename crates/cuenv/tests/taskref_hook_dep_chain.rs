@@ -308,6 +308,13 @@ env: {}
 
 workspaces: {
   bun: {
+    commands: ["bun", "bunx"]
+    inject: {
+      install: {
+        command: "bun"
+        args: ["install"]
+      }
+    }
     hooks: {
       beforeInstall: [
         { ref: "#projen-generator:types" },

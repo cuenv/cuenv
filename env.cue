@@ -3,16 +3,70 @@ package cuenv
 import (
 	"list"
 	"github.com/cuenv/cuenv/schema"
-	nixcontrib "github.com/cuenv/cuenv/contrib/nix"
-	rustcontrib "github.com/cuenv/cuenv/contrib/rust"
+	xBun "github.com/cuenv/cuenv/contrib/bun"
+	xRust "github.com/cuenv/cuenv/contrib/rust"
+	xTools "github.com/cuenv/cuenv/contrib/tools"
 )
 
 schema.#Project & {
 	name: "cuenv"
 
-	// runtime: nix should provide hooks?
-	runtime: schema.#NixRuntime
-	hooks: onEnter: nix: nixcontrib.#NixFlake
+	runtime: schema.#ToolsRuntime & {
+		platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
+		flakes: {
+			nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
+		}
+		github: token: schema.#OnePasswordRef & {ref: "op://Private/GitHub/api-tokens/no-permissions-just-auth"}
+		tools: {
+			jq: xTools.#Jq & {version: "1.7.1"}
+			yq: xTools.#Yq & {version: "4.44.6"}
+			treefmt: xTools.#Treefmt & {version: "2.4.0"}
+			bun: xBun.#Bun & {version: "1.3.5"}
+
+			prettier: schema.#Tool & {
+				version: "3.7.4"
+				source: schema.#Nix & {
+					flake:   "nixpkgs"
+					package: "nodePackages.prettier"
+				}
+			}
+
+			// Rust toolchain via rustup
+			rust: xRust.#Rust & {
+				version: "1.92.0"
+				source: profile: "default"
+				source: components: ["rust-src", "clippy", "rustfmt", "llvm-tools-preview"]
+				source: targets: [
+					"x86_64-unknown-linux-gnu",
+					"aarch64-unknown-linux-gnu",
+					"aarch64-apple-darwin",
+					"x86_64-apple-darwin",
+				]
+			}
+			"rust-analyzer": xRust.#RustAnalyzer & {version: "2025-12-22"}
+
+			// Cargo extensions
+			"cargo-nextest": xRust.#CargoNextest & {version: "0.9.116"}
+			"cargo-deny": xRust.#CargoDeny & {version: "0.18.9"}
+			"cargo-llvm-cov": xRust.#CargoLlvmCov & {version: "0.6.21"}
+			"cargo-cyclonedx": xRust.#CargoCyclonedx & {version: "0.5.7"}
+			"cargo-zigbuild": xRust.#CargoZigbuild & {version: "0.20.1"}
+			sccache: xRust.#SccacheTool & {version: "0.12.0"}
+
+			// Build tools (version tied to nixpkgs flake)
+			zig: xRust.#Zig & {version: "nixos-unstable"}
+
+			"nixpkgs-fmt": schema.#Tool & {
+				version: "nixos-unstable"
+				source: schema.#Nix & {
+					flake:   "nixpkgs"
+					package: "nixpkgs-fmt"
+				}
+			}
+		}
+	}
+
+	hooks: onEnter: tools: schema.#ToolsActivate
 
 	// Build cuenv from source instead of using released binaries
 	// We really need to find a way to speed this up later.
@@ -31,7 +85,7 @@ schema.#Project & {
 	}
 
 	ci: {
-		contributors: sccache: rustcontrib.#Sccache
+		contributors: sccache: xRust.#Sccache
 
 		provider: github: {
 			runner: "blacksmith-8vcpu-ubuntu-2404"
@@ -49,7 +103,7 @@ schema.#Project & {
 
 			pathsIgnore: [
 				"docs/**",
-				"_examples/**",
+				"examples/**",
 				"*.md",
 				"LICENSE",
 				".vscode/**",
@@ -149,12 +203,12 @@ schema.#Project & {
 				echo "Running clippy..."
 				cargo clippy --workspace --all-targets --all-features -- -D warnings
 				echo "Running tests..."
-				cargo nextest run --workspace --all-features
+				cargo test --workspace --all-features
 				echo "Running security checks..."
 				cargo deny check bans licenses advisories
 				echo "All checks passed!"
 				"""
-			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
+			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 		}
 
 		// schema.#Rust.#Lint?
@@ -178,7 +232,7 @@ schema.#Project & {
 				"deny.toml",
 				"docs/**",
 				"env.cue",
-				"_examples/**",
+				"examples/**",
 				"features/**",
 				"flake.lock",
 				"flake.nix",
@@ -209,7 +263,7 @@ schema.#Project & {
 			unit: {
 				command: "cargo"
 				args: ["nextest", "run", "--workspace", "--all-features"]
-				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
+				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 			}
 			doc: {
 				command: "cargo"
@@ -276,7 +330,7 @@ schema.#Project & {
 		coverage: {
 			command: "cargo"
 			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "_examples/**", "schema/**", "cue.mod/**"]])
+			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 			outputs: ["lcov.info"]
 
 		}

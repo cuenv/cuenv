@@ -1,4 +1,8 @@
 //! Coordinator client for CLI and UI processes.
+//!
+//! Provides client-side connectivity to the cuenv coordinator server,
+//! which manages event routing between producers (CLI commands) and
+//! consumers (UI renderers like TUI or JSON output).
 
 // Client has some unused methods reserved for future multi-UI support
 #![allow(dead_code)]
@@ -11,9 +15,14 @@ use tokio::net::UnixStream;
 use uuid::Uuid;
 
 /// Client handle for connecting to the coordinator.
+///
+/// Manages a Unix socket connection to the coordinator server and handles
+/// message serialization/deserialization.
 #[derive(Debug)]
 pub struct CoordinatorClient {
+    /// The Unix socket stream to the coordinator.
     stream: UnixStream,
+    /// Unique identifier for this client session.
     client_id: Uuid,
 }
 
@@ -21,6 +30,10 @@ impl CoordinatorClient {
     /// Connect to the coordinator as a producer (CLI command).
     ///
     /// Returns `Ok(None)` if the coordinator is unavailable but connection is optional.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if registration fails after connection.
     pub async fn connect_as_producer(command: &str) -> io::Result<Option<Self>> {
         Self::connect(ClientType::Producer {
             command: command.to_string(),
@@ -29,6 +42,10 @@ impl CoordinatorClient {
     }
 
     /// Connect to the coordinator as a consumer (UI).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the coordinator is unavailable or registration fails.
     pub async fn connect_as_consumer(ui_type: UiType) -> io::Result<Self> {
         Self::connect(ClientType::Consumer { ui_type })
             .await?
@@ -89,12 +106,22 @@ impl CoordinatorClient {
     }
 
     /// Send an event to the coordinator.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message cannot be written to the socket.
     pub async fn send_event(&mut self, event: &CuenvEvent) -> io::Result<()> {
         let msg = WireMessage::event(event);
         msg.write_to(&mut self.stream).await
     }
 
     /// Receive an event from the coordinator (for consumers).
+    ///
+    /// Returns `None` for non-event messages (e.g., ping responses).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading from the socket fails.
     pub async fn recv_event(&mut self) -> io::Result<Option<CuenvEvent>> {
         let msg = WireMessage::read_from(&mut self.stream).await?;
 
@@ -111,6 +138,10 @@ impl CoordinatorClient {
     }
 
     /// Send a ping and wait for pong.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if sending/receiving fails or the response is not a pong.
     pub async fn ping(&mut self) -> io::Result<()> {
         let ping = WireMessage::ping();
         ping.write_to(&mut self.stream).await?;

@@ -1,6 +1,11 @@
 use std::env;
 use tracing::instrument;
 
+/// Get formatted version information for display.
+///
+/// Returns a multi-line string with package name, version, authors,
+/// build target, compiler version, build date, and correlation ID.
+#[must_use]
 #[instrument]
 pub fn get_version_info() -> String {
     let version = env!("CARGO_PKG_VERSION");

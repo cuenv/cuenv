@@ -66,7 +66,7 @@ impl Default for GitHubActionsEmitter {
             cachix_auth_token_secret: "CACHIX_AUTH_TOKEN".to_string(),
             default_paths_ignore: vec![
                 "docs/**".to_string(),
-                "_examples/**".to_string(),
+                "examples/**".to_string(),
                 "*.md".to_string(),
                 "LICENSE".to_string(),
                 ".vscode/**".to_string(),

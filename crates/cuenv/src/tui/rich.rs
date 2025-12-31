@@ -56,12 +56,16 @@ pub struct RichTui {
 }
 
 impl RichTui {
-    /// Create a new rich TUI
+    /// Create a new rich TUI.
     ///
     /// # Arguments
     /// * `event_rx` - Receiver for cuenv events
     /// * `ready_tx` - Oneshot sender to signal when the TUI event loop is ready.
     ///   Task execution should wait for this signal before starting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal initialization fails.
     pub fn new(event_rx: EventReceiver, ready_tx: oneshot::Sender<()>) -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
@@ -91,7 +95,11 @@ impl RichTui {
         self.state.init_tree();
     }
 
-    /// Run the TUI event loop
+    /// Run the TUI event loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if terminal operations fail.
     pub fn run(&mut self) -> io::Result<()> {
         // Signal that the TUI event loop is ready to receive events.
         // This must happen before the first poll to prevent a race condition

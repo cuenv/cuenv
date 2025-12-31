@@ -811,48 +811,70 @@ mod tests {
 
     #[test]
     fn test_approval_status() {
-        let mut manager = ApprovalManager::new(PathBuf::from("/tmp/test"));
-        let directory = Path::new("/test/dir");
-        let mut config = base_project();
-        config.env = Some(Env {
-            base: HashMap::from([("TEST".to_string(), EnvValue::String("value".to_string()))]),
-            environment: None,
-        });
+        // Unset CI env vars so the test doesn't auto-approve
+        temp_env::with_vars_unset(
+            vec![
+                "CI",
+                "GITHUB_ACTIONS",
+                "GITLAB_CI",
+                "BUILDKITE",
+                "JENKINS_URL",
+                "CIRCLECI",
+                "TRAVIS",
+                "BITBUCKET_PIPELINES",
+                "AZURE_PIPELINES",
+                "TF_BUILD",
+                "DRONE",
+                "TEAMCITY_VERSION",
+            ],
+            || {
+                let mut manager = ApprovalManager::new(PathBuf::from("/tmp/test"));
+                let directory = Path::new("/test/dir");
+                let mut config = base_project();
+                config.env = Some(Env {
+                    base: HashMap::from([(
+                        "TEST".to_string(),
+                        EnvValue::String("value".to_string()),
+                    )]),
+                    environment: None,
+                });
 
-        let status = check_approval_status(&manager, directory, &config).unwrap();
-        assert!(matches!(status, ApprovalStatus::NotApproved { .. }));
+                let status = check_approval_status(&manager, directory, &config).unwrap();
+                assert!(matches!(status, ApprovalStatus::NotApproved { .. }));
 
-        // Add an approval with a different hash
-        let different_hash = "different_hash".to_string();
-        manager.approvals.insert(
-            compute_directory_key(directory),
-            ApprovalRecord {
-                directory_path: directory.to_path_buf(),
-                config_hash: different_hash,
-                approved_at: Utc::now(),
-                expires_at: None,
-                note: None,
+                // Add an approval with a different hash
+                let different_hash = "different_hash".to_string();
+                manager.approvals.insert(
+                    compute_directory_key(directory),
+                    ApprovalRecord {
+                        directory_path: directory.to_path_buf(),
+                        config_hash: different_hash,
+                        approved_at: Utc::now(),
+                        expires_at: None,
+                        note: None,
+                    },
+                );
+
+                let status = check_approval_status(&manager, directory, &config).unwrap();
+                assert!(matches!(status, ApprovalStatus::RequiresApproval { .. }));
+
+                // Add approval with correct hash
+                let correct_hash = compute_approval_hash(&config);
+                manager.approvals.insert(
+                    compute_directory_key(directory),
+                    ApprovalRecord {
+                        directory_path: directory.to_path_buf(),
+                        config_hash: correct_hash,
+                        approved_at: Utc::now(),
+                        expires_at: None,
+                        note: None,
+                    },
+                );
+
+                let status = check_approval_status(&manager, directory, &config).unwrap();
+                assert!(matches!(status, ApprovalStatus::Approved));
             },
         );
-
-        let status = check_approval_status(&manager, directory, &config).unwrap();
-        assert!(matches!(status, ApprovalStatus::RequiresApproval { .. }));
-
-        // Add approval with correct hash
-        let correct_hash = compute_approval_hash(&config);
-        manager.approvals.insert(
-            compute_directory_key(directory),
-            ApprovalRecord {
-                directory_path: directory.to_path_buf(),
-                config_hash: correct_hash,
-                approved_at: Utc::now(),
-                expires_at: None,
-                note: None,
-            },
-        );
-
-        let status = check_approval_status(&manager, directory, &config).unwrap();
-        assert!(matches!(status, ApprovalStatus::Approved));
     }
 
     #[test]
