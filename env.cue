@@ -16,7 +16,6 @@ schema.#Project & {
 		flakes: {
 			nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
 		}
-		github: token: schema.#OnePasswordRef & {ref: "op://Private/GitHub/api-tokens/no-permissions-just-auth"}
 		tools: {
 			jq: xTools.#Jq & {version: "1.7.1"}
 			yq: xTools.#Yq & {version: "4.44.6"}
