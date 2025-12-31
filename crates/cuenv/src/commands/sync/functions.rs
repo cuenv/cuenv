@@ -147,27 +147,48 @@ fn execute_sync_cubes_local(
 
     let sync_result = sync_cube_files(dir_path, &manifest.name, cube_config, dry_run, check, diff)?;
 
-    // Run formatters on generated files if configured
+    // Run formatters only on files that were actually written
     let format_result = if let Some(ref formatters) = manifest.formatters {
-        // Collect file paths from cube config
-        let file_paths: Vec<std::path::PathBuf> = cube_config
-            .files
-            .keys()
-            .map(|p| dir_path.join(p))
-            .collect();
-        let file_refs: Vec<&Path> = file_paths.iter().map(|p| p.as_path()).collect();
-
-        super::formatters::format_generated_files(&file_refs, formatters, dir_path, dry_run, check)?
+        if sync_result.written_files.is_empty() && !dry_run {
+            // No files were written, skip formatting
+            String::new()
+        } else if dry_run {
+            // In dry-run mode, show what would be formatted based on all configured files
+            let file_paths: Vec<std::path::PathBuf> =
+                cube_config.files.keys().map(|p| dir_path.join(p)).collect();
+            let file_refs: Vec<&Path> = file_paths.iter().map(|p| p.as_path()).collect();
+            super::formatters::format_generated_files(
+                &file_refs, formatters, dir_path, dry_run, check,
+            )?
+        } else {
+            // Format only the files that were actually written
+            let file_refs: Vec<&Path> = sync_result
+                .written_files
+                .iter()
+                .map(|p| p.as_path())
+                .collect();
+            super::formatters::format_generated_files(
+                &file_refs, formatters, dir_path, dry_run, check,
+            )?
+        }
     } else {
         String::new()
     };
 
     // Combine results
     if format_result.is_empty() {
-        Ok(sync_result)
+        Ok(sync_result.output)
     } else {
-        Ok(format!("{sync_result}\n\n{format_result}"))
+        Ok(format!("{}\n\n{format_result}", sync_result.output))
     }
+}
+
+/// Result of a cube sync operation
+struct SyncResult {
+    /// Human-readable output
+    output: String,
+    /// Files that were actually written to disk
+    written_files: Vec<PathBuf>,
 }
 
 /// Sync cube files for a single project
@@ -178,17 +199,18 @@ fn sync_cube_files(
     dry_run: bool,
     check: bool,
     diff: bool,
-) -> Result<String> {
+) -> Result<SyncResult> {
     use cuenv_core::manifest::FileMode;
 
     let mut output_lines = Vec::new();
+    let mut written_files = Vec::new();
 
     for (file_path, file_def) in &cube_config.files {
         let output_path = project_root.join(file_path);
 
         match file_def.mode {
             FileMode::Managed => {
-                sync_managed_file(
+                let was_written = sync_managed_file(
                     &mut output_lines,
                     &output_path,
                     file_path,
@@ -197,9 +219,12 @@ fn sync_cube_files(
                     check,
                     diff,
                 )?;
+                if was_written {
+                    written_files.push(output_path);
+                }
             }
             FileMode::Scaffold => {
-                sync_scaffold_file(
+                let was_written = sync_scaffold_file(
                     &mut output_lines,
                     &output_path,
                     file_path,
@@ -208,6 +233,9 @@ fn sync_cube_files(
                     check,
                     diff,
                 )?;
+                if was_written {
+                    written_files.push(output_path);
+                }
             }
         }
     }
@@ -215,13 +243,19 @@ fn sync_cube_files(
     tracing::info!(
         project = project_name,
         files = cube_config.files.len(),
+        written = written_files.len(),
         "Cube sync complete"
     );
 
-    Ok(output_lines.join("\n"))
+    Ok(SyncResult {
+        output: output_lines.join("\n"),
+        written_files,
+    })
 }
 
 /// Sync a managed cube file (always overwritten to match expected content)
+///
+/// Returns `true` if the file was actually written to disk.
 fn sync_managed_file(
     output_lines: &mut Vec<String>,
     output_path: &Path,
@@ -230,7 +264,7 @@ fn sync_managed_file(
     dry_run: bool,
     check: bool,
     diff: bool,
-) -> Result<()> {
+) -> Result<bool> {
     if check || diff {
         if output_path.exists() {
             let contents = std::fs::read_to_string(output_path).unwrap_or_default();
@@ -244,20 +278,24 @@ fn sync_managed_file(
             output_lines.push(format!("  Missing: {file_path}"));
             maybe_push_diff(output_lines, diff, file_path, None, content);
         }
+        Ok(false)
     } else if dry_run {
         if output_path.exists() {
             output_lines.push(format!("  Would update: {file_path}"));
         } else {
             output_lines.push(format!("  Would create: {file_path}"));
         }
+        Ok(false)
     } else {
         write_cube_file(output_path, file_path, content, "managed")?;
         output_lines.push(format!("  Generated: {file_path}"));
+        Ok(true)
     }
-    Ok(())
 }
 
 /// Sync a scaffold cube file (only created if it doesn't exist)
+///
+/// Returns `true` if the file was actually written to disk.
 fn sync_scaffold_file(
     output_lines: &mut Vec<String>,
     output_path: &Path,
@@ -266,22 +304,25 @@ fn sync_scaffold_file(
     dry_run: bool,
     check: bool,
     diff: bool,
-) -> Result<()> {
+) -> Result<bool> {
     if output_path.exists() {
         if !dry_run && !check {
             tracing::debug!("Skipping {file_path} (scaffold mode, file exists)");
         }
         output_lines.push(format!("  Skipped (exists): {file_path}"));
+        Ok(false)
     } else if check || diff {
         output_lines.push(format!("  Missing scaffold: {file_path}"));
         maybe_push_diff(output_lines, diff, file_path, None, content);
+        Ok(false)
     } else if dry_run {
         output_lines.push(format!("  Would scaffold: {file_path}"));
+        Ok(false)
     } else {
         write_cube_file(output_path, file_path, content, "scaffold")?;
         output_lines.push(format!("  Scaffolded: {file_path}"));
+        Ok(true)
     }
-    Ok(())
 }
 
 /// Write a cube file to disk, creating parent directories as needed

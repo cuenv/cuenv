@@ -239,6 +239,37 @@ fn default_rs_includes() -> Vec<String> {
     vec!["*.rs".to_string()]
 }
 
+/// Nix formatter tool selection
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NixFormatterTool {
+    /// Use nixfmt (default)
+    #[default]
+    Nixfmt,
+    /// Use alejandra
+    Alejandra,
+}
+
+impl NixFormatterTool {
+    /// Get the command name for this tool
+    #[must_use]
+    pub fn command(&self) -> &'static str {
+        match self {
+            Self::Nixfmt => "nixfmt",
+            Self::Alejandra => "alejandra",
+        }
+    }
+
+    /// Get the check flag for this tool
+    #[must_use]
+    pub fn check_flag(&self) -> &'static str {
+        match self {
+            Self::Nixfmt => "--check",
+            Self::Alejandra => "-c",
+        }
+    }
+}
+
 /// Nix formatter configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -252,8 +283,8 @@ pub struct NixFormatter {
     pub includes: Vec<String>,
 
     /// Which Nix formatter tool to use (nixfmt or alejandra)
-    #[serde(default = "default_nix_tool")]
-    pub tool: String,
+    #[serde(default)]
+    pub tool: NixFormatterTool,
 }
 
 impl Default for NixFormatter {
@@ -261,17 +292,13 @@ impl Default for NixFormatter {
         Self {
             enabled: true,
             includes: default_nix_includes(),
-            tool: default_nix_tool(),
+            tool: NixFormatterTool::default(),
         }
     }
 }
 
 fn default_nix_includes() -> Vec<String> {
     vec!["*.nix".to_string()]
-}
-
-fn default_nix_tool() -> String {
-    "nixfmt".to_string()
 }
 
 /// Go formatter configuration
