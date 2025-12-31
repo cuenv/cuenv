@@ -21,6 +21,7 @@ schema.#Project & {
 			jq: xTools.#Jq & {version: "1.7.1"}
 			yq: xTools.#Yq & {version: "4.44.6"}
 			treefmt: xTools.#Treefmt & {version: "2.4.0"}
+			cue: xTools.#Cue & {version: "0.15.3"}
 			bun: xBun.#Bun & {version: "1.3.5"}
 
 			prettier: schema.#Tool & {
@@ -344,7 +345,7 @@ schema.#Project & {
 		docs: {
 			build: {
 				command: "bash"
-				args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build"]
+				args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build && cp public/.assetsignore dist/"]
 				inputs: [
 					"package.json",
 					"bun.lock",
