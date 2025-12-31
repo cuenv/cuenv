@@ -1,8 +1,5 @@
 //! Error types for workspace operations.
 
-// Allow false positives from new clippy lint that doesn't understand thiserror patterns
-#![allow(unused_assignments)]
-
 use miette::Diagnostic;
 use std::path::PathBuf;
 use thiserror::Error;

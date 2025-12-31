@@ -127,6 +127,9 @@ name = "cuenv"
 [workspace.lints.rust]
 unsafe_code = "warn"
 missing_docs = "warn"
+# Rust 1.92 compiler bug: false positives for thiserror/miette fields
+# https://github.com/rust-lang/rust/issues/147648
+unused_assignments = "allow"
 
 [workspace.lints.clippy]
 # Lint groups at lower priority so individual overrides take precedence
