@@ -849,6 +849,7 @@ fn env_vars_still_set(world: &mut TestWorld) {
     );
 }
 
+#[allow(clippy::needless_pass_by_value)] // cucumber requires owned String
 #[when(expr = "I change back to {string}")]
 fn change_back_to_directory(world: &mut TestWorld, dir: String) {
     // Simply update the current directory without triggering hook execution
@@ -856,8 +857,7 @@ fn change_back_to_directory(world: &mut TestWorld, dir: String) {
     // Use just the last component of the path to avoid doubling "examples"
     let target = std::path::Path::new(&dir)
         .file_name()
-        .map(|s| s.to_str().unwrap())
-        .unwrap_or(&dir);
+        .map_or(dir.as_str(), |s| s.to_str().unwrap_or(&dir));
     world.current_dir = world.current_dir.join(target);
 }
 
