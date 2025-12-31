@@ -135,6 +135,49 @@ cuenv exec [OPTIONS] -- <COMMAND> [ARGS]...
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production exec -- npm start`
 :::
 
+### `cuenv fmt`
+
+Format code based on your project's formatters configuration.
+
+```bash
+cuenv fmt [OPTIONS]
+```
+
+**Options:**
+
+- `--fix`: Apply formatting changes. Without this flag, runs in check mode (validates without modifying).
+- `--only <FORMATTERS>`: Run only specific formatters (comma-separated). Valid values: `rust`, `nix`, `go`, `cue`.
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+
+**Examples:**
+
+```bash
+# Check formatting (default - exits non-zero if issues found)
+cuenv fmt
+
+# Apply formatting fixes
+cuenv fmt --fix
+
+# Check only Rust and Go files
+cuenv fmt --only rust,go
+
+# Fix only Nix files
+cuenv fmt --fix --only nix
+
+# Format files in a specific project
+cuenv fmt --fix -p ./packages/my-app
+```
+
+**Exit Codes:**
+
+- `0`: All files are properly formatted (check mode) or formatting succeeded (fix mode)
+- `3`: Files need formatting (check mode) or formatter error
+
+:::note
+The `cuenv fmt` command requires a `formatters` block in your `env.cue`. See the [Formatters Guide](/how-to/formatters/) for configuration details.
+:::
+
 ### `cuenv shell`
 
 Shell integration commands.

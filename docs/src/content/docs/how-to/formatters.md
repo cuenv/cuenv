@@ -1,13 +1,13 @@
 ---
 title: Formatters
-description: Automatically format generated files after sync
+description: Format code consistently across your project
 ---
 
-cuenv can automatically format generated files after running `cuenv sync cubes`. This keeps your generated code consistent with your project's style guidelines without manual intervention.
+cuenv provides built-in code formatting with `cuenv fmt`. Configure formatters once in your `env.cue` and format your entire codebase with a single command.
 
 ## Quick Start
 
-Add a `formatters` field to your `env.cue`:
+**1. Add formatters to your `env.cue`:**
 
 ```cue
 package cuenv
@@ -18,55 +18,71 @@ schema.#Project & {
     name: "my-project"
 
     formatters: {
-        rust: {
-            includes: ["**/*.rs"]
-        }
-        nix: {
-            tool: "nixfmt"
-        }
+        rust: {}
+        nix: { tool: "nixfmt" }
+        go: {}
+        cue: {}
     }
 }
 ```
 
-Then run:
+**2. Check formatting:**
 
 ```bash
-cuenv sync cubes
+cuenv fmt
 ```
 
-Generated files matching your patterns will be automatically formatted.
+**3. Fix formatting issues:**
+
+```bash
+cuenv fmt --fix
+```
+
+That's it! cuenv discovers all matching files (respecting `.gitignore`) and formats them.
 
 ## Commands
 
-### Format generated files
+### Check Mode (Default)
 
 ```bash
-cuenv sync cubes
+cuenv fmt
 ```
 
-Runs cube generation and formats all generated files that match your formatter patterns.
+Validates that all files are properly formatted without making changes. Exits with code `3` if any files need formatting—perfect for CI pipelines.
 
-### Check formatting (CI mode)
+### Fix Mode
 
 ```bash
-cuenv sync cubes --check
+cuenv fmt --fix
 ```
 
-Verifies generated files are properly formatted without making changes. Exits with non-zero status if formatting is needed. Useful in CI pipelines.
+Formats all files in-place. This is what you'll use during development.
 
-### Preview changes (dry-run)
+### Filter by Formatter
 
 ```bash
-cuenv sync cubes --dry-run
+# Only check Rust files
+cuenv fmt --only rust
+
+# Fix only Go and CUE files
+cuenv fmt --fix --only go,cue
+
+# Check Nix files only
+cuenv fmt --only nix
 ```
 
-Shows what files would be generated and formatted without actually writing them.
+The `--only` flag accepts a comma-separated list: `rust`, `nix`, `go`, `cue`.
+
+### Format a Specific Path
+
+```bash
+# Format files in a subdirectory
+cuenv fmt --fix -p ./packages/my-app
+```
 
 ## Supported Formatters
 
-### Rust (rustfmt)
-
-Formats Rust files using `rustfmt`.
+### Rust (`rustfmt`)
 
 ```cue
 formatters: {
@@ -82,11 +98,9 @@ formatters: {
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable/disable this formatter |
 | `includes` | `[...string]` | `["*.rs"]` | Glob patterns for files to format |
-| `edition` | `string` | (none) | Rust edition for formatting rules |
+| `edition` | `string` | — | Rust edition for formatting rules |
 
-### Nix (nixfmt or alejandra)
-
-Formats Nix files using either `nixfmt` or `alejandra`.
+### Nix (`nixfmt` or `alejandra`)
 
 ```cue
 formatters: {
@@ -102,11 +116,9 @@ formatters: {
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable/disable this formatter |
 | `includes` | `[...string]` | `["*.nix"]` | Glob patterns for files to format |
-| `tool` | `string` | `"nixfmt"` | Formatter tool: `"nixfmt"` or `"alejandra"` |
+| `tool` | `string` | `"nixfmt"` | Tool to use: `"nixfmt"` or `"alejandra"` |
 
-### Go (gofmt)
-
-Formats Go files using `gofmt`.
+### Go (`gofmt`)
 
 ```cue
 formatters: {
@@ -122,9 +134,7 @@ formatters: {
 | `enabled` | `bool` | `true` | Enable/disable this formatter |
 | `includes` | `[...string]` | `["*.go"]` | Glob patterns for files to format |
 
-### CUE (cue fmt)
-
-Formats CUE files using `cue fmt`.
+### CUE (`cue fmt`)
 
 ```cue
 formatters: {
@@ -142,95 +152,197 @@ formatters: {
 
 ## Pattern Matching
 
-File patterns use glob syntax and are matched relative to the project root:
+Patterns use glob syntax and match against paths relative to your project root:
 
-- `*.rs` - Rust files in the project root
-- `**/*.rs` - All Rust files recursively
-- `src/**/*.rs` - Rust files under src/
-- `crates/*/src/**/*.rs` - Rust files in any crate's src directory
+| Pattern | Matches |
+|---------|---------|
+| `*.rs` | Rust files in project root only |
+| `**/*.rs` | All Rust files recursively |
+| `src/**/*.rs` | Rust files under `src/` |
+| `crates/*/src/**/*.rs` | Rust files in any crate's src directory |
+| `!vendor/**` | Exclude vendor directory |
 
-Patterns are matched against the relative path from your project root. For example, if a generated file is at `/path/to/project/src/lib.rs`, it's matched against `src/lib.rs`.
+:::tip
+Use `**/*.ext` patterns to recursively match files. The default patterns (`*.rs`, `*.nix`, etc.) only match files in the project root.
+:::
 
-Invalid glob patterns are logged as warnings and skipped (not silent failures).
+## CI Integration
 
-## Output Status
+Add formatting checks to your CI pipeline:
 
-When formatting runs, you'll see status messages:
+```yaml
+# GitHub Actions
+- name: Check formatting
+  run: cuenv fmt
 
+# GitLab CI
+format:
+  script:
+    - cuenv fmt
 ```
-Synchronized files
-Formatted 42 Rust file(s)
-Formatted 12 Nix file(s)
+
+The command exits with code `3` if any files need formatting, failing the CI job.
+
+### Pre-commit Hook
+
+Add to `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: local
+    hooks:
+      - id: cuenv-fmt
+        name: cuenv fmt
+        entry: cuenv fmt
+        language: system
+        pass_filenames: false
 ```
 
-In check mode, failures produce errors:
+Or use a simple Git hook in `.git/hooks/pre-commit`:
 
-```
-Error: 3 Rust file(s) need formatting
+```bash
+#!/bin/sh
+cuenv fmt || {
+    echo "Formatting check failed. Run 'cuenv fmt --fix' to fix."
+    exit 1
+}
 ```
 
 ## Examples
 
-### Rust Project with Edition 2024
+### Rust Workspace
 
 ```cue
 formatters: {
     rust: {
-        includes: ["src/**/*.rs", "tests/**/*.rs", "benches/**/*.rs"]
-        edition:  "2024"
+        includes: [
+            "crates/**/*.rs",
+            "tests/**/*.rs",
+            "benches/**/*.rs",
+        ]
+        edition: "2024"
     }
 }
 ```
 
-### Nix Flake with Alejandra
+### Nix Flake Project
 
 ```cue
 formatters: {
     nix: {
-        tool:     "alejandra"
+        tool: "alejandra"
+        includes: [
+            "*.nix",
+            "nix/**/*.nix",
+            "modules/**/*.nix",
+        ]
+    }
+}
+```
+
+### Multi-Language Monorepo
+
+```cue
+formatters: {
+    rust: {
+        includes: ["services/**/*.rs", "libs/**/*.rs"]
+        edition: "2024"
+    }
+    go: {
+        includes: ["cmd/**/*.go", "pkg/**/*.go", "internal/**/*.go"]
+    }
+    cue: {
+        includes: ["**/*.cue"]
+    }
+    nix: {
+        tool: "nixfmt"
         includes: ["*.nix", "nix/**/*.nix"]
     }
 }
 ```
 
-### Multi-language Project
+### Selective Formatting
 
 ```cue
 formatters: {
+    // Format Rust with specific edition
     rust: {
-        includes: ["crates/**/*.rs"]
-        edition:  "2024"
+        includes: ["src/**/*.rs"]
+        edition: "2024"
     }
+    // Skip Go formatting entirely
     go: {
-        includes: ["cmd/**/*.go", "pkg/**/*.go"]
+        enabled: false
     }
-    cue: {
-        includes: ["schema/**/*.cue", "*.cue"]
-    }
+    // Use alejandra for Nix
     nix: {
-        tool: "nixfmt"
+        tool: "alejandra"
     }
 }
 ```
 
-### Disable a Formatter
+## Post-Sync Formatting
+
+When using [cuenv cubes](/how-to/cubes/) for code generation, formatters also run automatically after `cuenv sync cubes`:
+
+```bash
+# Generates files AND formats them
+cuenv sync cubes
+```
+
+This ensures generated code matches your project's style without a separate step. The same formatter configuration applies to both `cuenv fmt` and post-sync formatting.
+
+## Troubleshooting
+
+### "No formatters configured"
+
+You need a `formatters` block in your `env.cue`:
 
 ```cue
 formatters: {
-    rust: {
-        enabled: false  // Skip Rust formatting
-    }
-    nix: {}  // Keep Nix formatting with defaults
+    rust: {}  // Minimal config with defaults
 }
 ```
 
-## Integration with CI
+### Formatter not found
 
-Use `--check` mode in your CI pipeline to verify generated files are properly formatted:
+Ensure the formatter binary is in your PATH:
 
-```yaml
-- name: Check sync formatting
-  run: cuenv sync cubes --check
+```bash
+# Check if rustfmt is available
+which rustfmt
+
+# Check if nixfmt is available
+which nixfmt
 ```
 
-This fails the build if any generated files need formatting, ensuring your repository stays consistent.
+### Files not being formatted
+
+1. Check your `includes` patterns match the files:
+   ```bash
+   # List files that would be formatted
+   cuenv fmt --only rust 2>&1 | head -20
+   ```
+
+2. Ensure files aren't in `.gitignore` (cuenv respects gitignore)
+
+3. Verify the formatter is enabled:
+   ```cue
+   formatters: {
+       rust: {
+           enabled: true  // Must be true (default)
+       }
+   }
+   ```
+
+### Pattern not matching
+
+Remember patterns are relative to project root:
+
+```cue
+// Wrong: absolute-style pattern
+includes: ["/src/**/*.rs"]
+
+// Correct: relative pattern
+includes: ["src/**/*.rs"]
+```
