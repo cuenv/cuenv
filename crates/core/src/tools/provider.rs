@@ -155,6 +155,20 @@ pub enum ToolSource {
         #[serde(skip_serializing_if = "Option::is_none")]
         output: Option<String>,
     },
+    /// Rust toolchain managed by rustup.
+    Rustup {
+        /// Toolchain identifier (e.g., "stable", "1.83.0", "nightly-2024-01-01").
+        toolchain: String,
+        /// Installation profile: minimal, default, complete.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
+        /// Additional components to install (e.g., "clippy", "rustfmt", "rust-src").
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        components: Vec<String>,
+        /// Additional targets to install (e.g., "x86_64-unknown-linux-gnu").
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        targets: Vec<String>,
+    },
 }
 
 impl ToolSource {
@@ -165,6 +179,7 @@ impl ToolSource {
             Self::Oci { .. } => "oci",
             Self::GitHub { .. } => "github",
             Self::Nix { .. } => "nix",
+            Self::Rustup { .. } => "rustup",
         }
     }
 }
@@ -418,5 +433,13 @@ mod tests {
             output: None,
         };
         assert_eq!(s.provider_type(), "nix");
+
+        let s = ToolSource::Rustup {
+            toolchain: "1.83.0".into(),
+            profile: Some("default".into()),
+            components: vec!["clippy".into(), "rustfmt".into()],
+            targets: vec!["x86_64-unknown-linux-gnu".into()],
+        };
+        assert_eq!(s.provider_type(), "rustup");
     }
 }

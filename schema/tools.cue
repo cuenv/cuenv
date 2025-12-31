@@ -77,7 +77,7 @@ package schema
 }
 
 // #Source is a union of all supported tool sources
-#Source: #Oci | #GitHub | #Nix
+#Source: #Oci | #GitHub | #Nix | #Rustup
 
 // #Oci extracts binaries from OCI container images
 #Oci: {
@@ -112,6 +112,19 @@ package schema
 	package!: string
 	// Output path if binary can't be auto-detected
 	output?: string
+}
+
+// #Rustup manages Rust toolchains via rustup
+#Rustup: {
+	type: "rustup"
+	// Toolchain identifier (e.g., "stable", "1.83.0", "nightly-2024-01-01")
+	toolchain!: string
+	// Installation profile: minimal, default, complete
+	profile: "minimal" | "default" | "complete" | *"default"
+	// Additional components to install (e.g., "clippy", "rustfmt", "rust-src")
+	components: [...string] | *[]
+	// Additional targets to install (e.g., "x86_64-unknown-linux-gnu")
+	targets: [...string] | *[]
 }
 
 // #ToolsActivate is a pre-configured hook that downloads tools

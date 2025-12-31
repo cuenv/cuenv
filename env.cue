@@ -31,8 +31,18 @@ schema.#Project & {
 				}
 			}
 
-			// Rust toolchain
-			rust: xRust.#Rust & {version: "1.92.0"}
+			// Rust toolchain via rustup
+			rust: xRust.#Rust & {
+				version: "1.92.0"
+				source: profile: "default"
+				source: components: ["rust-src", "clippy", "rustfmt", "llvm-tools-preview"]
+				source: targets: [
+					"x86_64-unknown-linux-gnu",
+					"aarch64-unknown-linux-gnu",
+					"aarch64-apple-darwin",
+					"x86_64-apple-darwin",
+				]
+			}
 			"rust-analyzer": xRust.#RustAnalyzer & {version: "2025-12-22"}
 
 			// Cargo extensions

@@ -1,0 +1,20 @@
+[package]
+name = "cuenv_tools_rustup"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rustup tool provider for cuenv"
+
+[lints]
+workspace = true
+
+[dependencies]
+cuenv-core = { path = "../../core" }
+async-trait = "0.1"
+dirs = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

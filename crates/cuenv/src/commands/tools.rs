@@ -19,6 +19,9 @@ fn create_registry() -> ToolRegistry {
     // Register GitHub provider
     registry.register(cuenv_tools_github::GitHubToolProvider::new());
 
+    // Register Rustup provider
+    registry.register(cuenv_tools_rustup::RustupToolProvider::new());
+
     registry
 }
 
@@ -410,6 +413,44 @@ fn lockfile_entry_to_source(
                 output,
             })
         }
+        "rustup" => {
+            let toolchain = locked
+                .source
+                .get("toolchain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("stable");
+            let profile = locked
+                .source
+                .get("profile")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let components = locked
+                .source
+                .get("components")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let targets = locked
+                .source
+                .get("targets")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(ToolSource::Rustup {
+                toolchain: toolchain.to_string(),
+                profile,
+                components,
+                targets,
+            })
+        }
         _ => None,
     }
 }
@@ -519,7 +560,7 @@ pub fn get_tool_paths(project_path: Option<&Path>) -> Result<Option<ToolPaths>, 
         }
     }
 
-    // 2. Process non-Nix tools (cache-based)
+    // 2. Process non-Nix tools (cache-based or rustup)
     for (name, tool) in &lockfile.tools {
         let Some(locked) = tool.platforms.get(&platform_str) else {
             continue;
@@ -530,7 +571,46 @@ pub fn get_tool_paths(project_path: Option<&Path>) -> Result<Option<ToolPaths>, 
             continue;
         }
 
-        // Construct the tool directory based on provider
+        // Handle rustup tools specially - they live in ~/.rustup/toolchains/
+        if locked.provider == "rustup" {
+            if let Some(toolchain) = locked.source.get("toolchain").and_then(|v| v.as_str()) {
+                let rustup_home = std::env::var("RUSTUP_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| {
+                        dirs::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join(".rustup")
+                    });
+
+                // Construct toolchain name with host triple
+                let host_triple = format!(
+                    "{}-{}",
+                    match platform.arch {
+                        cuenv_core::tools::Arch::Arm64 => "aarch64",
+                        cuenv_core::tools::Arch::X86_64 => "x86_64",
+                    },
+                    match platform.os {
+                        cuenv_core::tools::Os::Darwin => "apple-darwin",
+                        cuenv_core::tools::Os::Linux => "unknown-linux-gnu",
+                    }
+                );
+                let toolchain_name = format!("{toolchain}-{host_triple}");
+                let toolchain_dir = rustup_home.join("toolchains").join(toolchain_name);
+
+                let bin = toolchain_dir.join("bin");
+                let lib = toolchain_dir.join("lib");
+
+                if bin.exists() {
+                    bin_dirs.insert(bin);
+                }
+                if lib.exists() {
+                    lib_dirs.insert(lib);
+                }
+            }
+            continue;
+        }
+
+        // Construct the tool directory based on provider (github, oci, etc.)
         let tool_dir = cache_dir
             .join(&locked.provider)
             .join(name)

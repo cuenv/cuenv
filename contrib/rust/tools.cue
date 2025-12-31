@@ -2,19 +2,24 @@ package rust
 
 import "github.com/cuenv/cuenv/schema"
 
-// #Rust provides the Rust toolchain via Nix (cargo, rustc, clippy, rustfmt, rustdoc).
+// #Rust provides the Rust toolchain via rustup (cargo, rustc, clippy, rustfmt, rustdoc).
 //
 // Usage:
 //
 //	runtime: schema.#ToolsRuntime & {
-//	    flakes: nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
-//	    tools: rust: xRust.#Rust & {version: "1.83.0"}
+//	    tools: rust: xRust.#Rust & {
+//	        version: "1.83.0"
+//	        source: profile: "default"
+//	        source: components: ["rust-src", "clippy", "rustfmt"]
+//	        source: targets: ["x86_64-unknown-linux-gnu"]
+//	    }
 //	}
 #Rust: schema.#Tool & {
+	// The version is used as the toolchain identifier
 	version!: string
-	source: schema.#Nix & {
-		flake:   "nixpkgs"
-		package: "cargo"
+
+	source: schema.#Rustup & {
+		toolchain: version
 	}
 }
 

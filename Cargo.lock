@@ -1628,6 +1628,7 @@ dependencies = [
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-tools-oci",
+ "cuenv_tools_rustup",
  "dirs 6.0.0",
  "futures",
  "gix",
@@ -2057,6 +2058,20 @@ dependencies = [
  "tracing",
  "walkdir",
  "yarn-lock-parser",
+]
+
+[[package]]
+name = "cuenv_tools_rustup"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cuenv-core",
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
