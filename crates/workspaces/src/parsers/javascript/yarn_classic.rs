@@ -23,7 +23,7 @@ impl LockfileParser for YarnClassicLockfileParser {
         // If it fails (which can happen on some valid yarn.lock files), fall back to manual parsing.
         // Note: yarn_lock_parser only provides name and version, not resolved/integrity/dependencies.
         // We use catch_unwind because yarn_lock_parser can panic on some valid lockfiles.
-        let entries = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let parsed_lockfile = panic::catch_unwind(panic::AssertUnwindSafe(|| {
             yarn_lock_parser::parse_str(&contents)
         }))
         .ok()
@@ -32,8 +32,9 @@ impl LockfileParser for YarnClassicLockfileParser {
                 yarn_lock_parser::Lockfile<'_>,
                 yarn_lock_parser::YarnLockError,
             >| r.ok(),
-        )
-        .map(|lockfile| {
+        );
+
+        let entries = if let Some(lockfile) = parsed_lockfile {
             let parsed_entries = lockfile.entries;
             let detailed_entries = parse_lockfile_details(&contents);
             let mut result = Vec::new();
@@ -57,14 +58,10 @@ impl LockfileParser for YarnClassicLockfileParser {
             }
 
             result
-        })
-        .map_or_else(
-            || {
-                // Fall back to fully manual parsing if yarn_lock_parser fails or panics
-                parse_yarn_lockfile_fully(&contents, lockfile_path)
-            },
-            |entries| entries,
-        );
+        } else {
+            // Fall back to fully manual parsing if yarn_lock_parser fails or panics
+            parse_yarn_lockfile_fully(&contents, lockfile_path)
+        };
 
         Ok(entries)
     }

@@ -32,7 +32,7 @@ fn run_cuenv_command(args: &[&str]) -> Result<(String, String, bool), Box<dyn st
 }
 
 /// Get the path to the test examples directory
-fn get_test_examples_path() -> String {
+fn get_testexamples_path() -> String {
     // Use the CARGO_MANIFEST_DIR environment variable to get the project root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     // Go up two levels from crates/cuenv-cli to the project root
@@ -42,7 +42,7 @@ fn get_test_examples_path() -> String {
         .expect("Failed to find project root");
 
     project_root
-        .join("_examples/env-basic")
+        .join("examples/env-basic")
         .to_string_lossy()
         .to_string()
 }
@@ -349,14 +349,14 @@ fn test_correlation_id_uniqueness() {
 }
 #[test]
 fn test_env_print_command_basic() {
-    let test_path = get_test_examples_path();
+    let test_path = get_testexamples_path();
     let result = run_cuenv_command(&[
         "env",
         "print",
         "--path",
         &test_path,
         "--package",
-        "_examples",
+        "examples",
     ]);
 
     match result {
@@ -378,14 +378,14 @@ fn test_env_print_command_basic() {
 
 #[test]
 fn test_env_print_command_json_format() {
-    let test_path = get_test_examples_path();
+    let test_path = get_testexamples_path();
     let result = run_cuenv_command(&[
         "env",
         "print",
         "--path",
         &test_path,
         "--package",
-        "_examples",
+        "examples",
         "--output",
         "json",
     ]);
@@ -411,8 +411,8 @@ fn test_env_print_command_json_format() {
 
 #[test]
 fn test_env_print_command_with_short_path_flag() {
-    let test_path = get_test_examples_path();
-    let result = run_cuenv_command(&["env", "print", "-p", &test_path, "--package", "_examples"]);
+    let test_path = get_testexamples_path();
+    let result = run_cuenv_command(&["env", "print", "-p", &test_path, "--package", "examples"]);
 
     match result {
         Ok((stdout, _stderr, success)) => {
@@ -433,7 +433,7 @@ fn test_env_print_command_invalid_path() {
         "--path",
         "nonexistent/path",
         "--package",
-        "_examples",
+        "examples",
     ]);
 
     if let Ok((_stdout, _stderr, success)) = result {
@@ -449,7 +449,7 @@ fn test_env_print_command_invalid_package() {
         "env",
         "print",
         "--path",
-        "_examples/env-basic",
+        "examples/env-basic",
         "--package",
         "nonexistent",
     ]);
@@ -463,14 +463,14 @@ fn test_env_print_command_invalid_package() {
 
 #[test]
 fn test_env_print_command_unsupported_format() {
-    let test_path = get_test_examples_path();
+    let test_path = get_testexamples_path();
     let result = run_cuenv_command(&[
         "env",
         "print",
         "--path",
         &test_path,
         "--package",
-        "_examples",
+        "examples",
         "--output",
         "yaml",
     ]);
@@ -554,7 +554,7 @@ fn test_sync_command_invalid_path() {
         "--path",
         "nonexistent/path",
         "--package",
-        "_examples",
+        "examples",
         "--dry-run",
     ]);
 

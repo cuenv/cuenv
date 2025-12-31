@@ -148,6 +148,10 @@ impl WireMessage {
     }
 
     /// Write this message to a stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or I/O fails.
     pub async fn write_to<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> io::Result<()> {
         let json =
             serde_json::to_vec(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -168,6 +172,10 @@ impl WireMessage {
     }
 
     /// Read a message from a stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if I/O or deserialization fails.
     pub async fn read_from<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Self> {
         let mut len_buf = [0u8; 4];
         reader.read_exact(&mut len_buf).await?;

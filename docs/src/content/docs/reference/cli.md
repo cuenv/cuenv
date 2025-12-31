@@ -330,6 +330,80 @@ Tool names map to ignore files as `.{tool}ignore` (e.g., `git` creates `.gitigno
 
 See the [Ignore Files guide](/how-to/ignore-files/) for more details.
 
+### `cuenv tools`
+
+Manage project tools defined in CUE configuration.
+
+:::note
+When using `cuenv exec` or `cuenv task`, tools are activated automatically from the lockfile. The `cuenv tools` commands are for manual management and scripting.
+:::
+
+#### `cuenv tools download`
+
+Download tools for the current platform from the lockfile.
+
+```bash
+cuenv tools download
+```
+
+Downloads all tools specified in `cuenv.lock` for the current platform. Tools are cached in `~/.cache/cuenv/tools/` and reused across projects.
+
+**Example:**
+
+```bash
+# Pre-download tools for offline use or CI caching
+cuenv tools download
+```
+
+#### `cuenv tools activate`
+
+Output shell export statements to add tool binaries to PATH.
+
+```bash
+cuenv tools activate
+```
+
+Outputs `export PATH=...` and library path statements (`DYLD_LIBRARY_PATH` on macOS, `LD_LIBRARY_PATH` on Linux).
+
+**Example:**
+
+```bash
+# Activate tools in a script
+eval "$(cuenv tools activate)"
+
+# Verify tools are available
+jq --version
+```
+
+:::tip
+For `cuenv exec` and `cuenv task`, tools are activated automatically. Use `cuenv tools activate` for manual activation in scripts or when configuring shell hooks.
+:::
+
+#### `cuenv tools list`
+
+List configured tools and their platforms.
+
+```bash
+cuenv tools list
+```
+
+Shows all tools from `cuenv.lock` with their versions, providers, and digests per platform. The current platform is marked with `(current)`.
+
+**Example output:**
+
+```
+Tools (3 tools, 3 platforms):
+
+jq (1.7.1):
+  darwin-arm64 (current): homebrew sha256:abc123...
+  darwin-x86_64: homebrew sha256:def456...
+  linux-x86_64: homebrew sha256:789xyz...
+
+yq (4.44.6):
+  darwin-arm64 (current): homebrew sha256:...
+  ...
+```
+
 ### `cuenv tui`
 
 Start an interactive TUI dashboard for monitoring cuenv events.

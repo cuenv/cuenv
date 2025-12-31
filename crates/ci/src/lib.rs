@@ -1,4 +1,7 @@
 #![allow(missing_docs)]
+// Rust 1.92 compiler bug: false positives for thiserror/miette derive macro fields
+// https://github.com/rust-lang/rust/issues/147648
+#![allow(unused_assignments)]
 
 pub mod affected;
 pub mod compiler;

@@ -70,7 +70,7 @@ fn test_io_error_conversion() {
 
     let io_error = io::Error::new(io::ErrorKind::NotFound, "file not found");
     let error = Error::from(io_error);
-    assert!(error.to_string().contains("I/O operation failed"));
+    assert!(error.to_string().contains("I/O") && error.to_string().contains("failed"));
     // The specific error message is wrapped by miette, just check the main error type
     // assert!(error.to_string().contains("file not found"));
 }

@@ -4,7 +4,7 @@ import "github.com/cuenv/cuenv/schema"
 
 // #Sccache provides sccache setup for Rust compilation caching.
 //
-// Uses shell commands by default to install and configure sccache.
+// Configures cargo to use sccache which should be available via runtime.tools.
 // On GitHub Actions, uses Mozilla-Actions/sccache-action for optimized caching.
 //
 // Usage:
@@ -12,15 +12,19 @@ import "github.com/cuenv/cuenv/schema"
 // import rustcontrib "github.com/cuenv/cuenv/contrib/rust"
 //
 // ci: contributors: sccache: rustcontrib.#Sccache
+//
+// Requires sccache in runtime.tools:
+//
+//	runtime: schema.#ToolsRuntime & {
+//	    tools: {
+//	        sccache: #SccacheTool & {version: "0.12.0"}
+//	    }
+//	}
 #Sccache: schema.#Contributor & {
 	setup: [{
 		name: "Setup sccache"
 		script: """
-			# Install sccache if not present
-			if ! command -v sccache &> /dev/null; then
-			    cargo install sccache --locked
-			fi
-			# Configure cargo to use sccache
+			# Configure cargo to use sccache (provided via cuenv tools)
 			export RUSTC_WRAPPER=sccache
 			"""
 		env: RUSTC_WRAPPER: "sccache"

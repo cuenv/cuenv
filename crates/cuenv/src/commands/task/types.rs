@@ -68,8 +68,13 @@ impl fmt::Debug for TaskExecutionRequest<'_> {
 /// selection mode per execution request.
 #[derive(Debug, Clone, Default)]
 pub enum TaskSelection {
-    /// Execute a specific named task with optional arguments
-    Named { name: String, args: Vec<String> },
+    /// Execute a specific named task with optional arguments.
+    Named {
+        /// The task name.
+        name: String,
+        /// Optional arguments to pass to the task.
+        args: Vec<String>,
+    },
 
     /// Execute all tasks matching the given labels (AND semantics)
     Labels(Vec<String>),

@@ -73,7 +73,7 @@ cuenv/
 │   └── cuenv-release/      # Release management
 ├── schema/                 # CUE schema definitions
 ├── integrations/           # Editor integrations (VSCode)
-├── _examples/              # Example configurations
+├── examples/              # Example configurations
 ├── docs/                   # Documentation (Astro/Starlight)
 ├── _tests/                 # Integration tests
 └── flake.nix              # Nix development environment
@@ -104,7 +104,7 @@ cuenv task fmt.fix
 cargo run -p cuenv -- task
 
 # Evaluate a fixture
-cargo run -p cuenv -- env print --path ./_examples/env-basic
+cargo run -p cuenv -- env print --path ./examples/env-basic
 ```
 
 ## Working on specific crates

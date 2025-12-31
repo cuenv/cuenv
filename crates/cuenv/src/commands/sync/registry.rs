@@ -49,11 +49,13 @@ impl SyncRegistry {
     }
 
     /// Get provider names for CLI help.
+    #[must_use]
     pub fn names(&self) -> Vec<&'static str> {
         self.providers.iter().map(|p| p.name()).collect()
     }
 
     /// Build CLI commands for all providers.
+    #[must_use]
     #[allow(dead_code)]
     pub fn build_commands(&self) -> Vec<clap::Command> {
         self.providers.iter().map(|p| p.build_command()).collect()
@@ -63,6 +65,10 @@ impl SyncRegistry {
     ///
     /// When `all_projects` is true, calls `sync_workspace` on each provider.
     /// Otherwise calls `sync_path` for the given path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any provider fails to sync.
     pub async fn sync_all(
         &self,
         path: &Path,
@@ -107,6 +113,10 @@ impl SyncRegistry {
     }
 
     /// Sync a specific provider by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the provider is not found or fails to sync.
     pub async fn sync_provider(
         &self,
         name: &str,

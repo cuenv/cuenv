@@ -1,5 +1,8 @@
 // Transitive dependencies bring in multiple versions of foldhash and unicode-width
 #![allow(clippy::multiple_crate_versions)]
+// Rust 1.92 compiler bug: false positives for thiserror/miette derive macro fields
+// https://github.com/rust-lang/rust/issues/147648
+#![allow(unused_assignments)]
 
 //! Workspace and dependency resolution for cuenv across multiple package managers.
 //!

@@ -235,6 +235,64 @@ impl Environment {
         merged
     }
 
+    /// Essential system variables to preserve in hermetic mode.
+    /// These are required for basic process operation but don't pollute PATH.
+    const HERMETIC_ALLOWED_VARS: &'static [&'static str] = &[
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "COLORTERM",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "XDG_RUNTIME_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+    ];
+
+    /// Merge with only essential system environment variables (hermetic mode).
+    ///
+    /// Unlike `merge_with_system()`, this excludes PATH and other potentially
+    /// polluting variables. PATH should come from cuenv tools activation.
+    ///
+    /// Included variables:
+    /// - User identity: HOME, USER, LOGNAME, SHELL
+    /// - Terminal: TERM, COLORTERM
+    /// - Locale: LANG, LC_* variables
+    /// - Temp directories: TMPDIR, TMP, TEMP
+    /// - XDG directories: XDG_RUNTIME_DIR, XDG_CONFIG_HOME, etc.
+    pub fn merge_with_system_hermetic(&self) -> HashMap<String, String> {
+        let mut merged: HashMap<String, String> = HashMap::new();
+
+        // Only include allowed system variables
+        for var in Self::HERMETIC_ALLOWED_VARS {
+            if let Ok(value) = env::var(var) {
+                merged.insert((*var).to_string(), value);
+            }
+        }
+
+        // Also include any LC_* variables (locale settings)
+        for (key, value) in env::vars() {
+            if key.starts_with("LC_") {
+                merged.insert(key, value);
+            }
+        }
+
+        // Override with CUE environment variables (including cuenv-constructed PATH)
+        for (key, value) in &self.vars {
+            merged.insert(key.clone(), value.clone());
+        }
+
+        merged
+    }
+
     /// Convert to a vector of key=value strings including system environment
     pub fn to_full_env_vec(&self) -> Vec<String> {
         self.merge_with_system()
@@ -317,7 +375,51 @@ impl Environment {
             }
         }
 
-        // Command not found in PATH, return original (spawn will fail with proper error)
+        // Command not found in environment PATH - try system PATH as fallback
+        // This is necessary when the environment has tool paths but not system paths,
+        // since we still need to find system commands like echo, bash, etc.
+        if self.vars.contains_key("PATH")
+            && let Ok(system_path) = env::var("PATH")
+        {
+            tracing::debug!(
+                command = %command,
+                "Command not found in env PATH, trying system PATH"
+            );
+            for dir in system_path.split(':') {
+                if dir.is_empty() {
+                    continue;
+                }
+                let candidate = std::path::Path::new(dir).join(command);
+                if candidate.is_file() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = std::fs::metadata(&candidate) {
+                            let permissions = metadata.permissions();
+                            if permissions.mode() & 0o111 != 0 {
+                                tracing::debug!(
+                                    command = %command,
+                                    resolved = %candidate.display(),
+                                    "Command resolved from system PATH"
+                                );
+                                return candidate.to_string_lossy().to_string();
+                            }
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        tracing::debug!(
+                            command = %command,
+                            resolved = %candidate.display(),
+                            "Command resolved from system PATH"
+                        );
+                        return candidate.to_string_lossy().to_string();
+                    }
+                }
+            }
+        }
+
+        // Command not found in any PATH, return original (spawn will fail with proper error)
         tracing::warn!(
             command = %command,
             env_path_set = self.vars.contains_key("PATH"),

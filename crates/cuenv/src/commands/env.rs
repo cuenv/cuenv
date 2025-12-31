@@ -1,3 +1,8 @@
+//! Environment variable management commands.
+//!
+//! Provides commands for listing and printing environment variables
+//! from CUE configurations.
+
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
@@ -78,6 +83,11 @@ fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor
     instance.deserialize()
 }
 
+/// List available environments in the CUE configuration.
+///
+/// # Errors
+///
+/// Returns an error if CUE evaluation fails or the format is unsupported.
 #[instrument(name = "env_list", skip(executor))]
 pub async fn execute_env_list(
     path: &str,
@@ -121,6 +131,14 @@ pub async fn execute_env_list(
     Ok(output)
 }
 
+/// Print environment variables from the CUE configuration.
+///
+/// Resolves secrets and applies environment-specific overrides if specified.
+///
+/// # Errors
+///
+/// Returns an error if CUE evaluation fails, secrets cannot be resolved,
+/// or the format is unsupported.
 #[instrument(name = "env_print", skip(executor))]
 pub async fn execute_env_print(
     path: &str,
@@ -174,7 +192,7 @@ pub async fn execute_env_print(
     Ok(output)
 }
 
-/// Resolve all environment variables, returning resolved values and secret values separately
+/// Resolve all environment variables, returning resolved values and secret values separately.
 async fn resolve_env_vars_with_secrets(
     env_map: &std::collections::HashMap<String, cuenv_core::environment::EnvValue>,
 ) -> Result<(std::collections::HashMap<String, String>, Vec<String>)> {
@@ -192,6 +210,8 @@ async fn resolve_env_vars_with_secrets(
     Ok((resolved, secrets))
 }
 
+/// Format environment variables as shell-style KEY=VALUE pairs.
+#[must_use]
 fn format_as_env_vars(env_map: &std::collections::HashMap<String, String>) -> String {
     let mut lines = Vec::new();
 

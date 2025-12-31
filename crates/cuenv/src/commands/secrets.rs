@@ -6,7 +6,11 @@ use crate::cli::{CliError, SecretsProvider};
 const ONEPASSWORD_WASM_URL: &str =
     "https://github.com/1Password/onepassword-sdk-go/raw/refs/tags/v0.3.1/internal/wasm/core.wasm";
 
-/// Execute the secrets setup command
+/// Execute the secrets setup command.
+///
+/// # Errors
+///
+/// Returns an error if the WASM file cannot be downloaded or saved.
 pub fn execute_secrets_setup(
     provider: SecretsProvider,
     wasm_url: Option<&str>,

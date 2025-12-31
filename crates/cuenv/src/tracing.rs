@@ -77,15 +77,24 @@ impl std::str::FromStr for TracingFormat {
     }
 }
 
-/// Tracing configuration
+/// Tracing configuration options.
+///
+/// Controls format, log level, and optional features like correlation IDs
+/// and file location tracking.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct TracingConfig {
+    /// Output format for log messages.
     pub format: TracingFormat,
+    /// Minimum log level to capture.
     pub level: Level,
+    /// Whether to include correlation IDs in log output.
     pub enable_correlation_ids: bool,
+    /// Whether to include timestamps in log output.
     pub enable_timestamps: bool,
+    /// Whether to include file/line location in log output.
     pub enable_file_location: bool,
+    /// Optional custom filter string (overrides level-based filtering).
     pub filter: Option<String>,
 }
 
@@ -105,12 +114,21 @@ impl Default for TracingConfig {
 /// Global correlation ID for tracing request correlation
 static CORRELATION_ID: std::sync::OnceLock<Uuid> = std::sync::OnceLock::new();
 
-/// Get or create a correlation ID for the current session
+/// Get or create a correlation ID for the current session.
+///
+/// Returns the same UUID for all calls within a single process execution.
+#[must_use]
 pub fn correlation_id() -> Uuid {
     *CORRELATION_ID.get_or_init(Uuid::new_v4)
 }
 
-/// Initialize tracing with the given configuration
+/// Initialize tracing with the given configuration.
+///
+/// Sets up the tracing subscriber with the specified format, level, and filters.
+///
+/// # Errors
+///
+/// Returns an error if the tracing filter configuration is invalid.
 #[allow(dead_code)]
 pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
     let correlation_id = correlation_id();
@@ -194,6 +212,11 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
 /// Returns an `EventReceiver` for the main renderer (CLI, JSON, etc.).
 /// The global `EventBus` is stored internally and can be subscribed to
 /// via `subscribe_global_events()` for additional subscribers (like TUI).
+///
+/// # Errors
+///
+/// Returns an error if the tracing filter is invalid or the event bus is
+/// already initialized.
 #[allow(clippy::needless_pass_by_value)] // Config is small and taking by value is more ergonomic
 pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventReceiver> {
     // Sync correlation ID with cuenv_events

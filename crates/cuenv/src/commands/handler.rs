@@ -74,11 +74,15 @@ impl CommandRunner for CommandExecutor {
 // Command Handler Implementations
 // ============================================================================
 
-/// Handler for `env print` command
+/// Handler for `env print` command.
 pub struct EnvPrintHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
+    /// Output format (e.g., "json", "yaml", "table").
     pub format: String,
+    /// Optional environment name to use for evaluation.
     pub environment: Option<String>,
 }
 
@@ -104,10 +108,13 @@ impl CommandHandler for EnvPrintHandler {
     }
 }
 
-/// Handler for `env list` command
+/// Handler for `env list` command.
 pub struct EnvListHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
+    /// Output format (e.g., "json", "yaml", "table").
     pub format: String,
 }
 
@@ -126,9 +133,11 @@ impl CommandHandler for EnvListHandler {
     }
 }
 
-/// Handler for `env load` command
+/// Handler for `env load` command.
 pub struct EnvLoadHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
 }
 
@@ -147,12 +156,17 @@ impl CommandHandler for EnvLoadHandler {
     }
 }
 
-/// Handler for `env status` command
+/// Handler for `env status` command.
 pub struct EnvStatusHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
+    /// Whether to wait for the environment to become ready.
     pub wait: bool,
+    /// Maximum time in seconds to wait for environment readiness.
     pub timeout: u64,
+    /// Output format for the status information.
     pub format: StatusFormat,
 }
 
@@ -179,10 +193,13 @@ impl CommandHandler for EnvStatusHandler {
     }
 }
 
-/// Handler for `env check` command
+/// Handler for `env check` command.
 pub struct EnvCheckHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
+    /// Shell type to check compatibility with.
     pub shell: ShellType,
 }
 
@@ -201,9 +218,11 @@ impl CommandHandler for EnvCheckHandler {
     }
 }
 
-/// Handler for `env inspect` command
+/// Handler for `env inspect` command.
 pub struct EnvInspectHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
 }
 
@@ -222,11 +241,15 @@ impl CommandHandler for EnvInspectHandler {
     }
 }
 
-/// Handler for `allow` command
+/// Handler for `allow` command.
 pub struct AllowHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
+    /// Optional note explaining why this project is allowed.
     pub note: Option<String>,
+    /// Skip confirmation prompt and automatically approve.
     pub yes: bool,
 }
 
@@ -252,10 +275,13 @@ impl CommandHandler for AllowHandler {
     }
 }
 
-/// Handler for `deny` command
+/// Handler for `deny` command.
 pub struct DenyHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
+    /// Deny all previously allowed projects.
     pub all: bool,
 }
 
@@ -274,9 +300,13 @@ impl CommandHandler for DenyHandler {
     }
 }
 
-/// Handler for `export` command
+/// Handler for `export` command.
 pub struct ExportHandler {
+    /// Optional shell type override for export format.
     pub shell: Option<String>,
+    /// Path to the cuenv project directory.
+    pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
 }
 
@@ -291,16 +321,21 @@ impl CommandHandler for ExportHandler {
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        export::execute_export(self.shell.as_deref(), &self.package, Some(executor)).await
+        export::execute_export(self.shell.as_deref(), &self.path, &self.package, Some(executor)).await
     }
 }
 
-/// Handler for `exec` command
+/// Handler for `exec` command.
 pub struct ExecHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
+    /// Command to execute within the environment.
     pub command: String,
+    /// Arguments to pass to the command.
     pub args: Vec<String>,
+    /// Optional environment name to use for execution.
     pub environment: Option<String>,
 }
 
@@ -335,23 +370,38 @@ impl CommandHandler for ExecHandler {
     }
 }
 
-/// Handler for `task` command
+/// Handler for `task` command.
 #[allow(clippy::struct_excessive_bools)]
 pub struct TaskHandler {
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
+    /// Optional specific task name to execute.
     pub name: Option<String>,
+    /// Labels to filter tasks by.
     pub labels: Vec<String>,
+    /// Optional environment name to use for task execution.
     pub environment: Option<String>,
+    /// Output format (e.g., "json", "yaml", "table").
     pub format: String,
+    /// Optional path to materialize task outputs to.
     pub materialize_outputs: Option<String>,
+    /// Whether to display cache paths for tasks.
     pub show_cache_path: bool,
+    /// Optional execution backend override (e.g., "dagger").
     pub backend: Option<String>,
+    /// Whether to use the TUI interface.
     pub tui: bool,
+    /// Whether to run in interactive mode for task selection.
     pub interactive: bool,
+    /// Whether to show help for the specified task.
     pub help: bool,
+    /// Whether to run all tasks.
     pub all: bool,
+    /// Whether to skip task dependencies.
     pub skip_dependencies: bool,
+    /// Additional arguments to pass to the task.
     pub task_args: Vec<String>,
 }
 
@@ -419,11 +469,15 @@ impl CommandHandler for TaskHandler {
     }
 }
 
-/// Handler for `ci` command
+/// Handler for `ci` command.
 pub struct CiHandler {
+    /// Whether to run in dry-run mode without executing.
     pub dry_run: bool,
+    /// Optional pipeline name to execute.
     pub pipeline: Option<String>,
+    /// Optional dynamic configuration source.
     pub dynamic: Option<String>,
+    /// Optional starting point for pipeline execution.
     pub from: Option<String>,
 }
 
@@ -461,9 +515,11 @@ pub enum SyncScope {
 
 /// Handler for `sync` command using provider registry.
 pub struct SyncHandler {
-    /// Specific provider name (None = sync all providers)
+    /// Specific provider name (None = sync all providers).
     pub subcommand: Option<String>,
+    /// Path to the cuenv project directory.
     pub path: String,
+    /// Name of the CUE package to evaluate.
     pub package: String,
     /// Operation mode (write, dry-run, check).
     pub mode: sync::SyncMode,
@@ -577,8 +633,9 @@ impl CommandHandler for SyncHandler {
     }
 }
 
-/// Handler for `shell init` command (synchronous)
+/// Handler for `shell init` command (synchronous).
 pub struct ShellInitHandler {
+    /// Shell type to generate initialization script for.
     pub shell: ShellType,
 }
 

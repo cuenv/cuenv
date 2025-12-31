@@ -34,6 +34,7 @@ use cuenv_core::tasks::{
 
 use super::CommandExecutor;
 use super::env_file::find_cue_module_root;
+use super::tools::{ensure_tools_downloaded, get_tool_paths};
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
 
@@ -58,6 +59,10 @@ use super::export::get_environment_with_hooks;
 /// This is the preferred entry point for task execution. It accepts a
 /// `TaskExecutionRequest` which groups all parameters into a structured
 /// format with type-safe selection modes.
+///
+/// # Errors
+///
+/// Returns an error if task resolution, validation, or execution fails.
 ///
 /// # Example
 ///
@@ -624,6 +629,71 @@ async fn execute_task_legacy(
         // No manifest env, just use hook-generated environment
         for (key, value) in base_env_vars {
             runtime_env.set(key, value);
+        }
+    }
+
+    // Download and activate tools from lockfile by prepending to PATH and library path.
+    // This happens automatically without requiring hook approval since tool
+    // activation is a controlled, safe operation (just adds paths to the environment).
+    // Use project_root to scope tool activation to this project only.
+    // Tool activation failures are fatal - tasks require their tools to run.
+    ensure_tools_downloaded(Some(&project_root))
+        .await
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to download tools: {e}")))?;
+    if let Ok(Some(tool_paths)) = get_tool_paths(Some(&project_root)) {
+        tracing::debug!(
+            "Activating {} tool bin directories and {} lib directories for task execution",
+            tool_paths.bin_dirs.len(),
+            tool_paths.lib_dirs.len()
+        );
+
+        // Prepend tool bin directories to PATH
+        // Use runtime_env PATH (from CUE), NOT host PATH - this ensures hermetic isolation
+        if let Some(path_prepend) = tool_paths.path_prepend() {
+            let current_path = runtime_env
+                .get("PATH")
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            let new_path = if current_path.is_empty() {
+                path_prepend
+            } else {
+                format!("{path_prepend}:{current_path}")
+            };
+            runtime_env.set("PATH".to_string(), new_path);
+        }
+
+        // Prepend tool lib directories to library path
+        // Use runtime_env lib path (from CUE), NOT host lib path - hermetic isolation
+        if let Some(lib_prepend) = tool_paths.lib_path_prepend() {
+            #[cfg(target_os = "macos")]
+            {
+                let lib_var = "DYLD_LIBRARY_PATH";
+                let current = runtime_env
+                    .get(lib_var)
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                let new_path = if current.is_empty() {
+                    lib_prepend
+                } else {
+                    format!("{lib_prepend}:{current}")
+                };
+                runtime_env.set(lib_var.to_string(), new_path);
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let lib_var = "LD_LIBRARY_PATH";
+                let current = runtime_env
+                    .get(lib_var)
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                let new_path = if current.is_empty() {
+                    lib_prepend
+                } else {
+                    format!("{lib_prepend}:{current}")
+                };
+                runtime_env.set(lib_var.to_string(), new_path);
+            }
         }
     }
 

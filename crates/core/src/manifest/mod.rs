@@ -9,6 +9,7 @@ use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
+use crate::secrets::Secret;
 use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 
@@ -409,6 +410,10 @@ pub enum Runtime {
     Container(ContainerRuntime),
     /// Advanced container with caching, secrets, chaining
     Dagger(DaggerRuntime),
+    /// OCI-based binary fetching from container images
+    Oci(OciRuntime),
+    /// Multi-source tool management (GitHub, OCI, Nix)
+    Tools(ToolsRuntime),
 }
 
 /// Nix runtime configuration
@@ -489,6 +494,191 @@ pub struct DaggerCacheMount {
     pub path: String,
     /// Unique name for the cache volume
     pub name: String,
+}
+
+/// OCI-based binary runtime configuration.
+///
+/// Fetches binaries from OCI images for hermetic, content-addressed binary management.
+/// Images require explicit `extract` paths to specify which binaries to extract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OciRuntime {
+    /// Platforms to resolve and lock (e.g., "darwin-arm64", "linux-x86_64")
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    /// OCI images to fetch binaries from
+    #[serde(default)]
+    pub images: Vec<OciImage>,
+    /// Cache directory (defaults to ~/.cache/cuenv/oci)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
+}
+
+/// An OCI image to extract binaries from.
+///
+/// Images require explicit `extract` paths to specify which binaries to extract.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OciImage {
+    /// Full image reference (e.g., "nginx:1.25-alpine", "gcr.io/distroless/static:latest")
+    pub image: String,
+    /// Rename the extracted binary (when package name differs from binary name)
+    #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
+    /// Extraction paths specifying which binaries to extract from the image
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extract: Vec<OciExtract>,
+}
+
+/// A binary to extract from a container image.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OciExtract {
+    /// Path to the binary inside the container (e.g., "/usr/sbin/nginx")
+    pub path: String,
+    /// Name to expose the binary as in PATH (defaults to filename from path)
+    #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
+}
+
+/// GitHub provider configuration for runtime-level authentication.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct GitHubProviderConfig {
+    /// Authentication token (must use secret resolver like 1Password or exec)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<Secret>,
+}
+
+/// Multi-source tool runtime configuration.
+///
+/// Provides ergonomic tool management with platform-specific overrides.
+/// Simple case: `jq: "1.7.1"` requires a source to be defined.
+/// Complex case: Platform-specific sources with overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolsRuntime {
+    /// Platforms to resolve and lock (e.g., "darwin-arm64", "linux-x86_64")
+    #[serde(default)]
+    pub platforms: Vec<String>,
+    /// Named Nix flake references for pinning
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub flakes: HashMap<String, String>,
+    /// GitHub provider configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github: Option<GitHubProviderConfig>,
+    /// Tool specifications (version string or full Tool config)
+    #[serde(default)]
+    pub tools: HashMap<String, ToolSpec>,
+    /// Cache directory (defaults to ~/.cache/cuenv/tools)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<String>,
+}
+
+/// Tool specification - either a simple version or full config.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ToolSpec {
+    /// Simple version string (requires explicit source configuration)
+    Version(String),
+    /// Full tool configuration with source and overrides
+    Full(ToolConfig),
+}
+
+impl ToolSpec {
+    /// Get the version string.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        match self {
+            Self::Version(v) => v,
+            Self::Full(c) => &c.version,
+        }
+    }
+}
+
+/// Full tool configuration with source and platform overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolConfig {
+    /// Version string (e.g., "1.7.1", "latest")
+    pub version: String,
+    /// Rename the binary in PATH
+    #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
+    /// Default source for all platforms
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceConfig>,
+    /// Platform-specific source overrides
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overrides: Vec<SourceOverride>,
+}
+
+/// Platform-specific source override.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceOverride {
+    /// Match by OS (darwin, linux)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    /// Match by architecture (arm64, x86_64)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    /// Source for matching platforms
+    pub source: SourceConfig,
+}
+
+/// Source configuration for fetching a tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SourceConfig {
+    /// Extract from OCI container image
+    Oci {
+        /// Image reference with optional {version}, {os}, {arch} templates
+        image: String,
+        /// Path to binary inside the container
+        path: String,
+    },
+    /// Download from GitHub Releases
+    #[serde(rename = "github")]
+    GitHub {
+        /// Repository (owner/repo)
+        repo: String,
+        /// Tag prefix (prepended to version, defaults to "")
+        #[serde(default, rename = "tagPrefix")]
+        tag_prefix: String,
+        /// Release tag override (if set, ignores tagPrefix)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tag: Option<String>,
+        /// Asset name with optional {version}, {os}, {arch} templates
+        asset: String,
+        /// Path to binary within archive (if archived)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// Build from Nix flake
+    Nix {
+        /// Named flake reference (key in runtime.flakes)
+        flake: String,
+        /// Package attribute (e.g., "jq", "python3")
+        package: String,
+        /// Output path if binary can't be auto-detected
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<String>,
+    },
+    /// Install via rustup
+    Rustup {
+        /// Toolchain identifier (e.g., "stable", "1.83.0", "nightly-2024-01-01")
+        toolchain: String,
+        /// Installation profile: minimal, default, complete
+        #[serde(default = "default_rustup_profile")]
+        profile: String,
+        /// Additional components to install (e.g., "clippy", "rustfmt", "rust-src")
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        components: Vec<String>,
+        /// Additional targets to install (e.g., "x86_64-unknown-linux-gnu")
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        targets: Vec<String>,
+    },
+}
+
+fn default_rustup_profile() -> String {
+    "default".to_string()
 }
 
 // ============================================================================

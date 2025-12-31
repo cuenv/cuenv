@@ -103,8 +103,8 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
 
     // Build task index with synthetic tasks injected
     // Best-effort: if injection fails, fall back to basic index without hooks
-    let task_index = prepare_task_index(&mut manifest, Some(&discovery), &project_id)
-        .or_else(|_| {
+    let task_index =
+        prepare_task_index(&mut manifest, Some(&discovery), &project_id).or_else(|_| {
             // Fall back to basic index with implicit tasks but no hook injection
             let manifest_with_implicit = manifest.clone().with_implicit_tasks();
             cuenv_core::tasks::TaskIndex::build(&manifest_with_implicit.tasks)

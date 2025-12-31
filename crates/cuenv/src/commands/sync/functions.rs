@@ -103,6 +103,10 @@ fn load_instance_at_path(
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
+///
+/// # Errors
+///
+/// Returns an error if CUE evaluation fails or file operations fail.
 #[instrument(name = "sync_cubes", skip(executor))]
 pub async fn execute_sync_cubes(
     path: &str,
@@ -348,6 +352,10 @@ fn detect_package_name(project_path: &Path) -> Result<String> {
 /// Execute the sync ci command for a single project.
 ///
 /// Syncs CI workflow files (GitHub Actions, Buildkite) based on CUE configuration.
+///
+/// # Errors
+///
+/// Returns an error if project discovery fails or workflow generation fails.
 #[instrument(name = "sync_ci", skip_all)]
 pub async fn execute_sync_ci(
     path: &str,
@@ -445,6 +453,10 @@ pub async fn execute_sync_ci(
 /// Execute workspace-wide CI sync.
 ///
 /// Syncs CI workflow files for all projects with CI configuration.
+///
+/// # Errors
+///
+/// Returns an error if module evaluation or workflow generation fails.
 #[instrument(name = "sync_ci_workspace", skip_all)]
 pub async fn execute_sync_ci_workspace(
     _package: &str,
