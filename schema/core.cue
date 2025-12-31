@@ -4,6 +4,7 @@ package schema
 	config?:     #Config
 	env?:        #Env
 	workspaces?: #Workspaces
+	formatters?: #Formatters
 })
 
 #ProjectName: string & =~"^[a-zA-Z0-9._-]+$"

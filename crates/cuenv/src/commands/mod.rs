@@ -10,6 +10,8 @@ pub mod env_file;
 pub mod exec;
 /// Export environment variables to shell format.
 pub mod export;
+/// Format code based on formatters configuration.
+pub mod fmt;
 /// Command handler trait and implementations for command dispatch.
 pub mod handler;
 /// Hook execution for environment lifecycle events.
@@ -171,6 +173,17 @@ pub enum Command {
         args: Vec<String>,
         /// Optional environment name to use.
         environment: Option<String>,
+    },
+    /// Format code based on formatters configuration.
+    Fmt {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Apply formatting changes (default is check mode).
+        fix: bool,
+        /// Only run specific formatters.
+        only: Option<Vec<String>>,
     },
     /// Initialize shell integration for the specified shell.
     ShellInit {
@@ -674,6 +687,7 @@ impl CommandExecutor {
             | Command::Web { .. }
             | Command::Completions { .. }
             | Command::Info { .. }
+            | Command::Fmt { .. }
             | Command::ChangesetAdd { .. }
             | Command::ChangesetStatus { .. }
             | Command::ChangesetFromCommits { .. }

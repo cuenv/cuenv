@@ -1083,6 +1083,7 @@ mod tests {
             name: "test".to_string(),
             cube: None,
             runtime: None,
+            formatters: None,
         };
 
         let vars = extract_static_env_vars(&cfg);
@@ -1115,6 +1116,7 @@ mod tests {
             name: "test".to_string(),
             cube: None,
             runtime: None,
+            formatters: None,
         };
 
         let hook_env = HashMap::from([
