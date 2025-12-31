@@ -566,9 +566,17 @@ impl CommandExecutor {
                 self.run_command(handler::DenyHandler { path, package, all })
                     .await
             }
-            Command::Export { shell, path, package } => {
-                self.run_command(handler::ExportHandler { shell, path, package })
-                    .await
+            Command::Export {
+                shell,
+                path,
+                package,
+            } => {
+                self.run_command(handler::ExportHandler {
+                    shell,
+                    path,
+                    package,
+                })
+                .await
             }
             Command::Exec {
                 path,

@@ -85,9 +85,7 @@ impl RustupToolProvider {
         targets: &[String],
     ) -> Result<()> {
         let mut cmd = Command::new("rustup");
-        cmd.arg("toolchain")
-            .arg("install")
-            .arg(toolchain);
+        cmd.arg("toolchain").arg("install").arg(toolchain);
 
         // Add profile if specified
         if let Some(p) = profile {
@@ -268,13 +266,8 @@ impl ToolProvider for RustupToolProvider {
         );
 
         // Install the toolchain (idempotent - safe to re-run)
-        self.install_toolchain(
-            toolchain,
-            profile.as_deref(),
-            components,
-            targets,
-        )
-        .await?;
+        self.install_toolchain(toolchain, profile.as_deref(), components, targets)
+            .await?;
 
         // Get the binary path
         let toolchain_dir = Self::toolchain_path(toolchain, &resolved.platform);
@@ -291,12 +284,7 @@ impl ToolProvider for RustupToolProvider {
             )));
         }
 
-        let sha256 = Self::compute_digest(
-            toolchain,
-            profile.as_deref(),
-            components,
-            targets,
-        );
+        let sha256 = Self::compute_digest(toolchain, profile.as_deref(), components, targets);
 
         info!(
             tool = %resolved.name,
@@ -382,12 +370,7 @@ mod tests {
         assert!(digest1.starts_with("sha256:"));
 
         // Different config should produce different digest
-        let digest2 = RustupToolProvider::compute_digest(
-            "1.83.0",
-            Some("minimal"),
-            &[],
-            &[],
-        );
+        let digest2 = RustupToolProvider::compute_digest("1.83.0", Some("minimal"), &[], &[]);
         assert_ne!(digest1, digest2);
 
         // Same config should produce same digest

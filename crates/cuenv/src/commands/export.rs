@@ -130,7 +130,11 @@ fn evaluate_project(
 /// # Errors
 ///
 /// Returns an error if state management fails.
-pub fn execute_export_sync(shell_type: Option<&str>, path: &str, package: &str) -> Result<Option<String>> {
+pub fn execute_export_sync(
+    shell_type: Option<&str>,
+    path: &str,
+    package: &str,
+) -> Result<Option<String>> {
     let shell = Shell::detect(shell_type);
     let target_dir = Path::new(path);
 

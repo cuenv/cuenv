@@ -1353,7 +1353,15 @@ impl Commands {
                 yes,
             },
             Self::Deny { path, package, all } => Command::Deny { path, package, all },
-            Self::Export { shell, path, package } => Command::Export { shell, path, package },
+            Self::Export {
+                shell,
+                path,
+                package,
+            } => Command::Export {
+                shell,
+                path,
+                package,
+            },
             Self::Ci {
                 dry_run,
                 pipeline,
