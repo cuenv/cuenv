@@ -1338,6 +1338,18 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
+    /// Create a test directory with proper prefix (non-hidden) for gix compatibility.
+    ///
+    /// gix has stricter checks on temp directories that start with `.` (hidden directories).
+    /// The default `TempDir::new()` creates hidden directories like `.tmpXXXXX`, which can
+    /// cause gix to fail with "does not appear to be a git repository".
+    fn create_test_dir() -> TempDir {
+        tempfile::Builder::new()
+            .prefix("cuenv_test_")
+            .tempdir()
+            .expect("Failed to create temp directory")
+    }
+
     fn create_test_workspace(temp: &TempDir) -> String {
         let root = temp.path();
 
@@ -1516,7 +1528,7 @@ version.workspace = true
     /// Helper function to initialize and configure a git repository for testing
     fn init_git_repo(path: &str) {
         let out = Command::new("git")
-            .args(["init", "--ref-format=files"])
+            .args(["init"])
             .current_dir(path)
             .output()
             .unwrap();
@@ -1524,6 +1536,20 @@ version.workspace = true
             out.status.success(),
             "git init failed: {}",
             String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Verify .git directory and HEAD file were created (ensures git init fully completed)
+        let git_dir = std::path::Path::new(path).join(".git");
+        let git_head = git_dir.join("HEAD");
+        assert!(
+            git_dir.exists(),
+            "git init did not create .git directory at {}",
+            git_dir.display()
+        );
+        assert!(
+            git_head.exists(),
+            "git init did not create .git/HEAD at {}",
+            git_head.display()
         );
 
         let out = Command::new("git")
@@ -1586,7 +1612,7 @@ version.workspace = true
 
     #[test]
     fn test_changeset_from_commits_with_workspace() {
-        let temp = TempDir::new().unwrap();
+        let temp = create_test_dir();
         let path = create_test_workspace(&temp);
 
         init_git_repo(&path);
@@ -1594,7 +1620,7 @@ version.workspace = true
 
         // Now test the function
         let result = execute_changeset_from_commits(&path, None);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
         let output = result.unwrap();
         assert!(output.contains("Created changeset"));
         assert!(output.contains("conventional commit"));
@@ -1602,7 +1628,7 @@ version.workspace = true
 
     #[test]
     fn test_changeset_from_commits_no_version_bumps() {
-        let temp = TempDir::new().unwrap();
+        let temp = create_test_dir();
         let path = create_test_workspace(&temp);
 
         init_git_repo(&path);
@@ -1610,14 +1636,14 @@ version.workspace = true
 
         // Should return message about no version-bumping commits
         let result = execute_changeset_from_commits(&path, None);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
         let output = result.unwrap();
         assert!(output.contains("No version-bumping commits"));
     }
 
     #[test]
     fn test_changeset_from_commits_with_since_tag() {
-        let temp = TempDir::new().unwrap();
+        let temp = create_test_dir();
         let path = create_test_workspace(&temp);
 
         init_git_repo(&path);
@@ -1638,7 +1664,7 @@ version.workspace = true
 
         // Test with since_tag - should only process commits after the tag
         let result = execute_changeset_from_commits(&path, Some("v0.1.0"));
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Expected Ok, got error: {:?}", result.err());
         let output = result.unwrap();
         assert!(output.contains("Created changeset"));
         assert!(output.contains("conventional commit"));
@@ -1650,7 +1676,7 @@ version.workspace = true
 
     #[test]
     fn test_changeset_from_commits_with_nonexistent_tag() {
-        let temp = TempDir::new().unwrap();
+        let temp = create_test_dir();
         let path = create_test_workspace(&temp);
 
         init_git_repo(&path);

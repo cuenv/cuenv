@@ -35,7 +35,7 @@ struct ProjectInfo {
     path: String,
 }
 
-/// Execute the info command
+/// Execute the info command.
 ///
 /// Evaluates CUE instances and displays information about
 /// Base and Project instances found.
@@ -45,6 +45,10 @@ struct ProjectInfo {
 /// * `package` - CUE package name to evaluate
 /// * `json_output` - Whether to output JSON format
 /// * `with_meta` - Include source location metadata for all values
+///
+/// # Errors
+///
+/// Returns an error if CUE evaluation fails or path canonicalization fails.
 pub fn execute_info(
     path: Option<&str>,
     package: &str,

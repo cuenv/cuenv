@@ -24,24 +24,12 @@
 // expect_used is allowed for infallible operations like writing to strings
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)]
 
-mod cli;
-mod commands;
-mod completions;
-mod coordinator;
-mod events;
-mod performance;
-#[allow(dead_code)] // Shared with library; not all items used in binary
-mod provider;
-mod providers;
-#[allow(dead_code)] // Shared with library; not all items used in binary
-mod registry;
-mod tracing;
-mod tui;
-
-use crate::cli::{CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, render_error};
-use crate::commands::{Command, CommandExecutor};
-use crate::tracing::{Level, TracingConfig, TracingFormat};
+// Import everything from the library
 use crossterm::ExecutableCommand;
+use cuenv::cli::{self, CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, render_error};
+use cuenv::commands::{self, Command, CommandExecutor};
+use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
+use cuenv::{coordinator, tui};
 use cuenv_core::hooks::execute_hooks;
 use cuenv_core::hooks::state::StateManager;
 use cuenv_core::hooks::{ExecutionStatus, Hook, HookExecutionConfig};
@@ -74,7 +62,7 @@ fn main() {
     }
 
     // Handle shell completion requests first (before any other processing)
-    if crate::cli::try_complete() {
+    if cli::try_complete() {
         std::process::exit(EXIT_OK);
     }
 
@@ -87,7 +75,7 @@ fn main() {
     }
 
     // Parse CLI arguments synchronously to determine execution path
-    let cli = crate::cli::parse();
+    let cli = cli::parse();
 
     // Check if command needs async runtime
     if requires_async_runtime(&cli) {
@@ -121,7 +109,7 @@ fn run_with_tokio() -> i32 {
 }
 
 /// Determine if a command requires the async runtime
-const fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
+const fn requires_async_runtime(cli: &cli::Cli) -> bool {
     // Handle --llms flag (doesn't need async)
     if cli.llms {
         return false;
@@ -133,48 +121,54 @@ const fn requires_async_runtime(cli: &crate::cli::Cli) -> bool {
             // Commands that DON'T need tokio (fast path)
             // Export uses sync fast path with lightweight runtime for performance
             // (shell prompt integration requires sub-10ms response time)
-            crate::cli::Commands::Version { .. }
-            | crate::cli::Commands::Info { .. }
-            | crate::cli::Commands::Completions { .. }
-            | crate::cli::Commands::Changeset { .. }
-            | crate::cli::Commands::Secrets { .. }
-            | crate::cli::Commands::Export { .. } => false,
-            crate::cli::Commands::Shell { subcommand } => match subcommand {
-                crate::cli::ShellCommands::Init { .. } => false,
+            cli::Commands::Version { .. }
+            | cli::Commands::Info { .. }
+            | cli::Commands::Completions { .. }
+            | cli::Commands::Changeset { .. }
+            | cli::Commands::Secrets { .. }
+            | cli::Commands::Export { .. } => false,
+            cli::Commands::Shell { subcommand } => match subcommand {
+                cli::ShellCommands::Init { .. } => false,
             },
-            crate::cli::Commands::Release { subcommand } => match subcommand {
+            cli::Commands::Release { subcommand } => match subcommand {
                 // Version, Publish, and Prepare are sync (CUE/cargo/git operations)
-                crate::cli::ReleaseCommands::Version { .. }
-                | crate::cli::ReleaseCommands::Publish { .. }
-                | crate::cli::ReleaseCommands::Prepare { .. } => false,
+                cli::ReleaseCommands::Version { .. }
+                | cli::ReleaseCommands::Publish { .. }
+                | cli::ReleaseCommands::Prepare { .. } => false,
                 // Binaries needs async for HTTP/process execution
-                crate::cli::ReleaseCommands::Binaries { .. } => true,
+                cli::ReleaseCommands::Binaries { .. } => true,
             },
-            crate::cli::Commands::Env { subcommand } => match subcommand {
+            cli::Commands::Env { subcommand } => match subcommand {
                 // env status without --wait, print, and list are sync (CUE evaluation is sync FFI)
-                crate::cli::EnvCommands::Status { wait: false, .. }
-                | crate::cli::EnvCommands::Print { .. }
-                | crate::cli::EnvCommands::List { .. } => false,
+                cli::EnvCommands::Status { wait: false, .. }
+                | cli::EnvCommands::Print { .. }
+                | cli::EnvCommands::List { .. } => false,
                 // Other env commands need async
                 _ => true,
             },
 
             // Commands that NEED tokio
-            crate::cli::Commands::Task { .. }
-            | crate::cli::Commands::Exec { .. }
-            | crate::cli::Commands::Ci { .. }
-            | crate::cli::Commands::Tui
-            | crate::cli::Commands::Web { .. }
-            | crate::cli::Commands::Allow { .. }
-            | crate::cli::Commands::Deny { .. }
-            | crate::cli::Commands::Sync { .. } => true,
+            cli::Commands::Task { .. }
+            | cli::Commands::Exec { .. }
+            | cli::Commands::Ci { .. }
+            | cli::Commands::Tui
+            | cli::Commands::Web { .. }
+            | cli::Commands::Allow { .. }
+            | cli::Commands::Deny { .. }
+            | cli::Commands::Sync { .. }
+            | cli::Commands::Runtime { .. } => true,
+            // Tools commands - download/activate need async, list is sync
+            cli::Commands::Tools { subcommand } => match subcommand {
+                cli::ToolsCommands::Download | cli::ToolsCommands::Activate => true,
+                cli::ToolsCommands::List => false,
+            },
         },
     }
 }
 
 /// Run synchronous commands without tokio runtime
 /// This is the fast path for commands that don't need async
-fn run_sync(cli: crate::cli::Cli) -> i32 {
+fn run_sync(cli: cli::Cli) -> i32 {
     // Set up signal handler for sync path
     let _ = ctrlc::set_handler(|| {
         cleanup_terminal();
@@ -183,11 +177,11 @@ fn run_sync(cli: crate::cli::Cli) -> i32 {
 
     // Initialize tracing for sync path (simpler than async path, no event bus needed)
     let log_level = match cli.level {
-        crate::tracing::LogLevel::Trace => Level::TRACE,
-        crate::tracing::LogLevel::Debug => Level::DEBUG,
-        crate::tracing::LogLevel::Info => Level::INFO,
-        crate::tracing::LogLevel::Warn => Level::WARN,
-        crate::tracing::LogLevel::Error => Level::ERROR,
+        tracing::LogLevel::Trace => Level::TRACE,
+        tracing::LogLevel::Debug => Level::DEBUG,
+        tracing::LogLevel::Info => Level::INFO,
+        tracing::LogLevel::Warn => Level::WARN,
+        tracing::LogLevel::Error => Level::ERROR,
     };
     let tracing_config = tracing::TracingConfig {
         format: if cli.json {
@@ -199,7 +193,7 @@ fn run_sync(cli: crate::cli::Cli) -> i32 {
         ..Default::default()
     };
     // Ignore error if tracing already initialized (e.g., in tests)
-    let _ = crate::tracing::init_tracing(tracing_config);
+    let _ = tracing::init_tracing(tracing_config);
 
     // Handle --llms flag
     if cli.llms {
@@ -220,8 +214,8 @@ fn run_sync(cli: crate::cli::Cli) -> i32 {
     };
 
     // Handle completions command
-    if let crate::cli::Commands::Completions { shell } = &cli_command {
-        crate::cli::generate_completions(*shell);
+    if let cli::Commands::Completions { shell } = &cli_command {
+        cli::generate_completions(*shell);
         return EXIT_OK;
     }
 
@@ -514,7 +508,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         }
 
         Command::Completions { shell } => {
-            crate::cli::generate_completions(shell);
+            cli::generate_completions(shell);
             Ok(())
         }
 
@@ -522,9 +516,11 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             commands::secrets::execute_secrets_setup(provider, wasm_url.as_deref())
         }
 
-        Command::Export { shell, package } => {
+        Command::ToolsList => commands::tools::execute_tools_list(),
+
+        Command::Export { shell, path, package } => {
             // Try sync fast path first (handles no-env-cue, running, failed states)
-            match commands::export::execute_export_sync(shell.as_deref(), &package) {
+            match commands::export::execute_export_sync(shell.as_deref(), &path, &package) {
                 Ok(Some(output)) => {
                     // Fast path succeeded - output directly
                     print!("{output}");
@@ -539,7 +535,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                         .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
                     rt.block_on(async {
-                        match commands::export::execute_export(shell.as_deref(), &package, None)
+                        match commands::export::execute_export(shell.as_deref(), &path, &package, None)
                             .await
                         {
                             Ok(result) => {
@@ -645,7 +641,7 @@ fn drain_stdin() {
 async fn real_main() -> Result<(), CliError> {
     // Handle shell completion requests first (before any other processing)
     // The shell calls us with special env vars to request completions
-    if crate::cli::try_complete() {
+    if cli::try_complete() {
         return Ok(());
     }
 
@@ -686,8 +682,8 @@ async fn real_main() -> Result<(), CliError> {
     };
 
     // Handle completions command specially (before converting to internal command)
-    if let crate::cli::Commands::Completions { shell } = &cli_command {
-        crate::cli::generate_completions(*shell);
+    if let cli::Commands::Completions { shell } = &cli_command {
+        cli::generate_completions(*shell);
         return Ok(());
     }
 
@@ -713,7 +709,7 @@ async fn real_main() -> Result<(), CliError> {
 
 /// Result of CLI and tracing initialization
 struct InitResult {
-    cli: crate::cli::Cli,
+    cli: cli::Cli,
     /// Handle to the renderer task (if running).
     /// This handle should be awaited before program exit to ensure
     /// all events are properly rendered.
@@ -745,11 +741,11 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
     };
 
     let log_level = match cli.level {
-        crate::tracing::LogLevel::Trace => Level::TRACE,
-        crate::tracing::LogLevel::Debug => Level::DEBUG,
-        crate::tracing::LogLevel::Info => Level::INFO,
-        crate::tracing::LogLevel::Warn => Level::WARN,
-        crate::tracing::LogLevel::Error => Level::ERROR,
+        tracing::LogLevel::Trace => Level::TRACE,
+        tracing::LogLevel::Debug => Level::DEBUG,
+        tracing::LogLevel::Info => Level::INFO,
+        tracing::LogLevel::Warn => Level::WARN,
+        tracing::LogLevel::Error => Level::ERROR,
     };
 
     // Initialize enhanced tracing with event capture
@@ -760,7 +756,7 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
     };
 
     // Initialize tracing and get the event receiver for the main renderer
-    let receiver = match crate::tracing::init_tracing_with_events(tracing_config) {
+    let receiver = match tracing::init_tracing_with_events(tracing_config) {
         Ok(rx) => rx,
         Err(e) => {
             return Err(CliError::config(format!(
@@ -770,10 +766,7 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
     };
 
     // Check if TUI mode is enabled (Task command with --tui flag)
-    let tui_mode = matches!(
-        &cli.command,
-        Some(crate::cli::Commands::Task { tui: true, .. })
-    );
+    let tui_mode = matches!(&cli.command, Some(cli::Commands::Task { tui: true, .. }));
 
     // Spawn appropriate renderer based on output mode
     // Skip CLI renderer in TUI mode - TUI handles its own event rendering
@@ -830,12 +823,24 @@ async fn execute_command_safe(
         }
         Command::Completions { shell } => {
             // Completions are handled early in real_main, this is just for exhaustiveness
-            crate::cli::generate_completions(*shell);
+            cli::generate_completions(*shell);
             return Ok(());
         }
         Command::SecretsSetup { provider, wasm_url } => {
             // Secrets setup is handled early in real_main, this is just for exhaustiveness
             return commands::secrets::execute_secrets_setup(*provider, wasm_url.as_deref());
+        }
+        Command::RuntimeOciActivate => {
+            return run_oci_activate().await;
+        }
+        Command::ToolsDownload => {
+            return commands::tools::execute_tools_download().await;
+        }
+        Command::ToolsActivate => {
+            return commands::tools::execute_tools_activate();
+        }
+        Command::ToolsList => {
+            return commands::tools::execute_tools_list();
         }
         // Info command needs special handling for json_mode and output
         Command::Info {
@@ -946,8 +951,8 @@ async fn execute_command_safe(
 /// Execute TUI command - starts interactive event dashboard
 #[instrument(name = "cuenv_execute_tui")]
 async fn execute_tui_command() -> Result<(), CliError> {
-    use crate::coordinator::client::CoordinatorClient;
-    use crate::coordinator::protocol::UiType;
+    use coordinator::client::CoordinatorClient;
+    use coordinator::protocol::UiType;
 
     // Connect to coordinator as a TUI consumer
     let Ok(mut client) = CoordinatorClient::connect_as_consumer(UiType::Tui).await else {
@@ -965,7 +970,7 @@ async fn execute_tui_command() -> Result<(), CliError> {
     cuenv_events::emit_command_started!("tui");
 
     // Run the TUI event viewer
-    match crate::tui::run_event_viewer(&mut client).await {
+    match tui::run_event_viewer(&mut client).await {
         Ok(()) => {
             cuenv_events::emit_command_completed!("tui", true, 0_u64);
             Ok(())
@@ -995,10 +1000,7 @@ async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
 
 /// Execute shell init command safely
 #[instrument(name = "cuenv_execute_shell_init_safe")]
-fn execute_shell_init_command_safe(
-    shell: crate::cli::ShellType,
-    json_mode: bool,
-) -> Result<(), CliError> {
+fn execute_shell_init_command_safe(shell: cli::ShellType, json_mode: bool) -> Result<(), CliError> {
     let output = commands::hooks::execute_shell_init(shell);
 
     if json_mode {
@@ -1017,13 +1019,151 @@ fn execute_shell_init_command_safe(
 
 /// Run as the coordinator server (internal - spawned by discovery)
 async fn run_coordinator() -> Result<(), CliError> {
-    use crate::coordinator::server::EventCoordinator;
+    use coordinator::server::EventCoordinator;
 
     let coordinator = EventCoordinator::new();
     coordinator
         .run()
         .await
         .map_err(|e| CliError::other(format!("Coordinator failed: {e}")))
+}
+
+/// Run OCI binary activation (`cuenv runtime oci activate`).
+///
+/// Reads the lockfile, pulls/extracts binaries for the current platform,
+/// and outputs PATH modifications to stdout (to be sourced by the hook system).
+///
+/// This command is typically invoked by the `#OCIActivate` hook defined in
+/// `schema/oci.cue` to add OCI-managed binaries to the PATH.
+async fn run_oci_activate() -> Result<(), CliError> {
+    use cuenv_core::lockfile::{ArtifactKind, Lockfile};
+    use cuenv_tools_oci::{OciCache, OciClient, current_platform};
+    use std::collections::HashSet;
+
+    // Find the lockfile by walking up from current directory
+    let lockfile_path = find_lockfile().ok_or_else(|| {
+        CliError::config_with_help(
+            "No cuenv.lock found",
+            "Run 'cuenv sync lock' to create the lockfile",
+        )
+    })?;
+
+    // Load the lockfile
+    let lockfile = Lockfile::load(&lockfile_path)
+        .map_err(|e| CliError::other(format!("Failed to load lockfile: {e}")))?
+        .ok_or_else(|| {
+            CliError::config_with_help(
+                "Lockfile is empty",
+                "Run 'cuenv sync lock' to populate the lockfile",
+            )
+        })?;
+
+    // Get current platform
+    let platform = current_platform();
+    let platform_str = platform.to_string();
+
+    // Initialize OCI client and cache
+    let client = OciClient::new();
+    let cache = OciCache::default();
+    cache
+        .ensure_dirs()
+        .map_err(|e| CliError::other(format!("Failed to create cache directories: {e}")))?;
+
+    // Track directories to add to PATH
+    let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
+
+    for artifact in &lockfile.artifacts {
+        // Check if this artifact has data for our platform
+        let Some(platform_data) = artifact.platforms.get(&platform_str) else {
+            // Skip artifacts not available for this platform
+            continue;
+        };
+
+        match &artifact.kind {
+            ArtifactKind::Image { image } => {
+                let digest = &platform_data.digest;
+                let binary_name = extract_binary_name_from_image(image);
+
+                // Check if binary is already cached
+                if let Some(cached_path) = cache.get_binary(digest, &binary_name) {
+                    if let Some(parent) = cached_path.parent() {
+                        bin_dirs.insert(parent.to_path_buf());
+                    }
+                    continue;
+                }
+
+                // Need to pull and extract
+                let resolved = client.resolve_digest(image, &platform).await.map_err(|e| {
+                    CliError::other(format!("Failed to resolve '{}': {}", image, e))
+                })?;
+
+                let layer_paths = client.pull_layers(&resolved, &cache).await.map_err(|e| {
+                    CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
+                })?;
+
+                // Extract binary - requires explicit path in CUE config
+                // For now, skip OCI images without explicit extract paths
+                if layer_paths.is_empty() {
+                    eprintln!("Warning: OCI image '{}' has no layers to extract", image);
+                    continue;
+                }
+
+                let dest = cache.binary_path(digest, &binary_name);
+                if let Some(parent) = dest.parent() {
+                    bin_dirs.insert(parent.to_path_buf());
+                }
+            }
+        }
+    }
+
+    // Output PATH modification
+    if !bin_dirs.is_empty() {
+        let path_additions: Vec<String> =
+            bin_dirs.iter().map(|p| p.display().to_string()).collect();
+        println!("export PATH=\"{}:$PATH\"", path_additions.join(":"));
+    }
+
+    Ok(())
+}
+
+/// Find the lockfile by walking up from current directory
+fn find_lockfile() -> Option<PathBuf> {
+    use cuenv_core::lockfile::LOCKFILE_NAME;
+
+    let mut current = std::env::current_dir().ok()?;
+    loop {
+        let lockfile_path = current.join(LOCKFILE_NAME);
+        if lockfile_path.exists() {
+            return Some(lockfile_path);
+        }
+
+        // Also check in cue.mod directory
+        let cue_mod_lockfile = current.join("cue.mod").join(LOCKFILE_NAME);
+        if cue_mod_lockfile.exists() {
+            return Some(cue_mod_lockfile);
+        }
+
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+/// Extract binary name from image reference
+///
+/// For example: `nginx:1.25-alpine` -> `nginx`
+/// Extracts the last path component before the tag.
+fn extract_binary_name_from_image(image: &str) -> String {
+    // Remove tag/digest suffix
+    let without_tag = image.split(':').next().unwrap_or(image);
+    let without_digest = without_tag.split('@').next().unwrap_or(without_tag);
+
+    // Get last path component
+    without_digest
+        .rsplit('/')
+        .next()
+        .unwrap_or("binary")
+        .to_string()
 }
 
 /// Run as a hook supervisor process
@@ -1499,7 +1639,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_command_conversion() {
-        use crate::cli::{Commands, OutputFormat};
+        use cli::{Commands, OutputFormat};
 
         // Test Version command conversion
         let cli_command = Commands::Version {

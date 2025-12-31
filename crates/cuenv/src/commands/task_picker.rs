@@ -142,9 +142,13 @@ impl TaskPicker {
     }
 }
 
-/// Run the interactive task picker
+/// Run the interactive task picker.
 ///
 /// Returns the selected task name or None if cancelled.
+///
+/// # Errors
+///
+/// Returns an error if terminal operations fail.
 pub fn run_picker(tasks: Vec<SelectableTask>) -> io::Result<PickerResult> {
     // Don't show picker if no tasks
     if tasks.is_empty() {

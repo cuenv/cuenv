@@ -1,4 +1,4 @@
-//! Task list data structures and formatters
+//! Task list data structures and formatters.
 //!
 //! This module provides a clean separation between task list data and its presentation.
 //! The `TaskListData` structure captures all information about available tasks,
@@ -13,50 +13,53 @@ use std::path::Path;
 // Data Structures
 // ============================================================================
 
-/// Complete task list data extracted from indexed tasks
+/// Complete task list data extracted from indexed tasks.
 #[derive(Debug, Clone)]
 pub struct TaskListData {
-    /// Groups of tasks organized by source file
+    /// Groups of tasks organized by source file.
     pub sources: Vec<TaskSourceGroup>,
-    /// Aggregate statistics
+    /// Aggregate statistics.
     pub stats: TaskListStats,
 }
 
-/// A group of tasks from a single source file
+/// A group of tasks from a single source file.
 #[derive(Debug, Clone)]
 pub struct TaskSourceGroup {
-    /// Source file path (empty string = root env.cue)
+    /// Source file path (empty string = root env.cue).
     pub source: String,
-    /// Header to display (e.g., "Tasks:" or "Tasks from projects/foo/env.cue:")
+    /// Header to display (e.g., "Tasks:" or "Tasks from projects/foo/env.cue:").
     pub header: String,
-    /// Root-level task nodes (tree structure)
+    /// Root-level task nodes (tree structure).
     pub nodes: Vec<TaskNode>,
 }
 
-/// A node in the task tree (either a task or a namespace group)
+/// A node in the task tree (either a task or a namespace group).
 #[derive(Debug, Clone)]
 pub struct TaskNode {
-    /// Display name segment (e.g., "install" for nested, "build" for root)
+    /// Display name segment (e.g., "install" for nested, "build" for root).
     pub name: String,
-    /// Full executable reference (e.g., "bun.install") - None for groups
+    /// Full executable reference (e.g., "bun.install") - None for groups.
     pub full_name: Option<String>,
-    /// Task description
+    /// Task description.
     pub description: Option<String>,
-    /// True if this is a namespace-only node (not executable)
+    /// True if this is a namespace-only node (not executable).
     pub is_group: bool,
-    /// Number of dependencies (0 if none)
+    /// Number of dependencies (0 if none).
     pub dep_count: usize,
-    /// Whether cached result exists for this task
+    /// Whether cached result exists for this task.
     pub is_cached: bool,
-    /// Nested child nodes
-    pub children: Vec<TaskNode>,
+    /// Nested child nodes.
+    pub children: Vec<Self>,
 }
 
-/// Aggregate statistics about the task list
+/// Aggregate statistics about the task list.
 #[derive(Debug, Clone, Default)]
 pub struct TaskListStats {
+    /// Total number of executable tasks.
     pub total_tasks: usize,
+    /// Total number of namespace groups.
     pub total_groups: usize,
+    /// Number of tasks with cached results.
     pub cached_count: usize,
 }
 
@@ -64,9 +67,10 @@ pub struct TaskListStats {
 // Formatter Trait
 // ============================================================================
 
-/// Trait for formatting task list data into displayable output
+/// Trait for formatting task list data into displayable output.
 pub trait TaskListFormatter {
-    /// Format the task list data into a displayable string
+    /// Format the task list data into a displayable string.
+    #[must_use]
     fn format(&self, data: &TaskListData) -> String;
 }
 
@@ -74,7 +78,7 @@ pub trait TaskListFormatter {
 // Build Task List
 // ============================================================================
 
-/// Build a `TaskListData` from a list of indexed tasks
+/// Build a `TaskListData` from a list of indexed tasks.
 ///
 /// This function groups tasks by source file, builds a tree structure for
 /// hierarchical task names (e.g., "bun.install"), and calculates statistics.
@@ -83,6 +87,7 @@ pub trait TaskListFormatter {
 /// * `tasks` - Slice of indexed tasks from the task index
 /// * `cwd_relative` - Optional path relative to cue.mod root for proximity sorting
 /// * `project_root` - Project root for cache lookups
+#[must_use]
 pub fn build_task_list(
     tasks: &[&IndexedTask],
     cwd_relative: Option<&str>,
@@ -180,7 +185,7 @@ struct TreeBuilder {
     is_task: bool,
     is_cached: bool,
     dep_count: usize,
-    children: BTreeMap<String, TreeBuilder>,
+    children: BTreeMap<String, Self>,
 }
 
 // Convert TreeBuilder to TaskNode
@@ -318,7 +323,7 @@ fn source_proximity(source: &str, cwd_relative: Option<&str>) -> usize {
 // TextFormatter - Plain Text Output
 // ============================================================================
 
-/// Plain text formatter (no colors or styling, suitable for piping)
+/// Plain text formatter (no colors or styling, suitable for piping).
 #[derive(Debug, Default)]
 pub struct TextFormatter;
 
@@ -416,10 +421,10 @@ fn format_text_nodes(nodes: &[TaskNode], output: &mut String, max_width: usize, 
 // RichFormatter - Colored Output (same structure as text, with colors)
 // ============================================================================
 
-/// Rich formatter with colors but same tree structure as text (no box frame)
+/// Rich formatter with colors but same tree structure as text (no box frame).
 #[derive(Debug)]
 pub struct RichFormatter {
-    /// Whether to use colors (auto-detected from TTY)
+    /// Whether to use colors (auto-detected from TTY).
     pub use_colors: bool,
 }
 
@@ -430,7 +435,7 @@ impl Default for RichFormatter {
 }
 
 impl RichFormatter {
-    /// Create a new formatter with auto-detected settings
+    /// Create a new formatter with auto-detected settings.
     #[must_use]
     pub fn new() -> Self {
         use std::io::IsTerminal;

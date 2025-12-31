@@ -185,6 +185,10 @@ impl ChangesetPicker {
 /// Run the interactive changeset picker.
 ///
 /// Returns the changeset details or None if cancelled.
+///
+/// # Errors
+///
+/// Returns an error if terminal operations fail.
 pub fn run_changeset_picker(packages: Vec<PackageInfo>) -> io::Result<ChangesetPickerResult> {
     if packages.is_empty() {
         return Ok(ChangesetPickerResult::Cancelled);

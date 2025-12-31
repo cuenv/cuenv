@@ -302,10 +302,34 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
     world.current_dir.clone_from(&path);
 }
 
+#[given(expr = "I am in the {string} directory with completed hooks")]
+async fn in_directory_with_completed_hooks(world: &mut TestWorld, dir: String) {
+    // Extract the parent directory from the path (e.g., "examples/hook" -> "examples")
+    let parts: Vec<&str> = dir.split('/').collect();
+    let parent_dir = if parts.len() >= 2 {
+        parts[0].to_string()
+    } else {
+        "examples".to_string()
+    };
+
+    // 1. Set up parent directory (creates test_base_dir and sets current_dir)
+    in_directory(world, parent_dir).await;
+
+    // 2. Allow hooks in the directory (use FULL path to ensure "examples" is in path)
+    // This ensures package detection works correctly (looks for "examples" in path)
+    cuenv_allowed_in_dir(world, dir.clone()).await;
+
+    // 3. Change to directory (triggers hook execution) - use FULL path
+    change_directory(world, dir).await;
+
+    // 4. Wait for hooks to complete
+    wait_for_hooks(world).await;
+}
+
 #[given(expr = "cuenv is allowed in {string} directory")]
 async fn cuenv_allowed_in_dir(world: &mut TestWorld, dir: String) {
     // Create a valid CUE file for the hook test
-    let cue_content = r#"package _examples
+    let cue_content = r#"package examples
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -359,7 +383,7 @@ tasks: {
 
     // Pre-approve the configuration
     let package = if dir.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -383,7 +407,7 @@ async fn change_directory(world: &mut TestWorld, dir: String) {
 
     // Trigger cuenv env load (simulating shell integration)
     let package = if new_path.to_str().unwrap().contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -405,6 +429,25 @@ async fn change_directory(world: &mut TestWorld, dir: String) {
 
 #[then(expr = "hooks should be spawned in the background")]
 async fn hooks_spawned(world: &mut TestWorld) {
+    // The env load command doesn't print to stdout (by design, to avoid terminal clutter).
+    // Instead, we verify hooks were started by checking the hook execution status.
+
+    // Give the supervisor a moment to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Check hook status using env status command
+    let dir_path = world.current_dir.to_str().unwrap().to_string();
+    let package = if dir_path.contains("examples") {
+        "examples"
+    } else {
+        "cuenv"
+    };
+
+    world
+        .run_cuenv(&["env", "status", "--path", &dir_path, "--package", package])
+        .await
+        .unwrap();
+
     // Debug: write output to file
     let _ = tokio::fs::write(
         world
@@ -416,12 +459,13 @@ async fn hooks_spawned(world: &mut TestWorld) {
     )
     .await;
 
-    // Check that the command reported starting hooks
+    // Hooks are running or completed (status shows something other than "No hook execution")
+    let hooks_active = !world.last_output.contains("No hook execution in progress")
+        && !world.last_output.is_empty();
+
     assert!(
-        world.last_output.contains("Starting background execution")
-            || world.last_output.contains("hooks in background")
-            || world.last_output.contains("Started execution"),
-        "Hooks were not started in background: {}",
+        hooks_active,
+        "Hooks were not started in background. Status output: {}",
         world.last_output
     );
 }
@@ -454,7 +498,7 @@ async fn wait_for_hooks(world: &mut TestWorld) {
             // Run the new env check command to get environment variables
             let dir_path = world.current_dir.to_str().unwrap().to_string();
             let package = if dir_path.contains("examples") {
-                "_examples"
+                "examples"
             } else {
                 "cuenv"
             };
@@ -475,8 +519,17 @@ async fn wait_for_hooks(world: &mut TestWorld) {
             )
             .await;
 
+            // Use 'export' command which outputs shell eval statements
             world
-                .run_cuenv(&["env", "check", "--path", &dir_path, "--package", package])
+                .run_cuenv(&[
+                    "export",
+                    "--shell",
+                    "bash",
+                    "--path",
+                    &dir_path,
+                    "--package",
+                    package,
+                ])
                 .await
                 .unwrap();
 
@@ -567,7 +620,7 @@ fn should_see_output(world: &mut TestWorld, expected: String) {
 async fn check_hook_status(world: &mut TestWorld) {
     let dir_path = world.current_dir.to_str().unwrap().to_string();
     let package = if dir_path.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -594,7 +647,7 @@ fn hooks_are_running(world: &mut TestWorld) {
 async fn check_hook_status_again(world: &mut TestWorld) {
     let dir_path = world.current_dir.to_str().unwrap().to_string();
     let package = if dir_path.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -681,7 +734,7 @@ tasks: {}
 
     // Pre-approve the configuration
     let package = if dir.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -704,7 +757,7 @@ async fn wait_for_hooks_or_failure(world: &mut TestWorld) {
     for _ in 0..10 {
         let dir_path = world.current_dir.to_str().unwrap().to_string();
         let package = if dir_path.contains("examples") {
-            "_examples"
+            "examples"
         } else {
             "cuenv"
         };
@@ -739,7 +792,7 @@ fn env_vars_not_loaded(world: &mut TestWorld) {
 async fn see_hook_failure_message(world: &mut TestWorld) {
     let dir_path = world.current_dir.to_str().unwrap().to_string();
     let package = if dir_path.contains("examples") {
-        "_examples"
+        "examples"
     } else {
         "cuenv"
     };
@@ -780,6 +833,61 @@ async fn see_hook_failure_message(world: &mut TestWorld) {
     );
 }
 
+// Step definitions for "Changing Away From Directory Preserves State" scenario
+
+#[then(expr = "the environment variables from hooks should still be set")]
+fn env_vars_still_set(world: &mut TestWorld) {
+    assert!(
+        world.shell_env.contains_key("CUENV_TEST"),
+        "CUENV_TEST should still be set after changing directories. Current env: {:?}",
+        world.shell_env
+    );
+    assert_eq!(
+        world.shell_env.get("CUENV_TEST").unwrap(),
+        "loaded_successfully",
+        "CUENV_TEST should retain its value"
+    );
+}
+
+#[allow(clippy::needless_pass_by_value)] // cucumber requires owned String
+#[when(expr = "I change back to {string}")]
+fn change_back_to_directory(world: &mut TestWorld, dir: String) {
+    // Simply update the current directory without triggering hook execution
+    // This simulates going back to a directory where hooks already completed
+    // Use just the last component of the path to avoid doubling "examples"
+    let target = std::path::Path::new(&dir)
+        .file_name()
+        .map_or(dir.as_str(), |s| s.to_str().unwrap_or(&dir));
+    world.current_dir = world.current_dir.join(target);
+}
+
+#[then(expr = "hooks should not re-execute since configuration hasn't changed")]
+async fn hooks_should_not_reexecute(world: &mut TestWorld) {
+    // Check that no new hook execution is triggered
+    // The hook state should still show the previous completed execution
+    let dir_path = world.current_dir.to_str().unwrap().to_string();
+    let package = if dir_path.contains("examples") {
+        "examples"
+    } else {
+        "cuenv"
+    };
+
+    world
+        .run_cuenv(&["env", "status", "--path", &dir_path, "--package", package])
+        .await
+        .unwrap();
+
+    // Status should show completed (from before), not running
+    // Since hooks already ran, no new execution should be in progress
+    assert!(
+        !world.last_output.contains("Running") && !world.last_output.contains("in progress")
+            || world.last_output.contains("Completed")
+            || world.last_output.contains("completed"),
+        "Hooks should not be re-executing. Status: {}",
+        world.last_output
+    );
+}
+
 // Main test runner for cucumber BDD tests
 // Note: These tests are incompatible with nextest and should be run separately
 // with: cargo test --test bdd
@@ -794,6 +902,6 @@ async fn main() {
     }
 
     TestWorld::cucumber()
-        .run("tests/bdd/features/hooks.feature")
+        .run_and_exit("tests/bdd/features/hooks.feature")
         .await;
 }

@@ -85,6 +85,10 @@ async fn try_ping(socket: &Path) -> io::Result<u32> {
 }
 
 /// Ensure a coordinator is running, starting one if necessary.
+///
+/// # Errors
+///
+/// Returns an error if coordinator detection or startup fails.
 pub async fn ensure_coordinator_running() -> io::Result<CoordinatorHandle> {
     match detect_coordinator().await {
         CoordinatorStatus::Running { pid, socket } => Ok(CoordinatorHandle::existing(pid, socket)),

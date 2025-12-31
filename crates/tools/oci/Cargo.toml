@@ -1,0 +1,51 @@
+[package]
+name = "cuenv-tools-oci"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT"
+repository = "https://github.com/cuenv/cuenv"
+description = "OCI registry tool provider for cuenv"
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+# OCI registry operations
+oci-distribution = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+
+# Compression and archiving
+flate2 = "1.0"
+tar = "0.4"
+
+# Cryptography (for digest verification)
+sha2 = "0.10"
+
+# Async runtime
+tokio = { workspace = true, features = ["fs", "io-util"] }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Serialization (for manifest parsing)
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# HTTP client (for Homebrew API)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Directories
+dirs = "5.0"
+
+# Core types
+cuenv-core = { path = "../../core" }
+
+# Async trait
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }

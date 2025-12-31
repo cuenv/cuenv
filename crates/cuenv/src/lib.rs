@@ -1,3 +1,7 @@
+// Rust 1.92 compiler bug: false positives for thiserror/miette derive macro fields
+// https://github.com/rust-lang/rust/issues/147648
+#![allow(unused_assignments)]
+
 //! cuenv - CUE-powered environment management library
 //!
 //! This crate provides a library-first architecture for cuenv, allowing external
@@ -50,16 +54,27 @@
 #![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)]
 
 mod builder;
+/// CLI argument parsing and exit codes.
 pub mod cli;
+/// Command implementations (task, env, sync, etc.).
 pub mod commands;
+/// Shell completion generation.
 pub mod completions;
+/// Multi-process event coordination.
 pub mod coordinator;
+/// Event handling and routing.
 pub mod events;
+/// Performance measurement utilities.
 pub mod performance;
+/// Provider trait definitions.
 pub mod provider;
+/// Built-in provider implementations.
 pub mod providers;
+/// Provider registration and lookup.
 pub mod registry;
+/// Tracing and logging configuration.
 pub mod tracing;
+/// Terminal UI components.
 pub mod tui;
 
 // Re-export public API

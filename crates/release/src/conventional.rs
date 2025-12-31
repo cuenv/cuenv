@@ -68,6 +68,7 @@ impl CommitParser {
         tag_prefix: &str,
         tag_type: TagType,
     ) -> Result<Vec<ConventionalCommit>> {
+        // Use gix::open which handles worktree discovery internally
         let repo =
             gix::open(root).map_err(|e| Error::git(format!("Failed to open repository: {e}")))?;
 

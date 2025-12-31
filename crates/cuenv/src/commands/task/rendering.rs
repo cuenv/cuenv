@@ -17,7 +17,7 @@ use super::normalization::compute_project_id;
 #[derive(Default)]
 pub struct TaskTreeNode {
     pub description: Option<String>,
-    pub children: BTreeMap<String, TaskTreeNode>,
+    pub children: BTreeMap<String, Self>,
     pub is_task: bool,
 }
 
@@ -125,7 +125,10 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
 ///
 /// The `module_root` parameter is used to compute stable project IDs for
 /// workspace setup task injection.
-pub fn collect_workspace_tasks(discovery: &TaskDiscovery, module_root: &Path) -> Vec<WorkspaceTask> {
+pub fn collect_workspace_tasks(
+    discovery: &TaskDiscovery,
+    module_root: &Path,
+) -> Vec<WorkspaceTask> {
     let mut result = Vec::new();
 
     for project in discovery.projects() {
@@ -140,8 +143,8 @@ pub fn collect_workspace_tasks(discovery: &TaskDiscovery, module_root: &Path) ->
 
         // Build task index with synthetic tasks injected
         // Best-effort: if injection fails, fall back to basic index without hooks
-        let task_index = prepare_task_index(&mut manifest, Some(discovery), &project_id)
-            .or_else(|_| {
+        let task_index =
+            prepare_task_index(&mut manifest, Some(discovery), &project_id).or_else(|_| {
                 // Fall back to basic index with implicit tasks but no hook injection
                 let manifest_with_implicit = manifest.clone().with_implicit_tasks();
                 cuenv_core::tasks::TaskIndex::build(&manifest_with_implicit.tasks)

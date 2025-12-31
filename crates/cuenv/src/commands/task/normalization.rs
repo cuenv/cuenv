@@ -14,6 +14,7 @@ use cuenv_core::tasks::{Task, TaskDefinition};
 ///
 /// Task names can use either colons or dots as separators, but internally
 /// we use dots for consistency with CUE's namespace syntax.
+#[must_use]
 pub fn normalize_task_name(raw: &str) -> String {
     raw.replace(':', ".")
 }
@@ -22,6 +23,7 @@ pub fn normalize_task_name(raw: &str) -> String {
 ///
 /// The FQDN format is `task:{project_id}:{task_name}` where `task_name`
 /// has colons normalized to dots.
+#[must_use]
 pub fn task_fqdn(project_id: &str, task_name: &str) -> String {
     format!("task:{project_id}:{}", normalize_task_name(task_name))
 }
@@ -37,6 +39,7 @@ pub fn task_fqdn(project_id: &str, task_name: &str) -> String {
 /// // If task_name is "build.test" and dep is "lint", returns "build.lint"
 /// // If dep is "deploy.prod", returns "deploy.prod" (already absolute)
 /// ```
+#[must_use]
 pub fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> String {
     // Match TaskIndex semantics: treat dotted/colon deps as absolute, otherwise
     // resolve relative to the parent namespace of `task_name`.
@@ -58,6 +61,7 @@ pub fn canonicalize_dep_for_task_name(dep: &str, task_name: &str) -> String {
 ///
 /// Uses the manifest's `name` field if non-empty, otherwise falls back to
 /// a path-derived identifier relative to the module root.
+#[must_use]
 pub fn compute_project_id(manifest: &Project, project_root: &Path, module_root: &Path) -> String {
     let trimmed = manifest.name.trim();
     if !trimmed.is_empty() {
@@ -105,6 +109,7 @@ pub fn set_default_project_root(def: &mut TaskDefinition, project_root: &PathBuf
 /// - If already an FQDN (starts with "task:"), returns as-is
 /// - If a `TaskRef` (starts with "#"), parses and converts to FQDN
 /// - Otherwise, creates FQDN using the default project ID
+#[must_use]
 pub fn normalize_dep(
     dep: &str,
     default_project_id: &str,

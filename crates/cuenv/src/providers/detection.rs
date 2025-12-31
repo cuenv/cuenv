@@ -71,6 +71,7 @@ pub fn detect_code_owners_provider(repo_root: &Path) -> Box<dyn CodeOwnersProvid
 /// # Arguments
 ///
 /// * `from_ref` - Optional base ref for local provider (e.g., "main" to compare against)
+#[must_use]
 #[cfg(feature = "github")]
 pub fn detect_ci_provider(
     from_ref: Option<String>,
@@ -108,6 +109,7 @@ pub fn detect_ci_provider(
 /// # Arguments
 ///
 /// * `from_ref` - Optional base ref for local provider (e.g., "main" to compare against)
+#[must_use]
 #[cfg(not(feature = "github"))]
 pub fn detect_ci_provider(
     from_ref: Option<String>,
