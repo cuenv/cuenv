@@ -33,6 +33,11 @@ pub mod provider;
 pub mod providers;
 pub mod registry;
 
+// Re-export formatter functions for use by the fmt command
+pub use formatters::{
+    matches_any_pattern, run_cue_formatter, run_go_formatter, run_nix_formatter, run_rust_formatter,
+};
+
 // Re-export for external use (e.g., tests)
 #[allow(unused_imports)]
 pub use functions::{execute_sync_ci, execute_sync_ci_workspace, execute_sync_cubes};

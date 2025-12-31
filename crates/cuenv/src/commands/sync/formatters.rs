@@ -147,7 +147,7 @@ pub fn format_generated_files(
 ///
 /// Patterns are matched against the relative path from project root,
 /// allowing patterns like `src/**/*.rs` or `tests/*.go` to work correctly.
-fn matches_any_pattern(path: &str, patterns: &[String]) -> bool {
+pub fn matches_any_pattern(path: &str, patterns: &[String]) -> bool {
     for pattern_str in patterns {
         match Pattern::new(pattern_str) {
             Ok(pattern) => {
@@ -174,7 +174,7 @@ fn matches_any_pattern(path: &str, patterns: &[String]) -> bool {
 /// Returns an error if:
 /// - In check mode and files are not properly formatted
 /// - The formatter command fails to execute
-fn run_rust_formatter(
+pub fn run_rust_formatter(
     files: &[&Path],
     config: Option<&RustFormatter>,
     project_root: &Path,
@@ -246,7 +246,7 @@ fn run_rust_formatter(
 /// Returns an error if:
 /// - In check mode and files are not properly formatted
 /// - The formatter command fails to execute
-fn run_nix_formatter(
+pub fn run_nix_formatter(
     files: &[&Path],
     config: Option<&NixFormatter>,
     project_root: &Path,
@@ -317,7 +317,7 @@ fn run_nix_formatter(
 /// Returns an error if:
 /// - In check mode and files are not properly formatted
 /// - The formatter command fails to execute
-fn run_go_formatter(
+pub fn run_go_formatter(
     files: &[&Path],
     project_root: &Path,
     dry_run: bool,
@@ -394,7 +394,7 @@ fn run_go_formatter(
 /// # Check Mode
 ///
 /// Uses `cue fmt -d` to display diffs. If stdout is empty, formatting passes.
-fn run_cue_formatter(
+pub fn run_cue_formatter(
     files: &[&Path],
     project_root: &Path,
     dry_run: bool,
