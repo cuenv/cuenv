@@ -49,7 +49,7 @@ pub struct TaskNode {
     /// Whether cached result exists for this task.
     pub is_cached: bool,
     /// Nested child nodes.
-    pub children: Vec<TaskNode>,
+    pub children: Vec<Self>,
 }
 
 /// Aggregate statistics about the task list.
@@ -185,7 +185,7 @@ struct TreeBuilder {
     is_task: bool,
     is_cached: bool,
     dep_count: usize,
-    children: BTreeMap<String, TreeBuilder>,
+    children: BTreeMap<String, Self>,
 }
 
 // Convert TreeBuilder to TaskNode

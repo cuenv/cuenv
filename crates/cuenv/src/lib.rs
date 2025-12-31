@@ -1,3 +1,7 @@
+// Rust 1.92 compiler bug: false positives for thiserror/miette derive macro fields
+// https://github.com/rust-lang/rust/issues/147648
+#![allow(unused_assignments)]
+
 //! cuenv - CUE-powered environment management library
 //!
 //! This crate provides a library-first architecture for cuenv, allowing external

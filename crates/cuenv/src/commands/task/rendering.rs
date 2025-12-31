@@ -17,7 +17,7 @@ use super::normalization::compute_project_id;
 #[derive(Default)]
 pub struct TaskTreeNode {
     pub description: Option<String>,
-    pub children: BTreeMap<String, TaskTreeNode>,
+    pub children: BTreeMap<String, Self>,
     pub is_task: bool,
 }
 
