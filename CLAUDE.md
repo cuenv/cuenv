@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Rules
 
-- Never allow clippy warnings, fix the root cause
+- Never allow clippy warnings, fix the root cause.
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
+- We cannot commit any code if `cuenv task check` is not passing.
 
 ## Project Overview
 
