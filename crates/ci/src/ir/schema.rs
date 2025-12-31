@@ -542,11 +542,122 @@ impl StageConfiguration {
     }
 
     /// Sort all stages by priority (lower priority = earlier)
+    #[deprecated(note = "Use sort_by_dependencies instead, which respects depends_on relationships")]
     pub fn sort_by_priority(&mut self) {
         self.bootstrap.sort_by_key(|t| t.priority);
         self.setup.sort_by_key(|t| t.priority);
         self.success.sort_by_key(|t| t.priority);
         self.failure.sort_by_key(|t| t.priority);
+    }
+
+    /// Sort all stages respecting `depends_on` relationships, with priority as tiebreaker.
+    ///
+    /// Uses Kahn's algorithm for topological sorting. When multiple tasks have no
+    /// pending dependencies, the one with the lowest priority value is selected first.
+    ///
+    /// Tasks that depend on non-existent tasks are placed at the end (dependencies
+    /// are considered satisfied for external/unknown dependencies).
+    pub fn sort_by_dependencies(&mut self) {
+        self.bootstrap = Self::topological_sort_with_priority(std::mem::take(&mut self.bootstrap));
+        self.setup = Self::topological_sort_with_priority(std::mem::take(&mut self.setup));
+        self.success = Self::topological_sort_with_priority(std::mem::take(&mut self.success));
+        self.failure = Self::topological_sort_with_priority(std::mem::take(&mut self.failure));
+    }
+
+    /// Topological sort with priority-aware selection (Kahn's algorithm).
+    ///
+    /// When multiple tasks are ready (no pending dependencies), selects the one
+    /// with the lowest priority value first.
+    fn topological_sort_with_priority(tasks: Vec<StageTask>) -> Vec<StageTask> {
+        use std::collections::{BinaryHeap, HashMap, HashSet};
+
+        if tasks.is_empty() {
+            return tasks;
+        }
+
+        // Build a set of known task IDs for filtering external dependencies
+        let known_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+
+        // Build adjacency list and in-degree count
+        // in_degree[task_id] = number of dependencies that must complete first
+        let mut in_degree: HashMap<&str, usize> = HashMap::new();
+        // dependents[task_id] = list of tasks that depend on this task
+        let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
+
+        for task in &tasks {
+            in_degree.entry(task.id.as_str()).or_insert(0);
+            for dep in &task.depends_on {
+                // Only count dependencies on known tasks (ignore external dependencies)
+                if known_ids.contains(dep.as_str()) {
+                    *in_degree.entry(task.id.as_str()).or_insert(0) += 1;
+                    dependents
+                        .entry(dep.as_str())
+                        .or_default()
+                        .push(task.id.as_str());
+                }
+            }
+        }
+
+        // Create index lookup
+        let task_indices: HashMap<&str, usize> = tasks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.id.as_str(), i))
+            .collect();
+
+        // Initialize ready queue with tasks that have no dependencies
+        // Using (neg_priority, index) tuples - BinaryHeap is max-heap so negate priority
+        let mut ready: BinaryHeap<(i32, usize)> = BinaryHeap::new();
+        for (id, &degree) in &in_degree {
+            if degree == 0 {
+                let idx = task_indices[id];
+                // Negate priority so lowest priority comes first (max-heap behavior)
+                // Use negative index as secondary key for stable ordering
+                ready.push((-tasks[idx].priority, usize::MAX - idx));
+            }
+        }
+
+        // Kahn's algorithm
+        let mut result_indices = Vec::with_capacity(tasks.len());
+        let mut in_degree_mut = in_degree.clone();
+
+        while let Some((_, neg_idx)) = ready.pop() {
+            let index = usize::MAX - neg_idx;
+            result_indices.push(index);
+            let task_id = tasks[index].id.as_str();
+
+            // Decrease in-degree of dependents
+            if let Some(deps) = dependents.get(task_id) {
+                for &dep_id in deps {
+                    if let Some(degree) = in_degree_mut.get_mut(dep_id) {
+                        *degree -= 1;
+                        if *degree == 0 {
+                            let dep_idx = task_indices[dep_id];
+                            ready.push((-tasks[dep_idx].priority, usize::MAX - dep_idx));
+                        }
+                    }
+                }
+            }
+        }
+
+        // If cycle detected (not all tasks processed), fall back to priority sort
+        // This shouldn't happen with valid stage configurations
+        if result_indices.len() != tasks.len() {
+            tracing::warn!(
+                "Cycle detected in stage task dependencies, falling back to priority sort"
+            );
+            let mut fallback = tasks;
+            fallback.sort_by_key(|t| t.priority);
+            return fallback;
+        }
+
+        // Reorder tasks according to topological order
+        // SAFETY: Each index appears exactly once, so each take() succeeds
+        let mut tasks_vec: Vec<Option<StageTask>> = tasks.into_iter().map(Some).collect();
+        result_indices
+            .into_iter()
+            .filter_map(|i| tasks_vec[i].take())
+            .collect()
     }
 
     /// Get all task IDs from bootstrap and setup stages (for task dependencies)
@@ -1011,5 +1122,163 @@ mod tests {
         assert!(json.contains("install-nix"));
         assert!(json.contains("setup-1password"));
         assert!(json.contains("1password"));
+    }
+
+    #[test]
+    fn test_sort_by_dependencies_respects_depends_on() {
+        let mut config = StageConfiguration::default();
+
+        // 1Password has lower priority (20) but depends on cuenv (55)
+        // Without dependency-aware sorting, 1Password would come first
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-1password".to_string(),
+                priority: 20,
+                depends_on: vec!["setup-cuenv".to_string()],
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-cuenv".to_string(),
+                priority: 55,
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-cachix".to_string(),
+                priority: 5,
+                ..Default::default()
+            },
+        );
+
+        config.sort_by_dependencies();
+
+        // cachix has no deps and lowest priority -> first
+        assert_eq!(config.setup[0].id, "setup-cachix");
+        // cuenv has no deps -> second (by priority)
+        assert_eq!(config.setup[1].id, "setup-cuenv");
+        // 1password depends on cuenv -> must come after cuenv
+        assert_eq!(config.setup[2].id, "setup-1password");
+    }
+
+    #[test]
+    fn test_sort_by_dependencies_uses_priority_as_tiebreaker() {
+        let mut config = StageConfiguration::default();
+
+        // All tasks have no dependencies, should sort by priority
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "task-c".to_string(),
+                priority: 30,
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "task-a".to_string(),
+                priority: 10,
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "task-b".to_string(),
+                priority: 20,
+                ..Default::default()
+            },
+        );
+
+        config.sort_by_dependencies();
+
+        assert_eq!(config.setup[0].id, "task-a");
+        assert_eq!(config.setup[1].id, "task-b");
+        assert_eq!(config.setup[2].id, "task-c");
+    }
+
+    #[test]
+    fn test_sort_by_dependencies_ignores_external_dependencies() {
+        let mut config = StageConfiguration::default();
+
+        // Task depends on something not in this stage (external dependency)
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-1password".to_string(),
+                priority: 20,
+                depends_on: vec!["install-nix".to_string()], // Not in setup stage
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "setup-cuenv".to_string(),
+                priority: 55,
+                ..Default::default()
+            },
+        );
+
+        config.sort_by_dependencies();
+
+        // External deps are ignored, so sort by priority
+        assert_eq!(config.setup[0].id, "setup-1password");
+        assert_eq!(config.setup[1].id, "setup-cuenv");
+    }
+
+    #[test]
+    fn test_sort_by_dependencies_chain() {
+        let mut config = StageConfiguration::default();
+
+        // Chain: A -> B -> C (where -> means "depends on")
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "task-c".to_string(),
+                priority: 10, // Lowest priority, but depends on B
+                depends_on: vec!["task-b".to_string()],
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "task-a".to_string(),
+                priority: 30, // Highest priority, no deps
+                ..Default::default()
+            },
+        );
+        config.add(
+            BuildStage::Setup,
+            StageTask {
+                id: "task-b".to_string(),
+                priority: 20, // Middle priority, depends on A
+                depends_on: vec!["task-a".to_string()],
+                ..Default::default()
+            },
+        );
+
+        config.sort_by_dependencies();
+
+        // A has no deps -> first
+        // B depends on A -> second
+        // C depends on B -> third
+        assert_eq!(config.setup[0].id, "task-a");
+        assert_eq!(config.setup[1].id, "task-b");
+        assert_eq!(config.setup[2].id, "task-c");
+    }
+
+    #[test]
+    fn test_sort_by_dependencies_empty() {
+        let mut config = StageConfiguration::default();
+        config.sort_by_dependencies();
+        assert!(config.setup.is_empty());
     }
 }

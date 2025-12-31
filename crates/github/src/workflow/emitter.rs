@@ -479,205 +479,54 @@ impl GitHubActionsEmitter {
     }
 
     /// Build jobs from IR tasks
+    ///
+    /// Uses the stage-based rendering approach which respects `depends_on`
+    /// relationships in stage tasks for correct step ordering.
     fn build_jobs(&self, ir: &IntermediateRepresentation) -> IndexMap<String, Job> {
         let mut jobs = IndexMap::new();
 
         for task in &ir.tasks {
-            let job = self.build_job(task, ir);
+            // Build base job using stage renderer (respects dependency ordering)
+            let mut job = self.build_simple_job(
+                task,
+                &ir.stages,
+                ir.pipeline.environment.as_ref(),
+                None, // project_path - not used in single-project mode
+            );
+
+            // Apply additional job configuration from task
+
+            // Determine runner from task resources or use default
+            if let Some(resources) = &task.resources
+                && let Some(tag) = resources.tags.first()
+            {
+                job.runs_on = RunsOn::Label(tag.clone());
+            }
+
+            // Map task dependencies to sanitized job IDs
+            job.needs = task
+                .depends_on
+                .iter()
+                .map(|d| sanitize_job_id(d))
+                .collect();
+
+            // Handle manual approval via environment
+            if task.manual_approval {
+                job.environment = Some(Environment::Name(self.approval_environment.clone()));
+            }
+
+            // Handle concurrency group
+            if let Some(group) = &task.concurrency_group {
+                job.concurrency = Some(Concurrency {
+                    group: group.clone(),
+                    cancel_in_progress: Some(false),
+                });
+            }
+
             jobs.insert(sanitize_job_id(&task.id), job);
         }
 
         jobs
-    }
-
-    /// Build a job from an IR task
-    #[allow(clippy::too_many_lines)]
-    fn build_job(&self, task: &Task, ir: &IntermediateRepresentation) -> Job {
-        let mut steps = Vec::new();
-
-        // Checkout step
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
-
-        // Check IR stages for what setup is needed
-        let has_install_nix = ir.stages.bootstrap.iter().any(|t| t.id == "install-nix");
-        let has_cachix = ir.stages.setup.iter().any(|t| t.id == "setup-cachix");
-        let has_1password = ir.stages.setup.iter().any(|t| t.id == "setup-1password");
-
-        // Nix installation (from install-nix stage task)
-        if has_install_nix {
-            steps.push(
-                Step::uses("DeterminateSystems/nix-installer-action@v16")
-                    .with_name("Install Nix")
-                    .with_input(
-                        "extra-conf",
-                        serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                    ),
-            );
-        }
-
-        // Cachix setup (from setup-cachix stage task)
-        if has_cachix {
-            // Get cachix config from the stage task
-            if let Some(cachix_task) = ir.stages.setup.iter().find(|t| t.id == "setup-cachix") {
-                // Extract cache name from the task command
-                // Command format: ". /nix/... && nix-env -iA cachix... && cachix use {name}"
-                let cache_name = cachix_task
-                    .command
-                    .first()
-                    .and_then(|cmd| cmd.split("cachix use ").nth(1))
-                    .unwrap_or("cuenv");
-
-                // Get auth token secret name from env
-                let auth_token_secret = cachix_task
-                    .env
-                    .get("CACHIX_AUTH_TOKEN")
-                    .and_then(|v| {
-                        // Extract secret name from ${SECRET_NAME}
-                        v.strip_prefix("${").and_then(|s| s.strip_suffix("}"))
-                    })
-                    .unwrap_or("CACHIX_AUTH_TOKEN");
-
-                let cachix_step = Step::uses("cachix/cachix-action@v15")
-                    .with_name("Setup Cachix")
-                    .with_input("name", serde_yaml::Value::String(cache_name.to_string()))
-                    .with_input(
-                        "authToken",
-                        serde_yaml::Value::String(format!(
-                            "${{{{ secrets.{auth_token_secret} }}}}"
-                        )),
-                    );
-                steps.push(cachix_step);
-            }
-        }
-
-        // Setup cuenv (from setup-cuenv stage task)
-        if let Some(cuenv_task) = ir.stages.setup.iter().find(|t| t.id == "setup-cuenv") {
-            let command = cuenv_task.command.first().cloned().unwrap_or_default();
-            let name = cuenv_task
-                .label
-                .clone()
-                .unwrap_or_else(|| "Setup cuenv".to_string());
-            steps.push(Step::run(&command).with_name(&name));
-        }
-
-        // Setup 1Password (from setup-1password stage task)
-        if has_1password {
-            steps.push(Step::run("cuenv secrets setup onepassword").with_name("Setup 1Password"));
-        }
-
-        // Setup GitHub Models CLI extension (from setup-gh-models stage task)
-        if let Some(gh_models_task) = ir.stages.setup.iter().find(|t| t.id == "setup-gh-models") {
-            let command = gh_models_task.command.first().cloned().unwrap_or_default();
-            let name = gh_models_task
-                .label
-                .clone()
-                .unwrap_or_else(|| "Setup GitHub Models CLI".to_string());
-            steps.push(
-                Step::run(&command)
-                    .with_name(&name)
-                    .with_env("GH_TOKEN", "${{ github.token }}"),
-            );
-        }
-
-        // Run the task
-        // Use --skip-dependencies (-S) because GitHub Actions handles job dependencies
-        // via the `needs:` field. Each job only needs to run its own task.
-        let environment = ir.pipeline.environment.as_deref();
-        let task_command = environment.map_or_else(
-            || format!("cuenv task {} --skip-dependencies", task.id),
-            |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-        );
-        let mut task_step = Step::run(task_command)
-            .with_name(task.id.clone())
-            .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
-
-        // Add task environment variables (transform secret references)
-        for (key, value) in &task.env {
-            task_step
-                .env
-                .insert(key.clone(), transform_secret_ref(value));
-        }
-
-        // Add 1Password service account token if needed
-        if has_1password {
-            task_step.env.insert(
-                "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
-                "${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}".to_string(),
-            );
-        }
-
-        steps.push(task_step);
-
-        // Upload artifacts for orchestrator outputs
-        let orchestrator_outputs: Vec<_> = task
-            .outputs
-            .iter()
-            .filter(|o| o.output_type == OutputType::Orchestrator)
-            .collect();
-
-        if !orchestrator_outputs.is_empty() {
-            let paths: Vec<String> = orchestrator_outputs
-                .iter()
-                .map(|o| o.path.clone())
-                .collect();
-            let mut artifact_step = Step::uses("actions/upload-artifact@v4")
-                .with_name("Upload artifacts")
-                .with_input(
-                    "name",
-                    serde_yaml::Value::String(format!("{}-artifacts", task.id)),
-                )
-                .with_input("path", serde_yaml::Value::String(paths.join("\n")));
-            artifact_step.with_inputs.insert(
-                "if-no-files-found".to_string(),
-                serde_yaml::Value::String("ignore".to_string()),
-            );
-            artifact_step.if_condition = Some("always()".to_string());
-            steps.push(artifact_step);
-        }
-
-        // Determine runner
-        let runs_on = task
-            .resources
-            .as_ref()
-            .and_then(|r| r.tags.first())
-            .map_or_else(
-                || RunsOn::Label(self.runner.clone()),
-                |tag| RunsOn::Label(tag.clone()),
-            );
-
-        // Map dependencies to sanitized job IDs
-        let needs: Vec<String> = task.depends_on.iter().map(|d| sanitize_job_id(d)).collect();
-
-        // Handle manual approval via environment
-        let environment = if task.manual_approval {
-            Some(Environment::Name(self.approval_environment.clone()))
-        } else {
-            None
-        };
-
-        // Handle concurrency group
-        let concurrency = task.concurrency_group.as_ref().map(|group| Concurrency {
-            group: group.clone(),
-            cancel_in_progress: Some(false),
-        });
-
-        Job {
-            name: Some(task.id.clone()),
-            runs_on,
-            needs,
-            if_condition: None,
-            strategy: None,
-            environment,
-            env: IndexMap::new(),
-            concurrency,
-            continue_on_error: None,
-            timeout_minutes: None,
-            steps,
-        }
     }
 
     /// Serialize a workflow to YAML with a generation header
@@ -1537,6 +1386,16 @@ mod tests {
         let emitter = GitHubActionsEmitter::new().with_nix();
         let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
 
+        // Build provider_hints for GitHub Actions (matching NixContributor)
+        let provider_hints = serde_json::json!({
+            "github_action": {
+                "uses": "DeterminateSystems/nix-installer-action@v16",
+                "inputs": {
+                    "extra-conf": "accept-flake-config = true"
+                }
+            }
+        });
+
         // Add stage tasks that would be contributed by NixContributor
         ir.stages.bootstrap.push(StageTask {
             id: "install-nix".to_string(),
@@ -1545,6 +1404,7 @@ mod tests {
             command: vec!["curl ... | sh".to_string()],
             shell: true,
             priority: 0,
+            provider_hints: Some(provider_hints),
             ..Default::default()
         });
         ir.stages.setup.push(StageTask {
@@ -1571,6 +1431,16 @@ mod tests {
             .with_cachix("my-cache");
         let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
 
+        // Build provider_hints for GitHub Actions (matching NixContributor)
+        let nix_provider_hints = serde_json::json!({
+            "github_action": {
+                "uses": "DeterminateSystems/nix-installer-action@v16",
+                "inputs": {
+                    "extra-conf": "accept-flake-config = true"
+                }
+            }
+        });
+
         // Add stage tasks for Cachix
         ir.stages.bootstrap.push(StageTask {
             id: "install-nix".to_string(),
@@ -1579,6 +1449,7 @@ mod tests {
             command: vec!["curl ... | sh".to_string()],
             shell: true,
             priority: 0,
+            provider_hints: Some(nix_provider_hints),
             ..Default::default()
         });
         let mut env = HashMap::new();
@@ -1586,10 +1457,11 @@ mod tests {
             "CACHIX_AUTH_TOKEN".to_string(),
             "${CACHIX_AUTH_TOKEN}".to_string(),
         );
+        // CachixContributor uses a run command, not an action
         ir.stages.setup.push(StageTask {
             id: "setup-cachix".to_string(),
             provider: "cachix".to_string(),
-            label: Some("Setup Cachix".to_string()),
+            label: Some("Setup Cachix (my-cache)".to_string()),
             command: vec!["nix-env -iA cachix && cachix use my-cache".to_string()],
             shell: true,
             env,
@@ -1600,8 +1472,9 @@ mod tests {
 
         let yaml = emitter.emit(&ir).unwrap();
 
-        assert!(yaml.contains("cachix/cachix-action"));
-        assert!(yaml.contains("name: my-cache"));
+        // Cachix uses a run command (matching CachixContributor behavior)
+        assert!(yaml.contains("cachix use my-cache"));
+        assert!(yaml.contains("Setup Cachix (my-cache)"));
     }
 
     #[test]

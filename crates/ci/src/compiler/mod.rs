@@ -357,7 +357,7 @@ impl Compiler {
                     any_modified |= modified;
                 }
             }
-            ir.stages.sort_by_priority();
+            ir.stages.sort_by_dependencies();
             if !any_modified {
                 break;
             }
@@ -366,8 +366,8 @@ impl Compiler {
         // Apply CUE-defined setup steps and contributors
         self.apply_cue_setup_steps(&mut ir);
 
-        // Re-sort by priority after adding CUE setup steps
-        ir.stages.sort_by_priority();
+        // Re-sort by dependencies after adding CUE setup steps
+        ir.stages.sort_by_dependencies();
 
         // Validate the IR
         let validator = IrValidator::new(&ir);
