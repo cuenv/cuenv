@@ -51,6 +51,7 @@ cuenv-ignore = { workspace = true }
 cuenv-release = { workspace = true }
 cuengine = { workspace = true }
 gix = { workspace = true }
+glob = "0.3"
 ignore = "0.4"
 # Platform-specific providers (optional)
 cuenv-github = { workspace = true, optional = true }

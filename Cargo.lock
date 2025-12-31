@@ -1632,6 +1632,7 @@ dependencies = [
  "dirs 6.0.0",
  "futures",
  "gix",
+ "glob",
  "ignore",
  "indexmap 2.12.1",
  "libc",

@@ -492,6 +492,34 @@ pub enum Commands {
         )]
         package: String,
     },
+    /// Format code based on formatters configuration.
+    #[command(about = "Format code based on formatters configuration")]
+    Fmt {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Apply formatting changes (default is check mode).
+        #[arg(long, help = "Apply formatting changes (default is check mode)")]
+        fix: bool,
+        /// Run only specific formatters (comma-separated: rust,nix,go,cue).
+        #[arg(
+            long,
+            help = "Run only specific formatters (comma-separated: rust,nix,go,cue)"
+        )]
+        only: Option<String>,
+    },
     /// Shell integration commands.
     #[command(about = "Shell integration commands")]
     Shell {
@@ -1201,6 +1229,7 @@ impl Commands {
             Self::Info { package, .. }
             | Self::Task { package, .. }
             | Self::Exec { package, .. }
+            | Self::Fmt { package, .. }
             | Self::Sync { package, .. }
             | Self::Allow { package, .. }
             | Self::Deny { package, .. }
@@ -1337,6 +1366,17 @@ impl Commands {
                 command,
                 args,
                 environment,
+            },
+            Self::Fmt {
+                path,
+                package,
+                fix,
+                only,
+            } => Command::Fmt {
+                path,
+                package,
+                fix,
+                only: only.map(|s| s.split(',').map(|x| x.trim().to_string()).collect()),
             },
             Self::Shell { subcommand } => match subcommand {
                 ShellCommands::Init { shell } => Command::ShellInit { shell },

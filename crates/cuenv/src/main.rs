@@ -126,7 +126,8 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             | cli::Commands::Completions { .. }
             | cli::Commands::Changeset { .. }
             | cli::Commands::Secrets { .. }
-            | cli::Commands::Export { .. } => false,
+            | cli::Commands::Export { .. }
+            | cli::Commands::Fmt { .. } => false,
             cli::Commands::Shell { subcommand } => match subcommand {
                 cli::ShellCommands::Init { .. } => false,
             },
@@ -517,6 +518,22 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         }
 
         Command::ToolsList => commands::tools::execute_tools_list(),
+
+        Command::Fmt {
+            path,
+            package,
+            fix,
+            only,
+        } => match commands::fmt::execute_fmt(&path, &package, fix, only.as_deref()) {
+            Ok(output) => {
+                println!("{output}");
+                Ok(())
+            }
+            Err(e) => Err(CliError::eval_with_help(
+                format!("Format failed: {e}"),
+                "Check your formatters configuration in env.cue",
+            )),
+        },
 
         Command::Export {
             shell,
