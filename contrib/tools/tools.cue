@@ -104,3 +104,40 @@ import "github.com/cuenv/cuenv/schema"
 		}},
 	]
 }
+
+// #Cue provides the CUE language CLI from GitHub releases.
+//
+// Usage:
+//
+//	runtime: schema.#ToolsRuntime & {
+//	    tools: cue: xTools.#Cue & {version: "0.15.3"}
+//	}
+#Cue: schema.#Tool & {
+	version!: string
+	overrides: [
+		{os: "darwin", arch: "arm64", source: schema.#GitHub & {
+			repo:      "cue-lang/cue"
+			tagPrefix: "v"
+			asset:     "cue_v{version}_darwin_arm64.tar.gz"
+			path:      "cue"
+		}},
+		{os: "darwin", arch: "x86_64", source: schema.#GitHub & {
+			repo:      "cue-lang/cue"
+			tagPrefix: "v"
+			asset:     "cue_v{version}_darwin_amd64.tar.gz"
+			path:      "cue"
+		}},
+		{os: "linux", arch: "x86_64", source: schema.#GitHub & {
+			repo:      "cue-lang/cue"
+			tagPrefix: "v"
+			asset:     "cue_v{version}_linux_amd64.tar.gz"
+			path:      "cue"
+		}},
+		{os: "linux", arch: "arm64", source: schema.#GitHub & {
+			repo:      "cue-lang/cue"
+			tagPrefix: "v"
+			asset:     "cue_v{version}_linux_arm64.tar.gz"
+			path:      "cue"
+		}},
+	]
+}
