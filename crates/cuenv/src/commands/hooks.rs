@@ -1,10 +1,4 @@
-//! Hook-related command implementations.
-//!
-//! This module provides commands for managing environment hooks:
-//! - Loading environments and executing hooks
-//! - Checking hook execution status
-//! - Approving and denying hook configurations
-//! - Shell integration for automatic environment loading
+//! Hook-related command implementations
 
 use super::env_file::{self, EnvFileStatus, find_cue_module_root};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
@@ -229,18 +223,14 @@ fn format_starship_status(state: &HookExecutionState) -> String {
     }
 }
 
-/// Execute env load command - evaluates config, checks approval, starts hook execution.
+/// Execute env load command - evaluates config, checks approval, starts hook execution
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The directory cannot be resolved
-/// - CUE evaluation fails
-/// - Approval manager cannot be initialized
-/// - Hook execution fails to start
+/// Returns an error if env file lookup, CUE evaluation, or hook execution fails.
 pub async fn execute_env_load(
     path: &str,
     package: &str,
@@ -307,7 +297,7 @@ pub async fn execute_env_load(
     }
 }
 
-/// Execute env status command - show current hook execution status.
+/// Execute env status command - show current hook execution status
 ///
 /// Uses a fast path for non-wait mode that skips config hash computation entirely.
 /// This reduces latency from ~300ms to <20ms for Starship integration.
@@ -317,10 +307,7 @@ pub async fn execute_env_load(
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The directory cannot be resolved
-/// - Hook executor cannot be initialized
-/// - Config hash computation fails (in wait mode)
+/// Returns an error if env file lookup, hook executor initialization, or status retrieval fails.
 pub async fn execute_env_status(
     path: &str,
     package: &str,
@@ -381,13 +368,12 @@ pub async fn execute_env_status(
 }
 
 /// Synchronous version of `execute_env_status` for the fast path.
-///
 /// This skips the tokio runtime entirely for shell prompt integration.
 /// Only supports non-wait mode.
 ///
 /// # Errors
 ///
-/// Returns an error if the hook executor cannot be initialized.
+/// Returns an error if env file lookup or hook executor operations fail.
 pub fn execute_env_status_sync(path: &str, package: &str, format: StatusFormat) -> Result<String> {
     // Check env.cue and canonicalize path
     let directory = match env_file::find_env_file(Path::new(path), package)? {
@@ -410,16 +396,14 @@ pub fn execute_env_status_sync(path: &str, package: &str, format: StatusFormat) 
     }
 }
 
-/// Inspect cached hook state and captured environment.
+/// Inspect cached hook state and captured environment
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The env.cue file is missing or has wrong package
-/// - Approval manager or state manager cannot be initialized
+/// Returns an error if env file lookup, config hash computation, or state loading fails.
 pub async fn execute_env_inspect(
     path: &str,
     package: &str,
@@ -538,17 +522,14 @@ pub async fn execute_env_inspect(
     Ok(output)
 }
 
-/// Execute allow command - approve current directory's configuration.
+/// Execute allow command - approve current directory's configuration
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The env.cue file is missing or has wrong package
-/// - CUE evaluation fails
-/// - Approval manager cannot write the approval
+/// Returns an error if env file lookup, CUE evaluation, or approval management fails.
 pub async fn execute_allow(
     path: &str,
     package: &str,
@@ -627,13 +608,11 @@ pub async fn execute_allow(
     ))
 }
 
-/// Execute deny command - revoke approval for a directory.
+/// Execute deny command - revoke approval for a directory
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The directory path cannot be resolved
-/// - Approval manager cannot be initialized or updated
+/// Returns an error if path resolution or approval revocation fails.
 pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<String> {
     // Resolve directory path, but don't strictly require env.cue to exist
     // (user might want to deny a directory they deleted)
@@ -665,17 +644,14 @@ pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<Strin
     }
 }
 
-/// Execute env check command - check hook status and output env for shell.
+/// Execute env check command - check hook status and output env for shell
 ///
 /// When a `cmd_executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - Approval manager cannot be initialized
-/// - Config hash computation fails
-/// - Hook executor cannot be initialized
+/// Returns an error if env file lookup, config hash computation, or status retrieval fails.
 pub async fn execute_env_check(
     path: &str,
     package: &str,
@@ -745,9 +721,7 @@ pub async fn execute_env_check(
     Ok(String::new())
 }
 
-/// Generate shell integration script.
-///
-/// Returns the shell-specific script that integrates cuenv with the user's shell.
+/// Generate shell integration script
 #[must_use]
 pub fn execute_shell_init(shell: crate::cli::ShellType) -> String {
     match shell {
@@ -889,14 +863,15 @@ mod tests {
             hooks: Some(Hooks {
                 on_enter: Some(on_enter),
                 on_exit: None,
+                pre_push: None,
             }),
             workspaces: None,
             ci: None,
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
             cube: None,
-            runtime: None,
             formatters: None,
+            runtime: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -932,14 +907,15 @@ mod tests {
             hooks: Some(Hooks {
                 on_enter: Some(on_enter),
                 on_exit: None,
+                pre_push: None,
             }),
             workspaces: None,
             ci: None,
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
             cube: None,
-            runtime: None,
             formatters: None,
+            runtime: None,
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -961,8 +937,8 @@ mod tests {
             tasks: std::collections::HashMap::new(),
             name: "test".to_string(),
             cube: None,
-            runtime: None,
             formatters: None,
+            runtime: None,
         };
 
         let hooks = extract_hooks_from_config(&config);

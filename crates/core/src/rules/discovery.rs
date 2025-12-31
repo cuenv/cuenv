@@ -85,7 +85,7 @@ impl RulesDiscovery {
                     let path = entry.path();
                     // Look for .rules.cue files
                     if path.file_name() == Some(".rules.cue".as_ref()) {
-                        match self.load_rules(path, eval_fn) {
+                        match Self::load_rules(path, eval_fn) {
                             Ok(rules) => self.discovered.push(rules),
                             Err(e) => {
                                 tracing::warn!(
@@ -123,7 +123,6 @@ impl RulesDiscovery {
 
     /// Load a single .rules.cue configuration.
     fn load_rules(
-        &self,
         file_path: &Path,
         eval_fn: &RulesEvalFn,
     ) -> std::result::Result<DiscoveredRules, RulesDiscoveryError> {
