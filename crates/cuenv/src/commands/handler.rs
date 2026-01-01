@@ -535,6 +535,8 @@ pub struct SyncHandler {
     pub show_diff: bool,
     /// CI provider filter (github, buildkite).
     pub ci_provider: Option<String>,
+    /// Tools to force re-resolution for (lock-specific).
+    pub update_tools: Option<Vec<String>>,
 }
 
 #[async_trait]
@@ -551,6 +553,7 @@ impl CommandHandler for SyncHandler {
             mode: self.mode.clone(),
             show_diff: self.show_diff,
             ci_provider: self.ci_provider.clone(),
+            update_tools: self.update_tools.clone(),
         };
 
         let path = std::path::Path::new(&self.path);

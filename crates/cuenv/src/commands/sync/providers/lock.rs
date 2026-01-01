@@ -7,9 +7,11 @@
 //! (GitHub releases, Nix packages).
 
 use async_trait::async_trait;
+use clap::{Arg, Command};
 use cuenv_core::Result;
 use cuenv_core::lockfile::{
-    ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedToolPlatform, Lockfile, PlatformData,
+    ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedTool, LockedToolPlatform, Lockfile,
+    PlatformData,
 };
 use cuenv_core::manifest::{Base, GitHubProviderConfig, Project, Runtime, SourceConfig, ToolSpec};
 use cuenv_core::tools::{Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolSource};
@@ -56,6 +58,49 @@ impl SyncProvider for LockSyncProvider {
         false
     }
 
+    fn build_command(&self) -> Command {
+        self.default_command().arg(
+            Arg::new("update")
+                .short('u')
+                .long("update")
+                .help("Force re-resolution of tools, ignoring cached lockfile resolutions. Optionally specify tool names to update only those tools.")
+                .num_args(0..)
+                .value_name("TOOLS")
+                .action(clap::ArgAction::Append),
+        )
+    }
+
+    fn parse_args(&self, matches: &clap::ArgMatches) -> SyncOptions {
+        let mode = if matches.get_flag("dry-run") {
+            SyncMode::DryRun
+        } else if matches.get_flag("check") {
+            SyncMode::Check
+        } else {
+            SyncMode::Write
+        };
+
+        // Parse -u/--update flag
+        // - Not present: None (use cache)
+        // - Present with no args: Some(vec![]) (update all)
+        // - Present with args: Some(vec!["tool1", "tool2"]) (update specific tools)
+        let update_tools = if matches.contains_id("update") {
+            let tools: Vec<String> = matches
+                .get_many::<String>("update")
+                .map(|vals| vals.cloned().collect())
+                .unwrap_or_default();
+            Some(tools)
+        } else {
+            None
+        };
+
+        SyncOptions {
+            mode,
+            show_diff: matches.get_flag("diff"),
+            ci_provider: matches.get_one::<String>("provider").cloned(),
+            update_tools,
+        }
+    }
+
     async fn sync_path(
         &self,
         path: &Path,
@@ -63,8 +108,7 @@ impl SyncProvider for LockSyncProvider {
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let check = options.mode == SyncMode::Check;
-        let output = execute_lock_sync(path, package, check, executor).await?;
+        let output = execute_lock_sync(path, package, options, executor).await?;
         Ok(SyncResult::success(output))
     }
 
@@ -76,8 +120,7 @@ impl SyncProvider for LockSyncProvider {
     ) -> Result<SyncResult> {
         // For lock, workspace sync is the same as path sync at current dir
         // since the lockfile is at module root and aggregates all projects
-        let check = options.mode == SyncMode::Check;
-        let output = execute_lock_sync(Path::new("."), package, check, executor).await?;
+        let output = execute_lock_sync(Path::new("."), package, options, executor).await?;
         Ok(SyncResult::success(output))
     }
 }
@@ -94,6 +137,50 @@ struct CollectedTool {
 
 /// Key type for tool deduplication: (name, version, source_hash).
 type ToolIdentityKey = (String, String, String);
+
+/// Check if a tool should be force-updated based on the update_tools option.
+///
+/// Returns true if the tool should be re-resolved from the provider,
+/// false if it should use the cached lockfile resolution.
+fn should_update_tool(tool_name: &str, update_tools: Option<&Vec<String>>) -> bool {
+    match update_tools {
+        None => false,                                        // No -u flag: use cache
+        Some(tools) if tools.is_empty() => true,              // -u alone: update all
+        Some(tools) => tools.iter().any(|t| t == tool_name),  // -u <names>: update if listed
+    }
+}
+
+/// Get a valid cached resolution from the lockfile if it's still valid.
+///
+/// Returns the cached platform resolution if:
+/// 1. The locked version matches the requested version
+/// 2. The locked platform exists
+/// 3. The locked source configuration matches the resolved manifest source
+///
+/// Returns `None` if the cache is stale and the tool needs to be re-resolved.
+fn get_valid_cached_resolution<'a>(
+    locked_tool: &'a LockedTool,
+    manifest_version: &str,
+    platform_str: &str,
+    resolved_source_config: &serde_json::Value,
+) -> Option<&'a LockedToolPlatform> {
+    // Check version match
+    if locked_tool.version != manifest_version {
+        return None;
+    }
+
+    // Check platform exists
+    let locked_platform = locked_tool.platforms.get(platform_str)?;
+
+    // Compare source configurations
+    // The lockfile stores the resolved source (expanded templates), and we compare
+    // against the newly resolved source config to detect any changes.
+    if locked_platform.source == *resolved_source_config {
+        Some(locked_platform)
+    } else {
+        None
+    }
+}
 
 /// Create a unique identity key for tool deduplication.
 ///
@@ -115,12 +202,17 @@ fn tool_identity_key(
 ///
 /// For Tools runtime, uses ToolProvider to resolve each tool from
 /// GitHub releases or Nix packages.
+///
+/// If the lockfile already contains valid resolutions for tools (same version
+/// and source config), those are reused without contacting the provider,
+/// unless `-u/--update` is specified.
 async fn execute_lock_sync(
     path: &Path,
     _package: &str,
-    check: bool,
+    options: &SyncOptions,
     executor: &CommandExecutor,
 ) -> Result<String> {
+    let check = options.mode == SyncMode::Check;
     // Collect all OCI artifacts and tools from projects
     // Note: We collect all data before async operations to avoid holding
     // the module guard across await points (MutexGuard is not Send).
@@ -264,6 +356,14 @@ async fn execute_lock_sync(
     };
     // Module guard is now dropped, we can safely use async operations
 
+    // Load existing lockfile for cache lookup (unless in check mode or forcing update)
+    let existing_lockfile = if check {
+        // In check mode, we'll load it later for comparison
+        None
+    } else {
+        Lockfile::load(&lockfile_path)?
+    };
+
     // Resolve GitHub token if configured
     let github_token = if let Some(ref cfg) = github_config {
         if let Some(ref secret) = cfg.token {
@@ -371,6 +471,39 @@ async fn execute_lock_sync(
                 let (provider_name, _tool_source, config) =
                     source_config_to_tool_source(&tool.name, &tool.version, &source_config);
 
+                // Check if we should use cached resolution from existing lockfile
+                let force_update = should_update_tool(&tool.name, options.update_tools.as_ref());
+
+                if !force_update
+                    && let Some(ref existing) = existing_lockfile
+                    && let Some(locked_tool) = existing.find_tool(&tool.name)
+                    && let Some(locked_platform) =
+                        get_valid_cached_resolution(locked_tool, &tool.version, platform_str, &config)
+                {
+                    // Reuse cached resolution - skip provider call
+                    debug!(
+                        tool = %tool.name,
+                        %platform_str,
+                        "Using cached resolution from lockfile"
+                    );
+
+                    lockfile
+                        .upsert_tool_platform(
+                            &tool.name,
+                            &locked_tool.version,
+                            platform_str,
+                            locked_platform.clone(),
+                        )
+                        .map_err(|e| {
+                            cuenv_core::Error::configuration(format!(
+                                "Failed to add tool '{}' to lockfile: {}",
+                                tool.name, e
+                            ))
+                        })?;
+                    continue;
+                }
+
+                // No valid cache or force update - resolve from provider
                 // Get the provider
                 let Some(provider) = registry.get(&provider_name) else {
                     return Err(cuenv_core::Error::configuration(format!(
@@ -378,6 +511,13 @@ async fn execute_lock_sync(
                         provider_name, tool.name
                     )));
                 };
+
+                info!(
+                    tool = %tool.name,
+                    %platform_str,
+                    provider = %provider_name,
+                    "Resolving tool from provider"
+                );
 
                 // Resolve the tool (pass GitHub token for authenticated API access)
                 let resolved = provider
