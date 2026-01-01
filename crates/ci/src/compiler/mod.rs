@@ -3,10 +3,11 @@
 //! Transforms a cuenv `Project` with tasks into an intermediate representation
 //! suitable for emitting orchestrator-native CI configurations.
 //!
-//! ## Stage Contributors
+//! ## Contributors
 //!
-//! The compiler applies stage contributors (Nix, 1Password, Cachix) during
-//! compilation to inject setup/teardown tasks into the IR stages.
+//! Contributors are defined in CUE (see `contrib/contributors/`). The compiler
+//! evaluates the `ci.contributors` array and injects active contributors'
+//! tasks into the appropriate build phases.
 
 // IR compilation involves complex transformations with many fields
 #![allow(clippy::too_many_lines)]
@@ -19,8 +20,10 @@ use crate::ir::{
     ManualTriggerConfig, OutputDeclaration, OutputType, PurityMode, Runtime, SecretConfig,
     StageTask, Task as IrTask, TriggerCondition, WorkflowDispatchInputDef,
 };
-use crate::stages;
-use cuenv_core::ci::{CI, Contributor, ManualTrigger, Pipeline, PipelineTask, SetupStep};
+use cuenv_core::ci::{
+    BuildPhase as CueBuildPhase, CI, Contributor, ManualTrigger, PhaseTask, Pipeline, PipelineTask,
+    SecretRef,
+};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
 use digest::DigestBuilder;
@@ -54,12 +57,6 @@ pub struct Compiler {
     options: CompilerOptions,
 }
 
-/// Factory function type for creating stage contributors.
-///
-/// Used to defer contributor creation until compilation time,
-/// allowing `CompilerOptions` to remain `Clone`.
-pub type ContributorFactory = fn() -> Vec<Box<dyn crate::StageContributor>>;
-
 /// Compiler configuration options
 #[derive(Clone, Default)]
 pub struct CompilerOptions {
@@ -85,15 +82,9 @@ pub struct CompilerOptions {
     /// Pipeline being compiled (for environment-aware compilation)
     ///
     /// When set, the compiler will set `ir.pipeline.environment` from
-    /// the pipeline's environment, enabling contributors to self-detect
-    /// their requirements.
+    /// the pipeline's environment, enabling CUE stage contributors to
+    /// evaluate their activation conditions.
     pub pipeline: Option<Pipeline>,
-
-    /// Factory function for creating stage contributors.
-    ///
-    /// If None, uses `stages::default_contributors()`.
-    /// Set this to include provider-specific contributors (e.g., Cachix for GitHub).
-    pub contributor_factory: Option<ContributorFactory>,
 
     /// Enable CI mode for orchestrator artifact handling.
     ///
@@ -125,10 +116,6 @@ impl std::fmt::Debug for CompilerOptions {
             .field("project_root", &self.project_root)
             .field("input_overrides", &self.input_overrides)
             .field("pipeline", &self.pipeline)
-            .field(
-                "contributor_factory",
-                &self.contributor_factory.map(|_| "Some(<fn>)"),
-            )
             .field("ci_mode", &self.ci_mode)
             .field("module_root", &self.module_root)
             .field("project_path", &self.project_path)
@@ -339,34 +326,10 @@ impl Compiler {
         // but should use the actual output paths from the upstream tasks)
         Self::fix_artifact_download_paths(&mut ir);
 
-        // Apply stage contributors with fixed-point iteration
-        // Contributors self-detect their requirements and report modifications.
-        // Loop continues until no contributor reports changes (stable state).
-        let contributors = self
-            .options
-            .contributor_factory
-            .map_or_else(stages::default_contributors, |factory| factory());
-        loop {
-            let mut any_modified = false;
-            for contributor in &contributors {
-                if contributor.is_active(&ir, &self.project) {
-                    let (contributions, modified) = contributor.contribute(&ir, &self.project);
-                    for (stage, task) in contributions {
-                        ir.stages.add(stage, task);
-                    }
-                    any_modified |= modified;
-                }
-            }
-            ir.stages.sort_by_dependencies();
-            if !any_modified {
-                break;
-            }
-        }
+        // Apply CUE-defined contributors
+        self.apply_cue_contributors(&mut ir);
 
-        // Apply CUE-defined setup steps and contributors
-        self.apply_cue_setup_steps(&mut ir);
-
-        // Re-sort by dependencies after adding CUE setup steps
+        // Sort stages by dependencies
         ir.stages.sort_by_dependencies();
 
         // Validate the IR
@@ -738,64 +701,325 @@ impl Compiler {
         }
     }
 
-    /// Apply CUE-defined setup steps and contributors to the IR
+    /// Apply CUE-defined contributors to the IR
     ///
-    /// This processes:
-    /// 1. Inline setup steps defined on the pipeline
-    /// 2. CUE contributors whose `when` condition matches pipeline tasks
-    fn apply_cue_setup_steps(&self, ir: &mut IntermediateRepresentation) {
-        // 1. Add pipeline-level setup steps
-        if let Some(ref pipeline) = self.options.pipeline {
-            for step in &pipeline.setup {
-                let stage_task = Self::setup_step_to_stage_task(step, "pipeline");
-                ir.stages.add(BuildStage::Setup, stage_task);
+    /// This evaluates the `ci.contributors` array from CUE and converts
+    /// active contributors' tasks to IR phase tasks.
+    fn apply_cue_contributors(&self, ir: &mut IntermediateRepresentation) {
+        let Some(ref ci_config) = self.project.ci else {
+            return;
+        };
+
+        for contributor in &ci_config.contributors {
+            // Check if this contributor is active
+            if !self.cue_contributor_is_active(contributor, ir) {
+                continue;
             }
-        }
 
-        // 2. Apply CUE contributors (sorted by name for deterministic order)
-        if let Some(ref ci_config) = self.project.ci {
-            // Sort contributor names for deterministic iteration order
-            let mut contributor_names: Vec<_> = ci_config.contributors.keys().collect();
-            contributor_names.sort();
+            // Already contributed check (idempotency)
+            let contributed_ids: HashSet<String> = ir
+                .stages
+                .bootstrap
+                .iter()
+                .chain(ir.stages.setup.iter())
+                .chain(ir.stages.success.iter())
+                .chain(ir.stages.failure.iter())
+                .map(|t| t.id.clone())
+                .collect();
 
-            for name in contributor_names {
-                let contributor = &ci_config.contributors[name];
-                if self.contributor_matches(contributor) {
-                    for step in &contributor.setup {
-                        let stage_task = Self::setup_step_to_stage_task(step, name);
-                        ir.stages.add(BuildStage::Setup, stage_task);
-                    }
+            // Add contributor's tasks to appropriate phases
+            for phase_task in &contributor.tasks {
+                // Skip if already contributed
+                if contributed_ids.contains(&phase_task.id) {
+                    continue;
                 }
+
+                let stage_task = Self::phase_task_to_ir(phase_task, &contributor.id);
+                let stage = Self::cue_build_phase_to_ir(phase_task.phase);
+                ir.stages.add(stage, stage_task);
             }
         }
     }
 
-    /// Convert a CUE SetupStep to an IR StageTask
-    fn setup_step_to_stage_task(step: &SetupStep, provider: &str) -> StageTask {
-        // Build command array from command+args or script
-        let (command, shell) = if let Some(ref cmd) = step.command {
-            let mut cmd_vec = vec![cmd.clone()];
-            cmd_vec.extend(step.args.clone());
-            (cmd_vec, false)
-        } else if let Some(ref script) = step.script {
-            (
-                vec!["/bin/sh".to_string(), "-c".to_string(), script.clone()],
-                true,
-            )
+    /// Check if a CUE contributor is active
+    fn cue_contributor_is_active(
+        &self,
+        contributor: &Contributor,
+        ir: &IntermediateRepresentation,
+    ) -> bool {
+        let Some(ref condition) = contributor.when else {
+            // No condition = always active
+            return true;
+        };
+
+        // Check always condition - if explicitly set, use its value directly
+        if let Some(always_val) = condition.always {
+            return always_val;
+        }
+
+        // Check runtime type
+        if !condition.runtime_type.is_empty() {
+            if let Some(ref runtime) = self.project.runtime {
+                let runtime_type = Self::get_runtime_type(runtime);
+                if !condition.runtime_type.iter().any(|t| t == runtime_type) {
+                    return false;
+                }
+            } else {
+                // No runtime set but runtime type condition exists
+                return false;
+            }
+        }
+
+        // Check cuenv source mode
+        if !condition.cuenv_source.is_empty() {
+            let source = self
+                .project
+                .config
+                .as_ref()
+                .and_then(|c| c.ci.as_ref())
+                .and_then(|ci| ci.cuenv.as_ref())
+                .map_or("release", |c| c.source.as_str());
+            if !condition.cuenv_source.iter().any(|s| s == source) {
+                return false;
+            }
+        }
+
+        // Check secrets provider
+        if !condition.secrets_provider.is_empty()
+            && !self.has_secrets_provider(&condition.secrets_provider, ir)
+        {
+            return false;
+        }
+
+        // Check provider config
+        if !condition.provider_config.is_empty()
+            && !self.has_provider_config(&condition.provider_config)
+        {
+            return false;
+        }
+
+        // Check task command
+        if !condition.task_command.is_empty()
+            && !Self::has_task_command(&condition.task_command, ir)
+        {
+            return false;
+        }
+
+        // Check task labels
+        if !condition.task_labels.is_empty() && !self.has_task_labels(&condition.task_labels) {
+            return false;
+        }
+
+        // Check environment
+        if !condition.environment.is_empty() {
+            let Some(ref pipeline) = self.options.pipeline else {
+                return false;
+            };
+            let Some(ref env_name) = pipeline.environment else {
+                return false;
+            };
+            if !condition.environment.iter().any(|e| e == env_name) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Get the runtime type string for condition matching
+    fn get_runtime_type(runtime: &cuenv_core::manifest::Runtime) -> &'static str {
+        match runtime {
+            cuenv_core::manifest::Runtime::Nix(_) => "nix",
+            cuenv_core::manifest::Runtime::Devenv(_) => "devenv",
+            cuenv_core::manifest::Runtime::Container(_) => "container",
+            cuenv_core::manifest::Runtime::Dagger(_) => "dagger",
+            cuenv_core::manifest::Runtime::Oci(_) => "oci",
+            cuenv_core::manifest::Runtime::Tools(_) => "tools",
+        }
+    }
+
+    /// Check if the pipeline environment uses any of the specified secrets providers
+    fn has_secrets_provider(&self, providers: &[String], ir: &IntermediateRepresentation) -> bool {
+        let Some(ref env_name) = ir.pipeline.environment else {
+            return false;
+        };
+        let Some(ref env) = self.project.env else {
+            return false;
+        };
+
+        // Check for provider references in the environment
+        let env_vars = env.for_environment(env_name);
+        for value in env_vars.values() {
+            // Check for 1Password references
+            if providers.iter().any(|p| p == "onepassword") {
+                match value {
+                    cuenv_core::environment::EnvValue::String(s) if s.starts_with("op://") => {
+                        return true;
+                    }
+                    cuenv_core::environment::EnvValue::Secret(secret)
+                        if secret.resolver == "onepassword" =>
+                    {
+                        return true;
+                    }
+                    cuenv_core::environment::EnvValue::WithPolicies(wp) => match &wp.value {
+                        cuenv_core::environment::EnvValueSimple::Secret(secret)
+                            if secret.resolver == "onepassword" =>
+                        {
+                            return true;
+                        }
+                        cuenv_core::environment::EnvValueSimple::String(s)
+                            if s.starts_with("op://") =>
+                        {
+                            return true;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            // Add other provider checks as needed (aws, vault, etc.)
+        }
+        false
+    }
+
+    /// Check if any of the specified provider config paths are set
+    fn has_provider_config(&self, paths: &[String]) -> bool {
+        let Some(ref ci) = self.project.ci else {
+            return false;
+        };
+        let Some(ref provider) = ci.provider else {
+            return false;
+        };
+
+        for path in paths {
+            let parts: Vec<&str> = path.split('.').collect();
+            if parts.is_empty() {
+                continue;
+            }
+
+            // Get the top-level provider config (e.g., "github")
+            let Some(config) = provider.get(parts[0]) else {
+                continue;
+            };
+
+            // Navigate the path
+            let mut current = config;
+            let mut found = true;
+            for part in &parts[1..] {
+                match current.get(*part) {
+                    Some(value) if !value.is_null() => {
+                        current = value;
+                    }
+                    _ => {
+                        found = false;
+                        break;
+                    }
+                }
+            }
+
+            if found {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if any pipeline task uses the specified command
+    fn has_task_command(commands: &[String], ir: &IntermediateRepresentation) -> bool {
+        // Check IR tasks for command matches
+        for task in &ir.tasks {
+            // Only check tasks in the pipeline
+            if !ir.pipeline.pipeline_tasks.is_empty()
+                && !ir.pipeline.pipeline_tasks.contains(&task.id)
+            {
+                continue;
+            }
+
+            // Check if command starts with the specified commands
+            if task.command.len() >= commands.len() {
+                let matches = commands
+                    .iter()
+                    .zip(task.command.iter())
+                    .all(|(a, b)| a == b);
+                if matches {
+                    return true;
+                }
+            }
+
+            // Also check shell commands for the pattern
+            if task.shell && task.command.len() == 1 {
+                let cmd_str = commands.join(" ");
+                if task.command[0].contains(&cmd_str) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Check if any pipeline task has the specified labels
+    fn has_task_labels(&self, labels: &[String]) -> bool {
+        let Some(ref pipeline) = self.options.pipeline else {
+            return false;
+        };
+
+        for pipeline_task in &pipeline.tasks {
+            let task_name = pipeline_task.task_name();
+            if let Some(task) = self.find_task(task_name) {
+                let has_all = labels.iter().all(|l| task.labels.contains(l));
+                if has_all {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Convert a CUE BuildPhase to IR BuildStage
+    fn cue_build_phase_to_ir(phase: CueBuildPhase) -> BuildStage {
+        match phase {
+            CueBuildPhase::Bootstrap => BuildStage::Bootstrap,
+            CueBuildPhase::Setup => BuildStage::Setup,
+            CueBuildPhase::Success => BuildStage::Success,
+            CueBuildPhase::Failure => BuildStage::Failure,
+        }
+    }
+
+    /// Convert a CUE PhaseTask to an IR StageTask
+    fn phase_task_to_ir(phase_task: &PhaseTask, provider: &str) -> StageTask {
+        // Build command array
+        let (command, shell) = if let Some(ref cmd) = phase_task.command {
+            (vec![cmd.clone()], phase_task.shell)
+        } else if let Some(ref script) = phase_task.script {
+            (vec![script.clone()], true)
         } else {
-            // Empty command - shouldn't happen with valid CUE
             (vec![], false)
         };
 
-        // Convert env values (filter to strings only)
-        let env: BTreeMap<String, String> = step
-            .env
+        // Convert secrets
+        let secrets: BTreeMap<String, SecretConfig> = phase_task
+            .secrets
             .iter()
-            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .map(|(k, v)| {
+                let config = match v {
+                    SecretRef::Simple(s) => SecretConfig {
+                        source: s.clone(),
+                        cache_key: false,
+                    },
+                    SecretRef::Detailed(d) => SecretConfig {
+                        source: d.source.clone(),
+                        cache_key: d.cache_key,
+                    },
+                };
+                (k.clone(), config)
+            })
             .collect();
 
-        // Convert provider-specific overrides to provider_hints
-        let provider_hints = step.provider.as_ref().and_then(|p| {
+        // Convert provider hints
+        let provider_hints = phase_task.provider.as_ref().and_then(|p| {
             p.github.as_ref().map(|gh| {
                 let mut github_action = serde_json::Map::new();
                 github_action.insert(
@@ -824,89 +1048,21 @@ impl Compiler {
         });
 
         StageTask {
-            id: format!("cue-setup-{}", step.name.to_lowercase().replace(' ', "-")),
-            provider: format!("cue:{provider}"),
-            label: Some(step.name.clone()),
+            id: phase_task.id.clone(),
+            provider: provider.to_string(),
+            label: phase_task.label.clone(),
             command,
             shell,
-            env,
-            secrets: BTreeMap::new(),
-            depends_on: vec![],
-            priority: 50, // CUE setup steps run after Rust contributors (which use 10-30)
+            env: phase_task
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            secrets,
+            depends_on: phase_task.depends_on.clone(),
+            priority: phase_task.priority,
             provider_hints,
         }
-    }
-
-    /// Check if a CUE contributor's `when` condition matches any pipeline task
-    fn contributor_matches(&self, contributor: &Contributor) -> bool {
-        let Some(ref when) = contributor.when else {
-            // No `when` condition = always active
-            return true;
-        };
-
-        // Get the pipeline tasks we're checking against
-        let Some(ref pipeline) = self.options.pipeline else {
-            return false;
-        };
-
-        // Check if any pipeline task matches the contributor's conditions
-        for pipeline_task in &pipeline.tasks {
-            let task_name = pipeline_task.task_name();
-            if let Some(task) = self.find_task(task_name)
-                && Self::task_matches_condition(task, when)
-            {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Check if a task matches a TaskMatcher condition
-    fn task_matches_condition(task: &Task, condition: &cuenv_core::manifest::TaskMatcher) -> bool {
-        // Check labels (all must match)
-        if let Some(ref required_labels) = condition.labels {
-            let has_all_labels = required_labels
-                .iter()
-                .all(|label| task.labels.contains(label));
-            if !has_all_labels {
-                return false;
-            }
-        }
-
-        // Check command
-        if let Some(ref required_cmd) = condition.command
-            && &task.command != required_cmd
-        {
-            return false;
-        }
-
-        // Check args patterns
-        if let Some(ref arg_matchers) = condition.args {
-            for arg_cond in arg_matchers {
-                let is_match = if let Some(ref contains) = arg_cond.contains {
-                    task.args.iter().any(|arg| arg.contains(contains))
-                } else if let Some(ref pattern) = arg_cond.matches {
-                    // Regex pattern matching
-                    if let Ok(re) = regex::Regex::new(pattern) {
-                        task.args.iter().any(|arg| re.is_match(arg))
-                    } else {
-                        false
-                    }
-                } else {
-                    true // No conditions = matches
-                };
-
-                if !is_match {
-                    return false;
-                }
-            }
-        }
-
-        // Note: workspaces matching would require additional context
-        // For now, we only match on labels, command, and args
-
-        true
     }
 }
 
@@ -1236,7 +1392,6 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
-            setup: vec![],
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1310,7 +1465,6 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
-            setup: vec![],
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1369,7 +1523,6 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
-            setup: vec![],
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1425,7 +1578,6 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
-            setup: vec![],
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1463,5 +1615,376 @@ mod tests {
             "Root project with no inputs should fallback to **. Paths: {:?}",
             trigger.paths
         );
+    }
+
+    // =========================================================================
+    // Contributor Activation Tests
+    // =========================================================================
+
+    use crate::ir::StageConfiguration;
+    use cuenv_core::ci::ActivationCondition;
+    use std::collections::HashMap;
+
+    /// Helper to create a minimal Contributor for testing
+    fn test_contributor(id: &str, when: Option<ActivationCondition>) -> Contributor {
+        Contributor {
+            id: id.to_string(),
+            when,
+            tasks: vec![],
+        }
+    }
+
+    /// Helper to create a minimal IR for testing
+    fn test_ir() -> IntermediateRepresentation {
+        IntermediateRepresentation {
+            version: "1.4".to_string(),
+            pipeline: crate::ir::PipelineMetadata {
+                name: "test".to_string(),
+                environment: None,
+                requires_onepassword: false,
+                project_name: None,
+                trigger: None,
+                pipeline_tasks: vec![],
+            },
+            runtimes: vec![],
+            stages: StageConfiguration::default(),
+            tasks: vec![],
+        }
+    }
+
+    #[test]
+    fn test_contributor_no_condition_always_active() {
+        let project = Project::new("test");
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // No `when` condition = always active
+        let contributor = test_contributor("test", None);
+        assert!(compiler.cue_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_always_true_active() {
+        let project = Project::new("test");
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        let contributor = test_contributor(
+            "test",
+            Some(ActivationCondition {
+                always: Some(true),
+                ..Default::default()
+            }),
+        );
+        assert!(compiler.cue_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_always_false_inactive() {
+        let project = Project::new("test");
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // always: false explicitly disables the contributor
+        let contributor = test_contributor(
+            "test",
+            Some(ActivationCondition {
+                always: Some(false),
+                ..Default::default()
+            }),
+        );
+        assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_runtime_type_matches_nix() {
+        use cuenv_core::manifest::{NixRuntime, Runtime};
+
+        let mut project = Project::new("test");
+        project.runtime = Some(Runtime::Nix(NixRuntime::default()));
+
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        let contributor = test_contributor(
+            "nix",
+            Some(ActivationCondition {
+                runtime_type: vec!["nix".to_string()],
+                ..Default::default()
+            }),
+        );
+        assert!(compiler.cue_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_runtime_type_no_match() {
+        use cuenv_core::manifest::{NixRuntime, Runtime};
+
+        let mut project = Project::new("test");
+        project.runtime = Some(Runtime::Nix(NixRuntime::default()));
+
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // Project has Nix runtime, but condition requires "devenv"
+        let contributor = test_contributor(
+            "devenv-only",
+            Some(ActivationCondition {
+                runtime_type: vec!["devenv".to_string()],
+                ..Default::default()
+            }),
+        );
+        assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_runtime_type_no_runtime_set() {
+        let project = Project::new("test");
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // No runtime set but condition requires runtime type
+        let contributor = test_contributor(
+            "needs-nix",
+            Some(ActivationCondition {
+                runtime_type: vec!["nix".to_string()],
+                ..Default::default()
+            }),
+        );
+        assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_cuenv_source_matches() {
+        use cuenv_core::ci::CI;
+        use cuenv_core::config::{CIConfig, CuenvConfig, CuenvSource};
+
+        let mut project = Project::new("test");
+        project.config = Some(cuenv_core::config::Config::default());
+        project.ci = Some(CI {
+            pipelines: vec![],
+            provider: None,
+            contributors: vec![],
+        });
+        // Set cuenv source to "git"
+        if let Some(ref mut config) = project.config {
+            config.ci = Some(CIConfig {
+                cuenv: Some(CuenvConfig {
+                    source: CuenvSource::Git,
+                    ..Default::default()
+                }),
+            });
+        }
+
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        let contributor = test_contributor(
+            "cuenv-git",
+            Some(ActivationCondition {
+                cuenv_source: vec!["git".to_string()],
+                ..Default::default()
+            }),
+        );
+        assert!(compiler.cue_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_multiple_conditions_and_logic() {
+        use cuenv_core::manifest::{NixRuntime, Runtime};
+
+        let mut project = Project::new("test");
+        project.runtime = Some(Runtime::Nix(NixRuntime::default()));
+
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // Condition requires nix runtime AND devenv source (which doesn't match)
+        let contributor = test_contributor(
+            "multi-condition",
+            Some(ActivationCondition {
+                runtime_type: vec!["nix".to_string()],
+                cuenv_source: vec!["nix".to_string()], // default is "release", not "nix"
+                ..Default::default()
+            }),
+        );
+        // Runtime matches but cuenv_source doesn't (default is "release")
+        assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
+    }
+
+    // =========================================================================
+    // Phase Task Conversion Tests
+    // =========================================================================
+
+    #[test]
+    fn test_phase_task_to_ir_command() {
+        use cuenv_core::ci::BuildPhase;
+
+        let phase_task = PhaseTask {
+            id: "test-task".to_string(),
+            phase: BuildPhase::Setup,
+            label: Some("Test Task".to_string()),
+            command: Some("echo hello".to_string()),
+            script: None,
+            shell: false,
+            env: HashMap::default(),
+            secrets: HashMap::default(),
+            depends_on: vec![],
+            priority: 10,
+            provider: None,
+        };
+
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+
+        assert_eq!(ir_task.id, "test-task");
+        assert_eq!(ir_task.command, vec!["echo hello"]);
+        assert!(!ir_task.shell);
+        assert_eq!(ir_task.priority, 10);
+    }
+
+    #[test]
+    fn test_phase_task_to_ir_script() {
+        use cuenv_core::ci::BuildPhase;
+
+        let phase_task = PhaseTask {
+            id: "script-task".to_string(),
+            phase: BuildPhase::Bootstrap,
+            label: None,
+            command: None,
+            script: Some("echo line1\necho line2".to_string()),
+            shell: true,
+            env: HashMap::default(),
+            secrets: HashMap::default(),
+            depends_on: vec!["other".to_string()],
+            priority: 5,
+            provider: None,
+        };
+
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+
+        assert_eq!(ir_task.id, "script-task");
+        assert_eq!(ir_task.command, vec!["echo line1\necho line2"]);
+        assert!(ir_task.shell);
+        assert_eq!(ir_task.depends_on, vec!["other"]);
+        assert_eq!(ir_task.priority, 5);
+    }
+
+    #[test]
+    fn test_phase_task_to_ir_github_action() {
+        use cuenv_core::ci::{BuildPhase, GitHubActionConfig, PhaseTaskProviderConfig};
+
+        let mut inputs = std::collections::HashMap::new();
+        inputs.insert(
+            "extra-conf".to_string(),
+            serde_json::Value::String("accept-flake-config = true".to_string()),
+        );
+
+        let phase_task = PhaseTask {
+            id: "nix-install".to_string(),
+            phase: BuildPhase::Bootstrap,
+            label: Some("Install Nix".to_string()),
+            command: None,
+            script: None,
+            shell: false,
+            env: HashMap::default(),
+            secrets: HashMap::default(),
+            depends_on: vec![],
+            priority: 0,
+            provider: Some(PhaseTaskProviderConfig {
+                github: Some(GitHubActionConfig {
+                    uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
+                    inputs,
+                }),
+            }),
+        };
+
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+
+        assert_eq!(ir_task.id, "nix-install");
+        assert!(ir_task.command.is_empty()); // No command, uses action
+        assert!(ir_task.provider_hints.is_some());
+
+        // Verify the GitHub action is in provider_hints
+        let hints = ir_task.provider_hints.as_ref().unwrap();
+        let github_action = hints.get("github_action").unwrap();
+        assert_eq!(
+            github_action.get("uses").and_then(|v| v.as_str()),
+            Some("DeterminateSystems/nix-installer-action@v16")
+        );
+    }
+
+    #[test]
+    fn test_phase_task_to_ir_secrets() {
+        use cuenv_core::ci::{BuildPhase, SecretRefConfig};
+
+        let mut secrets = std::collections::HashMap::new();
+        secrets.insert(
+            "SIMPLE_SECRET".to_string(),
+            SecretRef::Simple("SECRET_NAME".to_string()),
+        );
+        secrets.insert(
+            "DETAILED_SECRET".to_string(),
+            SecretRef::Detailed(SecretRefConfig {
+                source: "DETAILED_SOURCE".to_string(),
+                cache_key: true,
+            }),
+        );
+
+        let phase_task = PhaseTask {
+            id: "secrets-task".to_string(),
+            phase: BuildPhase::Setup,
+            label: None,
+            command: Some("echo test".to_string()),
+            script: None,
+            shell: false,
+            env: HashMap::default(),
+            secrets,
+            depends_on: vec![],
+            priority: 10,
+            provider: None,
+        };
+
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+
+        assert_eq!(ir_task.secrets.len(), 2);
+
+        // Check simple secret conversion
+        let simple = ir_task.secrets.get("SIMPLE_SECRET").unwrap();
+        assert_eq!(simple.source, "SECRET_NAME");
+        assert!(!simple.cache_key);
+
+        // Check detailed secret conversion
+        let detailed = ir_task.secrets.get("DETAILED_SECRET").unwrap();
+        assert_eq!(detailed.source, "DETAILED_SOURCE");
+        assert!(detailed.cache_key);
+    }
+
+    #[test]
+    fn test_phase_task_to_ir_env_vars() {
+        use cuenv_core::ci::BuildPhase;
+
+        let mut env = std::collections::HashMap::new();
+        env.insert("VAR1".to_string(), "value1".to_string());
+        env.insert("VAR2".to_string(), "value2".to_string());
+
+        let phase_task = PhaseTask {
+            id: "env-task".to_string(),
+            phase: BuildPhase::Setup,
+            label: None,
+            command: Some("printenv".to_string()),
+            script: None,
+            shell: false,
+            env,
+            secrets: HashMap::default(),
+            depends_on: vec![],
+            priority: 10,
+            provider: None,
+        };
+
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+
+        assert_eq!(ir_task.env.len(), 2);
+        assert_eq!(ir_task.env.get("VAR1"), Some(&"value1".to_string()));
+        assert_eq!(ir_task.env.get("VAR2"), Some(&"value2".to_string()));
     }
 }

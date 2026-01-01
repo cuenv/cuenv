@@ -664,41 +664,41 @@ source: schema.#Rustup & {
 
 **Fields:**
 
-| Field        | Type          | Required | Default     | Description                                                 |
-| ------------ | ------------- | -------- | ----------- | ----------------------------------------------------------- |
-| `toolchain`  | `string`      | Yes      | -           | Toolchain identifier (e.g., "stable", "1.83.0", "nightly")  |
-| `profile`    | `string`      | No       | `"default"` | Installation profile                                        |
-| `components` | `[...string]` | No       | `[]`        | Additional components to install                            |
-| `targets`    | `[...string]` | No       | `[]`        | Cross-compilation targets                                   |
+| Field        | Type          | Required | Default     | Description                                                |
+| ------------ | ------------- | -------- | ----------- | ---------------------------------------------------------- |
+| `toolchain`  | `string`      | Yes      | -           | Toolchain identifier (e.g., "stable", "1.83.0", "nightly") |
+| `profile`    | `string`      | No       | `"default"` | Installation profile                                       |
+| `components` | `[...string]` | No       | `[]`        | Additional components to install                           |
+| `targets`    | `[...string]` | No       | `[]`        | Cross-compilation targets                                  |
 
 **Profiles:**
 
-| Profile    | Included Components                    |
-| ---------- | -------------------------------------- |
-| `minimal`  | rustc, rust-std, cargo                 |
-| `default`  | minimal + rustfmt, clippy              |
-| `complete` | All available components               |
+| Profile    | Included Components       |
+| ---------- | ------------------------- |
+| `minimal`  | rustc, rust-std, cargo    |
+| `default`  | minimal + rustfmt, clippy |
+| `complete` | All available components  |
 
 **Common Components:**
 
-| Component            | Description                        |
-| -------------------- | ---------------------------------- |
-| `clippy`             | Lint tool                          |
-| `rustfmt`            | Code formatter                     |
-| `rust-src`           | Source code (for IDE support)      |
-| `llvm-tools-preview` | LLVM tools (for code coverage)     |
-| `rust-analyzer`      | LSP server (bundled with toolchain)|
+| Component            | Description                         |
+| -------------------- | ----------------------------------- |
+| `clippy`             | Lint tool                           |
+| `rustfmt`            | Code formatter                      |
+| `rust-src`           | Source code (for IDE support)       |
+| `llvm-tools-preview` | LLVM tools (for code coverage)      |
+| `rust-analyzer`      | LSP server (bundled with toolchain) |
 
 **Common Targets:**
 
-| Target                        | Description       |
-| ----------------------------- | ----------------- |
-| `x86_64-unknown-linux-gnu`    | Linux x86_64      |
-| `aarch64-unknown-linux-gnu`   | Linux ARM64       |
-| `x86_64-apple-darwin`         | macOS x86_64      |
-| `aarch64-apple-darwin`        | macOS ARM64       |
-| `wasm32-unknown-unknown`      | WebAssembly       |
-| `x86_64-pc-windows-msvc`      | Windows x86_64    |
+| Target                      | Description    |
+| --------------------------- | -------------- |
+| `x86_64-unknown-linux-gnu`  | Linux x86_64   |
+| `aarch64-unknown-linux-gnu` | Linux ARM64    |
+| `x86_64-apple-darwin`       | macOS x86_64   |
+| `aarch64-apple-darwin`      | macOS ARM64    |
+| `wasm32-unknown-unknown`    | WebAssembly    |
+| `x86_64-pc-windows-msvc`    | Windows x86_64 |
 
 :::note[Prerequisite]
 Rustup must be installed on the system. Install via: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`

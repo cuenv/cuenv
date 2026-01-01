@@ -126,7 +126,11 @@ impl BuildkiteEmitter {
             label,
             key: Some(task.id.clone()),
             command,
-            env: task.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            env: task
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             agents: None,
             artifact_paths: vec![],
             depends_on,
@@ -171,7 +175,11 @@ impl BuildkiteEmitter {
 
         // Environment variables - secrets are handled by stage tasks
         // Convert from BTreeMap to HashMap for Buildkite schema
-        let env: HashMap<String, String> = task.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let env: HashMap<String, String> = task
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         // Build agent rules from resource tags
         let agents = task

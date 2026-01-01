@@ -85,12 +85,12 @@ pub trait ToolProvider: Send + Sync {
 
 ### Provider Implementations
 
-| Provider     | Source Type  | Prerequisites            | Use Case                            |
-| ------------ | ------------ | ------------------------ | ----------------------------------- |
-| **GitHub**   | `#GitHub`    | None                     | Tools with GitHub Releases          |
-| **OCI**      | `#Oci`       | None                     | Tools distributed as containers     |
-| **Nix**      | `#Nix`       | `nix` CLI                | Complex toolchains                  |
-| **Rustup**   | `#Rustup`    | `rustup` CLI             | Rust toolchains with components     |
+| Provider   | Source Type | Prerequisites | Use Case                        |
+| ---------- | ----------- | ------------- | ------------------------------- |
+| **GitHub** | `#GitHub`   | None          | Tools with GitHub Releases      |
+| **OCI**    | `#Oci`      | None          | Tools distributed as containers |
+| **Nix**    | `#Nix`      | `nix` CLI     | Complex toolchains              |
+| **Rustup** | `#Rustup`   | `rustup` CLI  | Rust toolchains with components |
 
 ### Provider Registry
 
@@ -158,11 +158,11 @@ Override matching follows specificity rules:
 
 GitHub and OCI sources support template variables:
 
-| Variable    | Description      | Example Values         |
-| ----------- | ---------------- | ---------------------- |
-| `{version}` | Tool version     | "1.7.1", "2.62.0"      |
-| `{os}`      | Operating system | "darwin", "linux"      |
-| `{arch}`    | Architecture     | "aarch64", "x86_64"    |
+| Variable    | Description      | Example Values      |
+| ----------- | ---------------- | ------------------- |
+| `{version}` | Tool version     | "1.7.1", "2.62.0"   |
+| `{os}`      | Operating system | "darwin", "linux"   |
+| `{arch}`    | Architecture     | "aarch64", "x86_64" |
 
 ```cue
 source: schema.#GitHub & {

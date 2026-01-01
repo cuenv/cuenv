@@ -403,8 +403,11 @@ impl CIExecutor {
             .iter()
             .map(|(task_id, resolved)| {
                 // Convert HashMap to BTreeMap for deterministic ordering
-                let fingerprints: BTreeMap<String, String> =
-                    resolved.fingerprints().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let fingerprints: BTreeMap<String, String> = resolved
+                    .fingerprints()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
                 (task_id.clone(), fingerprints)
             })
             .collect()

@@ -91,41 +91,92 @@ package schema
 // Pipeline task reference - either a simple task name or a matrix task
 #PipelineTask: string | #MatrixTask
 
-// GitHub Action configuration for setup steps
+// GitHub Action configuration for stage tasks
 #GitHubActionConfig: close({
 	uses!: string        // Action reference (e.g., "Mozilla-Actions/sccache-action@v0.2")
 	with?: [string]: _   // Action inputs
 })
 
-// Provider-specific setup step overrides
-#SetupStepProviderConfig: close({
+// =============================================================================
+// Contributors
+// =============================================================================
+
+// Build phases for contributor-injected tasks
+#BuildPhase: "bootstrap" | "setup" | "success" | "failure"
+
+// Activation predicate for contributors
+// All specified conditions must be true (AND logic)
+#ActivationCondition: close({
+	// Always active (no conditions)
+	always?: bool
+
+	// Runtime type detection (active if project uses any of these runtime types)
+	// Values: "nix", "devenv", "container", "dagger", "oci", "tools"
+	runtimeType?: [...string]
+
+	// Cuenv source mode detection (for cuenv installation strategy)
+	// Values: "git", "nix", "homebrew", "release"
+	cuenvSource?: [...string]
+
+	// Secrets provider detection (active if environment uses any of these providers)
+	// Values: "onepassword", "aws", "vault", "azure", "gcp"
+	secretsProvider?: [...string]
+
+	// Provider configuration detection (active if these config paths are set)
+	// Path format: "github.cachix", "github.trustedPublishing.cratesIo"
+	providerConfig?: [...string]
+
+	// Task command detection (active if any pipeline task uses these commands)
+	// Format: ["gh", "models"] matches tasks with command=["gh", "models", ...]
+	taskCommand?: [...string]
+
+	// Task label detection (active if any pipeline task has these labels)
+	taskLabels?: [...string]
+
+	// Environment name matching (active only in these environments)
+	environment?: [...string]
+})
+
+// Secret reference for phase tasks
+#SecretRef: close({
+	source!:   string            // CI secret name (e.g., "CACHIX_AUTH_TOKEN")
+	cacheKey?: bool | *false     // Include in cache key via salted HMAC
+})
+
+// A task contributed to a build phase
+#PhaseTask: close({
+	id!:       string              // Unique task identifier (e.g., "install-nix")
+	phase!:    #BuildPhase         // Target phase (bootstrap, setup, success, failure)
+	label?:    string              // Human-readable display name
+	command?:  string              // Shell command to execute
+	script?:   string              // Multi-line script (alternative to command)
+	shell?:    bool | *false       // Wrap command in shell
+	env?:      [string]: string    // Environment variables
+	secrets?:  [string]: #SecretRef | string  // Secret references (key=env var name)
+	dependsOn?: [...string]        // Dependencies on other phase tasks
+	priority?: int | *10           // Ordering within phase (lower = earlier)
+
+	// Provider-specific overrides (e.g., GitHub Actions)
+	provider?: #PhaseTaskProviderConfig
+})
+
+// Provider-specific phase task configuration
+#PhaseTaskProviderConfig: close({
 	github?: #GitHubActionConfig
 })
 
-// Setup step for CI pipelines
-#SetupStep: close({
-	name!:    string
-	command?: string
-	script?:  string
-	args?: [...string]
-	env?: [string]: #EnvironmentVariable
-	// Provider-specific replacements (e.g., GitHub Action instead of shell command)
-	provider?: #SetupStepProviderConfig
-})
-
-// CUE-defined contributor that injects setup steps based on task matching
+// Contributor definition
+// Contributors inject tasks into build phases based on activation conditions
 #Contributor: close({
-	when?:  #TaskMatcher       // Reuse existing task matcher
-	setup?: [...#SetupStep]
+	id!:    string                    // Contributor identifier (e.g., "nix", "1password")
+	when?:  #ActivationCondition      // Activation condition (defaults to always active)
+	tasks!: [...#PhaseTask]           // Tasks to contribute when active
 })
 
 #Pipeline: close({
 	name:         string
 	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
-
-	// Setup steps to run before tasks
-	setup?: [...#SetupStep]
 
 	// Tasks to run - can be simple task names or matrix task objects
 	tasks?: [...#PipelineTask]
@@ -138,6 +189,6 @@ package schema
 	pipelines: [...#Pipeline]
 	provider?: #ProviderConfig
 
-	// CUE-defined contributors that inject setup steps
-	contributors?: [string]: #Contributor
+	// Contributors that inject tasks into build phases
+	contributors?: [...#Contributor]
 })

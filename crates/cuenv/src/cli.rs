@@ -1552,9 +1552,8 @@ impl Commands {
                         // - None: flag not provided, use cache
                         // - Some(vec![""]) or Some(vec![]): -u alone, update all tools
                         // - Some(vec!["bun", "jq"]): update specific tools
-                        let update_tools = sub_update.map(|tools| {
-                            tools.into_iter().filter(|t| !t.is_empty()).collect()
-                        });
+                        let update_tools = sub_update
+                            .map(|tools| tools.into_iter().filter(|t| !t.is_empty()).collect());
                         (
                             Some("lock".to_string()),
                             sub_path,

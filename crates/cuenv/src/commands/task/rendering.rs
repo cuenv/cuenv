@@ -141,11 +141,10 @@ pub fn collect_workspace_tasks(
 
         // Build task index with auto-detected workspace tasks injected
         // Best-effort: if injection fails, fall back to basic index
-        let task_index =
-            prepare_task_index(&mut manifest, &project.project_root).or_else(|_| {
-                // Fall back to basic index without workspace injection
-                cuenv_core::tasks::TaskIndex::build(&manifest.tasks)
-            });
+        let task_index = prepare_task_index(&mut manifest, &project.project_root).or_else(|_| {
+            // Fall back to basic index without workspace injection
+            cuenv_core::tasks::TaskIndex::build(&manifest.tasks)
+        });
 
         if let Ok(index) = task_index {
             for entry in index.list() {
