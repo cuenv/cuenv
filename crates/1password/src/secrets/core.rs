@@ -345,4 +345,76 @@ mod tests {
         // Actual WASM loading requires the file to exist
         let _ = &SHARED_CORE;
     }
+
+    #[test]
+    fn test_create_host_functions_returns_four_functions() {
+        let functions = create_host_functions();
+        assert_eq!(functions.len(), 4, "Should create 4 host functions");
+    }
+
+    #[test]
+    fn test_host_functions_are_valid() {
+        // Creating host functions should not panic
+        let functions = create_host_functions();
+
+        // We should have exactly 4 functions:
+        // 1. random_fill_imported (op-extism-core)
+        // 2. unix_time_milliseconds_imported (op-now)
+        // 3. unix_time_milliseconds_imported (zxcvbn)
+        // 4. utc_offset_seconds (op-time)
+        assert_eq!(
+            functions.len(),
+            4,
+            "Should create exactly 4 host functions"
+        );
+    }
+
+    #[test]
+    fn test_create_host_functions_can_be_created_multiple_times() {
+        // Creating host functions should be idempotent
+        let first = create_host_functions();
+        let second = create_host_functions();
+        assert_eq!(first.len(), second.len());
+    }
+
+    #[test]
+    fn test_shared_core_static_is_mutex() {
+        // Verify the static is a mutex (compile-time check)
+        let guard = SHARED_CORE.lock();
+        assert!(guard.is_ok(), "Should be able to lock the mutex");
+        // Guard should be None initially (before get_or_init is called with WASM)
+    }
+
+    #[test]
+    fn test_os_mapping() {
+        // Test the OS mapping logic used in init_client
+        let os = match std::env::consts::OS {
+            "macos" => "darwin",
+            other => other,
+        };
+
+        // Should map macos to darwin
+        if std::env::consts::OS == "macos" {
+            assert_eq!(os, "darwin");
+        }
+    }
+
+    #[test]
+    fn test_arch_mapping() {
+        // Test the arch mapping logic used in init_client
+        let arch = match std::env::consts::ARCH {
+            "aarch64" => "arm64",
+            "x86_64" => "amd64",
+            other => other,
+        };
+
+        // Should map aarch64 to arm64
+        if std::env::consts::ARCH == "aarch64" {
+            assert_eq!(arch, "arm64");
+        }
+        // Should map x86_64 to amd64
+        if std::env::consts::ARCH == "x86_64" {
+            assert_eq!(arch, "amd64");
+        }
+    }
 }

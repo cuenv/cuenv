@@ -17,7 +17,7 @@ For each crate, verify:
 |-------|----------|----------|-------------|-------|
 | dagger | 0.0% | [x] | [x] | Added 8 tests for constructor, accessors, and factory |
 | aws | 11.8% | [x] | [x] | Added 15 tests for config, JSON extraction, error handling |
-| 1password | 18.1% | [ ] | [ ] | Pending review |
+| 1password | 18.1% | [x] | [x] | Added 32 tests for config, WASM utils, host functions, resolver |
 | vault | 25.8% | [x] | [x] | Added 12 tests for config, path handling, serialization |
 | homebrew | 43.6% | [x] | [x] | Added 23 tests for formula generation, config, backend |
 | gcp | 44.4% | [x] | [x] | Added 17 tests for config, resource name parsing, resolver |

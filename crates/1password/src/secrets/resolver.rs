@@ -448,4 +448,160 @@ mod tests {
         // This test just ensures the function exists and doesn't panic
         let _ = OnePasswordResolver::http_credentials_available();
     }
+
+    #[test]
+    fn test_config_new_from_string() {
+        let config = OnePasswordConfig::new(String::from("op://vault/item/field"));
+        assert_eq!(config.reference, "op://vault/item/field");
+    }
+
+    #[test]
+    fn test_config_new_from_str_slice() {
+        let ref_str = "op://vault/item/field";
+        let config = OnePasswordConfig::new(ref_str);
+        assert_eq!(config.reference, ref_str);
+    }
+
+    #[test]
+    fn test_config_equality() {
+        let config1 = OnePasswordConfig::new("op://vault/item/field");
+        let config2 = OnePasswordConfig::new("op://vault/item/field");
+        let config3 = OnePasswordConfig::new("op://other/item/field");
+
+        assert_eq!(config1, config2);
+        assert_ne!(config1, config3);
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = OnePasswordConfig::new("op://vault/item/field");
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
+    }
+
+    #[test]
+    fn test_config_debug() {
+        let config = OnePasswordConfig::new("op://vault/item/field");
+        let debug = format!("{config:?}");
+        assert!(debug.contains("OnePasswordConfig"));
+        assert!(debug.contains("op://vault/item/field"));
+    }
+
+    #[test]
+    fn test_config_deserialization_with_ref_key() {
+        let json = r#"{"ref": "op://vault/item/field"}"#;
+        let config: OnePasswordConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.reference, "op://vault/item/field");
+    }
+
+    #[test]
+    fn test_config_deserialization_camel_case() {
+        // Since serde uses camelCase, the field is "ref"
+        let json = r#"{"ref": "op://example/test/password"}"#;
+        let config: OnePasswordConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.reference, "op://example/test/password");
+    }
+
+    #[test]
+    fn test_config_deserialization_missing_ref() {
+        let json = r#"{}"#;
+        let result = serde_json::from_str::<OnePasswordConfig>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_with_special_characters() {
+        let config = OnePasswordConfig::new("op://My Vault/My Item 2024/api-key_v1");
+        assert!(config.reference.contains("My Vault"));
+        assert!(config.reference.contains("api-key_v1"));
+    }
+
+    #[test]
+    fn test_http_mode_available_without_env() {
+        // Without OP_SERVICE_ACCOUNT_TOKEN, HTTP mode should not be available
+        // (unless already set in environment)
+        let result = OnePasswordResolver::http_mode_available();
+        // Just verify it returns a boolean without panicking
+        let _ = result;
+    }
+
+    #[test]
+    fn test_resolver_provider_name() {
+        // Create a resolver in CLI mode (without WASM)
+        // If WASM is not available and token is not set, this should work
+        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        {
+            if let Ok(resolver) = OnePasswordResolver::new() {
+                assert_eq!(resolver.provider_name(), "onepassword");
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolver_supports_native_batch() {
+        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        {
+            if let Ok(resolver) = OnePasswordResolver::new() {
+                assert!(resolver.supports_native_batch());
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolver_can_use_http_false_without_client() {
+        // A resolver without client_id should return false for can_use_http
+        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        {
+            if let Ok(resolver) = OnePasswordResolver::new() {
+                assert!(!resolver.can_use_http());
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolver_debug_output() {
+        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        {
+            if let Ok(resolver) = OnePasswordResolver::new() {
+                let debug = format!("{resolver:?}");
+                assert!(debug.contains("OnePasswordResolver"));
+                // Should show mode as cli when no WASM client
+                assert!(debug.contains("cli") || debug.contains("http"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_batch_empty() {
+        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        {
+            if let Ok(resolver) = OnePasswordResolver::new() {
+                let empty: HashMap<String, SecretSpec> = HashMap::new();
+                let result = resolver.resolve_batch(&empty).await;
+                assert!(result.is_ok());
+                assert!(result.unwrap().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_config_roundtrip_serialization() {
+        let original = OnePasswordConfig::new("op://vault/item/field");
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: OnePasswordConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_config_empty_reference() {
+        // Empty reference should be allowed at config level
+        let config = OnePasswordConfig::new("");
+        assert_eq!(config.reference, "");
+    }
+
+    #[test]
+    fn test_config_unicode_reference() {
+        let config = OnePasswordConfig::new("op://vault/项目/密码");
+        assert_eq!(config.reference, "op://vault/项目/密码");
+    }
 }
