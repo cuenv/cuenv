@@ -142,4 +142,190 @@ mod tests {
         assert!(formula.contains("on_linux do"));
         assert!(formula.contains("sha256 \"abc123\""));
     }
+
+    #[test]
+    fn test_binary_info_clone() {
+        let info = BinaryInfo {
+            url: "https://example.com/binary.tar.gz".to_string(),
+            sha256: "abc123def456".to_string(),
+        };
+        let cloned = info.clone();
+        assert_eq!(info.url, cloned.url);
+        assert_eq!(info.sha256, cloned.sha256);
+    }
+
+    #[test]
+    fn test_binary_info_debug() {
+        let info = BinaryInfo {
+            url: "https://example.com/binary.tar.gz".to_string(),
+            sha256: "abc123".to_string(),
+        };
+        let debug_str = format!("{info:?}");
+        assert!(debug_str.contains("BinaryInfo"));
+        assert!(debug_str.contains("https://example.com"));
+        assert!(debug_str.contains("abc123"));
+    }
+
+    #[test]
+    fn test_formula_data_clone() {
+        let data = FormulaData {
+            class_name: "Test".to_string(),
+            desc: "Test desc".to_string(),
+            homepage: "https://test.com".to_string(),
+            license: "MIT".to_string(),
+            version: "1.0.0".to_string(),
+            binaries: HashMap::new(),
+        };
+        let cloned = data.clone();
+        assert_eq!(data.class_name, cloned.class_name);
+        assert_eq!(data.version, cloned.version);
+    }
+
+    #[test]
+    fn test_formula_data_debug() {
+        let data = FormulaData {
+            class_name: "Myapp".to_string(),
+            desc: "My app".to_string(),
+            homepage: "https://myapp.com".to_string(),
+            license: "Apache-2.0".to_string(),
+            version: "2.1.0".to_string(),
+            binaries: HashMap::new(),
+        };
+        let debug_str = format!("{data:?}");
+        assert!(debug_str.contains("FormulaData"));
+        assert!(debug_str.contains("Myapp"));
+    }
+
+    #[test]
+    fn test_generate_formula_linux_arm64() {
+        let mut binaries = HashMap::new();
+        binaries.insert(
+            Target::LinuxArm64,
+            BinaryInfo {
+                url: "https://example.com/linux-arm64.tar.gz".to_string(),
+                sha256: "arm64hash".to_string(),
+            },
+        );
+
+        let data = FormulaData {
+            class_name: "Test".to_string(),
+            desc: "Test".to_string(),
+            homepage: "https://test.com".to_string(),
+            license: "MIT".to_string(),
+            version: "1.0.0".to_string(),
+            binaries,
+        };
+
+        let formula = FormulaGenerator::generate(&data);
+        assert!(formula.contains("on_arm do"));
+        assert!(formula.contains("arm64hash"));
+    }
+
+    #[test]
+    fn test_generate_formula_all_platforms() {
+        let mut binaries = HashMap::new();
+        binaries.insert(
+            Target::DarwinArm64,
+            BinaryInfo {
+                url: "https://example.com/darwin-arm64.tar.gz".to_string(),
+                sha256: "darwin_arm_hash".to_string(),
+            },
+        );
+        binaries.insert(
+            Target::LinuxArm64,
+            BinaryInfo {
+                url: "https://example.com/linux-arm64.tar.gz".to_string(),
+                sha256: "linux_arm_hash".to_string(),
+            },
+        );
+        binaries.insert(
+            Target::LinuxX64,
+            BinaryInfo {
+                url: "https://example.com/linux-x64.tar.gz".to_string(),
+                sha256: "linux_x64_hash".to_string(),
+            },
+        );
+
+        let data = FormulaData {
+            class_name: "Multiplatform".to_string(),
+            desc: "Multi-platform app".to_string(),
+            homepage: "https://example.com".to_string(),
+            license: "BSD-3-Clause".to_string(),
+            version: "3.2.1".to_string(),
+            binaries,
+        };
+
+        let formula = FormulaGenerator::generate(&data);
+        assert!(formula.contains("darwin_arm_hash"));
+        assert!(formula.contains("linux_arm_hash"));
+        assert!(formula.contains("linux_x64_hash"));
+        assert!(formula.contains("on_intel do"));
+    }
+
+    #[test]
+    fn test_generate_formula_install_section() {
+        let data = FormulaData {
+            class_name: "Myapp".to_string(),
+            desc: "desc".to_string(),
+            homepage: "https://x.com".to_string(),
+            license: "MIT".to_string(),
+            version: "1.0.0".to_string(),
+            binaries: HashMap::new(),
+        };
+
+        let formula = FormulaGenerator::generate(&data);
+        assert!(formula.contains("def install"));
+        assert!(formula.contains("bin.install \"myapp\""));
+    }
+
+    #[test]
+    fn test_generate_formula_test_section() {
+        let data = FormulaData {
+            class_name: "Cuenv".to_string(),
+            desc: "desc".to_string(),
+            homepage: "https://x.com".to_string(),
+            license: "MIT".to_string(),
+            version: "1.0.0".to_string(),
+            binaries: HashMap::new(),
+        };
+
+        let formula = FormulaGenerator::generate(&data);
+        assert!(formula.contains("test do"));
+        assert!(formula.contains("assert_match version.to_s"));
+        assert!(formula.contains("cuenv --version"));
+    }
+
+    #[test]
+    fn test_generate_formula_empty_binaries() {
+        let data = FormulaData {
+            class_name: "Empty".to_string(),
+            desc: "No binaries".to_string(),
+            homepage: "https://empty.com".to_string(),
+            license: "GPL-3.0".to_string(),
+            version: "0.0.1".to_string(),
+            binaries: HashMap::new(),
+        };
+
+        let formula = FormulaGenerator::generate(&data);
+        // Should still generate valid structure even with no binaries
+        assert!(formula.contains("class Empty < Formula"));
+        assert!(formula.contains("on_macos do"));
+        assert!(formula.contains("on_linux do"));
+        assert!(formula.ends_with("end\n"));
+    }
+
+    #[test]
+    fn test_formula_special_characters_in_desc() {
+        let data = FormulaData {
+            class_name: "Test".to_string(),
+            desc: "App with special chars: &, <, >, quotes".to_string(),
+            homepage: "https://test.com".to_string(),
+            license: "MIT".to_string(),
+            version: "1.0.0".to_string(),
+            binaries: HashMap::new(),
+        };
+
+        let formula = FormulaGenerator::generate(&data);
+        assert!(formula.contains("App with special chars"));
+    }
 }

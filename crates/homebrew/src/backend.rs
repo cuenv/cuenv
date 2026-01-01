@@ -292,6 +292,7 @@ impl ReleaseBackend for HomebrewBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_release::Target;
 
     #[test]
     fn test_parse_tap() {
@@ -320,5 +321,190 @@ mod tests {
         assert_eq!(config.license, "MIT");
         assert_eq!(config.homepage, "https://example.com");
         assert_eq!(config.token_env, "MY_TOKEN");
+    }
+
+    #[test]
+    fn test_config_new_defaults() {
+        let config = HomebrewConfig::new("owner/tap", "myformula");
+        assert_eq!(config.tap, "owner/tap");
+        assert_eq!(config.formula, "myformula");
+        assert!(config.license.is_empty());
+        assert!(config.homepage.is_empty());
+        assert!(config.token.is_none());
+        assert_eq!(config.token_env, "HOMEBREW_TAP_TOKEN");
+    }
+
+    #[test]
+    fn test_config_with_token() {
+        let config = HomebrewConfig::new("owner/tap", "formula").with_token("my-secret-token");
+        assert_eq!(config.token, Some("my-secret-token".to_string()));
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = HomebrewConfig::new("owner/tap", "formula")
+            .with_license("MIT")
+            .with_homepage("https://example.com");
+        let cloned = config.clone();
+        assert_eq!(config.tap, cloned.tap);
+        assert_eq!(config.formula, cloned.formula);
+        assert_eq!(config.license, cloned.license);
+    }
+
+    #[test]
+    fn test_config_debug() {
+        let config = HomebrewConfig::new("owner/tap", "formula");
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("HomebrewConfig"));
+        assert!(debug_str.contains("owner/tap"));
+        assert!(debug_str.contains("formula"));
+    }
+
+    #[test]
+    fn test_parse_tap_multiple_slashes() {
+        let result = parse_tap("owner/repo/extra");
+        // Should only split on first slash
+        assert_eq!(
+            result,
+            Some(("owner".to_string(), "repo/extra".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_tap_org_with_dash() {
+        let result = parse_tap("my-org/homebrew-formulas");
+        assert_eq!(
+            result,
+            Some(("my-org".to_string(), "homebrew-formulas".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_backend_name() {
+        let config = HomebrewConfig::new("owner/tap", "formula");
+        let backend = HomebrewBackend::new(config);
+        assert_eq!(backend.name(), "Homebrew");
+    }
+
+    #[test]
+    fn test_generate_formula_with_artifacts() {
+        let config = HomebrewConfig::new("owner/tap", "cuenv")
+            .with_license("AGPL-3.0")
+            .with_homepage("https://cuenv.io");
+        let backend = HomebrewBackend::new(config);
+
+        let ctx = BackendContext {
+            name: "cuenv".to_string(),
+            version: "1.0.0".to_string(),
+            download_base_url: Some("https://github.com/cuenv/cuenv/releases/download".to_string()),
+            dry_run: false,
+        };
+
+        let artifacts = vec![PackagedArtifact {
+            target: Target::DarwinArm64,
+            archive_name: "cuenv-darwin-arm64.tar.gz".to_string(),
+            sha256: "abcdef123456".to_string(),
+            archive_path: std::path::PathBuf::from("/tmp/cuenv-darwin-arm64.tar.gz"),
+            checksum_path: std::path::PathBuf::from("/tmp/cuenv-darwin-arm64.tar.gz.sha256"),
+        }];
+
+        let formula = backend.generate_formula(&ctx, &artifacts);
+        assert!(formula.contains("class Cuenv < Formula"));
+        assert!(formula.contains("version \"1.0.0\""));
+        assert!(formula.contains("abcdef123456"));
+        assert!(formula.contains("cuenv-darwin-arm64.tar.gz"));
+    }
+
+    #[test]
+    fn test_generate_formula_default_base_url() {
+        let config = HomebrewConfig::new("owner/tap", "myapp");
+        let backend = HomebrewBackend::new(config);
+
+        let ctx = BackendContext {
+            name: "myapp".to_string(),
+            version: "2.0.0".to_string(),
+            download_base_url: None, // Uses default
+            dry_run: false,
+        };
+
+        let artifacts = vec![PackagedArtifact {
+            target: Target::LinuxX64,
+            archive_name: "myapp-linux-x64.tar.gz".to_string(),
+            sha256: "789xyz".to_string(),
+            archive_path: std::path::PathBuf::from("/tmp/myapp.tar.gz"),
+            checksum_path: std::path::PathBuf::from("/tmp/myapp.tar.gz.sha256"),
+        }];
+
+        let formula = backend.generate_formula(&ctx, &artifacts);
+        // Should use default base URL
+        assert!(formula.contains("https://github.com/OWNER/REPO/releases/download"));
+    }
+
+    #[test]
+    fn test_generate_formula_capitalizes_class_name() {
+        let config = HomebrewConfig::new("owner/tap", "myapp");
+        let backend = HomebrewBackend::new(config);
+
+        let ctx = BackendContext {
+            name: "myapp".to_string(),
+            version: "1.0.0".to_string(),
+            download_base_url: None,
+            dry_run: false,
+        };
+
+        let formula = backend.generate_formula(&ctx, &[]);
+        assert!(formula.contains("class Myapp < Formula"));
+    }
+
+    #[test]
+    fn test_generate_formula_with_multiple_artifacts() {
+        let config = HomebrewConfig::new("owner/tap", "tool")
+            .with_license("MIT")
+            .with_homepage("https://tool.dev");
+        let backend = HomebrewBackend::new(config);
+
+        let ctx = BackendContext {
+            name: "tool".to_string(),
+            version: "3.0.0".to_string(),
+            download_base_url: Some("https://releases.tool.dev".to_string()),
+            dry_run: false,
+        };
+
+        let artifacts = vec![
+            PackagedArtifact {
+                target: Target::DarwinArm64,
+                archive_name: "tool-darwin-arm64.tar.gz".to_string(),
+                sha256: "darwin_hash".to_string(),
+                archive_path: std::path::PathBuf::from("/tmp/tool-darwin.tar.gz"),
+                checksum_path: std::path::PathBuf::from("/tmp/tool-darwin.tar.gz.sha256"),
+            },
+            PackagedArtifact {
+                target: Target::LinuxX64,
+                archive_name: "tool-linux-x64.tar.gz".to_string(),
+                sha256: "linux_hash".to_string(),
+                archive_path: std::path::PathBuf::from("/tmp/tool-linux.tar.gz"),
+                checksum_path: std::path::PathBuf::from("/tmp/tool-linux.tar.gz.sha256"),
+            },
+        ];
+
+        let formula = backend.generate_formula(&ctx, &artifacts);
+        assert!(formula.contains("darwin_hash"));
+        assert!(formula.contains("linux_hash"));
+        assert!(formula.contains("on_macos do"));
+        assert!(formula.contains("on_linux do"));
+    }
+
+    #[test]
+    fn test_config_get_token_from_direct() {
+        let config = HomebrewConfig::new("owner/tap", "formula").with_token("direct-token");
+        assert_eq!(config.get_token(), Some("direct-token".to_string()));
+    }
+
+    #[test]
+    fn test_config_get_token_missing() {
+        // Use a unique env var name that won't be set
+        let config = HomebrewConfig::new("owner/tap", "formula")
+            .with_token_env("CUENV_TEST_HOMEBREW_TOKEN_DEFINITELY_MISSING_12345");
+        assert!(config.get_token().is_none());
     }
 }
