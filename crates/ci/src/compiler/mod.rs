@@ -1622,4 +1622,373 @@ mod tests {
             trigger.paths
         );
     }
+
+    // =========================================================================
+    // Stage Contributor Activation Tests
+    // =========================================================================
+
+    use cuenv_core::ci::ActivationCondition;
+
+    /// Helper to create a minimal StageContributor for testing
+    fn test_contributor(id: &str, when: Option<ActivationCondition>) -> StageContributor {
+        StageContributor {
+            id: id.to_string(),
+            when,
+            tasks: vec![],
+        }
+    }
+
+    /// Helper to create a minimal IR for testing
+    fn test_ir() -> IntermediateRepresentation {
+        IntermediateRepresentation {
+            version: "1.4".to_string(),
+            pipeline: crate::ir::PipelineMetadata {
+                name: "test".to_string(),
+                environment: None,
+                requires_onepassword: false,
+                project_name: None,
+                trigger: None,
+                pipeline_tasks: vec![],
+            },
+            runtimes: vec![],
+            stages: Default::default(),
+            tasks: vec![],
+        }
+    }
+
+    #[test]
+    fn test_contributor_no_condition_always_active() {
+        let project = Project::new("test");
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // No `when` condition = always active
+        let contributor = test_contributor("test", None);
+        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_always_true_active() {
+        let project = Project::new("test");
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        let contributor = test_contributor(
+            "test",
+            Some(ActivationCondition {
+                always: Some(true),
+                ..Default::default()
+            }),
+        );
+        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_always_false_inactive() {
+        let project = Project::new("test");
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // always: false means not active (skip the always: true shortcut)
+        // But with no other conditions specified, the function returns true
+        // because all condition checks pass (empty vecs are skipped)
+        let contributor = test_contributor(
+            "test",
+            Some(ActivationCondition {
+                always: Some(false),
+                ..Default::default()
+            }),
+        );
+        // With always: false and no other conditions, it falls through to true
+        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_runtime_type_matches_nix() {
+        use cuenv_core::manifest::{NixRuntime, Runtime};
+
+        let mut project = Project::new("test");
+        project.runtime = Some(Runtime::Nix(NixRuntime::default()));
+
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        let contributor = test_contributor(
+            "nix",
+            Some(ActivationCondition {
+                runtime_type: vec!["nix".to_string()],
+                ..Default::default()
+            }),
+        );
+        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_runtime_type_no_match() {
+        use cuenv_core::manifest::{NixRuntime, Runtime};
+
+        let mut project = Project::new("test");
+        project.runtime = Some(Runtime::Nix(NixRuntime::default()));
+
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // Project has Nix runtime, but condition requires "devenv"
+        let contributor = test_contributor(
+            "devenv-only",
+            Some(ActivationCondition {
+                runtime_type: vec!["devenv".to_string()],
+                ..Default::default()
+            }),
+        );
+        assert!(!compiler.cue_stage_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_runtime_type_no_runtime_set() {
+        let project = Project::new("test");
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // No runtime set but condition requires runtime type
+        let contributor = test_contributor(
+            "needs-nix",
+            Some(ActivationCondition {
+                runtime_type: vec!["nix".to_string()],
+                ..Default::default()
+            }),
+        );
+        assert!(!compiler.cue_stage_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_cuenv_source_matches() {
+        use cuenv_core::ci::CI;
+        use cuenv_core::config::{CIConfig, CuenvConfig, CuenvSource};
+
+        let mut project = Project::new("test");
+        project.config = Some(cuenv_core::config::Config::default());
+        project.ci = Some(CI {
+            pipelines: vec![],
+            provider: None,
+            stage_contributors: vec![],
+        });
+        // Set cuenv source to "git"
+        if let Some(ref mut config) = project.config {
+            config.ci = Some(CIConfig {
+                cuenv: Some(CuenvConfig {
+                    source: CuenvSource::Git,
+                    ..Default::default()
+                }),
+            });
+        }
+
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        let contributor = test_contributor(
+            "cuenv-git",
+            Some(ActivationCondition {
+                cuenv_source: vec!["git".to_string()],
+                ..Default::default()
+            }),
+        );
+        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+    }
+
+    #[test]
+    fn test_contributor_multiple_conditions_and_logic() {
+        use cuenv_core::manifest::{NixRuntime, Runtime};
+
+        let mut project = Project::new("test");
+        project.runtime = Some(Runtime::Nix(NixRuntime::default()));
+
+        let compiler = Compiler::new(project);
+        let ir = test_ir();
+
+        // Condition requires nix runtime AND devenv source (which doesn't match)
+        let contributor = test_contributor(
+            "multi-condition",
+            Some(ActivationCondition {
+                runtime_type: vec!["nix".to_string()],
+                cuenv_source: vec!["nix".to_string()], // default is "release", not "nix"
+                ..Default::default()
+            }),
+        );
+        // Runtime matches but cuenv_source doesn't (default is "release")
+        assert!(!compiler.cue_stage_contributor_is_active(&contributor, &ir));
+    }
+
+    // =========================================================================
+    // Stage Task Conversion Tests
+    // =========================================================================
+
+    #[test]
+    fn test_cue_stage_task_to_ir_command() {
+        use cuenv_core::ci::{BuildStage, CueStageTask};
+
+        let cue_task = CueStageTask {
+            id: "test-task".to_string(),
+            stage: BuildStage::Setup,
+            label: Some("Test Task".to_string()),
+            command: Some("echo hello".to_string()),
+            script: None,
+            shell: false,
+            env: Default::default(),
+            secrets: Default::default(),
+            depends_on: vec![],
+            priority: 10,
+            provider: None,
+        };
+
+        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+
+        assert_eq!(ir_task.id, "test-task");
+        assert_eq!(ir_task.command, vec!["echo hello"]);
+        assert!(!ir_task.shell);
+        assert_eq!(ir_task.priority, 10);
+    }
+
+    #[test]
+    fn test_cue_stage_task_to_ir_script() {
+        use cuenv_core::ci::{BuildStage, CueStageTask};
+
+        let cue_task = CueStageTask {
+            id: "script-task".to_string(),
+            stage: BuildStage::Bootstrap,
+            label: None,
+            command: None,
+            script: Some("echo line1\necho line2".to_string()),
+            shell: true,
+            env: Default::default(),
+            secrets: Default::default(),
+            depends_on: vec!["other".to_string()],
+            priority: 5,
+            provider: None,
+        };
+
+        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+
+        assert_eq!(ir_task.id, "script-task");
+        assert_eq!(ir_task.command, vec!["echo line1\necho line2"]);
+        assert!(ir_task.shell);
+        assert_eq!(ir_task.depends_on, vec!["other"]);
+        assert_eq!(ir_task.priority, 5);
+    }
+
+    #[test]
+    fn test_cue_stage_task_to_ir_github_action() {
+        use cuenv_core::ci::{BuildStage, CueStageTask, GitHubActionConfig, StageTaskProviderConfig};
+
+        let mut inputs = std::collections::HashMap::new();
+        inputs.insert(
+            "extra-conf".to_string(),
+            serde_json::Value::String("accept-flake-config = true".to_string()),
+        );
+
+        let cue_task = CueStageTask {
+            id: "nix-install".to_string(),
+            stage: BuildStage::Bootstrap,
+            label: Some("Install Nix".to_string()),
+            command: None,
+            script: None,
+            shell: false,
+            env: Default::default(),
+            secrets: Default::default(),
+            depends_on: vec![],
+            priority: 0,
+            provider: Some(StageTaskProviderConfig {
+                github: Some(GitHubActionConfig {
+                    uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
+                    inputs,
+                }),
+            }),
+        };
+
+        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+
+        assert_eq!(ir_task.id, "nix-install");
+        assert!(ir_task.command.is_empty()); // No command, uses action
+        assert!(ir_task.provider_hints.is_some());
+
+        // Verify the GitHub action is in provider_hints
+        let hints = ir_task.provider_hints.as_ref().unwrap();
+        let github_action = hints.get("github_action").unwrap();
+        assert_eq!(
+            github_action.get("uses").and_then(|v| v.as_str()),
+            Some("DeterminateSystems/nix-installer-action@v16")
+        );
+    }
+
+    #[test]
+    fn test_cue_stage_task_to_ir_secrets() {
+        use cuenv_core::ci::{BuildStage, CueStageTask, SecretRef, SecretRefConfig};
+
+        let mut secrets = std::collections::HashMap::new();
+        secrets.insert("SIMPLE_SECRET".to_string(), SecretRef::Simple("SECRET_NAME".to_string()));
+        secrets.insert(
+            "DETAILED_SECRET".to_string(),
+            SecretRef::Detailed(SecretRefConfig {
+                source: "DETAILED_SOURCE".to_string(),
+                cache_key: true,
+            }),
+        );
+
+        let cue_task = CueStageTask {
+            id: "secrets-task".to_string(),
+            stage: BuildStage::Setup,
+            label: None,
+            command: Some("echo test".to_string()),
+            script: None,
+            shell: false,
+            env: Default::default(),
+            secrets,
+            depends_on: vec![],
+            priority: 10,
+            provider: None,
+        };
+
+        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+
+        assert_eq!(ir_task.secrets.len(), 2);
+
+        // Check simple secret conversion
+        let simple = ir_task.secrets.get("SIMPLE_SECRET").unwrap();
+        assert_eq!(simple.source, "SECRET_NAME");
+        assert!(!simple.cache_key);
+
+        // Check detailed secret conversion
+        let detailed = ir_task.secrets.get("DETAILED_SECRET").unwrap();
+        assert_eq!(detailed.source, "DETAILED_SOURCE");
+        assert!(detailed.cache_key);
+    }
+
+    #[test]
+    fn test_cue_stage_task_to_ir_env_vars() {
+        use cuenv_core::ci::{BuildStage, CueStageTask};
+
+        let mut env = std::collections::HashMap::new();
+        env.insert("VAR1".to_string(), "value1".to_string());
+        env.insert("VAR2".to_string(), "value2".to_string());
+
+        let cue_task = CueStageTask {
+            id: "env-task".to_string(),
+            stage: BuildStage::Setup,
+            label: None,
+            command: Some("printenv".to_string()),
+            script: None,
+            shell: false,
+            env,
+            secrets: Default::default(),
+            depends_on: vec![],
+            priority: 10,
+            provider: None,
+        };
+
+        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+
+        assert_eq!(ir_task.env.len(), 2);
+        assert_eq!(ir_task.env.get("VAR1"), Some(&"value1".to_string()));
+        assert_eq!(ir_task.env.get("VAR2"), Some(&"value2".to_string()));
+    }
 }

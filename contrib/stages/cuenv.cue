@@ -30,6 +30,7 @@ import "github.com/cuenv/cuenv/schema"
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 		// Default: release mode (download pre-built binary)
 		// The actual command is templated at runtime based on config.ci.cuenv.source
+		// TODO: Add SHA256 checksum verification for downloaded binary
 		command: """
 			curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && \\
 			chmod +x /usr/local/bin/cuenv && \\
@@ -40,6 +41,7 @@ import "github.com/cuenv/cuenv/schema"
 
 // #CuenvRelease installs cuenv from GitHub Releases (default mode)
 // No Nix dependency required.
+// TODO: Add SHA256 checksum verification for downloaded binary
 #CuenvRelease: schema.#StageContributor & {
 	id: "cuenv"
 	when: cuenvSource: ["release"]
