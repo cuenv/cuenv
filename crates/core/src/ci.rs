@@ -1,4 +1,3 @@
-use crate::manifest::TaskMatcher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -163,56 +162,6 @@ pub struct GitHubActionConfig {
     pub inputs: HashMap<String, serde_json::Value>,
 }
 
-/// Provider-specific setup step overrides
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupStepProviderConfig {
-    /// GitHub Action to use instead of shell command
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub github: Option<GitHubActionConfig>,
-}
-
-/// Setup step for CI pipelines - runs before main tasks
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SetupStep {
-    /// Name of the setup step (for display)
-    pub name: String,
-
-    /// Command to execute (mutually exclusive with script)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-
-    /// Inline script to execute (mutually exclusive with command)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub script: Option<String>,
-
-    /// Arguments for the command
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-
-    /// Environment variables for this step
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, serde_json::Value>,
-
-    /// Provider-specific overrides (e.g., GitHub Action instead of shell)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<SetupStepProviderConfig>,
-}
-
-/// CUE-defined contributor that injects setup steps based on task matching
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct Contributor {
-    /// Condition for when this contributor should be active
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub when: Option<TaskMatcher>,
-
-    /// Setup steps to inject when active
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub setup: Vec<SetupStep>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
@@ -220,9 +169,6 @@ pub struct Pipeline {
     /// Environment for secret resolution (e.g., "production")
     pub environment: Option<String>,
     pub when: Option<PipelineCondition>,
-    /// Setup steps to run before tasks
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub setup: Vec<SetupStep>,
     /// Tasks to run - can be simple task names or matrix task objects
     #[serde(default)]
     pub tasks: Vec<PipelineTask>,
@@ -233,14 +179,163 @@ pub struct Pipeline {
     pub provider: Option<ProviderConfig>,
 }
 
+// =============================================================================
+// Contributors
+// =============================================================================
+
+/// Build phases that contributors can inject tasks into
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildPhase {
+    Bootstrap,
+    Setup,
+    Success,
+    Failure,
+}
+
+/// Activation condition for contributors
+/// All specified conditions must be true (AND logic)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivationCondition {
+    /// Always active (no conditions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub always: Option<bool>,
+
+    /// Runtime type detection (active if project uses any of these runtime types)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime_type: Vec<String>,
+
+    /// Cuenv source mode detection (for cuenv installation strategy)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cuenv_source: Vec<String>,
+
+    /// Secrets provider detection (active if environment uses any of these providers)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets_provider: Vec<String>,
+
+    /// Provider configuration detection (active if these config paths are set)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_config: Vec<String>,
+
+    /// Task command detection (active if any pipeline task uses these commands)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_command: Vec<String>,
+
+    /// Task label detection (active if any pipeline task has these labels)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub task_labels: Vec<String>,
+
+    /// Environment name matching (active only in these environments)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment: Vec<String>,
+}
+
+/// Secret reference for phase tasks
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum SecretRef {
+    /// Simple secret name (string)
+    Simple(String),
+    /// Detailed secret configuration
+    Detailed(SecretRefConfig),
+}
+
+/// Detailed secret configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretRefConfig {
+    /// CI secret name (e.g., "CACHIX_AUTH_TOKEN")
+    pub source: String,
+    /// Include in cache key via salted HMAC
+    #[serde(default)]
+    pub cache_key: bool,
+}
+
+/// Provider-specific phase task configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseTaskProviderConfig {
+    /// GitHub Action to use instead of shell command
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github: Option<GitHubActionConfig>,
+}
+
+/// A task contributed to a build phase (CUE-defined)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseTask {
+    /// Unique task identifier (e.g., "install-nix")
+    pub id: String,
+
+    /// Target phase (bootstrap, setup, success, failure)
+    pub phase: BuildPhase,
+
+    /// Human-readable display name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+
+    /// Shell command to execute
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+
+    /// Multi-line script (alternative to command)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+
+    /// Wrap command in shell
+    #[serde(default)]
+    pub shell: bool,
+
+    /// Environment variables
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+
+    /// Secret references (key=env var name)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub secrets: HashMap<String, SecretRef>,
+
+    /// Dependencies on other phase tasks
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+
+    /// Ordering within phase (lower = earlier)
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+
+    /// Provider-specific overrides (e.g., GitHub Actions)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<PhaseTaskProviderConfig>,
+}
+
+const fn default_priority() -> i32 {
+    10
+}
+
+/// Contributor definition (CUE-defined)
+/// Contributors inject tasks into build phases based on activation conditions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Contributor {
+    /// Contributor identifier (e.g., "nix", "1password")
+    pub id: String,
+
+    /// Activation condition (defaults to always active)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub when: Option<ActivationCondition>,
+
+    /// Tasks to contribute when active
+    pub tasks: Vec<PhaseTask>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CI {
     pub pipelines: Vec<Pipeline>,
     /// Global provider configuration defaults
     pub provider: Option<ProviderConfig>,
-    /// CUE-defined contributors that inject setup steps
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub contributors: HashMap<String, Contributor>,
+    /// Contributors that inject tasks into build phases
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contributors: Vec<Contributor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

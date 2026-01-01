@@ -94,12 +94,12 @@ tools: {
 
 The `#Tool` type supports these fields:
 
-| Field       | Type             | Required | Description                          |
-| ----------- | ---------------- | -------- | ------------------------------------ |
-| `version`   | `string`         | Yes      | Tool version                         |
-| `as`        | `string`         | No       | Rename binary in PATH                |
+| Field       | Type             | Required | Description                                             |
+| ----------- | ---------------- | -------- | ------------------------------------------------------- |
+| `version`   | `string`         | Yes      | Tool version                                            |
+| `as`        | `string`         | No       | Rename binary in PATH                                   |
 | `source`    | `#Source`        | No       | Tool source (must be specified via source or overrides) |
-| `overrides` | `[...#Override]` | No       | Platform-specific sources            |
+| `overrides` | `[...#Override]` | No       | Platform-specific sources                               |
 
 ## Tool Sources
 
@@ -188,12 +188,12 @@ runtime: schema.#ToolsRuntime & {
 
 **Fields:**
 
-| Field        | Type          | Default     | Description                                                 |
-| ------------ | ------------- | ----------- | ----------------------------------------------------------- |
-| `toolchain`  | `string`      | required    | Toolchain identifier (e.g., "stable", "1.83.0", "nightly")  |
-| `profile`    | `string`      | `"default"` | Installation profile: "minimal", "default", or "complete"   |
-| `components` | `[...string]` | `[]`        | Additional components (e.g., "clippy", "rustfmt")           |
-| `targets`    | `[...string]` | `[]`        | Cross-compilation targets                                   |
+| Field        | Type          | Default     | Description                                                |
+| ------------ | ------------- | ----------- | ---------------------------------------------------------- |
+| `toolchain`  | `string`      | required    | Toolchain identifier (e.g., "stable", "1.83.0", "nightly") |
+| `profile`    | `string`      | `"default"` | Installation profile: "minimal", "default", or "complete"  |
+| `components` | `[...string]` | `[]`        | Additional components (e.g., "clippy", "rustfmt")          |
+| `targets`    | `[...string]` | `[]`        | Cross-compilation targets                                  |
 
 **Profiles:**
 
@@ -367,12 +367,12 @@ runtime: schema.#ToolsRuntime & {
 
 Generic development tools fetched from GitHub Releases with pre-configured platform overrides.
 
-| Definition  | Tool    | Description                                         |
-| ----------- | ------- | --------------------------------------------------- |
-| `#Jq`       | jq      | JSON processor from jqlang/jq                       |
-| `#Yq`       | yq      | YAML processor from mikefarah/yq (uses `v` prefix)  |
-| `#Cue`      | cue     | CUE language CLI from cue-lang/cue                  |
-| `#Treefmt`  | treefmt | Multi-language formatter from numtide/treefmt       |
+| Definition | Tool    | Description                                        |
+| ---------- | ------- | -------------------------------------------------- |
+| `#Jq`      | jq      | JSON processor from jqlang/jq                      |
+| `#Yq`      | yq      | YAML processor from mikefarah/yq (uses `v` prefix) |
+| `#Cue`     | cue     | CUE language CLI from cue-lang/cue                 |
+| `#Treefmt` | treefmt | Multi-language formatter from numtide/treefmt      |
 
 **Example:**
 
@@ -392,17 +392,17 @@ runtime: schema.#ToolsRuntime & {
 
 Rust ecosystem tools including the complete toolchain via rustup and popular cargo extensions.
 
-| Definition        | Tool            | Source     | Description                                     |
-| ----------------- | --------------- | ---------- | ----------------------------------------------- |
-| `#Rust`           | rust            | Rustup     | Full Rust toolchain (cargo, rustc, etc.)        |
-| `#RustAnalyzer`   | rust-analyzer   | GitHub     | LSP server (uses date-based versions)           |
-| `#CargoNextest`   | cargo-nextest   | GitHub     | Fast test runner                                |
-| `#CargoDeny`      | cargo-deny      | GitHub     | License/security checker (no `v` tag prefix)    |
-| `#CargoLlvmCov`   | cargo-llvm-cov  | GitHub     | Code coverage via LLVM                          |
-| `#CargoCyclonedx` | cargo-cyclonedx | Nix        | SBOM generation (requires `runtime.flakes`)     |
-| `#CargoZigbuild`  | cargo-zigbuild  | GitHub     | Cross-compilation with Zig                      |
-| `#SccacheTool`    | sccache         | GitHub     | Compilation caching                             |
-| `#Zig`            | zig             | Nix        | Zig toolchain (requires `runtime.flakes`)       |
+| Definition        | Tool            | Source | Description                                  |
+| ----------------- | --------------- | ------ | -------------------------------------------- |
+| `#Rust`           | rust            | Rustup | Full Rust toolchain (cargo, rustc, etc.)     |
+| `#RustAnalyzer`   | rust-analyzer   | GitHub | LSP server (uses date-based versions)        |
+| `#CargoNextest`   | cargo-nextest   | GitHub | Fast test runner                             |
+| `#CargoDeny`      | cargo-deny      | GitHub | License/security checker (no `v` tag prefix) |
+| `#CargoLlvmCov`   | cargo-llvm-cov  | GitHub | Code coverage via LLVM                       |
+| `#CargoCyclonedx` | cargo-cyclonedx | Nix    | SBOM generation (requires `runtime.flakes`)  |
+| `#CargoZigbuild`  | cargo-zigbuild  | GitHub | Cross-compilation with Zig                   |
+| `#SccacheTool`    | sccache         | GitHub | Compilation caching                          |
+| `#Zig`            | zig             | Nix    | Zig toolchain (requires `runtime.flakes`)    |
 
 **Example - Full Rust development setup:**
 

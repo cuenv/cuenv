@@ -144,9 +144,9 @@ type ToolIdentityKey = (String, String, String);
 /// false if it should use the cached lockfile resolution.
 fn should_update_tool(tool_name: &str, update_tools: Option<&Vec<String>>) -> bool {
     match update_tools {
-        None => false,                                        // No -u flag: use cache
-        Some(tools) if tools.is_empty() => true,              // -u alone: update all
-        Some(tools) => tools.iter().any(|t| t == tool_name),  // -u <names>: update if listed
+        None => false,                                       // No -u flag: use cache
+        Some(tools) if tools.is_empty() => true,             // -u alone: update all
+        Some(tools) => tools.iter().any(|t| t == tool_name), // -u <names>: update if listed
     }
 }
 
@@ -190,11 +190,7 @@ fn get_valid_cached_resolution<'a>(
 ///
 /// Tools are considered identical if they have the same name, version, and source.
 /// This prevents resolving the same tool multiple times when defined in multiple projects.
-fn tool_identity_key(
-    name: &str,
-    version: &str,
-    source: Option<&SourceConfig>,
-) -> ToolIdentityKey {
+fn tool_identity_key(name: &str, version: &str, source: Option<&SourceConfig>) -> ToolIdentityKey {
     let source_hash = source.map(|s| format!("{s:?}")).unwrap_or_default();
     (name.to_string(), version.to_string(), source_hash)
 }
@@ -500,7 +496,12 @@ async fn execute_lock_sync(
                     None
                 } else if let Some(ref existing) = existing_lockfile {
                     if let Some(locked_tool) = existing.find_tool(&tool.name) {
-                        get_valid_cached_resolution(locked_tool, &tool.version, platform_str, &config)
+                        get_valid_cached_resolution(
+                            locked_tool,
+                            &tool.version,
+                            platform_str,
+                            &config,
+                        )
                     } else {
                         debug!(tool = %tool.name, "Cache miss: tool not in lockfile");
                         None
