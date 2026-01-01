@@ -1118,12 +1118,15 @@ fn create_synthetic_matrix_task(
 
     // Convert HashMap to BTreeMap for IR compatibility
     // Sort dimension values for deterministic output
-    let dimensions: BTreeMap<String, Vec<String>> =
-        matrix_task.matrix.iter().map(|(k, v)| {
+    let dimensions: BTreeMap<String, Vec<String>> = matrix_task
+        .matrix
+        .iter()
+        .map(|(k, v)| {
             let mut sorted_values = v.clone();
             sorted_values.sort();
             (k.clone(), sorted_values)
-        }).collect();
+        })
+        .collect();
 
     let matrix = MatrixConfig {
         dimensions,

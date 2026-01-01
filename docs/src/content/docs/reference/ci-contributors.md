@@ -275,11 +275,11 @@ ci: stageContributors: [
 
 **Available Contributors:**
 
-| Set | Contributors |
-|-----|--------------|
-| `#CoreContributors` | `#Nix`, `#Cuenv`, `#OnePassword` |
-| `#GitHubContributors` | `#Cachix`, `#GhModels`, `#TrustedPublishing` |
-| `#DefaultContributors` | All of the above |
+| Set                    | Contributors                                 |
+| ---------------------- | -------------------------------------------- |
+| `#CoreContributors`    | `#Nix`, `#Cuenv`, `#OnePassword`             |
+| `#GitHubContributors`  | `#Cachix`, `#GhModels`, `#TrustedPublishing` |
+| `#DefaultContributors` | All of the above                             |
 
 ## Activation Conditions
 

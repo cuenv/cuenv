@@ -98,13 +98,13 @@ package schema
 })
 
 // =============================================================================
-// Stage Contributors
+// Contributors
 // =============================================================================
 
-// Build stages for contributor-injected tasks
-#BuildStage: "bootstrap" | "setup" | "success" | "failure"
+// Build phases for contributor-injected tasks
+#BuildPhase: "bootstrap" | "setup" | "success" | "failure"
 
-// Activation predicate for stage contributors
+// Activation predicate for contributors
 // All specified conditions must be true (AND logic)
 #ActivationCondition: close({
 	// Always active (no conditions)

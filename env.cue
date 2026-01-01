@@ -85,7 +85,7 @@ schema.#Project & {
 	}
 
 	ci: {
-		contributors: sccache: xRust.#Sccache
+		stageContributors: [xRust.#Sccache]
 
 		provider: github: {
 			runner: "blacksmith-8vcpu-ubuntu-2404"

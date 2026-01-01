@@ -268,10 +268,7 @@ impl GitHubToolProvider {
         }
 
         // Generic error for other status codes
-        cuenv_core::Error::tool_resolution(format!(
-            "Failed to fetch {}: HTTP {}",
-            resource, status
-        ))
+        cuenv_core::Error::tool_resolution(format!("Failed to fetch {}: HTTP {}", resource, status))
     }
 
     /// Download an asset from GitHub.
@@ -906,7 +903,10 @@ mod tests {
             remaining: Some(0),
             reset: None,
         };
-        assert_eq!(info.format_status(), Some("0/60 requests remaining".to_string()));
+        assert_eq!(
+            info.format_status(),
+            Some("0/60 requests remaining".to_string())
+        );
 
         let info_partial = RateLimitInfo {
             limit: Some(60),

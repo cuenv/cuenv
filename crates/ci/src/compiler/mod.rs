@@ -752,9 +752,9 @@ impl Compiler {
             return true;
         };
 
-        // Check always condition
-        if condition.always == Some(true) {
-            return true;
+        // Check always condition - if explicitly set, use its value directly
+        if let Some(always_val) = condition.always {
+            return always_val;
         }
 
         // Check runtime type
@@ -839,11 +839,7 @@ impl Compiler {
     }
 
     /// Check if the pipeline environment uses any of the specified secrets providers
-    fn has_secrets_provider(
-        &self,
-        providers: &[String],
-        ir: &IntermediateRepresentation,
-    ) -> bool {
+    fn has_secrets_provider(&self, providers: &[String], ir: &IntermediateRepresentation) -> bool {
         let Some(ref env_name) = ir.pipeline.environment else {
             return false;
         };
@@ -865,21 +861,19 @@ impl Compiler {
                     {
                         return true;
                     }
-                    cuenv_core::environment::EnvValue::WithPolicies(wp) => {
-                        match &wp.value {
-                            cuenv_core::environment::EnvValueSimple::Secret(secret)
-                                if secret.resolver == "onepassword" =>
-                            {
-                                return true;
-                            }
-                            cuenv_core::environment::EnvValueSimple::String(s)
-                                if s.starts_with("op://") =>
-                            {
-                                return true;
-                            }
-                            _ => {}
+                    cuenv_core::environment::EnvValue::WithPolicies(wp) => match &wp.value {
+                        cuenv_core::environment::EnvValueSimple::Secret(secret)
+                            if secret.resolver == "onepassword" =>
+                        {
+                            return true;
                         }
-                    }
+                        cuenv_core::environment::EnvValueSimple::String(s)
+                            if s.starts_with("op://") =>
+                        {
+                            return true;
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -1627,7 +1621,9 @@ mod tests {
     // Stage Contributor Activation Tests
     // =========================================================================
 
+    use crate::ir::StageConfiguration;
     use cuenv_core::ci::ActivationCondition;
+    use std::collections::HashMap;
 
     /// Helper to create a minimal StageContributor for testing
     fn test_contributor(id: &str, when: Option<ActivationCondition>) -> StageContributor {
@@ -1651,7 +1647,7 @@ mod tests {
                 pipeline_tasks: vec![],
             },
             runtimes: vec![],
-            stages: Default::default(),
+            stages: StageConfiguration::default(),
             tasks: vec![],
         }
     }
@@ -1689,9 +1685,7 @@ mod tests {
         let compiler = Compiler::new(project);
         let ir = test_ir();
 
-        // always: false means not active (skip the always: true shortcut)
-        // But with no other conditions specified, the function returns true
-        // because all condition checks pass (empty vecs are skipped)
+        // always: false explicitly disables the contributor
         let contributor = test_contributor(
             "test",
             Some(ActivationCondition {
@@ -1699,8 +1693,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        // With always: false and no other conditions, it falls through to true
-        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(!compiler.cue_stage_contributor_is_active(&contributor, &ir));
     }
 
     #[test]
@@ -1834,8 +1827,8 @@ mod tests {
             command: Some("echo hello".to_string()),
             script: None,
             shell: false,
-            env: Default::default(),
-            secrets: Default::default(),
+            env: HashMap::default(),
+            secrets: HashMap::default(),
             depends_on: vec![],
             priority: 10,
             provider: None,
@@ -1860,8 +1853,8 @@ mod tests {
             command: None,
             script: Some("echo line1\necho line2".to_string()),
             shell: true,
-            env: Default::default(),
-            secrets: Default::default(),
+            env: HashMap::default(),
+            secrets: HashMap::default(),
             depends_on: vec!["other".to_string()],
             priority: 5,
             provider: None,
@@ -1878,7 +1871,9 @@ mod tests {
 
     #[test]
     fn test_cue_stage_task_to_ir_github_action() {
-        use cuenv_core::ci::{BuildStage, CueStageTask, GitHubActionConfig, StageTaskProviderConfig};
+        use cuenv_core::ci::{
+            BuildStage, CueStageTask, GitHubActionConfig, StageTaskProviderConfig,
+        };
 
         let mut inputs = std::collections::HashMap::new();
         inputs.insert(
@@ -1893,8 +1888,8 @@ mod tests {
             command: None,
             script: None,
             shell: false,
-            env: Default::default(),
-            secrets: Default::default(),
+            env: HashMap::default(),
+            secrets: HashMap::default(),
             depends_on: vec![],
             priority: 0,
             provider: Some(StageTaskProviderConfig {
@@ -1925,7 +1920,10 @@ mod tests {
         use cuenv_core::ci::{BuildStage, CueStageTask, SecretRef, SecretRefConfig};
 
         let mut secrets = std::collections::HashMap::new();
-        secrets.insert("SIMPLE_SECRET".to_string(), SecretRef::Simple("SECRET_NAME".to_string()));
+        secrets.insert(
+            "SIMPLE_SECRET".to_string(),
+            SecretRef::Simple("SECRET_NAME".to_string()),
+        );
         secrets.insert(
             "DETAILED_SECRET".to_string(),
             SecretRef::Detailed(SecretRefConfig {
@@ -1941,7 +1939,7 @@ mod tests {
             command: Some("echo test".to_string()),
             script: None,
             shell: false,
-            env: Default::default(),
+            env: HashMap::default(),
             secrets,
             depends_on: vec![],
             priority: 10,
@@ -1979,7 +1977,7 @@ mod tests {
             script: None,
             shell: false,
             env,
-            secrets: Default::default(),
+            secrets: HashMap::default(),
             depends_on: vec![],
             priority: 10,
             provider: None,

@@ -822,11 +822,7 @@ fn test_build_for_task_with_hook_chain() {
 
     tasks.tasks.insert(
         "dev".to_string(),
-        TaskDefinition::Single(Box::new(create_task(
-            "dev",
-            vec!["bun.setup"],
-            vec!["bun"],
-        ))),
+        TaskDefinition::Single(Box::new(create_task("dev", vec!["bun.setup"], vec!["bun"]))),
     );
 
     let mut graph = TaskGraph::new();

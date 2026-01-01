@@ -32,7 +32,11 @@
 //	ci: stageContributors: stages.#DefaultContributors
 package stages
 
-import "github.com/cuenv/cuenv/schema"
+import (
+	"list"
+
+	"github.com/cuenv/cuenv/schema"
+)
 
 // #CoreContributors contains the core (provider-agnostic) stage contributors.
 // These are always evaluated regardless of the CI provider.
@@ -52,6 +56,4 @@ import "github.com/cuenv/cuenv/schema"
 
 // #DefaultContributors contains all default stage contributors.
 // Combines core contributors with GitHub-specific contributors.
-#DefaultContributors: [...schema.#StageContributor] & (
-	#CoreContributors + #GitHubContributors
-)
+#DefaultContributors: [...schema.#StageContributor] & list.Concat([#CoreContributors, #GitHubContributors])
