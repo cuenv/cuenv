@@ -743,6 +743,17 @@ pub enum SyncCommands {
             help = "Sync lock for all projects in the workspace"
         )]
         all: bool,
+        /// Force re-resolution of tools, ignoring cached lockfile resolutions.
+        /// Use without arguments to update all tools, or specify tool names.
+        #[arg(
+            long = "update",
+            short = 'u',
+            help = "Force re-resolution of tools. Use -u to update all, or -u bun jq to update specific tools.",
+            num_args = 0..,
+            value_name = "TOOLS",
+            default_missing_value = ""
+        )]
+        update: Option<Vec<String>>,
     },
     /// Sync files from CUE cube configurations in projects.
     #[command(about = "Sync files from CUE cube configurations in projects")]
@@ -1527,6 +1538,7 @@ impl Commands {
                     scope,
                     show_diff,
                     ci_provider,
+                    update_tools,
                 ) = match subcommand {
                     Some(SyncCommands::Lock {
                         path: sub_path,
@@ -1534,15 +1546,26 @@ impl Commands {
                         dry_run: sub_dry_run,
                         check: sub_check,
                         all: sub_all,
-                    }) => (
-                        Some("lock".to_string()),
-                        sub_path,
-                        sub_package,
-                        to_mode(sub_dry_run, sub_check),
-                        to_scope(sub_all || all),
-                        false,
-                        None,
-                    ),
+                        update: sub_update,
+                    }) => {
+                        // Convert update flag:
+                        // - None: flag not provided, use cache
+                        // - Some(vec![""]) or Some(vec![]): -u alone, update all tools
+                        // - Some(vec!["bun", "jq"]): update specific tools
+                        let update_tools = sub_update.map(|tools| {
+                            tools.into_iter().filter(|t| !t.is_empty()).collect()
+                        });
+                        (
+                            Some("lock".to_string()),
+                            sub_path,
+                            sub_package,
+                            to_mode(sub_dry_run, sub_check),
+                            to_scope(sub_all || all),
+                            false,
+                            None,
+                            update_tools,
+                        )
+                    }
                     Some(SyncCommands::Cubes {
                         path: sub_path,
                         package: sub_package,
@@ -1558,6 +1581,7 @@ impl Commands {
                         to_scope(sub_all || all),
                         cubes_diff,
                         None,
+                        None, // update_tools only applies to lock
                     ),
                     Some(SyncCommands::Ci {
                         path: sub_path,
@@ -1574,6 +1598,7 @@ impl Commands {
                         to_scope(sub_all || all),
                         false,
                         provider,
+                        None, // update_tools only applies to lock
                     ),
                     None => (
                         None,
@@ -1583,6 +1608,7 @@ impl Commands {
                         to_scope(all),
                         false,
                         None,
+                        None, // update_tools only applies to lock
                     ),
                 };
                 Command::Sync {
@@ -1593,6 +1619,7 @@ impl Commands {
                     scope,
                     show_diff,
                     ci_provider,
+                    update_tools,
                 }
             }
             Self::Secrets { subcommand } => match subcommand {

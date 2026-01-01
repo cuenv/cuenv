@@ -33,6 +33,11 @@ pub struct SyncOptions {
     pub show_diff: bool,
     /// CI provider filter (github, buildkite).
     pub ci_provider: Option<String>,
+    /// Tools to force re-resolution for (lock-specific).
+    /// - `None`: use cached resolutions from lockfile
+    /// - `Some(vec![])`: re-resolve ALL tools (`-u` with no args)
+    /// - `Some(vec!["bun"])`: re-resolve only specified tools
+    pub update_tools: Option<Vec<String>>,
 }
 
 /// Result of a sync operation.
@@ -146,6 +151,7 @@ pub trait SyncProvider: Send + Sync {
             mode,
             show_diff: matches.get_flag("diff"),
             ci_provider: matches.get_one::<String>("provider").cloned(),
+            update_tools: None,
         }
     }
 }

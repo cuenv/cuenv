@@ -151,6 +151,7 @@ pub trait SyncCapability: Provider {
                 .ok()
                 .flatten()
                 .cloned(),
+            update_tools: None,
         }
     }
 }
