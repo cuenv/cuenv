@@ -1043,7 +1043,9 @@ impl Compiler {
     fn phase_task_to_ir(phase_task: &PhaseTask, provider: &str) -> StageTask {
         // Build command array
         let (command, shell) = if let Some(ref cmd) = phase_task.command {
-            (vec![cmd.clone()], phase_task.shell)
+            let mut cmd_vec = vec![cmd.clone()];
+            cmd_vec.extend(phase_task.args.clone());
+            (cmd_vec, phase_task.shell)
         } else if let Some(ref script) = phase_task.script {
             (vec![script.clone()], true)
         } else {
@@ -1876,6 +1878,7 @@ mod tests {
             phase: BuildPhase::Setup,
             label: Some("Test Task".to_string()),
             command: Some("echo hello".to_string()),
+            args: vec![],
             script: None,
             shell: false,
             env: HashMap::default(),
@@ -1902,6 +1905,7 @@ mod tests {
             phase: BuildPhase::Bootstrap,
             label: None,
             command: None,
+            args: vec![],
             script: Some("echo line1\necho line2".to_string()),
             shell: true,
             env: HashMap::default(),
@@ -1935,6 +1939,7 @@ mod tests {
             phase: BuildPhase::Bootstrap,
             label: Some("Install Nix".to_string()),
             command: None,
+            args: vec![],
             script: None,
             shell: false,
             env: HashMap::default(),
@@ -1986,6 +1991,7 @@ mod tests {
             phase: BuildPhase::Setup,
             label: None,
             command: Some("echo test".to_string()),
+            args: vec![],
             script: None,
             shell: false,
             env: HashMap::default(),
@@ -2023,6 +2029,7 @@ mod tests {
             phase: BuildPhase::Setup,
             label: None,
             command: Some("printenv".to_string()),
+            args: vec![],
             script: None,
             shell: false,
             env,
@@ -2037,5 +2044,40 @@ mod tests {
         assert_eq!(ir_task.env.len(), 2);
         assert_eq!(ir_task.env.get("VAR1"), Some(&"value1".to_string()));
         assert_eq!(ir_task.env.get("VAR2"), Some(&"value2".to_string()));
+    }
+
+    #[test]
+    fn test_phase_task_to_ir_command_with_args() {
+        use cuenv_core::ci::BuildPhase;
+
+        let phase_task = PhaseTask {
+            id: "bun-install".to_string(),
+            phase: BuildPhase::Setup,
+            label: Some("Install Bun Dependencies".to_string()),
+            command: Some("cuenv".to_string()),
+            args: vec![
+                "exec".to_string(),
+                "--".to_string(),
+                "bun".to_string(),
+                "install".to_string(),
+                "--frozen-lockfile".to_string(),
+            ],
+            script: None,
+            shell: false,
+            env: HashMap::default(),
+            secrets: HashMap::default(),
+            depends_on: vec![],
+            priority: 10,
+            provider: None,
+        };
+
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+
+        assert_eq!(ir_task.id, "bun-install");
+        assert_eq!(
+            ir_task.command,
+            vec!["cuenv", "exec", "--", "bun", "install", "--frozen-lockfile"]
+        );
+        assert!(!ir_task.shell);
     }
 }
