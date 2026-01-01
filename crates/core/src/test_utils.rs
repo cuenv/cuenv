@@ -50,20 +50,6 @@ pub fn create_task_with_project_ref(
     }
 }
 
-/// Create a task with workspace dependency
-pub fn create_workspace_task(name: &str, deps: Vec<&str>, workspaces: Vec<&str>) -> Task {
-    Task {
-        command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(String::from).collect(),
-        workspaces: if workspaces.is_empty() {
-            None
-        } else {
-            Some(workspaces.into_iter().map(String::from).collect())
-        },
-        ..Default::default()
-    }
-}
-
 /// Create a test hook for onEnter/onExit testing
 pub fn create_test_hook(order: i32, command: &str) -> crate::hooks::Hook {
     crate::hooks::Hook {

@@ -8,9 +8,7 @@
 //! - Task discovery and matcher integration
 
 use super::*;
-use crate::test_utils::{
-    create_task, create_task_ref, create_task_with_project_ref, create_workspace_task,
-};
+use crate::test_utils::{create_task, create_task_ref, create_task_with_project_ref};
 
 // ============================================================================
 // Basic Cross-Project Reference Tests
@@ -329,7 +327,7 @@ fn test_workspace_setup_chain() {
     let hook1 = create_task("bun.hooks.beforeInstall[0]", vec![], vec![]);
     let install = create_task("bun.install", vec!["bun.hooks.beforeInstall[0]"], vec![]);
     let setup = create_task("bun.setup", vec!["bun.install"], vec![]);
-    let user_task = create_workspace_task("dev", vec!["bun.setup"], vec!["bun"]);
+    let user_task = create_task("dev", vec!["bun.setup"], vec!["bun"]);
 
     graph.add_task("bun.hooks.beforeInstall[0]", hook1).unwrap();
     graph.add_task("bun.install", install).unwrap();
@@ -367,7 +365,7 @@ fn test_multiple_workspaces_setup() {
     let cargo_setup = create_task("cargo.setup", vec!["cargo.install"], vec![]);
 
     // Task using both workspaces
-    let build = create_workspace_task(
+    let build = create_task(
         "build",
         vec!["bun.setup", "cargo.setup"],
         vec!["bun", "cargo"],
@@ -693,7 +691,7 @@ fn test_empty_hook_list() {
 
     let install = create_task("bun.install", vec![], vec![]);
     let setup = create_task("bun.setup", vec!["bun.install"], vec![]);
-    let user_task = create_workspace_task("dev", vec!["bun.setup"], vec!["bun"]);
+    let user_task = create_task("dev", vec!["bun.setup"], vec!["bun"]);
 
     graph.add_task("bun.install", install).unwrap();
     graph.add_task("bun.setup", setup).unwrap();
@@ -824,7 +822,7 @@ fn test_build_for_task_with_hook_chain() {
 
     tasks.tasks.insert(
         "dev".to_string(),
-        TaskDefinition::Single(Box::new(create_workspace_task(
+        TaskDefinition::Single(Box::new(create_task(
             "dev",
             vec!["bun.setup"],
             vec!["bun"],

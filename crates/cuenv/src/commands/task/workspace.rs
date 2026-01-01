@@ -1,25 +1,38 @@
 //! Workspace setup and global task building
 //!
-//! Handles injecting workspace setup tasks (install hooks, setup dependencies)
-//! and building the global task registry from all discovered projects.
+//! Handles auto-detecting workspaces from lockfiles and injecting setup tasks.
+//! Workspaces are detected from:
+//! - `bun.lock` → Bun
+//! - `package-lock.json` → npm
+//! - `pnpm-lock.yaml` → pnpm
+//! - `yarn.lock` → Yarn
+//! - `Cargo.lock` → Cargo
+//! - `deno.lock` → Deno
+//!
+//! For each detected workspace, we inject:
+//! - `{manager}.install` task (runs the package manager's install command)
+//! - `{manager}.setup` task (depends on install, used as dependency anchor)
+//!
+//! Tasks are auto-associated by command: if a task uses `bun` and we detected
+//! a Bun workspace, the task automatically depends on `bun.setup`.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use cuenv_core::Result;
-use cuenv_core::manifest::{HookItem, Project};
+use cuenv_core::manifest::Project;
 use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
-use cuenv_core::tasks::{TaskDefinition, TaskGroup, TaskIndex, Tasks};
+use cuenv_core::tasks::{Input, Task, TaskDefinition, TaskGroup, TaskIndex, Tasks};
+use cuenv_workspaces::{PackageManager, detect_from_command, detect_package_managers};
 
 use crate::commands::CommandExecutor;
 
 use super::discovery::evaluate_manifest;
 use super::normalization::{
-    canonicalize_dep_for_task_name, compute_project_id, normalize_definition_deps,
-    set_default_project_root, task_fqdn,
+    compute_project_id, normalize_definition_deps, set_default_project_root, task_fqdn,
 };
-use super::resolution::{get_task_mut_by_name_or_path, resolve_task_refs_in_manifest};
+use super::resolution::resolve_task_refs_in_manifest;
 
 /// Context for a project during global task building.
 #[derive(Clone)]
@@ -30,256 +43,220 @@ pub struct ProjectCtx {
     pub is_current: bool,
 }
 
-/// Inject workspace setup tasks into a project manifest.
+/// Install task configuration for a package manager.
+struct InstallTaskConfig {
+    command: &'static str,
+    args: Vec<&'static str>,
+    inputs: Vec<&'static str>,
+    outputs: Vec<&'static str>,
+}
+
+/// Returns the install task configuration for a package manager.
+fn install_config_for_manager(manager: PackageManager) -> InstallTaskConfig {
+    match manager {
+        PackageManager::Npm => InstallTaskConfig {
+            command: "npm",
+            args: vec!["install"],
+            inputs: vec!["package.json", "package-lock.json"],
+            outputs: vec!["node_modules"],
+        },
+        PackageManager::Bun => InstallTaskConfig {
+            command: "bun",
+            args: vec!["install"],
+            inputs: vec!["package.json", "bun.lock"],
+            outputs: vec!["node_modules"],
+        },
+        PackageManager::Pnpm => InstallTaskConfig {
+            command: "pnpm",
+            args: vec!["install"],
+            inputs: vec!["package.json", "pnpm-lock.yaml"],
+            outputs: vec!["node_modules"],
+        },
+        PackageManager::YarnClassic | PackageManager::YarnModern => InstallTaskConfig {
+            command: "yarn",
+            args: vec!["install"],
+            inputs: vec!["package.json", "yarn.lock"],
+            outputs: vec!["node_modules"],
+        },
+        PackageManager::Cargo => InstallTaskConfig {
+            command: "cargo",
+            args: vec!["fetch"],
+            inputs: vec!["Cargo.toml", "Cargo.lock"],
+            outputs: vec![],
+        },
+        PackageManager::Deno => InstallTaskConfig {
+            command: "deno",
+            args: vec!["cache", "**/*.ts"],
+            inputs: vec!["deno.json", "deno.lock"],
+            outputs: vec![],
+        },
+    }
+}
+
+/// Returns the canonical workspace name for a package manager.
+fn workspace_name_for_manager(manager: PackageManager) -> &'static str {
+    match manager {
+        PackageManager::Npm => "npm",
+        PackageManager::Bun => "bun",
+        PackageManager::Pnpm => "pnpm",
+        PackageManager::YarnClassic | PackageManager::YarnModern => "yarn",
+        PackageManager::Cargo => "cargo",
+        PackageManager::Deno => "deno",
+    }
+}
+
+/// Inject workspace setup tasks based on auto-detection from lockfiles.
 ///
-/// For each enabled workspace that is referenced by tasks in the manifest:
-/// 1. Expands `beforeInstall` hooks into concrete tasks
-/// 2. Ensures a `<workspace>.setup` task exists
-/// 3. Wires tasks that use the workspace to depend on setup
+/// This function:
+/// 1. Detects package managers from lockfiles in the project directory
+/// 2. For each detected manager, creates `{manager}.install` and `{manager}.setup` tasks
+/// 3. Auto-associates tasks by command: if a task uses `bun`, it depends on `bun.setup`
 ///
-/// This creates the dependency chain: hooks -> install -> setup -> user tasks
-#[allow(clippy::too_many_lines)]
-pub fn inject_workspace_setup_tasks(
-    manifest: &mut Project,
-    discovery: &TaskDiscovery,
-    manifest_project_id: &str,
-) -> Result<()> {
-    // NOTE: This is long because it needs to translate workspace config + hook steps into
-    // concrete tasks while carefully avoiding dependency cycles.
-    #[allow(clippy::too_many_lines)]
-    fn add_setup_dep_to_definition(
-        task_name: &str,
-        task_def: &mut TaskDefinition,
-        ws_name: &str,
-        setup_task_name: &str,
-    ) {
-        // Avoid cycles: never make install/setup/hooks depend on setup.
-        let install_name = format!("{ws_name}.install");
-        let setup_name = format!("{ws_name}.setup");
-        let hooks_prefix = format!("{ws_name}.hooks.");
+/// This replaces the old explicit `workspaces:` configuration approach.
+pub fn inject_detected_workspace_tasks(manifest: &mut Project, project_root: &Path) {
+    // Detect package managers from lockfiles
+    let detected_managers = detect_package_managers(project_root).unwrap_or_else(|e| {
+        tracing::debug!(
+            "Failed to detect package managers in {}: {}",
+            project_root.display(),
+            e
+        );
+        Vec::new()
+    });
 
-        match task_def {
-            TaskDefinition::Single(task) => {
-                if !task
-                    .workspaces
-                    .as_ref()
-                    .is_some_and(|ws| ws.iter().any(|w| w == ws_name))
-                {
-                    return;
-                }
-
-                if task_name == install_name
-                    || task_name == setup_name
-                    || task_name.starts_with(&hooks_prefix)
-                {
-                    return;
-                }
-
-                if !task.depends_on.contains(&setup_task_name.to_string()) {
-                    task.depends_on.push(setup_task_name.to_string());
-                }
-            }
-            TaskDefinition::Group(group) => match group {
-                TaskGroup::Sequential(tasks) => {
-                    for (i, sub_task) in tasks.iter_mut().enumerate() {
-                        let sub_name = format!("{task_name}[{i}]");
-                        add_setup_dep_to_definition(&sub_name, sub_task, ws_name, setup_task_name);
-                    }
-                }
-                TaskGroup::Parallel(group) => {
-                    for (name, sub_task) in &mut group.tasks {
-                        let sub_name = format!("{task_name}.{name}");
-                        add_setup_dep_to_definition(&sub_name, sub_task, ws_name, setup_task_name);
-                    }
-                }
-            },
-        }
+    if detected_managers.is_empty() {
+        return;
     }
 
-    let Some(workspaces) = &manifest.workspaces else {
-        return Ok(());
-    };
+    tracing::debug!(
+        "Detected package managers in {}: {:?}",
+        project_root.display(),
+        detected_managers
+    );
 
-    // Clone to avoid borrow issues
-    let workspaces = workspaces.clone();
+    // Track which workspace names we've injected (to avoid duplicates for yarn variants)
+    let mut injected_workspaces: HashSet<&str> = HashSet::new();
 
-    for (ws_name, config) in &workspaces {
-        if !config.enabled {
+    for manager in &detected_managers {
+        let ws_name = workspace_name_for_manager(*manager);
+
+        // Skip if we've already injected this workspace (e.g., YarnClassic and YarnModern both map to "yarn")
+        if injected_workspaces.contains(ws_name) {
             continue;
         }
-
-        // Only inject if this workspace is actually referenced by tasks.
-        let workspace_used = manifest
-            .tasks
-            .values()
-            .any(|task_def| task_def.uses_workspace(ws_name));
-        if !workspace_used {
-            continue;
-        }
+        injected_workspaces.insert(ws_name);
 
         let install_task_name = format!("{ws_name}.install");
         let setup_task_name = format!("{ws_name}.setup");
 
-        // Expand beforeInstall hook steps into concrete tasks.
-        let mut all_hook_task_names: Vec<String> = Vec::new();
-        let mut previous_step_task_names: Vec<String> = Vec::new();
-
-        if let Some(hooks) = &config.hooks
-            && let Some(before_install) = &hooks.before_install
-        {
-            for (step_idx, hook_item) in before_install.iter().enumerate() {
-                match hook_item {
-                    HookItem::Task(task) => {
-                        let hook_task_name = format!("{ws_name}.hooks.beforeInstall[{step_idx}]");
-                        let mut hook_task = task.as_ref().clone();
-                        hook_task
-                            .depends_on
-                            .extend(previous_step_task_names.clone());
-                        manifest.tasks.insert(
-                            hook_task_name.clone(),
-                            TaskDefinition::Single(Box::new(hook_task)),
-                        );
-                        all_hook_task_names.push(hook_task_name.clone());
-                        previous_step_task_names = vec![hook_task_name];
-                    }
-                    HookItem::TaskRef(task_ref) => {
-                        let hook_task_name = format!("{ws_name}.hooks.beforeInstall[{step_idx}]");
-                        let mut hook_task = cuenv_core::tasks::Task::from_task_ref(&task_ref.ref_);
-                        hook_task
-                            .depends_on
-                            .extend(previous_step_task_names.clone());
-                        manifest.tasks.insert(
-                            hook_task_name.clone(),
-                            TaskDefinition::Single(Box::new(hook_task)),
-                        );
-                        all_hook_task_names.push(hook_task_name.clone());
-                        previous_step_task_names = vec![hook_task_name];
-                    }
-                    HookItem::Match(match_hook) => {
-                        let matched_tasks = discovery.match_tasks(&match_hook.matcher).map_err(|e| {
-                            cuenv_core::Error::configuration(format!(
-                                "Workspace '{ws_name}' beforeInstall matcher has invalid configuration: {e}"
-                            ))
-                        })?;
-
-                        let step_name = match_hook
-                            .name
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map_or_else(|| format!("match[{step_idx}]"), ToString::to_string);
-
-                        if matched_tasks.is_empty() {
-                            tracing::info!(
-                                "Workspace '{}' beforeInstall matcher '{}' matched no tasks",
-                                ws_name,
-                                step_name
-                            );
-                        } else {
-                            let matched_display: Vec<String> = matched_tasks
-                                .iter()
-                                .map(|m| {
-                                    if let Some(project_name) = &m.project_name {
-                                        format!("{project_name}:{}", m.task_name)
-                                    } else {
-                                        format!("{}:{}", m.project_root.display(), m.task_name)
-                                    }
-                                })
-                                .collect();
-
-                            tracing::info!(
-                                "Workspace '{}' beforeInstall matcher '{}' matched {} task(s): {}",
-                                ws_name,
-                                step_name,
-                                matched_display.len(),
-                                matched_display.join(", ")
-                            );
-                        }
-
-                        let mut step_task_names: Vec<String> = Vec::new();
-                        let mut prev_in_step: Option<String> = None;
-
-                        for (i, matched) in matched_tasks.iter().enumerate() {
-                            let hook_task_name =
-                                format!("{ws_name}.hooks.beforeInstall.{step_name}[{i}]");
-
-                            let mut task = matched.task.clone();
-                            task.project_root = Some(
-                                fs::canonicalize(&matched.project_root)
-                                    .unwrap_or_else(|_| matched.project_root.clone()),
-                            );
-
-                            // Canonicalize deps relative to the matched task name (not the synthetic hook name)
-                            task.depends_on = task
-                                .depends_on
-                                .iter()
-                                .map(|d| canonicalize_dep_for_task_name(d, &matched.task_name))
-                                .collect();
-
-                            // Ensure this step runs after previous hook step(s). These deps live in the
-                            // current project even though this task executes in a matched project_root.
-                            for dep in &previous_step_task_names {
-                                task.depends_on.push(task_fqdn(manifest_project_id, dep));
-                            }
-
-                            // Respect matcher.parallel: chain within this step if parallel == false
-                            if !match_hook.matcher.parallel {
-                                if let Some(prev_name) = &prev_in_step {
-                                    task.depends_on
-                                        .push(task_fqdn(manifest_project_id, prev_name));
-                                }
-                                prev_in_step = Some(hook_task_name.clone());
-                            }
-
-                            manifest.tasks.insert(
-                                hook_task_name.clone(),
-                                TaskDefinition::Single(Box::new(task)),
-                            );
-                            all_hook_task_names.push(hook_task_name.clone());
-                            step_task_names.push(hook_task_name);
-                        }
-
-                        // Next step depends on all tasks from this step
-                        previous_step_task_names = step_task_names;
-                    }
-                }
-            }
+        // Create the install task if it doesn't exist
+        if !manifest.tasks.contains_key(&install_task_name) {
+            let config = install_config_for_manager(*manager);
+            let install_task = Task {
+                command: config.command.to_string(),
+                args: config.args.iter().map(|s| (*s).to_string()).collect(),
+                hermetic: false,
+                inputs: config
+                    .inputs
+                    .iter()
+                    .map(|s| Input::Path((*s).to_string()))
+                    .collect(),
+                outputs: config.outputs.iter().map(|s| (*s).to_string()).collect(),
+                description: Some(format!("Install {ws_name} dependencies")),
+                ..Default::default()
+            };
+            manifest.tasks.insert(
+                install_task_name.clone(),
+                TaskDefinition::Single(Box::new(install_task)),
+            );
+            tracing::debug!("Injected task: {}", install_task_name);
         }
 
-        // Wire: hooks -> install
-        if !all_hook_task_names.is_empty()
-            && let Some(install_task) =
-                get_task_mut_by_name_or_path(&mut manifest.tasks, &install_task_name)
-        {
-            for hook_name in &all_hook_task_names {
-                if !install_task.depends_on.contains(hook_name) {
-                    install_task.depends_on.push(hook_name.clone());
-                }
-            }
-        }
-
-        // Ensure <ws>.setup exists
+        // Create the setup task if it doesn't exist
         if !manifest.tasks.contains_key(&setup_task_name) {
-            let setup_task = cuenv_core::tasks::Task {
+            let setup_task = Task {
                 command: String::new(),
                 script: Some("true".to_string()),
                 hermetic: false,
                 depends_on: vec![install_task_name.clone()],
+                description: Some(format!("{ws_name} workspace setup complete")),
                 ..Default::default()
             };
             manifest.tasks.insert(
                 setup_task_name.clone(),
                 TaskDefinition::Single(Box::new(setup_task)),
             );
-        }
-
-        // Wire: any task that uses this workspace -> <ws>.setup
-        for (task_name, task_def) in &mut manifest.tasks {
-            add_setup_dep_to_definition(task_name, task_def, ws_name, &setup_task_name);
+            tracing::debug!("Injected task: {}", setup_task_name);
         }
     }
 
-    Ok(())
+    // Auto-associate tasks by command: if a task's command matches a detected manager,
+    // add a dependency on the corresponding setup task
+    let ws_names: Vec<&str> = injected_workspaces.iter().copied().collect();
+    for (task_name, task_def) in &mut manifest.tasks {
+        auto_associate_task_by_command(task_name, task_def, &ws_names);
+    }
+}
+
+/// Auto-associate a task with workspace setup based on its command.
+///
+/// If the task's command matches a detected package manager (e.g., "bun run dev"),
+/// we add a dependency on the corresponding setup task (e.g., "bun.setup").
+fn auto_associate_task_by_command(
+    task_name: &str,
+    task_def: &mut TaskDefinition,
+    workspace_names: &[&str],
+) {
+    match task_def {
+        TaskDefinition::Single(task) => {
+            // Skip synthetic install/setup tasks to avoid cycles
+            for ws_name in workspace_names {
+                if task_name == format!("{ws_name}.install")
+                    || task_name == format!("{ws_name}.setup")
+                {
+                    return;
+                }
+            }
+
+            // Detect package manager from command
+            let Some(detected_manager) = detect_from_command(&task.command) else {
+                return;
+            };
+
+            let ws_name = workspace_name_for_manager(detected_manager);
+
+            // Only add dependency if this workspace was detected
+            if !workspace_names.contains(&ws_name) {
+                return;
+            }
+
+            let setup_task_name = format!("{ws_name}.setup");
+
+            // Add dependency if not already present
+            if !task.depends_on.contains(&setup_task_name) {
+                task.depends_on.push(setup_task_name);
+                tracing::debug!(
+                    "Auto-associated task '{}' with workspace '{}'",
+                    task_name,
+                    ws_name
+                );
+            }
+        }
+        TaskDefinition::Group(group) => match group {
+            TaskGroup::Sequential(tasks) => {
+                for (i, sub_task) in tasks.iter_mut().enumerate() {
+                    let sub_name = format!("{task_name}[{i}]");
+                    auto_associate_task_by_command(&sub_name, sub_task, workspace_names);
+                }
+            }
+            TaskGroup::Parallel(group) => {
+                for (name, sub_task) in &mut group.tasks {
+                    let sub_name = format!("{task_name}.{name}");
+                    auto_associate_task_by_command(&sub_name, sub_task, workspace_names);
+                }
+            }
+        },
+    }
 }
 
 /// Build the global task registry from all discovered projects.
@@ -400,9 +377,9 @@ pub fn build_global_tasks(
         |p| p.id.clone(),
     );
 
-    // Inject workspace setup tasks and resolve TaskRefs (hooks)
+    // Inject workspace setup tasks (auto-detected from lockfiles) and resolve TaskRefs
     for p in &mut projects {
-        inject_workspace_setup_tasks(&mut p.manifest, &discovery, &p.id)?;
+        inject_detected_workspace_tasks(&mut p.manifest, &p.root);
         resolve_task_refs_in_manifest(&mut p.manifest, &discovery, &p.id, &project_id_by_name);
     }
 

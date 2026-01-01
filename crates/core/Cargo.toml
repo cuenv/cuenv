@@ -46,7 +46,7 @@ ignore = "0.4"
 tar = "0.4"
 zstd = { version = "0.13", features = ["zstdmt"] }
 hex = "0.4"
-cuenv-workspaces = { workspace = true, features = ["discovery-rust", "parsers-rust"] }
+cuenv-workspaces = { workspace = true, features = ["detection", "discovery-rust", "discovery-javascript", "parsers-rust", "parsers-javascript"] }
 cuenv-events = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

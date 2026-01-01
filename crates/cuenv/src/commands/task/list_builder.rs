@@ -4,73 +4,72 @@
 //! tasks properly injected. This ensures consistency across completions,
 //! workspace listings, and task execution.
 
+use std::path::Path;
+
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::TaskIndex;
-use cuenv_core::tasks::discovery::TaskDiscovery;
 
-use super::workspace::inject_workspace_setup_tasks;
+use super::workspace::inject_detected_workspace_tasks;
 
 /// Prepare a task index with all synthetic tasks injected.
 ///
 /// This is the single entry point for building task lists. It:
-/// 1. Applies implicit tasks (npm, bun workspace detection)
-/// 2. Injects workspace setup tasks if discovery is provided
+/// 1. Auto-detects workspaces from lockfiles and injects setup tasks
+/// 2. Auto-associates tasks by command (e.g., `bun` tasks depend on `bun.setup`)
 /// 3. Builds the TaskIndex
 ///
 /// # Arguments
 ///
-/// * `manifest` - The project manifest (will be mutated to add implicit/synthetic tasks)
-/// * `discovery` - Optional task discovery for cross-project hook resolution
-/// * `project_id` - The project ID used for workspace setup injection
+/// * `manifest` - The project manifest (will be mutated to add synthetic tasks)
+/// * `project_root` - Path to the project directory (for lockfile detection)
 ///
 /// # Errors
 ///
-/// Returns an error if workspace setup task injection fails (e.g., invalid regex
-/// in a hook matcher) or if `TaskIndex::build` fails (e.g., cyclic dependencies).
+/// Returns an error if `TaskIndex::build` fails (e.g., cyclic dependencies).
 ///
 /// # Example
 ///
 /// ```ignore
 /// let mut manifest = instance.deserialize::<Project>()?;
-/// let task_index = prepare_task_index(&mut manifest, Some(&discovery), &project_id)?;
+/// let task_index = prepare_task_index(&mut manifest, project_root)?;
 /// ```
-pub fn prepare_task_index(
-    manifest: &mut Project,
-    discovery: Option<&TaskDiscovery>,
-    project_id: &str,
-) -> Result<TaskIndex> {
-    // 1. Apply implicit tasks (npm, bun workspace detection)
-    *manifest = manifest.clone().with_implicit_tasks();
+pub fn prepare_task_index(manifest: &mut Project, project_root: &Path) -> Result<TaskIndex> {
+    // 1. Inject workspace setup tasks (auto-detected from lockfiles)
+    inject_detected_workspace_tasks(manifest, project_root);
 
-    // 2. Inject workspace setup tasks if discovery available
-    if let Some(discovery) = discovery {
-        inject_workspace_setup_tasks(manifest, discovery, project_id)?;
-    }
-
-    // 3. Build TaskIndex
+    // 2. Build TaskIndex
     TaskIndex::build(&manifest.tasks)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::manifest::WorkspaceConfig;
     use cuenv_core::tasks::{Task, TaskDefinition};
-    use std::collections::HashMap;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn create_test_dir() -> TempDir {
+        tempfile::Builder::new()
+            .prefix("cuenv_list_builder_test_")
+            .tempdir()
+            .expect("Failed to create temp directory")
+    }
 
     #[test]
-    fn test_prepare_task_index_empty_manifest_returns_empty() {
+    fn test_prepare_task_index_empty_manifest_no_lockfile() {
+        let tmp = create_test_dir();
         let mut manifest = Project::default();
-        let result = prepare_task_index(&mut manifest, None, "test");
+        let result = prepare_task_index(&mut manifest, tmp.path());
         assert!(result.is_ok());
         let index = result.unwrap();
-        // Empty manifest with no workspaces should have no tasks
+        // Empty manifest with no lockfiles should have no tasks
         assert!(index.list().is_empty());
     }
 
     #[test]
     fn test_prepare_task_index_preserves_explicit_tasks() {
+        let tmp = create_test_dir();
         let mut manifest = Project::default();
         manifest.tasks.insert(
             "build".to_string(),
@@ -88,7 +87,7 @@ mod tests {
             })),
         );
 
-        let result = prepare_task_index(&mut manifest, None, "test");
+        let result = prepare_task_index(&mut manifest, tmp.path());
         assert!(result.is_ok());
         let index = result.unwrap();
 
@@ -99,92 +98,59 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_task_index_injects_workspace_tasks() {
+    fn test_prepare_task_index_injects_bun_tasks_from_lockfile() {
+        let tmp = create_test_dir();
+        // Create bun.lock to trigger bun workspace detection
+        fs::write(tmp.path().join("bun.lock"), "lockfile content").unwrap();
+
         let mut manifest = Project::default();
 
-        // Configure a bun workspace with an inject task
-        let mut inject_tasks = HashMap::new();
-        inject_tasks.insert(
-            "install".to_string(),
-            Task {
-                command: "bun install".to_string(),
-                description: Some("Install bun dependencies".to_string()),
-                ..Default::default()
-            },
-        );
-
-        let mut workspaces = HashMap::new();
-        workspaces.insert(
-            "bun".to_string(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: Vec::new(),
-                inject: inject_tasks,
-            },
-        );
-        manifest.workspaces = Some(workspaces);
-
-        let result = prepare_task_index(&mut manifest, None, "test");
+        let result = prepare_task_index(&mut manifest, tmp.path());
         assert!(result.is_ok());
         let index = result.unwrap();
 
-        // Should have the injected bun.install task
+        // Should have auto-injected bun.install and bun.setup tasks
         let task_names: Vec<_> = index.list().iter().map(|t| t.name.as_str()).collect();
         assert!(
             task_names.contains(&"bun.install"),
-            "should contain injected 'bun.install' task, got: {:?}",
+            "should contain auto-injected 'bun.install' task, got: {:?}",
+            task_names
+        );
+        assert!(
+            task_names.contains(&"bun.setup"),
+            "should contain auto-injected 'bun.setup' task, got: {:?}",
             task_names
         );
     }
 
     #[test]
-    fn test_prepare_task_index_disabled_workspace_no_inject() {
+    fn test_prepare_task_index_no_lockfile_no_inject() {
+        let tmp = create_test_dir();
+        // No lockfile - should not inject any workspace tasks
+
         let mut manifest = Project::default();
 
-        // Configure a disabled workspace
-        let mut inject_tasks = HashMap::new();
-        inject_tasks.insert(
-            "install".to_string(),
-            Task {
-                command: "bun install".to_string(),
-                ..Default::default()
-            },
-        );
-
-        let mut workspaces = HashMap::new();
-        workspaces.insert(
-            "bun".to_string(),
-            WorkspaceConfig {
-                enabled: false, // Disabled!
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: Vec::new(),
-                inject: inject_tasks,
-            },
-        );
-        manifest.workspaces = Some(workspaces);
-
-        let result = prepare_task_index(&mut manifest, None, "test");
+        let result = prepare_task_index(&mut manifest, tmp.path());
         assert!(result.is_ok());
         let index = result.unwrap();
 
-        // Should NOT have the injected task since workspace is disabled
+        // Should NOT have any injected tasks
         let task_names: Vec<_> = index.list().iter().map(|t| t.name.as_str()).collect();
         assert!(
             !task_names.contains(&"bun.install"),
-            "disabled workspace should not inject tasks"
+            "no lockfile should mean no injected tasks"
         );
     }
 
     #[test]
     fn test_prepare_task_index_explicit_task_not_overridden() {
+        let tmp = create_test_dir();
+        // Create bun.lock to trigger detection
+        fs::write(tmp.path().join("bun.lock"), "lockfile content").unwrap();
+
         let mut manifest = Project::default();
 
-        // Add explicit bun.install task
+        // Add explicit bun.install task with custom command
         manifest.tasks.insert(
             "bun.install".to_string(),
             TaskDefinition::Single(Box::new(Task {
@@ -194,41 +160,49 @@ mod tests {
             })),
         );
 
-        // Configure workspace that would also inject bun.install
-        let mut inject_tasks = HashMap::new();
-        inject_tasks.insert(
-            "install".to_string(),
-            Task {
-                command: "bun install".to_string(),
-                description: Some("Injected install".to_string()),
-                ..Default::default()
-            },
-        );
-
-        let mut workspaces = HashMap::new();
-        workspaces.insert(
-            "bun".to_string(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: Vec::new(),
-                inject: inject_tasks,
-            },
-        );
-        manifest.workspaces = Some(workspaces);
-
-        let result = prepare_task_index(&mut manifest, None, "test");
+        let result = prepare_task_index(&mut manifest, tmp.path());
         assert!(result.is_ok());
         let index = result.unwrap();
 
-        // Find the bun.install task and verify it's the explicit one
+        // Find the bun.install task and verify it's the explicit one (not overridden)
         let bun_install = index.resolve("bun.install").unwrap();
         if let TaskDefinition::Single(task) = &bun_install.definition {
             assert_eq!(
                 task.command, "echo custom install",
-                "explicit task should not be overridden by workspace inject"
+                "explicit task should not be overridden by auto-detection"
+            );
+        } else {
+            panic!("expected single task");
+        }
+    }
+
+    #[test]
+    fn test_prepare_task_index_auto_associates_bun_tasks() {
+        let tmp = create_test_dir();
+        // Create bun.lock to trigger detection
+        fs::write(tmp.path().join("bun.lock"), "lockfile content").unwrap();
+
+        let mut manifest = Project::default();
+        manifest.tasks.insert(
+            "dev".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "bun".to_string(),
+                args: vec!["run".to_string(), "dev".to_string()],
+                ..Default::default()
+            })),
+        );
+
+        let result = prepare_task_index(&mut manifest, tmp.path());
+        assert!(result.is_ok());
+        let index = result.unwrap();
+
+        // The 'dev' task should now depend on bun.setup
+        let dev_task = index.resolve("dev").unwrap();
+        if let TaskDefinition::Single(task) = &dev_task.definition {
+            assert!(
+                task.depends_on.contains(&"bun.setup".to_string()),
+                "bun task should auto-depend on bun.setup, got: {:?}",
+                task.depends_on
             );
         } else {
             panic!("expected single task");
