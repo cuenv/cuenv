@@ -8,6 +8,7 @@
 //   - #Nix: Installs Nix via Determinate Systems installer
 //   - #Cuenv: Installs or builds cuenv (multiple modes: release, git, nix, homebrew)
 //   - #OnePassword: Sets up 1Password WASM SDK for secret resolution
+//   - #Bun: Sets up Bun runtime and installs dependencies (auto-detects bun.lock)
 //
 // GitHub-Specific Contributors:
 //   - #Cachix: Configures Cachix for Nix binary caching
@@ -22,6 +23,7 @@
 //	    contributors.#Nix,
 //	    contributors.#Cuenv,
 //	    contributors.#OnePassword,
+//	    contributors.#Bun,
 //	    contributors.#Cachix,
 //	    contributors.#GhModels,
 //	    contributors.#TrustedPublishing,
@@ -44,6 +46,7 @@ import (
 	#Nix,
 	#Cuenv,
 	#OnePassword,
+	#Bun,
 ]
 
 // #GitHubContributors contains GitHub-specific contributors.

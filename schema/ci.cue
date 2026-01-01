@@ -135,6 +135,10 @@ package schema
 
 	// Environment name matching (active only in these environments)
 	environment?: [...string]
+
+	// Workspace type detection (active if project has these package managers)
+	// Values: "npm", "bun", "pnpm", "yarn", "cargo", "deno"
+	workspaceType?: [...string]
 })
 
 // Secret reference for phase tasks
