@@ -20,6 +20,77 @@ use tar::Archive;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
 
+/// Rate limit information from GitHub API response headers.
+#[derive(Debug, Default)]
+struct RateLimitInfo {
+    /// Maximum requests allowed per hour.
+    limit: Option<u32>,
+    /// Remaining requests in the current window.
+    remaining: Option<u32>,
+    /// Unix timestamp when the rate limit resets.
+    reset: Option<u64>,
+}
+
+impl RateLimitInfo {
+    /// Extract rate limit info from response headers.
+    fn from_headers(headers: &reqwest::header::HeaderMap) -> Self {
+        Self {
+            limit: headers
+                .get("x-ratelimit-limit")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok()),
+            remaining: headers
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok()),
+            reset: headers
+                .get("x-ratelimit-reset")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok()),
+        }
+    }
+
+    /// Check if the rate limit has been exceeded.
+    fn is_exceeded(&self) -> bool {
+        self.remaining == Some(0)
+    }
+
+    /// Format the reset time as a human-readable duration.
+    fn format_reset_duration(&self) -> Option<String> {
+        let reset_ts = self.reset?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
+
+        if reset_ts <= now {
+            return Some("now".to_string());
+        }
+
+        let seconds_remaining = reset_ts - now;
+        let minutes = seconds_remaining / 60;
+        let hours = minutes / 60;
+
+        if hours > 0 {
+            Some(format!("{} hour(s) {} minute(s)", hours, minutes % 60))
+        } else if minutes > 0 {
+            Some(format!("{} minute(s)", minutes))
+        } else {
+            Some(format!("{} second(s)", seconds_remaining))
+        }
+    }
+
+    /// Format rate limit status (e.g., "0/60 requests remaining").
+    fn format_status(&self) -> Option<String> {
+        match (self.remaining, self.limit) {
+            (Some(remaining), Some(limit)) => {
+                Some(format!("{}/{} requests remaining", remaining, limit))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// GitHub release metadata from the API.
 #[derive(Debug, Deserialize)]
 struct Release {
@@ -109,10 +180,11 @@ impl GitHubToolProvider {
         );
         debug!(%url, "Fetching GitHub release");
 
-        let mut request = self.client.get(&url);
+        let effective_token = Self::get_effective_token(token);
+        let is_authenticated = effective_token.is_some();
 
-        // Add auth token if available (runtime token > env vars)
-        if let Some(token) = Self::get_effective_token(token) {
+        let mut request = self.client.get(&url);
+        if let Some(token) = effective_token {
             request = request.header("Authorization", format!("Bearer {}", token));
         }
 
@@ -120,13 +192,16 @@ impl GitHubToolProvider {
             cuenv_core::Error::tool_resolution(format!("Failed to fetch release: {}", e))
         })?;
 
-        if !response.status().is_success() {
-            return Err(cuenv_core::Error::tool_resolution(format!(
-                "Release not found: {} {} (HTTP {})",
-                repo,
-                tag,
-                response.status()
-            )));
+        let status = response.status();
+        if !status.is_success() {
+            let rate_limit = RateLimitInfo::from_headers(response.headers());
+
+            return Err(Self::build_api_error(
+                status,
+                &rate_limit,
+                is_authenticated,
+                &format!("release {} {}", repo, tag),
+            ));
         }
 
         response.json().await.map_err(|e| {
@@ -134,14 +209,80 @@ impl GitHubToolProvider {
         })
     }
 
+    /// Build an appropriate error for GitHub API failures.
+    fn build_api_error(
+        status: reqwest::StatusCode,
+        rate_limit: &RateLimitInfo,
+        is_authenticated: bool,
+        resource: &str,
+    ) -> cuenv_core::Error {
+        // Handle rate limit exceeded (403 with remaining=0)
+        if status == reqwest::StatusCode::FORBIDDEN && rate_limit.is_exceeded() {
+            let mut message = "GitHub API rate limit exceeded".to_string();
+
+            if let Some(status_str) = rate_limit.format_status() {
+                message.push_str(&format!(" ({})", status_str));
+            }
+            if let Some(reset_str) = rate_limit.format_reset_duration() {
+                message.push_str(&format!(". Resets in {}", reset_str));
+            }
+
+            let help = if is_authenticated {
+                "Wait for the rate limit to reset, or use a different GitHub token"
+            } else {
+                "Set GITHUB_TOKEN environment variable with `public_repo` scope \
+                 for 5000 requests/hour (unauthenticated: 60/hour)"
+            };
+
+            return cuenv_core::Error::tool_resolution_with_help(message, help);
+        }
+
+        // Handle 403 Forbidden (not rate limited)
+        if status == reqwest::StatusCode::FORBIDDEN {
+            let message = format!("Access denied to {} (HTTP 403 Forbidden)", resource);
+            let help = if is_authenticated {
+                "Check that your GITHUB_TOKEN has the required permissions. \
+                 For private repositories, ensure the token has the `repo` scope"
+            } else {
+                "Set GITHUB_TOKEN environment variable with `public_repo` scope to access this resource"
+            };
+            return cuenv_core::Error::tool_resolution_with_help(message, help);
+        }
+
+        // Handle 404 Not Found
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return cuenv_core::Error::tool_resolution(format!(
+                "{} not found (HTTP 404)",
+                resource
+            ));
+        }
+
+        // Handle 401 Unauthorized
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            let help = "Your GITHUB_TOKEN may be invalid or expired. \
+                       Generate a new token at https://github.com/settings/tokens";
+            return cuenv_core::Error::tool_resolution_with_help(
+                format!("Authentication failed for {} (HTTP 401)", resource),
+                help,
+            );
+        }
+
+        // Generic error for other status codes
+        cuenv_core::Error::tool_resolution(format!(
+            "Failed to fetch {}: HTTP {}",
+            resource, status
+        ))
+    }
+
     /// Download an asset from GitHub.
     async fn download_asset(&self, url: &str, token: Option<&str>) -> Result<Vec<u8>> {
         debug!(%url, "Downloading GitHub asset");
 
-        let mut request = self.client.get(url);
+        let effective_token = Self::get_effective_token(token);
+        let is_authenticated = effective_token.is_some();
 
-        // Add auth token if available (runtime token > env vars)
-        if let Some(token) = Self::get_effective_token(token) {
+        let mut request = self.client.get(url);
+        if let Some(token) = effective_token {
             request = request.header("Authorization", format!("Bearer {}", token));
         }
 
@@ -149,11 +290,15 @@ impl GitHubToolProvider {
             cuenv_core::Error::tool_resolution(format!("Failed to download asset: {}", e))
         })?;
 
-        if !response.status().is_success() {
-            return Err(cuenv_core::Error::tool_resolution(format!(
-                "Failed to download asset (HTTP {})",
-                response.status()
-            )));
+        let status = response.status();
+        if !status.is_success() {
+            let rate_limit = RateLimitInfo::from_headers(response.headers());
+            return Err(Self::build_api_error(
+                status,
+                &rate_limit,
+                is_authenticated,
+                "asset download",
+            ));
         }
 
         response
@@ -724,5 +869,61 @@ mod tests {
             output: None,
         };
         assert!(!provider.can_handle(&nix_source));
+    }
+
+    #[test]
+    fn test_rate_limit_info_from_headers() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-limit", HeaderValue::from_static("60"));
+        headers.insert("x-ratelimit-remaining", HeaderValue::from_static("0"));
+        headers.insert("x-ratelimit-reset", HeaderValue::from_static("1735689600"));
+
+        let info = RateLimitInfo::from_headers(&headers);
+        assert_eq!(info.limit, Some(60));
+        assert_eq!(info.remaining, Some(0));
+        assert_eq!(info.reset, Some(1_735_689_600));
+        assert!(info.is_exceeded());
+    }
+
+    #[test]
+    fn test_rate_limit_info_not_exceeded() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-ratelimit-limit", HeaderValue::from_static("5000"));
+        headers.insert("x-ratelimit-remaining", HeaderValue::from_static("4999"));
+
+        let info = RateLimitInfo::from_headers(&headers);
+        assert!(!info.is_exceeded());
+    }
+
+    #[test]
+    fn test_rate_limit_info_format_status() {
+        let info = RateLimitInfo {
+            limit: Some(60),
+            remaining: Some(0),
+            reset: None,
+        };
+        assert_eq!(info.format_status(), Some("0/60 requests remaining".to_string()));
+
+        let info_partial = RateLimitInfo {
+            limit: Some(60),
+            remaining: None,
+            reset: None,
+        };
+        assert_eq!(info_partial.format_status(), None);
+    }
+
+    #[test]
+    fn test_rate_limit_info_empty_headers() {
+        let headers = reqwest::header::HeaderMap::new();
+        let info = RateLimitInfo::from_headers(&headers);
+
+        assert_eq!(info.limit, None);
+        assert_eq!(info.remaining, None);
+        assert_eq!(info.reset, None);
+        assert!(!info.is_exceeded());
     }
 }
