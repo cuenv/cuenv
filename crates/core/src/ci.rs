@@ -284,6 +284,10 @@ pub struct PhaseTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
 
+    /// Command arguments
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+
     /// Multi-line script (alternative to command)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
@@ -556,5 +560,35 @@ mod tests {
         let arch = mapping.arch.unwrap();
         assert_eq!(arch.get("linux-x64"), Some(&"ubuntu-latest".to_string()));
         assert_eq!(arch.get("darwin-arm64"), Some(&"macos-14".to_string()));
+    }
+
+    #[test]
+    fn test_phase_task_with_command_and_args() {
+        let json = r#"{
+            "id": "bun-install",
+            "phase": "setup",
+            "command": "cuenv",
+            "args": ["exec", "--", "bun", "install", "--frozen-lockfile"]
+        }"#;
+        let task: PhaseTask = serde_json::from_str(json).unwrap();
+        assert_eq!(task.id, "bun-install");
+        assert_eq!(task.command, Some("cuenv".to_string()));
+        assert_eq!(
+            task.args,
+            vec!["exec", "--", "bun", "install", "--frozen-lockfile"]
+        );
+    }
+
+    #[test]
+    fn test_phase_task_command_only() {
+        let json = r#"{
+            "id": "simple-task",
+            "phase": "setup",
+            "command": "echo hello"
+        }"#;
+        let task: PhaseTask = serde_json::from_str(json).unwrap();
+        assert_eq!(task.id, "simple-task");
+        assert_eq!(task.command, Some("echo hello".to_string()));
+        assert!(task.args.is_empty());
     }
 }
