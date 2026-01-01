@@ -21,7 +21,7 @@ For each crate, verify:
 | vault | 25.8% | [x] | [x] | Added 12 tests for config, path handling, serialization |
 | homebrew | 43.6% | [x] | [x] | Added 23 tests for formula generation, config, backend |
 | gcp | 44.4% | [x] | [x] | Added 17 tests for config, resource name parsing, resolver |
-| tools | 52.8% | [ ] | [ ] | Pending review |
+| tools/oci | 52.8% | [x] | [x] | Added 34 tests for error, platform, cache modules |
 | cuenv | 53.9% | [ ] | [ ] | Pending review (large crate: 15157 lines) |
 | ignore | 54.3% | [x] | [x] | Added 18 tests for builder, validation, error types |
 | secrets | 72.5% | [ ] | [ ] | Pending review |
