@@ -14,7 +14,7 @@ use cuenv_ci::ir::{
     IntermediateRepresentation, OutputType, StageConfiguration, Task, TriggerCondition,
 };
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// GitHub Actions workflow emitter
 ///
@@ -54,6 +54,131 @@ pub struct GitHubActionsEmitter {
     pub approval_environment: String,
     /// Configured permissions from the manifest
     pub configured_permissions: HashMap<String, String>,
+}
+
+// Helper functions for building GitHub Actions workflow components
+
+/// Parse a permission level string into a `PermissionLevel` enum.
+///
+/// # Arguments
+///
+/// * `s` - The permission level string ("write", "read", or "none")
+///
+/// # Returns
+///
+/// `Some(PermissionLevel)` if the string is valid, `None` otherwise.
+fn parse_permission_level(s: &str) -> Option<PermissionLevel> {
+    match s.to_lowercase().as_str() {
+        "write" => Some(PermissionLevel::Write),
+        "read" => Some(PermissionLevel::Read),
+        "none" => Some(PermissionLevel::None),
+        _ => None,
+    }
+}
+
+/// Build a cuenv task command with the `--skip-dependencies` flag.
+///
+/// # Arguments
+///
+/// * `task_id` - The task identifier
+/// * `environment` - Optional environment name
+///
+/// # Returns
+///
+/// A formatted command string for running the task.
+fn build_task_command(task_id: &str, environment: Option<&String>) -> String {
+    environment.map_or_else(
+        || format!("cuenv task {} --skip-dependencies", task_id),
+        |env| format!("cuenv task {} -e {} --skip-dependencies", task_id, env),
+    )
+}
+
+/// Build a GitHub Actions checkout step with specified fetch depth.
+///
+/// # Arguments
+///
+/// * `fetch_depth` - The number of commits to fetch (0 for all history)
+///
+/// # Returns
+///
+/// A configured checkout step.
+fn build_checkout_step(fetch_depth: u32) -> Step {
+    Step::uses("actions/checkout@v4")
+        .with_name("Checkout")
+        .with_input("fetch-depth", serde_yaml::Value::Number(fetch_depth.into()))
+}
+
+/// Build a GitHub Actions upload artifact step with standard options.
+///
+/// # Arguments
+///
+/// * `name` - The artifact name
+/// * `path` - The file path(s) to upload
+///
+/// # Returns
+///
+/// A configured upload artifact step with `if-no-files-found: ignore` and `include-hidden-files: true`.
+fn build_upload_artifact_step(name: String, path: String) -> Step {
+    let mut upload_step = Step::uses("actions/upload-artifact@v4")
+        .with_name("Upload artifacts")
+        .with_input("name", serde_yaml::Value::String(name))
+        .with_input("path", serde_yaml::Value::String(path));
+    upload_step.with_inputs.insert(
+        "if-no-files-found".to_string(),
+        serde_yaml::Value::String("ignore".to_string()),
+    );
+    upload_step.with_inputs.insert(
+        "include-hidden-files".to_string(),
+        serde_yaml::Value::Bool(true),
+    );
+    upload_step
+}
+
+/// Merge environment variables from secrets and task configuration into a step.
+///
+/// # Arguments
+///
+/// * `step` - The step to add environment variables to
+/// * `secret_env_vars` - Environment variables from secret configuration stages
+/// * `task_env` - Task-level environment variables
+fn merge_env_vars(
+    step: &mut Step,
+    secret_env_vars: &IndexMap<String, String>,
+    task_env: &BTreeMap<String, String>,
+) {
+    for (key, value) in secret_env_vars {
+        step.env.insert(key.clone(), transform_secret_ref(value));
+    }
+    for (key, value) in task_env {
+        step.env.insert(key.clone(), transform_secret_ref(value));
+    }
+}
+
+/// Build a Nix installation step using DeterminateSystems action.
+///
+/// # Returns
+///
+/// A configured Nix installer step with flake config acceptance.
+fn build_nix_install_step() -> Step {
+    Step::uses("DeterminateSystems/nix-installer-action@v16")
+        .with_name("Install Nix")
+        .with_input(
+            "extra-conf",
+            serde_yaml::Value::String("accept-flake-config = true".to_string()),
+        )
+}
+
+/// Build a cuenv setup step that runs a setup command.
+///
+/// # Arguments
+///
+/// * `command` - The command to run for setting up cuenv
+///
+/// # Returns
+///
+/// A configured step that runs the setup command.
+fn build_cuenv_setup_step(command: &str) -> Step {
+    Step::run(command).with_name("Setup cuenv")
 }
 
 impl Default for GitHubActionsEmitter {
@@ -128,19 +253,9 @@ impl GitHubActionsEmitter {
     /// Apply configured permissions to a base Permissions struct
     #[must_use]
     pub fn apply_configured_permissions(&self, mut permissions: Permissions) -> Permissions {
-        // Helper to parse permission level from string
-        let parse_level = |s: &str| -> Option<PermissionLevel> {
-            match s.to_lowercase().as_str() {
-                "write" => Some(PermissionLevel::Write),
-                "read" => Some(PermissionLevel::Read),
-                "none" => Some(PermissionLevel::None),
-                _ => None,
-            }
-        };
-
         // Apply configured permissions (override calculated)
         for (key, value) in &self.configured_permissions {
-            if let Some(level) = parse_level(value) {
+            if let Some(level) = parse_permission_level(value) {
                 match key.as_str() {
                     "contents" => permissions.contents = Some(level),
                     "checks" => permissions.checks = Some(level),
@@ -432,16 +547,6 @@ impl GitHubActionsEmitter {
                 .any(|o| o.output_type == OutputType::Orchestrator)
         });
 
-        // Helper to parse permission level from string
-        let parse_level = |s: &str| -> Option<PermissionLevel> {
-            match s.to_lowercase().as_str() {
-                "write" => Some(PermissionLevel::Write),
-                "read" => Some(PermissionLevel::Read),
-                "none" => Some(PermissionLevel::None),
-                _ => None,
-            }
-        };
-
         // Start with calculated permissions
         let mut permissions = Permissions {
             contents: Some(if has_deployments {
@@ -461,7 +566,7 @@ impl GitHubActionsEmitter {
 
         // Apply configured permissions (override calculated)
         for (key, value) in &self.configured_permissions {
-            if let Some(level) = parse_level(value) {
+            if let Some(level) = parse_permission_level(value) {
                 match key.as_str() {
                     "contents" => permissions.contents = Some(level),
                     "checks" => permissions.checks = Some(level),
@@ -604,11 +709,7 @@ impl GitHubActionsEmitter {
         let mut steps = Vec::new();
 
         // Checkout
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
+        steps.push(build_checkout_step(2));
 
         // Render bootstrap and setup stages using the StageRenderer
         let (stage_steps, secret_env_vars) = Self::render_stage_steps(stages);
@@ -625,10 +726,7 @@ impl GitHubActionsEmitter {
 
         // Run the task
         // Use --skip-dependencies because GitHub Actions handles job dependencies via `needs:`
-        let task_command = environment.map_or_else(
-            || format!("cuenv task {} --skip-dependencies", task.id),
-            |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-        );
+        let task_command = build_task_command(&task.id, environment);
         let mut task_step = Step::run(task_command)
             .with_name(task.id.clone())
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
@@ -638,17 +736,8 @@ impl GitHubActionsEmitter {
             task_step = task_step.with_working_directory(path);
         }
 
-        // Add secret env vars from setup stages to the task step
-        for (key, value) in secret_env_vars {
-            task_step.env.insert(key, transform_secret_ref(&value));
-        }
-
-        // Add task-level env vars
-        for (key, value) in &task.env {
-            task_step
-                .env
-                .insert(key.clone(), transform_secret_ref(value));
-        }
+        // Add secret env vars and task-level env vars
+        merge_env_vars(&mut task_step, &secret_env_vars, &task.env);
 
         steps.push(task_step);
 
@@ -664,21 +753,9 @@ impl GitHubActionsEmitter {
                 .iter()
                 .map(|o| o.path.clone())
                 .collect();
-            let mut upload_step = Step::uses("actions/upload-artifact@v4")
-                .with_name("Upload artifacts")
-                .with_input(
-                    "name",
-                    serde_yaml::Value::String(format!("{}-artifacts", task.id.replace('.', "-"))),
-                )
-                .with_input("path", serde_yaml::Value::String(paths.join("\n")));
-            upload_step.with_inputs.insert(
-                "if-no-files-found".to_string(),
-                serde_yaml::Value::String("ignore".to_string()),
-            );
-            // Include hidden files (e.g., .assetsignore) in artifact uploads
-            upload_step.with_inputs.insert(
-                "include-hidden-files".to_string(),
-                serde_yaml::Value::Bool(true),
+            let upload_step = build_upload_artifact_step(
+                format!("{}-artifacts", task.id.replace('.', "-")),
+                paths.join("\n"),
             );
             steps.push(upload_step);
         }
@@ -727,11 +804,7 @@ impl GitHubActionsEmitter {
         let mut steps = Vec::new();
 
         // Checkout with full history for releases
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-        );
+        steps.push(build_checkout_step(0));
 
         // Render bootstrap and setup stages using the StageRenderer
         let (stage_steps, secret_env_vars) = Self::render_stage_steps(stages);
@@ -767,10 +840,7 @@ impl GitHubActionsEmitter {
         }
 
         // Build task command with --skip-dependencies
-        let task_command = environment.map_or_else(
-            || format!("cuenv task {} --skip-dependencies", task.id),
-            |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-        );
+        let task_command = build_task_command(&task.id, environment);
 
         let mut task_step = Step::run(&task_command)
             .with_name(task.id.clone())
@@ -787,8 +857,8 @@ impl GitHubActionsEmitter {
         }
 
         // Add secret env vars from setup stages to the task step
-        for (key, value) in secret_env_vars {
-            task_step.env.insert(key, transform_secret_ref(&value));
+        for (key, value) in &secret_env_vars {
+            task_step.env.insert(key.clone(), transform_secret_ref(value));
         }
 
         steps.push(task_step);
@@ -854,21 +924,14 @@ impl GitHubActionsEmitter {
                 let mut steps = Vec::new();
 
                 // Checkout with full history for releases
-                steps.push(
-                    Step::uses("actions/checkout@v4")
-                        .with_name("Checkout")
-                        .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-                );
+                steps.push(build_checkout_step(0));
 
                 // Render bootstrap and setup stages using the StageRenderer
                 let (stage_steps, secret_env_vars) = Self::render_stage_steps(stages);
                 steps.extend(stage_steps);
 
                 // Run the task with --skip-dependencies
-                let task_command = environment.map_or_else(
-                    || format!("cuenv task {} --skip-dependencies", task.id),
-                    |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-                );
+                let task_command = build_task_command(&task.id, environment);
                 let mut task_step = Step::run(&task_command)
                     .with_name(format!("{} ({arch})", task.id))
                     .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
@@ -891,24 +954,9 @@ impl GitHubActionsEmitter {
                 steps.push(task_step);
 
                 // Upload artifact for matrix tasks (outputs from the build)
-                let mut upload_step = Step::uses("actions/upload-artifact@v4")
-                    .with_name("Upload artifacts")
-                    .with_input(
-                        "name",
-                        serde_yaml::Value::String(format!("{base_job_id}-{arch}")),
-                    )
-                    .with_input(
-                        "path",
-                        serde_yaml::Value::String("result/bin/*".to_string()),
-                    );
-                upload_step.with_inputs.insert(
-                    "if-no-files-found".to_string(),
-                    serde_yaml::Value::String("ignore".to_string()),
-                );
-                // Include hidden files in artifact uploads
-                upload_step.with_inputs.insert(
-                    "include-hidden-files".to_string(),
-                    serde_yaml::Value::Bool(true),
+                let upload_step = build_upload_artifact_step(
+                    format!("{base_job_id}-{arch}"),
+                    "result/bin/*".to_string(),
                 );
                 steps.push(upload_step);
 
@@ -1160,29 +1208,18 @@ impl ReleaseWorkflowBuilder {
         let mut steps = Vec::new();
 
         // Checkout
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-        );
+        steps.push(build_checkout_step(0));
 
         // Check IR stages for Nix setup
         let has_install_nix = ir.stages.bootstrap.iter().any(|t| t.id == "install-nix");
         if has_install_nix {
-            steps.push(
-                Step::uses("DeterminateSystems/nix-installer-action@v16")
-                    .with_name("Install Nix")
-                    .with_input(
-                        "extra-conf",
-                        serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                    ),
-            );
+            steps.push(build_nix_install_step());
         }
 
         // Setup cuenv
         if let Some(cuenv_task) = ir.stages.setup.iter().find(|t| t.id == "setup-cuenv") {
             let command = cuenv_task.command.first().cloned().unwrap_or_default();
-            steps.push(Step::run(&command).with_name("Setup cuenv"));
+            steps.push(build_cuenv_setup_step(&command));
         }
 
         // Build for target
@@ -1196,25 +1233,14 @@ impl ReleaseWorkflowBuilder {
         );
         steps.push(Step::run(&build_cmd).with_name("Build for ${{ matrix.target }}"));
 
-        // Upload artifact
-        let mut upload_step = Step::uses("actions/upload-artifact@v4")
-            .with_name("Upload binary")
-            .with_input(
-                "name",
-                serde_yaml::Value::String("binary-${{ matrix.target }}".to_string()),
-            )
-            .with_input(
-                "path",
-                serde_yaml::Value::String("target/${{ matrix.rust-triple }}/release/*".to_string()),
-            );
+        // Upload artifact - note: uses "error" instead of "ignore" for if-no-files-found
+        let mut upload_step = build_upload_artifact_step(
+            "binary-${{ matrix.target }}".to_string(),
+            "target/${{ matrix.rust-triple }}/release/*".to_string(),
+        );
         upload_step.with_inputs.insert(
             "if-no-files-found".to_string(),
             serde_yaml::Value::String("error".to_string()),
-        );
-        // Include hidden files in artifact uploads
-        upload_step.with_inputs.insert(
-            "include-hidden-files".to_string(),
-            serde_yaml::Value::Bool(true),
         );
         steps.push(upload_step);
 
@@ -1244,29 +1270,18 @@ impl ReleaseWorkflowBuilder {
         let mut steps = Vec::new();
 
         // Checkout
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-        );
+        steps.push(build_checkout_step(0));
 
         // Check IR stages for Nix setup
         let has_install_nix = ir.stages.bootstrap.iter().any(|t| t.id == "install-nix");
         if has_install_nix {
-            steps.push(
-                Step::uses("DeterminateSystems/nix-installer-action@v16")
-                    .with_name("Install Nix")
-                    .with_input(
-                        "extra-conf",
-                        serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                    ),
-            );
+            steps.push(build_nix_install_step());
         }
 
         // Setup cuenv
         if let Some(cuenv_task) = ir.stages.setup.iter().find(|t| t.id == "setup-cuenv") {
             let command = cuenv_task.command.first().cloned().unwrap_or_default();
-            steps.push(Step::run(&command).with_name("Setup cuenv"));
+            steps.push(build_cuenv_setup_step(&command));
         }
 
         // Download all artifacts
