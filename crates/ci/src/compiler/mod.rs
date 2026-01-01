@@ -5,8 +5,9 @@
 //!
 //! ## Stage Contributors
 //!
-//! The compiler applies stage contributors (Nix, 1Password, Cachix) during
-//! compilation to inject setup/teardown tasks into the IR stages.
+//! Stage contributors are defined in CUE (see `contrib/stages/`). The compiler
+//! evaluates the `ci.stageContributors` array and injects active contributors'
+//! tasks into the appropriate build stages.
 
 // IR compilation involves complex transformations with many fields
 #![allow(clippy::too_many_lines)]
@@ -19,10 +20,9 @@ use crate::ir::{
     ManualTriggerConfig, OutputDeclaration, OutputType, PurityMode, Runtime, SecretConfig,
     StageTask, Task as IrTask, TriggerCondition, WorkflowDispatchInputDef,
 };
-use crate::stages;
 use cuenv_core::ci::{
-    BuildStage as CueBuildStage, CI, Contributor, CueStageTask, ManualTrigger, Pipeline,
-    PipelineTask, SecretRef, SetupStep, StageContributor,
+    BuildStage as CueBuildStage, CI, CueStageTask, ManualTrigger, Pipeline, PipelineTask,
+    SecretRef, StageContributor,
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
@@ -57,12 +57,6 @@ pub struct Compiler {
     options: CompilerOptions,
 }
 
-/// Factory function type for creating stage contributors.
-///
-/// Used to defer contributor creation until compilation time,
-/// allowing `CompilerOptions` to remain `Clone`.
-pub type ContributorFactory = fn() -> Vec<Box<dyn crate::StageContributor>>;
-
 /// Compiler configuration options
 #[derive(Clone, Default)]
 pub struct CompilerOptions {
@@ -88,15 +82,9 @@ pub struct CompilerOptions {
     /// Pipeline being compiled (for environment-aware compilation)
     ///
     /// When set, the compiler will set `ir.pipeline.environment` from
-    /// the pipeline's environment, enabling contributors to self-detect
-    /// their requirements.
+    /// the pipeline's environment, enabling CUE stage contributors to
+    /// evaluate their activation conditions.
     pub pipeline: Option<Pipeline>,
-
-    /// Factory function for creating stage contributors.
-    ///
-    /// If None, uses `stages::default_contributors()`.
-    /// Set this to include provider-specific contributors (e.g., Cachix for GitHub).
-    pub contributor_factory: Option<ContributorFactory>,
 
     /// Enable CI mode for orchestrator artifact handling.
     ///
@@ -128,10 +116,6 @@ impl std::fmt::Debug for CompilerOptions {
             .field("project_root", &self.project_root)
             .field("input_overrides", &self.input_overrides)
             .field("pipeline", &self.pipeline)
-            .field(
-                "contributor_factory",
-                &self.contributor_factory.map(|_| "Some(<fn>)"),
-            )
             .field("ci_mode", &self.ci_mode)
             .field("module_root", &self.module_root)
             .field("project_path", &self.project_path)
@@ -342,37 +326,10 @@ impl Compiler {
         // but should use the actual output paths from the upstream tasks)
         Self::fix_artifact_download_paths(&mut ir);
 
-        // Apply stage contributors with fixed-point iteration
-        // Contributors self-detect their requirements and report modifications.
-        // Loop continues until no contributor reports changes (stable state).
-        let contributors = self
-            .options
-            .contributor_factory
-            .map_or_else(stages::default_contributors, |factory| factory());
-        loop {
-            let mut any_modified = false;
-            for contributor in &contributors {
-                if contributor.is_active(&ir, &self.project) {
-                    let (contributions, modified) = contributor.contribute(&ir, &self.project);
-                    for (stage, task) in contributions {
-                        ir.stages.add(stage, task);
-                    }
-                    any_modified |= modified;
-                }
-            }
-            ir.stages.sort_by_dependencies();
-            if !any_modified {
-                break;
-            }
-        }
-
-        // Apply CUE-defined setup steps and legacy contributors
-        self.apply_cue_setup_steps(&mut ir);
-
-        // Apply CUE-defined stage contributors (v1.4+)
+        // Apply CUE-defined stage contributors
         self.apply_cue_stage_contributors(&mut ir);
 
-        // Re-sort by dependencies after adding CUE setup steps
+        // Sort stages by dependencies
         ir.stages.sort_by_dependencies();
 
         // Validate the IR
@@ -743,181 +700,6 @@ impl Compiler {
             }
         }
     }
-
-    /// Apply CUE-defined setup steps and contributors to the IR
-    ///
-    /// This processes:
-    /// 1. Inline setup steps defined on the pipeline
-    /// 2. CUE contributors whose `when` condition matches pipeline tasks
-    fn apply_cue_setup_steps(&self, ir: &mut IntermediateRepresentation) {
-        // 1. Add pipeline-level setup steps
-        if let Some(ref pipeline) = self.options.pipeline {
-            for step in &pipeline.setup {
-                let stage_task = Self::setup_step_to_stage_task(step, "pipeline");
-                ir.stages.add(BuildStage::Setup, stage_task);
-            }
-        }
-
-        // 2. Apply CUE contributors (sorted by name for deterministic order)
-        if let Some(ref ci_config) = self.project.ci {
-            // Sort contributor names for deterministic iteration order
-            let mut contributor_names: Vec<_> = ci_config.contributors.keys().collect();
-            contributor_names.sort();
-
-            for name in contributor_names {
-                let contributor = &ci_config.contributors[name];
-                if self.contributor_matches(contributor) {
-                    for step in &contributor.setup {
-                        let stage_task = Self::setup_step_to_stage_task(step, name);
-                        ir.stages.add(BuildStage::Setup, stage_task);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Convert a CUE SetupStep to an IR StageTask
-    fn setup_step_to_stage_task(step: &SetupStep, provider: &str) -> StageTask {
-        // Build command array from command+args or script
-        let (command, shell) = if let Some(ref cmd) = step.command {
-            let mut cmd_vec = vec![cmd.clone()];
-            cmd_vec.extend(step.args.clone());
-            (cmd_vec, false)
-        } else if let Some(ref script) = step.script {
-            (
-                vec!["/bin/sh".to_string(), "-c".to_string(), script.clone()],
-                true,
-            )
-        } else {
-            // Empty command - shouldn't happen with valid CUE
-            (vec![], false)
-        };
-
-        // Convert env values (filter to strings only)
-        let env: BTreeMap<String, String> = step
-            .env
-            .iter()
-            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-            .collect();
-
-        // Convert provider-specific overrides to provider_hints
-        let provider_hints = step.provider.as_ref().and_then(|p| {
-            p.github.as_ref().map(|gh| {
-                let mut github_action = serde_json::Map::new();
-                github_action.insert(
-                    "uses".to_string(),
-                    serde_json::Value::String(gh.uses.clone()),
-                );
-                if !gh.inputs.is_empty() {
-                    github_action.insert(
-                        "inputs".to_string(),
-                        serde_json::Value::Object(
-                            gh.inputs
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect(),
-                        ),
-                    );
-                }
-
-                let mut hints = serde_json::Map::new();
-                hints.insert(
-                    "github_action".to_string(),
-                    serde_json::Value::Object(github_action),
-                );
-                serde_json::Value::Object(hints)
-            })
-        });
-
-        StageTask {
-            id: format!("cue-setup-{}", step.name.to_lowercase().replace(' ', "-")),
-            provider: format!("cue:{provider}"),
-            label: Some(step.name.clone()),
-            command,
-            shell,
-            env,
-            secrets: BTreeMap::new(),
-            depends_on: vec![],
-            priority: 50, // CUE setup steps run after Rust contributors (which use 10-30)
-            provider_hints,
-        }
-    }
-
-    /// Check if a CUE contributor's `when` condition matches any pipeline task
-    fn contributor_matches(&self, contributor: &Contributor) -> bool {
-        let Some(ref when) = contributor.when else {
-            // No `when` condition = always active
-            return true;
-        };
-
-        // Get the pipeline tasks we're checking against
-        let Some(ref pipeline) = self.options.pipeline else {
-            return false;
-        };
-
-        // Check if any pipeline task matches the contributor's conditions
-        for pipeline_task in &pipeline.tasks {
-            let task_name = pipeline_task.task_name();
-            if let Some(task) = self.find_task(task_name)
-                && Self::task_matches_condition(task, when)
-            {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Check if a task matches a TaskMatcher condition
-    fn task_matches_condition(task: &Task, condition: &cuenv_core::manifest::TaskMatcher) -> bool {
-        // Check labels (all must match)
-        if let Some(ref required_labels) = condition.labels {
-            let has_all_labels = required_labels
-                .iter()
-                .all(|label| task.labels.contains(label));
-            if !has_all_labels {
-                return false;
-            }
-        }
-
-        // Check command
-        if let Some(ref required_cmd) = condition.command
-            && &task.command != required_cmd
-        {
-            return false;
-        }
-
-        // Check args patterns
-        if let Some(ref arg_matchers) = condition.args {
-            for arg_cond in arg_matchers {
-                let is_match = if let Some(ref contains) = arg_cond.contains {
-                    task.args.iter().any(|arg| arg.contains(contains))
-                } else if let Some(ref pattern) = arg_cond.matches {
-                    // Regex pattern matching
-                    if let Ok(re) = regex::Regex::new(pattern) {
-                        task.args.iter().any(|arg| re.is_match(arg))
-                    } else {
-                        false
-                    }
-                } else {
-                    true // No conditions = matches
-                };
-
-                if !is_match {
-                    return false;
-                }
-            }
-        }
-
-        // Note: workspaces matching would require additional context
-        // For now, we only match on labels, command, and args
-
-        true
-    }
-
-    // =========================================================================
-    // CUE Stage Contributors (v1.4)
-    // =========================================================================
 
     /// Apply CUE-defined stage contributors to the IR
     ///
@@ -1616,7 +1398,6 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
-            setup: vec![],
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1690,7 +1471,6 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
-            setup: vec![],
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1749,7 +1529,6 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
-            setup: vec![],
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1805,7 +1584,6 @@ mod tests {
         let pipeline = Pipeline {
             name: "default".to_string(),
             environment: None,
-            setup: vec![],
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),

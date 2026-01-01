@@ -91,36 +91,14 @@ package schema
 // Pipeline task reference - either a simple task name or a matrix task
 #PipelineTask: string | #MatrixTask
 
-// GitHub Action configuration for setup steps
+// GitHub Action configuration for stage tasks
 #GitHubActionConfig: close({
 	uses!: string        // Action reference (e.g., "Mozilla-Actions/sccache-action@v0.2")
 	with?: [string]: _   // Action inputs
 })
 
-// Provider-specific setup step overrides
-#SetupStepProviderConfig: close({
-	github?: #GitHubActionConfig
-})
-
-// Setup step for CI pipelines
-#SetupStep: close({
-	name!:    string
-	command?: string
-	script?:  string
-	args?: [...string]
-	env?: [string]: #EnvironmentVariable
-	// Provider-specific replacements (e.g., GitHub Action instead of shell command)
-	provider?: #SetupStepProviderConfig
-})
-
-// CUE-defined contributor that injects setup steps based on task matching
-#Contributor: close({
-	when?:  #TaskMatcher       // Reuse existing task matcher
-	setup?: [...#SetupStep]
-})
-
 // =============================================================================
-// Stage Contributors (v1.4)
+// Stage Contributors
 // =============================================================================
 
 // Build stages for contributor-injected tasks
@@ -200,9 +178,6 @@ package schema
 	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
 
-	// Setup steps to run before tasks
-	setup?: [...#SetupStep]
-
 	// Tasks to run - can be simple task names or matrix task objects
 	tasks?: [...#PipelineTask]
 
@@ -214,10 +189,6 @@ package schema
 	pipelines: [...#Pipeline]
 	provider?: #ProviderConfig
 
-	// CUE-defined contributors that inject setup steps (legacy, task-matching based)
-	contributors?: [string]: #Contributor
-
-	// Stage contributors that inject tasks into build stages (v1.4+)
-	// These replace the hardcoded Rust StageContributor implementations
+	// Stage contributors that inject tasks into build stages
 	stageContributors?: [...#StageContributor]
 })

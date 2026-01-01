@@ -11,7 +11,7 @@ import "github.com/cuenv/cuenv/schema"
 //
 // import rustcontrib "github.com/cuenv/cuenv/contrib/rust"
 //
-// ci: contributors: sccache: rustcontrib.#Sccache
+// ci: stageContributors: [rustcontrib.#Sccache]
 //
 // Requires sccache in runtime.tools:
 //
@@ -20,15 +20,19 @@ import "github.com/cuenv/cuenv/schema"
 //	        sccache: #SccacheTool & {version: "0.12.0"}
 //	    }
 //	}
-#Sccache: schema.#Contributor & {
-	setup: [{
-		name: "Setup sccache"
+#Sccache: schema.#StageContributor & {
+	id: "sccache"
+	when: always: true
+	tasks: [{
+		id:       "setup-sccache"
+		stage:    "setup"
+		label:    "Setup sccache"
+		priority: 50
 		script: """
 			# Configure cargo to use sccache (provided via cuenv tools)
 			export RUSTC_WRAPPER=sccache
 			"""
 		env: RUSTC_WRAPPER: "sccache"
-		// GitHub-specific: use action instead of shell for better caching
 		provider: github: uses: "mozilla-actions/sccache-action@v0.0.9"
 	}]
 }

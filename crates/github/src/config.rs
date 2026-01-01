@@ -132,7 +132,6 @@ mod tests {
                 }))
                 .unwrap(),
             ),
-            contributors: HashMap::default(),
             stage_contributors: vec![],
             pipelines: vec![
                 Pipeline {
@@ -141,7 +140,6 @@ mod tests {
                     when: None,
                     tasks: vec![PipelineTask::Simple("test".to_string())],
                     derive_paths: None,
-                    setup: vec![],
                     provider: Some(
                         serde_json::from_value(json!({
                             "github": {
@@ -157,7 +155,6 @@ mod tests {
                     when: None,
                     tasks: vec![PipelineTask::Simple("deploy".to_string())],
                     derive_paths: None,
-                    setup: vec![],
                     provider: None,
                 },
             ],
