@@ -6,11 +6,9 @@
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
-use cuenv_core::tasks::discovery::TaskDiscovery;
 use std::path::{Path, PathBuf};
 
 use crate::commands::task::list_builder::prepare_task_index;
-use crate::commands::task::normalization::compute_project_id;
 
 /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
 fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
@@ -89,26 +87,12 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         return Vec::new();
     };
 
-    // Build TaskDiscovery from the evaluated module for synthetic task injection
-    let mut discovery = TaskDiscovery::new(module_root.clone());
-    for project_instance in module.projects() {
-        if let Ok(project) = project_instance.deserialize::<cuenv_core::manifest::Project>() {
-            let project_root = module_root.join(&project_instance.path);
-            discovery.add_project(project_root, project);
-        }
-    }
-
-    // Compute project ID for workspace setup injection
-    let project_id = compute_project_id(&manifest, &target_path, &module_root);
-
-    // Build task index with synthetic tasks injected
-    // Best-effort: if injection fails, fall back to basic index without hooks
-    let task_index =
-        prepare_task_index(&mut manifest, Some(&discovery), &project_id).or_else(|_| {
-            // Fall back to basic index with implicit tasks but no hook injection
-            let manifest_with_implicit = manifest.clone().with_implicit_tasks();
-            cuenv_core::tasks::TaskIndex::build(&manifest_with_implicit.tasks)
-        });
+    // Build task index with auto-detected workspace tasks injected
+    // Best-effort: if injection fails, fall back to basic index
+    let task_index = prepare_task_index(&mut manifest, &target_path).or_else(|_| {
+        // Fall back to basic index without workspace injection
+        cuenv_core::tasks::TaskIndex::build(&manifest.tasks)
+    });
 
     let Ok(task_index) = task_index else {
         return Vec::new();
@@ -187,25 +171,10 @@ fn get_task_params(
     let instance = module.get(&relative_path)?;
     let mut manifest: cuenv_core::manifest::Project = instance.deserialize().ok()?;
 
-    // Build TaskDiscovery from the evaluated module for synthetic task injection
-    let mut discovery = TaskDiscovery::new(module_root.clone());
-    for project_instance in module.projects() {
-        if let Ok(project) = project_instance.deserialize::<cuenv_core::manifest::Project>() {
-            let project_root = module_root.join(&project_instance.path);
-            discovery.add_project(project_root, project);
-        }
-    }
-
-    // Compute project ID for workspace setup injection
-    let project_id = compute_project_id(&manifest, &target_path, &module_root);
-
-    // Build task index with synthetic tasks injected
-    // Best-effort: if injection fails, fall back to basic index without hooks
-    let task_index = prepare_task_index(&mut manifest, Some(&discovery), &project_id)
-        .or_else(|_| {
-            let manifest_with_implicit = manifest.clone().with_implicit_tasks();
-            cuenv_core::tasks::TaskIndex::build(&manifest_with_implicit.tasks)
-        })
+    // Build task index with auto-detected workspace tasks injected
+    // Best-effort: if injection fails, fall back to basic index
+    let task_index = prepare_task_index(&mut manifest, &target_path)
+        .or_else(|_| cuenv_core::tasks::TaskIndex::build(&manifest.tasks))
         .ok()?;
     let task_entry = task_index.resolve(task_name).ok()?;
 

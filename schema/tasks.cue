@@ -39,8 +39,6 @@ package schema
 	// cache for later materialization. Writes to undeclared paths are allowed but
 	// will be warned about and are not indexed.
 	outputs?: [...string]
-	// Workspaces to mount/enable for this task
-	workspaces?: [...string]
 
 	description?: string
 

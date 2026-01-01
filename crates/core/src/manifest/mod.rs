@@ -13,49 +13,7 @@ use crate::secrets::Secret;
 use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 
-/// Workspace configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceConfig {
-    /// Enable or disable the workspace
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Optional: manually specify the root of the workspace relative to env.cue
-    pub root: Option<String>,
-
-    /// Optional: manually specify the package manager
-    pub package_manager: Option<String>,
-
-    /// Workspace lifecycle hooks
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hooks: Option<WorkspaceHooks>,
-
-    /// Commands that trigger auto-association to this workspace.
-    /// Any task with a matching command will automatically use this workspace.
-    #[serde(default)]
-    pub commands: Vec<String>,
-
-    /// Tasks to inject automatically when this workspace is enabled.
-    /// Keys become task names prefixed with workspace name (e.g., "bun.install").
-    #[serde(default)]
-    pub inject: HashMap<String, Task>,
-}
-
-/// Workspace lifecycle hooks for pre/post install
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceHooks {
-    /// Tasks or references to run before workspace install
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub before_install: Option<Vec<HookItem>>,
-
-    /// Tasks or references to run after workspace install
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub after_install: Option<Vec<HookItem>>,
-}
-
-/// A hook step to run as part of workspace lifecycle hooks.
+/// A hook step to run as part of task dependencies.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum HookItem {
@@ -109,13 +67,9 @@ impl TaskRef {
     }
 }
 
-/// Match tasks across workspace by metadata for discovery-based execution
+/// Match tasks across projects by metadata for discovery-based execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskMatcher {
-    /// Limit to specific workspaces (by name)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspaces: Option<Vec<String>>,
-
     /// Match tasks with these labels (all must match)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<Vec<String>>,
@@ -178,10 +132,6 @@ pub struct Base {
     /// Environment variables configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<Env>,
-
-    /// Workspaces configuration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
 
     /// Formatters configuration
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -882,10 +832,6 @@ pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Hooks>,
 
-    /// Workspaces configuration
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
-
     /// CI configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CI>,
@@ -967,95 +913,13 @@ impl Project {
         hooks.into_iter().map(|(_, h)| h).collect()
     }
 
-    /// Inject implicit tasks and dependencies based on workspace declarations.
+    /// Returns self unchanged.
     ///
-    /// When a workspace is declared (e.g., `workspaces: bun: #BunWorkspace`), this method:
-    /// 1. Auto-associates tasks to workspaces based on their command matching workspace's `commands`
-    /// 2. Injects tasks from the workspace's `inject` field
-    ///
-    /// This ensures users don't need to manually define common tasks like
-    /// `bun.install` or manually wire up dependencies.
-    pub fn with_implicit_tasks(mut self) -> Self {
-        let Some(workspaces) = &self.workspaces else {
-            return self;
-        };
-
-        // Clone workspaces to avoid borrow issues
-        let workspaces = workspaces.clone();
-
-        // Build command -> workspace mapping from config
-        let mut command_to_workspace: HashMap<String, String> = HashMap::new();
-        for (ws_name, config) in &workspaces {
-            if !config.enabled {
-                continue;
-            }
-            for cmd in &config.commands {
-                command_to_workspace.insert(cmd.clone(), ws_name.clone());
-            }
-        }
-
-        // Auto-associate tasks based on command
-        for task_def in self.tasks.values_mut() {
-            Self::auto_associate_by_command(task_def, &command_to_workspace);
-        }
-
-        // Inject tasks from workspace definitions
-        for (ws_name, config) in &workspaces {
-            if !config.enabled {
-                continue;
-            }
-
-            for (task_name, inject_task) in &config.inject {
-                let full_name = format!("{}.{}", ws_name, task_name);
-
-                // Don't override user-defined tasks
-                if self.tasks.contains_key(&full_name) {
-                    continue;
-                }
-
-                // Clone and set workspace on injected task
-                let mut task = inject_task.clone();
-                task.workspaces = Some(vec![ws_name.clone()]);
-
-                self.tasks
-                    .insert(full_name, TaskDefinition::Single(Box::new(task)));
-            }
-        }
-
+    /// Workspace detection and task injection now happens via auto-detection
+    /// from lockfiles in the task executor. This method is kept for API compatibility.
+    #[must_use]
+    pub fn with_implicit_tasks(self) -> Self {
         self
-    }
-
-    /// Recursively auto-associate workspaces to tasks based on command matching.
-    fn auto_associate_by_command(
-        task_def: &mut TaskDefinition,
-        command_to_workspace: &HashMap<String, String>,
-    ) {
-        match task_def {
-            TaskDefinition::Single(task) => {
-                // Only auto-associate if workspaces is None (not specified)
-                // If Some([]) or Some([...]), user explicitly set it - don't modify
-                if task.workspaces.is_some() {
-                    return;
-                }
-
-                // Check if task's command matches any workspace
-                if let Some(ws_name) = command_to_workspace.get(&task.command) {
-                    task.workspaces = Some(vec![ws_name.clone()]);
-                }
-            }
-            TaskDefinition::Group(group) => match group {
-                TaskGroup::Sequential(tasks) => {
-                    for sub in tasks {
-                        Self::auto_associate_by_command(sub, command_to_workspace);
-                    }
-                }
-                TaskGroup::Parallel(parallel) => {
-                    for sub in parallel.tasks.values_mut() {
-                        Self::auto_associate_by_command(sub, command_to_workspace);
-                    }
-                }
-            },
-        }
     }
 
     /// Expand shorthand cross-project references in inputs and implicit dependencies.
@@ -1186,354 +1050,6 @@ mod tests {
         // Check implicit dependency
         assert_eq!(task.depends_on.len(), 1);
         assert_eq!(task.depends_on[0], "#myproj:build");
-    }
-
-    // ============================================================================
-    // Auto-association and Inject Tests
-    // ============================================================================
-
-    #[test]
-    fn test_auto_associate_by_command() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string(), "bunx".to_string()],
-                inject: HashMap::new(),
-            },
-        )]));
-
-        // Add a task with command "bun" and no explicit workspaces
-        cuenv.tasks.insert(
-            "dev".into(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "bun".to_string(),
-                args: vec!["run".to_string(), "dev".to_string()],
-                workspaces: None, // Not specified - should auto-associate
-                ..Default::default()
-            })),
-        );
-
-        let cuenv = cuenv.with_implicit_tasks();
-
-        // Task should now have bun workspace associated
-        let task_def = cuenv.tasks.get("dev").unwrap();
-        let task = task_def.as_single().unwrap();
-        assert_eq!(task.workspaces, Some(vec!["bun".to_string()]));
-    }
-
-    #[test]
-    fn test_auto_associate_bunx_command() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string(), "bunx".to_string()],
-                inject: HashMap::new(),
-            },
-        )]));
-
-        // Add a task with command "bunx"
-        cuenv.tasks.insert(
-            "codegen".into(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "bunx".to_string(),
-                args: vec!["prisma".to_string(), "generate".to_string()],
-                workspaces: None,
-                ..Default::default()
-            })),
-        );
-
-        let cuenv = cuenv.with_implicit_tasks();
-
-        // Task should have bun workspace associated via bunx command
-        let task_def = cuenv.tasks.get("codegen").unwrap();
-        let task = task_def.as_single().unwrap();
-        assert_eq!(task.workspaces, Some(vec!["bun".to_string()]));
-    }
-
-    #[test]
-    fn test_auto_associate_opt_out_with_empty_array() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string()],
-                inject: HashMap::new(),
-            },
-        )]));
-
-        // Add a task with explicit empty workspaces (opt-out)
-        cuenv.tasks.insert(
-            "standalone".into(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "bun".to_string(),
-                args: vec!["run".to_string(), "standalone".to_string()],
-                workspaces: Some(vec![]), // Explicit empty = opt-out
-                ..Default::default()
-            })),
-        );
-
-        let cuenv = cuenv.with_implicit_tasks();
-
-        // Task should still have empty workspaces (not auto-associated)
-        let task_def = cuenv.tasks.get("standalone").unwrap();
-        let task = task_def.as_single().unwrap();
-        assert_eq!(task.workspaces, Some(vec![]));
-    }
-
-    #[test]
-    fn test_auto_associate_explicit_workspace_unchanged() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string()],
-                inject: HashMap::new(),
-            },
-        )]));
-
-        // Add a task with explicit different workspace
-        cuenv.tasks.insert(
-            "task".into(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "bun".to_string(),
-                args: vec!["run".to_string()],
-                workspaces: Some(vec!["other".to_string()]), // Explicit
-                ..Default::default()
-            })),
-        );
-
-        let cuenv = cuenv.with_implicit_tasks();
-
-        // Task should keep its explicit workspace
-        let task_def = cuenv.tasks.get("task").unwrap();
-        let task = task_def.as_single().unwrap();
-        assert_eq!(task.workspaces, Some(vec!["other".to_string()]));
-    }
-
-    #[test]
-    fn test_inject_creates_task() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string()],
-                inject: HashMap::from([(
-                    "install".to_string(),
-                    Task {
-                        command: "bun".to_string(),
-                        args: vec!["install".to_string()],
-                        hermetic: false,
-                        ..Default::default()
-                    },
-                )]),
-            },
-        )]));
-
-        let cuenv = cuenv.with_implicit_tasks();
-
-        // Injected task should exist
-        assert!(cuenv.tasks.contains_key("bun.install"));
-
-        let task_def = cuenv.tasks.get("bun.install").unwrap();
-        let task = task_def.as_single().unwrap();
-        assert_eq!(task.command, "bun");
-        assert_eq!(task.args, vec!["install"]);
-        assert_eq!(task.workspaces, Some(vec!["bun".to_string()]));
-    }
-
-    #[test]
-    fn test_inject_does_not_override_user_task() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string()],
-                inject: HashMap::from([(
-                    "install".to_string(),
-                    Task {
-                        command: "bun".to_string(),
-                        args: vec!["install".to_string()],
-                        ..Default::default()
-                    },
-                )]),
-            },
-        )]));
-
-        // User defines their own bun.install task
-        cuenv.tasks.insert(
-            "bun.install".into(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "custom-bun".to_string(),
-                args: vec!["custom-install".to_string()],
-                ..Default::default()
-            })),
-        );
-
-        let cuenv = cuenv.with_implicit_tasks();
-
-        // User's task should not be overridden
-        let task_def = cuenv.tasks.get("bun.install").unwrap();
-        let task = task_def.as_single().unwrap();
-        assert_eq!(task.command, "custom-bun");
-    }
-
-    #[test]
-    fn test_disabled_workspace_no_inject() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: false, // Disabled
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string()],
-                inject: HashMap::from([(
-                    "install".to_string(),
-                    Task {
-                        command: "bun".to_string(),
-                        args: vec!["install".to_string()],
-                        ..Default::default()
-                    },
-                )]),
-            },
-        )]));
-
-        let cuenv = cuenv.with_implicit_tasks();
-        assert!(!cuenv.tasks.contains_key("bun.install"));
-    }
-
-    #[test]
-    fn test_disabled_workspace_no_auto_associate() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: false, // Disabled
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string()],
-                inject: HashMap::new(),
-            },
-        )]));
-
-        cuenv.tasks.insert(
-            "dev".into(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "bun".to_string(),
-                args: vec!["run".to_string(), "dev".to_string()],
-                workspaces: None,
-                ..Default::default()
-            })),
-        );
-
-        let cuenv = cuenv.with_implicit_tasks();
-
-        // Task should NOT be auto-associated (workspace disabled)
-        let task_def = cuenv.tasks.get("dev").unwrap();
-        let task = task_def.as_single().unwrap();
-        assert_eq!(task.workspaces, None);
-    }
-
-    #[test]
-    fn test_no_workspaces_unchanged() {
-        let cuenv = Project::new("test");
-        let cuenv = cuenv.with_implicit_tasks();
-        assert!(cuenv.tasks.is_empty());
-    }
-
-    #[test]
-    fn test_nested_task_groups_auto_associate() {
-        let mut cuenv = Project::new("test");
-        cuenv.workspaces = Some(HashMap::from([(
-            "bun".into(),
-            WorkspaceConfig {
-                enabled: true,
-                root: None,
-                package_manager: None,
-                hooks: None,
-                commands: vec!["bun".to_string()],
-                inject: HashMap::new(),
-            },
-        )]));
-
-        // Create a parallel group with bun tasks
-        cuenv.tasks.insert(
-            "build".into(),
-            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
-                tasks: HashMap::from([
-                    (
-                        "frontend".into(),
-                        TaskDefinition::Single(Box::new(Task {
-                            command: "bun".to_string(),
-                            args: vec!["run".to_string(), "build:frontend".to_string()],
-                            workspaces: None,
-                            ..Default::default()
-                        })),
-                    ),
-                    (
-                        "backend".into(),
-                        TaskDefinition::Single(Box::new(Task {
-                            command: "cargo".to_string(), // Different command
-                            args: vec!["build".to_string()],
-                            workspaces: None,
-                            ..Default::default()
-                        })),
-                    ),
-                ]),
-                depends_on: vec![],
-            })),
-        );
-
-        let cuenv = cuenv.with_implicit_tasks();
-
-        // Check nested task got auto-associated
-        let build_def = cuenv.tasks.get("build").unwrap();
-        if let TaskDefinition::Group(TaskGroup::Parallel(group)) = build_def {
-            let frontend = group.tasks.get("frontend").unwrap();
-            if let TaskDefinition::Single(task) = frontend {
-                assert_eq!(task.workspaces, Some(vec!["bun".to_string()]));
-            } else {
-                panic!("Expected Single task");
-            }
-
-            let backend = group.tasks.get("backend").unwrap();
-            if let TaskDefinition::Single(task) = backend {
-                // cargo command not in bun workspace commands, should remain None
-                assert_eq!(task.workspaces, None);
-            } else {
-                panic!("Expected Single task");
-            }
-        } else {
-            panic!("Expected Parallel group");
-        }
     }
 
     // ============================================================================
@@ -1735,102 +1251,13 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_hooks_before_install() {
-        let json = format!(
-            r#"{{
-            "beforeInstall": [
-                {{"ref": "{}"}},
-                {{"name": "codegen", "match": {{"labels": ["codegen"]}}}},
-                {{"command": "echo", "args": ["ready"]}}
-            ]
-        }}"#,
-            "#projen:types"
-        );
-        let hooks: WorkspaceHooks = serde_json::from_str(&json).unwrap();
-
-        let before_install = hooks.before_install.unwrap();
-        assert_eq!(before_install.len(), 3);
-
-        // First item: TaskRef
-        match &before_install[0] {
-            HookItem::TaskRef(task_ref) => {
-                assert_eq!(task_ref.ref_, "#projen:types");
-            }
-            _ => panic!("Expected TaskRef"),
-        }
-
-        // Second item: Match
-        match &before_install[1] {
-            HookItem::Match(match_hook) => {
-                assert_eq!(match_hook.name, Some("codegen".to_string()));
-            }
-            _ => panic!("Expected Match"),
-        }
-
-        // Third item: Inline Task
-        match &before_install[2] {
-            HookItem::Task(task) => {
-                assert_eq!(task.command, "echo");
-            }
-            _ => panic!("Expected Task"),
-        }
-    }
-
-    #[test]
-    fn test_workspace_hooks_after_install() {
-        let json = r#"{
-            "afterInstall": [
-                {"command": "prisma", "args": ["generate"]}
-            ]
-        }"#;
-        let hooks: WorkspaceHooks = serde_json::from_str(json).unwrap();
-
-        assert!(hooks.before_install.is_none());
-        let after_install = hooks.after_install.unwrap();
-        assert_eq!(after_install.len(), 1);
-
-        match &after_install[0] {
-            HookItem::Task(task) => {
-                assert_eq!(task.command, "prisma");
-                assert_eq!(task.args, vec!["generate"]);
-            }
-            _ => panic!("Expected Task"),
-        }
-    }
-
-    #[test]
-    fn test_workspace_config_with_hooks() {
-        let json = format!(
-            r#"{{
-            "enabled": true,
-            "hooks": {{
-                "beforeInstall": [
-                    {{"ref": "{}"}}
-                ]
-            }}
-        }}"#,
-            "#generator:types"
-        );
-        let config: WorkspaceConfig = serde_json::from_str(&json).unwrap();
-
-        assert!(config.enabled);
-        assert!(config.hooks.is_some());
-
-        let hooks = config.hooks.unwrap();
-        let before_install = hooks.before_install.unwrap();
-        assert_eq!(before_install.len(), 1);
-    }
-
-    #[test]
     fn test_task_matcher_deserialization() {
         let json = r#"{
-            "workspaces": ["packages/lib"],
             "labels": ["projen", "codegen"],
             "parallel": true
         }"#;
         let matcher: TaskMatcher = serde_json::from_str(json).unwrap();
 
-        assert_eq!(matcher.workspaces, Some(vec!["packages/lib".to_string()]));
         assert_eq!(
             matcher.labels,
             Some(vec!["projen".to_string(), "codegen".to_string()])
@@ -1843,7 +1270,6 @@ mod tests {
         let json = r#"{}"#;
         let matcher: TaskMatcher = serde_json::from_str(json).unwrap();
 
-        assert!(matcher.workspaces.is_none());
         assert!(matcher.labels.is_none());
         assert!(matcher.command.is_none());
         assert!(matcher.args.is_none());
@@ -1862,86 +1288,6 @@ mod tests {
         let args = matcher.args.unwrap();
         assert_eq!(args.len(), 1);
         assert_eq!(args[0].contains, Some("generate".to_string()));
-    }
-
-    // ============================================================================
-    // WorkspaceHooks with Project Integration Tests
-    // ============================================================================
-
-    #[test]
-    fn test_cuenv_workspace_with_before_install_hooks() {
-        let json = format!(
-            r#"{{
-            "name": "test-project",
-            "workspaces": {{
-                "bun": {{
-                    "enabled": true,
-                    "hooks": {{
-                        "beforeInstall": [
-                            {{"ref": "{}"}},
-                            {{"command": "sh", "args": ["-c", "echo setup"]}}
-                        ]
-                    }}
-                }}
-            }},
-            "tasks": {{
-                "dev": {{
-                    "command": "bun",
-                    "args": ["run", "dev"],
-                    "workspaces": ["bun"]
-                }}
-            }}
-        }}"#,
-            "#generator:types"
-        );
-        let cuenv: Project = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(cuenv.name, "test-project");
-        let workspaces = cuenv.workspaces.unwrap();
-        let bun_config = workspaces.get("bun").unwrap();
-
-        assert!(bun_config.enabled);
-        let hooks = bun_config.hooks.as_ref().unwrap();
-        let before_install = hooks.before_install.as_ref().unwrap();
-        assert_eq!(before_install.len(), 2);
-    }
-
-    #[test]
-    fn test_cuenv_multiple_workspaces_with_hooks() {
-        let json = format!(
-            r#"{{
-            "name": "multi-workspace",
-            "workspaces": {{
-                "bun": {{
-                    "enabled": true,
-                    "hooks": {{
-                        "beforeInstall": [{{"ref": "{}"}}]
-                    }}
-                }},
-                "cargo": {{
-                    "enabled": true,
-                    "hooks": {{
-                        "beforeInstall": [{{"command": "cargo", "args": ["generate"]}}]
-                    }}
-                }}
-            }},
-            "tasks": {{}}
-        }}"#,
-            "#projen:types"
-        );
-        let cuenv: Project = serde_json::from_str(&json).unwrap();
-
-        let workspaces = cuenv.workspaces.unwrap();
-        assert!(workspaces.contains_key("bun"));
-        assert!(workspaces.contains_key("cargo"));
-
-        // Verify bun hooks
-        let bun_hooks = workspaces["bun"].hooks.as_ref().unwrap();
-        assert!(bun_hooks.before_install.is_some());
-
-        // Verify cargo hooks
-        let cargo_hooks = workspaces["cargo"].hooks.as_ref().unwrap();
-        assert!(cargo_hooks.before_install.is_some());
     }
 
     // ============================================================================

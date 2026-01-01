@@ -8,11 +8,9 @@ use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::{ParallelGroup, Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
 use crate::config::BackendConfig;
 use crate::environment::Environment;
-use crate::manifest::WorkspaceConfig;
 use crate::{Error, Result};
 use async_recursion::async_recursion;
 use cuenv_workspaces::PackageManager;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -53,8 +51,6 @@ pub struct ExecutorConfig {
     pub cache_dir: Option<PathBuf>,
     /// Optional: print cache path on hits/misses
     pub show_cache_path: bool,
-    /// Global workspace configuration
-    pub workspaces: Option<HashMap<String, WorkspaceConfig>>,
     /// Backend configuration
     pub backend_config: Option<BackendConfig>,
     /// CLI backend selection override
@@ -73,7 +69,6 @@ impl Default for ExecutorConfig {
             materialize_outputs: None,
             cache_dir: None,
             show_cache_path: false,
-            workspaces: None,
             backend_config: None,
             cli_backend: None,
         }
@@ -190,18 +185,13 @@ impl TaskExecutor {
                     .clone()
                     .unwrap_or_else(|| self.config.project_root.clone())
             }
-        } else if !task.hermetic && task.workspaces.as_ref().is_some_and(|ws| !ws.is_empty()) {
-            // Find workspace root for install tasks
-            let workspace_name = &task.workspaces.as_ref().unwrap()[0];
-            let manager = match workspace_name.as_str() {
-                "bun" => PackageManager::Bun,
-                "npm" => PackageManager::Npm,
-                "pnpm" => PackageManager::Pnpm,
-                "yarn" => PackageManager::YarnModern,
-                "cargo" => PackageManager::Cargo,
-                _ => PackageManager::Npm, // fallback
-            };
-            find_workspace_root(manager, &self.config.project_root)
+        } else if !task.hermetic {
+            // For non-hermetic tasks, detect package manager from command to find workspace root
+            if let Some(manager) = cuenv_workspaces::detect_from_command(&task.command) {
+                find_workspace_root(manager, &self.config.project_root)
+            } else {
+                self.config.project_root.clone()
+            }
         } else {
             self.config.project_root.clone()
         };
@@ -855,8 +845,6 @@ pub async fn execute_command_with_redaction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::Input;
-    use std::fs;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -920,126 +908,6 @@ mod tests {
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test_value"));
-    }
-
-    #[tokio::test]
-    async fn test_workspace_inputs_include_workspace_root_when_project_is_nested() {
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-
-        // Workspace root with workspaces + lockfile
-        fs::write(
-            root.join("package.json"),
-            r#"{
-  "name": "root-app",
-  "version": "0.0.0",
-  "workspaces": ["packages/*", "apps/*"],
-  "dependencies": {
-    "@rawkodeacademy/content-technologies": "workspace:*"
-  }
-}"#,
-        )
-        .unwrap();
-        // Deliberately omit the workspace member name for apps/site to mimic lockfiles
-        // that only record member paths, ensuring we can still discover dependencies.
-        fs::write(
-            root.join("bun.lock"),
-            r#"{
-  "lockfileVersion": 1,
-  "workspaces": {
-    "": {
-      "name": "root-app",
-      "dependencies": {
-        "@rawkodeacademy/content-technologies": "workspace:*"
-      }
-    },
-    "packages/content-technologies": {
-      "name": "@rawkodeacademy/content-technologies",
-      "version": "0.0.1"
-    },
-    "apps/site": {
-      "version": "0.0.0",
-      "dependencies": {
-        "@rawkodeacademy/content-technologies": "workspace:*"
-      }
-    }
-  },
-  "packages": {}
-}"#,
-        )
-        .unwrap();
-
-        // Workspace member packages
-        fs::create_dir_all(root.join("packages/content-technologies")).unwrap();
-        fs::write(
-            root.join("packages/content-technologies/package.json"),
-            r#"{
-  "name": "@rawkodeacademy/content-technologies",
-  "version": "0.0.1"
-}"#,
-        )
-        .unwrap();
-
-        fs::create_dir_all(root.join("apps/site")).unwrap();
-        fs::write(
-            root.join("apps/site/package.json"),
-            r#"{
-  "name": "site",
-  "version": "0.0.0",
-  "dependencies": {
-    "@rawkodeacademy/content-technologies": "workspace:*"
-  }
-}"#,
-        )
-        .unwrap();
-
-        let mut workspaces = HashMap::new();
-        workspaces.insert(
-            "bun".to_string(),
-            WorkspaceConfig {
-                enabled: true,
-                package_manager: Some("bun".to_string()),
-                root: None,
-                hooks: None,
-                commands: vec!["bun".to_string()],
-                inject: HashMap::new(),
-            },
-        );
-
-        let config = ExecutorConfig {
-            capture_output: true,
-            project_root: root.join("apps/site"),
-            workspaces: Some(workspaces),
-            ..Default::default()
-        };
-        let executor = TaskExecutor::new(config);
-
-        let task = Task {
-            command: "sh".to_string(),
-            args: vec![
-                "-c".to_string(),
-                "find ../.. -maxdepth 4 -type d | sort".to_string(),
-            ],
-            inputs: vec![Input::Path("package.json".to_string())],
-            workspaces: Some(vec!["bun".to_string()]),
-            ..Default::default()
-        };
-
-        let result = executor.execute_task("install", &task).await.unwrap();
-        assert!(
-            result.success,
-            "command failed stdout='{}' stderr='{}'",
-            result.stdout, result.stderr
-        );
-        assert!(
-            result
-                .stdout
-                .split_whitespace()
-                .any(|line| line.ends_with("packages/content-technologies")),
-            "should include workspace member from workspace root; stdout='{}' stderr='{}'",
-            result.stdout,
-            result.stderr
-        );
     }
 
     #[tokio::test]

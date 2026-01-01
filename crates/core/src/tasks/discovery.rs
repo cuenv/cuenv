@@ -235,21 +235,6 @@ impl TaskDiscovery {
         let mut matches = Vec::new();
 
         for project in &self.projects {
-            // Filter by workspace membership if specified
-            if let Some(required_workspaces) = &matcher.workspaces {
-                if let Some(project_workspaces) = &project.manifest.workspaces {
-                    let in_workspace = required_workspaces
-                        .iter()
-                        .any(|ws| project_workspaces.contains_key(ws));
-                    if !in_workspace {
-                        continue;
-                    }
-                } else {
-                    // Project has no workspaces defined, skip if we require specific ones
-                    continue;
-                }
-            }
-
             // Use the canonical TaskIndex to include tasks nested in parallel groups.
             let index = TaskIndex::build(&project.manifest.tasks).map_err(|e| {
                 DiscoveryError::TaskIndexError(project.env_cue_path.clone(), e.to_string())
@@ -526,7 +511,6 @@ mod tests {
         discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
 
         let matcher = TaskMatcher {
-            workspaces: None,
             labels: Some(vec!["projen".into()]),
             command: None,
             args: None,

@@ -1628,6 +1628,7 @@ dependencies = [
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-tools-oci",
+ "cuenv-workspaces",
  "cuenv_tools_rustup",
  "dirs 6.0.0",
  "futures",

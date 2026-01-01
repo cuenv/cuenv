@@ -3,7 +3,6 @@ package schema
 #Base: close({
 	config?:     #Config
 	env?:        #Env
-	workspaces?: #Workspaces
 	formatters?: #Formatters
 })
 
@@ -20,51 +19,15 @@ package schema
 	cube?:   #Cube
 })
 
-#Workspaces: [string]: #WorkspaceConfig
-
-#WorkspaceConfig: close({
-	enabled:          bool | *true
-	package_manager?: "npm" | "pnpm" | "yarn" | "yarn-classic" | "bun" | "cargo" | "deno"
-	root?:            string
-
-	// Workspace lifecycle hooks
-	hooks?: #WorkspaceHooks
-
-	// Commands that trigger auto-association to this workspace.
-	// Any task with a matching command will automatically use this workspace.
-	commands?: [...string]
-
-	// Tasks to inject automatically when this workspace is enabled.
-	// Keys become task names prefixed with workspace name (e.g., "bun.install").
-	inject?: [string]: #Command
-})
-
-// Workspace lifecycle hooks for pre/post install
-#WorkspaceHooks: close({
-	// Tasks or references to run before workspace install
-	beforeInstall?: [...(#Command | #Script | #TaskRef | #MatchHook)]
-	// Tasks or references to run after workspace install
-	afterInstall?: [...(#Command | #Script | #TaskRef | #MatchHook)]
-})
-
 // Reference a task from another env.cue project by its name property.
-// NOTE: Only matches explicitly declared tasks in env.cue files.
-// Implicit tasks (like auto-injected bun.install from workspace config)
-// are not visible to TaskRef.
 #TaskRef: close({
 	// Format: "#project-name:task-name" where project-name is the `name` field in env.cue
 	// Example: "#projen-generator:bun.install"
 	ref!: =~"^#[a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+$"
 })
 
-// Match tasks across workspace by metadata for discovery-based execution.
-// NOTE: Only matches explicitly declared tasks in env.cue files.
-// Implicit tasks (like auto-injected bun.install from workspace config)
-// are not visible to matchers.
+// Match tasks across projects by metadata for discovery-based execution.
 #TaskMatcher: close({
-	// Limit to specific workspaces (by name)
-	workspaces?: [...string]
-
 	// Match tasks with these labels (all must match)
 	labels?: [...string]
 
