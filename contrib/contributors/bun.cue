@@ -28,8 +28,9 @@ import "github.com/cuenv/cuenv/schema"
 		phase:     "setup"
 		label:     "Install Bun dependencies"
 		priority:  50
-		shell:     true
+		shell:     false
 		dependsOn: ["setup-cuenv"]
-		command:   "bun install --frozen-lockfile"
+		command:   "cuenv"
+		args: ["exec", "--", "bun", "install", "--frozen-lockfile"]
 	}]
 }
