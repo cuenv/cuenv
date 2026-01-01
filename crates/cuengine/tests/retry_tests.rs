@@ -118,7 +118,6 @@ fn test_retry_exponential_backoff() {
 }
 
 #[test]
-#[allow(clippy::unchecked_duration_subtraction)]
 fn test_retry_max_delay_capping() {
     let config = RetryConfig {
         max_attempts: 5,
@@ -144,13 +143,13 @@ fn test_retry_max_delay_capping() {
     // The total time for attempts 3-5 should reflect the capped delay
     if times.len() >= 5 {
         // Calculate delay between attempt 3 and 4 (times are monotonically increasing)
-        let delay_3_to_4 = times[3] - times[2];
+        let delay_3_to_4 = times[3].saturating_sub(times[2]);
         // Should be around 150ms (max_delay), but allow more tolerance for OS scheduling
         assert!(delay_3_to_4 >= Duration::from_millis(100)); // Should be at least close to max_delay
         assert!(delay_3_to_4 <= Duration::from_millis(400)); // More generous upper bound
 
         // Calculate delay between attempt 4 and 5 (times are monotonically increasing)
-        let delay_4_to_5 = times[4] - times[3];
+        let delay_4_to_5 = times[4].saturating_sub(times[3]);
         // Should also be around 150ms (max_delay), but allow more tolerance for OS scheduling
         assert!(delay_4_to_5 >= Duration::from_millis(100)); // Should be at least close to max_delay
         assert!(delay_4_to_5 <= Duration::from_millis(400)); // More generous upper bound
