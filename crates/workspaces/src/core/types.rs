@@ -139,6 +139,39 @@ impl Workspace {
     pub const fn member_count(&self) -> usize {
         self.members.len()
     }
+
+    /// Checks if a path is a member of this workspace.
+    ///
+    /// Returns true if the path matches or is contained within any workspace member path.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cuenv_workspaces::{Workspace, WorkspaceMember, PackageManager};
+    /// use std::path::PathBuf;
+    ///
+    /// let mut workspace = Workspace::new(
+    ///     PathBuf::from("/workspace"),
+    ///     PackageManager::Bun,
+    /// );
+    ///
+    /// let member = WorkspaceMember {
+    ///     name: "website".to_string(),
+    ///     path: PathBuf::from("projects/website"),
+    ///     manifest_path: PathBuf::from("projects/website/package.json"),
+    ///     dependencies: vec![],
+    /// };
+    ///
+    /// workspace.add_member(member);
+    /// assert!(workspace.contains_path(&PathBuf::from("projects/website")));
+    /// assert!(!workspace.contains_path(&PathBuf::from("other/project")));
+    /// ```
+    #[must_use]
+    pub fn contains_path(&self, path: &std::path::Path) -> bool {
+        self.members.iter().any(|m| {
+            m.path == path || path.starts_with(&m.path) || m.path.starts_with(path)
+        })
+    }
 }
 
 /// Represents a single package or crate within a workspace.
@@ -403,6 +436,37 @@ mod tests {
         let found = workspace.find_member("pkg2").unwrap();
         assert_eq!(found.name, "pkg2");
         assert_eq!(found.dependencies, vec!["pkg1"]);
+    }
+
+    #[test]
+    fn test_workspace_contains_path() {
+        let mut workspace = Workspace::new(PathBuf::from("/workspace"), PackageManager::Bun);
+
+        workspace.add_member(WorkspaceMember {
+            name: "website".to_string(),
+            path: PathBuf::from("projects/website"),
+            manifest_path: PathBuf::from("projects/website/package.json"),
+            dependencies: vec![],
+        });
+
+        workspace.add_member(WorkspaceMember {
+            name: "api".to_string(),
+            path: PathBuf::from("packages/api"),
+            manifest_path: PathBuf::from("packages/api/package.json"),
+            dependencies: vec![],
+        });
+
+        // Exact match
+        assert!(workspace.contains_path(&PathBuf::from("projects/website")));
+        assert!(workspace.contains_path(&PathBuf::from("packages/api")));
+
+        // Not a member
+        assert!(!workspace.contains_path(&PathBuf::from("other/project")));
+        assert!(!workspace.contains_path(&PathBuf::from("projects/different")));
+
+        // Empty workspace
+        let empty = Workspace::new(PathBuf::from("/workspace"), PackageManager::Npm);
+        assert!(!empty.contains_path(&PathBuf::from("any/path")));
     }
 
     #[test]
