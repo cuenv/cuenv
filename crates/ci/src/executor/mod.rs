@@ -44,7 +44,7 @@ use cuenv_core::manifest::Project;
 use graph::{CITaskGraph, CITaskNode};
 use runner::IRTaskRunner;
 use secrets::CIResolvedSecrets;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 use tokio::task::JoinSet;
 
@@ -398,10 +398,15 @@ impl CIExecutor {
     /// Extract fingerprints from resolved secrets
     fn extract_fingerprints(
         all_secrets: &HashMap<String, CIResolvedSecrets>,
-    ) -> HashMap<String, HashMap<String, String>> {
+    ) -> HashMap<String, BTreeMap<String, String>> {
         all_secrets
             .iter()
-            .map(|(task_id, resolved)| (task_id.clone(), resolved.fingerprints().clone()))
+            .map(|(task_id, resolved)| {
+                // Convert HashMap to BTreeMap for deterministic ordering
+                let fingerprints: BTreeMap<String, String> =
+                    resolved.fingerprints().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                (task_id.clone(), fingerprints)
+            })
             .collect()
     }
 }
@@ -410,6 +415,7 @@ impl CIExecutor {
 mod tests {
     use super::*;
     use crate::ir::{CachePolicy, PipelineMetadata, StageConfiguration, Task as IRTask};
+    use std::collections::BTreeMap;
 
     #[allow(dead_code)]
     fn make_simple_ir(tasks: Vec<IRTask>) -> IntermediateRepresentation {
@@ -436,8 +442,8 @@ mod tests {
             runtime: None,
             command: vec!["echo".to_string(), id.to_string()],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -448,7 +454,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 
@@ -469,7 +475,7 @@ mod tests {
 
             let mut secrets = HashMap::new();
 
-            let secret_configs = HashMap::from([(
+            let secret_configs = BTreeMap::from([(
                 "api_key".to_string(),
                 crate::ir::SecretConfig {
                     source: "TEST_EXTRACT_FP_SECRET".to_string(),

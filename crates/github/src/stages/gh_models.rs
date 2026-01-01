@@ -9,7 +9,7 @@
 use cuenv_ci::StageContributor;
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, StageTask, Task};
 use cuenv_core::manifest::Project;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// GitHub Models CLI extension stage contributor
 ///
@@ -80,7 +80,7 @@ impl StageContributor for GhModelsContributor {
                     label: Some("Setup GitHub Models CLI".to_string()),
                     command: vec!["gh extension install github/gh-models".to_string()],
                     shell: false,
-                    env: HashMap::new(),
+                    env: BTreeMap::new(),
                     depends_on: vec![], // No dependencies - gh should be available
                     priority: 25,       // After cuenv setup but before task execution
                     ..Default::default()
@@ -119,8 +119,8 @@ mod tests {
             runtime: None,
             command: command.into_iter().map(String::from).collect(),
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -131,7 +131,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 

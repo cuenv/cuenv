@@ -587,8 +587,8 @@ mod tests {
             runtime: None,
             command: vec!["echo".to_string(), "hello".to_string()],
             shell: false,
-            env: std::collections::HashMap::new(),
-            secrets: std::collections::HashMap::new(),
+            env: std::collections::BTreeMap::new(),
+            secrets: std::collections::BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -599,7 +599,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: std::collections::HashMap::new(),
+            params: std::collections::BTreeMap::new(),
         }
     }
 

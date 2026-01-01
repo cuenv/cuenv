@@ -9,7 +9,7 @@ use crate::config::GitHubConfig;
 use cuenv_ci::StageContributor;
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, StageTask};
 use cuenv_core::manifest::Project;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Trusted Publishing stage contributor for crates.io
 ///
@@ -78,10 +78,10 @@ impl StageContributor for TrustedPublishingContributor {
                     label: Some("Authenticate with crates.io".to_string()),
                     command: vec![],
                     shell: false,
-                    env: HashMap::new(),
+                    env: BTreeMap::new(),
                     depends_on: vec![],
                     priority: 50, // Run late in setup, before task execution
-                    secrets: HashMap::new(),
+                    secrets: BTreeMap::new(),
                     provider_hints: Some(serde_json::Value::Object(provider_hints)),
                 },
             )],

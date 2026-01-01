@@ -162,6 +162,7 @@ fn json_to_yaml_value(json: &serde_json::Value) -> serde_yaml::Value {
 mod tests {
     use super::*;
     use cuenv_ci::ir::StageConfiguration;
+    use std::collections::BTreeMap;
 
     /// Helper to create provider_hints with a GitHub action
     fn make_github_action_hints(
@@ -199,7 +200,7 @@ mod tests {
                 ".#cuenv".to_string(),
             ],
             env: {
-                let mut env = HashMap::new();
+                let mut env = BTreeMap::new();
                 env.insert(
                     "GITHUB_TOKEN".to_string(),
                     "${{ secrets.GITHUB_TOKEN }}".to_string(),
@@ -274,7 +275,7 @@ mod tests {
                 "onepassword".to_string(),
             ],
             env: {
-                let mut env = HashMap::new();
+                let mut env = BTreeMap::new();
                 // Use CI-agnostic format (what contributors produce)
                 env.insert(
                     "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
