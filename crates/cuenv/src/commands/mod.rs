@@ -331,6 +331,11 @@ pub enum Command {
         show_diff: bool,
         /// CI provider filter.
         ci_provider: Option<String>,
+        /// Tools to force re-resolution for (lock-specific).
+        /// - `None`: use cached resolutions from lockfile
+        /// - `Some(vec![])`: re-resolve ALL tools (`-u` with no args)
+        /// - `Some(vec!["bun"])`: re-resolve only specified tools
+        update_tools: Option<Vec<String>>,
     },
     /// Set up a secrets provider for runtime secret resolution.
     SecretsSetup {
@@ -665,6 +670,7 @@ impl CommandExecutor {
                 scope,
                 show_diff,
                 ci_provider,
+                update_tools,
             } => {
                 self.run_command(handler::SyncHandler {
                     subcommand,
@@ -674,6 +680,7 @@ impl CommandExecutor {
                     scope,
                     show_diff,
                     ci_provider,
+                    update_tools,
                 })
                 .await
             }
