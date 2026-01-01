@@ -16,7 +16,7 @@ pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection
 use arguments::{apply_args_to_task, resolve_task_args};
 use discovery::{evaluate_manifest, find_tasks_with_labels, format_label_root, normalize_labels};
 use list_builder::prepare_task_index;
-use normalization::{compute_project_id, task_fqdn};
+use normalization::task_fqdn;
 use rendering::{
     collect_workspace_tasks, format_task_detail, get_task_cli_help, render_task_tree,
     render_workspace_task_list,
@@ -159,42 +159,13 @@ async fn execute_task_legacy(
         manifest.tasks.len()
     );
 
-    // We may need the cue.mod root later for global task discovery / cross-project deps.
+    // Canonicalize project root for consistent paths
     let project_root =
         std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
     let cue_module_root = find_cue_module_root(&project_root);
 
-    // Build TaskDiscovery for synthetic task injection (workspace hooks)
-    // Use executor's cached module if available, otherwise skip discovery
-    let discovery = if let Some(exec) = executor {
-        if let Some(cue_mod_root) = cue_module_root.as_ref() {
-            if let Ok(module) = exec.get_module(cue_mod_root) {
-                let mut disc = TaskDiscovery::new(cue_mod_root.clone());
-                for instance in module.projects() {
-                    if let Ok(project) = instance.deserialize::<Project>() {
-                        let proj_root = module.root.join(&instance.path);
-                        disc.add_project(proj_root, project);
-                    }
-                }
-                Some(disc)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // Compute project ID for workspace setup injection
-    let project_id = cue_module_root
-        .as_ref()
-        .map(|root| compute_project_id(&manifest, &project_root, root))
-        .unwrap_or_default();
-
-    // Build a canonical index to support nested task paths (with synthetic tasks injected)
-    let task_index = prepare_task_index(&mut manifest, discovery.as_ref(), &project_id)?;
+    // Build a canonical index to support nested task paths (with auto-detected workspace tasks)
+    let task_index = prepare_task_index(&mut manifest, &project_root)?;
     let local_tasks = task_index.to_tasks();
 
     // Handle workspace-wide task listing for IDE completions
@@ -708,7 +679,6 @@ async fn execute_task_legacy(
         materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
         cache_dir: None,
         show_cache_path,
-        workspaces: manifest.workspaces.clone(),
         backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
         cli_backend: backend.map(ToString::to_string),
     };
@@ -754,7 +724,6 @@ async fn execute_task_legacy(
             materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
             cache_dir: None,
             show_cache_path,
-            workspaces: manifest.workspaces.clone(),
             backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
             cli_backend: backend.map(ToString::to_string),
         };

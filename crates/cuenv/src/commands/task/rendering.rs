@@ -11,7 +11,6 @@ use cuenv_core::tasks::discovery::TaskDiscovery;
 use cuenv_core::tasks::{TaskDefinition, WorkspaceTask};
 
 use super::list_builder::prepare_task_index;
-use super::normalization::compute_project_id;
 
 /// Node in a hierarchical task tree for display purposes
 #[derive(Default)]
@@ -123,8 +122,8 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
 
 /// Collect all tasks from discovered projects into `WorkspaceTask` format
 ///
-/// The `module_root` parameter is used to compute stable project IDs for
-/// workspace setup task injection.
+/// The `module_root` parameter is unused but kept for API compatibility.
+#[allow(unused_variables)]
 pub fn collect_workspace_tasks(
     discovery: &TaskDiscovery,
     module_root: &Path,
@@ -139,15 +138,13 @@ pub fn collect_workspace_tasks(
 
         // Clone manifest for mutation during prepare_task_index
         let mut manifest = project.manifest.clone();
-        let project_id = compute_project_id(&manifest, &project.project_root, module_root);
 
-        // Build task index with synthetic tasks injected
-        // Best-effort: if injection fails, fall back to basic index without hooks
+        // Build task index with auto-detected workspace tasks injected
+        // Best-effort: if injection fails, fall back to basic index
         let task_index =
-            prepare_task_index(&mut manifest, Some(discovery), &project_id).or_else(|_| {
-                // Fall back to basic index with implicit tasks but no hook injection
-                let manifest_with_implicit = manifest.clone().with_implicit_tasks();
-                cuenv_core::tasks::TaskIndex::build(&manifest_with_implicit.tasks)
+            prepare_task_index(&mut manifest, &project.project_root).or_else(|_| {
+                // Fall back to basic index without workspace injection
+                cuenv_core::tasks::TaskIndex::build(&manifest.tasks)
             });
 
         if let Ok(index) = task_index {
