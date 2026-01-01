@@ -4,6 +4,7 @@ import (
 	"list"
 	"github.com/cuenv/cuenv/schema"
 	xBun "github.com/cuenv/cuenv/contrib/bun"
+	xContributors "github.com/cuenv/cuenv/contrib/contributors"
 	xRust "github.com/cuenv/cuenv/contrib/rust"
 	xTools "github.com/cuenv/cuenv/contrib/tools"
 )
@@ -85,7 +86,11 @@ schema.#Project & {
 	}
 
 	ci: {
-		contributors: [xRust.#Sccache]
+		contributors: [
+			xContributors.#Nix,
+			xContributors.#CuenvGit,
+			xRust.#Sccache,
+		]
 
 		provider: github: {
 			runner: "blacksmith-8vcpu-ubuntu-2404"

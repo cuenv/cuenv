@@ -18,9 +18,8 @@ import "github.com/cuenv/cuenv/schema"
 #Nix: schema.#Contributor & {
 	id: "nix"
 	when: {
-		// Active if project uses Nix or Devenv runtime, or cuenv source needs Nix
-		runtimeType:  ["nix", "devenv"]
-		cuenvSource?: ["git", "nix"]
+		// Active when cuenv source mode requires Nix (git or nix builds)
+		cuenvSource: ["git", "nix"]
 	}
 	tasks: [{
 		id:       "install-nix"
