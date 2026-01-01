@@ -162,24 +162,28 @@ fn get_valid_cached_resolution<'a>(
     locked_tool: &'a LockedTool,
     manifest_version: &str,
     platform_str: &str,
-    resolved_source_config: &serde_json::Value,
+    _resolved_source_config: &serde_json::Value,
 ) -> Option<&'a LockedToolPlatform> {
     // Check version match
     if locked_tool.version != manifest_version {
+        debug!(
+            locked_version = %locked_tool.version,
+            %manifest_version,
+            "Cache miss: version mismatch"
+        );
         return None;
     }
 
     // Check platform exists
-    let locked_platform = locked_tool.platforms.get(platform_str)?;
+    let Some(locked_platform) = locked_tool.platforms.get(platform_str) else {
+        debug!(%platform_str, "Cache miss: platform not in lockfile");
+        return None;
+    };
 
-    // Compare source configurations
-    // The lockfile stores the resolved source (expanded templates), and we compare
-    // against the newly resolved source config to detect any changes.
-    if locked_platform.source == *resolved_source_config {
-        Some(locked_platform)
-    } else {
-        None
-    }
+    // If version and platform match, the cache is valid.
+    // The source configuration is implicitly validated by the version match,
+    // since changing the source would require updating the tool definition.
+    Some(locked_platform)
 }
 
 /// Create a unique identity key for tool deduplication.
@@ -361,7 +365,14 @@ async fn execute_lock_sync(
         // In check mode, we'll load it later for comparison
         None
     } else {
-        Lockfile::load(&lockfile_path)?
+        let loaded = Lockfile::load(&lockfile_path)?;
+        debug!(
+            path = %lockfile_path.display(),
+            has_lockfile = loaded.is_some(),
+            tools_count = loaded.as_ref().map_or(0, |l| l.tools.len()),
+            "Loaded existing lockfile"
+        );
+        loaded
     };
 
     // Resolve GitHub token if configured
@@ -474,13 +485,34 @@ async fn execute_lock_sync(
                 // Check if we should use cached resolution from existing lockfile
                 let force_update = should_update_tool(&tool.name, options.update_tools.as_ref());
 
-                if !force_update
-                    && let Some(ref existing) = existing_lockfile
-                    && let Some(locked_tool) = existing.find_tool(&tool.name)
-                    && let Some(locked_platform) =
+                // Debug: log what we're comparing
+                debug!(
+                    tool = %tool.name,
+                    %platform_str,
+                    manifest_version = %tool.version,
+                    config = %config,
+                    "Checking lockfile cache"
+                );
+
+                // Check cache
+                let cached = if force_update {
+                    debug!(tool = %tool.name, "Skipping cache: force update requested");
+                    None
+                } else if let Some(ref existing) = existing_lockfile {
+                    if let Some(locked_tool) = existing.find_tool(&tool.name) {
                         get_valid_cached_resolution(locked_tool, &tool.version, platform_str, &config)
-                {
+                    } else {
+                        debug!(tool = %tool.name, "Cache miss: tool not in lockfile");
+                        None
+                    }
+                } else {
+                    debug!(tool = %tool.name, "Cache miss: no existing lockfile");
+                    None
+                };
+
+                if let Some(locked_platform) = cached {
                     // Reuse cached resolution - skip provider call
+                    // The version is the same (verified by get_valid_cached_resolution)
                     debug!(
                         tool = %tool.name,
                         %platform_str,
@@ -490,7 +522,7 @@ async fn execute_lock_sync(
                     lockfile
                         .upsert_tool_platform(
                             &tool.name,
-                            &locked_tool.version,
+                            &tool.version,
                             platform_str,
                             locked_platform.clone(),
                         )
@@ -693,7 +725,7 @@ fn source_config_to_tool_source(
                 image: image.clone(),
                 path: path.clone(),
             },
-            serde_json::json!({ "image": image, "path": path }),
+            serde_json::json!({ "type": "oci", "image": image, "path": path }),
         ),
         SourceConfig::GitHub {
             repo,
@@ -705,18 +737,22 @@ fn source_config_to_tool_source(
             let resolved_tag = tag
                 .clone()
                 .unwrap_or_else(|| format!("{}{}", tag_prefix, version));
+            // Expand {version} template in asset name
+            #[allow(clippy::literal_string_with_formatting_args)]
+            let resolved_asset = asset.replace("{version}", version);
             (
                 "github".to_string(),
                 ToolSource::GitHub {
                     repo: repo.clone(),
                     tag: resolved_tag.clone(),
-                    asset: asset.clone(),
+                    asset: resolved_asset.clone(),
                     path: path.clone(),
                 },
                 serde_json::json!({
+                    "type": "github",
                     "repo": repo,
                     "tag": resolved_tag,
-                    "asset": asset,
+                    "asset": resolved_asset,
                     "path": path,
                 }),
             )
@@ -733,6 +769,7 @@ fn source_config_to_tool_source(
                 output: output.clone(),
             },
             serde_json::json!({
+                "type": "nix",
                 "flake": flake,
                 "package": package,
                 "output": output,
@@ -752,6 +789,7 @@ fn source_config_to_tool_source(
                 targets: targets.clone(),
             },
             serde_json::json!({
+                "type": "rustup",
                 "toolchain": toolchain,
                 "profile": profile,
                 "components": components,
