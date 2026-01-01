@@ -198,17 +198,21 @@ schema.#Project & {
 		}
 
 		check: {
-			script: """
-				set -e
-				echo "Running clippy..."
-				cargo clippy --workspace --all-targets --all-features -- -D warnings
-				echo "Running tests..."
-				cargo test --workspace --all-features
-				echo "Running security checks..."
-				cargo deny check bans licenses advisories
-				echo "All checks passed!"
-				"""
-			inputs: list.Concat([_baseInputs, ["deny.toml", "treefmt.toml", "_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
+			lint: {
+				command: "cargo"
+				args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+				inputs: _baseInputs
+			}
+			test: {
+				command: "cargo"
+				args: ["nextest", "run", "--workspace", "--all-features"]
+				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
+			}
+			security: {
+				command: "cargo"
+				args: ["deny", "check", "bans", "licenses", "advisories"]
+				inputs: list.Concat([_baseInputs, ["deny.toml"]])
+			}
 		}
 
 		// schema.#Rust.#Lint?
