@@ -24,7 +24,7 @@ For each crate, verify:
 | tools/oci | 52.8% | [x] | [x] | Added 34 tests for error, platform, cache modules |
 | cuenv | 53.9% | [ ] | [ ] | Pending review (large crate: 15157 lines) |
 | ignore | 54.3% | [x] | [x] | Added 18 tests for builder, validation, error types |
-| secrets | 72.5% | [ ] | [ ] | Pending review |
+| secrets | 72.5% | [x] | [x] | Added 14 tests for SecretError, SecretSpec in lib.rs |
 | editorconfig | 72.9% | [ ] | [ ] | Pending review |
 | events | 74.0% | [ ] | [ ] | Pending review |
 | ci | 74.2% | [ ] | [ ] | Pending review (large crate: 6691 lines) |
