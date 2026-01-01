@@ -161,6 +161,11 @@ pub struct Hooks {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "onExit")]
     pub on_exit: Option<HashMap<String, Hook>>,
+
+    /// Named hooks to execute before git push (map of name -> hook)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "prePush")]
+    pub pre_push: Option<HashMap<String, Hook>>,
 }
 
 /// Base configuration structure (composable across directories)
@@ -940,6 +945,23 @@ impl Project {
     /// Get hooks to execute when exiting environment, sorted by (order, name)
     pub fn on_exit_hooks(&self) -> Vec<Hook> {
         let map = self.on_exit_hooks_map();
+        let mut hooks: Vec<(String, Hook)> = map.into_iter().collect();
+        hooks.sort_by(|a, b| a.1.order.cmp(&b.1.order).then(a.0.cmp(&b.0)));
+        hooks.into_iter().map(|(_, h)| h).collect()
+    }
+
+    /// Get hooks to execute before git push as a map (name -> hook)
+    pub fn pre_push_hooks_map(&self) -> HashMap<String, Hook> {
+        self.hooks
+            .as_ref()
+            .and_then(|h| h.pre_push.as_ref())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Get hooks to execute before git push, sorted by (order, name)
+    pub fn pre_push_hooks(&self) -> Vec<Hook> {
+        let map = self.pre_push_hooks_map();
         let mut hooks: Vec<(String, Hook)> = map.into_iter().collect();
         hooks.sort_by(|a, b| a.1.order.cmp(&b.1.order).then(a.0.cmp(&b.0)));
         hooks.into_iter().map(|(_, h)| h).collect()
@@ -2089,6 +2111,7 @@ mod tests {
         cuenv.hooks = Some(Hooks {
             on_enter: Some(on_enter),
             on_exit: None,
+            pre_push: None,
         });
 
         let hooks = cuenv.on_enter_hooks();
@@ -2111,6 +2134,7 @@ mod tests {
             hooks: Some(Hooks {
                 on_enter: Some(on_enter),
                 on_exit: None,
+                pre_push: None,
             }),
             ..Default::default()
         };

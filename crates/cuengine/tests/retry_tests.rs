@@ -118,7 +118,7 @@ fn test_retry_exponential_backoff() {
 }
 
 #[test]
-#[allow(clippy::unchecked_time_subtraction)]
+#[allow(clippy::unchecked_duration_subtraction)]
 fn test_retry_max_delay_capping() {
     let config = RetryConfig {
         max_attempts: 5,

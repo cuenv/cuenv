@@ -356,6 +356,8 @@ struct HooksForHash {
     on_enter: Option<BTreeMap<String, Hook>>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "onExit")]
     on_exit: Option<BTreeMap<String, Hook>>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "prePush")]
+    pre_push: Option<BTreeMap<String, Hook>>,
 }
 
 impl HooksForHash {
@@ -363,6 +365,7 @@ impl HooksForHash {
         Self {
             on_enter: hooks.on_enter.as_ref().map(sorted_hooks_map),
             on_exit: hooks.on_exit.as_ref().map(sorted_hooks_map),
+            pre_push: hooks.pre_push.as_ref().map(sorted_hooks_map),
         }
     }
 }
@@ -391,6 +394,18 @@ pub fn check_approval_status(
         return Ok(ApprovalStatus::Approved);
     }
 
+    check_approval_status_core(manager, directory_path, config)
+}
+
+/// Core approval logic without CI bypass.
+///
+/// This function contains the actual approval checking logic and is used by tests
+/// to verify behavior without CI environment interference.
+fn check_approval_status_core(
+    manager: &ApprovalManager,
+    directory_path: &Path,
+    config: &Project,
+) -> Result<ApprovalStatus> {
     let current_hash = compute_approval_hash(config);
 
     if manager.is_approved(directory_path, &current_hash)? {
@@ -407,7 +422,7 @@ pub fn check_approval_status(
 }
 
 /// Compute a hash for approval based only on security-sensitive hooks.
-/// Only onEnter and onExit hooks are included since they execute arbitrary commands.
+/// Only onEnter, onExit, and prePush hooks are included since they execute arbitrary commands.
 /// Changes to env vars, tasks, config settings do NOT require re-approval.
 pub fn compute_approval_hash(config: &Project) -> String {
     let mut hasher = Sha256::new();
@@ -677,6 +692,7 @@ mod tests {
         let hooks = Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
+            pre_push: None,
         };
 
         let mut config1 = base_project();
@@ -709,6 +725,7 @@ mod tests {
         config3.hooks = Some(Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
+            pre_push: None,
         });
 
         let hash3 = compute_approval_hash(&config3);
@@ -724,6 +741,7 @@ mod tests {
         config1.hooks = Some(Hooks {
             on_enter: Some(hooks_map.clone()),
             on_exit: None,
+            pre_push: None,
         });
         config1.tasks.insert("build".to_string(), make_task("npm"));
 
@@ -731,6 +749,7 @@ mod tests {
         config2.hooks = Some(Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
+            pre_push: None,
         });
 
         let hash1 = compute_approval_hash(&config1);
@@ -791,6 +810,7 @@ mod tests {
         config.hooks = Some(Hooks {
             on_enter: Some(on_enter),
             on_exit: Some(on_exit),
+            pre_push: None,
         });
         config.tasks.insert("build".to_string(), make_task("npm"));
         config.tasks.insert("test".to_string(), make_task("npm"));
@@ -811,70 +831,49 @@ mod tests {
 
     #[test]
     fn test_approval_status() {
-        // Unset CI env vars so the test doesn't auto-approve
-        temp_env::with_vars_unset(
-            vec![
-                "CI",
-                "GITHUB_ACTIONS",
-                "GITLAB_CI",
-                "BUILDKITE",
-                "JENKINS_URL",
-                "CIRCLECI",
-                "TRAVIS",
-                "BITBUCKET_PIPELINES",
-                "AZURE_PIPELINES",
-                "TF_BUILD",
-                "DRONE",
-                "TEAMCITY_VERSION",
-            ],
-            || {
-                let mut manager = ApprovalManager::new(PathBuf::from("/tmp/test"));
-                let directory = Path::new("/test/dir");
-                let mut config = base_project();
-                config.env = Some(Env {
-                    base: HashMap::from([(
-                        "TEST".to_string(),
-                        EnvValue::String("value".to_string()),
-                    )]),
-                    environment: None,
-                });
+        // Use check_approval_status_core to test the core logic without CI bypass
+        let mut manager = ApprovalManager::new(PathBuf::from("/tmp/test"));
+        let directory = Path::new("/test/dir");
+        let mut config = base_project();
+        config.env = Some(Env {
+            base: HashMap::from([("TEST".to_string(), EnvValue::String("value".to_string()))]),
+            environment: None,
+        });
 
-                let status = check_approval_status(&manager, directory, &config).unwrap();
-                assert!(matches!(status, ApprovalStatus::NotApproved { .. }));
+        let status = check_approval_status_core(&manager, directory, &config).unwrap();
+        assert!(matches!(status, ApprovalStatus::NotApproved { .. }));
 
-                // Add an approval with a different hash
-                let different_hash = "different_hash".to_string();
-                manager.approvals.insert(
-                    compute_directory_key(directory),
-                    ApprovalRecord {
-                        directory_path: directory.to_path_buf(),
-                        config_hash: different_hash,
-                        approved_at: Utc::now(),
-                        expires_at: None,
-                        note: None,
-                    },
-                );
-
-                let status = check_approval_status(&manager, directory, &config).unwrap();
-                assert!(matches!(status, ApprovalStatus::RequiresApproval { .. }));
-
-                // Add approval with correct hash
-                let correct_hash = compute_approval_hash(&config);
-                manager.approvals.insert(
-                    compute_directory_key(directory),
-                    ApprovalRecord {
-                        directory_path: directory.to_path_buf(),
-                        config_hash: correct_hash,
-                        approved_at: Utc::now(),
-                        expires_at: None,
-                        note: None,
-                    },
-                );
-
-                let status = check_approval_status(&manager, directory, &config).unwrap();
-                assert!(matches!(status, ApprovalStatus::Approved));
+        // Add an approval with a different hash
+        let different_hash = "different_hash".to_string();
+        manager.approvals.insert(
+            compute_directory_key(directory),
+            ApprovalRecord {
+                directory_path: directory.to_path_buf(),
+                config_hash: different_hash,
+                approved_at: Utc::now(),
+                expires_at: None,
+                note: None,
             },
         );
+
+        let status = check_approval_status_core(&manager, directory, &config).unwrap();
+        assert!(matches!(status, ApprovalStatus::RequiresApproval { .. }));
+
+        // Add approval with correct hash
+        let correct_hash = compute_approval_hash(&config);
+        manager.approvals.insert(
+            compute_directory_key(directory),
+            ApprovalRecord {
+                directory_path: directory.to_path_buf(),
+                config_hash: correct_hash,
+                approved_at: Utc::now(),
+                expires_at: None,
+                note: None,
+            },
+        );
+
+        let status = check_approval_status_core(&manager, directory, &config).unwrap();
+        assert!(matches!(status, ApprovalStatus::Approved));
     }
 
     #[test]
@@ -1154,6 +1153,7 @@ mod tests {
         config.hooks = Some(Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
+            pre_push: None,
         });
 
         // In CI environment, should be auto-approved
