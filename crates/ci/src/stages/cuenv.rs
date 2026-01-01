@@ -516,6 +516,7 @@ mod tests {
                 pipelines: vec![],
                 provider: None,
                 contributors,
+                stage_contributors: vec![],
             }),
             ..Default::default()
         };

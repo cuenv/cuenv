@@ -93,6 +93,19 @@ pub enum CuenvSource {
     Release,
 }
 
+impl CuenvSource {
+    /// Get the string representation for activation condition matching
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Git => "git",
+            Self::Nix => "nix",
+            Self::Homebrew => "homebrew",
+            Self::Release => "release",
+        }
+    }
+}
+
 /// Task output format options
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]

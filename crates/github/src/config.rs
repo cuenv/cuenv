@@ -133,6 +133,7 @@ mod tests {
                 .unwrap(),
             ),
             contributors: HashMap::default(),
+            stage_contributors: vec![],
             pipelines: vec![
                 Pipeline {
                     name: "ci".to_string(),

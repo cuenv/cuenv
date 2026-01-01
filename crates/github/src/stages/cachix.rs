@@ -140,6 +140,7 @@ mod tests {
             ci: Some(CI {
                 pipelines: vec![],
                 contributors: HashMap::default(),
+                stage_contributors: vec![],
                 provider: Some(
                     serde_json::from_value(json!({
                         "github": {
@@ -161,6 +162,7 @@ mod tests {
             ci: Some(CI {
                 pipelines: vec![],
                 contributors: HashMap::default(),
+                stage_contributors: vec![],
                 provider: Some(
                     serde_json::from_value(json!({
                         "github": {

@@ -119,6 +119,82 @@ package schema
 	setup?: [...#SetupStep]
 })
 
+// =============================================================================
+// Stage Contributors (v1.4)
+// =============================================================================
+
+// Build stages for contributor-injected tasks
+#BuildStage: "bootstrap" | "setup" | "success" | "failure"
+
+// Activation predicate for stage contributors
+// All specified conditions must be true (AND logic)
+#ActivationCondition: close({
+	// Always active (no conditions)
+	always?: bool
+
+	// Runtime type detection (active if project uses any of these runtime types)
+	// Values: "nix", "devenv", "container", "dagger", "oci", "tools"
+	runtimeType?: [...string]
+
+	// Cuenv source mode detection (for cuenv installation strategy)
+	// Values: "git", "nix", "homebrew", "release"
+	cuenvSource?: [...string]
+
+	// Secrets provider detection (active if environment uses any of these providers)
+	// Values: "onepassword", "aws", "vault", "azure", "gcp"
+	secretsProvider?: [...string]
+
+	// Provider configuration detection (active if these config paths are set)
+	// Path format: "github.cachix", "github.trustedPublishing.cratesIo"
+	providerConfig?: [...string]
+
+	// Task command detection (active if any pipeline task uses these commands)
+	// Format: ["gh", "models"] matches tasks with command=["gh", "models", ...]
+	taskCommand?: [...string]
+
+	// Task label detection (active if any pipeline task has these labels)
+	taskLabels?: [...string]
+
+	// Environment name matching (active only in these environments)
+	environment?: [...string]
+})
+
+// Secret reference for stage tasks
+#SecretRef: close({
+	source!:   string            // CI secret name (e.g., "CACHIX_AUTH_TOKEN")
+	cacheKey?: bool | *false     // Include in cache key via salted HMAC
+})
+
+// A task contributed to a build stage
+#StageTask: close({
+	id!:       string              // Unique task identifier (e.g., "install-nix")
+	stage!:    #BuildStage         // Target stage (bootstrap, setup, success, failure)
+	label?:    string              // Human-readable display name
+	command?:  string              // Shell command to execute
+	script?:   string              // Multi-line script (alternative to command)
+	shell?:    bool | *false       // Wrap command in shell
+	env?:      [string]: string    // Environment variables
+	secrets?:  [string]: #SecretRef | string  // Secret references (key=env var name)
+	dependsOn?: [...string]        // Dependencies on other stage tasks
+	priority?: int | *10           // Ordering within stage (lower = earlier)
+
+	// Provider-specific overrides (e.g., GitHub Actions)
+	provider?: #StageTaskProviderConfig
+})
+
+// Provider-specific stage task configuration
+#StageTaskProviderConfig: close({
+	github?: #GitHubActionConfig
+})
+
+// Stage contributor definition
+// Contributors inject tasks into build stages based on activation conditions
+#StageContributor: close({
+	id!:    string                    // Contributor identifier (e.g., "nix", "1password")
+	when?:  #ActivationCondition      // Activation condition (defaults to always active)
+	tasks!: [...#StageTask]           // Tasks to contribute when active
+})
+
 #Pipeline: close({
 	name:         string
 	environment?: string // environment for secret resolution (e.g., "production")
@@ -138,6 +214,10 @@ package schema
 	pipelines: [...#Pipeline]
 	provider?: #ProviderConfig
 
-	// CUE-defined contributors that inject setup steps
+	// CUE-defined contributors that inject setup steps (legacy, task-matching based)
 	contributors?: [string]: #Contributor
+
+	// Stage contributors that inject tasks into build stages (v1.4+)
+	// These replace the hardcoded Rust StageContributor implementations
+	stageContributors?: [...#StageContributor]
 })

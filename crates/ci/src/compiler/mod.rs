@@ -20,7 +20,10 @@ use crate::ir::{
     StageTask, Task as IrTask, TriggerCondition, WorkflowDispatchInputDef,
 };
 use crate::stages;
-use cuenv_core::ci::{CI, Contributor, ManualTrigger, Pipeline, PipelineTask, SetupStep};
+use cuenv_core::ci::{
+    BuildStage as CueBuildStage, CI, Contributor, CueStageTask, ManualTrigger, Pipeline,
+    PipelineTask, SecretRef, SetupStep, StageContributor,
+};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
 use digest::DigestBuilder;
@@ -363,8 +366,11 @@ impl Compiler {
             }
         }
 
-        // Apply CUE-defined setup steps and contributors
+        // Apply CUE-defined setup steps and legacy contributors
         self.apply_cue_setup_steps(&mut ir);
+
+        // Apply CUE-defined stage contributors (v1.4+)
+        self.apply_cue_stage_contributors(&mut ir);
 
         // Re-sort by dependencies after adding CUE setup steps
         ir.stages.sort_by_dependencies();
@@ -907,6 +913,380 @@ impl Compiler {
         // For now, we only match on labels, command, and args
 
         true
+    }
+
+    // =========================================================================
+    // CUE Stage Contributors (v1.4)
+    // =========================================================================
+
+    /// Apply CUE-defined stage contributors to the IR
+    ///
+    /// This evaluates the `ci.stageContributors` array from CUE and converts
+    /// active contributors' tasks to IR stage tasks.
+    fn apply_cue_stage_contributors(&self, ir: &mut IntermediateRepresentation) {
+        let Some(ref ci_config) = self.project.ci else {
+            return;
+        };
+
+        for contributor in &ci_config.stage_contributors {
+            // Check if this contributor is active
+            if !self.cue_stage_contributor_is_active(contributor, ir) {
+                continue;
+            }
+
+            // Already contributed check (idempotency)
+            let contributed_ids: HashSet<String> = ir
+                .stages
+                .bootstrap
+                .iter()
+                .chain(ir.stages.setup.iter())
+                .chain(ir.stages.success.iter())
+                .chain(ir.stages.failure.iter())
+                .map(|t| t.id.clone())
+                .collect();
+
+            // Add contributor's tasks to appropriate stages
+            for cue_task in &contributor.tasks {
+                // Skip if already contributed
+                if contributed_ids.contains(&cue_task.id) {
+                    continue;
+                }
+
+                let stage_task = Self::cue_stage_task_to_ir(cue_task, &contributor.id);
+                let stage = Self::cue_build_stage_to_ir(cue_task.stage);
+                ir.stages.add(stage, stage_task);
+            }
+        }
+    }
+
+    /// Check if a CUE stage contributor is active
+    fn cue_stage_contributor_is_active(
+        &self,
+        contributor: &StageContributor,
+        ir: &IntermediateRepresentation,
+    ) -> bool {
+        let Some(ref condition) = contributor.when else {
+            // No condition = always active
+            return true;
+        };
+
+        // Check always condition
+        if condition.always == Some(true) {
+            return true;
+        }
+
+        // Check runtime type
+        if !condition.runtime_type.is_empty() {
+            if let Some(ref runtime) = self.project.runtime {
+                let runtime_type = Self::get_runtime_type(runtime);
+                if !condition.runtime_type.iter().any(|t| t == runtime_type) {
+                    return false;
+                }
+            } else {
+                // No runtime set but runtime type condition exists
+                return false;
+            }
+        }
+
+        // Check cuenv source mode
+        if !condition.cuenv_source.is_empty() {
+            let source = self
+                .project
+                .config
+                .as_ref()
+                .and_then(|c| c.ci.as_ref())
+                .and_then(|ci| ci.cuenv.as_ref())
+                .map_or("release", |c| c.source.as_str());
+            if !condition.cuenv_source.iter().any(|s| s == source) {
+                return false;
+            }
+        }
+
+        // Check secrets provider
+        if !condition.secrets_provider.is_empty()
+            && !self.has_secrets_provider(&condition.secrets_provider, ir)
+        {
+            return false;
+        }
+
+        // Check provider config
+        if !condition.provider_config.is_empty()
+            && !self.has_provider_config(&condition.provider_config)
+        {
+            return false;
+        }
+
+        // Check task command
+        if !condition.task_command.is_empty()
+            && !Self::has_task_command(&condition.task_command, ir)
+        {
+            return false;
+        }
+
+        // Check task labels
+        if !condition.task_labels.is_empty() && !self.has_task_labels(&condition.task_labels) {
+            return false;
+        }
+
+        // Check environment
+        if !condition.environment.is_empty() {
+            let Some(ref pipeline) = self.options.pipeline else {
+                return false;
+            };
+            let Some(ref env_name) = pipeline.environment else {
+                return false;
+            };
+            if !condition.environment.iter().any(|e| e == env_name) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Get the runtime type string for condition matching
+    fn get_runtime_type(runtime: &cuenv_core::manifest::Runtime) -> &'static str {
+        match runtime {
+            cuenv_core::manifest::Runtime::Nix(_) => "nix",
+            cuenv_core::manifest::Runtime::Devenv(_) => "devenv",
+            cuenv_core::manifest::Runtime::Container(_) => "container",
+            cuenv_core::manifest::Runtime::Dagger(_) => "dagger",
+            cuenv_core::manifest::Runtime::Oci(_) => "oci",
+            cuenv_core::manifest::Runtime::Tools(_) => "tools",
+        }
+    }
+
+    /// Check if the pipeline environment uses any of the specified secrets providers
+    fn has_secrets_provider(
+        &self,
+        providers: &[String],
+        ir: &IntermediateRepresentation,
+    ) -> bool {
+        let Some(ref env_name) = ir.pipeline.environment else {
+            return false;
+        };
+        let Some(ref env) = self.project.env else {
+            return false;
+        };
+
+        // Check for provider references in the environment
+        let env_vars = env.for_environment(env_name);
+        for value in env_vars.values() {
+            // Check for 1Password references
+            if providers.iter().any(|p| p == "onepassword") {
+                match value {
+                    cuenv_core::environment::EnvValue::String(s) if s.starts_with("op://") => {
+                        return true;
+                    }
+                    cuenv_core::environment::EnvValue::Secret(secret)
+                        if secret.resolver == "onepassword" =>
+                    {
+                        return true;
+                    }
+                    cuenv_core::environment::EnvValue::WithPolicies(wp) => {
+                        match &wp.value {
+                            cuenv_core::environment::EnvValueSimple::Secret(secret)
+                                if secret.resolver == "onepassword" =>
+                            {
+                                return true;
+                            }
+                            cuenv_core::environment::EnvValueSimple::String(s)
+                                if s.starts_with("op://") =>
+                            {
+                                return true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Add other provider checks as needed (aws, vault, etc.)
+        }
+        false
+    }
+
+    /// Check if any of the specified provider config paths are set
+    fn has_provider_config(&self, paths: &[String]) -> bool {
+        let Some(ref ci) = self.project.ci else {
+            return false;
+        };
+        let Some(ref provider) = ci.provider else {
+            return false;
+        };
+
+        for path in paths {
+            let parts: Vec<&str> = path.split('.').collect();
+            if parts.is_empty() {
+                continue;
+            }
+
+            // Get the top-level provider config (e.g., "github")
+            let Some(config) = provider.get(parts[0]) else {
+                continue;
+            };
+
+            // Navigate the path
+            let mut current = config;
+            let mut found = true;
+            for part in &parts[1..] {
+                match current.get(*part) {
+                    Some(value) if !value.is_null() => {
+                        current = value;
+                    }
+                    _ => {
+                        found = false;
+                        break;
+                    }
+                }
+            }
+
+            if found {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Check if any pipeline task uses the specified command
+    fn has_task_command(commands: &[String], ir: &IntermediateRepresentation) -> bool {
+        // Check IR tasks for command matches
+        for task in &ir.tasks {
+            // Only check tasks in the pipeline
+            if !ir.pipeline.pipeline_tasks.is_empty()
+                && !ir.pipeline.pipeline_tasks.contains(&task.id)
+            {
+                continue;
+            }
+
+            // Check if command starts with the specified commands
+            if task.command.len() >= commands.len() {
+                let matches = commands
+                    .iter()
+                    .zip(task.command.iter())
+                    .all(|(a, b)| a == b);
+                if matches {
+                    return true;
+                }
+            }
+
+            // Also check shell commands for the pattern
+            if task.shell && task.command.len() == 1 {
+                let cmd_str = commands.join(" ");
+                if task.command[0].contains(&cmd_str) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Check if any pipeline task has the specified labels
+    fn has_task_labels(&self, labels: &[String]) -> bool {
+        let Some(ref pipeline) = self.options.pipeline else {
+            return false;
+        };
+
+        for pipeline_task in &pipeline.tasks {
+            let task_name = pipeline_task.task_name();
+            if let Some(task) = self.find_task(task_name) {
+                let has_all = labels.iter().all(|l| task.labels.contains(l));
+                if has_all {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    /// Convert a CUE BuildStage to IR BuildStage
+    fn cue_build_stage_to_ir(stage: CueBuildStage) -> BuildStage {
+        match stage {
+            CueBuildStage::Bootstrap => BuildStage::Bootstrap,
+            CueBuildStage::Setup => BuildStage::Setup,
+            CueBuildStage::Success => BuildStage::Success,
+            CueBuildStage::Failure => BuildStage::Failure,
+        }
+    }
+
+    /// Convert a CUE stage task to an IR StageTask
+    fn cue_stage_task_to_ir(cue_task: &CueStageTask, provider: &str) -> StageTask {
+        // Build command array
+        let (command, shell) = if let Some(ref cmd) = cue_task.command {
+            (vec![cmd.clone()], cue_task.shell)
+        } else if let Some(ref script) = cue_task.script {
+            (vec![script.clone()], true)
+        } else {
+            (vec![], false)
+        };
+
+        // Convert secrets
+        let secrets: BTreeMap<String, SecretConfig> = cue_task
+            .secrets
+            .iter()
+            .map(|(k, v)| {
+                let config = match v {
+                    SecretRef::Simple(s) => SecretConfig {
+                        source: s.clone(),
+                        cache_key: false,
+                    },
+                    SecretRef::Detailed(d) => SecretConfig {
+                        source: d.source.clone(),
+                        cache_key: d.cache_key,
+                    },
+                };
+                (k.clone(), config)
+            })
+            .collect();
+
+        // Convert provider hints
+        let provider_hints = cue_task.provider.as_ref().and_then(|p| {
+            p.github.as_ref().map(|gh| {
+                let mut github_action = serde_json::Map::new();
+                github_action.insert(
+                    "uses".to_string(),
+                    serde_json::Value::String(gh.uses.clone()),
+                );
+                if !gh.inputs.is_empty() {
+                    github_action.insert(
+                        "inputs".to_string(),
+                        serde_json::Value::Object(
+                            gh.inputs
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
+                        ),
+                    );
+                }
+
+                let mut hints = serde_json::Map::new();
+                hints.insert(
+                    "github_action".to_string(),
+                    serde_json::Value::Object(github_action),
+                );
+                serde_json::Value::Object(hints)
+            })
+        });
+
+        StageTask {
+            id: cue_task.id.clone(),
+            provider: provider.to_string(),
+            label: cue_task.label.clone(),
+            command,
+            shell,
+            env: cue_task
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            secrets,
+            depends_on: cue_task.depends_on.clone(),
+            priority: cue_task.priority,
+            provider_hints,
+        }
     }
 }
 
