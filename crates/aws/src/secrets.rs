@@ -437,4 +437,145 @@ mod tests {
         // This test just ensures the function exists and doesn't panic
         let _ = AwsResolver::http_credentials_available();
     }
+
+    #[test]
+    fn test_aws_config_new_with_string_slice() {
+        let config = AwsSecretConfig::new("my-secret");
+        assert_eq!(config.secret_id, "my-secret");
+        assert!(config.version_id.is_none());
+        assert!(config.version_stage.is_none());
+        assert!(config.json_key.is_none());
+    }
+
+    #[test]
+    fn test_aws_config_full_serialization() {
+        let config = AwsSecretConfig {
+            secret_id: "my-secret".to_string(),
+            version_id: Some("abc123".to_string()),
+            version_stage: Some("AWSCURRENT".to_string()),
+            json_key: Some("api_key".to_string()),
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"secretId\":\"my-secret\""));
+        assert!(json.contains("\"versionId\":\"abc123\""));
+        assert!(json.contains("\"versionStage\":\"AWSCURRENT\""));
+        assert!(json.contains("\"jsonKey\":\"api_key\""));
+    }
+
+    #[test]
+    fn test_aws_config_minimal_serialization() {
+        let config = AwsSecretConfig::new("simple-secret");
+        let json = serde_json::to_string(&config).unwrap();
+        // Optional fields should not be present
+        assert!(!json.contains("versionId"));
+        assert!(!json.contains("versionStage"));
+        assert!(!json.contains("jsonKey"));
+    }
+
+    #[test]
+    fn test_extract_json_key_string_value() {
+        let secret = r#"{"username": "admin", "password": "secret123"}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"password".to_string()));
+        assert_eq!(result.unwrap(), "secret123");
+    }
+
+    #[test]
+    fn test_extract_json_key_number_value() {
+        let secret = r#"{"port": 5432, "host": "localhost"}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"port".to_string()));
+        assert_eq!(result.unwrap(), "5432");
+    }
+
+    #[test]
+    fn test_extract_json_key_boolean_value() {
+        let secret = r#"{"enabled": true, "debug": false}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"enabled".to_string()));
+        assert_eq!(result.unwrap(), "true");
+    }
+
+    #[test]
+    fn test_extract_json_key_no_key_returns_full_secret() {
+        let secret = r#"{"username": "admin"}"#;
+        let result = AwsResolver::extract_json_key("test", secret, None);
+        assert_eq!(result.unwrap(), secret);
+    }
+
+    #[test]
+    fn test_extract_json_key_plain_string_no_key() {
+        let secret = "plain-text-secret";
+        let result = AwsResolver::extract_json_key("test", secret, None);
+        assert_eq!(result.unwrap(), "plain-text-secret");
+    }
+
+    #[test]
+    fn test_extract_json_key_missing_key_error() {
+        let secret = r#"{"username": "admin"}"#;
+        let result =
+            AwsResolver::extract_json_key("test", secret, Some(&"nonexistent".to_string()));
+        assert!(result.is_err());
+        if let Err(SecretError::ResolutionFailed { message, .. }) = result {
+            assert!(message.contains("JSON key 'nonexistent' not found"));
+        } else {
+            panic!("Expected ResolutionFailed error");
+        }
+    }
+
+    #[test]
+    fn test_extract_json_key_invalid_json_error() {
+        let secret = "not-valid-json";
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"key".to_string()));
+        assert!(result.is_err());
+        if let Err(SecretError::ResolutionFailed { message, .. }) = result {
+            assert!(message.contains("Secret is not valid JSON"));
+        } else {
+            panic!("Expected ResolutionFailed error");
+        }
+    }
+
+    #[test]
+    fn test_extract_json_key_nested_object() {
+        let secret = r#"{"database": {"host": "localhost", "port": 5432}}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"database".to_string()));
+        // Should return the object as a string
+        let value = result.unwrap();
+        assert!(value.contains("host"));
+        assert!(value.contains("localhost"));
+    }
+
+    #[test]
+    fn test_extract_json_key_array_value() {
+        let secret = r#"{"hosts": ["host1", "host2", "host3"]}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"hosts".to_string()));
+        let value = result.unwrap();
+        assert!(value.contains("host1"));
+        assert!(value.contains("host2"));
+    }
+
+    #[test]
+    fn test_extract_json_key_null_value() {
+        let secret = r#"{"value": null}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"value".to_string()));
+        assert_eq!(result.unwrap(), "null");
+    }
+
+    #[test]
+    fn test_aws_config_clone() {
+        let config = AwsSecretConfig {
+            secret_id: "my-secret".to_string(),
+            version_id: Some("v1".to_string()),
+            version_stage: Some("AWSCURRENT".to_string()),
+            json_key: Some("key".to_string()),
+        };
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
+    }
+
+    #[test]
+    fn test_aws_config_debug() {
+        let config = AwsSecretConfig::new("test-secret");
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("AwsSecretConfig"));
+        assert!(debug_str.contains("test-secret"));
+    }
 }
