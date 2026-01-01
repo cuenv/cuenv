@@ -823,14 +823,17 @@ impl Compiler {
             }
         }
 
-        // Check workspace type (detect package managers from lockfiles)
+        // Check workspace type (detect package managers using workspace discovery)
         if !condition.workspace_type.is_empty() {
-            let project_dir = self.get_project_directory();
-            let detected = cuenv_workspaces::detection::detect_package_managers(&project_dir)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| m.to_string().to_lowercase())
-                .collect::<Vec<_>>();
+            // Use module root for workspace detection (lockfiles are at repo root in monorepos)
+            let module_root = self
+                .options
+                .module_root
+                .clone()
+                .or_else(|| self.options.project_root.clone())
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+            let detected = self.detect_workspace_managers(&module_root);
 
             if !condition
                 .workspace_type
@@ -844,20 +847,34 @@ impl Compiler {
         true
     }
 
-    /// Get the project directory for workspace detection
-    fn get_project_directory(&self) -> std::path::PathBuf {
-        let base = self
-            .options
-            .module_root
-            .clone()
-            .or_else(|| self.options.project_root.clone())
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
+    /// Detect package managers for the workspace, checking if the current project is a member.
+    ///
+    /// Uses `WorkspaceDiscovery` to properly discover workspace members rather than
+    /// just checking for lockfiles in the current directory.
+    fn detect_workspace_managers(&self, module_root: &std::path::Path) -> Vec<String> {
+        use cuenv_workspaces::{PackageJsonDiscovery, WorkspaceDiscovery};
 
-        if let Some(ref project_path) = self.options.project_path {
-            base.join(project_path)
-        } else {
-            base
+        // Try to discover workspace at module root
+        if let Ok(workspace) = PackageJsonDiscovery.discover(module_root) {
+            // Check if current project is a member of this workspace
+            if let Some(ref project_path) = self.options.project_path {
+                // Use contains_path() to check workspace membership
+                let path = std::path::Path::new(project_path);
+                if workspace.contains_path(path) || workspace.lockfile.is_some() {
+                    return vec![workspace.manager.to_string().to_lowercase()];
+                }
+            } else {
+                // No sub-project path means we're at root - use workspace manager directly
+                return vec![workspace.manager.to_string().to_lowercase()];
+            }
         }
+
+        // Fallback to simple lockfile detection at module root
+        cuenv_workspaces::detection::detect_package_managers(module_root)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| m.to_string().to_lowercase())
+            .collect()
     }
 
     /// Get the runtime type string for condition matching
