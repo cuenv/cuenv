@@ -41,7 +41,7 @@
 //! ```
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Current lockfile format version.
@@ -56,8 +56,8 @@ pub struct Lockfile {
     /// Lockfile format version (for future migrations).
     pub version: u32,
     /// Locked tools with per-platform resolution (v2+).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub tools: HashMap<String, LockedTool>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, LockedTool>,
     /// Legacy OCI artifacts (for backward compatibility with v1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<LockedArtifact>,
@@ -67,7 +67,7 @@ impl Default for Lockfile {
     fn default() -> Self {
         Self {
             version: LOCKFILE_VERSION,
-            tools: HashMap::new(),
+            tools: BTreeMap::new(),
             artifacts: Vec::new(),
         }
     }
@@ -185,7 +185,7 @@ impl Lockfile {
             .entry(name.to_string())
             .or_insert_with(|| LockedTool {
                 version: version.to_string(),
-                platforms: HashMap::new(),
+                platforms: BTreeMap::new(),
             });
 
         // Update version if it changed
@@ -237,7 +237,7 @@ pub struct LockedArtifact {
     pub kind: ArtifactKind,
     /// Platform-specific resolution data.
     /// Keys are platform strings like "darwin-arm64", "linux-x86_64".
-    pub platforms: HashMap<String, PlatformData>,
+    pub platforms: BTreeMap<String, PlatformData>,
 }
 
 impl LockedArtifact {
@@ -306,7 +306,7 @@ pub struct LockedTool {
     pub version: String,
     /// Platform-specific resolution data.
     /// Keys are platform strings like "darwin-arm64", "linux-x86_64".
-    pub platforms: HashMap<String, LockedToolPlatform>,
+    pub platforms: BTreeMap<String, LockedToolPlatform>,
 }
 
 impl LockedTool {
@@ -401,7 +401,7 @@ mod tests {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
             },
-            platforms: HashMap::from([
+            platforms: BTreeMap::from([
                 (
                     "darwin-arm64".to_string(),
                     PlatformData {
@@ -436,7 +436,7 @@ mod tests {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
             },
-            platforms: HashMap::new(),
+            platforms: BTreeMap::new(),
         });
 
         assert!(lockfile.find_image_artifact("nginx:1.25-alpine").is_some());
@@ -451,7 +451,7 @@ mod tests {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
             },
-            platforms: HashMap::from([(
+            platforms: BTreeMap::from([(
                 "darwin-arm64".to_string(),
                 PlatformData {
                     digest: "sha256:old".to_string(),
@@ -468,7 +468,7 @@ mod tests {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
             },
-            platforms: HashMap::from([(
+            platforms: BTreeMap::from([(
                 "darwin-arm64".to_string(),
                 PlatformData {
                     digest: "sha256:new".to_string(),
@@ -509,7 +509,7 @@ mod tests {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
             },
-            platforms: HashMap::new(), // Empty - should fail
+            platforms: BTreeMap::new(), // Empty - should fail
         };
 
         let result = lockfile.upsert_artifact(artifact);
@@ -530,7 +530,7 @@ mod tests {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
             },
-            platforms: HashMap::from([(
+            platforms: BTreeMap::from([(
                 "darwin-arm64".to_string(),
                 PlatformData {
                     digest: "invalid-no-prefix".to_string(), // Missing sha256: prefix
@@ -555,7 +555,7 @@ mod tests {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
             },
-            platforms: HashMap::from([
+            platforms: BTreeMap::from([
                 (
                     "darwin-arm64".to_string(),
                     PlatformData {
@@ -728,7 +728,7 @@ mod tests {
 
         let tool = LockedTool {
             version: "1.7.1".to_string(),
-            platforms: HashMap::new(), // Empty - should fail
+            platforms: BTreeMap::new(), // Empty - should fail
         };
 
         let result = lockfile.upsert_tool("jq".to_string(), tool);

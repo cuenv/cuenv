@@ -14,7 +14,7 @@ use cuenv_core::lockfile::{
 use cuenv_core::manifest::{Base, GitHubProviderConfig, Project, Runtime, SourceConfig, ToolSpec};
 use cuenv_core::tools::{Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolSource};
 use cuenv_tools_oci::{OciClient, Platform};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use tracing::{debug, info, warn};
 
@@ -92,6 +92,22 @@ struct CollectedTool {
     platforms: Vec<String>,
 }
 
+/// Key type for tool deduplication: (name, version, source_hash).
+type ToolIdentityKey = (String, String, String);
+
+/// Create a unique identity key for tool deduplication.
+///
+/// Tools are considered identical if they have the same name, version, and source.
+/// This prevents resolving the same tool multiple times when defined in multiple projects.
+fn tool_identity_key(
+    name: &str,
+    version: &str,
+    source: Option<&SourceConfig>,
+) -> ToolIdentityKey {
+    let source_hash = source.map(|s| format!("{s:?}")).unwrap_or_default();
+    (name.to_string(), version.to_string(), source_hash)
+}
+
 /// Execute lock synchronization for a path.
 ///
 /// Scans all projects in the CUE module, collects OCI image references,
@@ -123,7 +139,8 @@ async fn execute_lock_sync(
 
         let mut image_platforms: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_platforms: Vec<String> = Vec::new();
-        let mut collected_tools: Vec<CollectedTool> = Vec::new();
+        // Use HashMap for tool deduplication: same tool in multiple projects is resolved once
+        let mut tools_map: HashMap<ToolIdentityKey, CollectedTool> = HashMap::new();
         let mut tools_platforms: Vec<String> = Vec::new();
         let mut collected_flakes: HashMap<String, String> = HashMap::new();
         let mut github_config: Option<GitHubProviderConfig> = None;
@@ -196,7 +213,7 @@ async fn execute_lock_sync(
                         github_config.clone_from(&tools_runtime.github);
                     }
 
-                    // Collect all tools
+                    // Collect all tools with deduplication across projects
                     for (name, spec) in &tools_runtime.tools {
                         let (version, source, overrides) = match spec {
                             ToolSpec::Version(v) => (v.clone(), None, vec![]),
@@ -207,19 +224,33 @@ async fn execute_lock_sync(
                             ),
                         };
 
-                        collected_tools.push(CollectedTool {
-                            name: name.clone(),
-                            version,
-                            source,
-                            overrides,
-                            platforms: resolve_platforms.clone(),
-                        });
+                        let key = tool_identity_key(name, &version, source.as_ref());
+                        tools_map
+                            .entry(key)
+                            .and_modify(|existing| {
+                                // Merge platforms from this project into existing entry
+                                for platform in resolve_platforms {
+                                    if !existing.platforms.contains(platform) {
+                                        existing.platforms.push(platform.clone());
+                                    }
+                                }
+                            })
+                            .or_insert_with(|| CollectedTool {
+                                name: name.clone(),
+                                version,
+                                source,
+                                overrides,
+                                platforms: resolve_platforms.clone(),
+                            });
                     }
                 }
                 // Skip projects without OCI/Tools runtime
                 Some(_) | None => {}
             }
         }
+
+        // Convert deduplicated tools map to Vec
+        let collected_tools: Vec<CollectedTool> = tools_map.into_values().collect();
 
         (
             lockfile_path,
@@ -267,7 +298,7 @@ async fn execute_lock_sync(
     for (image, platforms) in &image_platforms {
         debug!(%image, ?platforms, "Resolving image");
 
-        let mut platforms_map = HashMap::new();
+        let mut platforms_map = BTreeMap::new();
         for platform_str in platforms {
             let platform = Platform::parse(platform_str).ok_or_else(|| {
                 cuenv_core::Error::configuration(format!(
@@ -307,7 +338,7 @@ async fn execute_lock_sync(
 
     if !collected_tools.is_empty() {
         info!(
-            "Resolving {} tools for {} platforms",
+            "Resolving {} unique tools for {} platforms",
             collected_tools.len(),
             tools_platforms.len()
         );
