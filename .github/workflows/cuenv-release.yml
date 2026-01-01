@@ -41,6 +41,10 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -50,6 +54,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: darwin-arm64
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -80,6 +85,10 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -89,6 +98,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: linux-x64
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -122,6 +132,10 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -142,6 +156,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
   publish-github:
     name: publish.github
@@ -168,6 +183,10 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -188,6 +207,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
   docs-deploy:
     name: docs.deploy
@@ -212,6 +232,10 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -225,6 +249,7 @@ jobs:
       run: cuenv task docs.deploy -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
   docs-build:
     name: docs.build
@@ -247,6 +272,10 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -255,6 +284,7 @@ jobs:
       run: cuenv task docs.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
