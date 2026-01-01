@@ -90,6 +90,9 @@ pub fn matched_inputs_for_task(
         .collect()
 }
 
+/// Check if a task is directly affected by file changes.
+///
+/// A task is directly affected if any of its input patterns match any of the changed files.
 fn is_task_directly_affected(
     task_name: &str,
     config: &Project,
@@ -106,6 +109,17 @@ fn is_task_directly_affected(
     }
 }
 
+/// Check if an external dependency (cross-project task) is affected by file changes.
+///
+/// External dependencies are specified in the format `#project:task`. This function
+/// recursively checks if the referenced task or any of its dependencies are affected.
+///
+/// # Recursion Prevention
+///
+/// To prevent infinite loops with circular dependencies, we insert a `false` sentinel
+/// value into the cache before checking. If we encounter this dependency again during
+/// recursion, we return false (not affected). Once the check completes, the cache is
+/// updated with the actual result.
 #[allow(clippy::implicit_hasher)]
 fn check_external_dependency(
     dep: &str,
@@ -118,8 +132,8 @@ fn check_external_dependency(
         return *result;
     }
 
-    // Break recursion cycle by assuming false initially (or handle cycles better?)
-    // For DAGs, temporary false is okay.
+    // Insert false as a sentinel to prevent infinite recursion on circular dependencies.
+    // This will be updated with the actual result once the check completes.
     cache.insert(dep.to_string(), false);
 
     let parts: Vec<&str> = dep[1..].split(':').collect();
@@ -168,6 +182,14 @@ fn check_external_dependency(
     false
 }
 
+/// Check if any of the given files match a pattern.
+///
+/// Supports two matching modes:
+/// - **Simple paths**: Patterns without wildcards (`*`, `?`, `[`) are treated as path prefixes.
+///   For example, `"crates"` matches `"crates/foo/bar.rs"`.
+/// - **Glob patterns**: Patterns with wildcards use glob matching.
+///
+/// File paths are normalized relative to the project root before matching.
 fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
     // If pattern doesn't contain glob characters, treat it as a path prefix
     // e.g., "crates" should match "crates/foo/bar.rs"
@@ -192,14 +214,16 @@ fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
         };
 
         if is_simple_path {
-            // Check if the pattern is a prefix of the file path or exact match
+            // Check if the pattern is a prefix of the file path.
+            // Note: starts_with includes exact matches, so no separate equality check needed.
             let pattern_path = Path::new(pattern);
-            if relative_path.starts_with(pattern_path) || relative_path == pattern_path {
+            if relative_path.starts_with(pattern_path) {
                 return true;
             }
         } else {
             // Use glob matching for patterns with wildcards
             let Ok(glob) = glob::Pattern::new(pattern) else {
+                tracing::trace!(pattern, "Skipping invalid glob pattern");
                 continue;
             };
             if glob.matches_path(relative_path) {
