@@ -186,6 +186,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: false,
             expect_eval_failure: false,
         },
+        ExampleExpectations {
+            name: "ci-bun-workspace",
+            min_task_count: 1, // version
+            has_hooks: false,
+            has_env: true, // Has empty env block
+            expect_eval_failure: false,
+        },
     ]
 }
 

@@ -823,7 +823,41 @@ impl Compiler {
             }
         }
 
+        // Check workspace type (detect package managers from lockfiles)
+        if !condition.workspace_type.is_empty() {
+            let project_dir = self.get_project_directory();
+            let detected = cuenv_workspaces::detection::detect_package_managers(&project_dir)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| m.to_string().to_lowercase())
+                .collect::<Vec<_>>();
+
+            if !condition
+                .workspace_type
+                .iter()
+                .any(|t| detected.contains(&t.to_lowercase()))
+            {
+                return false;
+            }
+        }
+
         true
+    }
+
+    /// Get the project directory for workspace detection
+    fn get_project_directory(&self) -> std::path::PathBuf {
+        let base = self
+            .options
+            .module_root
+            .clone()
+            .or_else(|| self.options.project_root.clone())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+        if let Some(ref project_path) = self.options.project_path {
+            base.join(project_path)
+        } else {
+            base
+        }
     }
 
     /// Get the runtime type string for condition matching
