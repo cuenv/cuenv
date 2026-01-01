@@ -229,6 +229,11 @@ pub struct ActivationCondition {
     /// Environment name matching (active only in these environments)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<String>,
+
+    /// Workspace type detection (active if project has these package managers)
+    /// Values: "npm", "bun", "pnpm", "yarn", "cargo", "deno"
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_type: Vec<String>,
 }
 
 /// Secret reference for phase tasks
