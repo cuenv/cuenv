@@ -88,36 +88,39 @@ hooks: {
         .output()
         .unwrap();
 
-    // Handle different behaviors based on how hook errors are handled
+    // Handle different behaviors based on environment and error handling:
+    // - Exit code 3: FFI/sandbox error
+    // - Exit code 2: CLI/configuration error (hook evaluation failed)
+    // - Exit code 1: Partial env (GOOD var not set, script returns MISSING)
     let exit_code = output.status.code();
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     match exit_code {
         Some(3) => {
-            // CI / Sandbox behavior: Abort with FFI or I/O error
+            // CI / Sandbox behavior: Abort with error (could be FFI or I/O)
             assert!(
                 stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
                 "Expected FFI or I/O error in stderr, got: {stderr}"
             );
         }
         Some(2) => {
-            // Hook failure treated as CLI/config error (fail-fast behavior)
-            // This is valid - hook with syntax error should cause cuenv to fail
+            // CLI/configuration error - hook evaluation or environment setup failed
+            // This is acceptable behavior when hooks have syntax errors
             assert!(
                 stderr.contains("error") || stderr.contains("Error") || stderr.contains("failed"),
                 "Expected error message in stderr for exit code 2, got: {stderr}"
             );
         }
         Some(1) => {
-            // Permissive behavior: Continue with partial env, inner command fails
+            // Local / Permissive behavior: Continue with partial env
             assert!(
                 stdout.contains("MISSING"),
                 "Expected MISSING in stdout for exit code 1, got: {stdout}"
             );
         }
         other => {
-            panic!("Unexpected exit code {other:?}. stdout: {stdout}, stderr: {stderr}");
+            panic!("Unexpected exit code {other:?}.\nstdout: {stdout}\nstderr: {stderr}");
         }
     }
 }

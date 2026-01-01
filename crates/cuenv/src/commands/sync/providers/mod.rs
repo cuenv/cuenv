@@ -2,11 +2,13 @@
 
 mod ci;
 mod cubes;
+mod git_hooks;
 mod lock;
 mod rules;
 
 pub use ci::CiSyncProvider;
 pub use cubes::CubesSyncProvider;
+pub use git_hooks::GitHooksSyncProvider;
 pub use lock::LockSyncProvider;
 pub use rules::RulesSyncProvider;
 
@@ -20,5 +22,6 @@ pub fn default_registry() -> SyncRegistry {
     registry.register(CiSyncProvider);
     registry.register(RulesSyncProvider);
     registry.register(LockSyncProvider);
+    registry.register(GitHooksSyncProvider);
     registry
 }
