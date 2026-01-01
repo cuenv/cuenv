@@ -216,6 +216,7 @@ impl<'a> IrValidator<'a> {
 mod tests {
     use super::*;
     use crate::ir::{PurityMode, Runtime};
+    use std::collections::BTreeMap;
 
     fn create_test_task(id: &str, depends_on: &[&str]) -> Task {
         Task {
@@ -223,8 +224,8 @@ mod tests {
             runtime: None,
             command: vec!["echo".to_string()],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -235,7 +236,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 

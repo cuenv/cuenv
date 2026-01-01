@@ -7,7 +7,7 @@
 //! - v1.3: Initial stable version
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// IR version identifier
 pub const IR_VERSION: &str = "1.4";
@@ -120,8 +120,8 @@ pub struct ManualTriggerConfig {
     pub enabled: bool,
 
     /// Input definitions for `workflow_dispatch`
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub inputs: HashMap<String, WorkflowDispatchInputDef>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, WorkflowDispatchInputDef>,
 }
 
 /// Workflow dispatch input definition
@@ -204,12 +204,12 @@ pub struct Task {
     pub shell: bool,
 
     /// Environment variables
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 
     /// Secret configurations
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub secrets: HashMap<String, SecretConfig>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, SecretConfig>,
 
     /// Resource requirements (for scheduling)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -252,8 +252,8 @@ pub struct Task {
     pub artifact_downloads: Vec<ArtifactDownload>,
 
     /// Parameters to pass to the task command
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub params: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, String>,
 }
 
 impl Task {
@@ -265,15 +265,15 @@ impl Task {
     pub fn synthetic_aggregation(
         id: impl Into<String>,
         artifact_downloads: Vec<ArtifactDownload>,
-        params: HashMap<String, String>,
+        params: BTreeMap<String, String>,
     ) -> Self {
         Self {
             id: id.into(),
             runtime: None,
             command: vec![],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -299,8 +299,8 @@ impl Task {
             runtime: None,
             command: vec![],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -311,7 +311,7 @@ impl Task {
             manual_approval: false,
             matrix: Some(matrix),
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 }
@@ -320,16 +320,16 @@ impl Task {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct MatrixConfig {
     /// Matrix dimensions (e.g., `{"arch": ["linux-x64", "darwin-arm64"]}`)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub dimensions: HashMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dimensions: BTreeMap<String, Vec<String>>,
 
     /// Exclude specific combinations
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub exclude: Vec<HashMap<String, String>>,
+    pub exclude: Vec<BTreeMap<String, String>>,
 
     /// Include additional combinations
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub include: Vec<HashMap<String, String>>,
+    pub include: Vec<BTreeMap<String, String>>,
 
     /// Maximum parallel jobs (0 = unlimited)
     #[serde(default)]
@@ -470,12 +470,12 @@ pub struct StageTask {
     pub shell: bool,
 
     /// Environment variables
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub env: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 
     /// Secret configurations
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub secrets: HashMap<String, SecretConfig>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secrets: BTreeMap<String, SecretConfig>,
 
     /// Dependencies on other stage tasks (by ID)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -736,8 +736,8 @@ mod tests {
             runtime: None,
             command: vec!["echo".to_string(), "hello".to_string()],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -748,7 +748,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -764,8 +764,8 @@ mod tests {
             runtime: None,
             command: vec!["deploy".to_string()],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: Some("production".to_string()),
             inputs: vec![],
@@ -776,7 +776,7 @@ mod tests {
             manual_approval: true,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -793,8 +793,8 @@ mod tests {
             runtime: None,
             command: vec!["cargo".to_string(), "build".to_string()],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -813,7 +813,7 @@ mod tests {
                 ..Default::default()
             }),
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -887,8 +887,8 @@ mod tests {
             runtime: Some("default".to_string()),
             command: vec!["cargo".to_string(), "build".to_string()],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: Some(ResourceRequirements {
                 cpu: Some("2".to_string()),
                 memory: Some("4Gi".to_string()),
@@ -906,7 +906,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         });
 
         let json = serde_json::to_string_pretty(&ir).unwrap();
@@ -953,7 +953,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-            secrets: HashMap::new(),
+            secrets: BTreeMap::new(),
             depends_on: vec![],
             priority: 0,
             provider_hints: None,

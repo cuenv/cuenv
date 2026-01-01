@@ -219,7 +219,7 @@ impl StageContributor for CuenvContributor {
         };
 
         // Add GITHUB_TOKEN for tool resolution during sync
-        let mut env = std::collections::HashMap::new();
+        let mut env = std::collections::BTreeMap::new();
         env.insert(
             "GITHUB_TOKEN".to_string(),
             "${{ secrets.GITHUB_TOKEN }}".to_string(),

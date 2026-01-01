@@ -126,7 +126,7 @@ impl BuildkiteEmitter {
             label,
             key: Some(task.id.clone()),
             command,
-            env: task.env.clone(),
+            env: task.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             agents: None,
             artifact_paths: vec![],
             depends_on,
@@ -170,7 +170,8 @@ impl BuildkiteEmitter {
         };
 
         // Environment variables - secrets are handled by stage tasks
-        let env = task.env.clone();
+        // Convert from BTreeMap to HashMap for Buildkite schema
+        let env: HashMap<String, String> = task.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
         // Build agent rules from resource tags
         let agents = task
@@ -326,6 +327,7 @@ mod tests {
         CachePolicy, OutputDeclaration, PipelineMetadata, PurityMode, ResourceRequirements,
         Runtime, SecretConfig, StageConfiguration,
     };
+    use std::collections::BTreeMap;
 
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
         IntermediateRepresentation {
@@ -350,8 +352,8 @@ mod tests {
             runtime: None,
             command: command.iter().map(|s| (*s).to_string()).collect(),
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -362,7 +364,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 
