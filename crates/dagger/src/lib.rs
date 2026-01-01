@@ -294,3 +294,82 @@ pub fn create_dagger_backend(
         .and_then(|o| o.image.clone());
     Arc::new(DaggerBackend::new(image, project_root))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::config::BackendOptions;
+
+    #[test]
+    fn test_dagger_backend_new() {
+        let backend = DaggerBackend::new(Some("alpine:latest".to_string()), "/tmp".into());
+        assert_eq!(backend.default_image, Some("alpine:latest".to_string()));
+        assert_eq!(backend.project_root, std::path::PathBuf::from("/tmp"));
+    }
+
+    #[test]
+    fn test_dagger_backend_new_no_image() {
+        let backend = DaggerBackend::new(None, "/workspace".into());
+        assert!(backend.default_image.is_none());
+        assert_eq!(
+            backend.project_root,
+            std::path::PathBuf::from("/workspace")
+        );
+    }
+
+    #[test]
+    fn test_dagger_backend_container_cache_empty() {
+        let backend = DaggerBackend::new(None, "/tmp".into());
+        let cache = backend.container_cache();
+        let guard = cache.lock().unwrap();
+        assert!(guard.is_empty());
+    }
+
+    #[test]
+    fn test_dagger_backend_name() {
+        let backend = DaggerBackend::new(None, "/tmp".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_with_config() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: Some("rust:latest".to_string()),
+                platform: None,
+            }),
+        };
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_no_config() {
+        let backend = create_dagger_backend(None, "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_config_no_options() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_with_platform() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: Some("alpine:latest".to_string()),
+                platform: Some("linux/amd64".to_string()),
+            }),
+        };
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+}
