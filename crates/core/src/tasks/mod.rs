@@ -620,7 +620,6 @@ impl TaskDefinition {
             _ => None,
         }
     }
-
 }
 
 impl TaskGroup {

@@ -743,16 +743,6 @@ fn generate_github_workflow_for_project(
     emit_standard_workflow(&pipeline.name, &ctx)
 }
 
-/// Factory function that returns all contributors for GitHub Actions workflows.
-///
-/// Combines core contributors (Nix, cuenv, 1Password) with GitHub-specific
-/// contributors (Cachix, GhModels).
-fn github_contributor_factory() -> Vec<Box<dyn cuenv_ci::StageContributor>> {
-    let mut contributors = cuenv_ci::stages::core_contributors();
-    contributors.extend(cuenv_github::stages::github_contributors());
-    contributors
-}
-
 /// Build pipeline context for a single project and pipeline.
 fn build_project_pipeline_context(
     project: &cuenv_ci::discovery::DiscoveredCIProject,
@@ -778,7 +768,6 @@ fn build_project_pipeline_context(
 
     let options = CompilerOptions {
         pipeline: Some(pipeline.clone()),
-        contributor_factory: Some(github_contributor_factory),
         ci_mode: true,
         module_root: Some(project.module_root.clone()),
         project_path: project_path_for_compiler.clone(),
@@ -1129,12 +1118,15 @@ fn create_synthetic_matrix_task(
 
     // Convert HashMap to BTreeMap for IR compatibility
     // Sort dimension values for deterministic output
-    let dimensions: BTreeMap<String, Vec<String>> =
-        matrix_task.matrix.iter().map(|(k, v)| {
+    let dimensions: BTreeMap<String, Vec<String>> = matrix_task
+        .matrix
+        .iter()
+        .map(|(k, v)| {
             let mut sorted_values = v.clone();
             sorted_values.sort();
             (k.clone(), sorted_values)
-        }).collect();
+        })
+        .collect();
 
     let matrix = MatrixConfig {
         dimensions,

@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::fs;
 
 use cuenv_core::manifest::TaskRef;
-use cuenv_core::tasks::discovery::TaskDiscovery;
 use cuenv_core::tasks::TaskDefinition;
+use cuenv_core::tasks::discovery::TaskDiscovery;
 
 use super::normalization::{canonicalize_dep_for_task_name, normalize_dep};
 
@@ -110,4 +110,3 @@ pub fn resolve_task_refs_in_manifest(
         resolve_task_refs_in_definition(def, discovery, manifest_project_id, project_id_by_name);
     }
 }
-

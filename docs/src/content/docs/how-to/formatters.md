@@ -94,11 +94,11 @@ formatters: {
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `true` | Enable/disable this formatter |
+| Field      | Type          | Default    | Description                       |
+| ---------- | ------------- | ---------- | --------------------------------- |
+| `enabled`  | `bool`        | `true`     | Enable/disable this formatter     |
 | `includes` | `[...string]` | `["*.rs"]` | Glob patterns for files to format |
-| `edition` | `string` | — | Rust edition for formatting rules |
+| `edition`  | `string`      | —          | Rust edition for formatting rules |
 
 ### Nix (`nixfmt` or `alejandra`)
 
@@ -112,11 +112,11 @@ formatters: {
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `true` | Enable/disable this formatter |
-| `includes` | `[...string]` | `["*.nix"]` | Glob patterns for files to format |
-| `tool` | `string` | `"nixfmt"` | Tool to use: `"nixfmt"` or `"alejandra"` |
+| Field      | Type          | Default     | Description                              |
+| ---------- | ------------- | ----------- | ---------------------------------------- |
+| `enabled`  | `bool`        | `true`      | Enable/disable this formatter            |
+| `includes` | `[...string]` | `["*.nix"]` | Glob patterns for files to format        |
+| `tool`     | `string`      | `"nixfmt"`  | Tool to use: `"nixfmt"` or `"alejandra"` |
 
 ### Go (`gofmt`)
 
@@ -129,9 +129,9 @@ formatters: {
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `true` | Enable/disable this formatter |
+| Field      | Type          | Default    | Description                       |
+| ---------- | ------------- | ---------- | --------------------------------- |
+| `enabled`  | `bool`        | `true`     | Enable/disable this formatter     |
 | `includes` | `[...string]` | `["*.go"]` | Glob patterns for files to format |
 
 ### CUE (`cue fmt`)
@@ -145,22 +145,22 @@ formatters: {
 }
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `true` | Enable/disable this formatter |
+| Field      | Type          | Default     | Description                       |
+| ---------- | ------------- | ----------- | --------------------------------- |
+| `enabled`  | `bool`        | `true`      | Enable/disable this formatter     |
 | `includes` | `[...string]` | `["*.cue"]` | Glob patterns for files to format |
 
 ## Pattern Matching
 
 Patterns use glob syntax and match against paths relative to your project root:
 
-| Pattern | Matches |
-|---------|---------|
-| `*.rs` | Rust files in project root only |
-| `**/*.rs` | All Rust files recursively |
-| `src/**/*.rs` | Rust files under `src/` |
+| Pattern                | Matches                                 |
+| ---------------------- | --------------------------------------- |
+| `*.rs`                 | Rust files in project root only         |
+| `**/*.rs`              | All Rust files recursively              |
+| `src/**/*.rs`          | Rust files under `src/`                 |
 | `crates/*/src/**/*.rs` | Rust files in any crate's src directory |
-| `!vendor/**` | Exclude vendor directory |
+| `!vendor/**`           | Exclude vendor directory                |
 
 :::tip
 Use `**/*.ext` patterns to recursively match files. The default patterns (`*.rs`, `*.nix`, etc.) only match files in the project root.
@@ -319,6 +319,7 @@ which nixfmt
 ### Files not being formatted
 
 1. Check your `includes` patterns match the files:
+
    ```bash
    # List files that would be formatted
    cuenv fmt --only rust 2>&1 | head -20
