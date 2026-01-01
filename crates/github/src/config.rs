@@ -132,7 +132,7 @@ mod tests {
                 }))
                 .unwrap(),
             ),
-            stage_contributors: vec![],
+            contributors: vec![],
             pipelines: vec![
                 Pipeline {
                     name: "ci".to_string(),

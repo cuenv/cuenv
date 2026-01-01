@@ -1,4 +1,4 @@
-package stages
+package contributors
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -13,9 +13,9 @@ import "github.com/cuenv/cuenv/schema"
 //
 // Usage:
 //
-//	import stages "github.com/cuenv/cuenv/contrib/stages"
+//	import "github.com/cuenv/cuenv/contrib/contributors"
 //
-//	ci: contributors: [stages.#GhModels]
+//	ci: contributors: [contributors.#GhModels]
 #GhModels: schema.#Contributor & {
 	id: "gh-models"
 	when: {

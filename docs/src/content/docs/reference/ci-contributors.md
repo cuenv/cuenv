@@ -253,23 +253,23 @@ tasks: {
 
 ## Using Built-in Contributors
 
-cuenv provides pre-defined contributors in `contrib/stages/`. Import and use them in your `env.cue`:
+cuenv provides pre-defined contributors in `contrib/contributors/`. Import and use them in your `env.cue`:
 
 ```cue
-import stages "github.com/cuenv/cuenv/contrib/stages"
+import "github.com/cuenv/cuenv/contrib/contributors"
 
 // Use all default contributors (recommended)
-ci: contributors: stages.#DefaultContributors
+ci: contributors: contributors.#DefaultContributors
 
 // Or select specific sets
-ci: contributors: stages.#CoreContributors    // Nix, Cuenv, 1Password only
-ci: contributors: stages.#GitHubContributors  // GitHub-specific only
+ci: contributors: contributors.#CoreContributors    // Nix, Cuenv, 1Password only
+ci: contributors: contributors.#GitHubContributors  // GitHub-specific only
 
 // Or pick individual contributors
 ci: contributors: [
-    stages.#Nix,
-    stages.#Cuenv,
-    stages.#Cachix,
+    contributors.#Nix,
+    contributors.#Cuenv,
+    contributors.#Cachix,
 ]
 ```
 

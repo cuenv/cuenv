@@ -1,4 +1,4 @@
-package stages
+package contributors
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -13,9 +13,9 @@ import "github.com/cuenv/cuenv/schema"
 //
 // Usage:
 //
-//	import stages "github.com/cuenv/cuenv/contrib/stages"
+//	import "github.com/cuenv/cuenv/contrib/contributors"
 //
-//	ci: contributors: [stages.#OnePassword]
+//	ci: contributors: [contributors.#OnePassword]
 #OnePassword: schema.#Contributor & {
 	id: "1password"
 	when: {

@@ -1,4 +1,4 @@
-package stages
+package contributors
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -12,9 +12,9 @@ import "github.com/cuenv/cuenv/schema"
 //
 // Usage:
 //
-//	import stages "github.com/cuenv/cuenv/contrib/stages"
+//	import "github.com/cuenv/cuenv/contrib/contributors"
 //
-//	ci: contributors: [stages.#Nix]
+//	ci: contributors: [contributors.#Nix]
 #Nix: schema.#Contributor & {
 	id: "nix"
 	when: {

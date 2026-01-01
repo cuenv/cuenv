@@ -5,7 +5,7 @@
 //!
 //! ## Contributors
 //!
-//! Contributors are defined in CUE (see `contrib/stages/`). The compiler
+//! Contributors are defined in CUE (see `contrib/contributors/`). The compiler
 //! evaluates the `ci.contributors` array and injects active contributors'
 //! tasks into the appropriate build phases.
 

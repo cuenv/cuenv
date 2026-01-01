@@ -1,4 +1,4 @@
-package stages
+package contributors
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -14,9 +14,9 @@ import "github.com/cuenv/cuenv/schema"
 //
 // Usage:
 //
-//	import stages "github.com/cuenv/cuenv/contrib/stages"
+//	import "github.com/cuenv/cuenv/contrib/contributors"
 //
-//	ci: contributors: [stages.#Cachix]
+//	ci: contributors: [contributors.#Cachix]
 //	ci: provider: github: cachix: name: "my-cache"
 #Cachix: schema.#Contributor & {
 	id: "cachix"

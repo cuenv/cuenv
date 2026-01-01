@@ -1,4 +1,4 @@
-// Package stages provides built-in contributors for CI pipelines.
+// Package contributors provides built-in contributors for CI pipelines.
 //
 // Contributors inject tasks into build phases (bootstrap, setup, success, failure)
 // based on activation conditions. This replaces hardcoded Rust Contributor
@@ -16,21 +16,21 @@
 //
 // Usage:
 //
-//	import stages "github.com/cuenv/cuenv/contrib/stages"
+//	import "github.com/cuenv/cuenv/contrib/contributors"
 //
 //	ci: contributors: [
-//	    stages.#Nix,
-//	    stages.#Cuenv,
-//	    stages.#OnePassword,
-//	    stages.#Cachix,
-//	    stages.#GhModels,
-//	    stages.#TrustedPublishing,
+//	    contributors.#Nix,
+//	    contributors.#Cuenv,
+//	    contributors.#OnePassword,
+//	    contributors.#Cachix,
+//	    contributors.#GhModels,
+//	    contributors.#TrustedPublishing,
 //	]
 //
 // Or use the default set:
 //
-//	ci: contributors: stages.#DefaultContributors
-package stages
+//	ci: contributors: contributors.#DefaultContributors
+package contributors
 
 import (
 	"list"

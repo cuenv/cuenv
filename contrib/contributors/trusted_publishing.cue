@@ -1,4 +1,4 @@
-package stages
+package contributors
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -14,9 +14,9 @@ import "github.com/cuenv/cuenv/schema"
 //
 // Usage:
 //
-//	import stages "github.com/cuenv/cuenv/contrib/stages"
+//	import "github.com/cuenv/cuenv/contrib/contributors"
 //
-//	ci: contributors: [stages.#TrustedPublishing]
+//	ci: contributors: [contributors.#TrustedPublishing]
 //	ci: provider: github: trustedPublishing: cratesIo: true
 #TrustedPublishing: schema.#Contributor & {
 	id: "trusted-publishing"
