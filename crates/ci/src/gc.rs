@@ -241,12 +241,14 @@ impl GarbageCollector {
         Ok(stats)
     }
 
+    /// Scan the cache directory and collect all cache entries with their metadata.
     fn scan_cache(dir: &Path) -> Result<Vec<CacheEntry>, GCError> {
         let mut entries = Vec::new();
         Self::scan_dir_recursive(dir, &mut entries)?;
         Ok(entries)
     }
 
+    /// Recursively traverse a directory tree, collecting file entries.
     fn scan_dir_recursive(dir: &Path, entries: &mut Vec<CacheEntry>) -> Result<(), GCError> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
@@ -264,6 +266,9 @@ impl GarbageCollector {
         Ok(())
     }
 
+    /// Create a cache entry from file path and metadata.
+    ///
+    /// Returns `None` if the access/modification time cannot be determined.
     fn create_entry(path: &Path, metadata: &Metadata) -> Option<CacheEntry> {
         let size = metadata.len();
         let last_accessed = metadata.accessed().or_else(|_| metadata.modified()).ok()?;
@@ -275,6 +280,7 @@ impl GarbageCollector {
         })
     }
 
+    /// Remove a cache entry (file or directory).
     fn remove_entry(path: &Path) -> Result<(), GCError> {
         if path.is_dir() {
             fs::remove_dir_all(path)?;
