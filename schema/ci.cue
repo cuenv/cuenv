@@ -137,40 +137,40 @@ package schema
 	environment?: [...string]
 })
 
-// Secret reference for stage tasks
+// Secret reference for phase tasks
 #SecretRef: close({
 	source!:   string            // CI secret name (e.g., "CACHIX_AUTH_TOKEN")
 	cacheKey?: bool | *false     // Include in cache key via salted HMAC
 })
 
-// A task contributed to a build stage
-#StageTask: close({
+// A task contributed to a build phase
+#PhaseTask: close({
 	id!:       string              // Unique task identifier (e.g., "install-nix")
-	stage!:    #BuildStage         // Target stage (bootstrap, setup, success, failure)
+	phase!:    #BuildPhase         // Target phase (bootstrap, setup, success, failure)
 	label?:    string              // Human-readable display name
 	command?:  string              // Shell command to execute
 	script?:   string              // Multi-line script (alternative to command)
 	shell?:    bool | *false       // Wrap command in shell
 	env?:      [string]: string    // Environment variables
 	secrets?:  [string]: #SecretRef | string  // Secret references (key=env var name)
-	dependsOn?: [...string]        // Dependencies on other stage tasks
-	priority?: int | *10           // Ordering within stage (lower = earlier)
+	dependsOn?: [...string]        // Dependencies on other phase tasks
+	priority?: int | *10           // Ordering within phase (lower = earlier)
 
 	// Provider-specific overrides (e.g., GitHub Actions)
-	provider?: #StageTaskProviderConfig
+	provider?: #PhaseTaskProviderConfig
 })
 
-// Provider-specific stage task configuration
-#StageTaskProviderConfig: close({
+// Provider-specific phase task configuration
+#PhaseTaskProviderConfig: close({
 	github?: #GitHubActionConfig
 })
 
-// Stage contributor definition
-// Contributors inject tasks into build stages based on activation conditions
-#StageContributor: close({
+// Contributor definition
+// Contributors inject tasks into build phases based on activation conditions
+#Contributor: close({
 	id!:    string                    // Contributor identifier (e.g., "nix", "1password")
 	when?:  #ActivationCondition      // Activation condition (defaults to always active)
-	tasks!: [...#StageTask]           // Tasks to contribute when active
+	tasks!: [...#PhaseTask]           // Tasks to contribute when active
 })
 
 #Pipeline: close({
@@ -189,6 +189,6 @@ package schema
 	pipelines: [...#Pipeline]
 	provider?: #ProviderConfig
 
-	// Stage contributors that inject tasks into build stages
-	stageContributors?: [...#StageContributor]
+	// Contributors that inject tasks into build phases
+	contributors?: [...#Contributor]
 })

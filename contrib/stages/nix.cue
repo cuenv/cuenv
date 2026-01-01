@@ -8,14 +8,14 @@ import "github.com/cuenv/cuenv/schema"
 // - Project uses a Nix or Devenv runtime, OR
 // - Cuenv source mode requires Nix (git or nix)
 //
-// Contributes to Bootstrap stage with priority 0 (runs first).
+// Contributes to Bootstrap phase with priority 0 (runs first).
 //
 // Usage:
 //
 //	import stages "github.com/cuenv/cuenv/contrib/stages"
 //
-//	ci: stageContributors: [stages.#Nix]
-#Nix: schema.#StageContributor & {
+//	ci: contributors: [stages.#Nix]
+#Nix: schema.#Contributor & {
 	id: "nix"
 	when: {
 		// Active if project uses Nix or Devenv runtime, or cuenv source needs Nix
@@ -24,7 +24,7 @@ import "github.com/cuenv/cuenv/schema"
 	}
 	tasks: [{
 		id:       "install-nix"
-		stage:    "bootstrap"
+		phase:    "bootstrap"
 		label:    "Install Nix"
 		priority: 0
 		shell:    true

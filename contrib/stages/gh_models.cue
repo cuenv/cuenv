@@ -7,7 +7,7 @@ import "github.com/cuenv/cuenv/schema"
 // Active when:
 // - Any pipeline task uses the `gh models` command
 //
-// Contributes to Setup stage with priority 25 (after cuenv, before task execution).
+// Contributes to Setup phase with priority 25 (after cuenv, before task execution).
 //
 // This is a GitHub-specific contributor.
 //
@@ -15,8 +15,8 @@ import "github.com/cuenv/cuenv/schema"
 //
 //	import stages "github.com/cuenv/cuenv/contrib/stages"
 //
-//	ci: stageContributors: [stages.#GhModels]
-#GhModels: schema.#StageContributor & {
+//	ci: contributors: [stages.#GhModels]
+#GhModels: schema.#Contributor & {
 	id: "gh-models"
 	when: {
 		// Active if any pipeline task uses gh models command
@@ -24,7 +24,7 @@ import "github.com/cuenv/cuenv/schema"
 	}
 	tasks: [{
 		id:       "setup-gh-models"
-		stage:    "setup"
+		phase:    "setup"
 		label:    "Setup GitHub Models CLI"
 		priority: 25
 		shell:    false

@@ -1,7 +1,7 @@
-// Package stages provides built-in stage contributors for CI pipelines.
+// Package stages provides built-in contributors for CI pipelines.
 //
-// Stage contributors inject tasks into build stages (bootstrap, setup, success, failure)
-// based on activation conditions. This replaces hardcoded Rust StageContributor
+// Contributors inject tasks into build phases (bootstrap, setup, success, failure)
+// based on activation conditions. This replaces hardcoded Rust Contributor
 // implementations with declarative CUE definitions.
 //
 // Core Contributors (provider-agnostic):
@@ -18,7 +18,7 @@
 //
 //	import stages "github.com/cuenv/cuenv/contrib/stages"
 //
-//	ci: stageContributors: [
+//	ci: contributors: [
 //	    stages.#Nix,
 //	    stages.#Cuenv,
 //	    stages.#OnePassword,
@@ -29,7 +29,7 @@
 //
 // Or use the default set:
 //
-//	ci: stageContributors: stages.#DefaultContributors
+//	ci: contributors: stages.#DefaultContributors
 package stages
 
 import (
@@ -38,22 +38,22 @@ import (
 	"github.com/cuenv/cuenv/schema"
 )
 
-// #CoreContributors contains the core (provider-agnostic) stage contributors.
+// #CoreContributors contains the core (provider-agnostic) contributors.
 // These are always evaluated regardless of the CI provider.
-#CoreContributors: [...schema.#StageContributor] & [
+#CoreContributors: [...schema.#Contributor] & [
 	#Nix,
 	#Cuenv,
 	#OnePassword,
 ]
 
-// #GitHubContributors contains GitHub-specific stage contributors.
+// #GitHubContributors contains GitHub-specific contributors.
 // These are only evaluated when using GitHub Actions as the CI provider.
-#GitHubContributors: [...schema.#StageContributor] & [
+#GitHubContributors: [...schema.#Contributor] & [
 	#Cachix,
 	#GhModels,
 	#TrustedPublishing,
 ]
 
-// #DefaultContributors contains all default stage contributors.
+// #DefaultContributors contains all default contributors.
 // Combines core contributors with GitHub-specific contributors.
-#DefaultContributors: [...schema.#StageContributor] & list.Concat([#CoreContributors, #GitHubContributors])
+#DefaultContributors: [...schema.#Contributor] & list.Concat([#CoreContributors, #GitHubContributors])

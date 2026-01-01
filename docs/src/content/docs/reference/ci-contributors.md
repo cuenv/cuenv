@@ -1,16 +1,16 @@
 ---
 title: CI Contributors
-description: Reference documentation for cuenv CI stage contributors
+description: Reference documentation for cuenv CI contributors
 ---
 
-This page documents the stage contributor system used by cuenv to inject setup tasks into CI pipelines. Contributors automatically add necessary steps (like installing Nix or configuring 1Password) based on project configuration.
+This page documents the contributor system used by cuenv to inject setup tasks into CI pipelines. Contributors automatically add necessary steps (like installing Nix or configuring 1Password) based on project configuration.
 
 ## Overview
 
 The cuenv CI compiler uses a **contributor system** to inject platform-specific setup tasks into workflows. Each contributor:
 
 1. **Self-detects** whether it should be active based on IR and project state
-2. **Contributes** stage tasks (bootstrap, setup, success, failure) when active
+2. **Contributes** phase tasks (bootstrap, setup, success, failure) when active
 3. **Reports modifications** to enable fixed-point iteration
 
 ### Compilation Process
@@ -24,11 +24,11 @@ Project + Pipeline -> Compiler -> Fixed-point iteration -> IR
 
 The compiler applies contributors in a loop until no contributor reports modifications (stable state).
 
-## Stage Types
+## Build Phases
 
-Contributors can inject tasks into four stages:
+Contributors can inject tasks into four phases:
 
-| Stage       | Purpose                                 | Example              |
+| Phase       | Purpose                                 | Example              |
 | ----------- | --------------------------------------- | -------------------- |
 | `Bootstrap` | Environment setup, runs first           | Install Nix          |
 | `Setup`     | Provider configuration, after bootstrap | Configure 1Password  |
@@ -43,7 +43,7 @@ Installs Nix using the Determinate Systems installer.
 
 **Activation:** Project has a Nix-based runtime (`runtime.nix` or `runtime.devenv`)
 
-**Stage:** Bootstrap (priority 0)
+**Phase:** Bootstrap (priority 0)
 
 **Task ID:** `install-nix`
 
@@ -72,7 +72,7 @@ Installs or builds cuenv for use in CI pipelines.
 
 **Activation:** Always active (cuenv is needed to run tasks)
 
-**Stage:** Setup (priority 10)
+**Phase:** Setup (priority 10)
 
 **Task ID:** `setup-cuenv`
 
@@ -135,7 +135,7 @@ Configures 1Password secret resolution for environments with `op://` references.
 
 **Activation:** Pipeline environment contains 1Password secret references (`op://...` URIs or `resolver: "onepassword"`)
 
-**Stage:** Setup (priority 15)
+**Phase:** Setup (priority 15)
 
 **Task ID:** `setup-1password`
 
@@ -176,7 +176,7 @@ Configures Cachix for Nix binary caching.
 
 **Activation:** `ci.provider.github.cachix` is configured
 
-**Stage:** Setup (priority 5)
+**Phase:** Setup (priority 5)
 
 **Task ID:** `setup-cachix`
 
@@ -223,7 +223,7 @@ Installs the GitHub Models CLI extension for LLM evaluation tasks.
 
 **Activation:** Any pipeline task uses `gh models` command
 
-**Stage:** Setup (priority 25)
+**Phase:** Setup (priority 25)
 
 **Task ID:** `setup-gh-models`
 
@@ -253,20 +253,20 @@ tasks: {
 
 ## Using Built-in Contributors
 
-cuenv provides pre-defined stage contributors in `contrib/stages/`. Import and use them in your `env.cue`:
+cuenv provides pre-defined contributors in `contrib/stages/`. Import and use them in your `env.cue`:
 
 ```cue
 import stages "github.com/cuenv/cuenv/contrib/stages"
 
 // Use all default contributors (recommended)
-ci: stageContributors: stages.#DefaultContributors
+ci: contributors: stages.#DefaultContributors
 
 // Or select specific sets
-ci: stageContributors: stages.#CoreContributors    // Nix, Cuenv, 1Password only
-ci: stageContributors: stages.#GitHubContributors  // GitHub-specific only
+ci: contributors: stages.#CoreContributors    // Nix, Cuenv, 1Password only
+ci: contributors: stages.#GitHubContributors  // GitHub-specific only
 
 // Or pick individual contributors
-ci: stageContributors: [
+ci: contributors: [
     stages.#Nix,
     stages.#Cuenv,
     stages.#Cachix,
@@ -283,7 +283,7 @@ ci: stageContributors: [
 
 ## Activation Conditions
 
-Stage contributors use activation conditions to determine when they should inject tasks. All specified conditions must be true (AND logic).
+Contributors use activation conditions to determine when they should inject tasks. All specified conditions must be true (AND logic).
 
 ```cue
 #ActivationCondition: {
@@ -335,15 +335,15 @@ when: {
 }
 ```
 
-## StageTask Schema
+## PhaseTask Schema
 
 ```cue
-#StageTask: {
+#PhaseTask: {
     // Unique task identifier (e.g., "install-nix")
     id: string
 
-    // Target stage: bootstrap, setup, success, or failure
-    stage: "bootstrap" | "setup" | "success" | "failure"
+    // Target phase: bootstrap, setup, success, or failure
+    phase: "bootstrap" | "setup" | "success" | "failure"
 
     // Human-readable display name
     label?: string
@@ -363,10 +363,10 @@ when: {
     // Secret references
     secrets: {[string]: string | #SecretRefConfig}
 
-    // Dependencies on other stage tasks
+    // Dependencies on other phase tasks
     dependsOn: [...string]
 
-    // Ordering within stage (lower = earlier, default: 10)
+    // Ordering within phase (lower = earlier, default: 10)
     priority: int | *10
 
     // Provider-specific overrides (e.g., GitHub Actions)
@@ -381,13 +381,13 @@ when: {
 
 ## Creating Custom Contributors
 
-Define custom stage contributors in CUE using the `#StageContributor` schema:
+Define custom contributors in CUE using the `#Contributor` schema:
 
 ```cue
 import "github.com/cuenv/cuenv/schema"
 
 // Define a custom contributor
-#MyToolContributor: schema.#StageContributor & {
+#MyToolContributor: schema.#Contributor & {
     id: "my-tool"
 
     // Activation condition - when should this contributor be active?
@@ -398,7 +398,7 @@ import "github.com/cuenv/cuenv/schema"
     // Tasks to inject when active
     tasks: [{
         id:       "setup-my-tool"
-        stage:    "setup"
+        phase:    "setup"
         label:    "Setup My Tool"
         priority: 20
         shell:    true
@@ -413,7 +413,7 @@ import "github.com/cuenv/cuenv/schema"
 }
 
 // Use in your project
-ci: stageContributors: [
+ci: contributors: [
     #MyToolContributor,
     // ... other contributors
 ]
@@ -422,12 +422,12 @@ ci: stageContributors: [
 **Example: Contributor with secrets:**
 
 ```cue
-#MySecretContributor: schema.#StageContributor & {
+#MySecretContributor: schema.#Contributor & {
     id: "my-secret-setup"
     when: secretsProvider: ["onepassword"]
     tasks: [{
         id:        "setup-my-secret"
-        stage:     "setup"
+        phase:     "setup"
         label:     "Configure Secrets"
         priority:  25
         dependsOn: ["setup-1password"]
@@ -440,7 +440,7 @@ ci: stageContributors: [
 
 ## Testing Contributors
 
-The CI compiler evaluates stage contributors and injects their tasks into the Intermediate Representation (IR). Integration tests verify the compiled output:
+The CI compiler evaluates contributors and injects their tasks into the Intermediate Representation (IR). Integration tests verify the compiled output:
 
 ```rust
 #[test]

@@ -180,20 +180,20 @@ pub struct Pipeline {
 }
 
 // =============================================================================
-// Stage Contributors (v1.4)
+// Contributors
 // =============================================================================
 
-/// Build stages that contributors can inject tasks into
+/// Build phases that contributors can inject tasks into
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum BuildStage {
+pub enum BuildPhase {
     Bootstrap,
     Setup,
     Success,
     Failure,
 }
 
-/// Activation condition for stage contributors
+/// Activation condition for contributors
 /// All specified conditions must be true (AND logic)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -231,7 +231,7 @@ pub struct ActivationCondition {
     pub environment: Vec<String>,
 }
 
-/// Secret reference for stage tasks
+/// Secret reference for phase tasks
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum SecretRef {
@@ -252,24 +252,24 @@ pub struct SecretRefConfig {
     pub cache_key: bool,
 }
 
-/// Provider-specific stage task configuration
+/// Provider-specific phase task configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct StageTaskProviderConfig {
+pub struct PhaseTaskProviderConfig {
     /// GitHub Action to use instead of shell command
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github: Option<GitHubActionConfig>,
 }
 
-/// A task contributed to a build stage (CUE-defined)
+/// A task contributed to a build phase (CUE-defined)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct CueStageTask {
+pub struct PhaseTask {
     /// Unique task identifier (e.g., "install-nix")
     pub id: String,
 
-    /// Target stage (bootstrap, setup, success, failure)
-    pub stage: BuildStage,
+    /// Target phase (bootstrap, setup, success, failure)
+    pub phase: BuildPhase,
 
     /// Human-readable display name
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -295,28 +295,28 @@ pub struct CueStageTask {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub secrets: HashMap<String, SecretRef>,
 
-    /// Dependencies on other stage tasks
+    /// Dependencies on other phase tasks
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
 
-    /// Ordering within stage (lower = earlier)
+    /// Ordering within phase (lower = earlier)
     #[serde(default = "default_priority")]
     pub priority: i32,
 
     /// Provider-specific overrides (e.g., GitHub Actions)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<StageTaskProviderConfig>,
+    pub provider: Option<PhaseTaskProviderConfig>,
 }
 
 const fn default_priority() -> i32 {
     10
 }
 
-/// Stage contributor definition (CUE-defined)
-/// Contributors inject tasks into build stages based on activation conditions
+/// Contributor definition (CUE-defined)
+/// Contributors inject tasks into build phases based on activation conditions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct StageContributor {
+pub struct Contributor {
     /// Contributor identifier (e.g., "nix", "1password")
     pub id: String,
 
@@ -325,7 +325,7 @@ pub struct StageContributor {
     pub when: Option<ActivationCondition>,
 
     /// Tasks to contribute when active
-    pub tasks: Vec<CueStageTask>,
+    pub tasks: Vec<PhaseTask>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -333,9 +333,9 @@ pub struct CI {
     pub pipelines: Vec<Pipeline>,
     /// Global provider configuration defaults
     pub provider: Option<ProviderConfig>,
-    /// Stage contributors that inject tasks into build stages
+    /// Contributors that inject tasks into build phases
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stage_contributors: Vec<StageContributor>,
+    pub contributors: Vec<Contributor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

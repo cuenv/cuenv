@@ -7,7 +7,7 @@ import "github.com/cuenv/cuenv/schema"
 // Active when:
 // - ci.provider.github.trustedPublishing.cratesIo is true
 //
-// Contributes to Setup stage with priority 50 (runs late, before task execution).
+// Contributes to Setup phase with priority 50 (runs late, before task execution).
 // Uses the rust-lang/crates-io-auth-action to obtain a short-lived token.
 //
 // This is a GitHub-specific contributor.
@@ -16,9 +16,9 @@ import "github.com/cuenv/cuenv/schema"
 //
 //	import stages "github.com/cuenv/cuenv/contrib/stages"
 //
-//	ci: stageContributors: [stages.#TrustedPublishing]
+//	ci: contributors: [stages.#TrustedPublishing]
 //	ci: provider: github: trustedPublishing: cratesIo: true
-#TrustedPublishing: schema.#StageContributor & {
+#TrustedPublishing: schema.#Contributor & {
 	id: "trusted-publishing"
 	when: {
 		// Active if trusted publishing for crates.io is enabled
@@ -26,7 +26,7 @@ import "github.com/cuenv/cuenv/schema"
 	}
 	tasks: [{
 		id:       "auth-crates-io"
-		stage:    "setup"
+		phase:    "setup"
 		label:    "Authenticate with crates.io"
 		priority: 50
 		shell:    false

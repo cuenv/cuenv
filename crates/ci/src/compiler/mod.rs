@@ -3,11 +3,11 @@
 //! Transforms a cuenv `Project` with tasks into an intermediate representation
 //! suitable for emitting orchestrator-native CI configurations.
 //!
-//! ## Stage Contributors
+//! ## Contributors
 //!
-//! Stage contributors are defined in CUE (see `contrib/stages/`). The compiler
-//! evaluates the `ci.stageContributors` array and injects active contributors'
-//! tasks into the appropriate build stages.
+//! Contributors are defined in CUE (see `contrib/stages/`). The compiler
+//! evaluates the `ci.contributors` array and injects active contributors'
+//! tasks into the appropriate build phases.
 
 // IR compilation involves complex transformations with many fields
 #![allow(clippy::too_many_lines)]
@@ -21,8 +21,8 @@ use crate::ir::{
     StageTask, Task as IrTask, TriggerCondition, WorkflowDispatchInputDef,
 };
 use cuenv_core::ci::{
-    BuildStage as CueBuildStage, CI, CueStageTask, ManualTrigger, Pipeline, PipelineTask,
-    SecretRef, StageContributor,
+    BuildPhase as CueBuildPhase, CI, Contributor, ManualTrigger, PhaseTask, Pipeline, PipelineTask,
+    SecretRef,
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
@@ -326,8 +326,8 @@ impl Compiler {
         // but should use the actual output paths from the upstream tasks)
         Self::fix_artifact_download_paths(&mut ir);
 
-        // Apply CUE-defined stage contributors
-        self.apply_cue_stage_contributors(&mut ir);
+        // Apply CUE-defined contributors
+        self.apply_cue_contributors(&mut ir);
 
         // Sort stages by dependencies
         ir.stages.sort_by_dependencies();
@@ -701,18 +701,18 @@ impl Compiler {
         }
     }
 
-    /// Apply CUE-defined stage contributors to the IR
+    /// Apply CUE-defined contributors to the IR
     ///
-    /// This evaluates the `ci.stageContributors` array from CUE and converts
-    /// active contributors' tasks to IR stage tasks.
-    fn apply_cue_stage_contributors(&self, ir: &mut IntermediateRepresentation) {
+    /// This evaluates the `ci.contributors` array from CUE and converts
+    /// active contributors' tasks to IR phase tasks.
+    fn apply_cue_contributors(&self, ir: &mut IntermediateRepresentation) {
         let Some(ref ci_config) = self.project.ci else {
             return;
         };
 
-        for contributor in &ci_config.stage_contributors {
+        for contributor in &ci_config.contributors {
             // Check if this contributor is active
-            if !self.cue_stage_contributor_is_active(contributor, ir) {
+            if !self.cue_contributor_is_active(contributor, ir) {
                 continue;
             }
 
@@ -727,24 +727,24 @@ impl Compiler {
                 .map(|t| t.id.clone())
                 .collect();
 
-            // Add contributor's tasks to appropriate stages
-            for cue_task in &contributor.tasks {
+            // Add contributor's tasks to appropriate phases
+            for phase_task in &contributor.tasks {
                 // Skip if already contributed
-                if contributed_ids.contains(&cue_task.id) {
+                if contributed_ids.contains(&phase_task.id) {
                     continue;
                 }
 
-                let stage_task = Self::cue_stage_task_to_ir(cue_task, &contributor.id);
-                let stage = Self::cue_build_stage_to_ir(cue_task.stage);
+                let stage_task = Self::phase_task_to_ir(phase_task, &contributor.id);
+                let stage = Self::cue_build_phase_to_ir(phase_task.phase);
                 ir.stages.add(stage, stage_task);
             }
         }
     }
 
-    /// Check if a CUE stage contributor is active
-    fn cue_stage_contributor_is_active(
+    /// Check if a CUE contributor is active
+    fn cue_contributor_is_active(
         &self,
-        contributor: &StageContributor,
+        contributor: &Contributor,
         ir: &IntermediateRepresentation,
     ) -> bool {
         let Some(ref condition) = contributor.when else {
@@ -978,29 +978,29 @@ impl Compiler {
         false
     }
 
-    /// Convert a CUE BuildStage to IR BuildStage
-    fn cue_build_stage_to_ir(stage: CueBuildStage) -> BuildStage {
-        match stage {
-            CueBuildStage::Bootstrap => BuildStage::Bootstrap,
-            CueBuildStage::Setup => BuildStage::Setup,
-            CueBuildStage::Success => BuildStage::Success,
-            CueBuildStage::Failure => BuildStage::Failure,
+    /// Convert a CUE BuildPhase to IR BuildStage
+    fn cue_build_phase_to_ir(phase: CueBuildPhase) -> BuildStage {
+        match phase {
+            CueBuildPhase::Bootstrap => BuildStage::Bootstrap,
+            CueBuildPhase::Setup => BuildStage::Setup,
+            CueBuildPhase::Success => BuildStage::Success,
+            CueBuildPhase::Failure => BuildStage::Failure,
         }
     }
 
-    /// Convert a CUE stage task to an IR StageTask
-    fn cue_stage_task_to_ir(cue_task: &CueStageTask, provider: &str) -> StageTask {
+    /// Convert a CUE PhaseTask to an IR StageTask
+    fn phase_task_to_ir(phase_task: &PhaseTask, provider: &str) -> StageTask {
         // Build command array
-        let (command, shell) = if let Some(ref cmd) = cue_task.command {
-            (vec![cmd.clone()], cue_task.shell)
-        } else if let Some(ref script) = cue_task.script {
+        let (command, shell) = if let Some(ref cmd) = phase_task.command {
+            (vec![cmd.clone()], phase_task.shell)
+        } else if let Some(ref script) = phase_task.script {
             (vec![script.clone()], true)
         } else {
             (vec![], false)
         };
 
         // Convert secrets
-        let secrets: BTreeMap<String, SecretConfig> = cue_task
+        let secrets: BTreeMap<String, SecretConfig> = phase_task
             .secrets
             .iter()
             .map(|(k, v)| {
@@ -1019,7 +1019,7 @@ impl Compiler {
             .collect();
 
         // Convert provider hints
-        let provider_hints = cue_task.provider.as_ref().and_then(|p| {
+        let provider_hints = phase_task.provider.as_ref().and_then(|p| {
             p.github.as_ref().map(|gh| {
                 let mut github_action = serde_json::Map::new();
                 github_action.insert(
@@ -1048,19 +1048,19 @@ impl Compiler {
         });
 
         StageTask {
-            id: cue_task.id.clone(),
+            id: phase_task.id.clone(),
             provider: provider.to_string(),
-            label: cue_task.label.clone(),
+            label: phase_task.label.clone(),
             command,
             shell,
-            env: cue_task
+            env: phase_task
                 .env
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             secrets,
-            depends_on: cue_task.depends_on.clone(),
-            priority: cue_task.priority,
+            depends_on: phase_task.depends_on.clone(),
+            priority: phase_task.priority,
             provider_hints,
         }
     }
@@ -1618,16 +1618,16 @@ mod tests {
     }
 
     // =========================================================================
-    // Stage Contributor Activation Tests
+    // Contributor Activation Tests
     // =========================================================================
 
     use crate::ir::StageConfiguration;
     use cuenv_core::ci::ActivationCondition;
     use std::collections::HashMap;
 
-    /// Helper to create a minimal StageContributor for testing
-    fn test_contributor(id: &str, when: Option<ActivationCondition>) -> StageContributor {
-        StageContributor {
+    /// Helper to create a minimal Contributor for testing
+    fn test_contributor(id: &str, when: Option<ActivationCondition>) -> Contributor {
+        Contributor {
             id: id.to_string(),
             when,
             tasks: vec![],
@@ -1660,7 +1660,7 @@ mod tests {
 
         // No `when` condition = always active
         let contributor = test_contributor("test", None);
-        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(compiler.cue_contributor_is_active(&contributor, &ir));
     }
 
     #[test]
@@ -1676,7 +1676,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(compiler.cue_contributor_is_active(&contributor, &ir));
     }
 
     #[test]
@@ -1693,7 +1693,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        assert!(!compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
     }
 
     #[test]
@@ -1713,7 +1713,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(compiler.cue_contributor_is_active(&contributor, &ir));
     }
 
     #[test]
@@ -1734,7 +1734,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        assert!(!compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
     }
 
     #[test]
@@ -1751,7 +1751,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        assert!(!compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
     }
 
     #[test]
@@ -1764,7 +1764,7 @@ mod tests {
         project.ci = Some(CI {
             pipelines: vec![],
             provider: None,
-            stage_contributors: vec![],
+            contributors: vec![],
         });
         // Set cuenv source to "git"
         if let Some(ref mut config) = project.config {
@@ -1786,7 +1786,7 @@ mod tests {
                 ..Default::default()
             }),
         );
-        assert!(compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(compiler.cue_contributor_is_active(&contributor, &ir));
     }
 
     #[test]
@@ -1809,20 +1809,20 @@ mod tests {
             }),
         );
         // Runtime matches but cuenv_source doesn't (default is "release")
-        assert!(!compiler.cue_stage_contributor_is_active(&contributor, &ir));
+        assert!(!compiler.cue_contributor_is_active(&contributor, &ir));
     }
 
     // =========================================================================
-    // Stage Task Conversion Tests
+    // Phase Task Conversion Tests
     // =========================================================================
 
     #[test]
-    fn test_cue_stage_task_to_ir_command() {
-        use cuenv_core::ci::{BuildStage, CueStageTask};
+    fn test_phase_task_to_ir_command() {
+        use cuenv_core::ci::BuildPhase;
 
-        let cue_task = CueStageTask {
+        let phase_task = PhaseTask {
             id: "test-task".to_string(),
-            stage: BuildStage::Setup,
+            phase: BuildPhase::Setup,
             label: Some("Test Task".to_string()),
             command: Some("echo hello".to_string()),
             script: None,
@@ -1834,7 +1834,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
 
         assert_eq!(ir_task.id, "test-task");
         assert_eq!(ir_task.command, vec!["echo hello"]);
@@ -1843,12 +1843,12 @@ mod tests {
     }
 
     #[test]
-    fn test_cue_stage_task_to_ir_script() {
-        use cuenv_core::ci::{BuildStage, CueStageTask};
+    fn test_phase_task_to_ir_script() {
+        use cuenv_core::ci::BuildPhase;
 
-        let cue_task = CueStageTask {
+        let phase_task = PhaseTask {
             id: "script-task".to_string(),
-            stage: BuildStage::Bootstrap,
+            phase: BuildPhase::Bootstrap,
             label: None,
             command: None,
             script: Some("echo line1\necho line2".to_string()),
@@ -1860,7 +1860,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
 
         assert_eq!(ir_task.id, "script-task");
         assert_eq!(ir_task.command, vec!["echo line1\necho line2"]);
@@ -1870,10 +1870,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cue_stage_task_to_ir_github_action() {
-        use cuenv_core::ci::{
-            BuildStage, CueStageTask, GitHubActionConfig, StageTaskProviderConfig,
-        };
+    fn test_phase_task_to_ir_github_action() {
+        use cuenv_core::ci::{BuildPhase, GitHubActionConfig, PhaseTaskProviderConfig};
 
         let mut inputs = std::collections::HashMap::new();
         inputs.insert(
@@ -1881,9 +1879,9 @@ mod tests {
             serde_json::Value::String("accept-flake-config = true".to_string()),
         );
 
-        let cue_task = CueStageTask {
+        let phase_task = PhaseTask {
             id: "nix-install".to_string(),
-            stage: BuildStage::Bootstrap,
+            phase: BuildPhase::Bootstrap,
             label: Some("Install Nix".to_string()),
             command: None,
             script: None,
@@ -1892,7 +1890,7 @@ mod tests {
             secrets: HashMap::default(),
             depends_on: vec![],
             priority: 0,
-            provider: Some(StageTaskProviderConfig {
+            provider: Some(PhaseTaskProviderConfig {
                 github: Some(GitHubActionConfig {
                     uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
                     inputs,
@@ -1900,7 +1898,7 @@ mod tests {
             }),
         };
 
-        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
 
         assert_eq!(ir_task.id, "nix-install");
         assert!(ir_task.command.is_empty()); // No command, uses action
@@ -1916,8 +1914,8 @@ mod tests {
     }
 
     #[test]
-    fn test_cue_stage_task_to_ir_secrets() {
-        use cuenv_core::ci::{BuildStage, CueStageTask, SecretRef, SecretRefConfig};
+    fn test_phase_task_to_ir_secrets() {
+        use cuenv_core::ci::{BuildPhase, SecretRefConfig};
 
         let mut secrets = std::collections::HashMap::new();
         secrets.insert(
@@ -1932,9 +1930,9 @@ mod tests {
             }),
         );
 
-        let cue_task = CueStageTask {
+        let phase_task = PhaseTask {
             id: "secrets-task".to_string(),
-            stage: BuildStage::Setup,
+            phase: BuildPhase::Setup,
             label: None,
             command: Some("echo test".to_string()),
             script: None,
@@ -1946,7 +1944,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
 
         assert_eq!(ir_task.secrets.len(), 2);
 
@@ -1962,16 +1960,16 @@ mod tests {
     }
 
     #[test]
-    fn test_cue_stage_task_to_ir_env_vars() {
-        use cuenv_core::ci::{BuildStage, CueStageTask};
+    fn test_phase_task_to_ir_env_vars() {
+        use cuenv_core::ci::BuildPhase;
 
         let mut env = std::collections::HashMap::new();
         env.insert("VAR1".to_string(), "value1".to_string());
         env.insert("VAR2".to_string(), "value2".to_string());
 
-        let cue_task = CueStageTask {
+        let phase_task = PhaseTask {
             id: "env-task".to_string(),
-            stage: BuildStage::Setup,
+            phase: BuildPhase::Setup,
             label: None,
             command: Some("printenv".to_string()),
             script: None,
@@ -1983,7 +1981,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::cue_stage_task_to_ir(&cue_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
 
         assert_eq!(ir_task.env.len(), 2);
         assert_eq!(ir_task.env.get("VAR1"), Some(&"value1".to_string()));

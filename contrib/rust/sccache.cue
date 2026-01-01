@@ -11,7 +11,7 @@ import "github.com/cuenv/cuenv/schema"
 //
 // import rustcontrib "github.com/cuenv/cuenv/contrib/rust"
 //
-// ci: stageContributors: [rustcontrib.#Sccache]
+// ci: contributors: [rustcontrib.#Sccache]
 //
 // Requires sccache in runtime.tools:
 //
@@ -20,12 +20,12 @@ import "github.com/cuenv/cuenv/schema"
 //	        sccache: #SccacheTool & {version: "0.12.0"}
 //	    }
 //	}
-#Sccache: schema.#StageContributor & {
+#Sccache: schema.#Contributor & {
 	id: "sccache"
 	when: always: true
 	tasks: [{
 		id:       "setup-sccache"
-		stage:    "setup"
+		phase:    "setup"
 		label:    "Setup sccache"
 		priority: 50
 		script: """

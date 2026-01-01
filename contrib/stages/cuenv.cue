@@ -11,19 +11,19 @@ import "github.com/cuenv/cuenv/schema"
 // - nix: Install via Nix flake
 // - homebrew: Install via Homebrew tap (no Nix required)
 //
-// Contributes to Setup stage with priority 10.
+// Contributes to Setup phase with priority 10.
 //
 // Usage:
 //
 //	import stages "github.com/cuenv/cuenv/contrib/stages"
 //
-//	ci: stageContributors: [stages.#Cuenv]
-#Cuenv: schema.#StageContributor & {
+//	ci: contributors: [stages.#Cuenv]
+#Cuenv: schema.#Contributor & {
 	id: "cuenv"
 	when: always: true
 	tasks: [{
 		id:       "setup-cuenv"
-		stage:    "setup"
+		phase:    "setup"
 		label:    "Setup cuenv"
 		priority: 10
 		shell:    true
@@ -42,12 +42,12 @@ import "github.com/cuenv/cuenv/schema"
 // #CuenvRelease installs cuenv from GitHub Releases (default mode)
 // No Nix dependency required.
 // TODO: Add SHA256 checksum verification for downloaded binary
-#CuenvRelease: schema.#StageContributor & {
+#CuenvRelease: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["release"]
 	tasks: [{
 		id:       "setup-cuenv"
-		stage:    "setup"
+		phase:    "setup"
 		label:    "Setup cuenv (release)"
 		priority: 10
 		shell:    true
@@ -62,12 +62,12 @@ import "github.com/cuenv/cuenv/schema"
 
 // #CuenvGit builds cuenv from git checkout using Nix
 // Requires install-nix to have run first.
-#CuenvGit: schema.#StageContributor & {
+#CuenvGit: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["git"]
 	tasks: [{
 		id:        "setup-cuenv"
-		stage:     "setup"
+		phase:     "setup"
 		label:     "Build cuenv"
 		priority:  10
 		shell:     true
@@ -85,12 +85,12 @@ import "github.com/cuenv/cuenv/schema"
 
 // #CuenvNix installs cuenv via Nix flake
 // Requires install-nix to have run first.
-#CuenvNix: schema.#StageContributor & {
+#CuenvNix: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["nix"]
 	tasks: [{
 		id:        "setup-cuenv"
-		stage:     "setup"
+		phase:     "setup"
 		label:     "Setup cuenv (nix)"
 		priority:  10
 		shell:     true
@@ -106,12 +106,12 @@ import "github.com/cuenv/cuenv/schema"
 
 // #CuenvHomebrew installs cuenv via Homebrew tap
 // No Nix dependency required.
-#CuenvHomebrew: schema.#StageContributor & {
+#CuenvHomebrew: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["homebrew"]
 	tasks: [{
 		id:       "setup-cuenv"
-		stage:    "setup"
+		phase:    "setup"
 		label:    "Setup cuenv (homebrew)"
 		priority: 10
 		shell:    true

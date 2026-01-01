@@ -7,7 +7,7 @@ import "github.com/cuenv/cuenv/schema"
 // Active when:
 // - ci.provider.github.cachix is configured
 //
-// Contributes to Setup stage with priority 15 (after Nix install, before cuenv).
+// Contributes to Setup phase with priority 15 (after Nix install, before cuenv).
 // Depends on install-nix to have run first.
 //
 // This is a GitHub-specific contributor.
@@ -16,9 +16,9 @@ import "github.com/cuenv/cuenv/schema"
 //
 //	import stages "github.com/cuenv/cuenv/contrib/stages"
 //
-//	ci: stageContributors: [stages.#Cachix]
+//	ci: contributors: [stages.#Cachix]
 //	ci: provider: github: cachix: name: "my-cache"
-#Cachix: schema.#StageContributor & {
+#Cachix: schema.#Contributor & {
 	id: "cachix"
 	when: {
 		// Active if Cachix is configured in GitHub provider
@@ -26,7 +26,7 @@ import "github.com/cuenv/cuenv/schema"
 	}
 	tasks: [{
 		id:        "setup-cachix"
-		stage:     "setup"
+		phase:     "setup"
 		label:     "Setup Cachix"
 		priority:  15
 		shell:     true
