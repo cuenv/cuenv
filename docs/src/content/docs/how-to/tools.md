@@ -3,16 +3,19 @@ title: Tools
 description: Configure and manage hermetic, reproducible development tools
 ---
 
-cuenv's tools feature provides hermetic, reproducible CLI tools managed via CUE configuration. Instead of relying on globally installed tools, cuenv downloads and manages versioned binaries from multiple sources (Homebrew, GitHub Releases, OCI images, Nix).
+cuenv's tools feature provides hermetic, reproducible CLI tools managed via CUE configuration. Instead of relying on globally installed tools, cuenv downloads and manages versioned binaries from multiple sources (GitHub Releases, OCI images, Nix, Rustup).
 
 ## Quick Start
 
-Add a `runtime` block to your `env.cue`:
+Add a `runtime` block to your `env.cue`. The easiest way is to use pre-configured contrib modules:
 
 ```cue
 package cuenv
 
-import "github.com/cuenv/cuenv/schema"
+import (
+    "github.com/cuenv/cuenv/schema"
+    xTools "github.com/cuenv/cuenv/contrib/tools"
+)
 
 schema.#Project & {
     name: "my-project"
@@ -21,8 +24,8 @@ schema.#Project & {
 runtime: schema.#ToolsRuntime & {
     platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64"]
     tools: {
-        jq: "1.7.1"
-        yq: "4.44.6"
+        jq: xTools.#Jq & {version: "1.7.1"}
+        yq: xTools.#Yq & {version: "4.44.6"}
     }
 }
 
@@ -50,25 +53,41 @@ cuenv task process
 
 ### Simple Version Strings
 
-The simplest form uses just a version string. This defaults to Homebrew as the source:
+The simplest form uses just a version string, but you must specify a source using the full `#Tool` definition or platform-specific overrides:
 
 ```cue
 tools: {
-    jq: "1.7.1"
-    yq: "4.44.6"
-    ripgrep: "14.1.1"
+    jq: {
+        version: "1.7.1"
+        source: schema.#GitHub & {
+            repo: "jqlang/jq"
+            asset: "jq-{os}-{arch}"
+        }
+    }
+    yq: {
+        version: "4.44.6"
+        source: schema.#GitHub & {
+            repo: "mikefarah/yq"
+            tag: "v{version}"
+            asset: "yq_{os}_{arch}.tar.gz"
+            path: "yq_{os}_{arch}"
+        }
+    }
 }
 ```
 
 ### Full Tool Specification
 
-For more control, use the full `#Tool` definition:
+Use the full `#Tool` definition to specify the source and version:
 
 ```cue
 tools: {
     go: {
         version: "1.24.0"
-        source: schema.#Homebrew & {formula: "go@1.24"}
+        source: schema.#Nix & {
+            flake: "nixpkgs"
+            package: "go_1_24"
+        }
     }
 }
 ```
@@ -79,29 +98,12 @@ The `#Tool` type supports these fields:
 | ----------- | ---------------- | -------- | ------------------------------------ |
 | `version`   | `string`         | Yes      | Tool version                         |
 | `as`        | `string`         | No       | Rename binary in PATH                |
-| `source`    | `#Source`        | No       | Default source (Homebrew if omitted) |
+| `source`    | `#Source`        | No       | Tool source (must be specified via source or overrides) |
 | `overrides` | `[...#Override]` | No       | Platform-specific sources            |
 
 ## Tool Sources
 
 cuenv supports four tool sources:
-
-### Homebrew (Default)
-
-Fetches from Homebrew bottles hosted on `ghcr.io/homebrew`. This is the default and covers most common tools.
-
-```cue
-tools: {
-    // Implicit Homebrew
-    jq: "1.7.1"
-
-    // Explicit Homebrew with formula override
-    go: {
-        version: "1.24.0"
-        source: schema.#Homebrew & {formula: "go@1.24"}
-    }
-}
-```
 
 ### GitHub Releases
 
@@ -292,8 +294,17 @@ Use `overrides` to specify different sources per platform:
 tools: {
     bun: {
         version: "1.3.5"
-        source: schema.#Homebrew
         overrides: [
+            // Use GitHub on macOS
+            {
+                os: "darwin"
+                source: schema.#GitHub & {
+                    repo: "oven-sh/bun"
+                    tag: "bun-v{version}"
+                    asset: "bun-darwin-{arch}.zip"
+                    path: "bun-darwin-{arch}/bun"
+                }
+            }
             // Use OCI image on Linux
             {
                 os: "linux"
@@ -488,13 +499,13 @@ error: tool 'mytool' not found in lockfile for platform darwin-arm64
 
 **Fix:** Ensure the platform is listed in `runtime.platforms`, then run `cuenv sync lock`.
 
-### Homebrew Bottle Not Available
+### Binary Not Available for Platform
 
 ```
-error: no bottle available for 'formula' on darwin-arm64
+error: tool 'mytool' could not be resolved for platform darwin-arm64
 ```
 
-**Fix:** The tool may not have a Homebrew bottle for your platform. Use a different source (GitHub, OCI) as an override.
+**Fix:** The tool may not have a binary available for your platform. Check if the source (GitHub, OCI, Nix) provides builds for your platform, or use platform-specific overrides to specify different sources.
 
 ### Nix Prerequisites Missing
 

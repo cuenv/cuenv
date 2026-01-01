@@ -12,7 +12,7 @@ cuenv's tools system provides **hermetic, reproducible CLI tools** without requi
 1. **Version pinning**: Every tool has an explicit version locked in `cuenv.lock`
 2. **Platform isolation**: Tools are resolved per-platform, supporting cross-platform teams
 3. **Content-addressed caching**: Tools are cached by SHA256 digest for integrity
-4. **Multiple sources**: Support for Homebrew, GitHub, OCI, Nix, and Rustup
+4. **Multiple sources**: Support for GitHub, OCI, Nix, and Rustup
 
 ## Architecture Overview
 
@@ -26,7 +26,7 @@ cuenv's tools system provides **hermetic, reproducible CLI tools** without requi
 ┌─────────────────────────────────────────────────────────────┐
 │                    Tool Resolution                           │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │  Homebrew   │  │   GitHub    │  │     OCI     │  ...    │
+│  │   GitHub    │  │     OCI     │  │     Nix     │  ...    │
 │  │  Provider   │  │  Provider   │  │  Provider   │         │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
 │         └────────────────┼────────────────┘                 │
@@ -87,7 +87,6 @@ pub trait ToolProvider: Send + Sync {
 
 | Provider     | Source Type  | Prerequisites            | Use Case                            |
 | ------------ | ------------ | ------------------------ | ----------------------------------- |
-| **Homebrew** | `#Homebrew`  | None (fetches bottles)   | Default for most tools              |
 | **GitHub**   | `#GitHub`    | None                     | Tools with GitHub Releases          |
 | **OCI**      | `#Oci`       | None                     | Tools distributed as containers     |
 | **Nix**      | `#Nix`       | `nix` CLI                | Complex toolchains                  |
@@ -99,8 +98,8 @@ Providers are registered in a `ToolRegistry` that routes tool sources to the app
 
 ```rust
 let mut registry = ToolRegistry::new();
-registry.register(HomebrewToolProvider::new());
 registry.register(GitHubToolProvider::new());
+registry.register(OciToolProvider::new());
 registry.register(NixToolProvider::with_flakes(flakes));
 registry.register(RustupToolProvider::new());
 
@@ -115,14 +114,19 @@ let provider = registry.find_for_source(&source);
 
 When resolving a tool, cuenv determines the source based on:
 
-1. **Default source**: If only a version string is provided, Homebrew is used
-2. **Explicit source**: The `source` field specifies a different provider
-3. **Platform overrides**: The `overrides` array can specify per-platform sources
+1. **Explicit source**: The `source` field specifies a provider
+2. **Platform overrides**: The `overrides` array can specify per-platform sources
 
 ```cue
 tools: {
-    // Uses Homebrew (default)
-    jq: "1.7.1"
+    // Explicit GitHub source
+    jq: {
+        version: "1.7.1"
+        source: schema.#GitHub & {
+            repo: "jqlang/jq"
+            asset: "jq-{os}-{arch}"
+        }
+    }
 
     // Explicit GitHub source
     gh: {
@@ -133,8 +137,8 @@ tools: {
     // Platform-specific overrides
     bun: {
         version: "1.3.5"
-        source: schema.#Homebrew
         overrides: [
+            {os: "darwin", source: schema.#GitHub & { repo: "oven-sh/bun", ... }}
             {os: "linux", source: schema.#Oci & { image: "oven/bun:1.3.5", ... }}
         ]
     }
@@ -180,11 +184,11 @@ source: schema.#GitHub & {
 │           ├── bin/
 │           │   └── jq           # The binary
 │           └── metadata.json    # Resolution metadata
-├── homebrew/
-│   └── ripgrep/
-│       └── 14.1.1/
+├── oci/
+│   └── kubectl/
+│       └── 1.31.0/
 │           └── bin/
-│               └── rg
+│               └── kubectl
 ├── nix/
 │   └── profiles/
 │       └── <project-hash>/      # Per-project Nix profile
