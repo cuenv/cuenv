@@ -590,7 +590,7 @@ impl CommandHandler for SyncHandler {
                     return Err(project_error(path));
                 }
 
-                let provider_names = ["ignore", "codeowners"];
+                let provider_names = ["rules"];
                 let mut outputs = Vec::new();
                 let mut had_error = false;
 
