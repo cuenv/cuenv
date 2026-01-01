@@ -108,7 +108,8 @@ tasks: {
     )
     .unwrap();
 
-    // Project A: bun workspace with beforeInstall hook referencing B.types
+    // Project A: bun workspace with beforeInstall hook referencing B.types.
+    // The inject config provides bun.install, which is injected by with_implicit_tasks().
     let proj_a = root.join("website");
     fs::create_dir_all(&proj_a).unwrap();
     fs::write(
@@ -121,6 +122,14 @@ env: {}
 
 workspaces: {
   bun: {
+    commands: ["bun", "bunx"]
+    inject: {
+      install: {
+        command: "sh"
+        args: ["-c", "echo A-bun-install"]
+        hermetic: false
+      }
+    }
     hooks: {
       beforeInstall: [
         { ref: "#projen-generator:types" },
@@ -136,12 +145,6 @@ workspaces: {
 }
 
 tasks: {
-  bun: {
-    install: {
-      command: "sh"
-      args: ["-c", "echo A-bun-install"]
-    }
-  }
   dev: {
     command: "sh"
     args: ["-c", "echo A-dev"]
@@ -292,8 +295,8 @@ tasks: {
     )
     .unwrap();
 
-    // Project A: bun workspace with beforeInstall hook referencing B.types, but DOES NOT
-    // define bun.install — it should be injected by with_implicit_tasks().
+    // Project A: bun workspace with beforeInstall hook referencing B.types.
+    // The inject config provides bun.install, which is injected by with_implicit_tasks().
     let proj_a = root.join("website");
     fs::create_dir_all(&proj_a).unwrap();
     fs::write(proj_a.join("package.json"), "{}\n").unwrap();
@@ -313,6 +316,7 @@ workspaces: {
       install: {
         command: "bun"
         args: ["install"]
+        hermetic: false
       }
     }
     hooks: {

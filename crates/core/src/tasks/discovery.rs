@@ -100,7 +100,7 @@ impl TaskDiscovery {
                 Ok(entry) => {
                     let path = entry.path();
                     if path.file_name() == Some("env.cue".as_ref()) {
-                        match self.load_project(path, eval_fn) {
+                        match Self::load_project(path, eval_fn) {
                             Ok(project) => {
                                 // Build name index
                                 let name = project.manifest.name.trim();
@@ -171,7 +171,6 @@ impl TaskDiscovery {
 
     /// Load a single project from its env.cue path
     fn load_project(
-        &self,
         env_cue_path: &Path,
         eval_fn: &EvalFn,
     ) -> Result<DiscoveredProject, DiscoveryError> {

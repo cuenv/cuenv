@@ -3,6 +3,7 @@ package schema
 #Hooks: close({
 	onEnter?: [string]: #Hook
 	onExit?: [string]:  #Hook
+	prePush?: [string]: #Hook
 })
 
 #Hook: #ExecHook

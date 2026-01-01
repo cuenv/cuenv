@@ -12,6 +12,8 @@ pub mod exec;
 pub mod export;
 /// Format code based on formatters configuration.
 pub mod fmt;
+/// Git hooks generation and management.
+pub mod git_hooks;
 /// Command handler trait and implementations for command dispatch.
 pub mod handler;
 /// Hook execution for environment lifecycle events.
