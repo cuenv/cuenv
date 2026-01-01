@@ -25,7 +25,7 @@ For each crate, verify:
 | cuenv | 53.9% | [ ] | [ ] | Pending review (large crate: 15157 lines) |
 | ignore | 54.3% | [x] | [x] | Added 18 tests for builder, validation, error types |
 | secrets | 72.5% | [x] | [x] | Added 14 tests for SecretError, SecretSpec in lib.rs |
-| editorconfig | 72.9% | [ ] | [ ] | Pending review |
+| editorconfig | 72.9% | [x] | [x] | Added 19 tests for optional builders, file ops, error handling |
 | events | 74.0% | [ ] | [ ] | Pending review |
 | ci | 74.2% | [ ] | [ ] | Pending review (large crate: 6691 lines) |
 | github | 75.4% | [ ] | [ ] | Pending review |
