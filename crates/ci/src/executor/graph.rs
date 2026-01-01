@@ -11,7 +11,7 @@ use crate::ir::{IntermediateRepresentation, Task as IRTask};
 use petgraph::algo::{is_cyclic_directed, toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::IntoNodeReferences;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
 /// Error types for task graph operations
@@ -175,7 +175,7 @@ impl CITaskGraph {
     pub fn compute_digests(
         &mut self,
         ir: &IntermediateRepresentation,
-        secret_fingerprints: &HashMap<String, HashMap<String, String>>,
+        secret_fingerprints: &HashMap<String, BTreeMap<String, String>>,
         system_salt: Option<&str>,
     ) {
         for node_index in self.graph.node_indices() {
@@ -308,6 +308,7 @@ impl CITaskGraph {
 mod tests {
     use super::*;
     use crate::ir::{CachePolicy, StageConfiguration, Task};
+    use std::collections::BTreeMap;
 
     fn make_task(id: &str, deps: &[&str]) -> Task {
         Task {
@@ -315,8 +316,8 @@ mod tests {
             runtime: None,
             command: vec!["echo".to_string(), id.to_string()],
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -327,7 +328,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 

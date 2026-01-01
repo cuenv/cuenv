@@ -8,7 +8,7 @@
 //! - Secret fingerprints (salted HMAC)
 
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Runtime digest builder for cache key computation
 pub struct DigestBuilder {
@@ -34,9 +34,9 @@ impl DigestBuilder {
     }
 
     /// Add environment variables to digest (sorted by key for determinism)
-    pub fn add_env(&mut self, env: &HashMap<String, String>) -> &mut Self {
-        let mut sorted: Vec<_> = env.iter().collect();
-        sorted.sort_by_key(|(k, _)| *k);
+    pub fn add_env(&mut self, env: &BTreeMap<String, String>) -> &mut Self {
+        // BTreeMap is already sorted by key
+        let sorted: Vec<_> = env.iter().collect();
 
         for (key, value) in sorted {
             self.hasher.update(key.as_bytes());
@@ -74,11 +74,11 @@ impl DigestBuilder {
     /// * `salt` - System-wide salt for HMAC computation
     pub fn add_secret_fingerprints(
         &mut self,
-        secrets: &HashMap<String, String>,
+        secrets: &BTreeMap<String, String>,
         salt: &str,
     ) -> &mut Self {
-        let mut sorted: Vec<_> = secrets.iter().collect();
-        sorted.sort_by_key(|(k, _)| *k);
+        // BTreeMap is already sorted by key
+        let sorted: Vec<_> = secrets.iter().collect();
 
         for (key, value) in sorted {
             // Compute HMAC-SHA256(key + value, salt)
@@ -118,13 +118,12 @@ impl Default for DigestBuilder {
 
 /// Compute task runtime digest
 #[must_use]
-#[allow(clippy::implicit_hasher)] // Standard HashMap is fine for digest computation
 pub fn compute_task_digest(
     command: &[String],
-    env: &HashMap<String, String>,
+    env: &BTreeMap<String, String>,
     inputs: &[String],
     runtime_digest: Option<&str>,
-    secret_fingerprints: Option<&HashMap<String, String>>,
+    secret_fingerprints: Option<&BTreeMap<String, String>>,
     system_salt: Option<&str>,
 ) -> String {
     let mut builder = DigestBuilder::new();
@@ -153,7 +152,7 @@ mod tests {
     #[test]
     fn test_digest_deterministic() {
         let command = vec!["cargo".to_string(), "build".to_string()];
-        let env = HashMap::from([("RUST_LOG".to_string(), "debug".to_string())]);
+        let env = BTreeMap::from([("RUST_LOG".to_string(), "debug".to_string())]);
         let inputs = vec!["src/**/*.rs".to_string()];
 
         let digest1 = compute_task_digest(&command, &env, &inputs, None, None, None);
@@ -165,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_digest_changes_with_command() {
-        let env = HashMap::new();
+        let env = BTreeMap::new();
         let inputs = vec![];
 
         let digest1 = compute_task_digest(&["echo".to_string()], &env, &inputs, None, None, None);
@@ -179,8 +178,8 @@ mod tests {
         let command = vec!["echo".to_string()];
         let inputs = vec![];
 
-        let env1 = HashMap::from([("KEY".to_string(), "value1".to_string())]);
-        let env2 = HashMap::from([("KEY".to_string(), "value2".to_string())]);
+        let env1 = BTreeMap::from([("KEY".to_string(), "value1".to_string())]);
+        let env2 = BTreeMap::from([("KEY".to_string(), "value2".to_string())]);
 
         let digest1 = compute_task_digest(&command, &env1, &inputs, None, None, None);
         let digest2 = compute_task_digest(&command, &env2, &inputs, None, None, None);
@@ -193,11 +192,11 @@ mod tests {
         let command = vec!["echo".to_string()];
         let inputs = vec![];
 
-        let mut env1 = HashMap::new();
+        let mut env1 = BTreeMap::new();
         env1.insert("A".to_string(), "1".to_string());
         env1.insert("B".to_string(), "2".to_string());
 
-        let mut env2 = HashMap::new();
+        let mut env2 = BTreeMap::new();
         env2.insert("B".to_string(), "2".to_string());
         env2.insert("A".to_string(), "1".to_string());
 
@@ -210,17 +209,17 @@ mod tests {
     #[test]
     fn test_secret_fingerprints() {
         let command = vec!["deploy".to_string()];
-        let env = HashMap::new();
+        let env = BTreeMap::new();
         let inputs = vec![];
 
-        let secrets = HashMap::from([("API_KEY".to_string(), "secret123".to_string())]);
+        let secrets = BTreeMap::from([("API_KEY".to_string(), "secret123".to_string())]);
         let salt = "system-wide-salt";
 
         let digest1 =
             compute_task_digest(&command, &env, &inputs, None, Some(&secrets), Some(salt));
 
         // Change secret value
-        let secrets2 = HashMap::from([("API_KEY".to_string(), "secret456".to_string())]);
+        let secrets2 = BTreeMap::from([("API_KEY".to_string(), "secret456".to_string())]);
 
         let digest2 =
             compute_task_digest(&command, &env, &inputs, None, Some(&secrets2), Some(salt));
@@ -232,10 +231,10 @@ mod tests {
     #[test]
     fn test_secret_fingerprints_deterministic() {
         let command = vec!["deploy".to_string()];
-        let env = HashMap::new();
+        let env = BTreeMap::new();
         let inputs = vec![];
 
-        let secrets = HashMap::from([("API_KEY".to_string(), "secret123".to_string())]);
+        let secrets = BTreeMap::from([("API_KEY".to_string(), "secret123".to_string())]);
         let salt = "system-wide-salt";
 
         let digest1 =
@@ -275,7 +274,7 @@ mod proptest_tests {
             key in "[A-Z_]+",
             value in "[a-zA-Z0-9]+",
         ) {
-            let env = HashMap::from([(key, value)]);
+            let env = BTreeMap::from([(key, value)]);
             let inputs: Vec<String> = vec![];
 
             let digest1 = compute_task_digest(&cmd, &env, &inputs, None, None, None);
@@ -292,7 +291,7 @@ mod proptest_tests {
         ) {
             prop_assume!(cmd1 != cmd2);
 
-            let env = HashMap::new();
+            let env = BTreeMap::new();
             let inputs: Vec<String> = vec![];
 
             let digest1 = compute_task_digest(&[cmd1], &env, &inputs, None, None, None);
@@ -311,8 +310,8 @@ mod proptest_tests {
             prop_assume!(value1 != value2);
 
             let cmd = vec!["test".to_string()];
-            let env1 = HashMap::from([(key.clone(), value1)]);
-            let env2 = HashMap::from([(key, value2)]);
+            let env1 = BTreeMap::from([(key.clone(), value1)]);
+            let env2 = BTreeMap::from([(key, value2)]);
             let inputs: Vec<String> = vec![];
 
             let digest1 = compute_task_digest(&cmd, &env1, &inputs, None, None, None);
@@ -324,7 +323,7 @@ mod proptest_tests {
         /// Property: Env order doesn't matter (digest is order-independent)
         #[test]
         fn env_order_is_irrelevant(
-            env in prop::collection::hash_map("[A-Z]+", "[a-z]+", 2..5),
+            env in prop::collection::btree_map("[A-Z]+", "[a-z]+", 2..5),
         ) {
             let cmd = vec!["test".to_string()];
             let inputs: Vec<String> = vec![];
@@ -333,10 +332,10 @@ mod proptest_tests {
             let pairs: Vec<_> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
             // Create env in original order
-            let env1: HashMap<String, String> = pairs.iter().cloned().collect();
+            let env1: BTreeMap<String, String> = pairs.iter().cloned().collect();
 
             // Create env in reverse order
-            let env2: HashMap<String, String> = pairs.iter().rev().cloned().collect();
+            let env2: BTreeMap<String, String> = pairs.iter().rev().cloned().collect();
 
             let digest1 = compute_task_digest(&cmd, &env1, &inputs, None, None, None);
             let digest2 = compute_task_digest(&cmd, &env2, &inputs, None, None, None);
@@ -349,7 +348,7 @@ mod proptest_tests {
         fn digest_has_correct_format(
             cmd in prop::collection::vec("[a-z]+", 1..3),
         ) {
-            let env = HashMap::new();
+            let env = BTreeMap::new();
             let inputs: Vec<String> = vec![];
 
             let digest = compute_task_digest(&cmd, &env, &inputs, None, None, None);

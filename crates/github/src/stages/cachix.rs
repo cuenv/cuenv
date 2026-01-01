@@ -9,7 +9,7 @@ use crate::config::GitHubConfig;
 use cuenv_ci::StageContributor;
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, SecretConfig, StageTask};
 use cuenv_core::manifest::Project;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Cachix stage contributor
 ///
@@ -66,7 +66,7 @@ impl StageContributor for CachixContributor {
         };
 
         // Build environment variables for the Cachix setup
-        let mut env = HashMap::new();
+        let mut env = BTreeMap::new();
         env.insert("CACHIX_CACHE_NAME".to_string(), config.name.clone());
         env.insert(
             "CACHIX_AUTH_TOKEN".to_string(),
@@ -94,7 +94,7 @@ impl StageContributor for CachixContributor {
                     env,
                     depends_on: vec!["install-nix".to_string()],
                     priority: 15, // After Nix install but before cuenv
-                    secrets: HashMap::from([(
+                    secrets: BTreeMap::from([(
                         "CACHIX_AUTH_TOKEN".to_string(),
                         SecretConfig {
                             source: config.auth_token_secret,
@@ -115,6 +115,7 @@ mod tests {
     use cuenv_ci::ir::{PipelineMetadata, StageConfiguration};
     use cuenv_core::ci::CI;
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn make_ir() -> IntermediateRepresentation {
         IntermediateRepresentation {

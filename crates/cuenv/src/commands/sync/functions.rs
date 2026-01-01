@@ -14,7 +14,7 @@ use cuenv_core::manifest::Project;
 use cuenv_core::{ModuleEvaluation, Result};
 use cuenv_github::GitHubConfigExt;
 use similar::TextDiff;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use tracing::instrument;
 
@@ -994,6 +994,8 @@ fn build_pipeline_jobs(
                             }
                         }
                     }
+                    // Sort for deterministic output
+                    combined_needs.sort();
 
                     // Create synthetic IR Task with artifact_downloads and params
                     let synthetic_task = create_synthetic_aggregation_task(task_name, matrix_task);
@@ -1087,15 +1089,21 @@ fn create_synthetic_aggregation_task(
         })
         .unwrap_or_default();
 
-    let params = matrix_task.params.clone().unwrap_or_default();
+    // Convert HashMap to BTreeMap for IR compatibility
+    let params: BTreeMap<String, String> = matrix_task
+        .params
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     Task {
         id: task_name.to_string(),
         runtime: None,
         command: vec![],
         shell: false,
-        env: HashMap::new(),
-        secrets: HashMap::new(),
+        env: BTreeMap::new(),
+        secrets: BTreeMap::new(),
         resources: None,
         concurrency_group: None,
         inputs: vec![],
@@ -1119,8 +1127,17 @@ fn create_synthetic_matrix_task(
 ) -> cuenv_ci::ir::Task {
     use cuenv_ci::ir::{CachePolicy, MatrixConfig, Task};
 
+    // Convert HashMap to BTreeMap for IR compatibility
+    // Sort dimension values for deterministic output
+    let dimensions: BTreeMap<String, Vec<String>> =
+        matrix_task.matrix.iter().map(|(k, v)| {
+            let mut sorted_values = v.clone();
+            sorted_values.sort();
+            (k.clone(), sorted_values)
+        }).collect();
+
     let matrix = MatrixConfig {
-        dimensions: matrix_task.matrix.clone(),
+        dimensions,
         exclude: vec![],
         include: vec![],
         max_parallel: 0,
@@ -1132,8 +1149,8 @@ fn create_synthetic_matrix_task(
         runtime: None,
         command: vec![],
         shell: false,
-        env: HashMap::new(),
-        secrets: HashMap::new(),
+        env: BTreeMap::new(),
+        secrets: BTreeMap::new(),
         resources: None,
         concurrency_group: None,
         inputs: vec![],
@@ -1144,7 +1161,7 @@ fn create_synthetic_matrix_task(
         manual_approval: false,
         matrix: Some(matrix),
         artifact_downloads: vec![],
-        params: HashMap::new(),
+        params: BTreeMap::new(),
     }
 }
 
@@ -1343,7 +1360,7 @@ fn build_github_trigger_condition(
     let manual = when.and_then(|w| w.manual.as_ref()).map(|m| match m {
         ManualTrigger::Enabled(enabled) => ManualTriggerConfig {
             enabled: *enabled,
-            inputs: std::collections::HashMap::new(),
+            inputs: BTreeMap::new(),
         },
         ManualTrigger::WithInputs(inputs) => ManualTriggerConfig {
             enabled: true,

@@ -18,7 +18,7 @@ use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, T
 use chrono::Utc;
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::ExecutorError;
@@ -412,7 +412,7 @@ async fn execute_single_task_by_name(
             .iter()
             .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
             .collect(),
-        secrets: HashMap::new(), // Secrets handled separately
+        secrets: BTreeMap::new(), // Secrets handled separately
         resources: None,
         concurrency_group: None,
         inputs: task
@@ -428,11 +428,11 @@ async fn execute_single_task_by_name(
         manual_approval: false,
         matrix: None,
         artifact_downloads: vec![],
-        params: HashMap::new(),
+        params: BTreeMap::new(),
     };
 
     // Build environment
-    let mut env: HashMap<String, String> = task
+    let mut env: BTreeMap<String, String> = task
         .env
         .iter()
         .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))

@@ -24,7 +24,7 @@ use cuenv_core::ci::{CI, Contributor, ManualTrigger, Pipeline, PipelineTask, Set
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
 use digest::DigestBuilder;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
@@ -408,7 +408,7 @@ impl Compiler {
         let manual = when.and_then(|w| w.manual.as_ref()).map(|m| match m {
             ManualTrigger::Enabled(enabled) => ManualTriggerConfig {
                 enabled: *enabled,
-                inputs: HashMap::new(),
+                inputs: BTreeMap::new(),
             },
             ManualTrigger::WithInputs(inputs) => ManualTriggerConfig {
                 enabled: true,
@@ -626,14 +626,14 @@ impl Compiler {
         let shell = task.shell.is_some() || task.script.is_some();
 
         // Convert environment variables (filter out complex JSON values)
-        let env: HashMap<String, String> = task
+        let env: BTreeMap<String, String> = task
             .env
             .iter()
             .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
             .collect();
 
         // Extract secrets (simplified - would integrate with secret resolver)
-        let secrets: HashMap<String, SecretConfig> = HashMap::new();
+        let secrets: BTreeMap<String, SecretConfig> = BTreeMap::new();
 
         // Convert inputs (path globs only for now)
         let inputs: Vec<String> = task.iter_path_inputs().cloned().collect();
@@ -697,7 +697,7 @@ impl Compiler {
             manual_approval: false, // Would come from task metadata
             matrix: None,
             artifact_downloads,
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         })
     }
 
@@ -752,9 +752,14 @@ impl Compiler {
             }
         }
 
-        // 2. Apply CUE contributors
+        // 2. Apply CUE contributors (sorted by name for deterministic order)
         if let Some(ref ci_config) = self.project.ci {
-            for (name, contributor) in &ci_config.contributors {
+            // Sort contributor names for deterministic iteration order
+            let mut contributor_names: Vec<_> = ci_config.contributors.keys().collect();
+            contributor_names.sort();
+
+            for name in contributor_names {
+                let contributor = &ci_config.contributors[name];
                 if self.contributor_matches(contributor) {
                     for step in &contributor.setup {
                         let stage_task = Self::setup_step_to_stage_task(step, name);
@@ -783,7 +788,7 @@ impl Compiler {
         };
 
         // Convert env values (filter to strings only)
-        let env: HashMap<String, String> = step
+        let env: BTreeMap<String, String> = step
             .env
             .iter()
             .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
@@ -825,7 +830,7 @@ impl Compiler {
             command,
             shell,
             env,
-            secrets: HashMap::new(),
+            secrets: BTreeMap::new(),
             depends_on: vec![],
             priority: 50, // CUE setup steps run after Rust contributors (which use 10-30)
             provider_hints,

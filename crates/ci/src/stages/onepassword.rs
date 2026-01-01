@@ -9,7 +9,7 @@ use super::StageContributor;
 use crate::ir::{BuildStage, IntermediateRepresentation, StageTask};
 use cuenv_core::environment::{Env, EnvValue, EnvValueSimple};
 use cuenv_core::manifest::Project;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// 1Password stage contributor
 ///
@@ -64,7 +64,7 @@ impl StageContributor for OnePasswordContributor {
             return (vec![], false);
         }
 
-        let mut env = HashMap::new();
+        let mut env = BTreeMap::new();
         env.insert(
             "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
             "${OP_SERVICE_ACCOUNT_TOKEN}".to_string(),
@@ -96,6 +96,7 @@ mod tests {
     use super::*;
     use crate::ir::{PipelineMetadata, StageConfiguration};
     use cuenv_core::secrets::Secret;
+    use std::collections::HashMap;
 
     /// Create IR with a production environment set
     fn make_ir_with_production_env() -> IntermediateRepresentation {

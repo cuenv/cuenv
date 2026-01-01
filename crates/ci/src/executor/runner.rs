@@ -7,7 +7,7 @@
 #![allow(clippy::too_many_lines)]
 
 use crate::ir::Task as IRTask;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use thiserror::Error;
@@ -140,7 +140,7 @@ impl IRTaskRunner {
     pub async fn execute(
         &self,
         task: &IRTask,
-        env: HashMap<String, String>,
+        env: BTreeMap<String, String>,
     ) -> Result<TaskOutput, RunnerError> {
         if task.command.is_empty() {
             return Err(RunnerError::EmptyCommand {
@@ -237,6 +237,7 @@ impl IRTaskRunner {
 mod tests {
     use super::*;
     use crate::ir::CachePolicy;
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     fn make_task(id: &str, command: &[&str], shell: bool) -> IRTask {
@@ -245,8 +246,8 @@ mod tests {
             runtime: None,
             command: command.iter().map(|s| (*s).to_string()).collect(),
             shell,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -257,7 +258,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 
@@ -267,7 +268,7 @@ mod tests {
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
         let task = make_task("test", &["echo", "hello"], false);
 
-        let result = runner.execute(&task, HashMap::new()).await.unwrap();
+        let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
         assert!(result.success);
         assert_eq!(result.exit_code, 0);
@@ -281,7 +282,7 @@ mod tests {
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
         let task = make_task("test", &["echo", "hello", "&&", "echo", "world"], true);
 
-        let result = runner.execute(&task, HashMap::new()).await.unwrap();
+        let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
         assert!(result.success);
         assert!(result.stdout.contains("hello"));
@@ -294,7 +295,7 @@ mod tests {
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
         let task = make_task("test", &["printenv", "MY_VAR"], false);
 
-        let env = HashMap::from([("MY_VAR".to_string(), "test_value".to_string())]);
+        let env = BTreeMap::from([("MY_VAR".to_string(), "test_value".to_string())]);
         let result = runner.execute(&task, env).await.unwrap();
 
         assert!(result.success);
@@ -307,7 +308,7 @@ mod tests {
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
         let task = make_task("test", &["false"], false);
 
-        let result = runner.execute(&task, HashMap::new()).await.unwrap();
+        let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
         assert!(!result.success);
         assert_ne!(result.exit_code, 0);
@@ -319,7 +320,7 @@ mod tests {
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
         let task = make_task("test", &[], false);
 
-        let result = runner.execute(&task, HashMap::new()).await;
+        let result = runner.execute(&task, BTreeMap::new()).await;
         assert!(matches!(result, Err(RunnerError::EmptyCommand { .. })));
     }
 
@@ -347,7 +348,7 @@ mod tests {
         let runner = IRTaskRunner::with_shell(tmp.path().to_path_buf(), true, "/bin/bash");
         let task = make_task("test", &["echo", "$BASH_VERSION"], true);
 
-        let result = runner.execute(&task, HashMap::new()).await.unwrap();
+        let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
         // On systems with bash, this should succeed and output something
         assert!(result.success);

@@ -675,6 +675,11 @@ impl GitHubActionsEmitter {
                 "if-no-files-found".to_string(),
                 serde_yaml::Value::String("ignore".to_string()),
             );
+            // Include hidden files (e.g., .assetsignore) in artifact uploads
+            upload_step.with_inputs.insert(
+                "include-hidden-files".to_string(),
+                serde_yaml::Value::Bool(true),
+            );
             steps.push(upload_step);
         }
 
@@ -899,6 +904,11 @@ impl GitHubActionsEmitter {
                 upload_step.with_inputs.insert(
                     "if-no-files-found".to_string(),
                     serde_yaml::Value::String("ignore".to_string()),
+                );
+                // Include hidden files in artifact uploads
+                upload_step.with_inputs.insert(
+                    "include-hidden-files".to_string(),
+                    serde_yaml::Value::Bool(true),
                 );
                 steps.push(upload_step);
 
@@ -1201,6 +1211,11 @@ impl ReleaseWorkflowBuilder {
             "if-no-files-found".to_string(),
             serde_yaml::Value::String("error".to_string()),
         );
+        // Include hidden files in artifact uploads
+        upload_step.with_inputs.insert(
+            "include-hidden-files".to_string(),
+            serde_yaml::Value::Bool(true),
+        );
         steps.push(upload_step);
 
         Job {
@@ -1322,6 +1337,7 @@ mod tests {
         CachePolicy, PipelineMetadata, ResourceRequirements, StageConfiguration, StageTask,
         TriggerCondition,
     };
+    use std::collections::BTreeMap;
 
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
         IntermediateRepresentation {
@@ -1346,8 +1362,8 @@ mod tests {
             runtime: None,
             command: command.iter().map(|s| (*s).to_string()).collect(),
             shell: false,
-            env: HashMap::new(),
-            secrets: HashMap::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             resources: None,
             concurrency_group: None,
             inputs: vec![],
@@ -1358,7 +1374,7 @@ mod tests {
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
-            params: HashMap::new(),
+            params: BTreeMap::new(),
         }
     }
 
@@ -1448,7 +1464,7 @@ mod tests {
             provider_hints: Some(nix_provider_hints),
             ..Default::default()
         });
-        let mut env = HashMap::new();
+        let mut env = BTreeMap::new();
         env.insert(
             "CACHIX_AUTH_TOKEN".to_string(),
             "${CACHIX_AUTH_TOKEN}".to_string(),

@@ -6,7 +6,7 @@
 //! - Custom provider integration (Vault, 1Password, etc.)
 
 use crate::ir::SecretConfig;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 // Re-export core types from cuenv-secrets
 pub use cuenv_secrets::{ResolvedSecrets, SaltConfig, SecretError, compute_secret_fingerprint};
@@ -91,7 +91,7 @@ impl CIResolvedSecrets {
     /// Returns error if a required secret is not found or if salt is missing
     /// when secrets have `cache_key: true`
     pub fn from_env(
-        secrets: &HashMap<String, SecretConfig>,
+        secrets: &BTreeMap<String, SecretConfig>,
         salt: Option<&str>,
     ) -> Result<Self, SecretError> {
         let salt_config = SaltConfig::new(salt.map(String::from));
@@ -104,7 +104,7 @@ impl CIResolvedSecrets {
     ///
     /// Returns `SecretError` if any secret cannot be resolved.
     pub fn from_env_with_salt_config(
-        secrets: &HashMap<String, SecretConfig>,
+        secrets: &BTreeMap<String, SecretConfig>,
         salt_config: &SaltConfig,
     ) -> Result<Self, SecretError> {
         Self::resolve_with_resolver(&EnvSecretResolver, secrets, salt_config)
@@ -121,7 +121,7 @@ impl CIResolvedSecrets {
     /// Returns error if resolution fails or salt is missing for cache keys
     pub fn resolve_with_resolver(
         resolver: &impl SecretResolver,
-        secrets: &HashMap<String, SecretConfig>,
+        secrets: &BTreeMap<String, SecretConfig>,
         salt_config: &SaltConfig,
     ) -> Result<Self, SecretError> {
         let mut values = HashMap::new();
@@ -293,7 +293,7 @@ mod tests {
                 ("TEST_SECRET_2", Some("value2")),
             ],
             || {
-                let secrets = HashMap::from([
+                let secrets = BTreeMap::from([
                     (
                         "secret1".to_string(),
                         make_secret_config("TEST_SECRET_1", true),
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_missing_secret() {
-        let secrets = HashMap::from([(
+        let secrets = BTreeMap::from([(
             "missing".to_string(),
             make_secret_config("NONEXISTENT_VAR", false),
         )]);
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn test_missing_salt_with_cache_key() {
         temp_env::with_var("TEST_SALT_CHECK", Some("value"), || {
-            let secrets = HashMap::from([(
+            let secrets = BTreeMap::from([(
                 "secret".to_string(),
                 make_secret_config("TEST_SALT_CHECK", true),
             )]);
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn test_fingerprint_matches_current_salt() {
         temp_env::with_var("TEST_FP_MATCH_1", Some("secret_value"), || {
-            let secrets = HashMap::from([(
+            let secrets = BTreeMap::from([(
                 "api_key".to_string(),
                 make_secret_config("TEST_FP_MATCH_1", true),
             )]);
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn test_fingerprint_matches_previous_salt() {
         temp_env::with_var("TEST_FP_MATCH_2", Some("secret_value"), || {
-            let secrets = HashMap::from([(
+            let secrets = BTreeMap::from([(
                 "api_key".to_string(),
                 make_secret_config("TEST_FP_MATCH_2", true),
             )]);
@@ -411,7 +411,7 @@ mod tests {
             .with_secret("API_KEY_SOURCE", "mock_api_key_value")
             .with_secret("DB_PASSWORD_SOURCE", "mock_db_password");
 
-        let secrets = HashMap::from([
+        let secrets = BTreeMap::from([
             (
                 "api_key".to_string(),
                 make_secret_config("API_KEY_SOURCE", true),
@@ -443,7 +443,7 @@ mod tests {
     fn test_mock_resolver_missing_secret() {
         let resolver = MockSecretResolver::new();
 
-        let secrets = HashMap::from([(
+        let secrets = BTreeMap::from([(
             "missing".to_string(),
             make_secret_config("NONEXISTENT_SOURCE", false),
         )]);
