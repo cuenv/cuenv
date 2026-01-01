@@ -802,6 +802,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	instances := make(map[string]json.RawMessage)
 	projects := []string{} // Use empty slice, not nil, so JSON serializes as [] instead of null
 	allMeta := make(map[string]ValueMeta)
+	var buildErrors []string
 
 	// Build CUE values SEQUENTIALLY to avoid race conditions.
 	// CUE's build.Instance objects share internal state (file caches, parsed ASTs),
@@ -829,7 +830,8 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		// Build the CUE value (must be sequential)
 		v := ctx.BuildInstance(inst)
 		if v.Err() != nil {
-			// Skip instances with build errors (logged below if no instances succeed)
+			// Collect build errors so they can be reported if no instances succeed
+			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, v.Err()))
 			continue
 		}
 
@@ -896,7 +898,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	}()
 
 	// Collect results (order doesn't matter for maps)
-	var buildErrors []string
 	for r := range results {
 		if r.err != nil {
 			buildErrors = append(buildErrors, r.err.Error())
