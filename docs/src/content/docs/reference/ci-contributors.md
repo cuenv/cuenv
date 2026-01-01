@@ -251,107 +251,196 @@ tasks: {
 }
 ```
 
-## StageRenderer Trait
+## Using Built-in Contributors
 
-Emitters implement `StageRenderer` to convert platform-agnostic `StageTask` into native CI steps.
+cuenv provides pre-defined stage contributors in `contrib/stages/`. Import and use them in your `env.cue`:
 
-```rust
-pub trait StageRenderer {
-    type Step;
-    type Error;
+```cue
+import stages "github.com/cuenv/cuenv/contrib/stages"
 
-    fn render_task(&self, task: &StageTask) -> Result<Self::Step, Self::Error>;
-    fn render_bootstrap(&self, stages: &StageConfiguration) -> Result<Vec<Self::Step>, Self::Error>;
-    fn render_setup(&self, stages: &StageConfiguration) -> Result<Vec<Self::Step>, Self::Error>;
-    fn render_success(&self, stages: &StageConfiguration) -> Result<Vec<Self::Step>, Self::Error>;
-    fn render_failure(&self, stages: &StageConfiguration) -> Result<Vec<Self::Step>, Self::Error>;
+// Use all default contributors (recommended)
+ci: stageContributors: stages.#DefaultContributors
+
+// Or select specific sets
+ci: stageContributors: stages.#CoreContributors    // Nix, Cuenv, 1Password only
+ci: stageContributors: stages.#GitHubContributors  // GitHub-specific only
+
+// Or pick individual contributors
+ci: stageContributors: [
+    stages.#Nix,
+    stages.#Cuenv,
+    stages.#Cachix,
+]
+```
+
+**Available Contributors:**
+
+| Set | Contributors |
+|-----|--------------|
+| `#CoreContributors` | `#Nix`, `#Cuenv`, `#OnePassword` |
+| `#GitHubContributors` | `#Cachix`, `#GhModels`, `#TrustedPublishing` |
+| `#DefaultContributors` | All of the above |
+
+## Activation Conditions
+
+Stage contributors use activation conditions to determine when they should inject tasks. All specified conditions must be true (AND logic).
+
+```cue
+#ActivationCondition: {
+    // Always active (overrides other conditions)
+    always?: bool
+
+    // Active if project uses any of these runtime types
+    runtimeType?: [...("nix" | "devenv" | "container" | "dagger" | "oci" | "tools")]
+
+    // Active if cuenv source mode matches
+    cuenvSource?: [...("release" | "git" | "nix" | "homebrew")]
+
+    // Active if environment uses any of these secret providers
+    secretsProvider?: [...("onepassword" | "aws" | "vault")]
+
+    // Active if these provider config paths are set
+    providerConfig?: [...string]  // e.g., ["github.cachix", "github.trustedPublishing.cratesIo"]
+
+    // Active if any pipeline task uses these commands
+    taskCommand?: [...string]  // e.g., ["gh", "models"]
+
+    // Active if any pipeline task has these labels
+    taskLabels?: [...string]
+
+    // Active only in these environments
+    environment?: [...string]  // e.g., ["production", "staging"]
 }
 ```
 
-### ActionSpec
+**Examples:**
 
-Contributors can provide `ActionSpec` for GitHub Actions-specific rendering:
+```cue
+// Always active
+when: always: true
 
-```rust
-pub struct ActionSpec {
-    pub uses: String,                              // e.g., "DeterminateSystems/nix-installer-action@v16"
-    pub inputs: HashMap<String, serde_yaml::Value>, // Action inputs
+// Active for Nix-based runtimes
+when: runtimeType: ["nix", "devenv"]
+
+// Active when 1Password secrets are used
+when: secretsProvider: ["onepassword"]
+
+// Active when Cachix is configured
+when: providerConfig: ["github.cachix"]
+
+// Multiple conditions (AND logic)
+when: {
+    runtimeType: ["nix"]
+    cuenvSource: ["git", "nix"]
 }
 ```
-
-When `ActionSpec` is present, `GitHubStageRenderer` uses the GitHub Action instead of a shell command. This allows contributors to specify both:
-
-- A shell command (for non-GitHub platforms)
-- A GitHub Action (for optimal GitHub integration)
 
 ## StageTask Schema
 
-```rust
-pub struct StageTask {
-    pub id: String,                       // Unique identifier (e.g., "install-nix")
-    pub provider: String,                 // Contributor ID (e.g., "nix")
-    pub label: Option<String>,            // Human-readable label
-    pub command: Vec<String>,             // Shell command
-    pub shell: bool,                      // Whether to use shell execution
-    pub env: HashMap<String, String>,     // Environment variables
-    pub depends_on: Vec<String>,          // Task dependencies
-    pub priority: i32,                    // Sort order (lower = earlier)
-    pub action: Option<ActionSpec>,       // GitHub Action alternative
+```cue
+#StageTask: {
+    // Unique task identifier (e.g., "install-nix")
+    id: string
+
+    // Target stage: bootstrap, setup, success, or failure
+    stage: "bootstrap" | "setup" | "success" | "failure"
+
+    // Human-readable display name
+    label?: string
+
+    // Shell command to execute (mutually exclusive with script)
+    command?: string
+
+    // Multi-line script (mutually exclusive with command)
+    script?: string
+
+    // Wrap command in shell (default: false)
+    shell: bool | *false
+
+    // Environment variables
+    env: {[string]: string}
+
+    // Secret references
+    secrets: {[string]: string | #SecretRefConfig}
+
+    // Dependencies on other stage tasks
+    dependsOn: [...string]
+
+    // Ordering within stage (lower = earlier, default: 10)
+    priority: int | *10
+
+    // Provider-specific overrides (e.g., GitHub Actions)
+    provider?: {
+        github?: {
+            uses: string              // Action reference
+            with?: {[string]: _}      // Action inputs
+        }
+    }
 }
 ```
 
 ## Creating Custom Contributors
 
-To create a custom contributor, implement the `StageContributor` trait:
+Define custom stage contributors in CUE using the `#StageContributor` schema:
 
-```rust
-use cuenv_ci::stages::StageContributor;
-use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, StageTask};
-use cuenv_core::manifest::Project;
+```cue
+import "github.com/cuenv/cuenv/schema"
 
-pub struct MyContributor;
+// Define a custom contributor
+#MyToolContributor: schema.#StageContributor & {
+    id: "my-tool"
 
-impl StageContributor for MyContributor {
-    fn id(&self) -> &'static str {
-        "my-contributor"
+    // Activation condition - when should this contributor be active?
+    when: {
+        taskLabels: ["needs-my-tool"]
     }
 
-    fn is_active(&self, ir: &IntermediateRepresentation, project: &Project) -> bool {
-        // Return true if this contributor should inject tasks
-        project.some_config.is_some()
-    }
+    // Tasks to inject when active
+    tasks: [{
+        id:       "setup-my-tool"
+        stage:    "setup"
+        label:    "Setup My Tool"
+        priority: 20
+        shell:    true
+        command:  "curl -sSL https://example.com/install.sh | sh"
 
-    fn contribute(
-        &self,
-        ir: &IntermediateRepresentation,
-        project: &Project,
-    ) -> (Vec<(BuildStage, StageTask)>, bool) {
-        // Idempotency check
-        if ir.stages.setup.iter().any(|t| t.id == "setup-my-thing") {
-            return (vec![], false);
+        // Optional: use GitHub Action instead of shell command
+        provider: github: {
+            uses: "my-org/setup-my-tool@v1"
+            with: version: "latest"
         }
+    }]
+}
 
-        (
-            vec![(
-                BuildStage::Setup,
-                StageTask {
-                    id: "setup-my-thing".to_string(),
-                    provider: "my-contributor".to_string(),
-                    label: Some("Setup My Thing".to_string()),
-                    command: vec!["my-setup-command".to_string()],
-                    priority: 20,
-                    ..Default::default()
-                },
-            )],
-            true,  // Report modification
-        )
-    }
+// Use in your project
+ci: stageContributors: [
+    #MyToolContributor,
+    // ... other contributors
+]
+```
+
+**Example: Contributor with secrets:**
+
+```cue
+#MySecretContributor: schema.#StageContributor & {
+    id: "my-secret-setup"
+    when: secretsProvider: ["onepassword"]
+    tasks: [{
+        id:        "setup-my-secret"
+        stage:     "setup"
+        label:     "Configure Secrets"
+        priority:  25
+        dependsOn: ["setup-1password"]
+        command:   "my-secret-tool configure"
+        env: MY_TOKEN: "${MY_TOKEN}"
+        secrets: MY_TOKEN: "MY_TOKEN_SECRET"
+    }]
 }
 ```
 
 ## Testing Contributors
 
-The crate includes IR-level regression tests to ensure contributors work correctly:
+The CI compiler evaluates stage contributors and injects their tasks into the Intermediate Representation (IR). Integration tests verify the compiled output:
 
 ```rust
 #[test]
@@ -361,10 +450,12 @@ fn test_onepassword_contributor_active_with_op_refs() {
 
     assert!(
         ir.stages.setup.iter().any(|t| t.id == "setup-1password"),
-        "OnePasswordContributor should inject task when op:// refs exist"
+        "1Password contributor should inject task when op:// refs exist"
     );
 }
 ```
+
+To test your custom CUE contributors, create an example project and verify the generated IR or workflow files contain the expected tasks.
 
 See `crates/ci/tests/ir_contributor_tests.rs` for comprehensive test examples.
 
