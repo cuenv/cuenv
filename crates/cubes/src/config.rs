@@ -83,6 +83,67 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_biome_config_with_defaults() {
+        let format = FormatConfig::default();
+        let config = generate_biome_config(&format);
+
+        // Should use default values for optional fields
+        assert_eq!(config["formatter"]["indentSize"], 2);
+        assert_eq!(config["formatter"]["lineWidth"], 100);
+        assert_eq!(config["javascript"]["formatter"]["quoteStyle"], "double");
+        assert_eq!(config["javascript"]["formatter"]["trailingComma"], "all");
+        assert_eq!(config["javascript"]["formatter"]["semicolons"], "always");
+    }
+
+    #[test]
+    fn test_generate_biome_config_with_tabs() {
+        let format = FormatConfig {
+            indent: "tab".to_string(),
+            indent_size: Some(4),
+            line_width: Some(120),
+            quotes: Some("double".to_string()),
+            semicolons: Some(true),
+            trailing_comma: Some("none".to_string()),
+        };
+
+        let config = generate_biome_config(&format);
+        assert_eq!(config["formatter"]["indentStyle"], "tab");
+        assert_eq!(config["formatter"]["indentSize"], 4);
+        assert_eq!(config["formatter"]["lineWidth"], 120);
+        assert_eq!(config["javascript"]["formatter"]["semicolons"], "always");
+    }
+
+    #[test]
+    fn test_generate_biome_config_semicolons_as_needed() {
+        let format = FormatConfig {
+            indent: "space".to_string(),
+            semicolons: Some(false),
+            ..Default::default()
+        };
+
+        let config = generate_biome_config(&format);
+        assert_eq!(config["javascript"]["formatter"]["semicolons"], "asNeeded");
+    }
+
+    #[test]
+    fn test_generate_biome_config_linter_enabled() {
+        let format = FormatConfig::default();
+        let config = generate_biome_config(&format);
+        assert_eq!(config["linter"]["enabled"], true);
+        assert_eq!(config["formatter"]["enabled"], true);
+    }
+
+    #[test]
+    fn test_generate_biome_config_schema() {
+        let format = FormatConfig::default();
+        let config = generate_biome_config(&format);
+        assert_eq!(
+            config["$schema"],
+            "https://biomejs.dev/schemas/1.4.1/schema.json"
+        );
+    }
+
+    #[test]
     fn test_generate_prettier_config() {
         let format = FormatConfig {
             indent: "tab".to_string(),
@@ -101,6 +162,44 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_prettier_config_with_defaults() {
+        let format = FormatConfig::default();
+        let config = generate_prettier_config(&format);
+
+        assert_eq!(config["useTabs"], false); // "space" != "tab"
+        assert_eq!(config["tabWidth"], 2);
+        assert_eq!(config["printWidth"], 100);
+        assert_eq!(config["singleQuote"], false); // None != Some("single")
+        assert_eq!(config["trailingComma"], "all");
+        assert_eq!(config["semi"], true);
+    }
+
+    #[test]
+    fn test_generate_prettier_config_double_quotes() {
+        let format = FormatConfig {
+            indent: "space".to_string(),
+            quotes: Some("double".to_string()),
+            ..Default::default()
+        };
+
+        let config = generate_prettier_config(&format);
+        assert_eq!(config["singleQuote"], false);
+    }
+
+    #[test]
+    fn test_generate_prettier_config_spaces() {
+        let format = FormatConfig {
+            indent: "space".to_string(),
+            indent_size: Some(2),
+            ..Default::default()
+        };
+
+        let config = generate_prettier_config(&format);
+        assert_eq!(config["useTabs"], false);
+        assert_eq!(config["tabWidth"], 2);
+    }
+
+    #[test]
     fn test_generate_rustfmt_config() {
         let format = FormatConfig {
             indent: "space".to_string(),
@@ -114,5 +213,65 @@ mod tests {
         assert!(config.contains("max_width = 100"));
         assert!(config.contains("hard_tabs = false"));
         assert!(config.contains("tab_spaces = 4"));
+    }
+
+    #[test]
+    fn test_generate_rustfmt_config_with_tabs() {
+        let format = FormatConfig {
+            indent: "tab".to_string(),
+            indent_size: Some(4),
+            line_width: Some(80),
+            ..Default::default()
+        };
+
+        let config = generate_rustfmt_config(&format);
+        assert!(config.contains("hard_tabs = true"));
+        assert!(config.contains("max_width = 80"));
+    }
+
+    #[test]
+    fn test_generate_rustfmt_config_with_defaults() {
+        let format = FormatConfig::default();
+        let config = generate_rustfmt_config(&format);
+
+        assert!(config.contains("edition = \"2021\""));
+        assert!(config.contains("max_width = 100"));
+        assert!(config.contains("hard_tabs = false"));
+        assert!(config.contains("tab_spaces = 2")); // Default indent_size is 2
+        assert!(config.contains("use_small_heuristics = \"Default\""));
+    }
+
+    #[test]
+    fn test_generate_rustfmt_config_no_indent_size() {
+        let format = FormatConfig {
+            indent: "space".to_string(),
+            indent_size: None,
+            line_width: None,
+            ..Default::default()
+        };
+
+        let config = generate_rustfmt_config(&format);
+        // Should use defaults
+        assert!(config.contains("tab_spaces = 4")); // Default for rustfmt is 4
+        assert!(config.contains("max_width = 100"));
+    }
+
+    #[test]
+    fn test_generate_rustfmt_config_format() {
+        let format = FormatConfig {
+            indent: "space".to_string(),
+            indent_size: Some(4),
+            line_width: Some(120),
+            ..Default::default()
+        };
+
+        let config = generate_rustfmt_config(&format);
+        // Verify the config is valid TOML-like format
+        let lines: Vec<&str> = config.lines().collect();
+        assert!(lines.iter().any(|l| l.starts_with("edition = ")));
+        assert!(lines.iter().any(|l| l.starts_with("max_width = ")));
+        assert!(lines.iter().any(|l| l.starts_with("hard_tabs = ")));
+        assert!(lines.iter().any(|l| l.starts_with("tab_spaces = ")));
+        assert!(lines.iter().any(|l| l.starts_with("use_small_heuristics = ")));
     }
 }

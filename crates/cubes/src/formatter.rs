@@ -73,6 +73,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_formatter_new() {
+        let fmt = Formatter::new();
+        // Just verify it can be created
+        let _debug = format!("{fmt:?}");
+    }
+
+    #[test]
+    fn test_formatter_default() {
+        let fmt = Formatter::default();
+        // Default should be equivalent to new()
+        let config = FormatConfig::default();
+        let result = fmt.format("test", "unknown", &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_format_json() {
         let fmt = Formatter::new();
         let input = r#"{"name":"test","value":123}"#;
@@ -91,6 +107,83 @@ mod tests {
     }
 
     #[test]
+    fn test_format_json_with_tabs() {
+        let fmt = Formatter::new();
+        let input = r#"{"key":"value"}"#;
+        let config = FormatConfig {
+            indent: "tab".to_string(),
+            indent_size: None,
+            ..Default::default()
+        };
+
+        let result = fmt.format(input, "json", &config);
+        assert!(result.is_ok());
+        // Tab formatting uses serde_json default pretty print
+        let output = result.unwrap();
+        assert!(output.contains("\"key\":"));
+    }
+
+    #[test]
+    fn test_format_json_with_custom_indent_size() {
+        let fmt = Formatter::new();
+        let input = r#"{"a":"b"}"#;
+        let config = FormatConfig {
+            indent: "space".to_string(),
+            indent_size: Some(4),
+            ..Default::default()
+        };
+
+        let result = fmt.format(input, "json", &config);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        // Should have 4-space indentation
+        assert!(output.contains("    \"a\""));
+    }
+
+    #[test]
+    fn test_format_json_invalid() {
+        let fmt = Formatter::new();
+        let input = "{ not valid json }";
+        let config = FormatConfig::default();
+
+        let result = fmt.format(input, "json", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_format_typescript_passthrough() {
+        let fmt = Formatter::new();
+        let input = "const x = 1;";
+        let config = FormatConfig::default();
+
+        let result = fmt.format(input, "typescript", &config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), input);
+    }
+
+    #[test]
+    fn test_format_javascript_passthrough() {
+        let fmt = Formatter::new();
+        let input = "function foo() { return 42; }";
+        let config = FormatConfig::default();
+
+        let result = fmt.format(input, "javascript", &config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), input);
+    }
+
+    #[test]
+    fn test_format_rust_passthrough() {
+        let fmt = Formatter::new();
+        let input = "fn main() { println!(\"hello\"); }";
+        let config = FormatConfig::default();
+
+        let result = fmt.format(input, "rust", &config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), input);
+    }
+
+    #[test]
     fn test_format_unknown_language() {
         let formatter = Formatter::new();
         let input = "some content";
@@ -99,5 +192,37 @@ mod tests {
         let result = formatter.format(input, "unknown", &config);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), input);
+    }
+
+    #[test]
+    fn test_format_json_nested_structure() {
+        let fmt = Formatter::new();
+        let input = r#"{"outer":{"inner":{"deep":"value"}}}"#;
+        let config = FormatConfig {
+            indent: "space".to_string(),
+            indent_size: Some(2),
+            ..Default::default()
+        };
+
+        let result = fmt.format(input, "json", &config);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("outer"));
+        assert!(output.contains("inner"));
+        assert!(output.contains("deep"));
+    }
+
+    #[test]
+    fn test_format_json_array() {
+        let fmt = Formatter::new();
+        let input = r#"[1,2,3]"#;
+        let config = FormatConfig::default();
+
+        let result = fmt.format(input, "json", &config);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("1"));
+        assert!(output.contains("2"));
+        assert!(output.contains("3"));
     }
 }
