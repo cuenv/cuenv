@@ -61,3 +61,15 @@ For each crate, verify:
 
 4. **workspaces/src/resolver.rs** (0% -> 96.08%)
    - Added 20 tests covering: `detect_workspace_protocol` (JS workspace:*, version, Rust workspace), `resolve_external_deps` (filtering workspace members), `resolve_dependencies` (graph creation, edges, missing deps, multiple versions), `parse_js_deps` (workspace deps, regular deps, empty), `parse_rust_deps` (workspace deps, non-workspace deps)
+
+5. **workspaces/src/materializer/cargo_deps.rs** (0% -> covered)
+   - Added 5 tests covering: skip non-Cargo workspaces, create target dir symlinks, replace existing symlinks, replace existing directories, work with pre-existing workspace targets
+
+6. **workspaces/src/materializer/node_modules.rs** (0% -> covered)
+   - Added 15 tests covering: handle all JS package managers (npm, bun, pnpm, yarn classic/modern), skip Cargo projects, handle missing source node_modules, skip if target exists, detect_cache_dir for all package managers
+
+7. **tools/github/src/lib.rs** (22.79% -> improved)
+   - Added 28 tests covering: ToolProvider trait impl (name, description, default), expand_template (all OS/arch combos), tool_cache_dir, get_effective_token (priority, fallbacks), RateLimitInfo (default, format methods), build_api_error (rate limit, 403, 404, 401, 500), is_cached, Release/Asset deserialization
+
+8. **ci/src/executor/mod.rs** (21.85% -> improved)
+   - Added 19 tests covering: ExecutorError variants (display messages), PipelineResult fields, CIExecutor construction, has_custom_cache_backend, cache_backend_name, CIExecutorConfig builder, make_simple_ir/make_task helpers, extract_fingerprints, TaskOutput methods
