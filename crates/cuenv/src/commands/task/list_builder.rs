@@ -6,9 +6,9 @@
 
 use std::path::Path;
 
+use cuenv_core::Result;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::TaskIndex;
-use cuenv_core::Result;
 
 use super::workspace::inject_detected_workspace_tasks;
 

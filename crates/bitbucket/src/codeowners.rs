@@ -8,11 +8,11 @@
 //! This provider aggregates all project ownership rules into a single file
 //! at the repository root `CODEOWNERS`.
 
-use cuenv_codeowners::provider::{
-    generate_aggregated_content, write_codeowners_file, CheckResult, CodeOwnersProvider,
-    ProjectOwners, ProviderError, Result, SyncResult,
-};
 use cuenv_codeowners::SectionStyle;
+use cuenv_codeowners::provider::{
+    CheckResult, CodeOwnersProvider, ProjectOwners, ProviderError, Result, SyncResult,
+    generate_aggregated_content, write_codeowners_file,
+};
 use std::fs;
 use std::path::Path;
 
@@ -104,8 +104,8 @@ impl CodeOwnersProvider for BitbucketCodeOwnersProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_codeowners::provider::SyncStatus;
     use cuenv_codeowners::Rule;
+    use cuenv_codeowners::provider::SyncStatus;
     use tempfile::tempdir;
 
     #[test]

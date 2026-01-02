@@ -34,11 +34,11 @@ cuenv exec -- cargo test --lib --workspace
 # Run clippy (15-20 seconds)
 cuenv task lint
 
-# Format code (treefmt handles Rust, Go, CUE, etc.)
-cuenv task fmt.fix
+# Format code
+cuenv fmt --fix
 
 # Check formatting (CI mode)
-cuenv task fmt.check
+cuenv fmt
 ```
 
 ### Using cuenv
@@ -114,7 +114,7 @@ cuenv exec -- cargo run -- env print --path examples/env-basic --package example
 Before committing:
 
 ```bash
-cuenv task fmt.fix
+cuenv fmt --fix
 cuenv task lint
 cuenv task test.unit
 ```
