@@ -216,6 +216,45 @@ For each crate, verify:
 
 ---
 
+### 2026-01-02: Coverage improvement session (seventh pass)
+
+**Starting coverage: 76.35%**
+**Ending coverage: 76.92%** (+0.57%)
+
+#### Tests Added (this session):
+
+1. **events/src/metadata.rs** (improved coverage)
+   - Added 6 tests: Default trait, with_correlation_id, debug format, clone, with string target, set_correlation_id after init
+
+2. **release/src/error.rs** (79.63% -> improved)
+   - Added 11 tests: changeset_io_with_source, all error constructor variants, From<io::Error>, error debug
+
+3. **cuenv/src/builder.rs** (76.47% -> improved)
+   - Added 4 tests: with_sync_provider, multiple providers, chaining, defaults then more
+
+4. **cuenv/src/lib.rs** (improved coverage)
+   - Added 6 tests: run with empty/default registry, EXIT_SIGINT constant, LLMS_CONTENT, sync command args, run_cli_with_registry
+
+5. **cuenv/src/providers/ci.rs** (72.73% -> improved)
+   - Added 5 tests: as_any_mut, command has args, Default trait, has_config
+
+6. **cuenv/src/providers/cubes.rs** (67.69% -> improved)
+   - Added 5 tests: as_any_mut, command has args, Default trait, has_config
+
+7. **cuenv/src/tracing.rs** (improved coverage)
+   - Added 12 tests: format parsing (all variants, case-insensitive), LogLevel conversion, TracingConfig (default, clone, debug), format/level debug and clone, subscribe_global_events
+
+8. **cuenv/src/commands/task/arguments.rs** (60.66% -> improved)
+   - Added 11 tests: boolean flag at end, short flag with value, negative number as positional, multi-char short as positional, resolve_task_args for all error paths, default values, optional without default, apply_args_to_task interpolation
+
+9. **cuenv/src/commands/task/types.rs** (70.10% -> improved)
+   - Added 18 tests: labels/interactive/all selection, with_backend, with_help, with_materialize_outputs, with_show_cache_path, OutputConfig/ExecutionMode/TaskSelection default and clone, request debug and clone, with_args on non-Named selection
+
+10. **cuenv/src/providers/rules.rs** (improved coverage)
+    - Added 7 tests: as_any_mut, command has args, Default, has_config, sync_codeowners empty/with rules, CUENV_HEADER constant
+
+---
+
 ### 2026-01-02: Coverage improvement session (sixth pass)
 
 **Starting coverage: 75.81%**
