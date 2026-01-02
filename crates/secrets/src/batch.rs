@@ -53,8 +53,8 @@ impl BatchConfig {
 /// resolver.add_resolver(&env_resolver);
 /// resolver.add_resolver(&aws_resolver);
 ///
-/// // Resolve all secrets
-/// let secrets = resolver.resolve_all(&secret_specs).await?;
+/// // Resolve all secrets (groups by provider for optimal batch handling)
+/// let secrets = resolver.resolve(&secret_specs).await?;
 /// ```
 pub struct BatchResolver<'a> {
     /// Provider name -> resolver

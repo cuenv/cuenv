@@ -73,7 +73,7 @@ impl CStringPtr {
     /// # Safety
     ///
     /// The caller must ensure that:
-    /// - `ptr` is either null or a valid pointer returned from `cue_eval_package`
+    /// - `ptr` is either null or a valid pointer returned from a CUE FFI function
     /// - The pointer has not been freed already
     /// - The pointer will not be used after this wrapper is dropped
     /// - No other thread is accessing this pointer
@@ -126,7 +126,7 @@ impl CStringPtr {
         let cstr = unsafe { CStr::from_ptr(self.ptr) };
         cstr.to_str().map_err(|e| {
             Error::ffi(
-                "cue_eval_package",
+                "cue_eval_module",
                 format!("failed to convert C string to UTF-8: {e}"),
             )
         })
@@ -160,9 +160,6 @@ impl Drop for CStringPtr {
 #[cfg(not(docsrs))]
 #[link(name = "cue_bridge")]
 unsafe extern "C" {
-    // Note: cue_eval_package is retained for Go bridge compatibility but unused in Rust
-    #[allow(dead_code)]
-    fn cue_eval_package(dir_path: *const c_char, package_name: *const c_char) -> *mut c_char;
     fn cue_eval_module(
         module_root: *const c_char,
         package_name: *const c_char,
@@ -173,11 +170,6 @@ unsafe extern "C" {
 }
 
 // Stub FFI for documentation builds - these satisfy the compiler but panic if called
-#[cfg(docsrs)]
-unsafe fn cue_eval_package(_: *const c_char, _: *const c_char) -> *mut c_char {
-    panic!("FFI not available in documentation builds")
-}
-
 #[cfg(docsrs)]
 unsafe fn cue_eval_module(_: *const c_char, _: *const c_char, _: *const c_char) -> *mut c_char {
     panic!("FFI not available in documentation builds")
