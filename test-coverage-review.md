@@ -26,7 +26,7 @@ For each crate, verify:
 | ignore | 54.3% | [x] | [x] | Added 18 tests for builder, validation, error types |
 | secrets | 72.5% | [x] | [x] | Added 14 tests for SecretError, SecretSpec in lib.rs |
 | editorconfig | 72.9% | [x] | [x] | Added 19 tests for optional builders, file ops, error handling |
-| events | 74.0% | [ ] | [ ] | Pending review |
+| events | 74.0% | [x] | [x] | Added 54 tests: bus (18), event (36 for all event types) |
 | ci | 74.2% | [ ] | [ ] | Pending review (large crate: 6691 lines) |
 | github | 75.4% | [ ] | [ ] | Pending review |
 | release | 77.2% | [ ] | [ ] | Pending review |

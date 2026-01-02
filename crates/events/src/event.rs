@@ -352,4 +352,318 @@ mod tests {
         assert_eq!(source.file, Some("src/main.rs".to_string()));
         assert_eq!(source.line, Some(42));
     }
+
+    #[test]
+    fn test_event_source_new() {
+        let source = EventSource::new("cuenv::ci");
+        assert_eq!(source.target, "cuenv::ci");
+        assert!(source.file.is_none());
+        assert!(source.line.is_none());
+    }
+
+    #[test]
+    fn test_task_event_cache_hit() {
+        let event = TaskEvent::CacheHit {
+            name: "test".to_string(),
+            cache_key: "abc123".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("CacheHit"));
+        assert!(json.contains("abc123"));
+    }
+
+    #[test]
+    fn test_task_event_cache_miss() {
+        let event = TaskEvent::CacheMiss {
+            name: "test".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("CacheMiss"));
+    }
+
+    #[test]
+    fn test_task_event_output() {
+        let event = TaskEvent::Output {
+            name: "build".to_string(),
+            stream: Stream::Stdout,
+            content: "compiling...".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Output"));
+        assert!(json.contains("Stdout"));
+    }
+
+    #[test]
+    fn test_task_event_completed() {
+        let event = TaskEvent::Completed {
+            name: "build".to_string(),
+            success: true,
+            exit_code: Some(0),
+            duration_ms: 1500,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Completed"));
+        assert!(json.contains("1500"));
+    }
+
+    #[test]
+    fn test_task_event_group_started() {
+        let event = TaskEvent::GroupStarted {
+            name: "tests".to_string(),
+            sequential: false,
+            task_count: 5,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("GroupStarted"));
+        assert!(json.contains("5"));
+    }
+
+    #[test]
+    fn test_task_event_group_completed() {
+        let event = TaskEvent::GroupCompleted {
+            name: "tests".to_string(),
+            success: true,
+            duration_ms: 3000,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("GroupCompleted"));
+    }
+
+    #[test]
+    fn test_ci_event_context_detected() {
+        let event = CiEvent::ContextDetected {
+            provider: "github".to_string(),
+            event_type: "push".to_string(),
+            ref_name: "main".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ContextDetected"));
+        assert!(json.contains("github"));
+    }
+
+    #[test]
+    fn test_ci_event_changed_files_found() {
+        let event = CiEvent::ChangedFilesFound { count: 10 };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ChangedFilesFound"));
+        assert!(json.contains("10"));
+    }
+
+    #[test]
+    fn test_ci_event_projects_discovered() {
+        let event = CiEvent::ProjectsDiscovered { count: 3 };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ProjectsDiscovered"));
+    }
+
+    #[test]
+    fn test_ci_event_project_skipped() {
+        let event = CiEvent::ProjectSkipped {
+            path: "/project".to_string(),
+            reason: "no changes".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ProjectSkipped"));
+        assert!(json.contains("no changes"));
+    }
+
+    #[test]
+    fn test_ci_event_task_executing() {
+        let event = CiEvent::TaskExecuting {
+            project: "/app".to_string(),
+            task: "build".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("TaskExecuting"));
+    }
+
+    #[test]
+    fn test_ci_event_task_result() {
+        let event = CiEvent::TaskResult {
+            project: "/app".to_string(),
+            task: "build".to_string(),
+            success: false,
+            error: Some("build failed".to_string()),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("TaskResult"));
+        assert!(json.contains("build failed"));
+    }
+
+    #[test]
+    fn test_ci_event_report_generated() {
+        let event = CiEvent::ReportGenerated {
+            path: "/reports/ci.json".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("ReportGenerated"));
+    }
+
+    #[test]
+    fn test_command_event_started() {
+        let event = CommandEvent::Started {
+            command: "sync".to_string(),
+            args: vec!["--force".to_string()],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Started"));
+        assert!(json.contains("--force"));
+    }
+
+    #[test]
+    fn test_command_event_progress() {
+        let event = CommandEvent::Progress {
+            command: "sync".to_string(),
+            progress: 0.5,
+            message: "halfway there".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Progress"));
+        assert!(json.contains("0.5"));
+    }
+
+    #[test]
+    fn test_command_event_completed() {
+        let event = CommandEvent::Completed {
+            command: "sync".to_string(),
+            success: true,
+            duration_ms: 500,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Completed"));
+    }
+
+    #[test]
+    fn test_interactive_event_prompt_requested() {
+        let event = InteractiveEvent::PromptRequested {
+            prompt_id: "p1".to_string(),
+            message: "Choose an option".to_string(),
+            options: vec!["a".to_string(), "b".to_string()],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("PromptRequested"));
+        assert!(json.contains("Choose an option"));
+    }
+
+    #[test]
+    fn test_interactive_event_prompt_resolved() {
+        let event = InteractiveEvent::PromptResolved {
+            prompt_id: "p1".to_string(),
+            response: "a".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("PromptResolved"));
+    }
+
+    #[test]
+    fn test_interactive_event_wait_progress() {
+        let event = InteractiveEvent::WaitProgress {
+            target: "lock".to_string(),
+            elapsed_secs: 30,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("WaitProgress"));
+        assert!(json.contains("30"));
+    }
+
+    #[test]
+    fn test_system_event_supervisor_log() {
+        let event = SystemEvent::SupervisorLog {
+            tag: "coordinator".to_string(),
+            message: "started".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("SupervisorLog"));
+    }
+
+    #[test]
+    fn test_system_event_shutdown() {
+        let event = SystemEvent::Shutdown;
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Shutdown"));
+    }
+
+    #[test]
+    fn test_output_event_stdout() {
+        let event = OutputEvent::Stdout {
+            content: "hello".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Stdout"));
+        assert!(json.contains("hello"));
+    }
+
+    #[test]
+    fn test_output_event_stderr() {
+        let event = OutputEvent::Stderr {
+            content: "error".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Stderr"));
+    }
+
+    #[test]
+    fn test_stream_enum() {
+        assert_eq!(Stream::Stdout, Stream::Stdout);
+        assert_ne!(Stream::Stdout, Stream::Stderr);
+
+        let stdout_json = serde_json::to_string(&Stream::Stdout).unwrap();
+        let stderr_json = serde_json::to_string(&Stream::Stderr).unwrap();
+
+        assert!(stdout_json.contains("Stdout"));
+        assert!(stderr_json.contains("Stderr"));
+    }
+
+    #[test]
+    fn test_event_category_all_variants() {
+        let categories = vec![
+            EventCategory::Task(TaskEvent::CacheMiss {
+                name: "test".to_string(),
+            }),
+            EventCategory::Ci(CiEvent::ProjectsDiscovered { count: 1 }),
+            EventCategory::Command(CommandEvent::Started {
+                command: "sync".to_string(),
+                args: vec![],
+            }),
+            EventCategory::Interactive(InteractiveEvent::WaitProgress {
+                target: "lock".to_string(),
+                elapsed_secs: 0,
+            }),
+            EventCategory::System(SystemEvent::Shutdown),
+            EventCategory::Output(OutputEvent::Stdout {
+                content: "out".to_string(),
+            }),
+        ];
+
+        for cat in categories {
+            let json = serde_json::to_string(&cat).unwrap();
+            let parsed: EventCategory = serde_json::from_str(&json).unwrap();
+            // Verify round-trip works
+            let json2 = serde_json::to_string(&parsed).unwrap();
+            assert_eq!(json, json2);
+        }
+    }
+
+    #[test]
+    fn test_cuenv_event_clone() {
+        let event = CuenvEvent::new(
+            Uuid::new_v4(),
+            EventSource::new("cuenv::test"),
+            EventCategory::System(SystemEvent::Shutdown),
+        );
+        let cloned = event.clone();
+        assert_eq!(event.id, cloned.id);
+        assert_eq!(event.correlation_id, cloned.correlation_id);
+    }
+
+    #[test]
+    fn test_cuenv_event_debug() {
+        let event = CuenvEvent::new(
+            Uuid::new_v4(),
+            EventSource::new("cuenv::test"),
+            EventCategory::System(SystemEvent::Shutdown),
+        );
+        let debug_str = format!("{event:?}");
+        assert!(debug_str.contains("CuenvEvent"));
+    }
 }
