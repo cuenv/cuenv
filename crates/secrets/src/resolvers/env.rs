@@ -58,7 +58,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_all() {
+    async fn test_resolve_batch() {
         temp_env::async_with_vars(
             [
                 ("TEST_SECRET_ENV_2", Some("value2")),
@@ -71,10 +71,10 @@ mod tests {
                     ("secret3".to_string(), SecretSpec::new("TEST_SECRET_ENV_3")),
                 ]);
 
-                let result = resolver.resolve_all(&secrets).await.unwrap();
+                let result = resolver.resolve_batch(&secrets).await.unwrap();
 
-                assert_eq!(result.get("secret2"), Some(&"value2".to_string()));
-                assert_eq!(result.get("secret3"), Some(&"value3".to_string()));
+                assert_eq!(result.get("secret2").map(|s| s.expose()), Some("value2"));
+                assert_eq!(result.get("secret3").map(|s| s.expose()), Some("value3"));
             },
         )
         .await;

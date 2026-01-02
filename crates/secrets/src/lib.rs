@@ -156,22 +156,6 @@ pub trait SecretResolver: Send + Sync {
         Ok(SecureSecret::new(value))
     }
 
-    /// Resolve multiple secrets at once (legacy sequential API).
-    ///
-    /// This method is kept for backward compatibility. New code should use
-    /// [`resolve_batch`](SecretResolver::resolve_batch) instead.
-    async fn resolve_all(
-        &self,
-        secrets: &HashMap<String, SecretSpec>,
-    ) -> Result<HashMap<String, String>, SecretError> {
-        let mut result = HashMap::new();
-        for (name, spec) in secrets {
-            let value = self.resolve(name, spec).await?;
-            result.insert(name.clone(), value);
-        }
-        Ok(result)
-    }
-
     /// Resolve multiple secrets in batch with concurrent execution.
     ///
     /// Override this method to implement provider-specific batch APIs
