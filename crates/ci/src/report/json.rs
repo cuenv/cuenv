@@ -84,7 +84,7 @@ mod tests {
 
         // Pretty-printed JSON should contain indentation
         let content = std::fs::read_to_string(&report_path).unwrap();
-        assert!(content.contains("\n"));
+        assert!(content.contains('\n'));
         assert!(content.contains("  "));
     }
 
@@ -96,14 +96,14 @@ mod tests {
 
         write_report(&report, &report_path).unwrap();
 
-        let content = std::fs::read_to_string(&report_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let file_content = std::fs::read_to_string(&report_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&file_content).unwrap();
 
-        let context = &parsed["context"];
-        assert_eq!(context["provider"], "github");
-        assert_eq!(context["event"], "push");
-        assert_eq!(context["ref_name"], "refs/heads/main");
-        assert_eq!(context["sha"], "abc123");
+        let ctx = &parsed["context"];
+        assert_eq!(ctx["provider"], "github");
+        assert_eq!(ctx["event"], "push");
+        assert_eq!(ctx["ref_name"], "refs/heads/main");
+        assert_eq!(ctx["sha"], "abc123");
     }
 
     #[test]

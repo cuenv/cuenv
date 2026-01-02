@@ -129,7 +129,7 @@ mod tests {
 
         let json_str = json.unwrap();
         // Pretty output should have newlines and indentation
-        assert!(json_str.contains("\n"));
+        assert!(json_str.contains('\n'));
         assert!(json_str.contains("  "));
         // Should still contain expected fields
         assert!(json_str.contains("\"id\""));

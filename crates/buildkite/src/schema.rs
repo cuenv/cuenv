@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn test_step_variants() {
-        let command = Step::Command(Box::new(CommandStep::default()));
+        let command = Step::Command(Box::default());
         let block = Step::Block(BlockStep::new("Approve"));
         let wait = Step::Wait(WaitStep::default());
         let group = Step::Group(GroupStep {

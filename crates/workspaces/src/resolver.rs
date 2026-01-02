@@ -209,7 +209,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// Helper to create a LockfileEntry for tests
+    /// Helper to create a `LockfileEntry` for tests
     fn make_entry(name: &str, version: &str, is_workspace: bool) -> LockfileEntry {
         LockfileEntry {
             name: name.to_string(),
@@ -225,7 +225,7 @@ mod tests {
         }
     }
 
-    /// Helper to create a LockfileEntry with dependencies
+    /// Helper to create a `LockfileEntry` with dependencies
     fn make_entry_with_deps(name: &str, version: &str, deps: Vec<DependencyRef>) -> LockfileEntry {
         LockfileEntry {
             name: name.to_string(),
@@ -466,7 +466,7 @@ mod tests {
     fn test_parse_js_deps_empty_deps() {
         let temp_dir = TempDir::new().unwrap();
         let pkg_json = temp_dir.path().join("package.json");
-        fs::write(&pkg_json, r#"{}"#).unwrap();
+        fs::write(&pkg_json, r"{}").unwrap();
 
         let resolver = GenericDependencyResolver;
         let deps = resolver.parse_js_deps(&pkg_json).unwrap();

@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn test_orchestrator_config_debug() {
         let config = OrchestratorConfig::new("test", "1.0.0");
-        let debug_str = format!("{:?}", config);
+        let debug_str = format!("{config:?}");
         assert!(debug_str.contains("test"));
         assert!(debug_str.contains("1.0.0"));
     }
@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn test_release_report_debug() {
         let report = ReleaseReport::empty(ReleasePhase::Build);
-        let debug_str = format!("{:?}", report);
+        let debug_str = format!("{report:?}");
         assert!(debug_str.contains("Build"));
         assert!(debug_str.contains("success"));
     }

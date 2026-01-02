@@ -2262,6 +2262,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(invalid_from_utf8)]
     fn test_cuenv_core_utf8_error() {
         // Create an actual UTF-8 error by parsing invalid bytes
         let invalid_bytes = [0xff, 0xfe];

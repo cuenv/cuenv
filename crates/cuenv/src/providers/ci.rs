@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn test_ci_provider_default() {
-        let provider = CiProvider::default();
+        let provider = CiProvider;
         assert_eq!(provider.name(), "ci");
     }
 

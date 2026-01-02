@@ -384,7 +384,7 @@ mod tests {
     fn test_parse_pr_number_large() {
         assert_eq!(
             GitHubCIProvider::parse_pr_number("refs/pull/999999/merge"),
-            Some(999999)
+            Some(999_999)
         );
     }
 
@@ -430,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn test_get_before_sha_filters_null_sha() {
         // The NULL_SHA should be filtered out
         // SAFETY: Test runs in isolation
@@ -445,6 +446,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn test_get_before_sha_filters_empty() {
         // Empty string should be filtered out
         // SAFETY: Test runs in isolation
@@ -460,6 +462,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn test_get_before_sha_valid() {
         // A valid SHA should be returned
         let valid_sha = "abc123def456";
@@ -479,6 +482,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn test_detect_not_github_actions() {
         // Clear GitHub Actions environment variables
         // SAFETY: Test runs in isolation
@@ -492,6 +496,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn test_detect_github_actions_false() {
         // SAFETY: Test runs in isolation
         unsafe {

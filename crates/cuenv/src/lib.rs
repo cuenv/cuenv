@@ -274,6 +274,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn test_llms_content_not_empty() {
         // LLM content should contain some text
         assert!(!LLMS_CONTENT.is_empty());

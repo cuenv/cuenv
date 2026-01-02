@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn test_formatter_default() {
-        let fmt = Formatter::default();
+        let fmt = Formatter;
         // Default should be equivalent to new()
         let config = FormatConfig::default();
         let result = fmt.format("test", "unknown", &config);
@@ -215,14 +215,14 @@ mod tests {
     #[test]
     fn test_format_json_array() {
         let fmt = Formatter::new();
-        let input = r#"[1,2,3]"#;
+        let input = r"[1,2,3]";
         let config = FormatConfig::default();
 
         let result = fmt.format(input, "json", &config);
         assert!(result.is_ok());
         let output = result.unwrap();
-        assert!(output.contains("1"));
-        assert!(output.contains("2"));
-        assert!(output.contains("3"));
+        assert!(output.contains('1'));
+        assert!(output.contains('2'));
+        assert!(output.contains('3'));
     }
 }

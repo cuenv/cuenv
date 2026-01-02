@@ -415,7 +415,7 @@ mod tests {
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("GroupStarted"));
-        assert!(json.contains("5"));
+        assert!(json.contains('5'));
     }
 
     #[test]

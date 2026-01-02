@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_provider_default() {
-        let provider = RustupToolProvider::default();
+        let provider = RustupToolProvider;
         assert_eq!(provider.name(), "rustup");
     }
 

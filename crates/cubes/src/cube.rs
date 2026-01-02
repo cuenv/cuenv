@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn test_file_mode_clone() {
         let mode = FileMode::Managed;
-        let cloned = mode.clone();
+        let cloned = mode;
         assert_eq!(mode, cloned);
     }
 
@@ -423,7 +423,7 @@ mod tests {
         let mut file = std::fs::File::create(&file_path).unwrap();
         writeln!(file, "// comment").unwrap();
         writeln!(file, "package mypackage").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(file, "data: 123").unwrap();
 
         let name = Cube::determine_package_name(&file_path).unwrap();

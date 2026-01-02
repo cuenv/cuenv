@@ -819,7 +819,7 @@ mod tests {
 
     #[test]
     fn test_error_debug() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "test error");
+        let io_err = std::io::Error::other("test error");
         let err: Error = io_err.into();
         let debug = format!("{err:?}");
         assert!(debug.contains("Io"));

@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn test_is_cuenv_process_for_nonexistent_pid() {
         // Test with a very high PID that's unlikely to exist
-        let result = is_cuenv_process(99999999);
+        let result = is_cuenv_process(99_999_999);
         // On macOS, ps will fail for nonexistent PIDs, returning false
         // On Linux, /proc/99999999/cmdline won't exist, returning false
         assert!(!result);
@@ -355,7 +355,9 @@ mod tests {
     #[test]
     fn test_is_cuenv_process_for_current_process() {
         // Current process is not a cuenv coordinator (it's the test runner)
-        let result = is_cuenv_process(std::process::id() as i32);
+        #[allow(clippy::cast_possible_wrap)]
+        let pid = std::process::id() as i32;
+        let result = is_cuenv_process(pid);
         // Should return false since test runner is not cuenv __coordinator
         assert!(!result);
     }

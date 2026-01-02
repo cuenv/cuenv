@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_host_backend_default() {
-        let backend = HostBackend::default();
+        let backend = HostBackend;
         assert_eq!(backend.name(), "host");
     }
 

@@ -124,8 +124,7 @@ mod tests {
             let result = load_onepassword_wasm();
             // If the file is actually installed, it will succeed
             // Otherwise it should fail with a helpful message
-            if result.is_err() {
-                let err = result.unwrap_err();
+            if let Err(err) = result {
                 let err_msg = format!("{err:?}");
                 assert!(
                     err_msg.contains("WASM SDK not found") || err_msg.contains("not found"),

@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn test_cubes_provider_default() {
-        let provider = CubesProvider::default();
+        let provider = CubesProvider;
         assert_eq!(provider.name(), "cubes");
     }
 

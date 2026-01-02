@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_config_deserialization_missing_ref() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let result = serde_json::from_str::<OnePasswordConfig>(json);
         assert!(result.is_err());
     }
@@ -529,58 +529,58 @@ mod tests {
     fn test_resolver_provider_name() {
         // Create a resolver in CLI mode (without WASM)
         // If WASM is not available and token is not set, this should work
-        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        if (!wasm::onepassword_wasm_available()
+            || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
+            && let Ok(resolver) = OnePasswordResolver::new()
         {
-            if let Ok(resolver) = OnePasswordResolver::new() {
-                assert_eq!(resolver.provider_name(), "onepassword");
-            }
+            assert_eq!(resolver.provider_name(), "onepassword");
         }
     }
 
     #[test]
     fn test_resolver_supports_native_batch() {
-        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        if (!wasm::onepassword_wasm_available()
+            || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
+            && let Ok(resolver) = OnePasswordResolver::new()
         {
-            if let Ok(resolver) = OnePasswordResolver::new() {
-                assert!(resolver.supports_native_batch());
-            }
+            assert!(resolver.supports_native_batch());
         }
     }
 
     #[test]
     fn test_resolver_can_use_http_false_without_client() {
         // A resolver without client_id should return false for can_use_http
-        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        if (!wasm::onepassword_wasm_available()
+            || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
+            && let Ok(resolver) = OnePasswordResolver::new()
         {
-            if let Ok(resolver) = OnePasswordResolver::new() {
-                assert!(!resolver.can_use_http());
-            }
+            assert!(!resolver.can_use_http());
         }
     }
 
     #[test]
     fn test_resolver_debug_output() {
-        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        if (!wasm::onepassword_wasm_available()
+            || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
+            && let Ok(resolver) = OnePasswordResolver::new()
         {
-            if let Ok(resolver) = OnePasswordResolver::new() {
-                let debug = format!("{resolver:?}");
-                assert!(debug.contains("OnePasswordResolver"));
-                // Should show mode as cli when no WASM client
-                assert!(debug.contains("cli") || debug.contains("http"));
-            }
+            let debug = format!("{resolver:?}");
+            assert!(debug.contains("OnePasswordResolver"));
+            // Should show mode as cli when no WASM client
+            assert!(debug.contains("cli") || debug.contains("http"));
         }
     }
 
     #[tokio::test]
     async fn test_resolve_batch_empty() {
-        if !wasm::onepassword_wasm_available() || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err()
+        if (!wasm::onepassword_wasm_available()
+            || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
+            && let Ok(resolver) = OnePasswordResolver::new()
         {
-            if let Ok(resolver) = OnePasswordResolver::new() {
-                let empty: HashMap<String, SecretSpec> = HashMap::new();
-                let result = resolver.resolve_batch(&empty).await;
-                assert!(result.is_ok());
-                assert!(result.unwrap().is_empty());
-            }
+            let empty: HashMap<String, SecretSpec> = HashMap::new();
+            let result = resolver.resolve_batch(&empty).await;
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_empty());
         }
     }
 

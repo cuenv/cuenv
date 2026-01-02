@@ -651,7 +651,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             DiffError::ReportNotFound(path) => {
-                assert!(path.to_string_lossy().contains("nonexistent"))
+                assert!(path.to_string_lossy().contains("nonexistent"));
             }
             _ => panic!("Expected ReportNotFound error"),
         }
@@ -699,10 +699,10 @@ mod tests {
     #[test]
     fn test_compare_by_sha_success() {
         let temp_dir = TempDir::new().unwrap();
-        let sha_a_dir = temp_dir.path().join("abc123");
-        let sha_b_dir = temp_dir.path().join("def456");
-        std::fs::create_dir_all(&sha_a_dir).unwrap();
-        std::fs::create_dir_all(&sha_b_dir).unwrap();
+        let dir_sha_a = temp_dir.path().join("abc123");
+        let dir_sha_b = temp_dir.path().join("def456");
+        std::fs::create_dir_all(&dir_sha_a).unwrap();
+        std::fs::create_dir_all(&dir_sha_b).unwrap();
 
         let report_a = make_report(
             "abc123",
@@ -714,12 +714,12 @@ mod tests {
         );
 
         std::fs::write(
-            sha_a_dir.join("report.json"),
+            dir_sha_a.join("report.json"),
             serde_json::to_string(&report_a).unwrap(),
         )
         .unwrap();
         std::fs::write(
-            sha_b_dir.join("report.json"),
+            dir_sha_b.join("report.json"),
             serde_json::to_string(&report_b).unwrap(),
         )
         .unwrap();

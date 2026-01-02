@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_rules_provider_default() {
-        let provider = RulesProvider::default();
+        let provider = RulesProvider;
         assert_eq!(provider.name(), "rules");
     }
 

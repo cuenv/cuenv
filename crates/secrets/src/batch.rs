@@ -398,10 +398,10 @@ mod tests {
         // This may fail if the env var doesn't exist, but it shouldn't fail due to missing salt
         let result = resolve_batch(&resolver, &secrets, &salt).await;
         // Either succeeds or fails for other reasons (missing env var), not missing salt
-        match result {
-            Err(SecretError::MissingSalt) => panic!("Should not require salt for non-cache-key secrets"),
-            _ => {}
-        }
+        assert!(
+            !matches!(result, Err(SecretError::MissingSalt)),
+            "Should not require salt for non-cache-key secrets"
+        );
     }
 
     #[tokio::test]

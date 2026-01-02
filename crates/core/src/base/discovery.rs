@@ -379,7 +379,7 @@ mod tests {
         discovery.discover().unwrap();
         // Only included should be found (if git is available), otherwise both
         // The ignore crate requires a git repo to respect .gitignore
-        assert!(discovery.bases().len() >= 1);
+        assert!(!discovery.bases().is_empty());
         // Verify included is always present
         assert!(discovery
             .bases()

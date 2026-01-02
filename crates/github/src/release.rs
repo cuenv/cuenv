@@ -417,6 +417,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn test_from_env_no_token() {
         // Clear any existing GITHUB_TOKEN
         // SAFETY: This test should run in isolation
@@ -429,6 +430,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn test_from_env_invalid_url() {
         // SAFETY: This test should run in isolation
         unsafe {

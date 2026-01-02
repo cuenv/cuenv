@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn test_shell_clone() {
         let shell = Shell::Fish;
-        let cloned = shell.clone();
+        let cloned = shell;
         assert_eq!(shell, cloned);
     }
 

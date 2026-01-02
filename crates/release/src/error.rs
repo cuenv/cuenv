@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn test_error_debug() {
         let err = Error::NoChangesets;
-        let debug = format!("{:?}", err);
+        let debug = format!("{err:?}");
         assert!(debug.contains("NoChangesets"));
     }
 }

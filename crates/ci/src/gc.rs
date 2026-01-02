@@ -604,6 +604,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_constants() {
         // Verify the default constants are reasonable
         assert!(DEFAULT_MAX_SIZE_BYTES > 1024 * 1024); // > 1MB

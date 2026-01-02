@@ -411,17 +411,17 @@ mod tests {
     #[tokio::test]
     async fn test_roundtrip_all_message_types() {
         // Test ping
-        let ping = WireMessage::ping();
+        let ping_wire = WireMessage::ping();
         let mut buf = Vec::new();
-        ping.write_to(&mut buf).await.unwrap();
+        ping_wire.write_to(&mut buf).await.unwrap();
         let mut reader = BufReader::new(Cursor::new(buf));
         let read = WireMessage::read_from(&mut reader).await.unwrap();
         assert_eq!(read.msg_type, MessageType::Ping);
 
         // Test pong
-        let pong = WireMessage::pong(Uuid::new_v4());
+        let pong_response = WireMessage::pong(Uuid::new_v4());
         let mut buf = Vec::new();
-        pong.write_to(&mut buf).await.unwrap();
+        pong_response.write_to(&mut buf).await.unwrap();
         let mut reader = BufReader::new(Cursor::new(buf));
         let read = WireMessage::read_from(&mut reader).await.unwrap();
         assert_eq!(read.msg_type, MessageType::Pong);
