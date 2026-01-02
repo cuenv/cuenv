@@ -25,7 +25,11 @@ impl<'a> TaskTreeWidget<'a> {
     fn render_tree_prefix(item: &TreeViewItem) -> String {
         let indent = "  ".repeat(item.depth);
         let icon = if item.has_children {
-            if item.is_expanded { "▼" } else { "▶" }
+            if item.is_expanded {
+                "▼"
+            } else {
+                "▶"
+            }
         } else {
             "─"
         };

@@ -17,10 +17,10 @@
 //! }
 //! ```
 
-use crate::Cuenv;
 use crate::provider::{RuntimeCapability, SecretCapability, SyncCapability};
 use crate::providers::{CiProvider, CubesProvider, RulesProvider};
 use crate::registry::ProviderRegistry;
+use crate::Cuenv;
 
 /// Builder for configuring and creating a [`Cuenv`] instance.
 ///

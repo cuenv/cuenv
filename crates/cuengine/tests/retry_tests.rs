@@ -7,8 +7,8 @@
     clippy::significant_drop_tightening
 )]
 
+use cuengine::retry::{with_retry, RetryConfig};
 use cuengine::CueEngineError;
-use cuengine::retry::{RetryConfig, with_retry};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

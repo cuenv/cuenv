@@ -9,7 +9,7 @@ use crate::ir::SecretConfig;
 use std::collections::{BTreeMap, HashMap};
 
 // Re-export core types from cuenv-secrets
-pub use cuenv_secrets::{ResolvedSecrets, SaltConfig, SecretError, compute_secret_fingerprint};
+pub use cuenv_secrets::{compute_secret_fingerprint, ResolvedSecrets, SaltConfig, SecretError};
 
 /// Trait for resolving secrets from various sources
 ///

@@ -514,12 +514,10 @@ mod tests {
 
         let result = lockfile.upsert_artifact(artifact);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("at least one platform")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("at least one platform"));
     }
 
     #[test]
@@ -541,12 +539,10 @@ mod tests {
 
         let result = lockfile.upsert_artifact(artifact);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Invalid digest format")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid digest format"));
     }
 
     #[test]
@@ -714,12 +710,10 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Invalid digest format")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid digest format"));
     }
 
     #[test]
@@ -733,12 +727,10 @@ mod tests {
 
         let result = lockfile.upsert_tool("jq".to_string(), tool);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("at least one platform")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("at least one platform"));
     }
 
     #[test]

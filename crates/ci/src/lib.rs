@@ -13,11 +13,11 @@ pub mod executor;
 pub mod flake;
 pub mod gc;
 pub mod ir;
+pub mod phases;
 pub mod pipeline;
 pub mod provider;
 pub mod render;
 pub mod report;
-pub mod phases;
 
 pub use render::StageRenderer;
 

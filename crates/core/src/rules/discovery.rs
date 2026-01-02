@@ -6,8 +6,8 @@
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 
-use crate::Result;
 use crate::manifest::DirectoryRules;
+use crate::Result;
 
 /// A discovered .rules.cue configuration.
 #[derive(Debug, Clone)]
