@@ -47,8 +47,8 @@ pub fn transform_secret_ref(value: &str) -> String {
     format!("${{{{ secrets.{var_name} }}}}")
 }
 
-use cuenv_ci::ir::StageTask;
 use cuenv_ci::StageRenderer;
+use cuenv_ci::ir::StageTask;
 
 use super::schema::Step;
 

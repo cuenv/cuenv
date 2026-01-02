@@ -69,7 +69,7 @@ schema.#Project & {
 
 	hooks: onEnter: tools: schema.#ToolsActivate
 
-	formatters: rust: {}
+	formatters: rust: {edition: "2024"}
 
 	// Build cuenv from source instead of using released binaries
 	// We really need to find a way to speed this up later.
@@ -228,47 +228,6 @@ schema.#Project & {
 			command: "cargo"
 			args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 			inputs: _baseInputs
-		}
-
-		fmt: {
-			_inputs: [
-				".config/**",
-				".gitignore",
-				".release-please-manifest.json",
-				"AGENTS.md",
-				"bun.lock",
-				"Cargo.lock",
-				"Cargo.toml",
-				"crates/**",
-				"cue.mod/**",
-				"deny.toml",
-				"docs/**",
-				"env.cue",
-				"examples/**",
-				"features/**",
-				"flake.lock",
-				"flake.nix",
-				"Formula/**",
-				"GEMINI.md",
-				"HOMEBREW_TAP.md",
-				"license.md",
-				"package.json",
-				"readme.md",
-				"release-please-config.json",
-				"release.toml",
-				"schema/**",
-				"_tests/**",
-				"treefmt.toml",
-			]
-			fix: {
-				command: "treefmt"
-				inputs:  _inputs
-			}
-			check: {
-				command: "treefmt"
-				args: ["--fail-on-change"]
-				inputs: _inputs
-			}
 		}
 
 		tests: {

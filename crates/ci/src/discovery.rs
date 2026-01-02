@@ -1,7 +1,7 @@
 use cuengine::ModuleEvalOptions;
-use cuenv_core::manifest::Project;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
+use cuenv_core::manifest::Project;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]

@@ -3,7 +3,7 @@
 #![allow(missing_docs)] // Benchmarks don't need documentation
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Benchmarks can use unwrap
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use cuengine::evaluate_cue_package;
 use std::fs;
 use std::hint::black_box;
