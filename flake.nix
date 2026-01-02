@@ -285,6 +285,8 @@
           cargo-llvm-cov
           patchelf
           libgccjit
+          mold  # Fast linker for faster link times
+          clang # Required for mold integration
         ];
 
       in
@@ -300,6 +302,10 @@
           RUST_BACKTRACE = "1";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
+
+          # sccache configuration for faster rebuilds
+          RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
+          SCCACHE_DIR = "$HOME/.cache/sccache";
 
           shellHook = ''
             ${setupBridge}
@@ -318,13 +324,19 @@
             
             cd ..
 
-            echo "🦀 cuenv development environment ready!"
-            echo "📦 Prebuilt CUE bridge available at: ${cue-bridge}"
-            echo "🚀 Crane-based build system active"
-            echo "📚 Docs dependencies installed${pkgs.lib.optionalString pkgs.stdenv.isLinux " and wrangler patched"}"
+            echo "cuenv development environment ready!"
+            echo "Prebuilt CUE bridge available at: ${cue-bridge}"
+            echo "Crane-based build system active"
+            echo "sccache enabled (RUSTC_WRAPPER set)"
+            echo "Docs dependencies installed${pkgs.lib.optionalString pkgs.stdenv.isLinux ", wrangler patched, mold linker available"}"
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
+          # Use mold linker for faster linking on Linux
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "clang";
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "clang";
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
         });
 
         apps = {
