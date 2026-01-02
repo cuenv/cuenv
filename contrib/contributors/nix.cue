@@ -4,10 +4,6 @@ import "github.com/cuenv/cuenv/schema"
 
 // #Nix installs Nix via the Determinate Systems installer.
 //
-// Active when:
-// - Project uses a Nix or Devenv runtime, OR
-// - Cuenv source mode requires Nix (git or nix)
-//
 // Contributes to Bootstrap phase with priority 0 (runs first).
 //
 // Usage:
@@ -17,10 +13,6 @@ import "github.com/cuenv/cuenv/schema"
 //	ci: contributors: [contributors.#Nix]
 #Nix: schema.#Contributor & {
 	id: "nix"
-	when: {
-		// Active when cuenv source mode requires Nix (git or nix builds)
-		cuenvSource: ["git", "nix"]
-	}
 	tasks: [{
 		id:       "install-nix"
 		phase:    "bootstrap"
