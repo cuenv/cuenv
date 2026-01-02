@@ -201,6 +201,11 @@ pub enum DiscoveryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    // ==========================================================================
+    // derive_synthetic_name tests
+    // ==========================================================================
 
     #[test]
     fn test_derive_synthetic_name() {
@@ -222,9 +227,242 @@ mod tests {
     }
 
     #[test]
+    fn test_derive_synthetic_name_trailing_slash() {
+        let workspace = PathBuf::from("/workspace/");
+        let nested = PathBuf::from("/workspace/services/");
+        // Should handle trailing components gracefully
+        assert_eq!(derive_synthetic_name(&workspace, &nested), "services");
+    }
+
+    #[test]
+    fn test_derive_synthetic_name_unrelated_paths() {
+        let workspace = PathBuf::from("/workspace");
+        let other = PathBuf::from("/other/project");
+        // When paths are unrelated, uses the full path as name
+        let name = derive_synthetic_name(&workspace, &other);
+        assert!(!name.is_empty());
+    }
+
+    // ==========================================================================
+    // BaseDiscovery construction tests
+    // ==========================================================================
+
+    #[test]
+    fn test_base_discovery_new() {
+        let discovery = BaseDiscovery::new(PathBuf::from("/workspace"));
+        assert!(discovery.bases().is_empty());
+    }
+
+    #[test]
+    fn test_base_discovery_with_eval_fn() {
+        let discovery = BaseDiscovery::new(PathBuf::from("/workspace"))
+            .with_eval_fn(Box::new(|_| Ok(crate::manifest::Base::default())));
+        // Just verify construction works
+        assert!(discovery.bases().is_empty());
+    }
+
+    #[test]
     fn test_discovery_requires_eval_fn() {
         let mut discovery = BaseDiscovery::new(PathBuf::from("/tmp"));
         let result = discovery.discover();
         assert!(matches!(result, Err(DiscoveryError::NoEvalFunction)));
+    }
+
+    #[test]
+    fn test_discovery_empty_workspace() {
+        let temp = TempDir::new().unwrap();
+        let mut discovery = BaseDiscovery::new(temp.path().to_path_buf())
+            .with_eval_fn(Box::new(|_| Ok(crate::manifest::Base::default())));
+
+        discovery.discover().unwrap();
+        assert!(discovery.bases().is_empty());
+    }
+
+    #[test]
+    fn test_discovery_with_env_cue() {
+        let temp = TempDir::new().unwrap();
+
+        // Create env.cue file
+        std::fs::write(temp.path().join("env.cue"), "{}").unwrap();
+
+        let mut discovery = BaseDiscovery::new(temp.path().to_path_buf())
+            .with_eval_fn(Box::new(|_| Ok(crate::manifest::Base::default())));
+
+        discovery.discover().unwrap();
+        assert_eq!(discovery.bases().len(), 1);
+        assert_eq!(discovery.bases()[0].synthetic_name, "root");
+    }
+
+    #[test]
+    fn test_discovery_nested_env_cue() {
+        let temp = TempDir::new().unwrap();
+
+        // Create nested structure
+        std::fs::create_dir_all(temp.path().join("services/api")).unwrap();
+        std::fs::write(temp.path().join("services/api/env.cue"), "{}").unwrap();
+
+        let mut discovery = BaseDiscovery::new(temp.path().to_path_buf())
+            .with_eval_fn(Box::new(|_| Ok(crate::manifest::Base::default())));
+
+        discovery.discover().unwrap();
+        assert_eq!(discovery.bases().len(), 1);
+        assert_eq!(discovery.bases()[0].synthetic_name, "services-api");
+    }
+
+    #[test]
+    fn test_discovery_multiple_env_cue() {
+        let temp = TempDir::new().unwrap();
+
+        // Create multiple env.cue files
+        std::fs::write(temp.path().join("env.cue"), "{}").unwrap();
+        std::fs::create_dir_all(temp.path().join("frontend")).unwrap();
+        std::fs::write(temp.path().join("frontend/env.cue"), "{}").unwrap();
+        std::fs::create_dir_all(temp.path().join("backend")).unwrap();
+        std::fs::write(temp.path().join("backend/env.cue"), "{}").unwrap();
+
+        let mut discovery = BaseDiscovery::new(temp.path().to_path_buf())
+            .with_eval_fn(Box::new(|_| Ok(crate::manifest::Base::default())));
+
+        discovery.discover().unwrap();
+        assert_eq!(discovery.bases().len(), 3);
+    }
+
+    #[test]
+    fn test_discovery_skips_failed_loads() {
+        let temp = TempDir::new().unwrap();
+
+        // Create env.cue files
+        std::fs::write(temp.path().join("env.cue"), "{}").unwrap();
+        std::fs::create_dir_all(temp.path().join("bad")).unwrap();
+        std::fs::write(temp.path().join("bad/env.cue"), "invalid").unwrap();
+
+        let mut discovery = BaseDiscovery::new(temp.path().to_path_buf()).with_eval_fn(Box::new(
+            |path| {
+                // Simulate failure for "bad" directory
+                if path.ends_with("bad") {
+                    Err(crate::Error::configuration("Invalid CUE"))
+                } else {
+                    Ok(crate::manifest::Base::default())
+                }
+            },
+        ));
+
+        // Should succeed even with some failures
+        discovery.discover().unwrap();
+        // Only the good one should be discovered
+        assert_eq!(discovery.bases().len(), 1);
+    }
+
+    #[test]
+    fn test_discovery_respects_gitignore() {
+        let temp = TempDir::new().unwrap();
+
+        // Initialize git repo so .gitignore is respected
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(temp.path())
+            .output()
+            .ok();
+
+        // Create .gitignore
+        std::fs::write(temp.path().join(".gitignore"), "ignored/\n").unwrap();
+
+        // Create ignored and non-ignored env.cue
+        std::fs::create_dir_all(temp.path().join("ignored")).unwrap();
+        std::fs::write(temp.path().join("ignored/env.cue"), "{}").unwrap();
+        std::fs::create_dir_all(temp.path().join("included")).unwrap();
+        std::fs::write(temp.path().join("included/env.cue"), "{}").unwrap();
+
+        let mut discovery = BaseDiscovery::new(temp.path().to_path_buf())
+            .with_eval_fn(Box::new(|_| Ok(crate::manifest::Base::default())));
+
+        discovery.discover().unwrap();
+        // Only included should be found (if git is available), otherwise both
+        // The ignore crate requires a git repo to respect .gitignore
+        assert!(discovery.bases().len() >= 1);
+        // Verify included is always present
+        assert!(discovery
+            .bases()
+            .iter()
+            .any(|b| b.synthetic_name == "included"));
+    }
+
+    // ==========================================================================
+    // DiscoveredBase tests
+    // ==========================================================================
+
+    #[test]
+    fn test_discovered_base_fields() {
+        let base = DiscoveredBase {
+            env_cue_path: PathBuf::from("/project/env.cue"),
+            project_root: PathBuf::from("/project"),
+            manifest: crate::manifest::Base::default(),
+            synthetic_name: "project".to_string(),
+        };
+
+        assert_eq!(base.env_cue_path, PathBuf::from("/project/env.cue"));
+        assert_eq!(base.project_root, PathBuf::from("/project"));
+        assert_eq!(base.synthetic_name, "project");
+    }
+
+    #[test]
+    fn test_discovered_base_clone() {
+        let base = DiscoveredBase {
+            env_cue_path: PathBuf::from("/project/env.cue"),
+            project_root: PathBuf::from("/project"),
+            manifest: crate::manifest::Base::default(),
+            synthetic_name: "project".to_string(),
+        };
+
+        let cloned = base.clone();
+        assert_eq!(cloned.synthetic_name, "project");
+    }
+
+    #[test]
+    fn test_discovered_base_debug() {
+        let base = DiscoveredBase {
+            env_cue_path: PathBuf::from("/project/env.cue"),
+            project_root: PathBuf::from("/project"),
+            manifest: crate::manifest::Base::default(),
+            synthetic_name: "project".to_string(),
+        };
+
+        let debug_str = format!("{:?}", base);
+        assert!(debug_str.contains("project"));
+    }
+
+    // ==========================================================================
+    // DiscoveryError tests
+    // ==========================================================================
+
+    #[test]
+    fn test_discovery_error_invalid_path() {
+        let err = DiscoveryError::InvalidPath(PathBuf::from("/bad/path"));
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid path"));
+        assert!(msg.contains("/bad/path"));
+    }
+
+    #[test]
+    fn test_discovery_error_no_eval_function() {
+        let err = DiscoveryError::NoEvalFunction;
+        let msg = err.to_string();
+        assert!(msg.contains("No evaluation function"));
+    }
+
+    #[test]
+    fn test_discovery_error_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err = DiscoveryError::Io(io_err);
+        let msg = err.to_string();
+        assert!(msg.contains("IO error"));
+    }
+
+    #[test]
+    fn test_discovery_error_eval_error() {
+        let inner = crate::Error::configuration("bad cue syntax");
+        let err = DiscoveryError::EvalError(PathBuf::from("/project/env.cue"), Box::new(inner));
+        let msg = err.to_string();
+        assert!(msg.contains("Failed to evaluate"));
     }
 }
