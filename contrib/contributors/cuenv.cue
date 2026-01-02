@@ -73,9 +73,10 @@ import "github.com/cuenv/cuenv/schema"
 		shell:     true
 		dependsOn: ["install-nix"]
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+		// Note: --impure allows environment variables like SCCACHE_DIR to pass through
 		command: """
 			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \\
-			nix develop -c cargo build --release -p cuenv && \\
+			nix develop --impure -c cargo build --release -p cuenv && \\
 			{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
 			  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
 			./target/release/cuenv sync -A
