@@ -310,7 +310,10 @@ async fn execute_task_legacy(
 
     // If no task specified, list available tasks
     if task_name.is_none() && labels.is_empty() {
-        use super::task_list::{RichFormatter, TaskListFormatter, TextFormatter, build_task_list};
+        use super::task_list::{
+            DashboardFormatter, EmojiFormatter, RichFormatter, TablesFormatter, TaskListFormatter,
+            TextFormatter, build_task_list,
+        };
         use std::io::IsTerminal;
 
         tracing::debug!("Listing available tasks");
@@ -349,6 +352,18 @@ async fn execute_task_legacy(
             }
             "text" => {
                 let formatter = TextFormatter;
+                formatter.format(&task_data)
+            }
+            "tables" => {
+                let formatter = TablesFormatter::new();
+                formatter.format(&task_data)
+            }
+            "dashboard" => {
+                let formatter = DashboardFormatter::new();
+                formatter.format(&task_data)
+            }
+            "emoji" => {
+                let formatter = EmojiFormatter;
                 formatter.format(&task_data)
             }
             _ => {

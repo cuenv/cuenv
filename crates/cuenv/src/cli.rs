@@ -216,6 +216,12 @@ pub enum OutputFormat {
     Text,
     /// Rich styled output with colors and formatting
     Rich,
+    /// Category-grouped tables with box-drawing characters
+    Tables,
+    /// Status dashboard with cache state and timing
+    Dashboard,
+    /// Emoji taxonomy with semantic prefixes
+    Emoji,
 }
 
 impl std::fmt::Display for OutputFormat {
@@ -225,6 +231,9 @@ impl std::fmt::Display for OutputFormat {
             Self::Env => "env",
             Self::Text => "text",
             Self::Rich => "rich",
+            Self::Tables => "tables",
+            Self::Dashboard => "dashboard",
+            Self::Emoji => "emoji",
         };
         write!(f, "{s}")
     }
@@ -237,6 +246,9 @@ impl AsRef<str> for OutputFormat {
             Self::Env => "env",
             Self::Text => "text",
             Self::Rich => "rich",
+            Self::Tables => "tables",
+            Self::Dashboard => "dashboard",
+            Self::Emoji => "emoji",
         }
     }
 }
