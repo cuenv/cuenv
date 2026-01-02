@@ -891,16 +891,24 @@ impl GitHubActionsEmitter {
                 steps.push(task_step);
 
                 // Upload artifact for matrix tasks (outputs from the build)
+                // Use task's output paths if available, otherwise default to result/bin/*
+                let artifact_path = if task.outputs.is_empty() {
+                    "result/bin/*".to_string()
+                } else {
+                    // Join all output paths with newlines for multi-path artifact upload
+                    task.outputs
+                        .iter()
+                        .map(|o| o.path.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
                 let mut upload_step = Step::uses("actions/upload-artifact@v4")
                     .with_name("Upload artifacts")
                     .with_input(
                         "name",
                         serde_yaml::Value::String(format!("{base_job_id}-{arch}")),
                     )
-                    .with_input(
-                        "path",
-                        serde_yaml::Value::String("result/bin/*".to_string()),
-                    );
+                    .with_input("path", serde_yaml::Value::String(artifact_path));
                 upload_step.with_inputs.insert(
                     "if-no-files-found".to_string(),
                     serde_yaml::Value::String("ignore".to_string()),

@@ -71,9 +71,9 @@ schema.#Project & {
 
 	formatters: rust: {edition: "2024"}
 
-	// Build cuenv from source instead of using released binaries
-	// We really need to find a way to speed this up later.
-	config: ci: cuenv: {source: "git", version: "self"}
+	// Build cuenv from source using native Rust/Go toolchains
+	// Uses native setup instead of nix to avoid sccache env var issues
+	config: ci: cuenv: {source: "native", version: "self"}
 
 	env: {
 		CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
@@ -90,7 +90,7 @@ schema.#Project & {
 	ci: {
 		contributors: [
 			xContributors.#Nix,
-			xContributors.#CuenvGit,
+			xContributors.#CuenvNative,
 			xContributors.#OnePassword,
 			xRust.#Sccache,
 		]
@@ -166,7 +166,7 @@ schema.#Project & {
 				}
 				tasks: [
 					{
-						task: "nix.build"
+						task: "cargo.build"
 						matrix: {
 							arch: ["linux-x64", "darwin-arm64"]
 						}
@@ -174,7 +174,7 @@ schema.#Project & {
 					{
 						task: "publish"
 						artifacts: [{
-							from:   "nix.build"
+							from:   "cargo.build"
 							to:     "dist"
 							filter: "" // All variants (default)
 						}]
@@ -361,13 +361,12 @@ schema.#Project & {
 			}
 		}
 
-		nix: {
-			build: {
-				command: "nix"
-				args: ["build", ".#cuenv"]
-				inputs: _baseInputs
-				outputs: ["result/bin/cuenv"]
-			}
+		// Build cuenv binary for releases (cargo + build.rs handles Go bridge)
+		cargo: build: {
+			command: "cargo"
+			args: ["build", "--release", "-p", "cuenv"]
+			inputs: _baseInputs
+			outputs: ["target/release/cuenv"]
 		}
 
 		publish: github: {

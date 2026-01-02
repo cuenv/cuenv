@@ -998,7 +998,11 @@ fn build_pipeline_jobs(
                     jobs.insert(job_id, job);
                 } else {
                     // Matrix expansion task: create a synthetic IR Task with matrix config
-                    let synthetic_task = create_synthetic_matrix_task(task_name, matrix_task);
+                    // Look up the actual task to get its outputs for artifact upload paths
+                    let ir_task = ctx.tasks.iter().find(|t| t.id == task_name);
+                    let outputs = ir_task.map(|t| t.outputs.clone()).unwrap_or_default();
+                    let synthetic_task =
+                        create_synthetic_matrix_task(task_name, matrix_task, outputs);
                     let arch_runners = ctx
                         .github_config
                         .runners
@@ -1113,6 +1117,7 @@ fn create_synthetic_aggregation_task(
 fn create_synthetic_matrix_task(
     task_name: &str,
     matrix_task: &cuenv_core::ci::MatrixTask,
+    outputs: Vec<cuenv_ci::ir::OutputDeclaration>,
 ) -> cuenv_ci::ir::Task {
     use cuenv_ci::ir::{CachePolicy, MatrixConfig, Task};
 
@@ -1146,7 +1151,7 @@ fn create_synthetic_matrix_task(
         resources: None,
         concurrency_group: None,
         inputs: vec![],
-        outputs: vec![],
+        outputs,
         depends_on: vec![],
         cache_policy: CachePolicy::Normal,
         deployment: false,

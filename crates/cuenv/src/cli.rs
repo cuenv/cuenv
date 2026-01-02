@@ -216,6 +216,12 @@ pub enum OutputFormat {
     Text,
     /// Rich styled output with colors and formatting
     Rich,
+    /// Category-grouped tables with box-drawing characters
+    Tables,
+    /// Status dashboard with cache state and timing
+    Dashboard,
+    /// Emoji taxonomy with semantic prefixes
+    Emoji,
 }
 
 impl std::fmt::Display for OutputFormat {
@@ -225,6 +231,9 @@ impl std::fmt::Display for OutputFormat {
             Self::Env => "env",
             Self::Text => "text",
             Self::Rich => "rich",
+            Self::Tables => "tables",
+            Self::Dashboard => "dashboard",
+            Self::Emoji => "emoji",
         };
         write!(f, "{s}")
     }
@@ -237,6 +246,9 @@ impl AsRef<str> for OutputFormat {
             Self::Env => "env",
             Self::Text => "text",
             Self::Rich => "rich",
+            Self::Tables => "tables",
+            Self::Dashboard => "dashboard",
+            Self::Emoji => "emoji",
         }
     }
 }
@@ -402,14 +414,14 @@ pub enum Commands {
         )]
         labels: Vec<String>,
         /// Output format (only used when listing tasks).
+        /// If not specified, uses config.commands.task.list.format or auto-detects based on TTY.
         #[arg(
             long = "output",
             short = 'o',
-            help = "Output format (only used when listing tasks)",
-            value_enum,
-            default_value_t = OutputFormat::Text
+            help = "Output format for task listing (defaults to config or auto-detect)",
+            value_enum
         )]
-        output_format: OutputFormat,
+        output_format: Option<OutputFormat>,
         /// Materialize cached outputs to this directory on cache hit.
         #[arg(
             long = "materialize-outputs",
@@ -1355,7 +1367,8 @@ impl Commands {
                 name,
                 labels,
                 environment,
-                format: output_format.to_string(),
+                // Empty string means "use config default or auto-detect"
+                format: output_format.map_or(String::new(), |f| f.to_string()),
                 materialize_outputs,
                 show_cache_path,
                 backend,
