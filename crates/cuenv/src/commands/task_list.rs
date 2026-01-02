@@ -586,8 +586,8 @@ impl TaskListFormatter for TablesFormatter {
         }
 
         // Collect all tasks with their categories
-        let mut categorized_tasks: BTreeMap<String, Vec<(String, String, usize)>> = BTreeMap::new();
-        
+        let mut categorized_tasks: CategorizedTasks = BTreeMap::new();
+
         for group in &data.sources {
             collect_tasks_for_tables(&group.nodes, &mut categorized_tasks, "");
         }
@@ -599,8 +599,18 @@ impl TaskListFormatter for TablesFormatter {
             }
 
             // Calculate column widths (use plain text lengths, not styled)
-            let max_name = tasks.iter().map(|(n, _, _)| n.len()).max().unwrap_or(10).max(10);
-            let max_desc = tasks.iter().map(|(_, d, _)| d.len()).max().unwrap_or(20).max(20);
+            let max_name = tasks
+                .iter()
+                .map(|(n, _, _)| n.len())
+                .max()
+                .unwrap_or(10)
+                .max(10);
+            let max_desc = tasks
+                .iter()
+                .map(|(_, d, _)| d.len())
+                .max()
+                .unwrap_or(20)
+                .max(20);
             let dep_width = 7; // "N deps" or empty
 
             let total_width = max_name + max_desc + dep_width + 6; // +6 for separators and padding
@@ -611,7 +621,7 @@ impl TaskListFormatter for TablesFormatter {
             let category_display = self.bold(&category_upper);
             let padding = total_width.saturating_sub(category_upper.len()); // Use original length
             let _ = writeln!(output, "│ {}{} │", category_display, " ".repeat(padding));
-            
+
             // Column headers
             let _ = write!(output, "├─");
             let _ = write!(output, "{}─┬─", "─".repeat(max_name));
@@ -629,7 +639,7 @@ impl TaskListFormatter for TablesFormatter {
                     String::new()
                 };
                 let dep_padding = dep_width.saturating_sub(dep_display.len());
-                
+
                 let _ = writeln!(
                     output,
                     "│ {}{} │ {}{} │ {}{} │",
@@ -661,12 +671,11 @@ impl TaskListFormatter for TablesFormatter {
     }
 }
 
+/// Type alias for categorized task entries (name, description, dep_count)
+type CategorizedTasks = BTreeMap<String, Vec<(String, String, usize)>>;
+
 /// Collect tasks into categories for tables formatter
-fn collect_tasks_for_tables(
-    nodes: &[TaskNode],
-    categories: &mut BTreeMap<String, Vec<(String, String, usize)>>,
-    prefix: &str,
-) {
+fn collect_tasks_for_tables(nodes: &[TaskNode], categories: &mut CategorizedTasks, prefix: &str) {
     for node in nodes {
         let full_name = if prefix.is_empty() {
             node.name.clone()
@@ -685,11 +694,12 @@ fn collect_tasks_for_tables(
 
             let task_name = node.full_name.as_deref().unwrap_or(&node.name);
             let description = node.description.as_deref().unwrap_or("").to_string();
-            
-            categories
-                .entry(category)
-                .or_default()
-                .push((task_name.to_string(), description, node.dep_count));
+
+            categories.entry(category).or_default().push((
+                task_name.to_string(),
+                description,
+                node.dep_count,
+            ));
         }
 
         // Recurse into children
@@ -781,16 +791,33 @@ impl TaskListFormatter for DashboardFormatter {
         }
 
         // Calculate column widths
-        let max_group = all_tasks.iter().map(|t| t.group.len()).max().unwrap_or(10).max(10);
-        let max_name = all_tasks.iter().map(|t| t.name.len()).max().unwrap_or(15).max(15);
+        let max_group = all_tasks
+            .iter()
+            .map(|t| t.group.len())
+            .max()
+            .unwrap_or(10)
+            .max(10);
+        let max_name = all_tasks
+            .iter()
+            .map(|t| t.name.len())
+            .max()
+            .unwrap_or(15)
+            .max(15);
         let status_width = 9; // "● cached" or "○ stale"
         let time_width = 15; // "2 mins ago" etc.
 
         let total_width = max_group + max_name + status_width + time_width + 10;
 
         // Header (use plain "Tasks" length for calculation, not styled)
-        let _ = writeln!(output, "┌─ {} {}─┐", self.bold("Tasks"), "─".repeat(total_width.saturating_sub(8)));
-        let _ = write!(output, "│ {:width_g$}  {:width_n$}  {:width_s$}  {:width_t$} │\n",
+        let _ = writeln!(
+            output,
+            "┌─ {} {}─┐",
+            self.bold("Tasks"),
+            "─".repeat(total_width.saturating_sub(8))
+        );
+        let _ = writeln!(
+            output,
+            "│ {:width_g$}  {:width_n$}  {:width_s$}  {:width_t$} │",
             self.bold("GROUP"),
             self.bold("TASK"),
             self.bold("STATUS"),
@@ -808,7 +835,7 @@ impl TaskListFormatter for DashboardFormatter {
             let group_display = if task.group == last_group {
                 " ".repeat(max_group)
             } else {
-                last_group = task.group.clone();
+                last_group.clone_from(&task.group);
                 format!("{:width$}", task.group, width = max_group)
             };
 
@@ -843,11 +870,11 @@ impl TaskListFormatter for DashboardFormatter {
         let stale_count = data.stats.total_tasks - data.stats.cached_count;
         let _ = writeln!(
             output,
-            "  {} {}  {} {}  {} │ {} total",
+            "  {} {} cached  {} {} stale  {} │ {} total",
             self.green("●"),
-            format!("{} cached", data.stats.cached_count),
+            data.stats.cached_count,
             self.yellow("○"),
-            format!("{} stale", stale_count),
+            stale_count,
             self.dim("◌ 0 running"),
             data.stats.total_tasks
         );
@@ -864,11 +891,7 @@ struct DashboardTask {
 }
 
 /// Collect tasks for dashboard formatter
-fn collect_tasks_for_dashboard(
-    nodes: &[TaskNode],
-    tasks: &mut Vec<DashboardTask>,
-    prefix: &str,
-) {
+fn collect_tasks_for_dashboard(nodes: &[TaskNode], tasks: &mut Vec<DashboardTask>, prefix: &str) {
     for node in nodes {
         let full_name = if prefix.is_empty() {
             node.name.clone()
@@ -885,7 +908,7 @@ fn collect_tasks_for_dashboard(
             };
 
             let task_name = node.name.clone();
-            
+
             tasks.push(DashboardTask {
                 group,
                 name: task_name,
@@ -917,7 +940,7 @@ impl TaskListFormatter for EmojiFormatter {
 
         // Collect and categorize tasks
         let mut categorized_tasks: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-        
+
         for group in &data.sources {
             collect_tasks_for_emoji(&group.nodes, &mut categorized_tasks, "");
         }
@@ -935,24 +958,32 @@ impl TaskListFormatter for EmojiFormatter {
         for (category, tasks) in &categorized_tasks {
             let emoji = get_category_emoji(category);
             let _ = writeln!(output, "\n{} {}", emoji, category);
-            
+
             for (name, desc) in tasks {
                 if desc.is_empty() {
                     let _ = writeln!(output, "   {}", name);
                 } else {
-                    let _ = writeln!(output, "   {:width$} {}", name, desc, width = max_name_width);
+                    let _ = writeln!(
+                        output,
+                        "   {:width$} {}",
+                        name,
+                        desc,
+                        width = max_name_width
+                    );
                 }
             }
         }
 
         // Summary footer
-        let cached_emoji = if data.stats.cached_count > 0 { "🎯" } else { "⚪" };
+        let cached_emoji = if data.stats.cached_count > 0 {
+            "🎯"
+        } else {
+            "⚪"
+        };
         let _ = writeln!(
             output,
             "\n📦 {} tasks │ {} {} cached │ ⚡ Run: cuenv t <name>",
-            data.stats.total_tasks,
-            cached_emoji,
-            data.stats.cached_count
+            data.stats.total_tasks, cached_emoji, data.stats.cached_count
         );
 
         output
@@ -977,7 +1008,7 @@ fn collect_tasks_for_emoji(
             let category = infer_category_from_name(&full_name, node.description.as_deref());
             let task_full_name = node.full_name.as_deref().unwrap_or(&node.name).to_string();
             let description = node.description.as_deref().unwrap_or("").to_string();
-            
+
             categories
                 .entry(category)
                 .or_default()
@@ -999,39 +1030,43 @@ fn infer_category_from_name(name: &str, description: Option<&str>) -> String {
     if combined.contains("docker") || combined.contains("container") || combined.contains("image") {
         return "Containers".to_string();
     }
-    
+
     if combined.contains("security") || combined.contains("audit") || combined.contains("vuln") {
         return "Security".to_string();
     }
-    
+
     if combined.contains("publish") || combined.contains("release") || combined.contains("deploy") {
         return "Release".to_string();
     }
-    
+
     if combined.contains("test") || combined.contains("spec") || combined.contains("bench") {
         return "Testing".to_string();
     }
-    
-    if combined.contains("lint") || combined.contains("fmt") || combined.contains("format") || combined.contains("check") {
+
+    if combined.contains("lint")
+        || combined.contains("fmt")
+        || combined.contains("format")
+        || combined.contains("check")
+    {
         return "Code Quality".to_string();
     }
-    
+
     if combined.contains("build") || combined.contains("compile") || combined.contains("install") {
         return "Build & Compile".to_string();
     }
-    
+
     if combined.contains("doc") || combined.contains("documentation") {
         return "Documentation".to_string();
     }
-    
+
     if combined.contains("clean") || combined.contains("reset") {
         return "Maintenance".to_string();
     }
-    
+
     if combined.contains("ci") || combined.contains("cd") {
         return "CI/CD".to_string();
     }
-    
+
     "Other".to_string()
 }
 
@@ -1118,23 +1153,11 @@ mod tests {
         assert_eq!(infer_category_from_name("build", None), "Build & Compile");
         assert_eq!(infer_category_from_name("test.unit", None), "Testing");
         assert_eq!(infer_category_from_name("lint", None), "Code Quality");
-        assert_eq!(
-            infer_category_from_name("publish", None),
-            "Release"
-        );
-        assert_eq!(
-            infer_category_from_name("security.audit", None),
-            "Security"
-        );
+        assert_eq!(infer_category_from_name("publish", None), "Release");
+        assert_eq!(infer_category_from_name("security.audit", None), "Security");
         // docker.build should prioritize containers over build
-        assert_eq!(
-            infer_category_from_name("docker.build", None),
-            "Containers"
-        );
-        assert_eq!(
-            infer_category_from_name("container", None),
-            "Containers"
-        );
+        assert_eq!(infer_category_from_name("docker.build", None), "Containers");
+        assert_eq!(infer_category_from_name("container", None), "Containers");
         assert_eq!(infer_category_from_name("unknown", None), "Other");
     }
 
