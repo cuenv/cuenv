@@ -365,4 +365,212 @@ mod tests {
             msg
         );
     }
+
+    // ==========================================================================
+    // Additional ModuleEvaluation tests
+    // ==========================================================================
+
+    #[test]
+    fn test_module_evaluation_empty() {
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![]);
+
+        assert_eq!(module.base_count(), 0);
+        assert_eq!(module.project_count(), 0);
+        assert!(module.root_instance().is_none());
+    }
+
+    #[test]
+    fn test_module_evaluation_root_only() {
+        let mut raw = HashMap::new();
+        raw.insert(".".to_string(), json!({"key": "value"}));
+
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, vec![]);
+
+        assert_eq!(module.base_count(), 1);
+        assert_eq!(module.project_count(), 0);
+        assert!(module.root_instance().is_some());
+    }
+
+    #[test]
+    fn test_module_evaluation_get_nonexistent() {
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![]);
+
+        assert!(module.get(Path::new("nonexistent")).is_none());
+    }
+
+    #[test]
+    fn test_module_evaluation_multiple_projects() {
+        let mut raw = HashMap::new();
+        raw.insert("proj1".to_string(), json!({"name": "proj1"}));
+        raw.insert("proj2".to_string(), json!({"name": "proj2"}));
+        raw.insert("proj3".to_string(), json!({"name": "proj3"}));
+
+        let project_paths = vec![
+            "proj1".to_string(),
+            "proj2".to_string(),
+            "proj3".to_string(),
+        ];
+
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, project_paths);
+
+        assert_eq!(module.project_count(), 3);
+        assert_eq!(module.base_count(), 0);
+    }
+
+    #[test]
+    fn test_module_evaluation_ancestors_deep_path() {
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![]);
+
+        let ancestors = module.ancestors(Path::new("a/b/c/d"));
+        assert_eq!(ancestors.len(), 4);
+        assert_eq!(ancestors[0], PathBuf::from("a/b/c"));
+        assert_eq!(ancestors[1], PathBuf::from("a/b"));
+        assert_eq!(ancestors[2], PathBuf::from("a"));
+        assert_eq!(ancestors[3], PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_module_evaluation_is_inherited_no_child() {
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![]);
+
+        // Non-existent child should return false
+        assert!(!module.is_inherited(Path::new("nonexistent"), "field"));
+    }
+
+    #[test]
+    fn test_module_evaluation_is_inherited_no_field() {
+        let mut raw = HashMap::new();
+        raw.insert("child".to_string(), json!({"other": "value"}));
+
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, vec![]);
+
+        // Child exists but doesn't have the field
+        assert!(!module.is_inherited(Path::new("child"), "missing_field"));
+    }
+
+    // ==========================================================================
+    // Instance tests
+    // ==========================================================================
+
+    #[test]
+    fn test_instance_get_field() {
+        let instance = Instance {
+            path: PathBuf::from("test"),
+            kind: InstanceKind::Project,
+            value: json!({
+                "name": "my-project",
+                "version": "1.0.0"
+            }),
+        };
+
+        assert_eq!(
+            instance.get_field("name"),
+            Some(&json!("my-project"))
+        );
+        assert_eq!(
+            instance.get_field("version"),
+            Some(&json!("1.0.0"))
+        );
+        assert!(instance.get_field("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_instance_has_field() {
+        let instance = Instance {
+            path: PathBuf::from("test"),
+            kind: InstanceKind::Project,
+            value: json!({"name": "test", "env": {}}),
+        };
+
+        assert!(instance.has_field("name"));
+        assert!(instance.has_field("env"));
+        assert!(!instance.has_field("missing"));
+    }
+
+    #[test]
+    fn test_instance_project_name_base() {
+        let instance = Instance {
+            path: PathBuf::from("test"),
+            kind: InstanceKind::Base,
+            value: json!({"name": "should-be-ignored"}),
+        };
+
+        // Base instances don't return project name even if they have one
+        assert!(instance.project_name().is_none());
+    }
+
+    #[test]
+    fn test_instance_project_name_missing() {
+        let instance = Instance {
+            path: PathBuf::from("test"),
+            kind: InstanceKind::Project,
+            value: json!({}),
+        };
+
+        assert!(instance.project_name().is_none());
+    }
+
+    #[test]
+    fn test_instance_clone() {
+        let instance = Instance {
+            path: PathBuf::from("original"),
+            kind: InstanceKind::Project,
+            value: json!({"name": "test"}),
+        };
+
+        let cloned = instance.clone();
+        assert_eq!(cloned.path, instance.path);
+        assert_eq!(cloned.kind, instance.kind);
+        assert_eq!(cloned.value, instance.value);
+    }
+
+    #[test]
+    fn test_instance_serialize() {
+        let instance = Instance {
+            path: PathBuf::from("test/path"),
+            kind: InstanceKind::Project,
+            value: json!({"name": "my-project"}),
+        };
+
+        let json = serde_json::to_string(&instance).unwrap();
+        assert!(json.contains("test/path"));
+        assert!(json.contains("Project"));
+        assert!(json.contains("my-project"));
+    }
+
+    // ==========================================================================
+    // InstanceKind tests
+    // ==========================================================================
+
+    #[test]
+    fn test_instance_kind_equality() {
+        assert_eq!(InstanceKind::Base, InstanceKind::Base);
+        assert_eq!(InstanceKind::Project, InstanceKind::Project);
+        assert_ne!(InstanceKind::Base, InstanceKind::Project);
+    }
+
+    #[test]
+    fn test_instance_kind_copy() {
+        let kind = InstanceKind::Project;
+        let copied = kind;
+        assert_eq!(kind, copied);
+    }
+
+    #[test]
+    fn test_instance_kind_serialize() {
+        let base_json = serde_json::to_string(&InstanceKind::Base).unwrap();
+        let project_json = serde_json::to_string(&InstanceKind::Project).unwrap();
+
+        assert!(base_json.contains("Base"));
+        assert!(project_json.contains("Project"));
+    }
+
+    #[test]
+    fn test_instance_kind_deserialize() {
+        let base: InstanceKind = serde_json::from_str("\"Base\"").unwrap();
+        let project: InstanceKind = serde_json::from_str("\"Project\"").unwrap();
+
+        assert_eq!(base, InstanceKind::Base);
+        assert_eq!(project, InstanceKind::Project);
+    }
 }
