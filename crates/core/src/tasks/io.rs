@@ -458,4 +458,282 @@ mod tests {
         populate_hermetic_dir(&resolved, herm.path()).unwrap();
         assert!(herm.path().join("dir/x.txt").exists());
     }
+
+    #[test]
+    fn test_resolved_input_file_fields() {
+        let file = ResolvedInputFile {
+            rel_path: PathBuf::from("src/main.rs"),
+            source_path: PathBuf::from("/project/src/main.rs"),
+            sha256: "abc123".to_string(),
+            size: 1024,
+        };
+        assert_eq!(file.rel_path, PathBuf::from("src/main.rs"));
+        assert_eq!(file.sha256, "abc123");
+        assert_eq!(file.size, 1024);
+    }
+
+    #[test]
+    fn test_resolved_inputs_to_summary_map() {
+        let inputs = ResolvedInputs {
+            files: vec![
+                ResolvedInputFile {
+                    rel_path: PathBuf::from("a.txt"),
+                    source_path: PathBuf::from("/a.txt"),
+                    sha256: "hash_a".to_string(),
+                    size: 10,
+                },
+                ResolvedInputFile {
+                    rel_path: PathBuf::from("b.txt"),
+                    source_path: PathBuf::from("/b.txt"),
+                    sha256: "hash_b".to_string(),
+                    size: 20,
+                },
+            ],
+        };
+        let map = inputs.to_summary_map();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("a.txt"), Some(&"hash_a".to_string()));
+        assert_eq!(map.get("b.txt"), Some(&"hash_b".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_rel_path() {
+        assert_eq!(normalize_rel_path(Path::new("./a/b")), PathBuf::from("a/b"));
+        assert_eq!(normalize_rel_path(Path::new("a/../b")), PathBuf::from("b"));
+        assert_eq!(normalize_rel_path(Path::new("./a/./b/../c")), PathBuf::from("a/c"));
+        assert_eq!(normalize_rel_path(Path::new("a/b/c")), PathBuf::from("a/b/c"));
+    }
+
+    #[test]
+    fn test_sha256_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("test.txt");
+        std::fs::write(&path, "hello world").unwrap();
+
+        let (hash, size) = sha256_file(&path).unwrap();
+        assert!(!hash.is_empty());
+        assert_eq!(size, 11); // "hello world" is 11 bytes
+        // SHA256 of "hello world" is well-known
+        assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+    }
+
+    #[test]
+    fn test_sha256_file_empty() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("empty.txt");
+        std::fs::write(&path, "").unwrap();
+
+        let (hash, size) = sha256_file(&path).unwrap();
+        assert!(!hash.is_empty());
+        assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn test_sha256_file_not_found() {
+        let result = sha256_file(Path::new("/nonexistent/file.txt"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_glob_base() {
+        assert_eq!(extract_glob_base("src/**/*.ts"), "src");
+        assert_eq!(extract_glob_base("**/*.ts"), "");
+        assert_eq!(extract_glob_base("foo/bar/*.rs"), "foo/bar");
+        assert_eq!(extract_glob_base("*.txt"), "");
+        assert_eq!(extract_glob_base("a/b/c/*.txt"), "a/b/c");
+        assert_eq!(extract_glob_base("a/{b,c}/*.txt"), "a");
+        assert_eq!(extract_glob_base("a/b?/*.txt"), "a");
+    }
+
+    #[test]
+    fn test_input_resolver_empty_patterns() {
+        let tmp = TempDir::new().unwrap();
+        let resolver = InputResolver::new(tmp.path());
+        let inputs = resolver.resolve(&[]).unwrap();
+        assert!(inputs.files.is_empty());
+    }
+
+    #[test]
+    fn test_input_resolver_whitespace_patterns() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "content").unwrap();
+        let resolver = InputResolver::new(tmp.path());
+        let inputs = resolver.resolve(&["".into(), "  ".into()]).unwrap();
+        assert!(inputs.files.is_empty());
+    }
+
+    #[test]
+    fn test_input_resolver_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let resolver = InputResolver::new(tmp.path());
+        // Should not error, just skip missing files
+        let inputs = resolver.resolve(&["nonexistent.txt".into()]).unwrap();
+        assert!(inputs.files.is_empty());
+    }
+
+    #[test]
+    fn test_input_resolver_missing_directory() {
+        let tmp = TempDir::new().unwrap();
+        let resolver = InputResolver::new(tmp.path());
+        // Should not error, just skip missing directories
+        let inputs = resolver.resolve(&["nonexistent/**/*.txt".into()]).unwrap();
+        assert!(inputs.files.is_empty());
+    }
+
+    #[test]
+    fn test_input_resolver_deduplicates() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "content").unwrap();
+        let resolver = InputResolver::new(tmp.path());
+        // Same file via two patterns
+        let inputs = resolver.resolve(&["a.txt".into(), "*.txt".into()]).unwrap();
+        assert_eq!(inputs.files.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_outputs_empty() {
+        let tmp = TempDir::new().unwrap();
+        let outputs = collect_outputs(tmp.path(), &[]).unwrap();
+        assert!(outputs.is_empty());
+    }
+
+    #[test]
+    fn test_collect_outputs_with_files() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("build")).unwrap();
+        std::fs::write(tmp.path().join("build/output.js"), "code").unwrap();
+        std::fs::write(tmp.path().join("build/output.css"), "styles").unwrap();
+
+        let outputs = collect_outputs(tmp.path(), &["build/*.js".into()]).unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0], PathBuf::from("build/output.js"));
+    }
+
+    #[test]
+    fn test_collect_outputs_directory_pattern() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("dist/nested")).unwrap();
+        std::fs::write(tmp.path().join("dist/a.txt"), "a").unwrap();
+        std::fs::write(tmp.path().join("dist/nested/b.txt"), "b").unwrap();
+
+        let outputs = collect_outputs(tmp.path(), &["dist".into()]).unwrap();
+        assert_eq!(outputs.len(), 2);
+    }
+
+    #[test]
+    fn test_collect_outputs_sorted() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("c.txt"), "c").unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "b").unwrap();
+
+        let outputs = collect_outputs(tmp.path(), &["*.txt".into()]).unwrap();
+        assert_eq!(outputs[0], PathBuf::from("a.txt"));
+        assert_eq!(outputs[1], PathBuf::from("b.txt"));
+        assert_eq!(outputs[2], PathBuf::from("c.txt"));
+    }
+
+    #[test]
+    fn test_snapshot_workspace_tar_zst() {
+        let src = TempDir::new().unwrap();
+        std::fs::create_dir_all(src.path().join("subdir")).unwrap();
+        std::fs::write(src.path().join("file.txt"), "content").unwrap();
+        std::fs::write(src.path().join("subdir/nested.txt"), "nested").unwrap();
+
+        let dst = TempDir::new().unwrap();
+        let archive_path = dst.path().join("archive.tar.zst");
+
+        snapshot_workspace_tar_zst(src.path(), &archive_path).unwrap();
+        assert!(archive_path.exists());
+        // Verify the archive is non-empty
+        let metadata = std::fs::metadata(&archive_path).unwrap();
+        assert!(metadata.len() > 0);
+    }
+
+    #[test]
+    fn test_populate_hermetic_dir_nested() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::write(root.join("a/b/c/deep.txt"), "deep content").unwrap();
+
+        let resolver = InputResolver::new(root);
+        let resolved = resolver.resolve(&["a".into()]).unwrap();
+
+        let herm = TempDir::new().unwrap();
+        populate_hermetic_dir(&resolved, herm.path()).unwrap();
+        assert!(herm.path().join("a/b/c/deep.txt").exists());
+
+        // Verify content matches
+        let content = std::fs::read_to_string(herm.path().join("a/b/c/deep.txt")).unwrap();
+        assert_eq!(content, "deep content");
+    }
+
+    #[test]
+    fn test_absolutize_relative_path() {
+        let p = Path::new("relative/path");
+        let abs = p.absolutize();
+        assert!(abs.is_absolute());
+    }
+
+    #[test]
+    fn test_absolutize_absolute_path() {
+        let p = Path::new("/absolute/path");
+        let abs = p.absolutize();
+        assert_eq!(abs, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn test_resolved_input_file_clone() {
+        let file = ResolvedInputFile {
+            rel_path: PathBuf::from("test.rs"),
+            source_path: PathBuf::from("/src/test.rs"),
+            sha256: "hash".to_string(),
+            size: 100,
+        };
+        let cloned = file.clone();
+        assert_eq!(cloned.rel_path, file.rel_path);
+        assert_eq!(cloned.sha256, file.sha256);
+    }
+
+    #[test]
+    fn test_resolved_inputs_clone() {
+        let inputs = ResolvedInputs {
+            files: vec![ResolvedInputFile {
+                rel_path: PathBuf::from("test.rs"),
+                source_path: PathBuf::from("/src/test.rs"),
+                sha256: "hash".to_string(),
+                size: 100,
+            }],
+        };
+        let cloned = inputs.clone();
+        assert_eq!(cloned.files.len(), 1);
+    }
+
+    #[test]
+    fn test_input_resolver_with_glob_brackets() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("a1.txt"), "a1").unwrap();
+        std::fs::write(root.join("a2.txt"), "a2").unwrap();
+        std::fs::write(root.join("b1.txt"), "b1").unwrap();
+
+        let resolver = InputResolver::new(root);
+        let inputs = resolver.resolve(&["a[12].txt".into()]).unwrap();
+        assert_eq!(inputs.files.len(), 2);
+    }
+
+    #[test]
+    fn test_input_resolver_with_question_mark() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        std::fs::write(root.join("ab.txt"), "ab").unwrap();
+        std::fs::write(root.join("abc.txt"), "abc").unwrap();
+
+        let resolver = InputResolver::new(root);
+        let inputs = resolver.resolve(&["a?.txt".into()]).unwrap();
+        assert_eq!(inputs.files.len(), 1);
+        assert!(inputs.files[0].rel_path.to_string_lossy().contains("ab.txt"));
+    }
 }

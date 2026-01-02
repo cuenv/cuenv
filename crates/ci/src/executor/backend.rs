@@ -244,6 +244,76 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_lookup_result_clone() {
+        let result = CacheLookupResult::hit("test", 100);
+        let cloned = result.clone();
+        assert_eq!(cloned.hit, result.hit);
+        assert_eq!(cloned.key, result.key);
+        assert_eq!(cloned.cached_duration_ms, result.cached_duration_ms);
+    }
+
+    #[test]
+    fn test_cache_output_fields() {
+        let output = CacheOutput {
+            path: "build/output.js".to_string(),
+            data: b"console.log('hello')".to_vec(),
+            is_executable: false,
+        };
+        assert_eq!(output.path, "build/output.js");
+        assert!(!output.is_executable);
+        assert!(!output.data.is_empty());
+    }
+
+    #[test]
+    fn test_cache_output_executable() {
+        let output = CacheOutput {
+            path: "bin/run.sh".to_string(),
+            data: b"#!/bin/bash\necho hello".to_vec(),
+            is_executable: true,
+        };
+        assert!(output.is_executable);
+    }
+
+    #[test]
+    fn test_cache_entry_fields() {
+        let entry = CacheEntry {
+            stdout: Some("output".to_string()),
+            stderr: Some("errors".to_string()),
+            exit_code: 0,
+            duration_ms: 500,
+            outputs: vec![],
+        };
+        assert_eq!(entry.exit_code, 0);
+        assert_eq!(entry.duration_ms, 500);
+        assert_eq!(entry.stdout, Some("output".to_string()));
+        assert!(entry.outputs.is_empty());
+    }
+
+    #[test]
+    fn test_cache_entry_with_outputs() {
+        let entry = CacheEntry {
+            stdout: None,
+            stderr: None,
+            exit_code: 1,
+            duration_ms: 1000,
+            outputs: vec![
+                CacheOutput {
+                    path: "a.txt".to_string(),
+                    data: b"content a".to_vec(),
+                    is_executable: false,
+                },
+                CacheOutput {
+                    path: "b.txt".to_string(),
+                    data: b"content b".to_vec(),
+                    is_executable: false,
+                },
+            ],
+        };
+        assert_eq!(entry.outputs.len(), 2);
+        assert_eq!(entry.exit_code, 1);
+    }
+
+    #[test]
     fn test_policy_allows_read() {
         assert!(policy_allows_read(CachePolicy::Normal));
         assert!(policy_allows_read(CachePolicy::Readonly));
@@ -308,5 +378,79 @@ mod tests {
         assert!(msg.contains("write"));
         assert!(msg.contains("/test/path"));
         assert!(msg.contains("disk full"));
+    }
+
+    #[test]
+    fn test_backend_error_display() {
+        let io_err = BackendError::Io(std::io::Error::other("test"));
+        assert!(io_err.to_string().contains("Cache IO error"));
+
+        let serialization_err = BackendError::Serialization("invalid json".to_string());
+        assert!(serialization_err.to_string().contains("Serialization error"));
+
+        let connection_err = BackendError::Connection("timeout".to_string());
+        assert!(connection_err.to_string().contains("connection error"));
+
+        let unavailable_err = BackendError::Unavailable("maintenance".to_string());
+        assert!(unavailable_err.to_string().contains("unavailable"));
+
+        let digest_err = BackendError::DigestMismatch {
+            expected: "sha256:abc".to_string(),
+            actual: "sha256:def".to_string(),
+        };
+        assert!(digest_err.to_string().contains("sha256:abc"));
+        assert!(digest_err.to_string().contains("sha256:def"));
+
+        let blob_err = BackendError::BlobNotFound {
+            digest: "sha256:missing".to_string(),
+        };
+        assert!(blob_err.to_string().contains("sha256:missing"));
+
+        let action_err = BackendError::ActionNotFound {
+            digest: "sha256:action".to_string(),
+        };
+        assert!(action_err.to_string().contains("sha256:action"));
+    }
+
+    #[test]
+    fn test_backend_error_from_io() {
+        let io_err = std::io::Error::other("test error");
+        let backend_err: BackendError = io_err.into();
+        assert!(matches!(backend_err, BackendError::Io(_)));
+    }
+
+    #[test]
+    fn test_cache_lookup_result_debug() {
+        let result = CacheLookupResult::miss("test");
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("CacheLookupResult"));
+        assert!(debug_str.contains("hit: false"));
+    }
+
+    #[test]
+    fn test_cache_output_clone() {
+        let output = CacheOutput {
+            path: "test.txt".to_string(),
+            data: vec![1, 2, 3],
+            is_executable: true,
+        };
+        let cloned = output.clone();
+        assert_eq!(cloned.path, output.path);
+        assert_eq!(cloned.data, output.data);
+        assert_eq!(cloned.is_executable, output.is_executable);
+    }
+
+    #[test]
+    fn test_cache_entry_clone() {
+        let entry = CacheEntry {
+            stdout: Some("out".to_string()),
+            stderr: None,
+            exit_code: 0,
+            duration_ms: 100,
+            outputs: vec![],
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.stdout, entry.stdout);
+        assert_eq!(cloned.exit_code, entry.exit_code);
     }
 }

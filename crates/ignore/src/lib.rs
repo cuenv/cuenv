@@ -696,4 +696,176 @@ mod tests {
         assert_eq!(file.tool(), "git");
         assert_eq!(file.output_filename(), ".custom");
     }
+
+    #[test]
+    fn test_ignore_file_clone() {
+        let file = IgnoreFile::new("git")
+            .pattern("node_modules/")
+            .header("Test");
+        let cloned = file.clone();
+        assert_eq!(file, cloned);
+    }
+
+    #[test]
+    fn test_ignore_file_debug() {
+        let file = IgnoreFile::new("git");
+        let debug_str = format!("{file:?}");
+        assert!(debug_str.contains("IgnoreFile"));
+        assert!(debug_str.contains("git"));
+    }
+
+    #[test]
+    fn test_ignore_file_equality() {
+        let file1 = IgnoreFile::new("git").pattern("*.log");
+        let file2 = IgnoreFile::new("git").pattern("*.log");
+        let file3 = IgnoreFile::new("docker").pattern("*.log");
+
+        assert_eq!(file1, file2);
+        assert_ne!(file1, file3);
+    }
+
+    #[test]
+    fn test_ignore_file_filename_opt_some() {
+        let file = IgnoreFile::new("git").filename_opt(Some(".custom-ignore"));
+        assert_eq!(file.output_filename(), ".custom-ignore");
+    }
+
+    #[test]
+    fn test_ignore_file_filename_opt_none() {
+        let file: IgnoreFile = IgnoreFile::new("git").filename_opt(None::<String>);
+        assert_eq!(file.output_filename(), ".gitignore");
+    }
+
+    #[test]
+    fn test_ignore_files_builder_default() {
+        let builder = IgnoreFiles::builder();
+        let debug_str = format!("{builder:?}");
+        assert!(debug_str.contains("IgnoreFilesBuilder"));
+    }
+
+    #[test]
+    fn test_validate_filename_valid() {
+        assert!(validate_filename(".gitignore").is_ok());
+        assert!(validate_filename(".my-custom-ignore").is_ok());
+    }
+
+    #[test]
+    fn test_validate_filename_invalid() {
+        assert!(validate_filename("path/to/file").is_err());
+        assert!(validate_filename("..\\file").is_err());
+        assert!(validate_filename("file..test").is_err());
+    }
+
+    #[test]
+    fn test_ignore_config_debug() {
+        let config = IgnoreConfig {
+            tool: "git".to_string(),
+            patterns: vec!["*.log".to_string()],
+            filename: None,
+        };
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("IgnoreConfig"));
+        assert!(debug_str.contains("git"));
+    }
+
+    #[test]
+    fn test_ignore_config_clone() {
+        let config = IgnoreConfig {
+            tool: "git".to_string(),
+            patterns: vec!["*.log".to_string()],
+            filename: Some(".myignore".to_string()),
+        };
+        let cloned = config.clone();
+        assert_eq!(config.tool, cloned.tool);
+        assert_eq!(config.patterns, cloned.patterns);
+        assert_eq!(config.filename, cloned.filename);
+    }
+
+    #[test]
+    fn test_sync_result_debug() {
+        let result = SyncResult {
+            files: vec![FileResult {
+                filename: ".gitignore".to_string(),
+                status: FileStatus::Created,
+                pattern_count: 5,
+            }],
+        };
+        let debug_str = format!("{result:?}");
+        assert!(debug_str.contains("SyncResult"));
+        assert!(debug_str.contains("gitignore"));
+    }
+
+    #[test]
+    fn test_file_result_debug() {
+        let result = FileResult {
+            filename: ".gitignore".to_string(),
+            status: FileStatus::Updated,
+            pattern_count: 3,
+        };
+        let debug_str = format!("{result:?}");
+        assert!(debug_str.contains("FileResult"));
+        assert!(debug_str.contains("Updated"));
+    }
+
+    #[test]
+    fn test_file_status_eq() {
+        assert_eq!(FileStatus::Created, FileStatus::Created);
+        assert_eq!(FileStatus::WouldCreate, FileStatus::WouldCreate);
+        assert_ne!(FileStatus::Created, FileStatus::Updated);
+    }
+
+    #[test]
+    fn test_file_status_clone() {
+        let status = FileStatus::WouldUpdate;
+        let cloned = status;
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn test_error_display() {
+        let err = Error::InvalidToolName {
+            name: "foo/bar".to_string(),
+            reason: "cannot contain path separators".to_string(),
+        };
+        let display = format!("{err}");
+        assert!(display.contains("foo/bar"));
+        assert!(display.contains("path separators"));
+    }
+
+    #[test]
+    fn test_error_not_in_git_repo_display() {
+        let err = Error::NotInGitRepo;
+        let display = format!("{err}");
+        assert!(display.contains("Git repository"));
+    }
+
+    #[test]
+    fn test_error_bare_repository_display() {
+        let err = Error::BareRepository;
+        let display = format!("{err}");
+        assert!(display.contains("bare Git repository"));
+    }
+
+    #[test]
+    fn test_error_outside_git_repo_display() {
+        let err = Error::OutsideGitRepo;
+        let display = format!("{err}");
+        assert!(display.contains("within the Git repository"));
+    }
+
+    #[test]
+    fn test_ignore_file_generate_empty() {
+        let file = IgnoreFile::new("git");
+        let content = file.generate();
+        assert_eq!(content, "\n");
+    }
+
+    #[test]
+    fn test_ignore_files_builder_files() {
+        let files = vec![
+            IgnoreFile::new("git").pattern("*.log"),
+            IgnoreFile::new("docker").pattern("target/"),
+        ];
+        let _builder = IgnoreFiles::builder().files(files);
+    }
 }

@@ -386,14 +386,14 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    #[allow(dead_code)]
+    #[allow(dead_code, unsafe_code)]
     struct EnvVarGuard {
         key: String,
         prev: Option<String>,
     }
 
     impl EnvVarGuard {
-        #[allow(dead_code)]
+        #[allow(dead_code, unsafe_code)]
         fn set<K: Into<String>, V: Into<String>>(key: K, value: V) -> Self {
             let key_s = key.into();
             let prev = std::env::var(&key_s).ok();
@@ -406,6 +406,7 @@ mod tests {
         }
     }
 
+    #[allow(unsafe_code)]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             if let Some(ref v) = self.prev {
@@ -419,6 +420,296 @@ mod tests {
             }
         }
     }
+
+    // ==========================================================================
+    // OutputIndexEntry tests
+    // ==========================================================================
+
+    #[test]
+    fn test_output_index_entry_serde() {
+        let entry = OutputIndexEntry {
+            rel_path: "output/file.txt".to_string(),
+            size: 1024,
+            sha256: "abc123".to_string(),
+        };
+
+        let json = serde_json::to_string(&entry).unwrap();
+        let parsed: OutputIndexEntry = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.rel_path, "output/file.txt");
+        assert_eq!(parsed.size, 1024);
+        assert_eq!(parsed.sha256, "abc123");
+    }
+
+    #[test]
+    fn test_output_index_entry_clone() {
+        let entry = OutputIndexEntry {
+            rel_path: "test.txt".to_string(),
+            size: 100,
+            sha256: "hash".to_string(),
+        };
+
+        let cloned = entry.clone();
+        assert_eq!(cloned.rel_path, "test.txt");
+    }
+
+    // ==========================================================================
+    // TaskResultMeta tests
+    // ==========================================================================
+
+    #[test]
+    fn test_task_result_meta_serde() {
+        let meta = TaskResultMeta {
+            task_name: "build".to_string(),
+            command: "cargo".to_string(),
+            args: vec!["build".to_string()],
+            env_summary: BTreeMap::new(),
+            inputs_summary: BTreeMap::new(),
+            created_at: chrono::Utc::now(),
+            cuenv_version: "0.1.0".to_string(),
+            platform: "linux-x86_64".to_string(),
+            duration_ms: 5000,
+            exit_code: 0,
+            cache_key_envelope: serde_json::json!({}),
+            output_index: vec![],
+        };
+
+        let json = serde_json::to_string(&meta).unwrap();
+        let parsed: TaskResultMeta = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.task_name, "build");
+        assert_eq!(parsed.command, "cargo");
+        assert_eq!(parsed.exit_code, 0);
+    }
+
+    #[test]
+    fn test_task_result_meta_with_env() {
+        let mut env_summary = BTreeMap::new();
+        env_summary.insert("RUST_LOG".to_string(), "debug".to_string());
+
+        let meta = TaskResultMeta {
+            task_name: "test".to_string(),
+            command: "cargo".to_string(),
+            args: vec!["test".to_string()],
+            env_summary,
+            inputs_summary: BTreeMap::new(),
+            created_at: chrono::Utc::now(),
+            cuenv_version: "0.1.0".to_string(),
+            platform: "linux-x86_64".to_string(),
+            duration_ms: 10000,
+            exit_code: 0,
+            cache_key_envelope: serde_json::json!({}),
+            output_index: vec![],
+        };
+
+        assert_eq!(meta.env_summary.len(), 1);
+        assert_eq!(meta.env_summary.get("RUST_LOG"), Some(&"debug".to_string()));
+    }
+
+    // ==========================================================================
+    // CacheEntry tests
+    // ==========================================================================
+
+    #[test]
+    fn test_cache_entry_fields() {
+        let entry = CacheEntry {
+            key: "abc123".to_string(),
+            path: PathBuf::from("/cache/abc123"),
+        };
+
+        assert_eq!(entry.key, "abc123");
+        assert_eq!(entry.path, PathBuf::from("/cache/abc123"));
+    }
+
+    #[test]
+    fn test_cache_entry_clone() {
+        let entry = CacheEntry {
+            key: "key".to_string(),
+            path: PathBuf::from("/path"),
+        };
+
+        let cloned = entry.clone();
+        assert_eq!(cloned.key, "key");
+    }
+
+    // ==========================================================================
+    // TaskLatestIndex tests
+    // ==========================================================================
+
+    #[test]
+    fn test_task_latest_index_default() {
+        let index = TaskLatestIndex::default();
+        assert!(index.entries.is_empty());
+    }
+
+    #[test]
+    fn test_task_latest_index_serde() {
+        let mut index = TaskLatestIndex::default();
+        let mut tasks = BTreeMap::new();
+        tasks.insert("build".to_string(), "key123".to_string());
+        index.entries.insert("project_hash".to_string(), tasks);
+
+        let json = serde_json::to_string(&index).unwrap();
+        let parsed: TaskLatestIndex = serde_json::from_str(&json).unwrap();
+
+        assert!(parsed.entries.contains_key("project_hash"));
+    }
+
+    // ==========================================================================
+    // CacheKeyEnvelope tests
+    // ==========================================================================
+
+    #[test]
+    fn test_cache_key_envelope_serde() {
+        let envelope = CacheKeyEnvelope {
+            inputs: BTreeMap::from([("file.txt".to_string(), "hash1".to_string())]),
+            command: "echo".to_string(),
+            args: vec!["hello".to_string()],
+            shell: None,
+            env: BTreeMap::new(),
+            cuenv_version: "0.1.0".to_string(),
+            platform: "linux".to_string(),
+            workspace_lockfile_hashes: None,
+            workspace_package_hashes: None,
+        };
+
+        let json = serde_json::to_string(&envelope).unwrap();
+        let parsed: CacheKeyEnvelope = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.command, "echo");
+    }
+
+    #[test]
+    fn test_cache_key_envelope_with_optional_fields() {
+        let envelope = CacheKeyEnvelope {
+            inputs: BTreeMap::new(),
+            command: "npm".to_string(),
+            args: vec!["install".to_string()],
+            shell: Some(serde_json::json!({"type": "bash"})),
+            env: BTreeMap::new(),
+            cuenv_version: "0.1.0".to_string(),
+            platform: "darwin".to_string(),
+            workspace_lockfile_hashes: Some(BTreeMap::from([(
+                "npm".to_string(),
+                "lockfile_hash".to_string(),
+            )])),
+            workspace_package_hashes: Some(BTreeMap::from([(
+                "pkg".to_string(),
+                "pkg_hash".to_string(),
+            )])),
+        };
+
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert!(json.contains("workspace_lockfile_hashes"));
+        assert!(json.contains("workspace_package_hashes"));
+    }
+
+    // ==========================================================================
+    // key_to_path tests
+    // ==========================================================================
+
+    #[test]
+    fn test_key_to_path_with_root() {
+        let temp = TempDir::new().unwrap();
+        let path = key_to_path("mykey", Some(temp.path())).unwrap();
+        assert!(path.ends_with("mykey"));
+        assert!(path.starts_with(temp.path()));
+    }
+
+    // ==========================================================================
+    // lookup tests
+    // ==========================================================================
+
+    #[test]
+    fn test_lookup_not_found() {
+        let temp = TempDir::new().unwrap();
+        let result = lookup("nonexistent", Some(temp.path()));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_lookup_found() {
+        let temp = TempDir::new().unwrap();
+        let key_dir = temp.path().join("mykey");
+        fs::create_dir_all(&key_dir).unwrap();
+
+        let result = lookup("mykey", Some(temp.path()));
+        assert!(result.is_some());
+        let entry = result.unwrap();
+        assert_eq!(entry.key, "mykey");
+    }
+
+    // ==========================================================================
+    // record_latest and lookup_latest tests
+    // ==========================================================================
+
+    #[test]
+    fn test_record_and_lookup_latest() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).unwrap();
+
+        record_latest(&project_root, "build", "key123", Some(temp.path())).unwrap();
+
+        let result = lookup_latest(&project_root, "build", Some(temp.path()));
+        assert_eq!(result, Some("key123".to_string()));
+    }
+
+    #[test]
+    fn test_lookup_latest_not_found() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+
+        let result = lookup_latest(&project_root, "nonexistent", Some(temp.path()));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_record_latest_overwrites() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).unwrap();
+
+        record_latest(&project_root, "build", "key1", Some(temp.path())).unwrap();
+        record_latest(&project_root, "build", "key2", Some(temp.path())).unwrap();
+
+        let result = lookup_latest(&project_root, "build", Some(temp.path()));
+        assert_eq!(result, Some("key2".to_string()));
+    }
+
+    // ==========================================================================
+    // get_project_cache_keys tests
+    // ==========================================================================
+
+    #[test]
+    fn test_get_project_cache_keys_empty() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+
+        let result = get_project_cache_keys(&project_root, Some(temp.path())).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_project_cache_keys_with_data() {
+        let temp = TempDir::new().unwrap();
+        let project_root = temp.path().join("project");
+        fs::create_dir_all(&project_root).unwrap();
+
+        record_latest(&project_root, "build", "key1", Some(temp.path())).unwrap();
+        record_latest(&project_root, "test", "key2", Some(temp.path())).unwrap();
+
+        let result = get_project_cache_keys(&project_root, Some(temp.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get("build"), Some(&"key1".to_string()));
+        assert_eq!(result.get("test"), Some(&"key2".to_string()));
+    }
+
+    // ==========================================================================
+    // compute_cache_key tests
+    // ==========================================================================
 
     #[test]
     fn cache_key_is_deterministic_and_order_invariant() {

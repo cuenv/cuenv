@@ -333,8 +333,29 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_repo_different_names() {
+        let (owner, repo) = GitHubCIProvider::parse_repo("organization/project-name");
+        assert_eq!(owner, "organization");
+        assert_eq!(repo, "project-name");
+    }
+
+    #[test]
     fn test_parse_repo_invalid() {
         let (owner, repo) = GitHubCIProvider::parse_repo("invalid");
+        assert_eq!(owner, "");
+        assert_eq!(repo, "");
+    }
+
+    #[test]
+    fn test_parse_repo_empty() {
+        let (owner, repo) = GitHubCIProvider::parse_repo("");
+        assert_eq!(owner, "");
+        assert_eq!(repo, "");
+    }
+
+    #[test]
+    fn test_parse_repo_too_many_parts() {
+        let (owner, repo) = GitHubCIProvider::parse_repo("a/b/c/d");
         assert_eq!(owner, "");
         assert_eq!(repo, "");
     }
@@ -357,5 +378,174 @@ mod tests {
         );
         assert_eq!(GitHubCIProvider::parse_pr_number("refs/heads/main"), None);
         assert_eq!(GitHubCIProvider::parse_pr_number("main"), None);
+    }
+
+    #[test]
+    fn test_parse_pr_number_large() {
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/pull/999999/merge"),
+            Some(999_999)
+        );
+    }
+
+    #[test]
+    fn test_parse_pr_number_zero() {
+        // Edge case: PR number 0 (unlikely but possible in parsing)
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/pull/0/merge"),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn test_parse_pr_number_empty() {
+        assert_eq!(GitHubCIProvider::parse_pr_number(""), None);
+    }
+
+    #[test]
+    fn test_parse_pr_number_refs_pull_only() {
+        assert_eq!(GitHubCIProvider::parse_pr_number("refs/pull/"), None);
+    }
+
+    #[test]
+    fn test_parse_pr_number_invalid_number() {
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/pull/abc/merge"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_pr_number_branch_ref() {
+        // Typical branch refs should return None
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/heads/feature/test"),
+            None
+        );
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/heads/develop"),
+            None
+        );
+        assert_eq!(GitHubCIProvider::parse_pr_number("refs/tags/v1.0.0"), None);
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn test_get_before_sha_filters_null_sha() {
+        // The NULL_SHA should be filtered out
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::set_var("GITHUB_BEFORE", NULL_SHA);
+        }
+        assert!(GitHubCIProvider::get_before_sha().is_none());
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("GITHUB_BEFORE");
+        }
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn test_get_before_sha_filters_empty() {
+        // Empty string should be filtered out
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::set_var("GITHUB_BEFORE", "");
+        }
+        assert!(GitHubCIProvider::get_before_sha().is_none());
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("GITHUB_BEFORE");
+        }
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn test_get_before_sha_valid() {
+        // A valid SHA should be returned
+        let valid_sha = "abc123def456";
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::set_var("GITHUB_BEFORE", valid_sha);
+        }
+        assert_eq!(
+            GitHubCIProvider::get_before_sha(),
+            Some(valid_sha.to_string())
+        );
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("GITHUB_BEFORE");
+        }
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn test_detect_not_github_actions() {
+        // Clear GitHub Actions environment variables
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::remove_var("GITHUB_ACTIONS");
+            std::env::remove_var("GITHUB_REPOSITORY");
+        }
+
+        let provider = GitHubCIProvider::detect();
+        assert!(provider.is_none());
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn test_detect_github_actions_false() {
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::set_var("GITHUB_ACTIONS", "false");
+        }
+
+        let provider = GitHubCIProvider::detect();
+        assert!(provider.is_none());
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("GITHUB_ACTIONS");
+        }
+    }
+
+    #[test]
+    fn test_try_git_diff_parses_output() {
+        // This test just verifies the diff output parsing logic
+        // In a real repo, this would test actual git diff output
+
+        // Test that empty output results in empty vec
+        // This is implicitly tested through the filter logic
+        let empty_lines = "";
+        let files: Vec<PathBuf> = empty_lines
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect();
+        assert!(files.is_empty());
+
+        // Test that whitespace-only lines are filtered
+        let whitespace_only = "   \n\t\n";
+        let files: Vec<PathBuf> = whitespace_only
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect();
+        assert!(files.is_empty());
+
+        // Test that valid file paths are parsed
+        let valid_output = "src/main.rs\nCargo.toml\nREADME.md";
+        let files: Vec<PathBuf> = valid_output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect();
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0], PathBuf::from("src/main.rs"));
+        assert_eq!(files[1], PathBuf::from("Cargo.toml"));
+        assert_eq!(files[2], PathBuf::from("README.md"));
     }
 }

@@ -823,8 +823,14 @@ async fn compute_file_sha256(path: &std::path::Path) -> Result<String> {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    // ==========================================================================
+    // GitHubToolProvider construction and ToolProvider trait tests
+    // ==========================================================================
 
     #[test]
     fn test_provider_name() {
@@ -833,19 +839,15 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_template() {
+    fn test_provider_description() {
         let provider = GitHubToolProvider::new();
-        let platform = Platform::new(Os::Darwin, Arch::Arm64);
+        assert_eq!(provider.description(), "Fetch tools from GitHub Releases");
+    }
 
-        assert_eq!(
-            provider.expand_template("bun-{os}-{arch}.zip", "1.0.0", &platform),
-            "bun-darwin-aarch64.zip"
-        );
-
-        assert_eq!(
-            provider.expand_template("v{version}", "1.0.0", &platform),
-            "v1.0.0"
-        );
+    #[test]
+    fn test_provider_default() {
+        let provider = GitHubToolProvider::default();
+        assert_eq!(provider.name(), "github");
     }
 
     #[test]
@@ -867,6 +869,170 @@ mod tests {
         };
         assert!(!provider.can_handle(&nix_source));
     }
+
+    #[test]
+    fn test_can_handle_github_with_path() {
+        let provider = GitHubToolProvider::new();
+
+        let source = ToolSource::GitHub {
+            repo: "owner/repo".into(),
+            tag: "v1.0.0".into(),
+            asset: "archive.tar.gz".into(),
+            path: Some("bin/tool".into()),
+        };
+        assert!(provider.can_handle(&source));
+    }
+
+    // ==========================================================================
+    // expand_template tests
+    // ==========================================================================
+
+    #[test]
+    fn test_expand_template() {
+        let provider = GitHubToolProvider::new();
+        let platform = Platform::new(Os::Darwin, Arch::Arm64);
+
+        assert_eq!(
+            provider.expand_template("bun-{os}-{arch}.zip", "1.0.0", &platform),
+            "bun-darwin-aarch64.zip"
+        );
+
+        assert_eq!(
+            provider.expand_template("v{version}", "1.0.0", &platform),
+            "v1.0.0"
+        );
+    }
+
+    #[test]
+    fn test_expand_template_linux_x86_64() {
+        let provider = GitHubToolProvider::new();
+        let platform = Platform::new(Os::Linux, Arch::X86_64);
+
+        assert_eq!(
+            provider.expand_template("{os}-{arch}", "1.0.0", &platform),
+            "linux-x86_64"
+        );
+    }
+
+    #[test]
+    fn test_expand_template_all_placeholders() {
+        let provider = GitHubToolProvider::new();
+        let platform = Platform::new(Os::Darwin, Arch::X86_64);
+
+        assert_eq!(
+            provider.expand_template("tool-{version}-{os}-{arch}.zip", "2.5.1", &platform),
+            "tool-2.5.1-darwin-x86_64.zip"
+        );
+    }
+
+    #[test]
+    fn test_expand_template_no_placeholders() {
+        let provider = GitHubToolProvider::new();
+        let platform = Platform::new(Os::Linux, Arch::Arm64);
+
+        assert_eq!(
+            provider.expand_template("static-name.tar.gz", "1.0.0", &platform),
+            "static-name.tar.gz"
+        );
+    }
+
+    // ==========================================================================
+    // tool_cache_dir tests
+    // ==========================================================================
+
+    #[test]
+    fn test_tool_cache_dir() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+        let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
+
+        let cache_dir = provider.tool_cache_dir(&options, "mytool", "1.2.3");
+
+        assert!(cache_dir.ends_with("github/mytool/1.2.3"));
+        assert!(cache_dir.starts_with(temp_dir.path()));
+    }
+
+    #[test]
+    fn test_tool_cache_dir_different_versions() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+        let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
+
+        let cache_v1 = provider.tool_cache_dir(&options, "tool", "1.0.0");
+        let cache_v2 = provider.tool_cache_dir(&options, "tool", "2.0.0");
+
+        assert_ne!(cache_v1, cache_v2);
+        assert!(cache_v1.ends_with("1.0.0"));
+        assert!(cache_v2.ends_with("2.0.0"));
+    }
+
+    // ==========================================================================
+    // get_effective_token tests
+    // ==========================================================================
+
+    #[test]
+    fn test_get_effective_token_runtime_only() {
+        // Clear env vars first
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var("GH_TOKEN");
+        }
+
+        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+        assert_eq!(token, Some("runtime-token".to_string()));
+    }
+
+    #[test]
+    fn test_get_effective_token_none() {
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var("GH_TOKEN");
+        }
+
+        let token = GitHubToolProvider::get_effective_token(None);
+        assert!(token.is_none());
+    }
+
+    #[test]
+    fn test_get_effective_token_github_token_priority() {
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::set_var("GITHUB_TOKEN", "github-token");
+            std::env::set_var("GH_TOKEN", "gh-token");
+        }
+
+        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+        assert_eq!(token, Some("github-token".to_string()));
+
+        // SAFETY: Cleanup
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var("GH_TOKEN");
+        }
+    }
+
+    #[test]
+    fn test_get_effective_token_gh_token_fallback() {
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+            std::env::set_var("GH_TOKEN", "gh-token");
+        }
+
+        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+        assert_eq!(token, Some("gh-token".to_string()));
+
+        // SAFETY: Cleanup
+        unsafe {
+            std::env::remove_var("GH_TOKEN");
+        }
+    }
+
+    // ==========================================================================
+    // RateLimitInfo tests
+    // ==========================================================================
 
     #[test]
     fn test_rate_limit_info_from_headers() {
@@ -925,5 +1091,263 @@ mod tests {
         assert_eq!(info.remaining, None);
         assert_eq!(info.reset, None);
         assert!(!info.is_exceeded());
+    }
+
+    #[test]
+    fn test_rate_limit_info_default() {
+        let info = RateLimitInfo::default();
+        assert_eq!(info.limit, None);
+        assert_eq!(info.remaining, None);
+        assert_eq!(info.reset, None);
+        assert!(!info.is_exceeded());
+    }
+
+    #[test]
+    fn test_rate_limit_info_format_status_missing_remaining() {
+        let info = RateLimitInfo {
+            limit: Some(60),
+            remaining: None,
+            reset: None,
+        };
+        assert!(info.format_status().is_none());
+    }
+
+    #[test]
+    fn test_rate_limit_info_format_status_missing_limit() {
+        let info = RateLimitInfo {
+            limit: None,
+            remaining: Some(50),
+            reset: None,
+        };
+        assert!(info.format_status().is_none());
+    }
+
+    #[test]
+    fn test_rate_limit_info_format_reset_duration_none() {
+        let info = RateLimitInfo {
+            limit: None,
+            remaining: None,
+            reset: None,
+        };
+        assert!(info.format_reset_duration().is_none());
+    }
+
+    #[test]
+    fn test_rate_limit_info_format_reset_duration_past() {
+        // Use a timestamp in the past
+        let info = RateLimitInfo {
+            limit: None,
+            remaining: None,
+            reset: Some(0), // epoch
+        };
+        // Should return "now" for past timestamps
+        assert_eq!(info.format_reset_duration(), Some("now".to_string()));
+    }
+
+    #[test]
+    fn test_rate_limit_info_invalid_header_values() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-ratelimit-limit",
+            HeaderValue::from_static("not-a-number"),
+        );
+        headers.insert("x-ratelimit-remaining", HeaderValue::from_static("invalid"));
+
+        let info = RateLimitInfo::from_headers(&headers);
+        assert_eq!(info.limit, None);
+        assert_eq!(info.remaining, None);
+    }
+
+    // ==========================================================================
+    // build_api_error tests
+    // ==========================================================================
+
+    #[test]
+    fn test_build_api_error_rate_limit_exceeded_unauthenticated() {
+        let rate_limit = RateLimitInfo {
+            limit: Some(60),
+            remaining: Some(0),
+            reset: Some(1_735_689_600),
+        };
+
+        let error = GitHubToolProvider::build_api_error(
+            reqwest::StatusCode::FORBIDDEN,
+            &rate_limit,
+            false,
+            "release owner/repo v1.0.0",
+        );
+
+        let msg = error.to_string();
+        assert!(msg.contains("rate limit exceeded"));
+    }
+
+    #[test]
+    fn test_build_api_error_rate_limit_exceeded_authenticated() {
+        let rate_limit = RateLimitInfo {
+            limit: Some(5000),
+            remaining: Some(0),
+            reset: None,
+        };
+
+        let error = GitHubToolProvider::build_api_error(
+            reqwest::StatusCode::FORBIDDEN,
+            &rate_limit,
+            true,
+            "release owner/repo v1.0.0",
+        );
+
+        let msg = error.to_string();
+        assert!(msg.contains("rate limit exceeded"));
+    }
+
+    #[test]
+    fn test_build_api_error_forbidden_not_rate_limit() {
+        let rate_limit = RateLimitInfo {
+            limit: Some(60),
+            remaining: Some(30),
+            reset: None,
+        };
+
+        let error = GitHubToolProvider::build_api_error(
+            reqwest::StatusCode::FORBIDDEN,
+            &rate_limit,
+            false,
+            "release owner/repo v1.0.0",
+        );
+
+        let msg = error.to_string();
+        assert!(msg.contains("Access denied"));
+    }
+
+    #[test]
+    fn test_build_api_error_not_found() {
+        let rate_limit = RateLimitInfo::default();
+
+        let error = GitHubToolProvider::build_api_error(
+            reqwest::StatusCode::NOT_FOUND,
+            &rate_limit,
+            false,
+            "release owner/repo v999.0.0",
+        );
+
+        let msg = error.to_string();
+        assert!(msg.contains("not found"));
+        assert!(msg.contains("404"));
+    }
+
+    #[test]
+    fn test_build_api_error_unauthorized() {
+        let rate_limit = RateLimitInfo::default();
+
+        let error = GitHubToolProvider::build_api_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            &rate_limit,
+            true,
+            "release owner/repo v1.0.0",
+        );
+
+        let msg = error.to_string();
+        assert!(msg.contains("Authentication failed"));
+        assert!(msg.contains("401"));
+    }
+
+    #[test]
+    fn test_build_api_error_server_error() {
+        let rate_limit = RateLimitInfo::default();
+
+        let error = GitHubToolProvider::build_api_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            &rate_limit,
+            false,
+            "asset download",
+        );
+
+        let msg = error.to_string();
+        assert!(msg.contains("HTTP 500"));
+    }
+
+    // ==========================================================================
+    // is_cached tests
+    // ==========================================================================
+
+    #[test]
+    fn test_is_cached_not_cached() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+        let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
+
+        let resolved = ResolvedTool {
+            name: "mytool".to_string(),
+            version: "1.0.0".to_string(),
+            platform: Platform::new(Os::Darwin, Arch::Arm64),
+            source: ToolSource::GitHub {
+                repo: "owner/repo".to_string(),
+                tag: "v1.0.0".to_string(),
+                asset: "mytool.tar.gz".to_string(),
+                path: None,
+            },
+        };
+
+        assert!(!provider.is_cached(&resolved, &options));
+    }
+
+    #[test]
+    fn test_is_cached_cached() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+        let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
+
+        let resolved = ResolvedTool {
+            name: "mytool".to_string(),
+            version: "1.0.0".to_string(),
+            platform: Platform::new(Os::Darwin, Arch::Arm64),
+            source: ToolSource::GitHub {
+                repo: "owner/repo".to_string(),
+                tag: "v1.0.0".to_string(),
+                asset: "mytool.tar.gz".to_string(),
+                path: None,
+            },
+        };
+
+        // Create the cached file
+        let cache_dir = provider.tool_cache_dir(&options, "mytool", "1.0.0");
+        let bin_dir = cache_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(bin_dir.join("mytool"), b"binary").unwrap();
+
+        assert!(provider.is_cached(&resolved, &options));
+    }
+
+    // ==========================================================================
+    // Release and Asset struct tests
+    // ==========================================================================
+
+    #[test]
+    fn test_release_deserialization() {
+        let json = r#"{
+            "tag_name": "v1.0.0",
+            "assets": [
+                {"name": "tool-linux.tar.gz", "browser_download_url": "https://example.com/linux.tar.gz"},
+                {"name": "tool-darwin.tar.gz", "browser_download_url": "https://example.com/darwin.tar.gz"}
+            ]
+        }"#;
+
+        let release: Release = serde_json::from_str(json).unwrap();
+        assert_eq!(release.tag_name, "v1.0.0");
+        assert_eq!(release.assets.len(), 2);
+        assert_eq!(release.assets[0].name, "tool-linux.tar.gz");
+        assert_eq!(
+            release.assets[0].browser_download_url,
+            "https://example.com/linux.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_release_deserialization_empty_assets() {
+        let json = r#"{"tag_name": "v0.1.0", "assets": []}"#;
+        let release: Release = serde_json::from_str(json).unwrap();
+        assert!(release.assets.is_empty());
     }
 }

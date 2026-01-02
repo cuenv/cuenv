@@ -20,6 +20,7 @@ struct CacheEntry {
 }
 
 /// Thread-safe LRU cache for CUE evaluation results
+#[derive(Debug)]
 pub struct EvaluationCache {
     cache: RwLock<LruCache<CacheKey, CacheEntry>>,
     ttl: Duration,
@@ -101,6 +102,14 @@ mod tests {
     use std::thread;
 
     #[test]
+    fn test_cache_new_zero_capacity_error() {
+        let result = EvaluationCache::new(0, Duration::from_secs(60));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("non-zero"));
+    }
+
+    #[test]
     fn test_cache_basic_operations() {
         let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
         let path = Path::new("/test");
@@ -114,6 +123,29 @@ mod tests {
 
         // Test cache size
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_cache_is_empty() {
+        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        cache.insert(Path::new("/test"), "pkg", "value".to_string());
+        assert!(!cache.is_empty());
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_cache_clear() {
+        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        cache.insert(Path::new("/test1"), "pkg1", "value1".to_string());
+        cache.insert(Path::new("/test2"), "pkg2", "value2".to_string());
+        assert_eq!(cache.len(), 2);
+
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.get(Path::new("/test1"), "pkg1"), None);
     }
 
     #[test]
@@ -147,5 +179,46 @@ mod tests {
             cache.get(Path::new("/test3"), "pkg"),
             Some("result3".to_string())
         );
+    }
+
+    #[test]
+    fn test_cache_different_paths_same_package() {
+        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        cache.insert(Path::new("/path1"), "pkg", "value1".to_string());
+        cache.insert(Path::new("/path2"), "pkg", "value2".to_string());
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(
+            cache.get(Path::new("/path1"), "pkg"),
+            Some("value1".to_string())
+        );
+        assert_eq!(
+            cache.get(Path::new("/path2"), "pkg"),
+            Some("value2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_cache_same_path_different_packages() {
+        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        let path = Path::new("/test");
+        cache.insert(path, "pkg1", "value1".to_string());
+        cache.insert(path, "pkg2", "value2".to_string());
+
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(path, "pkg1"), Some("value1".to_string()));
+        assert_eq!(cache.get(path, "pkg2"), Some("value2".to_string()));
+    }
+
+    #[test]
+    fn test_cache_update_existing_entry() {
+        let cache = EvaluationCache::new(10, Duration::from_secs(60)).unwrap();
+        let path = Path::new("/test");
+
+        cache.insert(path, "pkg", "old_value".to_string());
+        cache.insert(path, "pkg", "new_value".to_string());
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get(path, "pkg"), Some("new_value".to_string()));
     }
 }

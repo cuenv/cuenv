@@ -213,6 +213,7 @@ mod tests {
     fn test_cubes_provider_description() {
         let provider = CubesProvider::new();
         assert!(!provider.description().is_empty());
+        assert!(provider.description().contains("cube"));
     }
 
     #[test]
@@ -223,9 +224,44 @@ mod tests {
     }
 
     #[test]
+    fn test_cubes_provider_as_any_mut() {
+        let mut provider = CubesProvider::new();
+        let any = provider.as_any_mut();
+        assert!(any.is::<CubesProvider>());
+    }
+
+    #[test]
     fn test_cubes_provider_command() {
         let provider = CubesProvider::new();
         let cmd = provider.build_sync_command();
         assert_eq!(cmd.get_name(), "cubes");
+    }
+
+    #[test]
+    fn test_cubes_provider_command_has_args() {
+        let provider = CubesProvider::new();
+        let cmd = provider.build_sync_command();
+
+        let args: Vec<_> = cmd.get_arguments().map(|a| a.get_id().as_str()).collect();
+        assert!(args.contains(&"path"));
+        assert!(args.contains(&"package"));
+        assert!(args.contains(&"dry-run"));
+        assert!(args.contains(&"check"));
+        assert!(args.contains(&"all"));
+        assert!(args.contains(&"diff"));
+    }
+
+    #[test]
+    fn test_cubes_provider_default() {
+        let provider = CubesProvider;
+        assert_eq!(provider.name(), "cubes");
+    }
+
+    #[test]
+    fn test_cubes_provider_has_config() {
+        let provider = CubesProvider::new();
+        let base = Base::default();
+        // Cubes are only in Projects, not Base
+        assert!(!provider.has_config(&base));
     }
 }

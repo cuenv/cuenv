@@ -312,6 +312,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_pipeline_default() {
+        let pipeline = Pipeline::default();
+        assert!(pipeline.steps.is_empty());
+        assert!(pipeline.env.is_empty());
+    }
+
+    #[test]
+    fn test_command_step_default() {
+        let step = CommandStep::default();
+        assert!(step.label.is_none());
+        assert!(step.key.is_none());
+        assert!(step.command.is_none());
+        assert!(step.env.is_empty());
+        assert!(step.agents.is_none());
+        assert!(step.artifact_paths.is_empty());
+        assert!(step.depends_on.is_empty());
+        assert!(step.concurrency_group.is_none());
+        assert!(step.concurrency.is_none());
+        assert!(step.retry.is_none());
+        assert!(step.timeout_in_minutes.is_none());
+        assert!(step.soft_fail.is_none());
+    }
+
+    #[test]
     fn test_command_step_serialization() {
         let step = CommandStep {
             label: Some(":rust: Build".to_string()),
@@ -331,12 +355,100 @@ mod tests {
     }
 
     #[test]
+    fn test_command_value_single() {
+        let cmd = CommandValue::Single("echo hello".to_string());
+        let yaml = serde_yaml::to_string(&cmd).unwrap();
+        assert!(yaml.contains("echo hello"));
+    }
+
+    #[test]
+    fn test_command_value_array() {
+        let cmd = CommandValue::Array(vec!["echo".to_string(), "hello".to_string()]);
+        let yaml = serde_yaml::to_string(&cmd).unwrap();
+        assert!(yaml.contains("echo"));
+        assert!(yaml.contains("hello"));
+    }
+
+    #[test]
+    fn test_block_step_new() {
+        let step = BlockStep::new("Approve Deploy");
+        assert_eq!(step.block, "Approve Deploy");
+        assert!(step.key.is_none());
+        assert!(step.depends_on.is_empty());
+        assert!(step.prompt.is_none());
+        assert!(step.fields.is_empty());
+    }
+
+    #[test]
     fn test_block_step_serialization() {
         let step = BlockStep::new(":hand: Approve Deploy");
 
         let yaml = serde_yaml::to_string(&step).unwrap();
         assert!(yaml.contains("block:"));
         assert!(yaml.contains("Approve Deploy"));
+    }
+
+    #[test]
+    fn test_block_field_serialization() {
+        let field = BlockField {
+            field_type: "text".to_string(),
+            key: "reason".to_string(),
+            text: Some("Reason for deployment".to_string()),
+            required: Some(true),
+        };
+        let yaml = serde_yaml::to_string(&field).unwrap();
+        assert!(yaml.contains("type: text"));
+        assert!(yaml.contains("key: reason"));
+        assert!(yaml.contains("text:"));
+        assert!(yaml.contains("required: true"));
+    }
+
+    #[test]
+    fn test_wait_step_default() {
+        let step = WaitStep::default();
+        assert_eq!(step.wait, Some("~".to_string()));
+        assert!(step.continue_on_failure.is_none());
+    }
+
+    #[test]
+    fn test_wait_step_serialization() {
+        let step = WaitStep {
+            wait: Some("~".to_string()),
+            continue_on_failure: Some(true),
+        };
+        let yaml = serde_yaml::to_string(&step).unwrap();
+        assert!(yaml.contains("wait:"));
+        assert!(yaml.contains("continue_on_failure: true"));
+    }
+
+    #[test]
+    fn test_group_step_serialization() {
+        let group = GroupStep {
+            group: "Build and Test".to_string(),
+            key: Some("build-group".to_string()),
+            steps: vec![Step::Command(Box::new(CommandStep {
+                label: Some("Build".to_string()),
+                ..Default::default()
+            }))],
+            depends_on: vec![],
+        };
+        let yaml = serde_yaml::to_string(&group).unwrap();
+        assert!(yaml.contains("group:"));
+        assert!(yaml.contains("Build and Test"));
+        assert!(yaml.contains("key: build-group"));
+    }
+
+    #[test]
+    fn test_agent_rules_with_queue() {
+        let rules = AgentRules::with_queue("production");
+        assert_eq!(rules.queue, Some("production".to_string()));
+        assert!(rules.tags.is_empty());
+    }
+
+    #[test]
+    fn test_agent_rules_from_tags_empty() {
+        let rules = AgentRules::from_tags(vec![]);
+        assert!(rules.is_none());
     }
 
     #[test]
@@ -349,6 +461,60 @@ mod tests {
         let rules = rules.unwrap();
         assert_eq!(rules.queue, Some("deploy".to_string()));
         assert_eq!(rules.tags.get("os"), Some(&"linux".to_string()));
+    }
+
+    #[test]
+    fn test_agent_rules_serialization() {
+        let mut rules = AgentRules::with_queue("linux");
+        rules.tags.insert("arch".to_string(), "x86_64".to_string());
+        let yaml = serde_yaml::to_string(&rules).unwrap();
+        assert!(yaml.contains("queue: linux"));
+        assert!(yaml.contains("arch: x86_64"));
+    }
+
+    #[test]
+    fn test_depends_on_key() {
+        let dep = DependsOn::Key("build".to_string());
+        let yaml = serde_yaml::to_string(&dep).unwrap();
+        assert!(yaml.contains("build"));
+    }
+
+    #[test]
+    fn test_depends_on_detailed() {
+        let dep = DependsOn::Detailed(DetailedDependency {
+            step: "build".to_string(),
+            allow_failure: Some(true),
+        });
+        let yaml = serde_yaml::to_string(&dep).unwrap();
+        assert!(yaml.contains("step: build"));
+        assert!(yaml.contains("allow_failure: true"));
+    }
+
+    #[test]
+    fn test_retry_config_serialization() {
+        let config = RetryConfig {
+            automatic: Some(AutomaticRetry::Enabled(true)),
+            manual: Some(ManualRetry {
+                allowed: Some(true),
+                permit_on_passed: Some(false),
+                reason: Some("Flaky test".to_string()),
+            }),
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("automatic: true"));
+        assert!(yaml.contains("allowed: true"));
+        assert!(yaml.contains("Flaky test"));
+    }
+
+    #[test]
+    fn test_automatic_retry_config() {
+        let config = AutomaticRetry::Config(vec![AutomaticRetryRule {
+            exit_status: Some("*".to_string()),
+            limit: Some(2),
+        }]);
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("exit_status:"));
+        assert!(yaml.contains("limit: 2"));
     }
 
     #[test]
@@ -366,5 +532,34 @@ mod tests {
         let yaml = serde_yaml::to_string(&pipeline).unwrap();
         assert!(yaml.contains("steps:"));
         assert!(yaml.contains("label: Test"));
+    }
+
+    #[test]
+    fn test_pipeline_with_env() {
+        let mut env = HashMap::new();
+        env.insert("CI".to_string(), "true".to_string());
+        let pipeline = Pipeline { steps: vec![], env };
+        let yaml = serde_yaml::to_string(&pipeline).unwrap();
+        assert!(yaml.contains("env:"));
+        assert!(yaml.contains("CI: 'true'"));
+    }
+
+    #[test]
+    fn test_step_variants() {
+        let command = Step::Command(Box::default());
+        let block = Step::Block(BlockStep::new("Approve"));
+        let wait = Step::Wait(WaitStep::default());
+        let group = Step::Group(GroupStep {
+            group: "Test".to_string(),
+            key: None,
+            steps: vec![],
+            depends_on: vec![],
+        });
+
+        // All should serialize without panic
+        let _ = serde_yaml::to_string(&command).unwrap();
+        let _ = serde_yaml::to_string(&block).unwrap();
+        let _ = serde_yaml::to_string(&wait).unwrap();
+        let _ = serde_yaml::to_string(&group).unwrap();
     }
 }

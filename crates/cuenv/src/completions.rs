@@ -209,6 +209,8 @@ pub fn task_completer() -> ArgValueCandidates {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::fs;
 
     #[test]
     fn test_complete_tasks() {
@@ -223,5 +225,97 @@ mod tests {
         // Should return empty when no config exists
         let tasks = get_available_tasks("/nonexistent", "cuenv");
         assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn test_find_cue_module_root_nonexistent() {
+        let result = find_cue_module_root(Path::new("/nonexistent/path/that/does/not/exist"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_cue_module_root_no_cue_mod() {
+        // Use temp directory that definitely doesn't have cue.mod
+        let temp = env::temp_dir();
+        let result = find_cue_module_root(&temp);
+        // May or may not find one depending on system, just verify no panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_find_cue_module_root_with_cue_mod() {
+        // Create temp directory with cue.mod
+        let temp = tempfile::tempdir().unwrap();
+        let cue_mod = temp.path().join("cue.mod");
+        fs::create_dir(&cue_mod).unwrap();
+
+        // The module root should be found
+        let result = find_cue_module_root(temp.path());
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), temp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_find_cue_module_root_in_subdirectory() {
+        // Create temp directory with cue.mod and a nested subdirectory
+        let temp = tempfile::tempdir().unwrap();
+        let cue_mod = temp.path().join("cue.mod");
+        fs::create_dir(&cue_mod).unwrap();
+
+        let subdir = temp.path().join("foo").join("bar");
+        fs::create_dir_all(&subdir).unwrap();
+
+        // Should find root from subdirectory
+        let result = find_cue_module_root(&subdir);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), temp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_get_available_tasks_empty_path() {
+        let tasks = get_available_tasks("", "cuenv");
+        // May be empty or not depending on cwd, just verify no panic
+        let _ = tasks;
+    }
+
+    #[test]
+    fn test_get_available_tasks_invalid_package() {
+        let tasks = get_available_tasks(".", "nonexistent_package_name");
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn test_complete_task_params_no_task() {
+        let params = complete_task_params("nonexistent_task");
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_get_task_params_nonexistent_path() {
+        let result = get_task_params("/nonexistent", "cuenv", "test");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_task_params_invalid_package() {
+        let result = get_task_params(".", "invalid_package", "test");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_task_completer_returns_candidates() {
+        let completer = task_completer();
+        // Just verify it can be created
+        let _ = completer;
+    }
+
+    #[test]
+    fn test_complete_tasks_produces_candidates() {
+        // Test the actual completion function output type
+        let candidates = complete_tasks();
+        // Whether empty or not, the return type should be correct
+        for candidate in &candidates {
+            let _ = format!("{candidate:?}");
+        }
     }
 }

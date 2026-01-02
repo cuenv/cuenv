@@ -205,4 +205,113 @@ mod tests {
         assert_eq!(parse_digest("sha512:def456"), ("sha512", "def456"));
         assert_eq!(parse_digest("abc123"), ("sha256", "abc123"));
     }
+
+    #[test]
+    fn test_cache_default() {
+        let cache = OciCache::default();
+        // Default cache should be in user's cache directory
+        let root = cache.root();
+        assert!(root.to_string_lossy().contains("oci"));
+    }
+
+    #[test]
+    fn test_cache_root() {
+        let cache = OciCache::new(PathBuf::from("/custom/cache"));
+        assert_eq!(cache.root(), Path::new("/custom/cache"));
+    }
+
+    #[test]
+    fn test_cache_clone() {
+        let cache = OciCache::new(PathBuf::from("/tmp/test"));
+        let cloned = cache.clone();
+        assert_eq!(cache.root(), cloned.root());
+    }
+
+    #[test]
+    fn test_cache_debug() {
+        let cache = OciCache::new(PathBuf::from("/tmp/test"));
+        let debug = format!("{cache:?}");
+        assert!(debug.contains("OciCache"));
+        assert!(debug.contains("/tmp/test"));
+    }
+
+    #[test]
+    fn test_has_blob_missing() {
+        let temp = TempDir::new().unwrap();
+        let cache = OciCache::new(temp.path().to_path_buf());
+        assert!(!cache.has_blob("sha256:nonexistent"));
+    }
+
+    #[test]
+    fn test_has_binary_missing() {
+        let temp = TempDir::new().unwrap();
+        let cache = OciCache::new(temp.path().to_path_buf());
+        assert!(!cache.has_binary("sha256:nonexistent", "missing"));
+    }
+
+    #[test]
+    fn test_get_binary_missing() {
+        let temp = TempDir::new().unwrap();
+        let cache = OciCache::new(temp.path().to_path_buf());
+        assert!(cache.get_binary("sha256:nonexistent", "missing").is_none());
+    }
+
+    #[test]
+    fn test_store_blob() -> Result<()> {
+        let temp = TempDir::new()?;
+        let cache = OciCache::new(temp.path().to_path_buf());
+
+        // Create a test file
+        let source = temp.path().join("source_blob");
+        std::fs::write(&source, b"blob data")?;
+
+        let digest = "sha256:blobhash123";
+        let stored = cache.store_blob(digest, &source)?;
+
+        assert!(cache.has_blob(digest));
+        assert_eq!(stored, cache.blob_path(digest));
+
+        let content = std::fs::read(&stored)?;
+        assert_eq!(content, b"blob data");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ensure_dirs() -> Result<()> {
+        let temp = TempDir::new()?;
+        let cache = OciCache::new(temp.path().to_path_buf());
+        cache.ensure_dirs()?;
+
+        assert!(temp.path().join("blobs").join("sha256").exists());
+        assert!(temp.path().join("bin").join("sha256").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_blob_path_without_prefix() {
+        let cache = OciCache::new(PathBuf::from("/tmp/cache"));
+        // When no prefix, defaults to sha256
+        assert_eq!(
+            cache.blob_path("abc123"),
+            PathBuf::from("/tmp/cache/blobs/sha256/abc123")
+        );
+    }
+
+    #[test]
+    fn test_binary_dir_without_prefix() {
+        let cache = OciCache::new(PathBuf::from("/tmp/cache"));
+        assert_eq!(
+            cache.binary_dir("xyz789"),
+            PathBuf::from("/tmp/cache/bin/sha256/xyz789")
+        );
+    }
+
+    #[test]
+    fn test_parse_digest_sha512() {
+        let (algo, hash) = parse_digest("sha512:longhashvalue");
+        assert_eq!(algo, "sha512");
+        assert_eq!(hash, "longhashvalue");
+    }
 }

@@ -175,4 +175,132 @@ mod tests {
         assert!(names.contains(&"github"));
         assert!(names.contains(&"nix"));
     }
+
+    #[test]
+    fn test_registry_new() {
+        let registry = ToolRegistry::new();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_registry_default() {
+        let registry = ToolRegistry::default();
+        assert!(registry.is_empty());
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn test_registry_register_replaces_existing() {
+        let mut registry = ToolRegistry::new();
+        registry.register(MockProvider { name: "github" });
+        registry.register(MockProvider { name: "github" });
+
+        // Should still have only one provider
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_register_arc() {
+        let mut registry = ToolRegistry::new();
+        let provider: Arc<dyn ToolProvider> = Arc::new(MockProvider { name: "github" });
+        registry.register_arc(provider);
+
+        assert!(registry.get("github").is_some());
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_register_arc_replaces_existing() {
+        let mut registry = ToolRegistry::new();
+        registry.register(MockProvider { name: "github" });
+
+        let provider: Arc<dyn ToolProvider> = Arc::new(MockProvider { name: "github" });
+        registry.register_arc(provider);
+
+        // Should still have only one provider
+        assert_eq!(registry.len(), 1);
+    }
+
+    #[test]
+    fn test_registry_names() {
+        let mut registry = ToolRegistry::new();
+        registry.register(MockProvider { name: "github" });
+        registry.register(MockProvider { name: "nix" });
+        registry.register(MockProvider { name: "rustup" });
+
+        let names = registry.names();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"github"));
+        assert!(names.contains(&"nix"));
+        assert!(names.contains(&"rustup"));
+    }
+
+    #[test]
+    fn test_registry_names_empty() {
+        let registry = ToolRegistry::new();
+        let names = registry.names();
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn test_registry_debug() {
+        let mut registry = ToolRegistry::new();
+        registry.register(MockProvider { name: "github" });
+
+        let debug_str = format!("{:?}", registry);
+        assert!(debug_str.contains("ToolRegistry"));
+        assert!(debug_str.contains("providers"));
+        assert!(debug_str.contains("github"));
+    }
+
+    #[test]
+    fn test_registry_debug_empty() {
+        let registry = ToolRegistry::new();
+        let debug_str = format!("{:?}", registry);
+        assert!(debug_str.contains("ToolRegistry"));
+    }
+
+    #[test]
+    fn test_registry_find_for_source_no_match() {
+        let mut registry = ToolRegistry::new();
+        // Register github provider that only handles GitHub sources
+        registry.register(MockProvider { name: "github" });
+
+        // Try to find a provider for a Rustup source - should return None
+        let source = ToolSource::Rustup {
+            toolchain: "stable".into(),
+            profile: None,
+            components: vec![],
+            targets: vec![],
+        };
+        assert!(registry.find_for_source(&source).is_none());
+    }
+
+    #[test]
+    fn test_registry_find_for_source_oci() {
+        let registry = ToolRegistry::new();
+
+        let source = ToolSource::Oci {
+            image: "alpine:latest".into(),
+            path: "bin/sh".into(),
+        };
+        // Empty registry has no provider
+        assert!(registry.find_for_source(&source).is_none());
+    }
+
+    #[test]
+    fn test_registry_get_nonexistent() {
+        let registry = ToolRegistry::new();
+        assert!(registry.get("nonexistent").is_none());
+        assert!(registry.get("github").is_none());
+        assert!(registry.get("").is_none());
+    }
+
+    #[test]
+    fn test_registry_iter_empty() {
+        let registry = ToolRegistry::new();
+        let count = registry.iter().count();
+        assert_eq!(count, 0);
+    }
 }

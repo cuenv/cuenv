@@ -252,4 +252,172 @@ mod tests {
         // Sender still works because it has its own clone of the channel
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_event_bus_with_capacity() {
+        let bus = EventBus::with_capacity(10);
+        let sender = bus.sender();
+        assert!(!sender.is_closed());
+        assert_eq!(bus.subscriber_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_default() {
+        let bus = EventBus::default();
+        let sender = bus.sender();
+        assert!(!sender.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_event_receiver_try_recv_empty() {
+        let bus = EventBus::new();
+        let _sender = bus.sender();
+        let mut receiver = bus.subscribe();
+
+        // No events sent yet
+        let result = receiver.try_recv();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_event_receiver_try_recv_with_event() {
+        let bus = EventBus::new();
+        let sender = bus.sender();
+        let mut receiver = bus.subscribe();
+
+        let event = make_test_event();
+        let event_id = event.id;
+        sender.send(event).unwrap();
+
+        // Give the background task time to process
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        let result = receiver.try_recv();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, event_id);
+    }
+
+    #[test]
+    fn test_send_error_display() {
+        let err = SendError::Closed;
+        assert_eq!(format!("{err}"), "event bus is closed");
+    }
+
+    #[test]
+    fn test_send_error_equality() {
+        assert_eq!(SendError::Closed, SendError::Closed);
+    }
+
+    #[test]
+    fn test_send_error_debug() {
+        let err = SendError::Closed;
+        let debug_str = format!("{err:?}");
+        assert!(debug_str.contains("Closed"));
+    }
+
+    #[test]
+    fn test_send_error_is_error() {
+        let err = SendError::Closed;
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[tokio::test]
+    async fn test_event_sender_into_inner() {
+        let bus = EventBus::new();
+        let sender = bus.sender();
+        let inner = sender.into_inner();
+        assert!(!inner.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_event_bus_debug() {
+        let bus = EventBus::new();
+        let debug_str = format!("{bus:?}");
+        assert!(debug_str.contains("EventBus"));
+    }
+
+    #[tokio::test]
+    async fn test_event_sender_debug() {
+        let bus = EventBus::new();
+        let sender = bus.sender();
+        let debug_str = format!("{sender:?}");
+        assert!(debug_str.contains("EventSender"));
+    }
+
+    #[tokio::test]
+    async fn test_event_receiver_debug() {
+        let bus = EventBus::new();
+        let receiver = bus.subscribe();
+        let debug_str = format!("{receiver:?}");
+        assert!(debug_str.contains("EventReceiver"));
+    }
+
+    #[tokio::test]
+    async fn test_multiple_events_in_order() {
+        let bus = EventBus::new();
+        let sender = bus.sender();
+        let mut receiver = bus.subscribe();
+
+        let event1 = make_test_event();
+        let event2 = make_test_event();
+        let event3 = make_test_event();
+
+        let id1 = event1.id;
+        let id2 = event2.id;
+        let id3 = event3.id;
+
+        sender.send(event1).unwrap();
+        sender.send(event2).unwrap();
+        sender.send(event3).unwrap();
+
+        let r1 = receiver.recv().await.unwrap();
+        let r2 = receiver.recv().await.unwrap();
+        let r3 = receiver.recv().await.unwrap();
+
+        assert_eq!(r1.id, id1);
+        assert_eq!(r2.id, id2);
+        assert_eq!(r3.id, id3);
+    }
+
+    #[tokio::test]
+    async fn test_sender_clone() {
+        let bus = EventBus::new();
+        let sender1 = bus.sender();
+        let sender2 = sender1.clone();
+
+        let mut receiver = bus.subscribe();
+
+        let event1 = make_test_event();
+        let event2 = make_test_event();
+
+        let id1 = event1.id;
+        let id2 = event2.id;
+
+        sender1.send(event1).unwrap();
+        sender2.send(event2).unwrap();
+
+        let r1 = receiver.recv().await.unwrap();
+        let r2 = receiver.recv().await.unwrap();
+
+        assert_eq!(r1.id, id1);
+        assert_eq!(r2.id, id2);
+    }
+
+    #[tokio::test]
+    async fn test_subscriber_count_changes() {
+        let bus = EventBus::new();
+        assert_eq!(bus.subscriber_count(), 0);
+
+        let recv1 = bus.subscribe();
+        assert_eq!(bus.subscriber_count(), 1);
+
+        let recv2 = bus.subscribe();
+        assert_eq!(bus.subscriber_count(), 2);
+
+        drop(recv1);
+        assert_eq!(bus.subscriber_count(), 1);
+
+        drop(recv2);
+        assert_eq!(bus.subscriber_count(), 0);
+    }
 }

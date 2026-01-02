@@ -118,6 +118,10 @@ pub fn discover_projects_from_module(module: &ModuleEvaluation) -> Vec<Discovere
 mod tests {
     use super::*;
 
+    // ==========================================================================
+    // DiscoveredCIProject tests
+    // ==========================================================================
+
     #[test]
     fn test_discovered_ci_project_fields() {
         let project = DiscoveredCIProject {
@@ -181,6 +185,37 @@ mod tests {
     }
 
     #[test]
+    fn test_discovered_ci_project_clone() {
+        let project = DiscoveredCIProject {
+            path: PathBuf::from("/project/env.cue"),
+            module_root: PathBuf::from("/project"),
+            relative_path: PathBuf::from("."),
+            config: Project::default(),
+        };
+
+        let cloned = project.clone();
+        assert_eq!(cloned.path, project.path);
+        assert_eq!(cloned.module_root, project.module_root);
+    }
+
+    #[test]
+    fn test_discovered_ci_project_debug() {
+        let project = DiscoveredCIProject {
+            path: PathBuf::from("/project/env.cue"),
+            module_root: PathBuf::from("/project"),
+            relative_path: PathBuf::from("."),
+            config: Project::default(),
+        };
+
+        let debug_str = format!("{:?}", project);
+        assert!(debug_str.contains("DiscoveredCIProject"));
+    }
+
+    // ==========================================================================
+    // find_cue_module_root tests
+    // ==========================================================================
+
+    #[test]
     fn test_find_cue_module_root_from_nested_dir() {
         use std::fs;
         use tempfile::TempDir;
@@ -219,5 +254,92 @@ mod tests {
             found.is_none(),
             "Should not find module root without cue.mod"
         );
+    }
+
+    #[test]
+    fn test_find_cue_module_root_from_root() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Create cue.mod at root
+        fs::create_dir_all(root.join("cue.mod")).expect("Failed to create cue.mod");
+
+        // Find from root itself
+        let found = find_cue_module_root(root);
+        assert!(found.is_some());
+    }
+
+    #[test]
+    fn test_find_cue_module_root_deeply_nested() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Create cue.mod at root
+        fs::create_dir_all(root.join("cue.mod")).expect("Failed to create cue.mod");
+
+        // Create deeply nested directory
+        let nested = root.join("a").join("b").join("c").join("d").join("e");
+        fs::create_dir_all(&nested).expect("Failed to create nested dir");
+
+        // Should still find module root
+        let found = find_cue_module_root(&nested);
+        assert!(found.is_some());
+        assert_eq!(
+            found.unwrap().canonicalize().unwrap(),
+            root.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_find_cue_module_root_cue_mod_file_not_dir() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Create cue.mod as a FILE (not directory) - should not be recognized
+        fs::write(root.join("cue.mod"), "not a directory").expect("Failed to create file");
+
+        let found = find_cue_module_root(root);
+        assert!(found.is_none(), "File named cue.mod should not count as module root");
+    }
+
+    #[test]
+    fn test_find_cue_module_root_intermediate_cue_mod() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let root = temp_dir.path();
+
+        // Create cue.mod in an intermediate directory
+        let intermediate = root.join("project");
+        fs::create_dir_all(intermediate.join("cue.mod")).expect("Failed to create cue.mod");
+
+        // Create deeply nested directory
+        let nested = intermediate.join("services").join("api");
+        fs::create_dir_all(&nested).expect("Failed to create nested dir");
+
+        // Should find the intermediate cue.mod, not walk all the way up
+        let found = find_cue_module_root(&nested);
+        assert!(found.is_some());
+        assert_eq!(
+            found.unwrap().canonicalize().unwrap(),
+            intermediate.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn test_find_cue_module_root_nonexistent_path() {
+        let path = PathBuf::from("/nonexistent/path/that/does/not/exist");
+        let found = find_cue_module_root(&path);
+        assert!(found.is_none());
     }
 }

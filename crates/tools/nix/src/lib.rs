@@ -206,11 +206,32 @@ impl ToolProvider for NixToolProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::tools::{Arch, Os};
 
     #[test]
     fn test_provider_name() {
         let provider = NixToolProvider::new();
         assert_eq!(provider.name(), "nix");
+    }
+
+    #[test]
+    fn test_provider_description() {
+        let provider = NixToolProvider::new();
+        assert_eq!(provider.description(), "Build tools from Nix flakes");
+    }
+
+    #[test]
+    fn test_provider_default() {
+        let provider = NixToolProvider::default();
+        assert_eq!(provider.name(), "nix");
+        // Default provider has no flakes registered
+        assert!(provider.resolve_flake("stable").is_none());
+    }
+
+    #[test]
+    fn test_provider_new_empty_flakes() {
+        let provider = NixToolProvider::new();
+        assert!(provider.resolve_flake("anything").is_none());
     }
 
     #[test]
@@ -239,6 +260,24 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_flake_with_custom_flakes() {
+        let mut flakes = std::collections::HashMap::new();
+        flakes.insert(
+            "my-tools".to_string(),
+            "github:owner/my-tools-flake".to_string(),
+        );
+        flakes.insert("local".to_string(), "path:./flake".to_string());
+
+        let provider = NixToolProvider::with_flakes(flakes);
+
+        assert_eq!(
+            provider.resolve_flake("my-tools"),
+            Some("github:owner/my-tools-flake")
+        );
+        assert_eq!(provider.resolve_flake("local"), Some("path:./flake"));
+    }
+
+    #[test]
     fn test_can_handle() {
         let provider = NixToolProvider::new();
 
@@ -256,5 +295,113 @@ mod tests {
             path: None,
         };
         assert!(!provider.can_handle(&github_source));
+    }
+
+    #[test]
+    fn test_can_handle_nix_with_output() {
+        let provider = NixToolProvider::new();
+
+        let nix_source = ToolSource::Nix {
+            flake: "github:NixOS/nixpkgs".into(),
+            package: "hello".into(),
+            output: Some("out".to_string()),
+        };
+        assert!(provider.can_handle(&nix_source));
+    }
+
+    #[test]
+    fn test_can_handle_rustup_source() {
+        let provider = NixToolProvider::new();
+
+        let rustup_source = ToolSource::Rustup {
+            toolchain: "stable".into(),
+            profile: None,
+            components: vec![],
+            targets: vec![],
+        };
+        assert!(!provider.can_handle(&rustup_source));
+    }
+
+    #[test]
+    fn test_can_handle_oci_source() {
+        let provider = NixToolProvider::new();
+
+        let oci_source = ToolSource::Oci {
+            image: "alpine:latest".into(),
+            path: "alpine".into(),
+        };
+        assert!(!provider.can_handle(&oci_source));
+    }
+
+    #[test]
+    fn test_is_cached_always_true() {
+        let provider = NixToolProvider::new();
+        let options = ToolOptions::new();
+
+        // Create a resolved tool with Nix source
+        let resolved = ResolvedTool {
+            name: "jq".to_string(),
+            version: "1.7.1".to_string(),
+            platform: Platform::new(Os::Darwin, Arch::Arm64),
+            source: ToolSource::Nix {
+                flake: "github:NixOS/nixpkgs".to_string(),
+                package: "jq".to_string(),
+                output: None,
+            },
+        };
+
+        // Nix tools are always considered cached
+        assert!(provider.is_cached(&resolved, &options));
+    }
+
+    #[test]
+    fn test_is_cached_non_nix_source() {
+        let provider = NixToolProvider::new();
+        let options = ToolOptions::new();
+
+        // Create a resolved tool with GitHub source
+        let resolved = ResolvedTool {
+            name: "mytool".to_string(),
+            version: "1.0.0".to_string(),
+            platform: Platform::new(Os::Linux, Arch::X86_64),
+            source: ToolSource::GitHub {
+                repo: "owner/repo".to_string(),
+                tag: "v1.0.0".to_string(),
+                asset: "file.zip".to_string(),
+                path: None,
+            },
+        };
+
+        // Even non-Nix sources return true since we just return true unconditionally
+        assert!(provider.is_cached(&resolved, &options));
+    }
+
+    #[test]
+    fn test_with_flakes_empty() {
+        let provider = NixToolProvider::with_flakes(std::collections::HashMap::new());
+        assert!(provider.resolve_flake("any").is_none());
+    }
+
+    #[test]
+    fn test_with_flakes_single() {
+        let mut flakes = std::collections::HashMap::new();
+        flakes.insert("nixpkgs".to_string(), "github:NixOS/nixpkgs".to_string());
+
+        let provider = NixToolProvider::with_flakes(flakes);
+        assert_eq!(
+            provider.resolve_flake("nixpkgs"),
+            Some("github:NixOS/nixpkgs")
+        );
+    }
+
+    #[test]
+    fn test_with_flakes_overwrite() {
+        let mut flakes = std::collections::HashMap::new();
+        flakes.insert("stable".to_string(), "first-value".to_string());
+        flakes.insert("stable".to_string(), "second-value".to_string());
+
+        let provider = NixToolProvider::with_flakes(flakes);
+        // HashMap uses last inserted value
+        assert_eq!(provider.resolve_flake("stable"), Some("second-value"));
     }
 }

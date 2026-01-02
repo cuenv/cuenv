@@ -1104,4 +1104,295 @@ mod tests {
         assert!(consumer.success);
         assert!(consumer.stdout.contains("ok"));
     }
+
+    #[test]
+    fn test_summarize_task_failure_with_exit_code() {
+        let result = TaskResult {
+            name: "build".to_string(),
+            exit_code: Some(127),
+            stdout: String::new(),
+            stderr: "command not found".to_string(),
+            success: false,
+        };
+        let summary = summarize_task_failure(&result, 10);
+        assert!(summary.contains("build"));
+        assert!(summary.contains("127"));
+        assert!(summary.contains("command not found"));
+    }
+
+    #[test]
+    fn test_summarize_task_failure_no_exit_code() {
+        let result = TaskResult {
+            name: "killed".to_string(),
+            exit_code: None,
+            stdout: String::new(),
+            stderr: String::new(),
+            success: false,
+        };
+        let summary = summarize_task_failure(&result, 10);
+        assert!(summary.contains("killed"));
+        assert!(summary.contains("unknown"));
+    }
+
+    #[test]
+    fn test_summarize_task_failure_no_output() {
+        let result = TaskResult {
+            name: "silent".to_string(),
+            exit_code: Some(1),
+            stdout: String::new(),
+            stderr: String::new(),
+            success: false,
+        };
+        let summary = summarize_task_failure(&result, 10);
+        assert!(summary.contains("No stdout/stderr"));
+        assert!(summary.contains("RUST_LOG=debug"));
+    }
+
+    #[test]
+    fn test_summarize_task_failure_truncates_long_output() {
+        let result = TaskResult {
+            name: "verbose".to_string(),
+            exit_code: Some(1),
+            stdout: (1..=50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n"),
+            stderr: String::new(),
+            success: false,
+        };
+        let summary = summarize_task_failure(&result, 10);
+        assert!(summary.contains("last 10 of 50 lines"));
+        assert!(summary.contains("line 50"));
+        assert!(!summary.contains("line 1\n")); // First line should be truncated
+    }
+
+    #[test]
+    fn test_summarize_stream_empty() {
+        assert!(summarize_stream("test", "", 10).is_none());
+        assert!(summarize_stream("test", "   ", 10).is_none());
+        assert!(summarize_stream("test", "\n\n", 10).is_none());
+    }
+
+    #[test]
+    fn test_summarize_stream_short() {
+        let result = summarize_stream("stdout", "line 1\nline 2", 10).unwrap();
+        assert!(result.contains("stdout:"));
+        assert!(result.contains("line 1"));
+        assert!(result.contains("line 2"));
+        assert!(!result.contains("last"));
+    }
+
+    #[test]
+    fn test_format_failure_streams_both() {
+        let result = TaskResult {
+            name: "test".to_string(),
+            exit_code: Some(1),
+            stdout: "stdout content".to_string(),
+            stderr: "stderr content".to_string(),
+            success: false,
+        };
+        let formatted = format_failure_streams(&result, 10);
+        assert!(formatted.contains("stdout:"));
+        assert!(formatted.contains("stderr:"));
+        assert!(formatted.contains("stdout content"));
+        assert!(formatted.contains("stderr content"));
+    }
+
+    #[test]
+    fn test_find_workspace_root_with_npm() {
+        let tmp = TempDir::new().unwrap();
+        // Create a workspace structure
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"workspaces": ["packages/*"]}"#,
+        ).unwrap();
+        let subdir = tmp.path().join("packages").join("subpkg");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let root = find_workspace_root(PackageManager::Npm, &subdir);
+        assert_eq!(root, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_find_workspace_root_with_pnpm() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'",
+        ).unwrap();
+        let subdir = tmp.path().join("packages").join("app");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let root = find_workspace_root(PackageManager::Pnpm, &subdir);
+        assert_eq!(root, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_find_workspace_root_with_cargo() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]",
+        ).unwrap();
+        let subdir = tmp.path().join("crates").join("core");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        let root = find_workspace_root(PackageManager::Cargo, &subdir);
+        assert_eq!(root, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_find_workspace_root_no_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let root = find_workspace_root(PackageManager::Npm, tmp.path());
+        // Should return the start path when no workspace is found
+        assert_eq!(root, tmp.path().to_path_buf());
+    }
+
+    #[test]
+    fn test_package_json_has_workspaces_array() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"workspaces": ["packages/*"]}"#,
+        ).unwrap();
+        assert!(package_json_has_workspaces(tmp.path()));
+    }
+
+    #[test]
+    fn test_package_json_has_workspaces_object() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"workspaces": {"packages": ["packages/*"]}}"#,
+        ).unwrap();
+        assert!(package_json_has_workspaces(tmp.path()));
+    }
+
+    #[test]
+    fn test_package_json_no_workspaces() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"name": "test"}"#,
+        ).unwrap();
+        assert!(!package_json_has_workspaces(tmp.path()));
+    }
+
+    #[test]
+    fn test_package_json_empty_workspaces() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"workspaces": []}"#,
+        ).unwrap();
+        assert!(!package_json_has_workspaces(tmp.path()));
+    }
+
+    #[test]
+    fn test_package_json_missing() {
+        let tmp = TempDir::new().unwrap();
+        assert!(!package_json_has_workspaces(tmp.path()));
+    }
+
+    #[test]
+    fn test_cargo_toml_has_workspace() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]",
+        ).unwrap();
+        assert!(cargo_toml_has_workspace(tmp.path()));
+    }
+
+    #[test]
+    fn test_cargo_toml_no_workspace() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"test\"",
+        ).unwrap();
+        assert!(!cargo_toml_has_workspace(tmp.path()));
+    }
+
+    #[test]
+    fn test_cargo_toml_missing() {
+        let tmp = TempDir::new().unwrap();
+        assert!(!cargo_toml_has_workspace(tmp.path()));
+    }
+
+    #[test]
+    fn test_deno_json_has_workspace_array() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("deno.json"),
+            r#"{"workspace": ["./packages/*"]}"#,
+        ).unwrap();
+        assert!(deno_json_has_workspace(tmp.path()));
+    }
+
+    #[test]
+    fn test_deno_json_has_workspace_object() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("deno.json"),
+            r#"{"workspace": {"members": ["./packages/*"]}}"#,
+        ).unwrap();
+        assert!(deno_json_has_workspace(tmp.path()));
+    }
+
+    #[test]
+    fn test_deno_json_no_workspace() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("deno.json"),
+            r#"{"name": "test"}"#,
+        ).unwrap();
+        assert!(!deno_json_has_workspace(tmp.path()));
+    }
+
+    #[test]
+    fn test_deno_json_missing() {
+        let tmp = TempDir::new().unwrap();
+        assert!(!deno_json_has_workspace(tmp.path()));
+    }
+
+    #[test]
+    fn test_executor_config_with_fields() {
+        let config = ExecutorConfig {
+            capture_output: true,
+            max_parallel: 4,
+            working_dir: Some(PathBuf::from("/tmp")),
+            project_root: PathBuf::from("/project"),
+            cue_module_root: Some(PathBuf::from("/project/cue.mod")),
+            materialize_outputs: Some(PathBuf::from("/outputs")),
+            cache_dir: Some(PathBuf::from("/cache")),
+            show_cache_path: true,
+            cli_backend: Some("host".to_string()),
+            ..Default::default()
+        };
+        assert!(config.capture_output);
+        assert_eq!(config.max_parallel, 4);
+        assert_eq!(config.working_dir, Some(PathBuf::from("/tmp")));
+        assert!(config.show_cache_path);
+    }
+
+    #[test]
+    fn test_task_result_clone() {
+        let result = TaskResult {
+            name: "test".to_string(),
+            exit_code: Some(0),
+            stdout: "output".to_string(),
+            stderr: "error".to_string(),
+            success: true,
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.name, result.name);
+        assert_eq!(cloned.exit_code, result.exit_code);
+        assert_eq!(cloned.stdout, result.stdout);
+        assert_eq!(cloned.stderr, result.stderr);
+        assert_eq!(cloned.success, result.success);
+    }
+
+    #[test]
+    fn test_task_failure_snippet_lines_constant() {
+        assert_eq!(TASK_FAILURE_SNIPPET_LINES, 20);
+    }
 }

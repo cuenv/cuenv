@@ -713,4 +713,354 @@ mod tests {
         let result = check_cache(&task, digest, tmp.path(), None);
         assert!(!result.hit);
     }
+
+    #[test]
+    fn test_cache_error_io_with_context() {
+        let err = CacheError::io_with_context(
+            "read",
+            "/some/path",
+            io::Error::new(io::ErrorKind::NotFound, "not found"),
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("read"));
+        assert!(msg.contains("/some/path"));
+        assert!(msg.contains("not found"));
+    }
+
+    #[test]
+    fn test_cache_error_from_io() {
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
+        let cache_err: CacheError = io_err.into();
+        assert!(matches!(cache_err, CacheError::Io(_)));
+    }
+
+    #[test]
+    fn test_cache_error_from_serialization() {
+        // Create a JSON error by trying to parse invalid JSON
+        let json_err = serde_json::from_str::<CacheMetadata>("not json").unwrap_err();
+        let cache_err: CacheError = json_err.into();
+        assert!(matches!(cache_err, CacheError::Serialization(_)));
+    }
+
+    #[test]
+    fn test_cache_result_fields() {
+        let result = CacheResult {
+            hit: true,
+            key: "sha256:test".to_string(),
+            path: Some(PathBuf::from("/cache/te/st/test")),
+        };
+        assert!(result.hit);
+        assert_eq!(result.key, "sha256:test");
+        assert_eq!(result.path, Some(PathBuf::from("/cache/te/st/test")));
+    }
+
+    #[test]
+    fn test_cache_metadata_serialization() {
+        let meta = CacheMetadata {
+            task_id: "build".to_string(),
+            digest: "sha256:abc123".to_string(),
+            command: vec!["cargo".to_string(), "build".to_string()],
+            created_at: Utc::now(),
+            duration_ms: 1500,
+            exit_code: 0,
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let parsed: CacheMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.task_id, "build");
+        assert_eq!(parsed.exit_code, 0);
+        assert_eq!(parsed.duration_ms, 1500);
+    }
+
+    #[test]
+    fn test_task_logs_default() {
+        let logs = TaskLogs::default();
+        assert!(logs.stdout.is_none());
+        assert!(logs.stderr.is_none());
+    }
+
+    #[test]
+    fn test_task_logs_with_content() {
+        let logs = TaskLogs {
+            stdout: Some("hello".to_string()),
+            stderr: Some("error".to_string()),
+        };
+        assert_eq!(logs.stdout.as_deref(), Some("hello"));
+        assert_eq!(logs.stderr.as_deref(), Some("error"));
+    }
+
+    #[test]
+    fn test_cache_path_for_short_digest() {
+        let root = Path::new("/cache");
+        // Short hash should use fallback
+        let path = cache_path_for_digest(root, "ab");
+        assert_eq!(path, PathBuf::from("/cache/ab"));
+    }
+
+    #[test]
+    fn test_load_metadata_nonexistent() {
+        let tmp = TempDir::new().unwrap();
+        let result = load_metadata(tmp.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_logs_nonexistent() {
+        let tmp = TempDir::new().unwrap();
+        let logs = load_logs(tmp.path());
+        assert!(logs.stdout.is_none());
+        assert!(logs.stderr.is_none());
+    }
+
+    #[test]
+    fn test_load_logs_with_content() {
+        let tmp = TempDir::new().unwrap();
+        let logs_dir = tmp.path().join("logs");
+        fs::create_dir_all(&logs_dir).unwrap();
+        fs::write(logs_dir.join("stdout.log"), "output").unwrap();
+        fs::write(logs_dir.join("stderr.log"), "error").unwrap();
+
+        let logs = load_logs(tmp.path());
+        assert_eq!(logs.stdout, Some("output".to_string()));
+        assert_eq!(logs.stderr, Some("error".to_string()));
+    }
+
+    #[test]
+    fn test_local_cache_backend_new() {
+        let backend = LocalCacheBackend::new("/tmp/cache");
+        assert_eq!(backend.name(), "local");
+    }
+
+    #[test]
+    fn test_local_cache_backend_outputs_path() {
+        let backend = LocalCacheBackend::new("/cache");
+        let path = backend.outputs_path("sha256:abc123");
+        assert!(path.to_string_lossy().contains("outputs"));
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_backend_health_check() {
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalCacheBackend::new(tmp.path());
+        let result = backend.health_check().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_backend_check_miss() {
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalCacheBackend::new(tmp.path());
+        let task = make_task("test", CachePolicy::Normal);
+
+        let result = backend
+            .check(&task, "sha256:nonexistent", CachePolicy::Normal)
+            .await
+            .unwrap();
+        assert!(!result.hit);
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_backend_check_skips_on_policy() {
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalCacheBackend::new(tmp.path());
+        let task = make_task("test", CachePolicy::Writeonly);
+
+        let result = backend
+            .check(&task, "sha256:test", CachePolicy::Writeonly)
+            .await
+            .unwrap();
+        assert!(!result.hit);
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_backend_store_and_check() {
+        use crate::executor::backend::CacheEntry;
+
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalCacheBackend::new(tmp.path());
+        let task = make_task("test", CachePolicy::Normal);
+        let digest = "sha256:store_test_123456";
+
+        let entry = CacheEntry {
+            exit_code: 0,
+            duration_ms: 500,
+            stdout: Some("hello".to_string()),
+            stderr: None,
+            outputs: vec![],
+        };
+
+        backend
+            .store(&task, digest, &entry, CachePolicy::Normal)
+            .await
+            .unwrap();
+
+        let result = backend
+            .check(&task, digest, CachePolicy::Normal)
+            .await
+            .unwrap();
+        assert!(result.hit);
+        assert_eq!(result.cached_duration_ms, Some(500));
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_backend_get_logs() {
+        use crate::executor::backend::CacheEntry;
+
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalCacheBackend::new(tmp.path());
+        let task = make_task("test", CachePolicy::Normal);
+        let digest = "sha256:logs_test_123456";
+
+        let entry = CacheEntry {
+            exit_code: 0,
+            duration_ms: 100,
+            stdout: Some("stdout content".to_string()),
+            stderr: Some("stderr content".to_string()),
+            outputs: vec![],
+        };
+
+        backend
+            .store(&task, digest, &entry, CachePolicy::Normal)
+            .await
+            .unwrap();
+
+        let (stdout, stderr) = backend.get_logs(&task, digest).await.unwrap();
+        assert_eq!(stdout, Some("stdout content".to_string()));
+        assert_eq!(stderr, Some("stderr content".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_backend_store_skips_on_readonly() {
+        use crate::executor::backend::CacheEntry;
+
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalCacheBackend::new(tmp.path());
+        let task = make_task("test", CachePolicy::Readonly);
+        let digest = "sha256:readonly_test";
+
+        let entry = CacheEntry {
+            exit_code: 0,
+            duration_ms: 100,
+            stdout: None,
+            stderr: None,
+            outputs: vec![],
+        };
+
+        backend
+            .store(&task, digest, &entry, CachePolicy::Readonly)
+            .await
+            .unwrap();
+
+        // Should not be stored due to readonly policy
+        let result = backend
+            .check(&task, digest, CachePolicy::Normal)
+            .await
+            .unwrap();
+        assert!(!result.hit);
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_backend_restore_outputs_empty() {
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalCacheBackend::new(tmp.path());
+        let task = make_task("test", CachePolicy::Normal);
+
+        let outputs = backend
+            .restore_outputs(&task, "sha256:nonexistent", tmp.path())
+            .await
+            .unwrap();
+        assert!(outputs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_backend_store_with_outputs() {
+        use crate::executor::backend::{CacheEntry, CacheOutput};
+
+        let tmp = TempDir::new().unwrap();
+        let backend = LocalCacheBackend::new(tmp.path());
+        let task = make_task("test", CachePolicy::Normal);
+        let digest = "sha256:outputs_test_123456";
+
+        let entry = CacheEntry {
+            exit_code: 0,
+            duration_ms: 100,
+            stdout: None,
+            stderr: None,
+            outputs: vec![CacheOutput {
+                path: "build/output.txt".to_string(),
+                data: b"output content".to_vec(),
+                is_executable: false,
+            }],
+        };
+
+        backend
+            .store(&task, digest, &entry, CachePolicy::Normal)
+            .await
+            .unwrap();
+
+        // Verify the output was stored
+        let outputs_dir = backend.outputs_path(digest);
+        assert!(outputs_dir.join("build/output.txt").exists());
+    }
+
+    #[test]
+    fn test_walkdir_empty() {
+        let tmp = TempDir::new().unwrap();
+        let files = walkdir(tmp.path()).unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_walkdir_with_files() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("file1.txt"), "content").unwrap();
+        fs::create_dir_all(tmp.path().join("subdir")).unwrap();
+        fs::write(tmp.path().join("subdir/file2.txt"), "content").unwrap();
+
+        let files = walkdir(tmp.path()).unwrap();
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_is_file_executable() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("script.sh");
+        fs::write(&path, "#!/bin/bash").unwrap();
+
+        // Initially not executable
+        assert!(!is_file_executable(&path));
+
+        // Make executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&path, perms).unwrap();
+            assert!(is_file_executable(&path));
+        }
+    }
+
+    #[test]
+    fn test_store_result_with_logs() {
+        let tmp = TempDir::new().unwrap();
+        let task = make_task("test", CachePolicy::Normal);
+        let digest = "sha256:fulltest123456";
+
+        let logs = TaskLogs {
+            stdout: Some("stdout content".to_string()),
+            stderr: Some("stderr content".to_string()),
+        };
+        store_result(&task, digest, tmp.path(), &logs, 250, 1, None).unwrap();
+
+        // Verify logs were written
+        let cache_path = cache_path_for_digest(tmp.path(), digest);
+        let logs_dir = cache_path.join("logs");
+        assert!(logs_dir.join("stdout.log").exists());
+        assert!(logs_dir.join("stderr.log").exists());
+
+        // Verify metadata
+        let meta = load_metadata(&cache_path).unwrap();
+        assert_eq!(meta.exit_code, 1);
+        assert_eq!(meta.duration_ms, 250);
+    }
 }

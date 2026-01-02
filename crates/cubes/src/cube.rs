@@ -247,10 +247,242 @@ mod tests {
     }
 
     #[test]
+    fn test_file_mode_serde_managed() {
+        let json = r#""managed""#;
+        let mode: FileMode = serde_json::from_str(json).unwrap();
+        assert_eq!(mode, FileMode::Managed);
+        assert_eq!(serde_json::to_string(&mode).unwrap(), json);
+    }
+
+    #[test]
+    fn test_file_mode_serde_scaffold() {
+        let json = r#""scaffold""#;
+        let mode: FileMode = serde_json::from_str(json).unwrap();
+        assert_eq!(mode, FileMode::Scaffold);
+        assert_eq!(serde_json::to_string(&mode).unwrap(), json);
+    }
+
+    #[test]
+    fn test_file_mode_clone() {
+        let mode = FileMode::Managed;
+        let cloned = mode;
+        assert_eq!(mode, cloned);
+    }
+
+    #[test]
+    fn test_file_mode_copy() {
+        let mode = FileMode::Scaffold;
+        let copied = mode;
+        assert_eq!(mode, copied);
+    }
+
+    #[test]
     fn test_format_config_default() {
         let config = FormatConfig::default();
         assert_eq!(config.indent, "space");
         assert_eq!(config.indent_size, Some(2));
         assert_eq!(config.line_width, Some(100));
+        assert!(config.trailing_comma.is_none());
+        assert!(config.semicolons.is_none());
+        assert!(config.quotes.is_none());
+    }
+
+    #[test]
+    fn test_format_config_clone() {
+        let config = FormatConfig {
+            indent: "tab".to_string(),
+            indent_size: Some(4),
+            line_width: Some(120),
+            trailing_comma: Some("all".to_string()),
+            semicolons: Some(true),
+            quotes: Some("single".to_string()),
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.indent, "tab");
+        assert_eq!(cloned.indent_size, Some(4));
+        assert_eq!(cloned.line_width, Some(120));
+        assert_eq!(cloned.trailing_comma, Some("all".to_string()));
+        assert_eq!(cloned.semicolons, Some(true));
+        assert_eq!(cloned.quotes, Some("single".to_string()));
+    }
+
+    #[test]
+    fn test_format_config_serde_roundtrip() {
+        let config = FormatConfig {
+            indent: "space".to_string(),
+            indent_size: Some(2),
+            line_width: Some(80),
+            trailing_comma: Some("es5".to_string()),
+            semicolons: Some(false),
+            quotes: Some("double".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: FormatConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(config.indent, deserialized.indent);
+        assert_eq!(config.indent_size, deserialized.indent_size);
+        assert_eq!(config.quotes, deserialized.quotes);
+    }
+
+    #[test]
+    fn test_project_file_definition_serde() {
+        let def = ProjectFileDefinition {
+            content: "test content".to_string(),
+            language: "json".to_string(),
+            mode: FileMode::Scaffold,
+            format: FormatConfig::default(),
+            gitignore: true,
+        };
+        let json = serde_json::to_string(&def).unwrap();
+        let deserialized: ProjectFileDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.content, "test content");
+        assert_eq!(deserialized.language, "json");
+        assert_eq!(deserialized.mode, FileMode::Scaffold);
+        assert!(deserialized.gitignore);
+    }
+
+    #[test]
+    fn test_project_file_definition_defaults() {
+        // Test that serde default attributes work
+        let json = r#"{"content":"x","language":"rust"}"#;
+        let def: ProjectFileDefinition = serde_json::from_str(json).unwrap();
+        assert_eq!(def.mode, FileMode::Managed); // default
+        assert!(!def.gitignore); // default
+    }
+
+    #[test]
+    fn test_cube_data_serde() {
+        let mut files = HashMap::new();
+        files.insert(
+            "test.rs".to_string(),
+            ProjectFileDefinition {
+                content: "fn main() {}".to_string(),
+                language: "rust".to_string(),
+                mode: FileMode::Managed,
+                format: FormatConfig::default(),
+                gitignore: false,
+            },
+        );
+        let data = CubeData {
+            files,
+            context: serde_json::json!({"key": "value"}),
+        };
+        let json = serde_json::to_string(&data).unwrap();
+        let deserialized: CubeData = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.files.contains_key("test.rs"));
+        assert_eq!(deserialized.context["key"], "value");
+    }
+
+    #[test]
+    fn test_cube_data_default_context() {
+        let json = r#"{"files":{}}"#;
+        let data: CubeData = serde_json::from_str(json).unwrap();
+        assert!(data.files.is_empty());
+        assert!(data.context.is_null());
+    }
+
+    #[test]
+    fn test_cube_accessors() {
+        let mut files = HashMap::new();
+        files.insert(
+            "example.js".to_string(),
+            ProjectFileDefinition {
+                content: "console.log('hi')".to_string(),
+                language: "javascript".to_string(),
+                mode: FileMode::Managed,
+                format: FormatConfig::default(),
+                gitignore: false,
+            },
+        );
+        let cube = Cube {
+            data: CubeData {
+                files,
+                context: serde_json::json!({"project": "test"}),
+            },
+            source_path: PathBuf::from("/path/to/cube.cue"),
+        };
+
+        assert_eq!(cube.files().len(), 1);
+        assert!(cube.files().contains_key("example.js"));
+        assert_eq!(cube.context()["project"], "test");
+        assert_eq!(cube.source_path(), Path::new("/path/to/cube.cue"));
+    }
+
+    #[test]
+    fn test_cube_load_nonexistent_file() {
+        let result = Cube::load("/nonexistent/path/cube.cue");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Cube file not found"));
+    }
+
+    #[test]
+    fn test_determine_package_name_finds_package() {
+        use std::io::Write;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.cue");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        writeln!(file, "// comment").unwrap();
+        writeln!(file, "package mypackage").unwrap();
+        writeln!(file).unwrap();
+        writeln!(file, "data: 123").unwrap();
+
+        let name = Cube::determine_package_name(&file_path).unwrap();
+        assert_eq!(name, "mypackage");
+    }
+
+    #[test]
+    fn test_determine_package_name_defaults() {
+        use std::io::Write;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.cue");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        writeln!(file, "// no package declaration").unwrap();
+        writeln!(file, "data: 123").unwrap();
+
+        let name = Cube::determine_package_name(&file_path).unwrap();
+        assert_eq!(name, "cubes");
+    }
+
+    #[test]
+    fn test_determine_package_name_file_not_found() {
+        let result = Cube::determine_package_name(Path::new("/nonexistent/file.cue"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Failed to read cube file"));
+    }
+
+    #[test]
+    fn test_find_cue_module_root_found() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cue_mod = temp_dir.path().join("cue.mod");
+        std::fs::create_dir(&cue_mod).unwrap();
+        let subdir = temp_dir.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+
+        let root = Cube::find_cue_module_root(&subdir);
+        assert!(root.is_some());
+        assert_eq!(root.unwrap(), temp_dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_find_cue_module_root_not_found() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = Cube::find_cue_module_root(temp_dir.path());
+        assert!(root.is_none());
+    }
+
+    #[test]
+    fn test_cube_load_no_cue_module() {
+        use std::io::Write;
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("cube.cue");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        writeln!(file, "package test").unwrap();
+        writeln!(file, "files: {{}}").unwrap();
+
+        let result = Cube::load(&file_path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("No CUE module found"));
     }
 }

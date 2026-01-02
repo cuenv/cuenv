@@ -175,4 +175,139 @@ mod tests {
             Some(StringOrVec::String("ubuntu-latest".to_string()))
         );
     }
+
+    #[test]
+    fn test_github_config_default() {
+        let config = GitHubConfig::default();
+        assert!(config.runner.is_none());
+        assert!(config.runners.is_none());
+        assert!(config.cachix.is_none());
+        assert!(config.artifacts.is_none());
+        assert!(config.trusted_publishing.is_none());
+        assert!(config.paths_ignore.is_none());
+        assert!(config.permissions.is_none());
+    }
+
+    #[test]
+    fn test_trusted_publishing_config_default() {
+        let config = TrustedPublishingConfig::default();
+        assert!(config.crates_io.is_none());
+    }
+
+    #[test]
+    fn test_artifacts_config_default() {
+        let config = ArtifactsConfig::default();
+        assert!(config.paths.is_none());
+        assert!(config.if_no_files_found.is_none());
+    }
+
+    #[test]
+    fn test_cachix_config_serde() {
+        let config = CachixConfig {
+            name: "my-cache".to_string(),
+            auth_token: Some("CACHIX_TOKEN".to_string()),
+            push_filter: Some(".*".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("my-cache"));
+        assert!(json.contains("CACHIX_TOKEN"));
+
+        let parsed: CachixConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "my-cache");
+    }
+
+    #[test]
+    fn test_github_config_serde() {
+        let json = json!({
+            "runner": "ubuntu-latest",
+            "cachix": {
+                "name": "test-cache"
+            },
+            "pathsIgnore": ["*.md", "docs/*"]
+        });
+        let config: GitHubConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            config.runner,
+            Some(StringOrVec::String("ubuntu-latest".to_string()))
+        );
+        assert!(config.cachix.is_some());
+        assert_eq!(config.paths_ignore.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_github_config_for_nonexistent_pipeline() {
+        let ci = CI {
+            provider: Some(
+                serde_json::from_value(json!({
+                    "github": {
+                        "runner": "ubuntu-latest"
+                    }
+                }))
+                .unwrap(),
+            ),
+            contributors: vec![],
+            pipelines: vec![],
+        };
+
+        // Returns global config when pipeline doesn't exist
+        let config = ci.github_config_for_pipeline("nonexistent");
+        assert_eq!(
+            config.runner,
+            Some(StringOrVec::String("ubuntu-latest".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_github_config_no_global_config() {
+        let ci = CI {
+            provider: None,
+            contributors: vec![],
+            pipelines: vec![],
+        };
+
+        let config = ci.github_config_for_pipeline("any");
+        // Returns default config when no global config
+        assert!(config.runner.is_none());
+    }
+
+    #[test]
+    fn test_github_config_with_permissions() {
+        let mut permissions = HashMap::new();
+        permissions.insert("contents".to_string(), "read".to_string());
+        permissions.insert("packages".to_string(), "write".to_string());
+
+        let config = GitHubConfig {
+            permissions: Some(permissions),
+            ..Default::default()
+        };
+
+        let perms = config.permissions.unwrap();
+        assert_eq!(perms.get("contents"), Some(&"read".to_string()));
+        assert_eq!(perms.get("packages"), Some(&"write".to_string()));
+    }
+
+    #[test]
+    fn test_github_config_equality() {
+        let config1 = GitHubConfig {
+            runner: Some(StringOrVec::String("ubuntu-latest".to_string())),
+            ..Default::default()
+        };
+        let config2 = GitHubConfig {
+            runner: Some(StringOrVec::String("ubuntu-latest".to_string())),
+            ..Default::default()
+        };
+        assert_eq!(config1, config2);
+    }
+
+    #[test]
+    fn test_trusted_publishing_with_crates_io() {
+        let config = TrustedPublishingConfig {
+            crates_io: Some(true),
+        };
+        assert_eq!(config.crates_io, Some(true));
+
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: TrustedPublishingConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.crates_io, Some(true));
+    }
 }

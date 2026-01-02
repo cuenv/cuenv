@@ -65,3 +65,88 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::CueEngineError;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn test_retry_config_default() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_attempts, 3);
+        assert_eq!(config.initial_delay, Duration::from_millis(100));
+        assert_eq!(config.max_delay, Duration::from_secs(10));
+        assert!((config.exponential_base - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_with_retry_success_first_attempt() {
+        let config = RetryConfig::default();
+        let result = with_retry(&config, || Ok::<i32, CueEngineError>(42));
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_with_retry_all_failures() {
+        let config = RetryConfig {
+            max_attempts: 2,
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+            exponential_base: 2.0,
+        };
+
+        let result: Result<i32> =
+            with_retry(&config, || Err(CueEngineError::validation("always fails")));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_with_retry_eventual_success() {
+        let config = RetryConfig {
+            max_attempts: 3,
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+            exponential_base: 2.0,
+        };
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let result = with_retry(&config, move || {
+            let current = attempts_clone.fetch_add(1, Ordering::SeqCst);
+            if current < 2 {
+                Err(CueEngineError::validation("fail first two times"))
+            } else {
+                Ok(42)
+            }
+        });
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn test_with_retry_respects_max_attempts() {
+        let config = RetryConfig {
+            max_attempts: 2,
+            initial_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+            exponential_base: 2.0,
+        };
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let result: Result<i32> = with_retry(&config, move || {
+            attempts_clone.fetch_add(1, Ordering::SeqCst);
+            Err(CueEngineError::validation("always fails"))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+}

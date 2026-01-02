@@ -172,3 +172,271 @@ pub enum RulesDiscoveryError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::DirectoryRules;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ==========================================================================
+    // RulesDiscovery construction tests
+    // ==========================================================================
+
+    #[test]
+    fn test_rules_discovery_new() {
+        let discovery = RulesDiscovery::new(PathBuf::from("/some/root"));
+
+        assert_eq!(discovery.root(), Path::new("/some/root"));
+        assert!(discovery.discovered().is_empty());
+    }
+
+    #[test]
+    fn test_rules_discovery_with_eval_fn() {
+        let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
+        let discovery = RulesDiscovery::new(PathBuf::from("/root")).with_eval_fn(eval_fn);
+
+        // Can't directly check if eval_fn is set, but we can verify discover doesn't fail
+        // with NoEvalFunction error (we'll test that separately)
+        assert_eq!(discovery.root(), Path::new("/root"));
+    }
+
+    // ==========================================================================
+    // RulesDiscovery::discover tests
+    // ==========================================================================
+
+    #[test]
+    fn test_discover_no_eval_function_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut discovery = RulesDiscovery::new(temp_dir.path().to_path_buf());
+
+        let result = discovery.discover();
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, RulesDiscoveryError::NoEvalFunction));
+        assert_eq!(err.to_string(), "No evaluation function provided");
+    }
+
+    #[test]
+    fn test_discover_empty_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
+        let mut discovery =
+            RulesDiscovery::new(temp_dir.path().to_path_buf()).with_eval_fn(eval_fn);
+
+        let result = discovery.discover();
+
+        assert!(result.is_ok());
+        assert!(discovery.discovered().is_empty());
+    }
+
+    #[test]
+    fn test_discover_processes_walker_results() {
+        // Test the basic discovery flow without relying on hidden file behavior
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        // Discovery with no .rules.cue files should succeed with empty results
+        let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
+        let mut discovery = RulesDiscovery::new(root.to_path_buf()).with_eval_fn(eval_fn);
+
+        let result = discovery.discover();
+
+        assert!(result.is_ok());
+        // Empty because no .rules.cue files exist
+        assert!(discovery.discovered().is_empty());
+    }
+
+    #[test]
+    fn test_discover_ignores_non_rules_cue_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        // Create various files that should NOT be picked up
+        fs::write(root.join("rules.cue"), "").unwrap(); // Missing leading dot
+        fs::write(root.join(".rules.txt"), "").unwrap(); // Wrong extension
+        fs::write(root.join("config.cue"), "").unwrap(); // Different name
+
+        let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
+        let mut discovery = RulesDiscovery::new(root.to_path_buf()).with_eval_fn(eval_fn);
+
+        let result = discovery.discover();
+
+        assert!(result.is_ok());
+        assert!(discovery.discovered().is_empty());
+    }
+
+    #[test]
+    fn test_discover_eval_failure_continues() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        // Create two .rules.cue files
+        fs::write(root.join(".rules.cue"), "").unwrap();
+        fs::create_dir_all(root.join("subdir")).unwrap();
+        fs::write(root.join("subdir/.rules.cue"), "").unwrap();
+
+        // Eval function that always fails - discovery should still succeed
+        // (failures are logged but not fatal)
+        let eval_fn: RulesEvalFn = Box::new(|_path| Err(crate::Error::configuration("test error")));
+        let mut discovery = RulesDiscovery::new(root.to_path_buf()).with_eval_fn(eval_fn);
+
+        let result = discovery.discover();
+
+        // Should succeed overall, even with eval failures
+        assert!(result.is_ok());
+        // No discoveries because all evaluations failed
+        assert!(discovery.discovered().is_empty());
+    }
+
+    #[test]
+    fn test_discover_clears_previous_results() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
+        let mut discovery = RulesDiscovery::new(root.to_path_buf()).with_eval_fn(eval_fn);
+
+        // First discovery
+        discovery.discover().unwrap();
+        let first_count = discovery.discovered().len();
+
+        // Second discovery - should start fresh (both empty)
+        discovery.discover().unwrap();
+        let second_count = discovery.discovered().len();
+
+        // Both should be empty (no .rules.cue files)
+        assert_eq!(first_count, second_count);
+        assert_eq!(first_count, 0);
+    }
+
+    // ==========================================================================
+    // DiscoveredRules tests
+    // ==========================================================================
+
+    #[test]
+    fn test_discovered_rules_fields() {
+        let discovered = DiscoveredRules {
+            file_path: PathBuf::from("/repo/frontend/.rules.cue"),
+            directory: PathBuf::from("/repo/frontend"),
+            config: DirectoryRules::default(),
+        };
+
+        assert_eq!(
+            discovered.file_path,
+            PathBuf::from("/repo/frontend/.rules.cue")
+        );
+        assert_eq!(discovered.directory, PathBuf::from("/repo/frontend"));
+    }
+
+    #[test]
+    fn test_discovered_rules_clone() {
+        let discovered = DiscoveredRules {
+            file_path: PathBuf::from("/repo/.rules.cue"),
+            directory: PathBuf::from("/repo"),
+            config: DirectoryRules::default(),
+        };
+
+        let cloned = discovered.clone();
+
+        assert_eq!(cloned.file_path, discovered.file_path);
+        assert_eq!(cloned.directory, discovered.directory);
+    }
+
+    // ==========================================================================
+    // RulesDiscoveryError tests
+    // ==========================================================================
+
+    #[test]
+    fn test_rules_discovery_error_invalid_path_display() {
+        let err = RulesDiscoveryError::InvalidPath(PathBuf::from("/bad/path"));
+        assert_eq!(err.to_string(), "Invalid path: /bad/path");
+    }
+
+    #[test]
+    fn test_rules_discovery_error_no_eval_function_display() {
+        let err = RulesDiscoveryError::NoEvalFunction;
+        assert_eq!(err.to_string(), "No evaluation function provided");
+    }
+
+    #[test]
+    fn test_rules_discovery_error_io_display() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err = RulesDiscoveryError::Io(io_err);
+        assert!(err.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn test_rules_discovery_error_eval_error_display() {
+        let inner_err = crate::Error::configuration("CUE syntax error");
+        let err =
+            RulesDiscoveryError::EvalError(PathBuf::from("/repo/.rules.cue"), Box::new(inner_err));
+        let display = err.to_string();
+        assert!(display.contains("/repo/.rules.cue"));
+        assert!(display.contains("CUE syntax error"));
+    }
+
+    #[test]
+    fn test_rules_discovery_error_io_from() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let err: RulesDiscoveryError = io_err.into();
+        assert!(matches!(err, RulesDiscoveryError::Io(_)));
+    }
+
+    // ==========================================================================
+    // load_rules tests (unit testing the internal function)
+    // ==========================================================================
+
+    #[test]
+    fn test_load_rules_sets_correct_directory() {
+        // Test load_rules directly by creating a temporary file and calling it
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let subdir = root.join("frontend").join("components");
+        fs::create_dir_all(&subdir).unwrap();
+        let rules_file = subdir.join(".rules.cue");
+        fs::write(&rules_file, "").unwrap();
+
+        let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
+
+        // Call load_rules directly
+        let result = RulesDiscovery::load_rules(&rules_file, &eval_fn);
+
+        assert!(result.is_ok());
+        let discovered = result.unwrap();
+        assert_eq!(discovered.directory, subdir);
+        assert_eq!(discovered.file_path, rules_file);
+    }
+
+    #[test]
+    fn test_load_rules_eval_fn_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let rules_file = temp_dir.path().join(".rules.cue");
+        fs::write(&rules_file, "").unwrap();
+
+        let eval_fn: RulesEvalFn = Box::new(|_| Err(crate::Error::configuration("parse failed")));
+
+        let result = RulesDiscovery::load_rules(&rules_file, &eval_fn);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, RulesDiscoveryError::EvalError(_, _)));
+    }
+
+    #[test]
+    fn test_root_accessor() {
+        let path = PathBuf::from("/custom/root/path");
+        let discovery = RulesDiscovery::new(path.clone());
+
+        assert_eq!(discovery.root(), path.as_path());
+    }
+
+    #[test]
+    fn test_discovered_accessor_empty() {
+        let discovery = RulesDiscovery::new(PathBuf::from("/root"));
+
+        assert!(discovery.discovered().is_empty());
+    }
+}

@@ -203,9 +203,14 @@ async fn compute_file_digest(path: &Path) -> Result<String> {
 }
 
 #[cfg(test)]
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // ==========================================================================
+    // parse_reference tests
+    // ==========================================================================
 
     #[test]
     fn test_parse_reference() {
@@ -228,6 +233,41 @@ mod tests {
         let r = parse_reference("not a valid reference!!!");
         assert!(r.is_err());
     }
+
+    #[test]
+    fn test_parse_reference_docker_hub_short() {
+        let r = parse_reference("nginx:latest").unwrap();
+        assert_eq!(r.registry(), "docker.io");
+        assert_eq!(r.repository(), "library/nginx");
+        assert_eq!(r.tag(), Some("latest"));
+    }
+
+    #[test]
+    fn test_parse_reference_with_port() {
+        let r = parse_reference("localhost:5000/myimage:v1").unwrap();
+        assert_eq!(r.registry(), "localhost:5000");
+        assert_eq!(r.repository(), "myimage");
+        assert_eq!(r.tag(), Some("v1"));
+    }
+
+    #[test]
+    fn test_parse_reference_no_tag() {
+        // Without a tag, it should default to "latest"
+        let r = parse_reference("nginx").unwrap();
+        assert_eq!(r.repository(), "library/nginx");
+    }
+
+    #[test]
+    fn test_parse_reference_private_registry() {
+        let r = parse_reference("registry.example.com/org/repo:v2.0.0").unwrap();
+        assert_eq!(r.registry(), "registry.example.com");
+        assert_eq!(r.repository(), "org/repo");
+        assert_eq!(r.tag(), Some("v2.0.0"));
+    }
+
+    // ==========================================================================
+    // compute_file_digest tests
+    // ==========================================================================
 
     #[tokio::test]
     async fn test_compute_file_digest() {
@@ -253,11 +293,137 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_compute_file_digest_larger_content() {
+        let temp = TempDir::new().unwrap();
+        let file_path = temp.path().join("large.bin");
+
+        // Write content larger than the buffer size (8192 bytes)
+        let content: Vec<u8> = (0..20000).map(|i| (i % 256) as u8).collect();
+        std::fs::write(&file_path, &content).unwrap();
+
+        let digest = compute_file_digest(&file_path).await.unwrap();
+        assert!(digest.starts_with("sha256:"));
+        assert_eq!(digest.len(), 7 + 64); // "sha256:" + 64 hex chars
+    }
+
+    #[tokio::test]
+    async fn test_compute_file_digest_nonexistent() {
+        let result = compute_file_digest(std::path::Path::new("/nonexistent/path")).await;
+        assert!(result.is_err());
+    }
+
+    // ==========================================================================
+    // Error tests
+    // ==========================================================================
+
     #[test]
     fn test_digest_mismatch_error() {
         let err = Error::digest_mismatch("sha256:expected", "sha256:actual");
         let msg = err.to_string();
         assert!(msg.contains("expected"));
         assert!(msg.contains("actual"));
+    }
+
+    #[test]
+    fn test_invalid_reference_error() {
+        let err = Error::invalid_reference("bad image", "parse error");
+        let msg = err.to_string();
+        assert!(msg.contains("bad image") || msg.contains("parse error"));
+    }
+
+    #[test]
+    fn test_blob_pull_failed_error() {
+        let err = Error::blob_pull_failed("sha256:abc123", "connection refused");
+        let msg = err.to_string();
+        assert!(msg.contains("sha256:abc123") || msg.contains("connection refused"));
+    }
+
+    // ==========================================================================
+    // OciClient tests
+    // ==========================================================================
+
+    #[test]
+    fn test_oci_client_new() {
+        let client = OciClient::new();
+        // Just verify it can be created
+        let _ = client;
+    }
+
+    #[test]
+    fn test_oci_client_default() {
+        let client = OciClient::default();
+        // Verify Default trait works
+        let _ = client;
+    }
+
+    #[test]
+    fn test_oci_client_get_auth_anonymous() {
+        let client = OciClient::new();
+        let reference = parse_reference("docker.io/library/nginx:latest").unwrap();
+        let auth = client.get_auth(&reference);
+        assert!(matches!(auth, RegistryAuth::Anonymous));
+    }
+
+    #[test]
+    fn test_oci_client_get_auth_ghcr_no_token() {
+        // Ensure no token env vars are set
+        // SAFETY: Test runs in isolation
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var("GH_TOKEN");
+        }
+
+        let client = OciClient::new();
+        let reference = parse_reference("ghcr.io/owner/image:latest").unwrap();
+        let auth = client.get_auth(&reference);
+        assert!(matches!(auth, RegistryAuth::Anonymous));
+    }
+
+    // ==========================================================================
+    // ResolvedImage tests
+    // ==========================================================================
+
+    #[test]
+    fn test_resolved_image_debug() {
+        let reference = parse_reference("nginx:latest").unwrap();
+        let resolved = ResolvedImage {
+            reference,
+            digest: "sha256:abc123".to_string(),
+            layers: vec!["sha256:layer1".to_string()],
+            layer_descriptors: vec![],
+        };
+
+        let debug_str = format!("{:?}", resolved);
+        assert!(debug_str.contains("sha256:abc123"));
+    }
+
+    #[test]
+    fn test_resolved_image_clone() {
+        let reference = parse_reference("nginx:latest").unwrap();
+        let resolved = ResolvedImage {
+            reference,
+            digest: "sha256:abc123".to_string(),
+            layers: vec!["sha256:layer1".to_string(), "sha256:layer2".to_string()],
+            layer_descriptors: vec![],
+        };
+
+        let cloned = resolved.clone();
+        assert_eq!(cloned.digest, "sha256:abc123");
+        assert_eq!(cloned.layers.len(), 2);
+    }
+
+    #[test]
+    fn test_resolved_image_empty_layers() {
+        let reference = parse_reference("scratch:latest").unwrap();
+        let resolved = ResolvedImage {
+            reference,
+            digest: "sha256:empty".to_string(),
+            layers: vec![],
+            layer_descriptors: vec![],
+        };
+
+        assert!(resolved.layers.is_empty());
+        assert!(resolved.layer_descriptors.is_empty());
     }
 }

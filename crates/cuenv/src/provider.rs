@@ -197,6 +197,10 @@ pub trait SecretCapability: Provider {
 mod tests {
     use super::*;
 
+    // ==========================================================================
+    // Mock provider for testing
+    // ==========================================================================
+
     struct TestProvider;
 
     impl Provider for TestProvider {
@@ -217,6 +221,10 @@ mod tests {
         }
     }
 
+    // ==========================================================================
+    // Provider trait tests
+    // ==========================================================================
+
     #[test]
     fn test_provider_name() {
         let provider = TestProvider;
@@ -234,5 +242,141 @@ mod tests {
         let provider = TestProvider;
         let any = provider.as_any();
         assert!(any.is::<TestProvider>());
+    }
+
+    #[test]
+    fn test_provider_as_any_mut() {
+        let mut provider = TestProvider;
+        let any = provider.as_any_mut();
+        assert!(any.is::<TestProvider>());
+    }
+
+    #[test]
+    fn test_provider_as_any_wrong_type() {
+        let provider = TestProvider;
+        let any = provider.as_any();
+        // Should not be castable to String
+        assert!(!any.is::<String>());
+    }
+
+    #[test]
+    fn test_provider_downcast() {
+        let provider = TestProvider;
+        let any = provider.as_any();
+        let downcasted = any.downcast_ref::<TestProvider>();
+        assert!(downcasted.is_some());
+    }
+
+    // ==========================================================================
+    // SyncMode tests
+    // ==========================================================================
+
+    #[test]
+    fn test_sync_mode_debug() {
+        assert_eq!(format!("{:?}", SyncMode::Write), "Write");
+        assert_eq!(format!("{:?}", SyncMode::DryRun), "DryRun");
+        assert_eq!(format!("{:?}", SyncMode::Check), "Check");
+    }
+
+    #[test]
+    fn test_sync_mode_clone() {
+        let mode = SyncMode::DryRun;
+        let cloned = mode;
+        assert!(matches!(cloned, SyncMode::DryRun));
+    }
+
+    #[test]
+    fn test_sync_mode_eq() {
+        assert_eq!(SyncMode::Write, SyncMode::Write);
+        assert_ne!(SyncMode::Write, SyncMode::DryRun);
+    }
+
+    // ==========================================================================
+    // SyncOptions tests
+    // ==========================================================================
+
+    #[test]
+    fn test_sync_options_default() {
+        let options = SyncOptions {
+            mode: SyncMode::Write,
+            show_diff: false,
+            ci_provider: None,
+            update_tools: None,
+        };
+
+        assert!(!options.show_diff);
+        assert!(options.ci_provider.is_none());
+    }
+
+    #[test]
+    fn test_sync_options_with_provider() {
+        let options = SyncOptions {
+            mode: SyncMode::Check,
+            show_diff: true,
+            ci_provider: Some("github".to_string()),
+            update_tools: None,
+        };
+
+        assert_eq!(options.ci_provider, Some("github".to_string()));
+        assert!(options.show_diff);
+    }
+
+    #[test]
+    fn test_sync_options_dry_run() {
+        let options = SyncOptions {
+            mode: SyncMode::DryRun,
+            show_diff: false,
+            ci_provider: None,
+            update_tools: None,
+        };
+
+        assert!(matches!(options.mode, SyncMode::DryRun));
+    }
+
+    #[test]
+    fn test_sync_options_clone() {
+        let options = SyncOptions {
+            mode: SyncMode::Write,
+            show_diff: true,
+            ci_provider: Some("buildkite".to_string()),
+            update_tools: Some(vec!["bun".to_string()]),
+        };
+
+        let cloned = options.clone();
+        assert_eq!(cloned.ci_provider, Some("buildkite".to_string()));
+        assert_eq!(cloned.update_tools, Some(vec!["bun".to_string()]));
+    }
+
+    // ==========================================================================
+    // SyncResult tests
+    // ==========================================================================
+
+    #[test]
+    fn test_sync_result_success() {
+        let result = SyncResult::success("test.yaml created");
+        assert!(!result.had_error);
+        assert!(result.output.contains("test.yaml"));
+    }
+
+    #[test]
+    fn test_sync_result_error() {
+        let result = SyncResult::error("failed to sync");
+        assert!(result.had_error);
+        assert!(result.output.contains("failed"));
+    }
+
+    #[test]
+    fn test_sync_result_clone() {
+        let result = SyncResult::success("cloned result");
+        let cloned = result.clone();
+        assert_eq!(cloned.output, "cloned result");
+        assert!(!cloned.had_error);
+    }
+
+    #[test]
+    fn test_sync_result_debug() {
+        let result = SyncResult::success("debug test");
+        let debug_str = format!("{:?}", result);
+        assert!(debug_str.contains("debug test"));
     }
 }
