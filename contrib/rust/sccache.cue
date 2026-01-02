@@ -27,16 +27,12 @@ import "github.com/cuenv/cuenv/schema"
 		id:       "setup-sccache"
 		phase:    "setup"
 		label:    "Setup sccache"
-		priority: 5
+		priority: 50
 		script: """
 			# Configure cargo to use sccache (provided via cuenv tools)
 			export RUSTC_WRAPPER=sccache
-			export SCCACHE_DIR=/tmp/sccache
 			"""
-		env: {
-			RUSTC_WRAPPER: "sccache"
-			SCCACHE_DIR:   "/tmp/sccache"
-		}
+		env: RUSTC_WRAPPER: "sccache"
 		provider: github: uses: "mozilla-actions/sccache-action@v0.0.9"
 	}]
 }

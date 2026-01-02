@@ -32,11 +32,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -46,19 +41,21 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
     - name: nix.build (darwin-arm64)
       run: cuenv task nix.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: darwin-arm64
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -79,11 +76,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -93,19 +85,21 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
     - name: nix.build (linux-x64)
       run: cuenv task nix.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: linux-x64
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
@@ -129,11 +123,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -143,11 +132,14 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
     - name: Download nix-build-darwin-arm64
       uses: actions/download-artifact@v4
       with:
@@ -164,9 +156,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
   publish-github:
     name: publish.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -183,11 +174,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -197,11 +183,14 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
     - name: Download nix-build-darwin-arm64
       uses: actions/download-artifact@v4
       with:
@@ -218,9 +207,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
   docs-deploy:
     name: docs.deploy
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -235,11 +223,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -249,11 +232,14 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
     - name: Download docs-build-artifacts
       uses: actions/download-artifact@v4
       with:
@@ -263,9 +249,8 @@ jobs:
       run: cuenv task docs.deploy -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
   docs-build:
     name: docs.build
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -278,11 +263,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -292,18 +272,20 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
     - name: docs.build
       run: cuenv task docs.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:

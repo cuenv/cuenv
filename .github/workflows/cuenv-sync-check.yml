@@ -42,11 +42,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -56,10 +51,12 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SCCACHE_DIR: /tmp/sccache
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
     - name: ci.sync-check
       run: cuenv task ci.sync-check --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: /tmp/sccache
