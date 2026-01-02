@@ -215,3 +215,50 @@ For each crate, verify:
    - Clone implementations for data types
 
 ---
+
+### 2026-01-02: Coverage improvement session (sixth pass)
+
+**Starting coverage: 75.81%**
+**Ending coverage: 76.12%** (+0.31%)
+
+#### Tests Added (this session):
+
+1. **tools/rustup/src/lib.rs** (coverage improved)
+   - Added 20+ tests for RustupToolProvider:
+   - Provider description and default behavior
+   - Host triple mapping for all OS/arch combinations
+   - ToolSource handling for GitHub, Nix, Oci sources
+   - Digest computation with components, targets, profiles
+   - Digest determinism and order sensitivity
+   - Toolchain path generation (stable, nightly, versioned)
+   - is_toolchain_installed for nonexistent toolchains
+   - Resolve method with minimal config, toolchain, profile, components, targets
+
+2. **tools/nix/src/lib.rs** (coverage improved)
+   - Added 15+ tests for NixToolProvider:
+   - Provider description and default behavior
+   - Flake resolution with custom flakes
+   - with_flakes edge cases (empty, single, overwrite)
+   - ToolSource handling for Nix, GitHub, Rustup, Oci sources
+   - is_cached behavior for Nix and non-Nix sources
+
+3. **github/src/release.rs** (30.41% -> improved)
+   - Added 15+ tests for GitHubReleaseBackend:
+   - parse_github_remote SSH format without .git suffix
+   - Non-GitHub remotes (Bitbucket)
+   - Empty and partial URLs
+   - Nested paths in URLs
+   - Config defaults and builder methods
+   - Config clone and debug
+   - Backend creation and name
+
+4. **github/src/ci.rs** (23.93% -> improved)
+   - Added 25+ tests for GitHubCIProvider:
+   - parse_repo edge cases (different names, empty, too many parts)
+   - parse_pr_number for large numbers, zero, empty, refs_pull_only, invalid
+   - Branch ref handling (feature branches, develop, tags)
+   - get_before_sha filtering (null SHA, empty, valid)
+   - CI provider detection (not GitHub Actions, false value)
+   - Git diff output parsing logic
+
+---

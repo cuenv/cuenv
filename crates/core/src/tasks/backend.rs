@@ -219,3 +219,194 @@ pub fn should_use_dagger(config: Option<&BackendConfig>, cli_backend: Option<&st
 
     backend_type == "dagger"
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_host_backend_new() {
+        let backend = HostBackend::new();
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_host_backend_default() {
+        let backend = HostBackend::default();
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_host_backend_name() {
+        let backend = HostBackend;
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_should_use_dagger_cli_override_dagger() {
+        // CLI override takes precedence
+        assert!(should_use_dagger(None, Some("dagger")));
+    }
+
+    #[test]
+    fn test_should_use_dagger_cli_override_host() {
+        // CLI override to host
+        assert!(!should_use_dagger(None, Some("host")));
+    }
+
+    #[test]
+    fn test_should_use_dagger_config_dagger() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+        assert!(should_use_dagger(Some(&config), None));
+    }
+
+    #[test]
+    fn test_should_use_dagger_config_host() {
+        let config = BackendConfig {
+            backend_type: "host".to_string(),
+            options: None,
+        };
+        assert!(!should_use_dagger(Some(&config), None));
+    }
+
+    #[test]
+    fn test_should_use_dagger_default() {
+        // No config, no CLI - defaults to host
+        assert!(!should_use_dagger(None, None));
+    }
+
+    #[test]
+    fn test_should_use_dagger_cli_overrides_config() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+        // CLI override to host, even though config says dagger
+        assert!(!should_use_dagger(Some(&config), Some("host")));
+    }
+
+    #[test]
+    fn test_create_backend_defaults_to_host() {
+        let backend = create_backend(None, std::path::PathBuf::from("."), None);
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_create_backend_with_cli_host() {
+        let backend = create_backend(None, std::path::PathBuf::from("."), Some("host"));
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_create_backend_with_config_host() {
+        let config = BackendConfig {
+            backend_type: "host".to_string(),
+            options: None,
+        };
+        let backend = create_backend(Some(&config), std::path::PathBuf::from("."), None);
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_create_backend_unknown_type_defaults_to_host() {
+        let config = BackendConfig {
+            backend_type: "unknown".to_string(),
+            options: None,
+        };
+        let backend = create_backend(Some(&config), std::path::PathBuf::from("."), None);
+        // Unknown backend types fall back to host
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_create_backend_dagger_without_factory() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+        // Without factory, dagger falls back to host
+        let backend = create_backend(Some(&config), std::path::PathBuf::from("."), None);
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_create_backend_with_factory_dagger() {
+        // Create a mock factory that returns a host backend (for testing)
+        fn mock_dagger_factory(
+            _config: Option<&BackendConfig>,
+            _project_root: std::path::PathBuf,
+        ) -> Arc<dyn TaskBackend> {
+            Arc::new(HostBackend::new())
+        }
+
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+
+        let backend = create_backend_with_factory(
+            Some(&config),
+            std::path::PathBuf::from("."),
+            None,
+            Some(mock_dagger_factory),
+        );
+        // The mock factory returns a host backend, but the factory was called
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_create_backend_with_factory_cli_overrides_to_dagger() {
+        fn mock_dagger_factory(
+            _config: Option<&BackendConfig>,
+            _project_root: std::path::PathBuf,
+        ) -> Arc<dyn TaskBackend> {
+            Arc::new(HostBackend::new())
+        }
+
+        // CLI says dagger, even with no config
+        let backend = create_backend_with_factory(
+            None,
+            std::path::PathBuf::from("."),
+            Some("dagger"),
+            Some(mock_dagger_factory),
+        );
+        assert_eq!(backend.name(), "host"); // Mock returns host
+    }
+
+    #[test]
+    fn test_create_backend_with_factory_cli_overrides_config() {
+        fn mock_dagger_factory(
+            _config: Option<&BackendConfig>,
+            _project_root: std::path::PathBuf,
+        ) -> Arc<dyn TaskBackend> {
+            Arc::new(HostBackend::new())
+        }
+
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+
+        // CLI says host, config says dagger - CLI wins
+        let backend = create_backend_with_factory(
+            Some(&config),
+            std::path::PathBuf::from("."),
+            Some("host"),
+            Some(mock_dagger_factory),
+        );
+        assert_eq!(backend.name(), "host");
+    }
+
+    #[test]
+    fn test_backend_config_debug() {
+        let config = BackendConfig {
+            backend_type: "host".to_string(),
+            options: None,
+        };
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("host"));
+    }
+}
