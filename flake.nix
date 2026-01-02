@@ -300,6 +300,7 @@
           RUST_BACKTRACE = "1";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
+          SCCACHE_DIR = "/tmp/sccache";
 
           shellHook = ''
             ${setupBridge}
