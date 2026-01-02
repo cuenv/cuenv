@@ -4,6 +4,7 @@ import (
 	"list"
 	"github.com/cuenv/cuenv/schema"
 	xBun "github.com/cuenv/cuenv/contrib/bun"
+	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
 	xContributors "github.com/cuenv/cuenv/contrib/contributors"
 	xRust "github.com/cuenv/cuenv/contrib/rust"
 	xTools "github.com/cuenv/cuenv/contrib/tools"
@@ -93,6 +94,7 @@ schema.#Project & {
 			xContributors.#CuenvNative,
 			xContributors.#OnePassword,
 			xRust.#Sccache,
+			xCodecov.#Codecov,
 		]
 
 		provider: github: {
@@ -215,6 +217,7 @@ schema.#Project & {
 				command: "cargo"
 				args: ["nextest", "run", "--workspace", "--all-features"]
 				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
+				labels: ["test"]
 			}
 			security: {
 				command: "cargo"
@@ -311,7 +314,7 @@ schema.#Project & {
 			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
 			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 			outputs: ["lcov.info"]
-
+			labels: ["coverage"]
 		}
 
 		bench: {

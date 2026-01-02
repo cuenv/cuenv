@@ -193,6 +193,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: true, // Has empty env block
             expect_eval_failure: false,
         },
+        ExampleExpectations {
+            name: "ci-codecov",
+            min_task_count: 1, // test
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
     ]
 }
 

@@ -16,10 +16,7 @@ pub mod ir;
 pub mod phases;
 pub mod pipeline;
 pub mod provider;
-pub mod render;
 pub mod report;
-
-pub use render::StageRenderer;
 
 pub use diff::{DiffError, DigestDiff, compare_by_sha, compare_runs};
 pub use gc::{GCConfig, GCError, GCStats, GarbageCollector};

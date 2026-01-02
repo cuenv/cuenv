@@ -8,11 +8,8 @@ use crate::workflow::schema::{
     WorkflowDispatchTrigger, WorkflowInput, WorkflowTriggers,
 };
 use crate::workflow::stage_renderer::{GitHubStageRenderer, transform_secret_ref};
-use cuenv_ci::StageRenderer;
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
-use cuenv_ci::ir::{
-    IntermediateRepresentation, OutputType, StageConfiguration, Task, TriggerCondition,
-};
+use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task, TriggerCondition};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
@@ -480,16 +477,16 @@ impl GitHubActionsEmitter {
 
     /// Build jobs from IR tasks
     ///
-    /// Uses the stage-based rendering approach which respects `depends_on`
-    /// relationships in stage tasks for correct step ordering.
+    /// Uses phase tasks for bootstrap and setup steps, respecting `depends_on`
+    /// relationships for correct step ordering.
     fn build_jobs(&self, ir: &IntermediateRepresentation) -> IndexMap<String, Job> {
         let mut jobs = IndexMap::new();
 
-        for task in &ir.tasks {
-            // Build base job using stage renderer (respects dependency ordering)
+        for task in ir.regular_tasks() {
+            // Build base job using phase tasks for bootstrap/setup
             let mut job = self.build_simple_job(
                 task,
-                &ir.stages,
+                ir,
                 ir.pipeline.environment.as_ref(),
                 None, // project_path - not used in single-project mode
             );
@@ -540,32 +537,30 @@ impl GitHubActionsEmitter {
     // Matrix and Artifact Job Building Methods
     // =========================================================================
 
-    /// Render stage configuration (bootstrap + setup) into GitHub Actions steps.
+    /// Render phase tasks (bootstrap + setup) into GitHub Actions steps.
     ///
     /// Returns a tuple of:
-    /// - `Vec<Step>` - rendered steps for bootstrap and setup stages
+    /// - `Vec<Step>` - rendered steps for bootstrap and setup phase tasks
     /// - `IndexMap<String, String>` - secret env vars that should be passed to task steps
     ///
-    /// This uses `GitHubStageRenderer` to properly convert stage tasks into steps,
+    /// This uses `GitHubStageRenderer` to properly convert phase tasks into steps,
     /// handling both `uses:` action steps and `run:` command steps.
     #[must_use]
-    pub fn render_stage_steps(
-        stages: &StageConfiguration,
+    pub fn render_phase_steps(
+        ir: &IntermediateRepresentation,
     ) -> (Vec<Step>, IndexMap<String, String>) {
         let renderer = GitHubStageRenderer::new();
         let mut steps = Vec::new();
         let mut secret_env_vars = IndexMap::new();
 
-        // Render bootstrap stage tasks (e.g., Nix installation)
-        // Note: render_bootstrap returns Result<_, Infallible> so unwrap is safe
-        let bootstrap_steps = renderer.render_bootstrap(stages).unwrap();
+        // Render bootstrap phase tasks (e.g., Nix installation)
+        let bootstrap_steps = renderer.render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap));
         steps.extend(bootstrap_steps);
 
-        // Render setup stage tasks (e.g., cuenv, 1Password, Cachix)
+        // Render setup phase tasks (e.g., cuenv, 1Password, Cachix)
         // Also collect env vars from setup tasks that need to be passed to task steps
-        for task in &stages.setup {
-            // Note: render_task returns Result<_, Infallible> so unwrap is safe
-            let step = renderer.render_task(task).unwrap();
+        for task in ir.sorted_phase_tasks(BuildStage::Setup) {
+            let step = renderer.render_task(task);
             steps.push(step);
 
             // Collect env vars from setup tasks - these may contain secrets
@@ -582,7 +577,7 @@ impl GitHubActionsEmitter {
     ///
     /// This method creates a single job that:
     /// 1. Checks out the repository
-    /// 2. Runs bootstrap/setup stages (Nix, cuenv, 1Password, etc.)
+    /// 2. Runs bootstrap/setup phase tasks (Nix, cuenv, 1Password, etc.)
     /// 3. Runs the task with `--skip-dependencies` (since CI handles job dependencies)
     ///
     /// Use `build_matrix_jobs` for tasks with matrix configurations.
@@ -590,14 +585,14 @@ impl GitHubActionsEmitter {
     /// # Arguments
     ///
     /// * `task` - IR task to build job for
-    /// * `stages` - Stage configuration for bootstrap/setup steps
+    /// * `ir` - Intermediate representation containing phase tasks
     /// * `environment` - Optional environment name for the task
     /// * `project_path` - Optional working directory (for monorepo projects)
     #[must_use]
     pub fn build_simple_job(
         &self,
         task: &Task,
-        stages: &StageConfiguration,
+        ir: &IntermediateRepresentation,
         environment: Option<&String>,
         project_path: Option<&str>,
     ) -> Job {
@@ -610,9 +605,9 @@ impl GitHubActionsEmitter {
                 .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
         );
 
-        // Render bootstrap and setup stages using the StageRenderer
-        let (stage_steps, secret_env_vars) = Self::render_stage_steps(stages);
-        steps.extend(stage_steps);
+        // Render bootstrap and setup phase tasks
+        let (phase_steps, secret_env_vars) = Self::render_phase_steps(ir);
+        steps.extend(phase_steps);
 
         // Download artifacts if task has artifact_downloads
         for artifact in &task.artifact_downloads {
@@ -702,7 +697,7 @@ impl GitHubActionsEmitter {
     ///
     /// This creates a job that:
     /// 1. Checks out the repository
-    /// 2. Runs bootstrap/setup stages
+    /// 2. Runs bootstrap/setup phase tasks
     /// 3. Downloads artifacts from previous jobs
     /// 4. Runs the task with params and `--skip-dependencies`
     ///
@@ -711,7 +706,7 @@ impl GitHubActionsEmitter {
     /// # Arguments
     ///
     /// * `task` - IR task to build job for
-    /// * `stages` - Stage configuration for bootstrap/setup steps
+    /// * `ir` - Intermediate representation containing phase tasks
     /// * `environment` - Optional environment name for the task
     /// * `previous_jobs` - Jobs that must complete before this job
     /// * `project_path` - Optional working directory (for monorepo projects)
@@ -719,7 +714,7 @@ impl GitHubActionsEmitter {
     pub fn build_artifact_aggregation_job(
         &self,
         task: &Task,
-        stages: &StageConfiguration,
+        ir: &IntermediateRepresentation,
         environment: Option<&String>,
         previous_jobs: &[String],
         project_path: Option<&str>,
@@ -733,9 +728,9 @@ impl GitHubActionsEmitter {
                 .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
         );
 
-        // Render bootstrap and setup stages using the StageRenderer
-        let (stage_steps, secret_env_vars) = Self::render_stage_steps(stages);
-        steps.extend(stage_steps);
+        // Render bootstrap and setup phase tasks
+        let (phase_steps, secret_env_vars) = Self::render_phase_steps(ir);
+        steps.extend(phase_steps);
 
         // Download artifacts from previous jobs
         for artifact in &task.artifact_downloads {
@@ -818,7 +813,7 @@ impl GitHubActionsEmitter {
     /// # Arguments
     ///
     /// * `task` - IR task with `matrix` configuration
-    /// * `stages` - Stage configuration for bootstrap/setup steps
+    /// * `ir` - Intermediate representation containing phase tasks
     /// * `environment` - Optional environment name for the task
     /// * `arch_runners` - Optional mapping of arch -> runner label
     /// * `previous_jobs` - Jobs that must complete before these matrix jobs
@@ -827,7 +822,7 @@ impl GitHubActionsEmitter {
     pub fn build_matrix_jobs(
         &self,
         task: &Task,
-        stages: &StageConfiguration,
+        ir: &IntermediateRepresentation,
         environment: Option<&String>,
         arch_runners: Option<&HashMap<String, String>>,
         previous_jobs: &[String],
@@ -860,9 +855,9 @@ impl GitHubActionsEmitter {
                         .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
                 );
 
-                // Render bootstrap and setup stages using the StageRenderer
-                let (stage_steps, secret_env_vars) = Self::render_stage_steps(stages);
-                steps.extend(stage_steps);
+                // Render bootstrap and setup phase tasks
+                let (phase_steps, secret_env_vars) = Self::render_phase_steps(ir);
+                steps.extend(phase_steps);
 
                 // Run the task with --skip-dependencies
                 let task_command = environment.map_or_else(
@@ -1174,8 +1169,11 @@ impl ReleaseWorkflowBuilder {
                 .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
         );
 
-        // Check IR stages for Nix setup
-        let has_install_nix = ir.stages.bootstrap.iter().any(|t| t.id == "install-nix");
+        // Check IR phase tasks for Nix setup
+        let has_install_nix = ir
+            .sorted_phase_tasks(BuildStage::Bootstrap)
+            .iter()
+            .any(|t| t.id == "install-nix");
         if has_install_nix {
             steps.push(
                 Step::uses("DeterminateSystems/nix-installer-action@v16")
@@ -1188,7 +1186,11 @@ impl ReleaseWorkflowBuilder {
         }
 
         // Setup cuenv
-        if let Some(cuenv_task) = ir.stages.setup.iter().find(|t| t.id == "setup-cuenv") {
+        if let Some(cuenv_task) = ir
+            .sorted_phase_tasks(BuildStage::Setup)
+            .iter()
+            .find(|t| t.id == "setup-cuenv")
+        {
             let command = cuenv_task.command.first().cloned().unwrap_or_default();
             steps.push(Step::run(&command).with_name("Setup cuenv"));
         }
@@ -1258,8 +1260,11 @@ impl ReleaseWorkflowBuilder {
                 .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
         );
 
-        // Check IR stages for Nix setup
-        let has_install_nix = ir.stages.bootstrap.iter().any(|t| t.id == "install-nix");
+        // Check IR phase tasks for Nix setup
+        let has_install_nix = ir
+            .sorted_phase_tasks(BuildStage::Bootstrap)
+            .iter()
+            .any(|t| t.id == "install-nix");
         if has_install_nix {
             steps.push(
                 Step::uses("DeterminateSystems/nix-installer-action@v16")
@@ -1272,7 +1277,11 @@ impl ReleaseWorkflowBuilder {
         }
 
         // Setup cuenv
-        if let Some(cuenv_task) = ir.stages.setup.iter().find(|t| t.id == "setup-cuenv") {
+        if let Some(cuenv_task) = ir
+            .sorted_phase_tasks(BuildStage::Setup)
+            .iter()
+            .find(|t| t.id == "setup-cuenv")
+        {
             let command = cuenv_task.command.first().cloned().unwrap_or_default();
             steps.push(Step::run(&command).with_name("Setup cuenv"));
         }
@@ -1294,7 +1303,10 @@ impl ReleaseWorkflowBuilder {
         }
 
         // Setup 1Password if needed
-        let has_1password = ir.stages.setup.iter().any(|t| t.id == "setup-1password");
+        let has_1password = ir
+            .sorted_phase_tasks(BuildStage::Setup)
+            .iter()
+            .any(|t| t.id == "setup-1password");
         if has_1password {
             steps.push(Step::run("cuenv secrets setup onepassword").with_name("Setup 1Password"));
         }
@@ -1341,10 +1353,7 @@ impl ReleaseWorkflowBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_ci::ir::{
-        CachePolicy, PipelineMetadata, ResourceRequirements, StageConfiguration, StageTask,
-        TriggerCondition,
-    };
+    use cuenv_ci::ir::{CachePolicy, PipelineMetadata, ResourceRequirements, TriggerCondition};
     use std::collections::BTreeMap;
 
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
@@ -1359,8 +1368,36 @@ mod tests {
                 pipeline_tasks: vec![],
             },
             runtimes: vec![],
-            stages: StageConfiguration::default(),
             tasks,
+        }
+    }
+
+    /// Helper to create a phase task for testing
+    fn make_phase_task(id: &str, command: &[&str], phase: BuildStage, priority: i32) -> Task {
+        Task {
+            id: id.to_string(),
+            runtime: None,
+            command: command.iter().map(|s| (*s).to_string()).collect(),
+            shell: command.len() == 1,
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Disabled,
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: BTreeMap::new(),
+            phase: Some(phase),
+            label: None,
+            priority: Some(priority),
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         }
     }
 
@@ -1383,6 +1420,12 @@ mod tests {
             matrix: None,
             artifact_downloads: vec![],
             params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         }
     }
 
@@ -1404,7 +1447,6 @@ mod tests {
     #[test]
     fn test_workflow_with_nix() {
         let emitter = GitHubActionsEmitter::new().with_nix();
-        let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
 
         // Build provider_hints for GitHub Actions (matching NixContributor)
         let provider_hints = serde_json::json!({
@@ -1416,27 +1458,24 @@ mod tests {
             }
         });
 
-        // Add stage tasks that would be contributed by NixContributor
-        ir.stages.bootstrap.push(StageTask {
-            id: "install-nix".to_string(),
-            provider: "nix".to_string(),
-            label: Some("Install Nix".to_string()),
-            command: vec!["curl ... | sh".to_string()],
-            shell: true,
-            priority: 0,
-            provider_hints: Some(provider_hints),
-            ..Default::default()
-        });
-        ir.stages.setup.push(StageTask {
-            id: "setup-cuenv".to_string(),
-            provider: "cuenv".to_string(),
-            label: Some("Setup cuenv".to_string()),
-            command: vec!["nix build .#cuenv".to_string()],
-            shell: true,
-            depends_on: vec!["install-nix".to_string()],
-            priority: 10,
-            ..Default::default()
-        });
+        // Create phase tasks that would be contributed by NixContributor
+        let mut bootstrap_task =
+            make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+        bootstrap_task.label = Some("Install Nix".to_string());
+        bootstrap_task.contributor = Some("nix".to_string());
+        bootstrap_task.provider_hints = Some(provider_hints);
+
+        let mut setup_task =
+            make_phase_task("setup-cuenv", &["nix build .#cuenv"], BuildStage::Setup, 10);
+        setup_task.label = Some("Setup cuenv".to_string());
+        setup_task.contributor = Some("cuenv".to_string());
+        setup_task.depends_on = vec!["install-nix".to_string()];
+
+        let ir = make_ir(vec![
+            bootstrap_task,
+            setup_task,
+            make_task("build", &["cargo", "build"]),
+        ]);
 
         let yaml = emitter.emit(&ir).unwrap();
 
@@ -1449,7 +1488,6 @@ mod tests {
         let emitter = GitHubActionsEmitter::new()
             .with_nix()
             .with_cachix("my-cache");
-        let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
 
         // Build provider_hints for GitHub Actions (matching NixContributor)
         let nix_provider_hints = serde_json::json!({
@@ -1461,34 +1499,32 @@ mod tests {
             }
         });
 
-        // Add stage tasks for Cachix
-        ir.stages.bootstrap.push(StageTask {
-            id: "install-nix".to_string(),
-            provider: "nix".to_string(),
-            label: Some("Install Nix".to_string()),
-            command: vec!["curl ... | sh".to_string()],
-            shell: true,
-            priority: 0,
-            provider_hints: Some(nix_provider_hints),
-            ..Default::default()
-        });
-        let mut env = BTreeMap::new();
-        env.insert(
+        // Create phase tasks for Cachix
+        let mut bootstrap_task =
+            make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+        bootstrap_task.label = Some("Install Nix".to_string());
+        bootstrap_task.contributor = Some("nix".to_string());
+        bootstrap_task.provider_hints = Some(nix_provider_hints);
+
+        let mut cachix_task = make_phase_task(
+            "setup-cachix",
+            &["nix-env -iA cachix && cachix use my-cache"],
+            BuildStage::Setup,
+            5,
+        );
+        cachix_task.label = Some("Setup Cachix (my-cache)".to_string());
+        cachix_task.contributor = Some("cachix".to_string());
+        cachix_task.depends_on = vec!["install-nix".to_string()];
+        cachix_task.env.insert(
             "CACHIX_AUTH_TOKEN".to_string(),
             "${CACHIX_AUTH_TOKEN}".to_string(),
         );
-        // CachixContributor uses a run command, not an action
-        ir.stages.setup.push(StageTask {
-            id: "setup-cachix".to_string(),
-            provider: "cachix".to_string(),
-            label: Some("Setup Cachix (my-cache)".to_string()),
-            command: vec!["nix-env -iA cachix && cachix use my-cache".to_string()],
-            shell: true,
-            env,
-            depends_on: vec!["install-nix".to_string()],
-            priority: 5,
-            ..Default::default()
-        });
+
+        let ir = make_ir(vec![
+            bootstrap_task,
+            cachix_task,
+            make_task("build", &["cargo", "build"]),
+        ]);
 
         let yaml = emitter.emit(&ir).unwrap();
 
@@ -1652,9 +1688,9 @@ mod tests {
     fn test_build_simple_job() {
         let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
         let task = make_task("build", &["cargo", "build"]);
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &stages, None, None);
+        let job = emitter.build_simple_job(&task, &ir, None, None);
 
         assert_eq!(job.name, Some("build".to_string()));
         assert!(matches!(job.runs_on, RunsOn::Label(ref l) if l == "ubuntu-latest"));
@@ -1671,10 +1707,10 @@ mod tests {
     fn test_build_simple_job_with_environment() {
         let emitter = GitHubActionsEmitter::new();
         let task = make_task("deploy", &["./deploy.sh"]);
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
         let env = "production".to_string();
 
-        let job = emitter.build_simple_job(&task, &stages, Some(&env), None);
+        let job = emitter.build_simple_job(&task, &ir, Some(&env), None);
 
         // Find the task step and check command includes environment
         let task_step = job
@@ -1691,9 +1727,9 @@ mod tests {
     fn test_build_simple_job_with_working_directory() {
         let emitter = GitHubActionsEmitter::new();
         let task = make_task("build", &["cargo", "build"]);
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &stages, None, Some("platform/my-project"));
+        let job = emitter.build_simple_job(&task, &ir, None, Some("platform/my-project"));
 
         // Find the task step and check working-directory is set
         let task_step = job
@@ -1722,9 +1758,9 @@ mod tests {
             .collect(),
             ..Default::default()
         });
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
-        let jobs = emitter.build_matrix_jobs(&task, &stages, None, None, &[], None);
+        let jobs = emitter.build_matrix_jobs(&task, &ir, None, None, &[], None);
 
         // Should create 2 jobs, one per arch
         assert_eq!(jobs.len(), 2);
@@ -1765,7 +1801,7 @@ mod tests {
             .collect(),
             ..Default::default()
         });
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
         let arch_runners: HashMap<String, String> = [
             ("linux-x64".to_string(), "ubuntu-24.04".to_string()),
             ("darwin-arm64".to_string(), "macos-14".to_string()),
@@ -1773,7 +1809,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let jobs = emitter.build_matrix_jobs(&task, &stages, None, Some(&arch_runners), &[], None);
+        let jobs = emitter.build_matrix_jobs(&task, &ir, None, Some(&arch_runners), &[], None);
 
         // Check runners are correctly mapped
         let linux_job = jobs.get("build-linux-x64").unwrap();
@@ -1797,14 +1833,13 @@ mod tests {
         task.params = [("version".to_string(), "1.0.0".to_string())]
             .into_iter()
             .collect();
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
         let previous_jobs = vec![
             "release-build-linux-x64".to_string(),
             "release-build-darwin-arm64".to_string(),
         ];
 
-        let job =
-            emitter.build_artifact_aggregation_job(&task, &stages, None, &previous_jobs, None);
+        let job = emitter.build_artifact_aggregation_job(&task, &ir, None, &previous_jobs, None);
 
         assert_eq!(job.name, Some("release.publish".to_string()));
         assert_eq!(job.needs, previous_jobs);
@@ -1872,28 +1907,23 @@ mod tests {
     }
 
     #[test]
-    fn test_render_stage_steps() {
-        let mut stages = StageConfiguration::default();
-        stages.bootstrap.push(StageTask {
-            id: "install-nix".to_string(),
-            provider: "nix".to_string(),
-            label: Some("Install Nix".to_string()),
-            command: vec!["curl ... | sh".to_string()],
-            shell: true,
-            ..Default::default()
-        });
-        stages.setup.push(StageTask {
-            id: "setup-cuenv".to_string(),
-            provider: "cuenv".to_string(),
-            label: Some("Setup cuenv".to_string()),
-            command: vec!["nix build .#cuenv".to_string()],
-            env: [("MY_VAR".to_string(), "${MY_SECRET}".to_string())]
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        });
+    fn test_render_phase_steps() {
+        let mut bootstrap_task =
+            make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+        bootstrap_task.label = Some("Install Nix".to_string());
+        bootstrap_task.contributor = Some("nix".to_string());
 
-        let (steps, secret_env_vars) = GitHubActionsEmitter::render_stage_steps(&stages);
+        let mut setup_task =
+            make_phase_task("setup-cuenv", &["nix build .#cuenv"], BuildStage::Setup, 10);
+        setup_task.label = Some("Setup cuenv".to_string());
+        setup_task.contributor = Some("cuenv".to_string());
+        setup_task
+            .env
+            .insert("MY_VAR".to_string(), "${MY_SECRET}".to_string());
+
+        let ir = make_ir(vec![bootstrap_task, setup_task]);
+
+        let (steps, secret_env_vars) = GitHubActionsEmitter::render_phase_steps(&ir);
 
         assert_eq!(steps.len(), 2);
         assert!(steps[0].name.as_deref() == Some("Install Nix"));
@@ -1914,10 +1944,10 @@ mod tests {
     fn test_build_simple_job_without_working_directory() {
         let emitter = GitHubActionsEmitter::new();
         let task = make_task("build", &["cargo", "build"]);
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
         // project_path = None means root project, no working-directory
-        let job = emitter.build_simple_job(&task, &stages, None, None);
+        let job = emitter.build_simple_job(&task, &ir, None, None);
 
         let task_step = job
             .steps
@@ -1935,12 +1965,12 @@ mod tests {
     fn test_build_simple_job_with_nested_working_directory() {
         let emitter = GitHubActionsEmitter::new();
         let task = make_task("deploy", &["./deploy.sh"]);
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
         // Deeply nested project path
         let job = emitter.build_simple_job(
             &task,
-            &stages,
+            &ir,
             None,
             Some("projects/rawkode.academy/platform/email-preferences"),
         );
@@ -1969,10 +1999,9 @@ mod tests {
                 .collect(),
             ..Default::default()
         });
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
-        let jobs =
-            emitter.build_matrix_jobs(&task, &stages, None, None, &[], Some("apps/my-service"));
+        let jobs = emitter.build_matrix_jobs(&task, &ir, None, None, &[], Some("apps/my-service"));
 
         assert_eq!(jobs.len(), 1);
         let job = jobs.get("release-build-linux-x64").unwrap();
@@ -2001,10 +2030,10 @@ mod tests {
                 .collect(),
             ..Default::default()
         });
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
         // project_path = None
-        let jobs = emitter.build_matrix_jobs(&task, &stages, None, None, &[], None);
+        let jobs = emitter.build_matrix_jobs(&task, &ir, None, None, &[], None);
 
         let job = jobs.get("build-linux-x64").unwrap();
         let task_step = job
@@ -2030,11 +2059,11 @@ mod tests {
             path: "./out".to_string(),
             filter: String::new(),
         }];
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
         let job = emitter.build_artifact_aggregation_job(
             &task,
-            &stages,
+            &ir,
             None,
             &["build-linux-x64".to_string()],
             Some("services/api"),
@@ -2063,11 +2092,11 @@ mod tests {
             path: "./out".to_string(),
             filter: String::new(),
         }];
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
         let job = emitter.build_artifact_aggregation_job(
             &task,
-            &stages,
+            &ir,
             None,
             &["build-linux-x64".to_string()],
             None,
@@ -2089,9 +2118,9 @@ mod tests {
     fn test_working_directory_yaml_serialization() {
         let emitter = GitHubActionsEmitter::new();
         let task = make_task("test", &["cargo", "test"]);
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &stages, None, Some("my-project"));
+        let job = emitter.build_simple_job(&task, &ir, None, Some("my-project"));
 
         // Serialize job to YAML and verify working-directory appears
         let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");
@@ -2105,9 +2134,9 @@ mod tests {
     fn test_working_directory_not_in_yaml_when_none() {
         let emitter = GitHubActionsEmitter::new();
         let task = make_task("test", &["cargo", "test"]);
-        let stages = StageConfiguration::default();
+        let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &stages, None, None);
+        let job = emitter.build_simple_job(&task, &ir, None, None);
 
         // Serialize job to YAML and verify working-directory does NOT appear
         let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");

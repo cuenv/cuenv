@@ -192,6 +192,12 @@ mod tests {
             matrix: None,
             artifact_downloads: vec![],
             params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         }
     }
 
