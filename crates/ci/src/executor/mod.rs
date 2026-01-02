@@ -15,6 +15,7 @@
 pub mod backend;
 pub mod cache;
 pub mod config;
+pub mod engine;
 pub mod graph;
 pub mod lock;
 pub mod metrics;
@@ -29,6 +30,7 @@ pub use backend::{
 };
 pub use cache::LocalCacheBackend;
 pub use config::CIExecutorConfig;
+pub use engine::{EngineConfig, EngineResult, ExecutionEngine};
 pub use lock::{ConcurrencyLock, LockConfig, LockError, LockGuard};
 pub use metrics::{CacheMetrics, RestoreErrorType, global_metrics};
 pub use orchestrator::run_ci;

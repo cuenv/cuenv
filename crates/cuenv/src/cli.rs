@@ -616,23 +616,7 @@ pub enum Commands {
     },
     /// Run CI pipelines.
     #[command(about = "Run CI pipelines")]
-    Ci {
-        /// Show what would be executed without running it.
-        #[arg(long, help = "Show what would be executed without running it")]
-        dry_run: bool,
-        /// Force a specific pipeline to run.
-        #[arg(long, help = "Force a specific pipeline to run")]
-        pipeline: Option<String>,
-        /// Output dynamic pipeline YAML to stdout.
-        #[arg(
-            long,
-            help = "Output dynamic pipeline YAML to stdout (e.g., 'buildkite' for buildkite-agent pipeline upload)"
-        )]
-        dynamic: Option<String>,
-        /// Base ref to compare against (branch name or commit SHA).
-        #[arg(long, help = "Base ref to compare against (branch name or commit SHA)")]
-        from: Option<String>,
-    },
+    Ci(crate::commands::ci::CiArgs),
     /// Start interactive TUI dashboard for monitoring cuenv events.
     #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
     Tui,
@@ -1426,17 +1410,7 @@ impl Commands {
                 path,
                 package,
             },
-            Self::Ci {
-                dry_run,
-                pipeline,
-                dynamic,
-                from,
-            } => Command::Ci {
-                dry_run,
-                pipeline,
-                dynamic,
-                from,
-            },
+            Self::Ci(args) => Command::Ci { args },
             Self::Tui => Command::Tui,
             Self::Web { port, host } => Command::Web { port, host },
             Self::Changeset { subcommand } => match subcommand {
