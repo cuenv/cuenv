@@ -1,6 +1,6 @@
 //! Tests for input validation functions
 
-use cuengine::validation::{Limits, validate_output, validate_package_name, validate_path};
+use cuengine::validation::{validate_output, validate_package_name, validate_path, Limits};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;

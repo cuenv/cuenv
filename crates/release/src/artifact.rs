@@ -7,8 +7,8 @@
 //! - Checksums manifest file creation
 
 use crate::error::{Error, Result};
-use flate2::Compression;
 use flate2::write::GzEncoder;
+use flate2::Compression;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;

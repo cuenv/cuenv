@@ -3,7 +3,7 @@
 //! This module provides GitHub-specific configuration types and extension traits
 //! for working with GitHub Actions CI configuration.
 
-use cuenv_core::ci::{CI, RunnerMapping, StringOrVec};
+use cuenv_core::ci::{RunnerMapping, StringOrVec, CI};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

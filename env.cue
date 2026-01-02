@@ -69,6 +69,8 @@ schema.#Project & {
 
 	hooks: onEnter: tools: schema.#ToolsActivate
 
+	formatters: rust: {}
+
 	// Build cuenv from source instead of using released binaries
 	// We really need to find a way to speed this up later.
 	config: ci: cuenv: {source: "git", version: "self"}
