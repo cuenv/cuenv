@@ -211,14 +211,16 @@ pub fn save_result(
         }
     }
 
-    // logs/
+    // logs/ - redact secrets before writing to disk
     let logs_dir = path.join("logs");
     fs::create_dir_all(&logs_dir).ok();
     if let Some(s) = logs.stdout.as_ref() {
-        let _ = fs::write(logs_dir.join("stdout.log"), s);
+        let redacted = cuenv_events::redact(s);
+        let _ = fs::write(logs_dir.join("stdout.log"), redacted);
     }
     if let Some(s) = logs.stderr.as_ref() {
-        let _ = fs::write(logs_dir.join("stderr.log"), s);
+        let redacted = cuenv_events::redact(s);
+        let _ = fs::write(logs_dir.join("stderr.log"), redacted);
     }
 
     // workspace snapshot
