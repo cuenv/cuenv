@@ -35,9 +35,9 @@ For each crate, verify:
 | workspaces | 84.3% | [x] | [x] | Already well-tested with 665+ lines of tests in types.rs, 400+ in error.rs. Coverage is comprehensive for Workspace, PackageManager, DependencySpec, LockfileEntry, all error variants, and serde roundtrips. |
 | buildkite | 87.0% | [x] | [x] | Added 22 tests in schema.rs for Pipeline, CommandStep, BlockStep, WaitStep, GroupStep, AgentRules, DependsOn, RetryConfig serialization. Already had 17 tests in emitter.rs and provider.rs. |
 | cuengine | 87.6% | [x] | [x] | Already well-tested with 55 tests. Added 14 tests in validation.rs (Limits, path validation, package validation), 5 tests in retry.rs (RetryConfig, with_retry success/failure), 6 tests in cache.rs (capacity error, is_empty, clear, key combinations). |
-| codeowners | 90.4% | [ ] | [ ] | Pending review |
-| bitbucket | 94.5% | [ ] | [ ] | Pending review |
-| gitlab | 95.2% | [ ] | [ ] | Pending review |
+| codeowners | 90.4% | [x] | [N/A] | Already above 80% target, no changes needed |
+| bitbucket | 94.5% | [x] | [N/A] | Already above 80% target, no changes needed |
+| gitlab | 95.2% | [x] | [N/A] | Already above 80% target, no changes needed |
 
 ## Session Log
 
