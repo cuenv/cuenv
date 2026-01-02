@@ -8,9 +8,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
-    /// Task output format
+    /// Task output format (for task execution)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_format: Option<OutputFormat>,
+
+    /// Command-specific configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commands: Option<CommandsConfig>,
 
     /// Cache configuration
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,6 +45,47 @@ pub struct Config {
     /// CI-specific configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CIConfig>,
+}
+
+/// Command-specific configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandsConfig {
+    /// Task command configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<TaskCommandConfig>,
+}
+
+/// Task command configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCommandConfig {
+    /// Task list configuration (for `cuenv task` without arguments)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list: Option<TaskListConfig>,
+}
+
+/// Task list display configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskListConfig {
+    /// Output format for task listing
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<TaskListFormat>,
+}
+
+impl Config {
+    /// Get the configured task list format, if any.
+    ///
+    /// Accesses `config.commands.task.list.format` with safe navigation.
+    #[must_use]
+    pub fn task_list_format(&self) -> Option<TaskListFormat> {
+        self.commands
+            .as_ref()
+            .and_then(|c| c.task.as_ref())
+            .and_then(|t| t.list.as_ref())
+            .and_then(|l| l.format)
+    }
 }
 
 /// CI-specific configuration
@@ -106,7 +151,7 @@ impl CuenvSource {
     }
 }
 
-/// Task output format options
+/// Task output format options (for task execution)
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
@@ -115,6 +160,36 @@ pub enum OutputFormat {
     Simple,
     Tree,
     Json,
+}
+
+/// Task list format options (for `cuenv task` without arguments)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskListFormat {
+    /// Plain tree structure (default for non-TTY)
+    Text,
+    /// Colored tree structure (default for TTY)
+    Rich,
+    /// Category-grouped bordered tables
+    Tables,
+    /// Status dashboard with cache indicators
+    Dashboard,
+    /// Emoji-prefixed semantic categories
+    Emoji,
+}
+
+impl TaskListFormat {
+    /// Convert to the string representation used by the task command
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Rich => "rich",
+            Self::Tables => "tables",
+            Self::Dashboard => "dashboard",
+            Self::Emoji => "emoji",
+        }
+    }
 }
 
 /// Cache mode options

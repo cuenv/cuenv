@@ -1,11 +1,37 @@
 package schema
 
 #Config: close({
-	// Task output format
+	// Task output format (for task execution output)
 	outputFormat?: "tui" | "spinner" | "simple" | "tree" | "json"
+
+	// Command-specific configuration
+	commands?: #CommandsConfig
 
 	// CI-specific configuration
 	ci?: #CIConfig
+})
+
+// Command-specific configuration
+#CommandsConfig: close({
+	// Task command configuration
+	task?: #TaskCommandConfig
+})
+
+// Task command configuration
+#TaskCommandConfig: close({
+	// Task list configuration (for `cuenv task` without arguments)
+	list?: #TaskListConfig
+})
+
+// Task list display configuration
+#TaskListConfig: close({
+	// Output format for task listing
+	// - "text": Plain tree structure (default for non-TTY)
+	// - "rich": Colored tree structure (default for TTY)
+	// - "tables": Category-grouped bordered tables
+	// - "dashboard": Status dashboard with cache indicators
+	// - "emoji": Emoji-prefixed semantic categories
+	format?: "text" | "rich" | "tables" | "dashboard" | "emoji"
 })
 
 // CI-specific configuration

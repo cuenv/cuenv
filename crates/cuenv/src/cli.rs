@@ -414,14 +414,14 @@ pub enum Commands {
         )]
         labels: Vec<String>,
         /// Output format (only used when listing tasks).
+        /// If not specified, uses config.commands.task.list.format or auto-detects based on TTY.
         #[arg(
             long = "output",
             short = 'o',
-            help = "Output format (only used when listing tasks)",
-            value_enum,
-            default_value_t = OutputFormat::Text
+            help = "Output format for task listing (defaults to config or auto-detect)",
+            value_enum
         )]
-        output_format: OutputFormat,
+        output_format: Option<OutputFormat>,
         /// Materialize cached outputs to this directory on cache hit.
         #[arg(
             long = "materialize-outputs",
@@ -1367,7 +1367,8 @@ impl Commands {
                 name,
                 labels,
                 environment,
-                format: output_format.to_string(),
+                // Empty string means "use config default or auto-detect"
+                format: output_format.map_or(String::new(), |f| f.to_string()),
                 materialize_outputs,
                 show_cache_path,
                 backend,
