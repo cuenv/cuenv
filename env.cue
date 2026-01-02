@@ -14,23 +14,12 @@ schema.#Project & {
 
 	runtime: schema.#ToolsRuntime & {
 		platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
-		flakes: {
-			nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
-		}
 		tools: {
 			jq: xTools.#Jq & {version: "1.7.1"}
 			yq: xTools.#Yq & {version: "4.44.6"}
 			treefmt: xTools.#Treefmt & {version: "2.4.0"}
 			cue: xTools.#Cue & {version: "0.15.3"}
 			bun: xBun.#Bun & {version: "1.3.5"}
-
-			prettier: schema.#Tool & {
-				version: "3.7.4"
-				source: schema.#Nix & {
-					flake:   "nixpkgs"
-					package: "nodePackages.prettier"
-				}
-			}
 
 			// Rust toolchain via rustup
 			rust: xRust.#Rust & {
