@@ -324,6 +324,18 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_description() {
+        let provider = RustupToolProvider::new();
+        assert_eq!(provider.description(), "Manage Rust toolchains via rustup");
+    }
+
+    #[test]
+    fn test_provider_default() {
+        let provider = RustupToolProvider::default();
+        assert_eq!(provider.name(), "rustup");
+    }
+
+    #[test]
     fn test_host_triple() {
         let platform = Platform::new(Os::Darwin, Arch::Arm64);
         assert_eq!(
@@ -331,6 +343,37 @@ mod tests {
             "aarch64-apple-darwin"
         );
 
+        let platform = Platform::new(Os::Linux, Arch::X86_64);
+        assert_eq!(
+            RustupToolProvider::host_triple(&platform),
+            "x86_64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn test_host_triple_all_combos() {
+        // Darwin + Arm64
+        let platform = Platform::new(Os::Darwin, Arch::Arm64);
+        assert_eq!(
+            RustupToolProvider::host_triple(&platform),
+            "aarch64-apple-darwin"
+        );
+
+        // Darwin + X86_64
+        let platform = Platform::new(Os::Darwin, Arch::X86_64);
+        assert_eq!(
+            RustupToolProvider::host_triple(&platform),
+            "x86_64-apple-darwin"
+        );
+
+        // Linux + Arm64
+        let platform = Platform::new(Os::Linux, Arch::Arm64);
+        assert_eq!(
+            RustupToolProvider::host_triple(&platform),
+            "aarch64-unknown-linux-gnu"
+        );
+
+        // Linux + X86_64
         let platform = Platform::new(Os::Linux, Arch::X86_64);
         assert_eq!(
             RustupToolProvider::host_triple(&platform),
@@ -360,6 +403,29 @@ mod tests {
     }
 
     #[test]
+    fn test_can_handle_nix_source() {
+        let provider = RustupToolProvider::new();
+
+        let nix_source = ToolSource::Nix {
+            flake: "nixpkgs".into(),
+            package: "cargo".into(),
+            output: None,
+        };
+        assert!(!provider.can_handle(&nix_source));
+    }
+
+    #[test]
+    fn test_can_handle_oci_source() {
+        let provider = RustupToolProvider::new();
+
+        let oci_source = ToolSource::Oci {
+            image: "rust:latest".into(),
+            path: "rust".into(),
+        };
+        assert!(!provider.can_handle(&oci_source));
+    }
+
+    #[test]
     fn test_compute_digest() {
         let digest1 = RustupToolProvider::compute_digest(
             "1.83.0",
@@ -381,5 +447,300 @@ mod tests {
             &["x86_64-unknown-linux-gnu".into()],
         );
         assert_eq!(digest1, digest3);
+    }
+
+    #[test]
+    fn test_compute_digest_no_profile() {
+        let digest = RustupToolProvider::compute_digest("stable", None, &[], &[]);
+        assert!(digest.starts_with("sha256:"));
+        // Default profile is used when None
+        assert!(digest.len() > 10);
+    }
+
+    #[test]
+    fn test_compute_digest_multiple_components() {
+        let digest = RustupToolProvider::compute_digest(
+            "nightly",
+            Some("complete"),
+            &[
+                "clippy".into(),
+                "rustfmt".into(),
+                "rust-src".into(),
+                "rust-analyzer".into(),
+            ],
+            &[],
+        );
+        assert!(digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn test_compute_digest_multiple_targets() {
+        let digest = RustupToolProvider::compute_digest(
+            "1.80.0",
+            None,
+            &[],
+            &[
+                "x86_64-unknown-linux-gnu".into(),
+                "aarch64-unknown-linux-gnu".into(),
+                "wasm32-unknown-unknown".into(),
+            ],
+        );
+        assert!(digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn test_compute_digest_deterministic() {
+        let digest1 = RustupToolProvider::compute_digest(
+            "1.75.0",
+            Some("default"),
+            &["clippy".into()],
+            &["x86_64-pc-windows-msvc".into()],
+        );
+        let digest2 = RustupToolProvider::compute_digest(
+            "1.75.0",
+            Some("default"),
+            &["clippy".into()],
+            &["x86_64-pc-windows-msvc".into()],
+        );
+        assert_eq!(digest1, digest2);
+    }
+
+    #[test]
+    fn test_compute_digest_order_matters() {
+        // Different component order should produce different digest
+        let digest1 = RustupToolProvider::compute_digest(
+            "stable",
+            None,
+            &["clippy".into(), "rustfmt".into()],
+            &[],
+        );
+        let digest2 = RustupToolProvider::compute_digest(
+            "stable",
+            None,
+            &["rustfmt".into(), "clippy".into()],
+            &[],
+        );
+        assert_ne!(digest1, digest2);
+    }
+
+    #[test]
+    fn test_toolchain_path() {
+        let platform = Platform::new(Os::Darwin, Arch::Arm64);
+        let path = RustupToolProvider::toolchain_path("1.83.0", &platform);
+
+        // Should contain the toolchain and host triple
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("toolchains"));
+        assert!(path_str.contains("1.83.0-aarch64-apple-darwin"));
+    }
+
+    #[test]
+    fn test_toolchain_path_stable() {
+        let platform = Platform::new(Os::Linux, Arch::X86_64);
+        let path = RustupToolProvider::toolchain_path("stable", &platform);
+
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("stable-x86_64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_toolchain_path_nightly() {
+        let platform = Platform::new(Os::Darwin, Arch::X86_64);
+        let path = RustupToolProvider::toolchain_path("nightly", &platform);
+
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains("nightly-x86_64-apple-darwin"));
+    }
+
+    #[test]
+    fn test_is_toolchain_installed_nonexistent() {
+        // A fake toolchain that definitely doesn't exist
+        let platform = Platform::new(Os::Darwin, Arch::Arm64);
+        let installed = RustupToolProvider::is_toolchain_installed(
+            "nonexistent-fake-toolchain-12345",
+            &platform,
+        );
+        assert!(!installed);
+    }
+
+    #[test]
+    fn test_rustup_home_default() {
+        // Test that rustup_home returns a path
+        let home = RustupToolProvider::rustup_home();
+        // Should end with .rustup when RUSTUP_HOME is not set
+        // or be the RUSTUP_HOME value if set
+        let path_str = home.to_string_lossy();
+        assert!(path_str.contains("rustup") || path_str.contains(".rustup"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_minimal_config() {
+        let provider = RustupToolProvider::new();
+        let platform = Platform::new(Os::Darwin, Arch::Arm64);
+        let config = serde_json::json!({});
+
+        let resolved = provider.resolve("rust", "1.83.0", &platform, &config).await;
+        assert!(resolved.is_ok());
+
+        let resolved = resolved.unwrap();
+        assert_eq!(resolved.name, "rust");
+        assert_eq!(resolved.version, "1.83.0");
+
+        match &resolved.source {
+            ToolSource::Rustup {
+                toolchain,
+                profile,
+                components,
+                targets,
+            } => {
+                assert_eq!(toolchain, "1.83.0");
+                assert!(profile.is_none());
+                assert!(components.is_empty());
+                assert!(targets.is_empty());
+            }
+            _ => panic!("Expected Rustup source"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_with_toolchain() {
+        let provider = RustupToolProvider::new();
+        let platform = Platform::new(Os::Linux, Arch::X86_64);
+        let config = serde_json::json!({
+            "toolchain": "nightly"
+        });
+
+        let resolved = provider
+            .resolve("rust", "latest", &platform, &config)
+            .await
+            .unwrap();
+
+        match &resolved.source {
+            ToolSource::Rustup { toolchain, .. } => {
+                assert_eq!(toolchain, "nightly");
+            }
+            _ => panic!("Expected Rustup source"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_with_profile() {
+        let provider = RustupToolProvider::new();
+        let platform = Platform::new(Os::Darwin, Arch::Arm64);
+        let config = serde_json::json!({
+            "profile": "minimal"
+        });
+
+        let resolved = provider
+            .resolve("rust", "1.80.0", &platform, &config)
+            .await
+            .unwrap();
+
+        match &resolved.source {
+            ToolSource::Rustup { profile, .. } => {
+                assert_eq!(profile.as_deref(), Some("minimal"));
+            }
+            _ => panic!("Expected Rustup source"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_with_components() {
+        let provider = RustupToolProvider::new();
+        let platform = Platform::new(Os::Linux, Arch::Arm64);
+        let config = serde_json::json!({
+            "components": ["clippy", "rustfmt", "rust-src"]
+        });
+
+        let resolved = provider
+            .resolve("rust", "stable", &platform, &config)
+            .await
+            .unwrap();
+
+        match &resolved.source {
+            ToolSource::Rustup { components, .. } => {
+                assert_eq!(components.len(), 3);
+                assert!(components.contains(&"clippy".to_string()));
+                assert!(components.contains(&"rustfmt".to_string()));
+                assert!(components.contains(&"rust-src".to_string()));
+            }
+            _ => panic!("Expected Rustup source"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_with_targets() {
+        let provider = RustupToolProvider::new();
+        let platform = Platform::new(Os::Darwin, Arch::X86_64);
+        let config = serde_json::json!({
+            "targets": ["wasm32-unknown-unknown", "aarch64-apple-darwin"]
+        });
+
+        let resolved = provider
+            .resolve("rust", "1.82.0", &platform, &config)
+            .await
+            .unwrap();
+
+        match &resolved.source {
+            ToolSource::Rustup { targets, .. } => {
+                assert_eq!(targets.len(), 2);
+                assert!(targets.contains(&"wasm32-unknown-unknown".to_string()));
+                assert!(targets.contains(&"aarch64-apple-darwin".to_string()));
+            }
+            _ => panic!("Expected Rustup source"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_full_config() {
+        let provider = RustupToolProvider::new();
+        let platform = Platform::new(Os::Linux, Arch::X86_64);
+        let config = serde_json::json!({
+            "toolchain": "nightly-2024-01-15",
+            "profile": "complete",
+            "components": ["clippy", "rustfmt", "rust-analyzer"],
+            "targets": ["x86_64-unknown-linux-musl", "wasm32-wasi"]
+        });
+
+        let resolved = provider
+            .resolve("rust", "nightly", &platform, &config)
+            .await
+            .unwrap();
+
+        match &resolved.source {
+            ToolSource::Rustup {
+                toolchain,
+                profile,
+                components,
+                targets,
+            } => {
+                assert_eq!(toolchain, "nightly-2024-01-15");
+                assert_eq!(profile.as_deref(), Some("complete"));
+                assert_eq!(components.len(), 3);
+                assert_eq!(targets.len(), 2);
+            }
+            _ => panic!("Expected Rustup source"),
+        }
+    }
+
+    #[test]
+    fn test_is_cached_wrong_source_type() {
+        let provider = RustupToolProvider::new();
+        let options = ToolOptions::new();
+
+        let resolved = ResolvedTool {
+            name: "sometool".to_string(),
+            version: "1.0.0".to_string(),
+            platform: Platform::new(Os::Darwin, Arch::Arm64),
+            source: ToolSource::GitHub {
+                repo: "owner/repo".to_string(),
+                tag: "v1.0.0".to_string(),
+                asset: "file.zip".to_string(),
+                path: None,
+            },
+        };
+
+        // Should return false for non-Rustup source
+        assert!(!provider.is_cached(&resolved, &options));
     }
 }

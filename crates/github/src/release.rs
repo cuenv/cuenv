@@ -282,6 +282,12 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_github_remote_ssh_no_git_suffix() {
+        let result = parse_github_remote("git@github.com:owner/repo");
+        assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
+    }
+
+    #[test]
     fn test_parse_github_remote_https() {
         let result = parse_github_remote("https://github.com/cuenv/cuenv.git");
         assert_eq!(result, Some(("cuenv".to_string(), "cuenv".to_string())));
@@ -300,6 +306,37 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_github_remote_bitbucket() {
+        // Non-GitHub remotes should return None
+        assert!(parse_github_remote("git@bitbucket.org:owner/repo.git").is_none());
+        assert!(parse_github_remote("https://bitbucket.org/owner/repo.git").is_none());
+    }
+
+    #[test]
+    fn test_parse_github_remote_empty() {
+        assert!(parse_github_remote("").is_none());
+    }
+
+    #[test]
+    fn test_parse_github_remote_partial_url() {
+        // Missing repo part
+        assert!(parse_github_remote("https://github.com/owner").is_none());
+    }
+
+    #[test]
+    fn test_parse_github_remote_nested_path() {
+        // Only owner/repo is valid, deeper paths should still parse the first two parts
+        let result = parse_github_remote("https://github.com/owner/repo/extra/path");
+        // This will only get owner/repo/extra/path as the second part
+        // and then split_once('/') gives "repo/extra/path" as repo
+        assert!(result.is_some());
+        let (owner, repo) = result.unwrap();
+        assert_eq!(owner, "owner");
+        // The repo will include the extra path parts
+        assert!(repo.starts_with("repo"));
+    }
+
+    #[test]
     fn test_config_builder() {
         let config = GitHubReleaseConfig::new("owner", "repo", "token")
             .with_draft(true)
@@ -309,5 +346,101 @@ mod tests {
         assert_eq!(config.repo, "repo");
         assert!(config.draft);
         assert!(config.prerelease);
+    }
+
+    #[test]
+    fn test_config_defaults() {
+        let config = GitHubReleaseConfig::new("owner", "repo", "token");
+
+        assert_eq!(config.owner, "owner");
+        assert_eq!(config.repo, "repo");
+        assert_eq!(config.token, "token");
+        // Defaults should be false
+        assert!(!config.draft);
+        assert!(!config.prerelease);
+    }
+
+    #[test]
+    fn test_config_with_draft_only() {
+        let config = GitHubReleaseConfig::new("owner", "repo", "token").with_draft(true);
+
+        assert!(config.draft);
+        assert!(!config.prerelease);
+    }
+
+    #[test]
+    fn test_config_with_prerelease_only() {
+        let config = GitHubReleaseConfig::new("owner", "repo", "token").with_prerelease(true);
+
+        assert!(!config.draft);
+        assert!(config.prerelease);
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = GitHubReleaseConfig::new("owner", "repo", "token")
+            .with_draft(true)
+            .with_prerelease(true);
+
+        let cloned = config.clone();
+        assert_eq!(cloned.owner, config.owner);
+        assert_eq!(cloned.repo, config.repo);
+        assert_eq!(cloned.token, config.token);
+        assert_eq!(cloned.draft, config.draft);
+        assert_eq!(cloned.prerelease, config.prerelease);
+    }
+
+    #[test]
+    fn test_config_debug() {
+        let config = GitHubReleaseConfig::new("owner", "repo", "token");
+        let debug_str = format!("{:?}", config);
+
+        // Debug output should contain the field names
+        assert!(debug_str.contains("owner"));
+        assert!(debug_str.contains("repo"));
+    }
+
+    #[test]
+    fn test_backend_new() {
+        let config = GitHubReleaseConfig::new("owner", "repo", "token");
+        let backend = GitHubReleaseBackend::new(config);
+
+        assert_eq!(backend.name(), "GitHub Releases");
+    }
+
+    #[test]
+    fn test_backend_name() {
+        let config = GitHubReleaseConfig::new("owner", "repo", "token");
+        let backend = GitHubReleaseBackend::new(config);
+
+        assert_eq!(backend.name(), "GitHub Releases");
+    }
+
+    #[test]
+    fn test_from_env_no_token() {
+        // Clear any existing GITHUB_TOKEN
+        // SAFETY: This test should run in isolation
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+        }
+
+        let result = GitHubReleaseConfig::from_env("git@github.com:owner/repo.git");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_from_env_invalid_url() {
+        // SAFETY: This test should run in isolation
+        unsafe {
+            std::env::set_var("GITHUB_TOKEN", "test_token");
+        }
+
+        let result = GitHubReleaseConfig::from_env("not a valid url");
+        assert!(result.is_none());
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+        }
     }
 }
