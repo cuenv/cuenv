@@ -168,9 +168,9 @@ impl Workspace {
     /// ```
     #[must_use]
     pub fn contains_path(&self, path: &std::path::Path) -> bool {
-        self.members.iter().any(|m| {
-            m.path == path || path.starts_with(&m.path) || m.path.starts_with(path)
-        })
+        self.members
+            .iter()
+            .any(|m| m.path == path || path.starts_with(&m.path) || m.path.starts_with(path))
     }
 }
 
