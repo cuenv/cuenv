@@ -435,7 +435,7 @@ impl<R: ProgressReporter + 'static> ExecutionEngine<R> {
             });
         }
 
-        // Collect results
+        // Collect results with fail-fast behavior
         while let Some(join_result) = join_set.join_next().await {
             let (task, task_id, digest, cache_root_owned, policy_override, exec_result, duration) =
                 join_result.map_err(|e| ExecutorError::TaskPanic(e.to_string()))?;
@@ -449,7 +449,7 @@ impl<R: ProgressReporter + 'static> ExecutionEngine<R> {
 
                     // Store in cache if successful
                     if output.success {
-                        let _ = cache::store_result(
+                        if let Err(e) = cache::store_result(
                             &task,
                             &digest,
                             &cache_root_owned,
@@ -460,7 +460,13 @@ impl<R: ProgressReporter + 'static> ExecutionEngine<R> {
                             output.duration_ms,
                             output.exit_code,
                             policy_override,
-                        );
+                        ) {
+                            tracing::warn!(
+                                task = %task_id,
+                                error = %e,
+                                "Failed to store task result in cache"
+                            );
+                        }
                     }
 
                     let report = TaskReport {
@@ -479,6 +485,12 @@ impl<R: ProgressReporter + 'static> ExecutionEngine<R> {
 
                     if !output.success {
                         group_success = false;
+                        // Fail-fast: abort remaining tasks
+                        tracing::warn!(
+                            task = %task_id,
+                            "Task failed, aborting remaining tasks in group"
+                        );
+                        join_set.abort_all();
                     }
 
                     outputs.push(output);
@@ -512,6 +524,10 @@ impl<R: ProgressReporter + 'static> ExecutionEngine<R> {
                     };
 
                     group_success = false;
+                    // Fail-fast: abort remaining tasks
+                    tracing::warn!("Task execution error, aborting remaining tasks in group");
+                    join_set.abort_all();
+
                     outputs.push(output);
                     reports.push(report);
                 }
