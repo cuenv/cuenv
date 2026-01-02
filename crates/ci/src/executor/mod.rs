@@ -606,7 +606,7 @@ mod tests {
         let task = make_task("build", &[]);
         let ir = make_simple_ir(vec![task]);
 
-        assert_eq!(ir.version, "1.4");
+        assert_eq!(ir.version, "1.5");
         assert_eq!(ir.pipeline.name, "test");
         assert_eq!(ir.tasks.len(), 1);
         assert_eq!(ir.tasks[0].id, "build");

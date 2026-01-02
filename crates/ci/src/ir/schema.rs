@@ -848,4 +848,145 @@ mod tests {
             r#""failure""#
         );
     }
+
+    // =============================================================================
+    // Phase Task Filtering and Sorting Tests (v1.5)
+    // =============================================================================
+
+    /// Helper to create a minimal task for testing
+    fn make_test_task(id: &str) -> Task {
+        Task {
+            id: id.to_string(),
+            runtime: None,
+            command: vec!["echo".to_string()],
+            shell: false,
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Disabled,
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
+        }
+    }
+
+    #[test]
+    fn test_phase_tasks_filters_by_phase() {
+        let mut ir = IntermediateRepresentation::new("test");
+
+        // Add regular task (no phase)
+        ir.tasks.push(make_test_task("regular-task"));
+
+        // Add bootstrap phase task
+        let mut bootstrap_task = make_test_task("install-nix");
+        bootstrap_task.phase = Some(BuildStage::Bootstrap);
+        ir.tasks.push(bootstrap_task);
+
+        // Add setup phase task
+        let mut setup_task = make_test_task("setup-cuenv");
+        setup_task.phase = Some(BuildStage::Setup);
+        ir.tasks.push(setup_task);
+
+        // Verify phase_tasks filters correctly
+        let bootstrap_tasks: Vec<_> = ir.phase_tasks(BuildStage::Bootstrap).collect();
+        assert_eq!(bootstrap_tasks.len(), 1);
+        assert_eq!(bootstrap_tasks[0].id, "install-nix");
+
+        let setup_tasks: Vec<_> = ir.phase_tasks(BuildStage::Setup).collect();
+        assert_eq!(setup_tasks.len(), 1);
+        assert_eq!(setup_tasks[0].id, "setup-cuenv");
+
+        // Success phase should be empty
+        let success_tasks: Vec<_> = ir.phase_tasks(BuildStage::Success).collect();
+        assert!(success_tasks.is_empty());
+    }
+
+    #[test]
+    fn test_regular_tasks_excludes_phase_tasks() {
+        let mut ir = IntermediateRepresentation::new("test");
+
+        // Add regular tasks
+        ir.tasks.push(make_test_task("build"));
+        ir.tasks.push(make_test_task("test"));
+
+        // Add phase task
+        let mut phase_task = make_test_task("install-nix");
+        phase_task.phase = Some(BuildStage::Bootstrap);
+        ir.tasks.push(phase_task);
+
+        // Verify regular_tasks excludes phase tasks
+        let regular: Vec<_> = ir.regular_tasks().collect();
+        assert_eq!(regular.len(), 2);
+        assert!(regular.iter().any(|t| t.id == "build"));
+        assert!(regular.iter().any(|t| t.id == "test"));
+        assert!(!regular.iter().any(|t| t.id == "install-nix"));
+    }
+
+    #[test]
+    fn test_sorted_phase_tasks_orders_by_priority() {
+        let mut ir = IntermediateRepresentation::new("test");
+
+        // Add tasks with different priorities (lower = earlier)
+        let mut task_high_priority = make_test_task("first");
+        task_high_priority.phase = Some(BuildStage::Setup);
+        task_high_priority.priority = Some(1);
+        ir.tasks.push(task_high_priority);
+
+        let mut task_low_priority = make_test_task("last");
+        task_low_priority.phase = Some(BuildStage::Setup);
+        task_low_priority.priority = Some(100);
+        ir.tasks.push(task_low_priority);
+
+        let mut task_medium_priority = make_test_task("middle");
+        task_medium_priority.phase = Some(BuildStage::Setup);
+        task_medium_priority.priority = Some(50);
+        ir.tasks.push(task_medium_priority);
+
+        // Verify sorted order
+        let sorted = ir.sorted_phase_tasks(BuildStage::Setup);
+        assert_eq!(sorted.len(), 3);
+        assert_eq!(sorted[0].id, "first");
+        assert_eq!(sorted[1].id, "middle");
+        assert_eq!(sorted[2].id, "last");
+    }
+
+    #[test]
+    fn test_sorted_phase_tasks_uses_default_priority() {
+        let mut ir = IntermediateRepresentation::new("test");
+
+        // Task with explicit low priority
+        let mut explicit_task = make_test_task("explicit");
+        explicit_task.phase = Some(BuildStage::Setup);
+        explicit_task.priority = Some(5);
+        ir.tasks.push(explicit_task);
+
+        // Task with no priority (defaults to 10)
+        let mut default_task = make_test_task("default");
+        default_task.phase = Some(BuildStage::Setup);
+        ir.tasks.push(default_task);
+
+        // Task with high priority (> 10)
+        let mut high_task = make_test_task("high");
+        high_task.phase = Some(BuildStage::Setup);
+        high_task.priority = Some(20);
+        ir.tasks.push(high_task);
+
+        // Verify: explicit (5) < default (10) < high (20)
+        let sorted = ir.sorted_phase_tasks(BuildStage::Setup);
+        assert_eq!(sorted[0].id, "explicit");
+        assert_eq!(sorted[1].id, "default");
+        assert_eq!(sorted[2].id, "high");
+    }
 }
