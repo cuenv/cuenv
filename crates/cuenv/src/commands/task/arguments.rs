@@ -304,7 +304,12 @@ mod tests {
         let args: Vec<String> = vec!["pos1".into(), "pos2".into()];
         let result = resolve_task_args(Some(&params), &args);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Too many positional"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Too many positional")
+        );
     }
 
     #[test]
@@ -395,13 +400,19 @@ mod tests {
     fn test_apply_args_to_task() {
         let task = Task {
             command: "echo".to_string(),
-            args: vec!["{{0}}".to_string(), "--name".to_string(), "{{name}}".to_string()],
+            args: vec![
+                "{{0}}".to_string(),
+                "--name".to_string(),
+                "{{name}}".to_string(),
+            ],
             ..Default::default()
         };
 
         let mut resolved = ResolvedArgs::new();
         resolved.positional.push("hello".to_string());
-        resolved.named.insert("name".to_string(), "world".to_string());
+        resolved
+            .named
+            .insert("name".to_string(), "world".to_string());
 
         let new_task = apply_args_to_task(&task, &resolved);
         assert_eq!(new_task.args, vec!["hello", "--name", "world"]);

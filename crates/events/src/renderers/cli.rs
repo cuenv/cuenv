@@ -610,21 +610,25 @@ mod tests {
     #[test]
     fn test_render_interactive_prompt_requested() {
         let renderer = CliRenderer::new();
-        let event = make_event(EventCategory::Interactive(InteractiveEvent::PromptRequested {
-            prompt_id: "test-prompt-1".to_string(),
-            message: "Select an option:".to_string(),
-            options: vec!["Option A".to_string(), "Option B".to_string()],
-        }));
+        let event = make_event(EventCategory::Interactive(
+            InteractiveEvent::PromptRequested {
+                prompt_id: "test-prompt-1".to_string(),
+                message: "Select an option:".to_string(),
+                options: vec!["Option A".to_string(), "Option B".to_string()],
+            },
+        ));
         renderer.render(&event);
     }
 
     #[test]
     fn test_render_interactive_prompt_resolved() {
         let renderer = CliRenderer::new();
-        let event = make_event(EventCategory::Interactive(InteractiveEvent::PromptResolved {
-            prompt_id: "test-prompt-1".to_string(),
-            response: "Option A".to_string(),
-        }));
+        let event = make_event(EventCategory::Interactive(
+            InteractiveEvent::PromptResolved {
+                prompt_id: "test-prompt-1".to_string(),
+                response: "Option A".to_string(),
+            },
+        ));
         renderer.render(&event);
     }
 

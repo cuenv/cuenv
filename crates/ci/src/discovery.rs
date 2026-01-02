@@ -308,7 +308,10 @@ mod tests {
         fs::write(root.join("cue.mod"), "not a directory").expect("Failed to create file");
 
         let found = find_cue_module_root(root);
-        assert!(found.is_none(), "File named cue.mod should not count as module root");
+        assert!(
+            found.is_none(),
+            "File named cue.mod should not count as module root"
+        );
     }
 
     #[test]
