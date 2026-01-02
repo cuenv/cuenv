@@ -351,6 +351,7 @@ mod tests {
     use super::*;
     use crate::report::{ContextReport, PipelineStatus, TaskStatus};
     use chrono::Utc;
+    use tempfile::TempDir;
 
     fn make_report(sha: &str, tasks: Vec<TaskReport>) -> PipelineReport {
         PipelineReport {
@@ -434,5 +435,379 @@ mod tests {
         );
         let diff = compare_reports(&report_a, &report_b).unwrap();
         assert!(diff.task_diffs[0].secrets_changed);
+    }
+
+    // --- New tests for comprehensive coverage ---
+
+    #[test]
+    fn test_diff_error_report_not_found() {
+        let err = DiffError::ReportNotFound(PathBuf::from("/missing/report.json"));
+        let msg = err.to_string();
+        assert!(msg.contains("Report not found"));
+        assert!(msg.contains("/missing/report.json"));
+    }
+
+    #[test]
+    fn test_diff_error_read_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let err = DiffError::ReadError {
+            path: PathBuf::from("/path/to/file.json"),
+            source: io_err,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Failed to read report"));
+        assert!(msg.contains("/path/to/file.json"));
+    }
+
+    #[test]
+    fn test_diff_error_parse_error() {
+        let json_err = serde_json::from_str::<PipelineReport>("invalid json").unwrap_err();
+        let err = DiffError::ParseError {
+            path: PathBuf::from("/path/to/file.json"),
+            source: json_err,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Failed to parse report"));
+    }
+
+    #[test]
+    fn test_diff_error_invalid_run_id() {
+        let err = DiffError::InvalidRunId("bad-id".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid run identifier"));
+        assert!(msg.contains("bad-id"));
+    }
+
+    #[test]
+    fn test_task_added() {
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![
+                make_task("build", vec!["src/main.rs"], Some("key1")),
+                make_task("test", vec!["tests/test.rs"], Some("key2")),
+            ],
+        );
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+
+        // Find the added task
+        let added_task = diff.task_diffs.iter().find(|t| t.name == "test").unwrap();
+        assert_eq!(added_task.change_type, ChangeType::Added);
+        assert_eq!(diff.summary.added_tasks, 1);
+    }
+
+    #[test]
+    fn test_task_removed() {
+        let report_a = make_report(
+            "abc123",
+            vec![
+                make_task("build", vec!["src/main.rs"], Some("key1")),
+                make_task("test", vec!["tests/test.rs"], Some("key2")),
+            ],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+
+        // Find the removed task
+        let removed_task = diff.task_diffs.iter().find(|t| t.name == "test").unwrap();
+        assert_eq!(removed_task.change_type, ChangeType::Removed);
+        assert_eq!(diff.summary.removed_tasks, 1);
+    }
+
+    #[test]
+    fn test_cache_invalidated_no_file_changes() {
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("build", vec!["src/main.rs"], Some("key2"))],
+        );
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+        assert_eq!(diff.task_diffs[0].change_type, ChangeType::CacheInvalidated);
+    }
+
+    #[test]
+    fn test_summary_counts() {
+        let report_a = make_report(
+            "abc123",
+            vec![
+                make_task("build", vec!["src/main.rs"], Some("key1")),
+                make_task("old-task", vec!["old.rs"], Some("old-key")),
+            ],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![
+                make_task("build", vec!["src/main.rs", "src/new.rs"], Some("key2")),
+                make_task("new-task", vec!["new.rs"], Some("new-key")),
+            ],
+        );
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+
+        assert_eq!(diff.summary.total_tasks, 3);
+        assert_eq!(diff.summary.added_tasks, 1);
+        assert_eq!(diff.summary.removed_tasks, 1);
+        assert_eq!(diff.summary.file_changes, 1); // build changed files
+    }
+
+    #[test]
+    fn test_format_diff_basic() {
+        let report_a = make_report(
+            "abc1234567890",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def4567890abc",
+            vec![make_task(
+                "build",
+                vec!["src/main.rs", "src/lib.rs"],
+                Some("key2"),
+            )],
+        );
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+        let output = format_diff(&diff);
+
+        assert!(output.contains("abc1234")); // shortened SHA
+        assert!(output.contains("def4567")); // shortened SHA
+        assert!(output.contains("Summary:"));
+        assert!(output.contains("Total tasks: 1"));
+        assert!(output.contains("~ build")); // modified task
+        assert!(output.contains("src/lib.rs")); // changed file
+    }
+
+    #[test]
+    fn test_format_diff_with_secrets() {
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("deploy", vec!["config.yml"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("deploy", vec!["config.yml"], Some("key2"))],
+        );
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+        let output = format_diff(&diff);
+
+        assert!(output.contains("Secrets: changed (values hidden)"));
+        assert!(output.contains("Secret changes: 1"));
+    }
+
+    #[test]
+    fn test_format_diff_added_removed() {
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("old-task", vec!["old.rs"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("new-task", vec!["new.rs"], Some("key2"))],
+        );
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+        let output = format_diff(&diff);
+
+        assert!(output.contains("+ new-task")); // added
+        assert!(output.contains("- old-task")); // removed
+        assert!(output.contains("Added: 1"));
+        assert!(output.contains("Removed: 1"));
+    }
+
+    #[test]
+    fn test_compare_runs_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let report_a_path = temp_dir.path().join("report_a.json");
+        let report_b_path = temp_dir.path().join("report_b.json");
+
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+
+        std::fs::write(&report_a_path, serde_json::to_string(&report_a).unwrap()).unwrap();
+        std::fs::write(&report_b_path, serde_json::to_string(&report_b).unwrap()).unwrap();
+
+        let diff = compare_runs(&report_a_path, &report_b_path).unwrap();
+        assert_eq!(diff.run_a, "abc123");
+        assert_eq!(diff.run_b, "def456");
+    }
+
+    #[test]
+    fn test_compare_runs_file_not_found() {
+        let result = compare_runs(
+            Path::new("/nonexistent/a.json"),
+            Path::new("/nonexistent/b.json"),
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            DiffError::ReportNotFound(path) => {
+                assert!(path.to_string_lossy().contains("nonexistent"))
+            }
+            _ => panic!("Expected ReportNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_load_report_invalid_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let report_path = temp_dir.path().join("invalid.json");
+        std::fs::write(&report_path, "not valid json").unwrap();
+
+        let result = load_report(&report_path);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            DiffError::ParseError { path, .. } => assert_eq!(path, report_path),
+            _ => panic!("Expected ParseError"),
+        }
+    }
+
+    #[test]
+    fn test_find_first_report_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let report_path = temp_dir.path().join("report.json");
+        std::fs::write(&report_path, "{}").unwrap();
+
+        let found = find_first_report(temp_dir.path()).unwrap();
+        assert_eq!(found, report_path);
+    }
+
+    #[test]
+    fn test_find_first_report_no_json() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("file.txt"), "not json").unwrap();
+
+        let result = find_first_report(temp_dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_first_report_dir_not_exists() {
+        let result = find_first_report(Path::new("/nonexistent/dir"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compare_by_sha_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let sha_a_dir = temp_dir.path().join("abc123");
+        let sha_b_dir = temp_dir.path().join("def456");
+        std::fs::create_dir_all(&sha_a_dir).unwrap();
+        std::fs::create_dir_all(&sha_b_dir).unwrap();
+
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("build", vec!["src/main.rs"], Some("key1"))],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("build", vec!["src/main.rs"], Some("key2"))],
+        );
+
+        std::fs::write(
+            sha_a_dir.join("report.json"),
+            serde_json::to_string(&report_a).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            sha_b_dir.join("report.json"),
+            serde_json::to_string(&report_b).unwrap(),
+        )
+        .unwrap();
+
+        let diff = compare_by_sha("abc123", "def456", temp_dir.path()).unwrap();
+        assert_eq!(diff.run_a, "abc123");
+        assert_eq!(diff.run_b, "def456");
+    }
+
+    #[test]
+    fn test_digest_diff_serialization() {
+        let diff = DigestDiff {
+            run_a: "abc123".to_string(),
+            run_b: "def456".to_string(),
+            task_diffs: vec![TaskDiff {
+                name: "build".to_string(),
+                change_type: ChangeType::Modified,
+                changed_files: vec!["src/main.rs".to_string()],
+                changed_env_vars: vec![],
+                changed_upstream: vec![],
+                secrets_changed: false,
+                cache_key_a: Some("key1".to_string()),
+                cache_key_b: Some("key2".to_string()),
+            }],
+            summary: DiffSummary {
+                total_tasks: 1,
+                changed_tasks: 1,
+                added_tasks: 0,
+                removed_tasks: 0,
+                secret_changes: 0,
+                file_changes: 1,
+                env_changes: 0,
+            },
+        };
+
+        let json = serde_json::to_string(&diff).unwrap();
+        let parsed: DigestDiff = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.run_a, "abc123");
+        assert_eq!(parsed.task_diffs.len(), 1);
+    }
+
+    #[test]
+    fn test_change_type_serialization() {
+        let ct = ChangeType::Modified;
+        let json = serde_json::to_string(&ct).unwrap();
+        assert_eq!(json, "\"modified\"");
+
+        let ct2: ChangeType = serde_json::from_str("\"cache_invalidated\"").unwrap();
+        assert_eq!(ct2, ChangeType::CacheInvalidated);
+    }
+
+    #[test]
+    fn test_diff_summary_default() {
+        let summary = DiffSummary::default();
+        assert_eq!(summary.total_tasks, 0);
+        assert_eq!(summary.changed_tasks, 0);
+        assert_eq!(summary.added_tasks, 0);
+        assert_eq!(summary.removed_tasks, 0);
+        assert_eq!(summary.secret_changes, 0);
+        assert_eq!(summary.file_changes, 0);
+        assert_eq!(summary.env_changes, 0);
+    }
+
+    #[test]
+    fn test_task_no_cache_keys() {
+        let report_a = make_report(
+            "abc123",
+            vec![make_task("build", vec!["src/main.rs"], None)],
+        );
+        let report_b = make_report(
+            "def456",
+            vec![make_task("build", vec!["src/main.rs"], None)],
+        );
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+        // Without cache keys, tasks should be unchanged
+        assert_eq!(diff.task_diffs[0].change_type, ChangeType::Unchanged);
+        assert!(!diff.task_diffs[0].secrets_changed);
+    }
+
+    #[test]
+    fn test_format_diff_short_sha() {
+        let report_a = make_report("abc", vec![]);
+        let report_b = make_report("def", vec![]);
+        let diff = compare_reports(&report_a, &report_b).unwrap();
+        let output = format_diff(&diff);
+
+        // Short SHAs should be displayed as-is
+        assert!(output.contains("abc"));
+        assert!(output.contains("def"));
     }
 }
