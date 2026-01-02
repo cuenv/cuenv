@@ -83,6 +83,67 @@ import "github.com/cuenv/cuenv/schema"
 	}]
 }
 
+// #CuenvNative builds cuenv using native Rust/Go toolchains (no Nix)
+// build.rs automatically compiles the Go CUE bridge via `go build`
+#CuenvNative: schema.#Contributor & {
+	id: "cuenv"
+	when: cuenvSource: ["native"]
+	tasks: [
+		{
+			id:       "setup-rust"
+			phase:    "setup"
+			label:    "Setup Rust"
+			priority: 6
+			provider: github: uses: "dtolnay/rust-toolchain@stable"
+		},
+		{
+			id:       "setup-go"
+			phase:    "setup"
+			label:    "Setup Go"
+			priority: 6
+			provider: github: {
+				uses: "actions/setup-go@v5"
+				with: "go-version": "1.24"
+			}
+		},
+		{
+			id:        "setup-cuenv"
+			phase:     "setup"
+			label:     "Build cuenv"
+			priority:  10
+			shell:     true
+			dependsOn: ["setup-rust", "setup-go"]
+			env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+			command: """
+				cargo build --release -p cuenv && \\
+				{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
+				  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
+				./target/release/cuenv sync -A
+				"""
+		},
+	]
+}
+
+// #CuenvFromArtifact sets up cuenv from a previously built artifact
+// Used by CI jobs that depend on the build.cuenv job
+#CuenvFromArtifact: schema.#Contributor & {
+	id: "cuenv"
+	when: cuenvSource: ["artifact"]
+	tasks: [{
+		id:       "setup-cuenv"
+		phase:    "setup"
+		label:    "Setup cuenv (from artifact)"
+		priority: 10
+		shell:    true
+		command: """
+			chmod +x target/release/cuenv && \\
+			{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
+			  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
+			./target/release/cuenv sync -A
+			"""
+	}]
+}
+
 // #CuenvNix installs cuenv via Nix flake
 // Requires install-nix to have run first.
 #CuenvNix: schema.#Contributor & {

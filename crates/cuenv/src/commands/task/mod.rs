@@ -310,7 +310,10 @@ async fn execute_task_legacy(
 
     // If no task specified, list available tasks
     if task_name.is_none() && labels.is_empty() {
-        use super::task_list::{RichFormatter, TaskListFormatter, TextFormatter, build_task_list};
+        use super::task_list::{
+            DashboardFormatter, EmojiFormatter, RichFormatter, TablesFormatter, TaskListFormatter,
+            TextFormatter, build_task_list,
+        };
         use std::io::IsTerminal;
 
         tracing::debug!("Listing available tasks");
@@ -341,18 +344,42 @@ async fn execute_task_legacy(
         // Build task list data
         let task_data = build_task_list(&tasks, cwd_relative.as_deref(), &project_root);
 
-        // Select formatter based on format flag and TTY detection
-        let output = match format {
-            "rich" => {
+        // Determine effective format: CLI flag > config > auto-detect
+        let effective_format = if format.is_empty() {
+            // No CLI flag provided, check config
+            manifest
+                .config
+                .as_ref()
+                .and_then(|c| c.task_list_format())
+                .map(|f| f.as_str())
+        } else {
+            Some(format)
+        };
+
+        // Select formatter based on effective format
+        let output = match effective_format {
+            Some("rich") => {
                 let formatter = RichFormatter::new();
                 formatter.format(&task_data)
             }
-            "text" => {
+            Some("text") => {
                 let formatter = TextFormatter;
                 formatter.format(&task_data)
             }
+            Some("tables") => {
+                let formatter = TablesFormatter::new();
+                formatter.format(&task_data)
+            }
+            Some("dashboard") => {
+                let formatter = DashboardFormatter::new();
+                formatter.format(&task_data)
+            }
+            Some("emoji") => {
+                let formatter = EmojiFormatter;
+                formatter.format(&task_data)
+            }
             _ => {
-                // Default: rich for TTY, text otherwise
+                // Auto-detect: rich for TTY, text otherwise
                 if std::io::stdout().is_terminal() {
                     let formatter = RichFormatter::new();
                     formatter.format(&task_data)

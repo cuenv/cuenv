@@ -19,8 +19,8 @@ permissions:
   contents: write
   id-token: write
 jobs:
-  nix-build-darwin-arm64:
-    name: nix.build (darwin-arm64)
+  cargo-build-darwin-arm64:
+    name: cargo.build (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
     timeout-minutes: 60
     steps:
@@ -32,10 +32,22 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
@@ -45,26 +57,23 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-    - name: nix.build (darwin-arm64)
-      run: cuenv task nix.build -e production --skip-dependencies
+    - name: cargo.build (darwin-arm64)
+      run: cuenv task cargo.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: darwin-arm64
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: nix-build-darwin-arm64
-        path: result/bin/*
+        name: cargo-build-darwin-arm64
+        path: target/release/cuenv
         if-no-files-found: ignore
         include-hidden-files: true
-  nix-build-linux-x64:
-    name: nix.build (linux-x64)
+  cargo-build-linux-x64:
+    name: cargo.build (linux-x64)
     runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 60
     steps:
@@ -76,10 +85,22 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
@@ -89,30 +110,27 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-    - name: nix.build (linux-x64)
-      run: cuenv task nix.build -e production --skip-dependencies
+    - name: cargo.build (linux-x64)
+      run: cuenv task cargo.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: linux-x64
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: nix-build-linux-x64
-        path: result/bin/*
+        name: cargo-build-linux-x64
+        path: target/release/cuenv
         if-no-files-found: ignore
         include-hidden-files: true
   publish-cue:
     name: publish.cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-    - nix-build-darwin-arm64
-    - nix-build-linux-x64
+    - cargo-build-darwin-arm64
+    - cargo-build-linux-x64
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -123,10 +141,22 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
@@ -136,19 +166,15 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-    - name: Download nix-build-darwin-arm64
+    - name: Download cargo-build-darwin-arm64
       uses: actions/download-artifact@v4
       with:
-        name: nix-build-darwin-arm64
+        name: cargo-build-darwin-arm64
         path: dist/darwin-arm64
-    - name: Download nix-build-linux-x64
+    - name: Download cargo-build-linux-x64
       uses: actions/download-artifact@v4
       with:
-        name: nix-build-linux-x64
+        name: cargo-build-linux-x64
         path: dist/linux-x64
     - name: publish.cue
       run: cuenv task publish.cue -e production --skip-dependencies
@@ -156,14 +182,15 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-github:
     name: publish.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-    - nix-build-darwin-arm64
-    - nix-build-linux-x64
+    - cargo-build-darwin-arm64
+    - cargo-build-linux-x64
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -174,10 +201,22 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
@@ -187,19 +226,15 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-    - name: Download nix-build-darwin-arm64
+    - name: Download cargo-build-darwin-arm64
       uses: actions/download-artifact@v4
       with:
-        name: nix-build-darwin-arm64
+        name: cargo-build-darwin-arm64
         path: dist/darwin-arm64
-    - name: Download nix-build-linux-x64
+    - name: Download cargo-build-linux-x64
       uses: actions/download-artifact@v4
       with:
-        name: nix-build-linux-x64
+        name: cargo-build-linux-x64
         path: dist/linux-x64
     - name: publish.github
       run: cuenv task publish.github -e production --skip-dependencies
@@ -207,8 +242,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
     name: docs.deploy
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -223,10 +259,22 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
@@ -236,10 +284,6 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
     - name: Download docs-build-artifacts
       uses: actions/download-artifact@v4
       with:
@@ -249,8 +293,9 @@ jobs:
       run: cuenv task docs.deploy -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
     name: docs.build
     runs-on: blacksmith-8vcpu-ubuntu-2404
@@ -263,10 +308,22 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
@@ -276,16 +333,13 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
     - name: docs.build
       run: cuenv task docs.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
         RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
