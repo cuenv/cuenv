@@ -702,7 +702,7 @@ mod tests {
         let task = IndexedTask {
             name: "build".to_string(),
             original_name: "build".to_string(),
-            definition: TaskDefinition::Single(Box::new(Task::default())),
+            definition: TaskDefinition::Single(Box::default()),
             is_group: false,
             source_file: Some("env.cue".to_string()),
         };
@@ -717,7 +717,7 @@ mod tests {
         let task = IndexedTask {
             name: "build".to_string(),
             original_name: "_build".to_string(),
-            definition: TaskDefinition::Single(Box::new(Task::default())),
+            definition: TaskDefinition::Single(Box::default()),
             is_group: false,
             source_file: None,
         };
