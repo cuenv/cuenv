@@ -116,3 +116,36 @@ For each crate, verify:
 
 8. **ci/src/executor/mod.rs** (21.85% -> improved)
    - Added 19 tests covering: ExecutorError variants (display messages), PipelineResult fields, CIExecutor construction, has_custom_cache_backend, cache_backend_name, CIExecutorConfig builder, make_simple_ir/make_task helpers, extract_fingerprints, TaskOutput methods
+
+### 2026-01-02: Coverage improvement session (fourth pass)
+
+**Starting coverage: 74.53%**
+**Ending coverage: 75.64%** (+1.11%)
+
+#### Tests Added (this session):
+
+1. **release/src/orchestrator.rs** (19.85% -> improved)
+   - Added 23 tests: ReleasePhase enum, OrchestratorConfig builder methods, ReleaseReport lifecycle and backend results, ReleaseOrchestrator artifact loading and dry-run modes
+
+2. **tools/oci/src/registry.rs** (45.87% -> improved)
+   - Added 14 tests: parse_reference with various formats and registries, compute_file_digest with various content sizes, OciClient authentication and ResolvedImage
+
+3. **secrets/src/batch.rs** (60.50% -> improved)
+   - Added 18 tests: BatchConfig construction and cloning, BatchResolver with multiple resolvers, resolve_batch with salt requirements and cache keys
+
+4. **release/src/manifest.rs** (65.87% -> improved)
+   - Added 16 tests: workspace version reading and error handling, package dependency tracking and glob patterns, workspace dependency version updates
+
+5. **core/src/base/discovery.rs** (43.42% -> improved)
+   - Added 17 tests: derive_synthetic_name with various path scenarios, BaseDiscovery construction and with_eval_fn builder, discovery with single/nested/multiple env.cue files, skipping failed loads, respecting .gitignore, DiscoveredBase struct, DiscoveryError variants
+
+6. **core/src/cache/tasks.rs** (67.98% -> improved)
+   - Added 19 tests: OutputIndexEntry and TaskResultMeta serialization, CacheEntry and TaskLatestIndex types, CacheKeyEnvelope with optional fields, key_to_path, lookup, record_latest, lookup_latest, get_project_cache_keys
+
+7. **cuenv/src/provider.rs** (53.23% -> improved)
+   - Added 16 tests: Provider trait methods (as_any, as_any_mut, downcast), SyncMode enum (debug, clone, equality), SyncOptions struct, SyncResult methods
+
+8. **ci/src/discovery.rs** (60.99% -> improved)
+   - Added 7 tests: DiscoveredCIProject clone/debug, find_cue_module_root edge cases
+
+---
