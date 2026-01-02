@@ -598,17 +598,18 @@ impl TaskListFormatter for TablesFormatter {
                 output.push('\n');
             }
 
-            // Calculate column widths
+            // Calculate column widths (use plain text lengths, not styled)
             let max_name = tasks.iter().map(|(n, _, _)| n.len()).max().unwrap_or(10).max(10);
             let max_desc = tasks.iter().map(|(_, d, _)| d.len()).max().unwrap_or(20).max(20);
             let dep_width = 7; // "N deps" or empty
 
             let total_width = max_name + max_desc + dep_width + 6; // +6 for separators and padding
 
-            // Header
+            // Header (use plain text for width calculations)
             let _ = writeln!(output, "╭─{}─╮", "─".repeat(total_width));
-            let category_display = self.bold(&category.to_uppercase());
-            let padding = total_width.saturating_sub(category.len());
+            let category_upper = category.to_uppercase();
+            let category_display = self.bold(&category_upper);
+            let padding = total_width.saturating_sub(category_upper.len()); // Use original length
             let _ = writeln!(output, "│ {}{} │", category_display, " ".repeat(padding));
             
             // Column headers
@@ -620,7 +621,7 @@ impl TaskListFormatter for TablesFormatter {
             // Rows
             for (name, desc, dep_count) in tasks {
                 let name_display = self.cyan(name);
-                let name_padding = max_name.saturating_sub(name.len());
+                let name_padding = max_name.saturating_sub(name.len()); // Use original length
                 let desc_padding = max_desc.saturating_sub(desc.len());
                 let dep_display = if *dep_count > 0 {
                     format!("{} dep{}", dep_count, if *dep_count > 1 { "s" } else { "" })
@@ -787,7 +788,7 @@ impl TaskListFormatter for DashboardFormatter {
 
         let total_width = max_group + max_name + status_width + time_width + 10;
 
-        // Header
+        // Header (use plain "Tasks" length for calculation, not styled)
         let _ = writeln!(output, "┌─ {} {}─┐", self.bold("Tasks"), "─".repeat(total_width.saturating_sub(8)));
         let _ = write!(output, "│ {:width_g$}  {:width_n$}  {:width_s$}  {:width_t$} │\n",
             self.bold("GROUP"),
@@ -921,6 +922,15 @@ impl TaskListFormatter for EmojiFormatter {
             collect_tasks_for_emoji(&group.nodes, &mut categorized_tasks, "");
         }
 
+        // Calculate max name width for alignment
+        let max_name_width = categorized_tasks
+            .values()
+            .flatten()
+            .map(|(name, _)| name.len())
+            .max()
+            .unwrap_or(20)
+            .max(20);
+
         // Render each category with emoji
         for (category, tasks) in &categorized_tasks {
             let emoji = get_category_emoji(category);
@@ -930,7 +940,7 @@ impl TaskListFormatter for EmojiFormatter {
                 if desc.is_empty() {
                     let _ = writeln!(output, "   {}", name);
                 } else {
-                    let _ = writeln!(output, "   {:20} {}", name, desc);
+                    let _ = writeln!(output, "   {:width$} {}", name, desc, width = max_name_width);
                 }
             }
         }
