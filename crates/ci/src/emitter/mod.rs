@@ -3,6 +3,15 @@
 //! Defines the interface for emitting CI configurations from the intermediate
 //! representation (IR). Implementations of this trait generate orchestrator-native
 //! configurations (e.g., Buildkite, GitLab CI, Tekton).
+//!
+//! ## Emitter Registry
+//!
+//! The [`EmitterRegistry`] provides a central registry for all available emitters,
+//! enabling dynamic lookup and discovery of available formats.
+
+mod registry;
+
+pub use registry::{EmitterInfo, EmitterRegistry, EmitterRegistryBuilder};
 
 use crate::ir::IntermediateRepresentation;
 use thiserror::Error;
