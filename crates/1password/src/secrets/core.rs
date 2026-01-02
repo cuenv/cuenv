@@ -362,11 +362,7 @@ mod tests {
         // 2. unix_time_milliseconds_imported (op-now)
         // 3. unix_time_milliseconds_imported (zxcvbn)
         // 4. utc_offset_seconds (op-time)
-        assert_eq!(
-            functions.len(),
-            4,
-            "Should create exactly 4 host functions"
-        );
+        assert_eq!(functions.len(), 4, "Should create exactly 4 host functions");
     }
 
     #[test]
@@ -416,5 +412,83 @@ mod tests {
         if std::env::consts::ARCH == "x86_64" {
             assert_eq!(arch, "amd64");
         }
+    }
+
+    #[test]
+    fn test_os_mapping_linux() {
+        // Test that linux stays as linux
+        let os = match "linux" {
+            "macos" => "darwin",
+            other => other,
+        };
+        assert_eq!(os, "linux");
+    }
+
+    #[test]
+    fn test_os_mapping_windows() {
+        // Test that windows stays as windows
+        let os = match "windows" {
+            "macos" => "darwin",
+            other => other,
+        };
+        assert_eq!(os, "windows");
+    }
+
+    #[test]
+    fn test_arch_mapping_arm() {
+        // Test other arch mappings
+        let arch = match "arm" {
+            "aarch64" => "arm64",
+            "x86_64" => "amd64",
+            other => other,
+        };
+        assert_eq!(arch, "arm");
+    }
+
+    #[test]
+    fn test_arch_mapping_riscv() {
+        let arch = match "riscv64" {
+            "aarch64" => "arm64",
+            "x86_64" => "amd64",
+            other => other,
+        };
+        assert_eq!(arch, "riscv64");
+    }
+
+    #[test]
+    fn test_host_functions_creates_random_fill() {
+        // Verify host functions are created successfully
+        let functions = create_host_functions();
+        // The functions list should contain 4 entries
+        assert_eq!(functions.len(), 4);
+    }
+
+    #[test]
+    fn test_create_host_functions_no_side_effects() {
+        // Creating host functions should not have side effects
+        let _functions1 = create_host_functions();
+        let _functions2 = create_host_functions();
+        // Both should succeed without issues
+    }
+
+    #[test]
+    fn test_shared_core_mutex_initial_state() {
+        // The shared core mutex should be lockable
+        let guard = SHARED_CORE.lock();
+        assert!(guard.is_ok());
+        let inner = guard.unwrap();
+        // Initially None until get_or_init is called with valid WASM
+        // We just verify it's accessible
+        let _ = inner.is_none() || inner.is_some();
+    }
+
+    #[test]
+    fn test_get_or_init_without_wasm_returns_error() {
+        // If WASM is not available and ONEPASSWORD_WASM_PATH is not set,
+        // get_or_init should fail. But we can't guarantee state here,
+        // so we just verify it doesn't panic
+        let result = SharedCore::get_or_init();
+        // Result is either Ok (WASM available) or Err (not available)
+        let _ = result.is_ok() || result.is_err();
     }
 }

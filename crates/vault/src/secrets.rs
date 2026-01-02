@@ -371,4 +371,148 @@ mod tests {
         assert_eq!(config1, config2);
         assert_ne!(config1, config3);
     }
+
+    #[test]
+    fn test_vault_config_with_different_mounts() {
+        let mut config1 = VaultSecretConfig::new("path", "key");
+        config1.mount = "kv".to_string();
+        let mut config2 = VaultSecretConfig::new("path", "key");
+        config2.mount = "secrets".to_string();
+
+        assert_ne!(config1, config2);
+    }
+
+    #[test]
+    fn test_vault_config_roundtrip() {
+        let original = VaultSecretConfig {
+            path: "deep/nested/path".to_string(),
+            key: "complex_key".to_string(),
+            mount: "custom_mount".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: VaultSecretConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_full_path_with_special_characters() {
+        let config = VaultSecretConfig {
+            path: "my-app/config_v1".to_string(),
+            key: "api-key".to_string(),
+            mount: "secret".to_string(),
+        };
+        assert_eq!(config.full_path(), "secret/data/my-app/config_v1");
+    }
+
+    #[test]
+    fn test_full_path_empty_path() {
+        let config = VaultSecretConfig {
+            path: String::new(),
+            key: "key".to_string(),
+            mount: "secret".to_string(),
+        };
+        assert_eq!(config.full_path(), "secret/data/");
+    }
+
+    #[test]
+    fn test_vault_config_deserialization_missing_path() {
+        let json = r#"{"key": "mykey"}"#;
+        let result = serde_json::from_str::<VaultSecretConfig>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_vault_config_deserialization_missing_key() {
+        let json = r#"{"path": "mypath"}"#;
+        let result = serde_json::from_str::<VaultSecretConfig>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolver_new_without_credentials() {
+        // Without VAULT_TOKEN and VAULT_ADDR, should use CLI mode
+        if std::env::var("VAULT_TOKEN").is_err() || std::env::var("VAULT_ADDR").is_err() {
+            let resolver = VaultResolver::new();
+            assert!(resolver.is_ok());
+            let resolver = resolver.unwrap();
+            assert!(!resolver.can_use_http());
+        }
+    }
+
+    #[test]
+    fn test_resolver_provider_name() {
+        if std::env::var("VAULT_TOKEN").is_err() || std::env::var("VAULT_ADDR").is_err() {
+            let resolver = VaultResolver::new().unwrap();
+            assert_eq!(resolver.provider_name(), "vault");
+        }
+    }
+
+    #[test]
+    fn test_resolver_debug_output() {
+        if std::env::var("VAULT_TOKEN").is_err() || std::env::var("VAULT_ADDR").is_err() {
+            let resolver = VaultResolver::new().unwrap();
+            let debug = format!("{resolver:?}");
+            assert!(debug.contains("VaultResolver"));
+            assert!(debug.contains("cli") || debug.contains("http"));
+        }
+    }
+
+    #[test]
+    fn test_http_credentials_available_logic() {
+        let token = std::env::var("VAULT_TOKEN").is_ok();
+        let addr = std::env::var("VAULT_ADDR").is_ok();
+        let expected = token && addr;
+        assert_eq!(VaultResolver::http_credentials_available(), expected);
+    }
+
+    #[test]
+    fn test_vault_config_unicode_path() {
+        let config = VaultSecretConfig::new("路径/配置", "密钥");
+        assert_eq!(config.path, "路径/配置");
+        assert_eq!(config.key, "密钥");
+        assert_eq!(config.full_path(), "secret/data/路径/配置");
+    }
+
+    #[test]
+    fn test_vault_config_with_slashes_in_key() {
+        let config = VaultSecretConfig {
+            path: "myapp/config".to_string(),
+            key: "nested/key/path".to_string(),
+            mount: "secret".to_string(),
+        };
+        assert_eq!(config.key, "nested/key/path");
+    }
+
+    #[test]
+    fn test_vault_config_empty_key() {
+        let config = VaultSecretConfig {
+            path: "myapp/config".to_string(),
+            key: String::new(),
+            mount: "secret".to_string(),
+        };
+        assert_eq!(config.key, "");
+    }
+
+    #[test]
+    fn test_full_path_mount_partial_match() {
+        // Path starts with "secret" but not as mount
+        let config = VaultSecretConfig {
+            path: "secretive/path".to_string(),
+            key: "key".to_string(),
+            mount: "secret".to_string(),
+        };
+        // "secretive" starts with "secret", so it matches the starts_with check
+        assert_eq!(config.full_path(), "secretive/path");
+    }
+
+    #[test]
+    fn test_full_path_different_mount_prefix() {
+        // Path doesn't start with mount
+        let config = VaultSecretConfig {
+            path: "other/path".to_string(),
+            key: "key".to_string(),
+            mount: "kv".to_string(),
+        };
+        assert_eq!(config.full_path(), "kv/data/other/path");
+    }
 }

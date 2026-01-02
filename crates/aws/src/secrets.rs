@@ -578,4 +578,180 @@ mod tests {
         assert!(debug_str.contains("AwsSecretConfig"));
         assert!(debug_str.contains("test-secret"));
     }
+
+    #[test]
+    fn test_aws_config_equality() {
+        let config1 = AwsSecretConfig::new("secret-1");
+        let config2 = AwsSecretConfig::new("secret-1");
+        let config3 = AwsSecretConfig::new("secret-2");
+
+        assert_eq!(config1, config2);
+        assert_ne!(config1, config3);
+    }
+
+    #[test]
+    fn test_aws_config_with_version_id_equality() {
+        let mut config1 = AwsSecretConfig::new("secret");
+        config1.version_id = Some("v1".to_string());
+        let mut config2 = AwsSecretConfig::new("secret");
+        config2.version_id = Some("v1".to_string());
+        let mut config3 = AwsSecretConfig::new("secret");
+        config3.version_id = Some("v2".to_string());
+
+        assert_eq!(config1, config2);
+        assert_ne!(config1, config3);
+    }
+
+    #[test]
+    fn test_aws_config_deserialization_from_json() {
+        let json = r#"{"secretId": "my-secret", "versionId": "abc", "jsonKey": "password"}"#;
+        let config: AwsSecretConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.secret_id, "my-secret");
+        assert_eq!(config.version_id, Some("abc".to_string()));
+        assert_eq!(config.json_key, Some("password".to_string()));
+        assert!(config.version_stage.is_none());
+    }
+
+    #[test]
+    fn test_aws_config_deserialization_minimal() {
+        let json = r#"{"secretId": "just-the-id"}"#;
+        let config: AwsSecretConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.secret_id, "just-the-id");
+        assert!(config.version_id.is_none());
+        assert!(config.version_stage.is_none());
+        assert!(config.json_key.is_none());
+    }
+
+    #[test]
+    fn test_aws_config_deserialization_missing_secret_id() {
+        let json = r#"{"versionId": "v1"}"#;
+        let result = serde_json::from_str::<AwsSecretConfig>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_aws_config_with_arn() {
+        let arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:my-secret-abc123";
+        let config = AwsSecretConfig::new(arn);
+        assert_eq!(config.secret_id, arn);
+    }
+
+    #[test]
+    fn test_aws_config_roundtrip() {
+        let original = AwsSecretConfig {
+            secret_id: "test-secret".to_string(),
+            version_id: Some("v1".to_string()),
+            version_stage: Some("AWSPREVIOUS".to_string()),
+            json_key: Some("key".to_string()),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: AwsSecretConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_extract_json_key_empty_string_value() {
+        let secret = r#"{"key": ""}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"key".to_string()));
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn test_extract_json_key_special_characters() {
+        let secret = r#"{"key": "value with \"quotes\" and \n newlines"}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"key".to_string()));
+        assert!(result.is_ok());
+        let value = result.unwrap();
+        assert!(value.contains("quotes"));
+    }
+
+    #[test]
+    fn test_extract_json_key_unicode() {
+        let secret = r#"{"密码": "秘密值"}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"密码".to_string()));
+        assert_eq!(result.unwrap(), "秘密值");
+    }
+
+    #[test]
+    fn test_extract_json_key_numeric_string() {
+        let secret = r#"{"key": "12345"}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"key".to_string()));
+        assert_eq!(result.unwrap(), "12345");
+    }
+
+    #[test]
+    fn test_extract_json_key_float_value() {
+        let secret = r#"{"rate": 3.14159}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"rate".to_string()));
+        let value = result.unwrap();
+        assert!(value.starts_with("3.14"));
+    }
+
+    #[tokio::test]
+    async fn test_resolver_new_without_credentials() {
+        // Without AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, should use CLI mode
+        // This test just verifies the resolver can be created
+        if std::env::var("AWS_ACCESS_KEY_ID").is_err()
+            || std::env::var("AWS_SECRET_ACCESS_KEY").is_err()
+        {
+            let resolver = AwsResolver::new().await;
+            assert!(resolver.is_ok());
+            let resolver = resolver.unwrap();
+            assert!(!resolver.can_use_http());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolver_provider_name() {
+        if std::env::var("AWS_ACCESS_KEY_ID").is_err()
+            || std::env::var("AWS_SECRET_ACCESS_KEY").is_err()
+        {
+            let resolver = AwsResolver::new().await.unwrap();
+            assert_eq!(resolver.provider_name(), "aws");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolver_supports_native_batch() {
+        if std::env::var("AWS_ACCESS_KEY_ID").is_err()
+            || std::env::var("AWS_SECRET_ACCESS_KEY").is_err()
+        {
+            let resolver = AwsResolver::new().await.unwrap();
+            assert!(resolver.supports_native_batch());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolver_debug_output() {
+        if std::env::var("AWS_ACCESS_KEY_ID").is_err()
+            || std::env::var("AWS_SECRET_ACCESS_KEY").is_err()
+        {
+            let resolver = AwsResolver::new().await.unwrap();
+            let debug = format!("{resolver:?}");
+            assert!(debug.contains("AwsResolver"));
+            assert!(debug.contains("cli") || debug.contains("http"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_batch_empty() {
+        if std::env::var("AWS_ACCESS_KEY_ID").is_err()
+            || std::env::var("AWS_SECRET_ACCESS_KEY").is_err()
+        {
+            let resolver = AwsResolver::new().await.unwrap();
+            let empty: HashMap<String, SecretSpec> = HashMap::new();
+            let result = resolver.resolve_batch(&empty).await;
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_http_credentials_available_logic() {
+        // Test the logic directly
+        let key_id = std::env::var("AWS_ACCESS_KEY_ID").is_ok();
+        let secret = std::env::var("AWS_SECRET_ACCESS_KEY").is_ok();
+        let expected = key_id && secret;
+        assert_eq!(AwsResolver::http_credentials_available(), expected);
+    }
 }
