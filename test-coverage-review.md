@@ -149,3 +149,69 @@ For each crate, verify:
    - Added 7 tests: DiscoveredCIProject clone/debug, find_cue_module_root edge cases
 
 ---
+
+### 2026-01-02: Coverage improvement session (fifth pass)
+
+**Starting coverage: 74.94%**
+**Ending coverage: 75.80%** (+0.86%)
+
+#### Tests Added (this session):
+
+1. **ci/src/executor/cache.rs** (63.79% -> improved)
+   - Added 30+ tests for LocalCacheBackend:
+   - CacheError variants and io_with_context helper
+   - CacheResult and CacheMetadata serialization
+   - TaskLogs default and content handling
+   - cache_path_for_digest with short digests
+   - load_metadata and load_logs error paths
+   - LocalCacheBackend async operations (check, store, get_logs, restore_outputs)
+   - walkdir and is_file_executable utilities
+   - store_result with various log configurations
+
+2. **ci/src/executor/remote.rs** (15.86% -> improved)
+   - Added 10+ tests for RemoteCacheConfig:
+   - from_env with URL, instance, TLS settings
+   - TLS parsing with "true", "1", "false"
+   - Empty URL handling
+   - Config default values
+   - compute_digest determinism
+   - to_bazel_digest prefix handling
+   - is_retryable for all gRPC status codes
+   - RemoteCacheBackend construction and debug
+   - create_backoff configuration
+
+3. **core/src/tasks/executor.rs** (57.71% -> improved)
+   - Added 30+ tests for helper functions and types:
+   - summarize_task_failure with exit codes, no exit code, no output, truncation
+   - summarize_stream for empty, whitespace, and short content
+   - format_failure_streams with both stdout and stderr
+   - find_workspace_root for npm, pnpm, cargo, deno
+   - package_json_has_workspaces (array, object, empty, missing)
+   - cargo_toml_has_workspace detection
+   - deno_json_has_workspace (array, object styles)
+   - ExecutorConfig field coverage
+   - TaskResult clone and constant checks
+
+4. **core/src/tasks/io.rs** (coverage improved)
+   - Added 25+ tests for IO utilities:
+   - ResolvedInputFile and ResolvedInputs fields and cloning
+   - to_summary_map output
+   - normalize_rel_path with ./ and ../
+   - sha256_file including empty files and not found
+   - extract_glob_base with various patterns
+   - InputResolver edge cases (empty, whitespace, missing, deduplication)
+   - collect_outputs (empty, files, directory patterns, sorting)
+   - snapshot_workspace_tar_zst
+   - populate_hermetic_dir nested directories
+   - Absolutize trait for relative and absolute paths
+
+5. **ci/src/executor/backend.rs** (coverage improved)
+   - Added 10+ tests for backend types:
+   - CacheLookupResult clone
+   - CacheOutput fields and executability
+   - CacheEntry fields and with outputs
+   - BackendError display messages for all variants
+   - BackendError from_io conversion
+   - Clone implementations for data types
+
+---
