@@ -5,7 +5,7 @@ name: cuenv-release
 on:
   release:
     types:
-      - published
+    - published
   workflow_dispatch:
     inputs:
       tag_name:
@@ -24,6 +24,7 @@ jobs:
     runs-on: namespace-profile-cuenv-macos-arm64
     timeout-minutes: 60
     steps:
+<<<<<<< HEAD
 <<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
@@ -157,12 +158,94 @@ jobs:
           path: result/bin/*
           if-no-files-found: ignore
           include-hidden-files: true
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: nix.build (darwin-arm64)
+        run: cuenv task nix.build -e production --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUENV_ARCH: darwin-arm64
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          RUSTC_WRAPPER: sccache
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-build-darwin-arm64
+          path: result/bin/*
+          if-no-files-found: ignore
+          include-hidden-files: true
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: nix.build (darwin-arm64)
+      run: cuenv task nix.build -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CUENV_ARCH: darwin-arm64
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nix-build-darwin-arm64
+        path: result/bin/*
+        if-no-files-found: ignore
+        include-hidden-files: true
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
   nix-build-linux-x64:
     name: nix.build (linux-x64)
 >>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
     runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 60
     steps:
+<<<<<<< HEAD
 <<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
@@ -293,10 +376,92 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 >>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: nix.build (linux-x64)
+        run: cuenv task nix.build -e production --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CUENV_ARCH: linux-x64
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          RUSTC_WRAPPER: sccache
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-build-linux-x64
+          path: result/bin/*
+          if-no-files-found: ignore
+          include-hidden-files: true
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: nix.build (linux-x64)
+      run: cuenv task nix.build -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CUENV_ARCH: linux-x64
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nix-build-linux-x64
+        path: result/bin/*
+        if-no-files-found: ignore
+        include-hidden-files: true
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
   publish-cue:
     name: publish.cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
+<<<<<<< HEAD
 <<<<<<< HEAD
     - cargo-build-darwin-arm64
     - cargo-build-linux-x64
@@ -307,8 +472,16 @@ jobs:
       - nix-build-darwin-arm64
       - nix-build-linux-x64
 >>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - nix-build-darwin-arm64
+      - nix-build-linux-x64
+=======
+    - nix-build-darwin-arm64
+    - nix-build-linux-x64
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
     timeout-minutes: 30
     steps:
+<<<<<<< HEAD
 <<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
@@ -451,10 +624,100 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           RUSTC_WRAPPER: sccache
 >>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: Download nix-build-darwin-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-build-darwin-arm64
+          path: dist/darwin-arm64
+      - name: Download nix-build-linux-x64
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-build-linux-x64
+          path: dist/linux-x64
+      - name: publish.cue
+        run: cuenv task publish.cue -e production --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PATHS: dist/**/*
+          TAG: ${{ github.ref_name }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          RUSTC_WRAPPER: sccache
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: Download nix-build-darwin-arm64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-darwin-arm64
+        path: dist/darwin-arm64
+    - name: Download nix-build-linux-x64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-linux-x64
+        path: dist/linux-x64
+    - name: publish.cue
+      run: cuenv task publish.cue -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PATHS: dist/**/*
+        TAG: ${{ github.ref_name }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
   publish-github:
     name: publish.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
+<<<<<<< HEAD
 <<<<<<< HEAD
     - cargo-build-darwin-arm64
     - cargo-build-linux-x64
@@ -465,8 +728,16 @@ jobs:
       - nix-build-darwin-arm64
       - nix-build-linux-x64
 >>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - nix-build-darwin-arm64
+      - nix-build-linux-x64
+=======
+    - nix-build-darwin-arm64
+    - nix-build-linux-x64
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
     timeout-minutes: 30
     steps:
+<<<<<<< HEAD
 <<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
@@ -609,12 +880,102 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           RUSTC_WRAPPER: sccache
 >>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: Download nix-build-darwin-arm64
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-build-darwin-arm64
+          path: dist/darwin-arm64
+      - name: Download nix-build-linux-x64
+        uses: actions/download-artifact@v4
+        with:
+          name: nix-build-linux-x64
+          path: dist/linux-x64
+      - name: publish.github
+        run: cuenv task publish.github -e production --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PATHS: dist/**/*
+          TAG: ${{ github.ref_name }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          RUSTC_WRAPPER: sccache
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: Download nix-build-darwin-arm64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-darwin-arm64
+        path: dist/darwin-arm64
+    - name: Download nix-build-linux-x64
+      uses: actions/download-artifact@v4
+      with:
+        name: nix-build-linux-x64
+        path: dist/linux-x64
+    - name: publish.github
+      run: cuenv task publish.github -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PATHS: dist/**/*
+        TAG: ${{ github.ref_name }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
   docs-deploy:
     name: docs.deploy
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-      - docs-build
+    - docs-build
     steps:
+<<<<<<< HEAD
 <<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
@@ -736,10 +1097,230 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           RUSTC_WRAPPER: sccache
 >>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: Download docs-build-artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-build-artifacts
+          path: docs/dist
+      - name: docs.deploy
+        run: cuenv task docs.deploy -e production --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          RUSTC_WRAPPER: sccache
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: Download docs-build-artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: docs-build-artifacts
+        path: docs/dist
+    - name: docs.deploy
+      run: cuenv task docs.deploy -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+  install-nix:
+    name: install-nix
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: install-nix
+      run: cuenv task install-nix -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+  setup-cuenv:
+    name: setup-cuenv
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs:
+    - install-nix
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: setup-cuenv
+      run: cuenv task setup-cuenv -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+  setup-1password:
+    name: setup-1password
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs:
+    - setup-cuenv
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: setup-1password
+      run: cuenv task setup-1password -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+  setup-sccache:
+    name: setup-sccache
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: setup-sccache
+      run: cuenv task setup-sccache -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
   docs-build:
     name: docs.build
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
+<<<<<<< HEAD
 <<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
@@ -867,3 +1448,82 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 >>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup 1Password
+        run: cuenv secrets setup onepassword
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: docs.build
+        run: cuenv task docs.build -e production --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          RUSTC_WRAPPER: sccache
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-build-artifacts
+          path: docs/dist
+          if-no-files-found: ignore
+          include-hidden-files: true
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: docs.build
+      run: cuenv task docs.build -e production --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+        RUSTC_WRAPPER: sccache
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: docs-build-artifacts
+        path: docs/dist
+        if-no-files-found: ignore
+        include-hidden-files: true
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)

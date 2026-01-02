@@ -1053,11 +1053,7 @@ impl Compiler {
     ///
     /// Creates an IR Task with phase metadata. Phase tasks are stored alongside
     /// regular tasks in `ir.tasks` and distinguished by their `phase` field.
-    fn phase_task_to_ir(
-        phase_task: &PhaseTask,
-        contributor_id: &str,
-        phase: BuildStage,
-    ) -> IrTask {
+    fn phase_task_to_ir(phase_task: &PhaseTask, contributor_id: &str, phase: BuildStage) -> IrTask {
         // Build command array
         let (command, shell) = if let Some(ref cmd) = phase_task.command {
             let mut cmd_vec = vec![cmd.clone()];

@@ -129,7 +129,7 @@ impl GitHubStageRenderer {
 
     /// Render a slice of tasks to GitHub Actions steps.
     #[must_use]
-    pub fn render_tasks(&self, tasks: Vec<&Task>) -> Vec<Step> {
+    pub fn render_tasks(&self, tasks: &[&Task]) -> Vec<Step> {
         tasks.iter().map(|t| self.render_task(t)).collect()
     }
 }
@@ -272,15 +272,18 @@ mod tests {
     #[test]
     fn test_render_tasks() {
         let task1 = make_test_task("setup-cuenv", &["nix", "build"]);
-        let mut task2 = make_test_task("setup-1password", &["cuenv", "secrets", "setup", "onepassword"]);
+        let mut task2 = make_test_task(
+            "setup-1password",
+            &["cuenv", "secrets", "setup", "onepassword"],
+        );
         task2.env.insert(
             "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
             "${OP_SERVICE_ACCOUNT_TOKEN}".to_string(),
         );
 
-        let tasks = vec![&task1, &task2];
+        let task_refs = vec![&task1, &task2];
         let renderer = GitHubStageRenderer::new();
-        let steps = renderer.render_tasks(tasks);
+        let steps = renderer.render_tasks(&task_refs);
 
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].run, Some("nix build".to_string()));

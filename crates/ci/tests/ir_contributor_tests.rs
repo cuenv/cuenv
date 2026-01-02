@@ -97,7 +97,7 @@ fn test_nix_contributor_active_with_nix_runtime() {
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 
     // Check that install-nix bootstrap task is present
-    let bootstrap_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Bootstrap).collect();
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
     assert!(
         bootstrap_tasks.iter().any(|t| t.id == "install-nix"),
         "NixContributor should inject 'install-nix' task into bootstrap stage"
@@ -123,7 +123,7 @@ fn test_nix_contributor_inactive_without_nix_runtime() {
     let ir = compile_with_pipeline(project, "eval").expect("Failed to compile");
 
     // Check that install-nix bootstrap task is NOT present
-    let bootstrap_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Bootstrap).collect();
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
     assert!(
         !bootstrap_tasks.iter().any(|t| t.id == "install-nix"),
         "NixContributor should NOT inject 'install-nix' task when no Nix runtime"
@@ -145,17 +145,14 @@ fn test_cuenv_contributor_active_with_nix_runtime() {
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 
     // CuenvContributor should inject setup-cuenv task
-    let setup_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Setup).collect();
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     assert!(
         setup_tasks.iter().any(|t| t.id == "setup-cuenv"),
         "CuenvContributor should inject 'setup-cuenv' task into setup stage"
     );
 
     // Verify it depends on install-nix
-    let setup_cuenv = setup_tasks
-        .iter()
-        .find(|t| t.id == "setup-cuenv")
-        .unwrap();
+    let setup_cuenv = setup_tasks.iter().find(|t| t.id == "setup-cuenv").unwrap();
     assert!(
         setup_cuenv.depends_on.contains(&"install-nix".to_string()),
         "setup-cuenv should depend on install-nix"
@@ -178,7 +175,7 @@ fn test_onepassword_contributor_active_with_op_refs() {
     let ir = compile_with_pipeline(project, "deploy").expect("Failed to compile");
 
     // Check that setup-1password task is present
-    let setup_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Setup).collect();
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     assert!(
         setup_tasks.iter().any(|t| t.id == "setup-1password"),
         "OnePasswordContributor should inject 'setup-1password' task when op:// refs exist"
@@ -207,7 +204,7 @@ fn test_onepassword_contributor_inactive_without_op_refs() {
     let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
 
     // Check that setup-1password task is NOT present
-    let setup_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Setup).collect();
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     assert!(
         !setup_tasks.iter().any(|t| t.id == "setup-1password"),
         "OnePasswordContributor should NOT inject task when no op:// refs"
@@ -230,17 +227,14 @@ fn test_cachix_contributor_active_with_config() {
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 
     // Check that setup-cachix task is present
-    let setup_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Setup).collect();
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     assert!(
         setup_tasks.iter().any(|t| t.id == "setup-cachix"),
         "CachixContributor should inject 'setup-cachix' task when cachix is configured"
     );
 
     // Verify it uses the configured cache name
-    let setup_cachix = setup_tasks
-        .iter()
-        .find(|t| t.id == "setup-cachix")
-        .unwrap();
+    let setup_cachix = setup_tasks.iter().find(|t| t.id == "setup-cachix").unwrap();
     assert!(
         setup_cachix.command[0].contains("my-project-cache"),
         "setup-cachix should use the configured cache name"
@@ -259,7 +253,7 @@ fn test_cachix_contributor_inactive_without_config() {
     let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
 
     // Check that setup-cachix task is NOT present
-    let setup_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Setup).collect();
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     assert!(
         !setup_tasks.iter().any(|t| t.id == "setup-cachix"),
         "CachixContributor should NOT inject task when no cachix config"
@@ -282,7 +276,7 @@ fn test_gh_models_contributor_active_with_gh_models_task() {
     let ir = compile_with_pipeline(project, "eval").expect("Failed to compile");
 
     // Check that setup-gh-models task is present
-    let setup_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Setup).collect();
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     assert!(
         setup_tasks.iter().any(|t| t.id == "setup-gh-models"),
         "GhModelsContributor should inject 'setup-gh-models' task when gh models is used"
@@ -311,7 +305,7 @@ fn test_gh_models_contributor_inactive_without_gh_models_task() {
     let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
 
     // Check that setup-gh-models task is NOT present
-    let setup_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Setup).collect();
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     assert!(
         !setup_tasks.iter().any(|t| t.id == "setup-gh-models"),
         "GhModelsContributor should NOT inject task when no gh models usage"
@@ -333,7 +327,7 @@ fn test_phase_tasks_are_sorted_by_priority() {
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 
     // Bootstrap phase tasks should be sorted by priority (sorted_phase_tasks returns them sorted)
-    let bootstrap_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Bootstrap).collect();
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
     let bootstrap_priorities: Vec<i32> = bootstrap_tasks
         .iter()
         .map(|t| t.priority.unwrap_or(0))
@@ -346,7 +340,7 @@ fn test_phase_tasks_are_sorted_by_priority() {
     );
 
     // Setup phase tasks should be sorted by priority
-    let setup_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Setup).collect();
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
     let setup_priorities: Vec<i32> = setup_tasks
         .iter()
         .map(|t| t.priority.unwrap_or(0))
@@ -374,7 +368,7 @@ fn test_nix_contributor_provides_github_action_hints() {
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 
     // NixContributor should provide provider_hints for GitHub Actions
-    let bootstrap_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Bootstrap).collect();
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
     let install_nix = bootstrap_tasks
         .iter()
         .find(|t| t.id == "install-nix")
@@ -414,7 +408,7 @@ fn test_codecov_contributor_active_with_test_label() {
     let ir = compile_with_pipeline(project, "test").expect("Failed to compile");
 
     // Check that codecov-upload success task is present
-    let success_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Success).collect();
+    let success_tasks = ir.sorted_phase_tasks(BuildStage::Success);
     assert!(
         success_tasks.iter().any(|t| t.id == "codecov-upload"),
         "CodecovContributor should inject 'codecov-upload' task into success phase"
@@ -439,7 +433,7 @@ fn test_codecov_contributor_provides_github_action_hints() {
     let ir = compile_with_pipeline(project, "test").expect("Failed to compile");
 
     // CodecovContributor should provide provider_hints for GitHub Actions
-    let success_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Success).collect();
+    let success_tasks = ir.sorted_phase_tasks(BuildStage::Success);
     let codecov_upload = success_tasks
         .iter()
         .find(|t| t.id == "codecov-upload")
@@ -471,7 +465,7 @@ fn test_codecov_contributor_command_structure() {
 
     let ir = compile_with_pipeline(project, "test").expect("Failed to compile");
 
-    let success_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Success).collect();
+    let success_tasks = ir.sorted_phase_tasks(BuildStage::Success);
     let codecov_upload = success_tasks
         .iter()
         .find(|t| t.id == "codecov-upload")
@@ -480,11 +474,15 @@ fn test_codecov_contributor_command_structure() {
     // Verify the command structure
     assert_eq!(codecov_upload.command[0], "codecov");
     assert!(
-        codecov_upload.command.contains(&"upload-process".to_string()),
+        codecov_upload
+            .command
+            .contains(&"upload-process".to_string()),
         "codecov-upload should use upload-process subcommand"
     );
     assert!(
-        codecov_upload.command.contains(&"--auto-detect".to_string()),
+        codecov_upload
+            .command
+            .contains(&"--auto-detect".to_string()),
         "codecov-upload should use --auto-detect flag"
     );
 }
@@ -501,7 +499,7 @@ fn test_codecov_contributor_inactive_without_labels() {
     let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
 
     // Check that codecov-upload task is NOT present
-    let success_tasks: Vec<_> = ir.sorted_phase_tasks(BuildStage::Success).collect();
+    let success_tasks = ir.sorted_phase_tasks(BuildStage::Success);
     assert!(
         !success_tasks.iter().any(|t| t.id == "codecov-upload"),
         "CodecovContributor should NOT inject task when no test/coverage labels"

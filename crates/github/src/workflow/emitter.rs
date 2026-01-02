@@ -554,7 +554,7 @@ impl GitHubActionsEmitter {
         let mut secret_env_vars = IndexMap::new();
 
         // Render bootstrap phase tasks (e.g., Nix installation)
-        let bootstrap_steps = renderer.render_tasks(ir.sorted_phase_tasks(BuildStage::Bootstrap));
+        let bootstrap_steps = renderer.render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap));
         steps.extend(bootstrap_steps);
 
         // Render setup phase tasks (e.g., cuenv, 1Password, Cachix)
@@ -1459,12 +1459,14 @@ mod tests {
         });
 
         // Create phase tasks that would be contributed by NixContributor
-        let mut bootstrap_task = make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+        let mut bootstrap_task =
+            make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
         bootstrap_task.label = Some("Install Nix".to_string());
         bootstrap_task.contributor = Some("nix".to_string());
         bootstrap_task.provider_hints = Some(provider_hints);
 
-        let mut setup_task = make_phase_task("setup-cuenv", &["nix build .#cuenv"], BuildStage::Setup, 10);
+        let mut setup_task =
+            make_phase_task("setup-cuenv", &["nix build .#cuenv"], BuildStage::Setup, 10);
         setup_task.label = Some("Setup cuenv".to_string());
         setup_task.contributor = Some("cuenv".to_string());
         setup_task.depends_on = vec!["install-nix".to_string()];
@@ -1498,7 +1500,8 @@ mod tests {
         });
 
         // Create phase tasks for Cachix
-        let mut bootstrap_task = make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+        let mut bootstrap_task =
+            make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
         bootstrap_task.label = Some("Install Nix".to_string());
         bootstrap_task.contributor = Some("nix".to_string());
         bootstrap_task.provider_hints = Some(nix_provider_hints);
@@ -1836,8 +1839,7 @@ mod tests {
             "release-build-darwin-arm64".to_string(),
         ];
 
-        let job =
-            emitter.build_artifact_aggregation_job(&task, &ir, None, &previous_jobs, None);
+        let job = emitter.build_artifact_aggregation_job(&task, &ir, None, &previous_jobs, None);
 
         assert_eq!(job.name, Some("release.publish".to_string()));
         assert_eq!(job.needs, previous_jobs);
@@ -1906,14 +1908,18 @@ mod tests {
 
     #[test]
     fn test_render_phase_steps() {
-        let mut bootstrap_task = make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+        let mut bootstrap_task =
+            make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
         bootstrap_task.label = Some("Install Nix".to_string());
         bootstrap_task.contributor = Some("nix".to_string());
 
-        let mut setup_task = make_phase_task("setup-cuenv", &["nix build .#cuenv"], BuildStage::Setup, 10);
+        let mut setup_task =
+            make_phase_task("setup-cuenv", &["nix build .#cuenv"], BuildStage::Setup, 10);
         setup_task.label = Some("Setup cuenv".to_string());
         setup_task.contributor = Some("cuenv".to_string());
-        setup_task.env.insert("MY_VAR".to_string(), "${MY_SECRET}".to_string());
+        setup_task
+            .env
+            .insert("MY_VAR".to_string(), "${MY_SECRET}".to_string());
 
         let ir = make_ir(vec![bootstrap_task, setup_task]);
 
@@ -1995,8 +2001,7 @@ mod tests {
         });
         let ir = make_ir(vec![task.clone()]);
 
-        let jobs =
-            emitter.build_matrix_jobs(&task, &ir, None, None, &[], Some("apps/my-service"));
+        let jobs = emitter.build_matrix_jobs(&task, &ir, None, None, &[], Some("apps/my-service"));
 
         assert_eq!(jobs.len(), 1);
         let job = jobs.get("release-build-linux-x64").unwrap();

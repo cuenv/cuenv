@@ -813,11 +813,8 @@ fn build_project_pipeline_context(
     let filtered_tasks = cuenv_ci::pipeline::filter_tasks(&pipeline_task_names, ir.tasks.clone());
 
     // Combine phase tasks (bootstrap, setup, success, failure) with pipeline tasks
-    let phase_tasks: Vec<cuenv_ci::ir::Task> = ir
-        .tasks
-        .into_iter()
-        .filter(|t| t.phase.is_some())
-        .collect();
+    let phase_tasks: Vec<cuenv_ci::ir::Task> =
+        ir.tasks.into_iter().filter(|t| t.phase.is_some()).collect();
     let mut all_tasks = phase_tasks;
     all_tasks.extend(filtered_tasks);
 

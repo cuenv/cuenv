@@ -158,7 +158,12 @@ fn collect_affected_tasks_for_pipeline(
         })?;
 
         // Get phase tasks (bootstrap, setup, success, failure)
-        let phase_tasks: Vec<_> = ir.tasks.iter().filter(|t| t.phase.is_some()).cloned().collect();
+        let phase_tasks: Vec<_> = ir
+            .tasks
+            .iter()
+            .filter(|t| t.phase.is_some())
+            .cloned()
+            .collect();
 
         // Get affected regular tasks
         let affected_tasks: Vec<_> = ir

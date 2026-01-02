@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn test_ir_version() {
         let ir = IntermediateRepresentation::new("test-pipeline");
-        assert_eq!(ir.version, "1.4");
+        assert_eq!(ir.version, "1.5");
         assert_eq!(ir.pipeline.name, "test-pipeline");
         assert!(ir.runtimes.is_empty());
         assert!(ir.tasks.is_empty());
@@ -820,7 +820,7 @@ mod tests {
         });
 
         let json = serde_json::to_string_pretty(&ir).unwrap();
-        assert!(json.contains(r#""version": "1.4""#));
+        assert!(json.contains(r#""version": "1.5""#));
         assert!(json.contains(r#""name": "my-pipeline""#));
         assert!(json.contains(r#""id": "build""#));
     }
