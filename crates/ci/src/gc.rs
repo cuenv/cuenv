@@ -431,4 +431,217 @@ mod tests {
         assert_eq!(stats.entries_removed, 0);
         assert_eq!(stats.bytes_freed, 0);
     }
+
+    #[test]
+    fn test_gc_stats_clone() {
+        let stats = GCStats {
+            entries_scanned: 10,
+            entries_removed: 5,
+            bytes_freed: 1024,
+            current_size: 2048,
+            duration_ms: 100,
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.entries_scanned, 10);
+        assert_eq!(cloned.entries_removed, 5);
+        assert_eq!(cloned.bytes_freed, 1024);
+    }
+
+    #[test]
+    fn test_gc_stats_debug() {
+        let stats = GCStats::default();
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("GCStats"));
+    }
+
+    #[test]
+    fn test_gc_config_default() {
+        let config = GCConfig::default();
+        assert_eq!(config.max_size_bytes, DEFAULT_MAX_SIZE_BYTES);
+        assert_eq!(config.max_age_days, DEFAULT_MAX_AGE_DAYS);
+        assert!(!config.run_nix_gc);
+        assert!(!config.dry_run);
+    }
+
+    #[test]
+    fn test_gc_config_clone() {
+        let config = GCConfig {
+            cache_dir: PathBuf::from("/test"),
+            max_size_bytes: 1000,
+            max_age_days: 7,
+            run_nix_gc: true,
+            dry_run: true,
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.cache_dir, PathBuf::from("/test"));
+        assert_eq!(cloned.max_size_bytes, 1000);
+    }
+
+    #[test]
+    fn test_gc_config_debug() {
+        let config = GCConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("GCConfig"));
+    }
+
+    #[test]
+    fn test_garbage_collector_new() {
+        let gc = GarbageCollector::new();
+        // Just verify it can be created
+        assert!(gc.config.cache_dir.to_string_lossy().contains("cache"));
+    }
+
+    #[test]
+    fn test_garbage_collector_default() {
+        let gc = GarbageCollector::default();
+        assert!(gc.config.cache_dir.to_string_lossy().contains("cache"));
+    }
+
+    #[test]
+    fn test_garbage_collector_with_config() {
+        let config = GCConfig {
+            cache_dir: PathBuf::from("/custom/path"),
+            max_size_bytes: 5000,
+            max_age_days: 14,
+            run_nix_gc: false,
+            dry_run: false,
+        };
+        let gc = GarbageCollector::with_config(config);
+        assert_eq!(gc.config.cache_dir, PathBuf::from("/custom/path"));
+        assert_eq!(gc.config.max_size_bytes, 5000);
+    }
+
+    #[test]
+    fn test_garbage_collector_builder_cache_dir() {
+        let gc = GarbageCollector::new().cache_dir("/test/cache");
+        assert_eq!(gc.config.cache_dir, PathBuf::from("/test/cache"));
+    }
+
+    #[test]
+    fn test_garbage_collector_builder_max_size() {
+        let gc = GarbageCollector::new().max_size(12345);
+        assert_eq!(gc.config.max_size_bytes, 12345);
+    }
+
+    #[test]
+    fn test_garbage_collector_builder_max_age_days() {
+        let gc = GarbageCollector::new().max_age_days(60);
+        assert_eq!(gc.config.max_age_days, 60);
+    }
+
+    #[test]
+    fn test_garbage_collector_builder_with_nix_gc() {
+        let gc = GarbageCollector::new().with_nix_gc();
+        assert!(gc.config.run_nix_gc);
+    }
+
+    #[test]
+    fn test_garbage_collector_builder_dry_run() {
+        let gc = GarbageCollector::new().dry_run();
+        assert!(gc.config.dry_run);
+    }
+
+    #[test]
+    fn test_garbage_collector_builder_chained() {
+        let gc = GarbageCollector::new()
+            .cache_dir("/test")
+            .max_size(1000)
+            .max_age_days(7)
+            .with_nix_gc()
+            .dry_run();
+
+        assert_eq!(gc.config.cache_dir, PathBuf::from("/test"));
+        assert_eq!(gc.config.max_size_bytes, 1000);
+        assert_eq!(gc.config.max_age_days, 7);
+        assert!(gc.config.run_nix_gc);
+        assert!(gc.config.dry_run);
+    }
+
+    #[test]
+    fn test_run_gc_convenience() {
+        let tmp = TempDir::new().unwrap();
+        let stats = run_gc(tmp.path()).unwrap();
+        assert_eq!(stats.entries_scanned, 0);
+    }
+
+    #[test]
+    fn test_preview_gc_convenience() {
+        let tmp = TempDir::new().unwrap();
+        create_test_file(tmp.path(), "file.cache", 100);
+
+        let stats = preview_gc(tmp.path()).unwrap();
+        assert_eq!(stats.entries_scanned, 1);
+        // File should still exist after preview
+        assert!(tmp.path().join("file.cache").exists());
+    }
+
+    #[test]
+    fn test_gc_error_io() {
+        let err = GCError::Io(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let display = format!("{}", err);
+        assert!(display.contains("IO error"));
+    }
+
+    #[test]
+    fn test_gc_error_cache_dir_not_found() {
+        let err = GCError::CacheDirNotFound(PathBuf::from("/test"));
+        let display = format!("{}", err);
+        assert!(display.contains("Cache directory not found"));
+    }
+
+    #[test]
+    fn test_gc_error_nix_gc_failed() {
+        let err = GCError::NixGCFailed("command failed".to_string());
+        let display = format!("{}", err);
+        assert!(display.contains("Nix garbage collection failed"));
+    }
+
+    #[test]
+    fn test_gc_error_debug() {
+        let err = GCError::NixGCFailed("test".to_string());
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("NixGCFailed"));
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn test_constants() {
+        // Verify the default constants are reasonable
+        assert!(DEFAULT_MAX_SIZE_BYTES > 1024 * 1024); // > 1MB
+        assert!(DEFAULT_MAX_AGE_DAYS > 0);
+        assert!(DEFAULT_MAX_AGE_DAYS <= 365);
+    }
+
+    #[test]
+    fn test_deeply_nested_directories() {
+        let tmp = TempDir::new().unwrap();
+        let level1 = tmp.path().join("level1");
+        let level2 = level1.join("level2");
+        let level3 = level2.join("level3");
+        fs::create_dir_all(&level3).unwrap();
+
+        create_test_file(&level3, "deep.cache", 100);
+
+        let gc = GarbageCollector::new().cache_dir(tmp.path());
+        let stats = gc.run().unwrap();
+
+        assert_eq!(stats.entries_scanned, 1);
+    }
+
+    #[test]
+    fn test_gc_with_mixed_content() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create files of various sizes
+        create_test_file(tmp.path(), "small.cache", 10);
+        create_test_file(tmp.path(), "medium.cache", 1000);
+        create_test_file(tmp.path(), "large.cache", 10000);
+
+        let gc = GarbageCollector::new().cache_dir(tmp.path()).max_size(5000);
+
+        let stats = gc.run().unwrap();
+        assert_eq!(stats.entries_scanned, 3);
+        // At least one file should be removed to get under limit
+        assert!(stats.entries_removed >= 1);
+    }
 }

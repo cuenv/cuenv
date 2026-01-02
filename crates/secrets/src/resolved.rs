@@ -195,3 +195,227 @@ impl ResolvedSecrets {
         (current_fp, previous_fp)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolved_secrets_new_is_empty() {
+        let secrets = ResolvedSecrets::new();
+        assert!(secrets.is_empty());
+        assert!(secrets.values.is_empty());
+        assert!(secrets.fingerprints.is_empty());
+    }
+
+    #[test]
+    fn test_resolved_secrets_default_is_empty() {
+        let secrets = ResolvedSecrets::default();
+        assert!(secrets.is_empty());
+    }
+
+    #[test]
+    fn test_resolved_secrets_get_existing() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("API_KEY".to_string(), "secret123".to_string());
+
+        assert_eq!(secrets.get("API_KEY"), Some("secret123"));
+        assert!(!secrets.is_empty());
+    }
+
+    #[test]
+    fn test_resolved_secrets_get_missing() {
+        let secrets = ResolvedSecrets::new();
+        assert_eq!(secrets.get("NONEXISTENT"), None);
+    }
+
+    #[test]
+    fn test_fingerprint_matches_with_current_salt() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("API_KEY".to_string(), "secret123".to_string());
+
+        let salt_config = SaltConfig::new(Some("my-salt".to_string()));
+        let fingerprint = compute_secret_fingerprint("API_KEY", "secret123", "my-salt");
+
+        assert!(secrets.fingerprint_matches("API_KEY", &fingerprint, &salt_config));
+    }
+
+    #[test]
+    fn test_fingerprint_matches_with_previous_salt() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("API_KEY".to_string(), "secret123".to_string());
+
+        // Salt config with new salt but old fingerprint should still match
+        let salt_config =
+            SaltConfig::with_rotation(Some("new-salt".to_string()), Some("old-salt".to_string()));
+        let old_fingerprint = compute_secret_fingerprint("API_KEY", "secret123", "old-salt");
+
+        assert!(secrets.fingerprint_matches("API_KEY", &old_fingerprint, &salt_config));
+    }
+
+    #[test]
+    fn test_fingerprint_matches_no_match() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("API_KEY".to_string(), "secret123".to_string());
+
+        let salt_config = SaltConfig::new(Some("my-salt".to_string()));
+        let wrong_fingerprint = compute_secret_fingerprint("API_KEY", "wrong-secret", "my-salt");
+
+        assert!(!secrets.fingerprint_matches("API_KEY", &wrong_fingerprint, &salt_config));
+    }
+
+    #[test]
+    fn test_fingerprint_matches_missing_secret() {
+        let secrets = ResolvedSecrets::new();
+        let salt_config = SaltConfig::new(Some("my-salt".to_string()));
+
+        assert!(!secrets.fingerprint_matches("NONEXISTENT", "any-fingerprint", &salt_config));
+    }
+
+    #[test]
+    fn test_fingerprint_matches_no_salt_configured() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("API_KEY".to_string(), "secret123".to_string());
+
+        let salt_config = SaltConfig::default();
+
+        // With no salt configured, no fingerprint should match
+        assert!(!secrets.fingerprint_matches("API_KEY", "any-fingerprint", &salt_config));
+    }
+
+    #[test]
+    fn test_compute_fingerprints_for_validation_both_salts() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("DB_PASS".to_string(), "password".to_string());
+
+        let salt_config = SaltConfig::with_rotation(
+            Some("current-salt".to_string()),
+            Some("previous-salt".to_string()),
+        );
+
+        let (current_fp, previous_fp) =
+            secrets.compute_fingerprints_for_validation("DB_PASS", &salt_config);
+
+        assert!(current_fp.is_some());
+        assert!(previous_fp.is_some());
+        assert_ne!(current_fp, previous_fp);
+
+        // Verify fingerprints are correct
+        let expected_current = compute_secret_fingerprint("DB_PASS", "password", "current-salt");
+        let expected_previous = compute_secret_fingerprint("DB_PASS", "password", "previous-salt");
+        assert_eq!(current_fp.unwrap(), expected_current);
+        assert_eq!(previous_fp.unwrap(), expected_previous);
+    }
+
+    #[test]
+    fn test_compute_fingerprints_for_validation_only_current() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("TOKEN".to_string(), "abc123".to_string());
+
+        let salt_config = SaltConfig::new(Some("only-current".to_string()));
+
+        let (current_fp, previous_fp) =
+            secrets.compute_fingerprints_for_validation("TOKEN", &salt_config);
+
+        assert!(current_fp.is_some());
+        assert!(previous_fp.is_none());
+    }
+
+    #[test]
+    fn test_compute_fingerprints_for_validation_only_previous() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("TOKEN".to_string(), "abc123".to_string());
+
+        let salt_config = SaltConfig::with_rotation(None, Some("only-previous".to_string()));
+
+        let (current_fp, previous_fp) =
+            secrets.compute_fingerprints_for_validation("TOKEN", &salt_config);
+
+        assert!(current_fp.is_none());
+        assert!(previous_fp.is_some());
+    }
+
+    #[test]
+    fn test_compute_fingerprints_for_validation_missing_secret() {
+        let secrets = ResolvedSecrets::new();
+        let salt_config = SaltConfig::new(Some("salt".to_string()));
+
+        let (current_fp, previous_fp) =
+            secrets.compute_fingerprints_for_validation("MISSING", &salt_config);
+
+        assert!(current_fp.is_none());
+        assert!(previous_fp.is_none());
+    }
+
+    #[test]
+    fn test_compute_fingerprints_for_validation_no_salt() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("KEY".to_string(), "value".to_string());
+
+        let salt_config = SaltConfig::default();
+
+        let (current_fp, previous_fp) =
+            secrets.compute_fingerprints_for_validation("KEY", &salt_config);
+
+        assert!(current_fp.is_none());
+        assert!(previous_fp.is_none());
+    }
+
+    #[test]
+    fn test_resolved_secrets_clone() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets.values.insert("K1".to_string(), "V1".to_string());
+        secrets
+            .fingerprints
+            .insert("K1".to_string(), "FP1".to_string());
+
+        let cloned = secrets.clone();
+        assert_eq!(cloned.values.get("K1"), Some(&"V1".to_string()));
+        assert_eq!(cloned.fingerprints.get("K1"), Some(&"FP1".to_string()));
+    }
+
+    #[test]
+    fn test_resolved_secrets_debug() {
+        let secrets = ResolvedSecrets::new();
+        let debug = format!("{secrets:?}");
+        assert!(debug.contains("ResolvedSecrets"));
+    }
+
+    #[test]
+    fn test_multiple_secrets() {
+        let mut secrets = ResolvedSecrets::new();
+        secrets
+            .values
+            .insert("KEY1".to_string(), "value1".to_string());
+        secrets
+            .values
+            .insert("KEY2".to_string(), "value2".to_string());
+        secrets
+            .values
+            .insert("KEY3".to_string(), "value3".to_string());
+
+        assert_eq!(secrets.values.len(), 3);
+        assert!(!secrets.is_empty());
+        assert_eq!(secrets.get("KEY1"), Some("value1"));
+        assert_eq!(secrets.get("KEY2"), Some("value2"));
+        assert_eq!(secrets.get("KEY3"), Some("value3"));
+    }
+}

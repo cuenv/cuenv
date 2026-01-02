@@ -119,4 +119,101 @@ mod tests {
         assert!(!p.os.is_empty());
         assert!(!p.arch.is_empty());
     }
+
+    #[test]
+    fn test_platform_new() {
+        let p = Platform::new("linux", "arm64");
+        assert_eq!(p.os, "linux");
+        assert_eq!(p.arch, "arm64");
+    }
+
+    #[test]
+    fn test_platform_new_with_strings() {
+        let p = Platform::new(String::from("darwin"), String::from("x86_64"));
+        assert_eq!(p.os, "darwin");
+        assert_eq!(p.arch, "x86_64");
+    }
+
+    #[test]
+    fn test_platform_display() {
+        let p = Platform::new("linux", "arm64");
+        assert_eq!(format!("{p}"), "linux-arm64");
+    }
+
+    #[test]
+    fn test_platform_parse_invalid() {
+        assert!(Platform::parse("just-one").is_some()); // Two parts
+        assert!(Platform::parse("single").is_none()); // Only one part
+        assert!(Platform::parse("too-many-parts").is_none()); // Three parts
+    }
+
+    #[test]
+    fn test_platform_parse_normalized() {
+        // Parse should normalize macos to darwin
+        let p = Platform::parse("macos-arm64").unwrap();
+        assert_eq!(p.os, "darwin");
+        assert_eq!(p.arch, "arm64");
+    }
+
+    #[test]
+    fn test_platform_parse_with_amd64() {
+        let p = Platform::parse("linux-amd64").unwrap();
+        assert_eq!(p.os, "linux");
+        assert_eq!(p.arch, "x86_64"); // amd64 normalized to x86_64
+    }
+
+    #[test]
+    fn test_platform_equality() {
+        let p1 = Platform::new("darwin", "arm64");
+        let p2 = Platform::new("darwin", "arm64");
+        let p3 = Platform::new("linux", "arm64");
+        assert_eq!(p1, p2);
+        assert_ne!(p1, p3);
+    }
+
+    #[test]
+    fn test_platform_clone() {
+        let p1 = Platform::new("darwin", "arm64");
+        let p2 = p1.clone();
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn test_platform_debug() {
+        let p = Platform::new("linux", "x86_64");
+        let debug = format!("{p:?}");
+        assert!(debug.contains("Platform"));
+        assert!(debug.contains("linux"));
+        assert!(debug.contains("x86_64"));
+    }
+
+    #[test]
+    fn test_platform_hash() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        set.insert(Platform::new("darwin", "arm64"));
+        set.insert(Platform::new("darwin", "arm64")); // Duplicate
+        set.insert(Platform::new("linux", "x86_64"));
+
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_normalize_platform_osx() {
+        assert_eq!(normalize_platform("osx-arm64"), "darwin-arm64");
+    }
+
+    #[test]
+    fn test_normalize_platform_already_normalized() {
+        assert_eq!(normalize_platform("darwin-arm64"), "darwin-arm64");
+        assert_eq!(normalize_platform("linux-x86_64"), "linux-x86_64");
+    }
+
+    #[test]
+    fn test_to_oci_platform_unknown_arch() {
+        let p = Platform::new("linux", "riscv64");
+        // Unknown arch should pass through unchanged
+        assert_eq!(p.to_oci_platform(), "linux/riscv64");
+    }
 }

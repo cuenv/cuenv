@@ -69,3 +69,43 @@ pub enum CodegenError {
 
 /// Result type for codegen operations
 pub type Result<T> = std::result::Result<T, CodegenError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_codegen_error_cube_display() {
+        let error = CodegenError::Cube("test cube error".to_string());
+        assert_eq!(error.to_string(), "Cube error: test cube error");
+    }
+
+    #[test]
+    fn test_codegen_error_generation_display() {
+        let error = CodegenError::Generation("test generation error".to_string());
+        assert_eq!(error.to_string(), "Generation error: test generation error");
+    }
+
+    #[test]
+    fn test_codegen_error_formatting_display() {
+        let error = CodegenError::Formatting("test formatting error".to_string());
+        assert_eq!(error.to_string(), "Formatting error: test formatting error");
+    }
+
+    #[test]
+    fn test_codegen_error_io_from() {
+        let io_error = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let error: CodegenError = io_error.into();
+        assert!(matches!(error, CodegenError::Io(_)));
+        assert!(error.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn test_codegen_error_json_from() {
+        let json_str = "{ invalid json }";
+        let json_error = serde_json::from_str::<serde_json::Value>(json_str).unwrap_err();
+        let error: CodegenError = json_error.into();
+        assert!(matches!(error, CodegenError::Json(_)));
+        assert!(error.to_string().contains("JSON error"));
+    }
+}

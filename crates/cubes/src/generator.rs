@@ -180,6 +180,66 @@ mod tests {
         }
     }
 
+    fn create_scaffold_cube() -> Cube {
+        let mut files = HashMap::new();
+        files.insert(
+            "scaffold.txt".to_string(),
+            ProjectFileDefinition {
+                content: "scaffold content".to_string(),
+                language: "text".to_string(),
+                mode: FileMode::Scaffold,
+                format: FormatConfig::default(),
+                gitignore: false,
+            },
+        );
+
+        let data = CubeData {
+            files,
+            context: serde_json::Value::Null,
+        };
+
+        Cube {
+            data,
+            source_path: PathBuf::from("scaffold.cue"),
+        }
+    }
+
+    #[test]
+    fn test_generate_options_default() {
+        let options = GenerateOptions::default();
+        assert_eq!(options.output_dir, PathBuf::from("."));
+        assert!(!options.check);
+        assert!(!options.diff);
+    }
+
+    #[test]
+    fn test_generated_file_clone() {
+        let file = GeneratedFile {
+            path: PathBuf::from("test.rs"),
+            content: "fn main() {}".to_string(),
+            mode: FileMode::Managed,
+            language: "rust".to_string(),
+        };
+        let cloned = file.clone();
+        assert_eq!(cloned.path, file.path);
+        assert_eq!(cloned.content, file.content);
+        assert_eq!(cloned.mode, file.mode);
+        assert_eq!(cloned.language, file.language);
+    }
+
+    #[test]
+    fn test_generated_file_debug() {
+        let file = GeneratedFile {
+            path: PathBuf::from("test.rs"),
+            content: "fn main() {}".to_string(),
+            mode: FileMode::Managed,
+            language: "rust".to_string(),
+        };
+        let debug = format!("{file:?}");
+        assert!(debug.contains("test.rs"));
+        assert!(debug.contains("rust"));
+    }
+
     #[test]
     fn test_generator_new() {
         let cube = create_test_cube();
@@ -208,5 +268,220 @@ mod tests {
 
         let file_path = temp_dir.path().join("test.json");
         assert!(file_path.exists());
+    }
+
+    #[test]
+    fn test_generate_scaffold_creates_new_file() {
+        let cube = create_scaffold_cube();
+        let generator = Generator::new(cube);
+
+        let temp_dir = TempDir::new().unwrap();
+        let options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: false,
+            diff: false,
+        };
+
+        let result = generator.generate(&options);
+        assert!(result.is_ok());
+
+        let file_path = temp_dir.path().join("scaffold.txt");
+        assert!(file_path.exists());
+        let content = std::fs::read_to_string(file_path).unwrap();
+        assert_eq!(content, "scaffold content");
+    }
+
+    #[test]
+    fn test_generate_scaffold_skips_existing_file() {
+        let cube = create_scaffold_cube();
+        let generator = Generator::new(cube);
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("scaffold.txt");
+        std::fs::write(&file_path, "existing content").unwrap();
+
+        let options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: false,
+            diff: false,
+        };
+
+        let result = generator.generate(&options);
+        assert!(result.is_ok());
+
+        // File should not be overwritten
+        let content = std::fs::read_to_string(file_path).unwrap();
+        assert_eq!(content, "existing content");
+    }
+
+    #[test]
+    fn test_generate_check_mode_missing_managed_file() {
+        let cube = create_test_cube();
+        let generator = Generator::new(cube);
+
+        let temp_dir = TempDir::new().unwrap();
+        let options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: true,
+            diff: false,
+        };
+
+        let result = generator.generate(&options);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Missing managed file"));
+    }
+
+    #[test]
+    fn test_generate_check_mode_file_would_be_modified() {
+        let cube = create_test_cube();
+        let generator = Generator::new(cube);
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.json");
+        std::fs::write(&file_path, "different content").unwrap();
+
+        let options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: true,
+            diff: false,
+        };
+
+        let result = generator.generate(&options);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("would be modified"));
+    }
+
+    #[test]
+    fn test_generate_check_mode_file_matches() {
+        let cube = create_test_cube();
+        let generator = Generator::new(cube);
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // First generate the file
+        let options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: false,
+            diff: false,
+        };
+        generator.generate(&options).unwrap();
+
+        // Now check should pass
+        let check_options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: true,
+            diff: false,
+        };
+        let result = generator.generate(&check_options);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_generate_check_mode_missing_scaffold_file() {
+        let cube = create_scaffold_cube();
+        let generator = Generator::new(cube);
+
+        let temp_dir = TempDir::new().unwrap();
+        let options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: true,
+            diff: false,
+        };
+
+        let result = generator.generate(&options);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Missing scaffold file"));
+    }
+
+    #[test]
+    fn test_generate_creates_nested_directories() {
+        let mut files = HashMap::new();
+        files.insert(
+            "deep/nested/path/file.txt".to_string(),
+            ProjectFileDefinition {
+                content: "nested content".to_string(),
+                language: "text".to_string(),
+                mode: FileMode::Managed,
+                format: FormatConfig::default(),
+                gitignore: false,
+            },
+        );
+
+        let cube = Cube {
+            data: CubeData {
+                files,
+                context: serde_json::Value::Null,
+            },
+            source_path: PathBuf::from("test.cue"),
+        };
+        let generator = Generator::new(cube);
+
+        let temp_dir = TempDir::new().unwrap();
+        let options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: false,
+            diff: false,
+        };
+
+        let result = generator.generate(&options);
+        assert!(result.is_ok());
+
+        let file_path = temp_dir.path().join("deep/nested/path/file.txt");
+        assert!(file_path.exists());
+        let content = std::fs::read_to_string(file_path).unwrap();
+        assert_eq!(content, "nested content");
+    }
+
+    #[test]
+    fn test_generate_multiple_files() {
+        let mut files = HashMap::new();
+        files.insert(
+            "file1.txt".to_string(),
+            ProjectFileDefinition {
+                content: "content 1".to_string(),
+                language: "text".to_string(),
+                mode: FileMode::Managed,
+                format: FormatConfig::default(),
+                gitignore: false,
+            },
+        );
+        files.insert(
+            "file2.txt".to_string(),
+            ProjectFileDefinition {
+                content: "content 2".to_string(),
+                language: "text".to_string(),
+                mode: FileMode::Scaffold,
+                format: FormatConfig::default(),
+                gitignore: false,
+            },
+        );
+
+        let cube = Cube {
+            data: CubeData {
+                files,
+                context: serde_json::Value::Null,
+            },
+            source_path: PathBuf::from("test.cue"),
+        };
+        let generator = Generator::new(cube);
+
+        let temp_dir = TempDir::new().unwrap();
+        let options = GenerateOptions {
+            output_dir: temp_dir.path().to_path_buf(),
+            check: false,
+            diff: false,
+        };
+
+        let result = generator.generate(&options);
+        assert!(result.is_ok());
+
+        let generated = result.unwrap();
+        assert_eq!(generated.len(), 2);
+
+        assert!(temp_dir.path().join("file1.txt").exists());
+        assert!(temp_dir.path().join("file2.txt").exists());
     }
 }

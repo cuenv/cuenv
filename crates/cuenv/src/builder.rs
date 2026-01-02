@@ -129,4 +129,41 @@ mod tests {
         let cuenv = builder.build();
         assert!(cuenv.registry.is_empty());
     }
+
+    #[test]
+    fn test_builder_with_sync_provider() {
+        let builder = CuenvBuilder::new().with_sync_provider(CiProvider::new());
+        let cuenv = builder.build();
+        assert_eq!(cuenv.registry.sync_provider_count(), 1);
+    }
+
+    #[test]
+    fn test_builder_with_multiple_sync_providers() {
+        let builder = CuenvBuilder::new()
+            .with_sync_provider(CiProvider::new())
+            .with_sync_provider(CubesProvider::new());
+        let cuenv = builder.build();
+        assert_eq!(cuenv.registry.sync_provider_count(), 2);
+    }
+
+    #[test]
+    fn test_builder_chaining() {
+        // Test that all builder methods return Self for chaining
+        let cuenv = CuenvBuilder::new()
+            .with_sync_provider(CiProvider::new())
+            .with_sync_provider(RulesProvider::new())
+            .build();
+        assert_eq!(cuenv.registry.sync_provider_count(), 2);
+    }
+
+    #[test]
+    fn test_builder_defaults_then_more() {
+        // Add defaults then additional providers
+        let builder = CuenvBuilder::new()
+            .with_defaults()
+            .with_sync_provider(CiProvider::new()); // Duplicate CI provider
+        let cuenv = builder.build();
+        // Should have 4 sync providers (3 defaults + 1 more)
+        assert_eq!(cuenv.registry.sync_provider_count(), 4);
+    }
 }

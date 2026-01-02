@@ -177,3 +177,126 @@ pub trait ReleaseBackend: Send + Sync {
         artifacts: &'a [PackagedArtifact],
     ) -> Pin<Box<dyn Future<Output = Result<PublishResult>> + Send + 'a>>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backend_context_new() {
+        let ctx = BackendContext::new("my-app", "1.0.0");
+        assert_eq!(ctx.name, "my-app");
+        assert_eq!(ctx.version, "1.0.0");
+        assert!(!ctx.dry_run);
+        assert!(ctx.download_base_url.is_none());
+    }
+
+    #[test]
+    fn test_backend_context_with_dry_run() {
+        let ctx = BackendContext::new("my-app", "1.0.0").with_dry_run(true);
+        assert!(ctx.dry_run);
+    }
+
+    #[test]
+    fn test_backend_context_with_download_url() {
+        let ctx =
+            BackendContext::new("my-app", "1.0.0").with_download_url("https://github.com/releases");
+        assert_eq!(
+            ctx.download_base_url,
+            Some("https://github.com/releases".to_string())
+        );
+    }
+
+    #[test]
+    fn test_backend_context_builder_chain() {
+        let ctx = BackendContext::new("test", "2.0.0")
+            .with_dry_run(true)
+            .with_download_url("https://example.com");
+
+        assert_eq!(ctx.name, "test");
+        assert_eq!(ctx.version, "2.0.0");
+        assert!(ctx.dry_run);
+        assert_eq!(
+            ctx.download_base_url,
+            Some("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_publish_result_success() {
+        let result = PublishResult::success("github", "Published successfully");
+        assert!(result.success);
+        assert_eq!(result.backend, "github");
+        assert_eq!(result.message, "Published successfully");
+        assert!(result.url.is_none());
+    }
+
+    #[test]
+    fn test_publish_result_success_with_url() {
+        let result = PublishResult::success_with_url(
+            "github",
+            "Released",
+            "https://github.com/repo/releases/v1.0.0",
+        );
+        assert!(result.success);
+        assert_eq!(
+            result.url,
+            Some("https://github.com/repo/releases/v1.0.0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_publish_result_dry_run() {
+        let result = PublishResult::dry_run("homebrew", "Would update formula");
+        assert!(result.success);
+        assert!(result.message.starts_with("[dry-run]"));
+        assert!(result.message.contains("Would update formula"));
+    }
+
+    #[test]
+    fn test_publish_result_failure() {
+        let result = PublishResult::failure("crates-io", "Upload failed");
+        assert!(!result.success);
+        assert_eq!(result.backend, "crates-io");
+        assert_eq!(result.message, "Upload failed");
+        assert!(result.url.is_none());
+    }
+
+    #[test]
+    fn test_backend_context_debug() {
+        let ctx = BackendContext::new("app", "1.0");
+        let debug_str = format!("{ctx:?}");
+        assert!(debug_str.contains("BackendContext"));
+        assert!(debug_str.contains("app"));
+    }
+
+    #[test]
+    fn test_publish_result_debug() {
+        let result = PublishResult::success("test", "ok");
+        let debug_str = format!("{result:?}");
+        assert!(debug_str.contains("PublishResult"));
+        assert!(debug_str.contains("test"));
+    }
+
+    #[test]
+    fn test_backend_context_clone() {
+        let ctx = BackendContext::new("app", "1.0")
+            .with_dry_run(true)
+            .with_download_url("https://example.com");
+        let cloned = ctx.clone();
+        assert_eq!(ctx.name, cloned.name);
+        assert_eq!(ctx.version, cloned.version);
+        assert_eq!(ctx.dry_run, cloned.dry_run);
+        assert_eq!(ctx.download_base_url, cloned.download_base_url);
+    }
+
+    #[test]
+    fn test_publish_result_clone() {
+        let result = PublishResult::success_with_url("github", "Released", "https://url");
+        let cloned = result.clone();
+        assert_eq!(result.backend, cloned.backend);
+        assert_eq!(result.success, cloned.success);
+        assert_eq!(result.url, cloned.url);
+        assert_eq!(result.message, cloned.message);
+    }
+}

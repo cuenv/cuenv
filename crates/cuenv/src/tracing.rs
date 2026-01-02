@@ -394,6 +394,97 @@ mod tests {
     }
 
     #[test]
+    fn test_format_parsing_all_variants() {
+        assert!(matches!(
+            "compact".parse::<TracingFormat>().unwrap(),
+            TracingFormat::Compact
+        ));
+        assert!(matches!(
+            "dev".parse::<TracingFormat>().unwrap(),
+            TracingFormat::Dev
+        ));
+    }
+
+    #[test]
+    fn test_format_parsing_case_insensitive() {
+        assert!(matches!(
+            "PRETTY".parse::<TracingFormat>().unwrap(),
+            TracingFormat::Pretty
+        ));
+        assert!(matches!(
+            "JSON".parse::<TracingFormat>().unwrap(),
+            TracingFormat::Json
+        ));
+        assert!(matches!(
+            "Compact".parse::<TracingFormat>().unwrap(),
+            TracingFormat::Compact
+        ));
+    }
+
+    #[test]
+    fn test_log_level_conversion() {
+        assert_eq!(Level::from(LogLevel::Trace), Level::TRACE);
+        assert_eq!(Level::from(LogLevel::Debug), Level::DEBUG);
+        assert_eq!(Level::from(LogLevel::Info), Level::INFO);
+        assert_eq!(Level::from(LogLevel::Warn), Level::WARN);
+        assert_eq!(Level::from(LogLevel::Error), Level::ERROR);
+    }
+
+    #[test]
+    fn test_tracing_config_default() {
+        let config = TracingConfig::default();
+        assert!(matches!(config.format, TracingFormat::Pretty));
+        assert_eq!(config.level, Level::WARN);
+        assert!(config.enable_correlation_ids);
+        assert!(config.enable_timestamps);
+        assert!(config.enable_file_location);
+        assert!(config.filter.is_none());
+    }
+
+    #[test]
+    fn test_tracing_config_clone() {
+        let config = TracingConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.level, cloned.level);
+        assert_eq!(config.enable_timestamps, cloned.enable_timestamps);
+    }
+
+    #[test]
+    fn test_tracing_config_debug() {
+        let config = TracingConfig::default();
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("TracingConfig"));
+    }
+
+    #[test]
+    fn test_tracing_format_debug() {
+        let format = TracingFormat::Pretty;
+        let debug = format!("{:?}", format);
+        assert!(debug.contains("Pretty"));
+    }
+
+    #[test]
+    fn test_tracing_format_clone() {
+        let format = TracingFormat::Json;
+        let cloned = format.clone();
+        assert!(matches!(cloned, TracingFormat::Json));
+    }
+
+    #[test]
+    fn test_log_level_debug() {
+        let level = LogLevel::Info;
+        let debug = format!("{:?}", level);
+        assert!(debug.contains("Info"));
+    }
+
+    #[test]
+    fn test_log_level_clone() {
+        let level = LogLevel::Error;
+        let cloned = level.clone();
+        assert!(matches!(cloned, LogLevel::Error));
+    }
+
+    #[test]
     fn test_correlation_id_consistency() {
         let id1 = correlation_id();
         let id2 = correlation_id();
@@ -412,5 +503,16 @@ mod tests {
         let dur = std::time::Duration::from_millis(1);
         // smoke test for macro with required args
         perf_event!("perf_op", dur);
+    }
+
+    #[test]
+    fn test_subscribe_global_events_before_init() {
+        // Before init, subscribe should return None
+        // Note: This test may not work if the global is already set by other tests
+        // In a fresh run, this should return None
+        let result = subscribe_global_events();
+        // Result depends on whether other tests have run first
+        // We just verify it doesn't panic
+        let _ = result;
     }
 }

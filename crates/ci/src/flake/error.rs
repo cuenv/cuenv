@@ -86,3 +86,96 @@ impl FlakeLockError {
         Self::MissingLockFile { path: path.into() }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_error_constructor() {
+        let err = FlakeLockError::parse("invalid JSON");
+        assert!(matches!(err, FlakeLockError::ParseError(_)));
+        let display = format!("{err}");
+        assert!(display.contains("Failed to parse flake.lock"));
+        assert!(display.contains("invalid JSON"));
+    }
+
+    #[test]
+    fn test_io_error_constructor() {
+        let err = FlakeLockError::io("/path/to/flake.lock", "permission denied");
+        if let FlakeLockError::IoError { path, message } = err {
+            assert_eq!(path, PathBuf::from("/path/to/flake.lock"));
+            assert_eq!(message, "permission denied");
+        } else {
+            panic!("Expected IoError");
+        }
+    }
+
+    #[test]
+    fn test_io_error_display() {
+        let err = FlakeLockError::io("/project/flake.lock", "file not found");
+        let display = format!("{err}");
+        assert!(display.contains("/project/flake.lock"));
+        assert!(display.contains("file not found"));
+    }
+
+    #[test]
+    fn test_strict_violation_constructor() {
+        let inputs = vec!["nixpkgs".to_string(), "home-manager".to_string()];
+        let err = FlakeLockError::strict_violation(inputs);
+
+        if let FlakeLockError::StrictModeViolation { count, inputs } = err {
+            assert_eq!(count, 2);
+            assert!(inputs.contains(&"nixpkgs".to_string()));
+            assert!(inputs.contains(&"home-manager".to_string()));
+        } else {
+            panic!("Expected StrictModeViolation");
+        }
+    }
+
+    #[test]
+    fn test_strict_violation_display() {
+        let inputs = vec!["input1".to_string(), "input2".to_string()];
+        let err = FlakeLockError::strict_violation(inputs);
+        let display = format!("{err}");
+        assert!(display.contains("2 unlocked input(s)"));
+        assert!(display.contains("input1"));
+        assert!(display.contains("input2"));
+    }
+
+    #[test]
+    fn test_missing_lock_file_constructor() {
+        let err = FlakeLockError::missing("/project/flake.lock");
+        if let FlakeLockError::MissingLockFile { path } = err {
+            assert_eq!(path, PathBuf::from("/project/flake.lock"));
+        } else {
+            panic!("Expected MissingLockFile");
+        }
+    }
+
+    #[test]
+    fn test_missing_lock_file_display() {
+        let err = FlakeLockError::missing("/my/project/flake.lock");
+        let display = format!("{err}");
+        assert!(display.contains("No flake.lock file found"));
+        assert!(display.contains("/my/project/flake.lock"));
+    }
+
+    #[test]
+    fn test_error_debug() {
+        let err = FlakeLockError::parse("test error");
+        let debug_str = format!("{err:?}");
+        assert!(debug_str.contains("ParseError"));
+    }
+
+    #[test]
+    fn test_strict_violation_empty_inputs() {
+        let err = FlakeLockError::strict_violation(vec![]);
+        if let FlakeLockError::StrictModeViolation { count, inputs } = err {
+            assert_eq!(count, 0);
+            assert!(inputs.is_empty());
+        } else {
+            panic!("Expected StrictModeViolation");
+        }
+    }
+}

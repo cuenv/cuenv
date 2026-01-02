@@ -379,4 +379,140 @@ mod tests {
 
         assert!(req.skip_dependencies);
     }
+
+    #[test]
+    fn test_request_labels() {
+        let req = TaskExecutionRequest::labels("./", "cuenv", vec!["ci".to_string(), "fast".to_string()]);
+        assert!(matches!(
+            req.selection,
+            TaskSelection::Labels(ref labels) if labels == &vec!["ci".to_string(), "fast".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_request_interactive() {
+        let req = TaskExecutionRequest::interactive("./", "cuenv");
+        assert!(matches!(req.selection, TaskSelection::Interactive));
+    }
+
+    #[test]
+    fn test_request_all() {
+        let req = TaskExecutionRequest::all("./", "cuenv");
+        assert!(matches!(req.selection, TaskSelection::All));
+    }
+
+    #[test]
+    fn test_with_backend() {
+        let req = TaskExecutionRequest::named("./", "cuenv", "build")
+            .with_backend("dagger");
+        assert_eq!(req.backend, Some("dagger".to_string()));
+    }
+
+    #[test]
+    fn test_with_help() {
+        let req = TaskExecutionRequest::named("./", "cuenv", "build")
+            .with_help();
+        assert!(req.output.help);
+    }
+
+    #[test]
+    fn test_with_materialize_outputs() {
+        let req = TaskExecutionRequest::named("./", "cuenv", "build")
+            .with_materialize_outputs("/tmp/outputs");
+        assert_eq!(req.output.materialize_outputs, Some(PathBuf::from("/tmp/outputs")));
+    }
+
+    #[test]
+    fn test_with_show_cache_path() {
+        let req = TaskExecutionRequest::named("./", "cuenv", "build")
+            .with_show_cache_path();
+        assert!(req.output.show_cache_path);
+    }
+
+    #[test]
+    fn test_output_config_default() {
+        let config = OutputConfig::default();
+        assert_eq!(config.format, "simple");
+        assert!(!config.capture_output);
+        assert!(!config.show_cache_path);
+        assert!(config.materialize_outputs.is_none());
+        assert!(!config.help);
+    }
+
+    #[test]
+    fn test_execution_mode_default() {
+        let mode = ExecutionMode::default();
+        assert_eq!(mode, ExecutionMode::Simple);
+    }
+
+    #[test]
+    fn test_task_selection_default() {
+        let selection = TaskSelection::default();
+        assert!(matches!(selection, TaskSelection::List));
+    }
+
+    #[test]
+    fn test_request_debug() {
+        let req = TaskExecutionRequest::list("./", "cuenv");
+        let debug = format!("{:?}", req);
+        assert!(debug.contains("TaskExecutionRequest"));
+        assert!(debug.contains("path"));
+        assert!(debug.contains("package"));
+    }
+
+    #[test]
+    fn test_request_clone() {
+        let req = TaskExecutionRequest::named("./", "cuenv", "build")
+            .with_environment("dev")
+            .with_format("json");
+        let cloned = req.clone();
+        assert_eq!(cloned.path, "./");
+        assert_eq!(cloned.package, "cuenv");
+        assert_eq!(cloned.environment, Some("dev".to_string()));
+        assert_eq!(cloned.output.format, "json");
+    }
+
+    #[test]
+    fn test_output_config_clone() {
+        let config = OutputConfig {
+            format: "json".to_string(),
+            capture_output: true,
+            show_cache_path: true,
+            materialize_outputs: Some(PathBuf::from("/tmp")),
+            help: true,
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.format, "json");
+        assert!(cloned.capture_output);
+        assert!(cloned.show_cache_path);
+    }
+
+    #[test]
+    fn test_execution_mode_clone() {
+        let mode = ExecutionMode::Tui;
+        let cloned = mode.clone();
+        assert_eq!(cloned, ExecutionMode::Tui);
+    }
+
+    #[test]
+    fn test_task_selection_clone() {
+        let selection = TaskSelection::Named {
+            name: "test".to_string(),
+            args: vec!["arg1".to_string()],
+        };
+        let cloned = selection.clone();
+        assert!(matches!(
+            cloned,
+            TaskSelection::Named { ref name, ref args }
+                if name == "test" && args == &vec!["arg1".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_with_args_on_non_named_selection() {
+        // with_args should be a no-op for non-Named selections
+        let req = TaskExecutionRequest::list("./", "cuenv")
+            .with_args(vec!["arg".to_string()]);
+        assert!(matches!(req.selection, TaskSelection::List));
+    }
 }

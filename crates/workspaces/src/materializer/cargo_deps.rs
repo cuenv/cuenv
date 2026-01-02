@@ -76,3 +76,114 @@ impl Materializer for CargoMaterializer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_workspace(root: &Path, manager: PackageManager) -> Workspace {
+        Workspace::new(root.to_path_buf(), manager)
+    }
+
+    #[test]
+    fn test_cargo_materializer_skips_non_cargo() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = make_workspace(temp_dir.path(), PackageManager::Npm);
+        let target_dir = temp_dir.path().join("hermetic");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        let materializer = CargoMaterializer;
+        let result = materializer.materialize(&workspace, &[], &target_dir);
+
+        assert!(result.is_ok());
+        // No symlink should be created
+        assert!(!target_dir.join("target").exists());
+    }
+
+    #[test]
+    fn test_cargo_materializer_creates_target_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = make_workspace(temp_dir.path(), PackageManager::Cargo);
+        let target_dir = temp_dir.path().join("hermetic");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        let materializer = CargoMaterializer;
+        let result = materializer.materialize(&workspace, &[], &target_dir);
+
+        assert!(result.is_ok());
+        // Workspace target should be created
+        assert!(temp_dir.path().join("target").exists());
+        // Hermetic env should have a symlink
+        assert!(target_dir.join("target").exists());
+    }
+
+    #[test]
+    fn test_cargo_materializer_replaces_existing_symlink() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = make_workspace(temp_dir.path(), PackageManager::Cargo);
+        let target_dir = temp_dir.path().join("hermetic");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        // Create an existing symlink pointing somewhere else
+        let other_dir = temp_dir.path().join("other");
+        fs::create_dir_all(&other_dir).unwrap();
+        let env_target = target_dir.join("target");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&other_dir, &env_target).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&other_dir, &env_target).unwrap();
+
+        let materializer = CargoMaterializer;
+        let result = materializer.materialize(&workspace, &[], &target_dir);
+
+        assert!(result.is_ok());
+        // Symlink should now point to workspace target
+        let workspace_target = temp_dir.path().join("target");
+        assert!(target_dir.join("target").exists());
+        assert!(workspace_target.exists());
+    }
+
+    #[test]
+    fn test_cargo_materializer_replaces_existing_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = make_workspace(temp_dir.path(), PackageManager::Cargo);
+        let target_dir = temp_dir.path().join("hermetic");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        // Create an existing directory with some content
+        let env_target = target_dir.join("target");
+        fs::create_dir_all(&env_target).unwrap();
+        fs::write(env_target.join("somefile"), "content").unwrap();
+
+        let materializer = CargoMaterializer;
+        let result = materializer.materialize(&workspace, &[], &target_dir);
+
+        assert!(result.is_ok());
+        // Directory should be replaced with symlink
+        assert!(target_dir.join("target").exists());
+    }
+
+    #[test]
+    fn test_cargo_materializer_with_existing_workspace_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = make_workspace(temp_dir.path(), PackageManager::Cargo);
+        let target_dir = temp_dir.path().join("hermetic");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        // Pre-create workspace target with content
+        let workspace_target = temp_dir.path().join("target");
+        fs::create_dir_all(&workspace_target).unwrap();
+        fs::write(workspace_target.join("marker"), "exists").unwrap();
+
+        let materializer = CargoMaterializer;
+        let result = materializer.materialize(&workspace, &[], &target_dir);
+
+        assert!(result.is_ok());
+        // Symlink should point to existing workspace target
+        assert!(target_dir.join("target").exists());
+        // Original content should be preserved
+        assert!(workspace_target.join("marker").exists());
+    }
+}
