@@ -255,6 +255,14 @@ schema.#Project & {
 			inputs: _baseInputs
 		}
 
+		// Fast development build with minimal optimization
+		// Uses --profile quick for fastest iteration (no debug info, no optimization)
+		quick: {
+			command: "cargo"
+			args: ["build", "--workspace", "--all-features", "--profile", "quick"]
+			inputs: _baseInputs
+		}
+
 		cross: {
 			linux: {
 				script: """
