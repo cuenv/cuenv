@@ -63,17 +63,19 @@ impl Default for TerminalReporter {
 impl ProgressReporter for TerminalReporter {
     async fn pipeline_started(&self, name: &str, task_count: usize) {
         let progress = LivePipelineProgress::new(name, task_count);
-        *self.progress.write().unwrap() = Some(progress);
+        if let Ok(mut guard) = self.progress.write() {
+            *guard = Some(progress);
+        }
 
         tracing::info!(pipeline = name, tasks = task_count, "Starting CI pipeline");
     }
 
     async fn task_started(&self, task_id: &str, task_name: &str) {
-        if let Ok(mut guard) = self.progress.write() {
-            if let Some(ref mut progress) = *guard {
-                let task = LiveTaskProgress::pending(task_id, task_name).running();
-                progress.tasks.push(task);
-            }
+        if let Ok(mut guard) = self.progress.write()
+            && let Some(ref mut progress) = *guard
+        {
+            let task = LiveTaskProgress::pending(task_id, task_name).running();
+            progress.tasks.push(task);
         }
 
         if self.verbose {
@@ -82,17 +84,17 @@ impl ProgressReporter for TerminalReporter {
     }
 
     async fn task_completed(&self, task_progress: &LiveTaskProgress) {
-        if let Ok(mut guard) = self.progress.write() {
-            if let Some(ref mut progress) = *guard {
-                progress.completed_tasks += 1;
-                if task_progress.status == LiveTaskStatus::Cached {
-                    progress.cached_tasks += 1;
-                }
+        if let Ok(mut guard) = self.progress.write()
+            && let Some(ref mut progress) = *guard
+        {
+            progress.completed_tasks += 1;
+            if task_progress.status == LiveTaskStatus::Cached {
+                progress.cached_tasks += 1;
+            }
 
-                // Update the task in our list
-                if let Some(task) = progress.tasks.iter_mut().find(|t| t.id == task_progress.id) {
-                    *task = task_progress.clone();
-                }
+            // Update the task in our list
+            if let Some(task) = progress.tasks.iter_mut().find(|t| t.id == task_progress.id) {
+                *task = task_progress.clone();
             }
         }
 
@@ -118,14 +120,14 @@ impl ProgressReporter for TerminalReporter {
     }
 
     async fn task_cached(&self, task_id: &str, task_name: &str) {
-        if let Ok(mut guard) = self.progress.write() {
-            if let Some(ref mut progress) = *guard {
-                progress.completed_tasks += 1;
-                progress.cached_tasks += 1;
+        if let Ok(mut guard) = self.progress.write()
+            && let Some(ref mut progress) = *guard
+        {
+            progress.completed_tasks += 1;
+            progress.cached_tasks += 1;
 
-                let task = LiveTaskProgress::pending(task_id, task_name).cached();
-                progress.tasks.push(task);
-            }
+            let task = LiveTaskProgress::pending(task_id, task_name).cached();
+            progress.tasks.push(task);
         }
 
         tracing::info!(
@@ -142,6 +144,7 @@ impl ProgressReporter for TerminalReporter {
         }
     }
 
+    #[allow(clippy::cast_precision_loss)] // u64 ms to f64 secs is fine for display
     async fn pipeline_completed(&self, report: &PipelineReport) {
         let total = report.tasks.len();
         let failed = report
@@ -150,10 +153,7 @@ impl ProgressReporter for TerminalReporter {
             .filter(|t| t.status == super::TaskStatus::Failed)
             .count();
         let cached = report.cache_hits();
-        let duration_secs = report
-            .duration_ms
-            .map(|ms| ms as f64 / 1000.0)
-            .unwrap_or(0.0);
+        let duration_secs = report.duration_ms.map_or(0.0, |ms| ms as f64 / 1000.0);
 
         if report.status == super::PipelineStatus::Success {
             tracing::info!(
@@ -176,6 +176,7 @@ impl ProgressReporter for TerminalReporter {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)] // unwrap is fine in tests
 mod tests {
     use super::*;
     use std::time::Duration;

@@ -75,7 +75,7 @@ impl EmitterRegistry {
     #[must_use]
     pub fn formats(&self) -> Vec<&'static str> {
         let mut names: Vec<_> = self.emitters.keys().copied().collect();
-        names.sort();
+        names.sort_unstable();
         names
     }
 

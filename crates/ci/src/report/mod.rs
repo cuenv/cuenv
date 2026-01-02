@@ -3,21 +3,17 @@
 //! Provides types and traits for pipeline execution reporting, including:
 //! - Static report types for completed pipelines
 //! - Live progress reporting traits
-//! - Terminal and GitHub Check Run reporters
+//! - Terminal reporter (provider-specific reporters live in their own crates)
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub mod github;
 pub mod json;
 pub mod markdown;
 pub mod progress;
 pub mod terminal;
 
 // Re-export commonly used types
-pub use github::{
-    CheckAnnotation, GitHubApiClient, GitHubCheckReporter, GitHubReporterConfig, NoOpGitHubClient,
-};
 pub use progress::{
     LivePipelineProgress, LiveTaskProgress, LiveTaskStatus, NoOpReporter, ProgressReporter,
 };
