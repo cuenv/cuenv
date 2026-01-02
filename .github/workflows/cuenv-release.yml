@@ -46,6 +46,7 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -92,6 +93,7 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -141,6 +143,7 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -194,6 +197,7 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -245,6 +249,7 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:
@@ -287,6 +292,7 @@ jobs:
         ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SCCACHE_DIR: /tmp/sccache
     - name: Setup 1Password
       run: cuenv secrets setup onepassword
       env:

@@ -72,7 +72,10 @@ import "github.com/cuenv/cuenv/schema"
 		priority:  10
 		shell:     true
 		dependsOn: ["install-nix"]
-		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+		env: {
+			GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+			SCCACHE_DIR:  "/tmp/sccache"
+		}
 		command: """
 			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \\
 			nix develop -c cargo build --release -p cuenv && \\
