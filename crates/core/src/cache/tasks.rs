@@ -1,4 +1,5 @@
 use crate::{Error, Result};
+use super::cas::{BlobId, CasStore};
 use chrono::{DateTime, Utc};
 use dirs::{cache_dir, home_dir};
 use serde::{Deserialize, Serialize};
@@ -7,11 +8,18 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Index entry for a cached output file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputIndexEntry {
+    /// Relative path within the outputs directory
     pub rel_path: String,
+    /// File size in bytes
     pub size: u64,
+    /// SHA-256 hash of the file content
     pub sha256: String,
+    /// CAS blob ID (if stored in CAS)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blob_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +137,20 @@ pub fn key_to_path(key: &str, root: Option<&Path>) -> Result<PathBuf> {
     Ok(base.join(key))
 }
 
+/// Get the CAS store for the cache
+///
+/// # Errors
+///
+/// Returns error if cache root cannot be determined
+pub fn cas_store(root: Option<&Path>) -> Result<CasStore> {
+    let base = if let Some(r) = root {
+        r.to_path_buf()
+    } else {
+        cache_root()?
+    };
+    Ok(CasStore::new(base.join("cas")))
+}
+
 pub fn lookup(key: &str, root: Option<&Path>) -> Option<CacheEntry> {
     let path = match key_to_path(key, root) {
         Ok(p) => p,
@@ -165,6 +187,9 @@ pub fn save_result(
         operation: "create_dir_all".into(),
     })?;
 
+    // Initialize CAS store
+    let store = cas_store(root)?;
+
     // metadata.json
     let meta_path = path.join("metadata.json");
     let json = serde_json::to_vec_pretty(meta)
@@ -175,14 +200,14 @@ pub fn save_result(
         operation: "write".into(),
     })?;
 
-    // outputs/
+    // Store outputs in CAS
     let out_dir = path.join("outputs");
     fs::create_dir_all(&out_dir).map_err(|e| Error::Io {
         source: e,
         path: Some(out_dir.clone().into()),
         operation: "create_dir_all".into(),
     })?;
-    // Copy tree from outputs_root (already collected) if exists
+
     if outputs_root.exists() {
         for entry in walkdir::WalkDir::new(outputs_root)
             .into_iter()
@@ -192,6 +217,18 @@ pub fn save_result(
             if p.is_dir() {
                 continue;
             }
+
+            // Read file content
+            let content = fs::read(p).map_err(|e| Error::Io {
+                source: e,
+                path: Some(p.into()),
+                operation: "read".into(),
+            })?;
+
+            // Store in CAS
+            let blob_id = store.store(&content)?;
+
+            // Also store locally in outputs/ for backward compatibility
             let rel = p.strip_prefix(outputs_root).map_err(|_| {
                 Error::configuration(format!(
                     "path {} is not under outputs_root {}",
@@ -203,11 +240,18 @@ pub fn save_result(
             if let Some(parent) = dst.parent() {
                 fs::create_dir_all(parent).ok();
             }
-            fs::copy(p, &dst).map_err(|e| Error::Io {
+            fs::write(&dst, &content).map_err(|e| Error::Io {
                 source: e,
                 path: Some(dst.into()),
-                operation: "copy".into(),
+                operation: "write".into(),
             })?;
+
+            tracing::debug!(
+                path = %rel.display(),
+                blob_id = %blob_id,
+                size = content.len(),
+                "Stored output in CAS"
+            );
         }
     }
 
@@ -228,14 +272,64 @@ pub fn save_result(
     Ok(())
 }
 
+/// Materialize outputs from cache, preferring CAS when available
+///
+/// # Errors
+///
+/// Returns error if the cache entry doesn't exist or IO operations fail
 pub fn materialize_outputs(key: &str, destination: &Path, root: Option<&Path>) -> Result<usize> {
     let entry = lookup(key, root)
         .ok_or_else(|| Error::configuration(format!("Cache key not found: {key}")))?;
+
+    // Try to load metadata to get blob IDs
+    let meta_path = entry.path.join("metadata.json");
+    let store = cas_store(root)?;
+    let mut count = 0usize;
+
+    // Try CAS-based restoration first if metadata has blob_ids
+    if meta_path.exists() {
+        if let Ok(meta_content) = fs::read_to_string(&meta_path) {
+            if let Ok(meta) = serde_json::from_str::<TaskResultMeta>(&meta_content) {
+                // Try to restore from CAS using output_index
+                for output_entry in &meta.output_index {
+                    if let Some(blob_id_hex) = &output_entry.blob_id {
+                        if let Ok(blob_id) = BlobId::from_hex(blob_id_hex) {
+                            if store.exists(&blob_id) {
+                                // Load from CAS
+                                if let Ok(data) = store.load(&blob_id) {
+                                    let dst = destination.join(&output_entry.rel_path);
+                                    if let Some(parent) = dst.parent() {
+                                        fs::create_dir_all(parent).ok();
+                                    }
+                                    if fs::write(&dst, data).is_ok() {
+                                        count += 1;
+                                        tracing::debug!(
+                                            path = %output_entry.rel_path,
+                                            blob_id = %blob_id,
+                                            "Restored output from CAS"
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // If we successfully restored all files from CAS, return
+                if count == meta.output_index.len() {
+                    return Ok(count);
+                }
+            }
+        }
+    }
+
+    // Fallback to traditional outputs/ directory
     let out_dir = entry.path.join("outputs");
     if !out_dir.exists() {
-        return Ok(0);
+        return Ok(count);
     }
-    let mut count = 0usize;
+
     for e in walkdir::WalkDir::new(&out_dir)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -351,6 +445,52 @@ pub fn get_project_cache_keys(
         .map_err(|e| Error::configuration(format!("Failed to parse task index: {e}")))?;
     let proj_hash = project_hash(project_root);
     Ok(index.entries.get(&proj_hash).cloned())
+}
+
+/// Statistics about the CAS store
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CasStats {
+    /// Total number of blobs
+    pub blob_count: usize,
+    /// Total size in bytes
+    pub total_size: u64,
+    /// Human-readable size
+    pub human_size: String,
+}
+
+impl CasStats {
+    fn format_size(bytes: u64) -> String {
+        const KB: u64 = 1024;
+        const MB: u64 = KB * 1024;
+        const GB: u64 = MB * 1024;
+
+        if bytes >= GB {
+            format!("{:.2} GB", bytes as f64 / GB as f64)
+        } else if bytes >= MB {
+            format!("{:.2} MB", bytes as f64 / MB as f64)
+        } else if bytes >= KB {
+            format!("{:.2} KB", bytes as f64 / KB as f64)
+        } else {
+            format!("{} bytes", bytes)
+        }
+    }
+}
+
+/// Get statistics about the CAS store
+///
+/// # Errors
+///
+/// Returns error if CAS directory cannot be accessed
+pub fn cas_stats(root: Option<&Path>) -> Result<CasStats> {
+    let store = cas_store(root)?;
+    let blobs = store.list()?;
+    let total_size = store.total_size()?;
+
+    Ok(CasStats {
+        blob_count: blobs.len(),
+        total_size,
+        human_size: CasStats::format_size(total_size),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -589,6 +729,88 @@ mod tests {
         assert_eq!(
             std::fs::read(dest.path().join("dir/bar.bin")).unwrap(),
             b"bar"
+        );
+    }
+
+    #[test]
+    fn test_cas_integration() {
+        // Test that outputs are stored in CAS and can be restored
+        let cache_tmp = TempDir::new().expect("tempdir");
+
+        // Prepare outputs
+        let outputs = TempDir::new().expect("outputs tempdir");
+        std::fs::write(outputs.path().join("test.txt"), b"test content").unwrap();
+
+        // Minimal metadata
+        let mut env_summary = BTreeMap::new();
+        env_summary.insert("TEST".to_string(), "1".to_string());
+        let inputs_summary = BTreeMap::new();
+        let output_index = vec![OutputIndexEntry {
+            rel_path: "test.txt".to_string(),
+            size: 12,
+            sha256: {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(b"test content");
+                hex::encode(h.finalize())
+            },
+            blob_id: None, // Will be populated during save
+        }];
+
+        let meta = TaskResultMeta {
+            task_name: "cas-test".into(),
+            command: "echo".into(),
+            args: vec!["test".into()],
+            env_summary,
+            inputs_summary,
+            created_at: chrono::Utc::now(),
+            cuenv_version: "0.0.0-test".into(),
+            platform: std::env::consts::OS.to_string(),
+            duration_ms: 1,
+            exit_code: 0,
+            cache_key_envelope: serde_json::json!({}),
+            output_index,
+        };
+
+        let logs = TaskLogs {
+            stdout: Some("test".into()),
+            stderr: None,
+        };
+
+        // Create hermetic root
+        let herm = TempDir::new().expect("hermetic tempdir");
+        std::fs::create_dir_all(herm.path().join("work")).unwrap();
+        std::fs::write(herm.path().join("work/a.txt"), b"a").unwrap();
+
+        let key = "cas-test-key";
+        save_result(
+            key,
+            &meta,
+            outputs.path(),
+            herm.path(),
+            logs,
+            Some(cache_tmp.path()),
+        )
+        .expect("save_result");
+
+        // Verify CAS store was populated
+        let store = cas_store(Some(cache_tmp.path())).unwrap();
+        let blobs = store.list().unwrap();
+        assert!(!blobs.is_empty(), "CAS should contain blobs");
+
+        // Verify we can get stats
+        let stats = cas_stats(Some(cache_tmp.path())).unwrap();
+        assert!(stats.blob_count > 0);
+        assert!(stats.total_size > 0);
+
+        // Materialize into fresh destination
+        let dest = TempDir::new().expect("dest tempdir");
+        let copied = materialize_outputs(key, dest.path(), Some(cache_tmp.path()))
+            .expect("materialize_outputs");
+        assert_eq!(copied, 1);
+        assert_eq!(
+            std::fs::read(dest.path().join("test.txt")).unwrap(),
+            b"test content"
         );
     }
 }
