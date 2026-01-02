@@ -89,6 +89,7 @@ schema.#Project & {
 
 	ci: {
 		contributors: [
+			xContributors.#Nix,
 			xContributors.#CuenvNative,
 			xContributors.#OnePassword,
 			xRust.#Sccache,
