@@ -242,4 +242,168 @@ mod tests {
         let (_, named) = parse_task_args(&args, Some(&params));
         assert_eq!(named.get("verbose"), Some(&"true".to_string()));
     }
+
+    #[test]
+    fn test_parse_task_args_boolean_flag_at_end() {
+        let args: Vec<String> = vec!["--verbose".into()];
+        let (positional, named) = parse_task_args(&args, None);
+        assert!(positional.is_empty());
+        assert_eq!(named.get("verbose"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_short_flag_with_value() {
+        let mut named_params = HashMap::new();
+        named_params.insert(
+            "file".to_string(),
+            ParamDef {
+                short: Some("f".to_string()),
+                ..Default::default()
+            },
+        );
+        let params = TaskParams {
+            positional: vec![],
+            named: named_params,
+        };
+
+        let args: Vec<String> = vec!["-f".into(), "test.txt".into()];
+        let (_, named) = parse_task_args(&args, Some(&params));
+        assert_eq!(named.get("file"), Some(&"test.txt".to_string()));
+    }
+
+    #[test]
+    fn test_parse_task_args_negative_number_as_positional() {
+        let args: Vec<String> = vec!["-5".into()];
+        let (positional, named) = parse_task_args(&args, None);
+        assert_eq!(positional, vec!["-5"]);
+        assert!(named.is_empty());
+    }
+
+    #[test]
+    fn test_parse_task_args_multi_char_short_as_positional() {
+        let args: Vec<String> = vec!["-abc".into()];
+        let (positional, named) = parse_task_args(&args, None);
+        assert_eq!(positional, vec!["-abc"]);
+        assert!(named.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_task_args_no_params() {
+        let args: Vec<String> = vec!["pos1".into(), "--flag".into(), "value".into()];
+        let resolved = resolve_task_args(None, &args).unwrap();
+        assert_eq!(resolved.positional, vec!["pos1"]);
+        assert_eq!(resolved.named.get("flag"), Some(&"value".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_task_args_too_many_positional() {
+        let params = TaskParams {
+            positional: vec![ParamDef::default()], // Only 1 positional allowed
+            named: HashMap::new(),
+        };
+        let args: Vec<String> = vec!["pos1".into(), "pos2".into()];
+        let result = resolve_task_args(Some(&params), &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Too many positional"));
+    }
+
+    #[test]
+    fn test_resolve_task_args_unknown_flag() {
+        let params = TaskParams {
+            positional: vec![],
+            named: HashMap::new(),
+        };
+        let args: Vec<String> = vec!["--unknown".into(), "value".into()];
+        let result = resolve_task_args(Some(&params), &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown argument"));
+    }
+
+    #[test]
+    fn test_resolve_task_args_missing_required_positional() {
+        let mut positional = vec![ParamDef::default()];
+        positional[0].required = true;
+        let params = TaskParams {
+            positional,
+            named: HashMap::new(),
+        };
+        let args: Vec<String> = vec![];
+        let result = resolve_task_args(Some(&params), &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing required"));
+    }
+
+    #[test]
+    fn test_resolve_task_args_missing_required_named() {
+        let mut named_params = HashMap::new();
+        named_params.insert(
+            "input".to_string(),
+            ParamDef {
+                required: true,
+                ..Default::default()
+            },
+        );
+        let params = TaskParams {
+            positional: vec![],
+            named: named_params,
+        };
+        let args: Vec<String> = vec![];
+        let result = resolve_task_args(Some(&params), &args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("--input"));
+    }
+
+    #[test]
+    fn test_resolve_task_args_default_values() {
+        let mut positional = vec![ParamDef::default()];
+        positional[0].default = Some("default_pos".to_string());
+
+        let mut named_params = HashMap::new();
+        named_params.insert(
+            "flag".to_string(),
+            ParamDef {
+                default: Some("default_val".to_string()),
+                ..Default::default()
+            },
+        );
+        let params = TaskParams {
+            positional,
+            named: named_params,
+        };
+        let args: Vec<String> = vec![];
+        let resolved = resolve_task_args(Some(&params), &args).unwrap();
+        assert_eq!(resolved.positional, vec!["default_pos"]);
+        assert_eq!(resolved.named.get("flag"), Some(&"default_val".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_task_args_optional_without_default() {
+        let mut positional = vec![ParamDef::default()];
+        positional[0].required = false;
+
+        let params = TaskParams {
+            positional,
+            named: HashMap::new(),
+        };
+        let args: Vec<String> = vec![];
+        let resolved = resolve_task_args(Some(&params), &args).unwrap();
+        // Optional without default gets empty string
+        assert_eq!(resolved.positional, vec![""]);
+    }
+
+    #[test]
+    fn test_apply_args_to_task() {
+        let task = Task {
+            command: "echo".to_string(),
+            args: vec!["{{0}}".to_string(), "--name".to_string(), "{{name}}".to_string()],
+            ..Default::default()
+        };
+
+        let mut resolved = ResolvedArgs::new();
+        resolved.positional.push("hello".to_string());
+        resolved.named.insert("name".to_string(), "world".to_string());
+
+        let new_task = apply_args_to_task(&task, &resolved);
+        assert_eq!(new_task.args, vec!["hello", "--name", "world"]);
+    }
 }
