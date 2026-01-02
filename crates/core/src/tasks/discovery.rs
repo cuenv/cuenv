@@ -523,4 +523,386 @@ mod tests {
         assert!(names.contains(&"projen.generate".to_string()));
         assert!(names.contains(&"projen.types".to_string()));
     }
+
+    #[test]
+    fn test_task_discovery_new() {
+        let discovery = TaskDiscovery::new(PathBuf::from("/workspace"));
+        assert!(discovery.projects().is_empty());
+        assert!(discovery.get_project("anything").is_none());
+    }
+
+    #[test]
+    fn test_task_discovery_discover_without_eval_fn() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+        let result = discovery.discover();
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), DiscoveryError::NoEvalFunction));
+    }
+
+    #[test]
+    fn test_task_discovery_add_project_with_empty_name() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        // Project with empty name should still be added to projects list
+        // but not to the name index
+        let manifest = Project::new("");
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        assert_eq!(discovery.projects().len(), 1);
+        assert!(discovery.get_project("").is_none()); // Empty names not indexed
+    }
+
+    #[test]
+    fn test_task_discovery_add_project_with_whitespace_name() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        // Project with whitespace-only name should not be indexed
+        let manifest = Project::new("   ");
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        assert_eq!(discovery.projects().len(), 1);
+        assert!(discovery.get_project("   ").is_none());
+    }
+
+    #[test]
+    fn test_task_discovery_add_project_indexed_by_name() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let manifest = Project::new("my-project");
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        assert_eq!(discovery.projects().len(), 1);
+        let project = discovery.get_project("my-project");
+        assert!(project.is_some());
+        assert_eq!(project.unwrap().project_root, PathBuf::from("/tmp/proj"));
+    }
+
+    #[test]
+    fn test_task_discovery_resolve_ref_invalid_format() {
+        let discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let task_ref = TaskRef {
+            ref_: "invalid-format".to_string(),
+        };
+        let result = discovery.resolve_ref(&task_ref);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DiscoveryError::InvalidTaskRef(_)
+        ));
+    }
+
+    #[test]
+    fn test_task_discovery_resolve_ref_project_not_found() {
+        let discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let task_ref = TaskRef {
+            ref_: "#nonexistent:task".to_string(),
+        };
+        let result = discovery.resolve_ref(&task_ref);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DiscoveryError::ProjectNotFound(_)
+        ));
+    }
+
+    #[test]
+    fn test_task_discovery_resolve_ref_task_not_found() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let manifest = Project::new("my-project");
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        let task_ref = TaskRef {
+            ref_: "#my-project:nonexistent".to_string(),
+        };
+        let result = discovery.resolve_ref(&task_ref);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DiscoveryError::TaskNotFound(_, _)
+        ));
+    }
+
+    #[test]
+    fn test_task_discovery_resolve_ref_task_is_group() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let mut manifest = Project::new("my-project");
+        manifest.tasks.insert(
+            "group-task".into(),
+            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
+                tasks: HashMap::new(),
+                depends_on: Vec::new(),
+            })),
+        );
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        let task_ref = TaskRef {
+            ref_: "#my-project:group-task".to_string(),
+        };
+        let result = discovery.resolve_ref(&task_ref);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            DiscoveryError::TaskIsGroup(_, _)
+        ));
+    }
+
+    #[test]
+    fn test_task_discovery_resolve_ref_success() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let mut manifest = Project::new("my-project");
+        manifest.tasks.insert(
+            "build".into(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".into(),
+                args: vec!["build".into()],
+                ..Default::default()
+            })),
+        );
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        let task_ref = TaskRef {
+            ref_: "#my-project:build".to_string(),
+        };
+        let result = discovery.resolve_ref(&task_ref);
+        assert!(result.is_ok());
+
+        let matched = result.unwrap();
+        assert_eq!(matched.task_name, "build");
+        assert_eq!(matched.project_root, PathBuf::from("/tmp/proj"));
+        assert_eq!(matched.project_name, Some("my-project".to_string()));
+        assert_eq!(matched.task.command, "cargo");
+    }
+
+    #[test]
+    fn test_match_tasks_by_command() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let mut manifest = Project::new("test");
+        manifest.tasks.insert(
+            "build".into(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".into(),
+                ..Default::default()
+            })),
+        );
+        manifest.tasks.insert(
+            "test".into(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "npm".into(),
+                ..Default::default()
+            })),
+        );
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        let matcher = TaskMatcher {
+            labels: None,
+            command: Some("cargo".into()),
+            args: None,
+            parallel: false,
+        };
+
+        let matches = discovery.match_tasks(&matcher).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].task_name, "build");
+    }
+
+    #[test]
+    fn test_match_tasks_by_labels() {
+        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let mut manifest = Project::new("test");
+        manifest.tasks.insert(
+            "task1".into(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "echo".into(),
+                labels: vec!["ci".into(), "test".into()],
+                ..Default::default()
+            })),
+        );
+        manifest.tasks.insert(
+            "task2".into(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "echo".into(),
+                labels: vec!["ci".into()],
+                ..Default::default()
+            })),
+        );
+        discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
+
+        // Match tasks with both "ci" and "test" labels
+        let matcher = TaskMatcher {
+            labels: Some(vec!["ci".into(), "test".into()]),
+            command: None,
+            args: None,
+            parallel: false,
+        };
+
+        let matches = discovery.match_tasks(&matcher).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].task_name, "task1");
+    }
+
+    #[test]
+    fn test_match_tasks_empty_projects() {
+        let discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
+
+        let matcher = TaskMatcher {
+            labels: Some(vec!["ci".into()]),
+            command: None,
+            args: None,
+            parallel: false,
+        };
+
+        let matches = discovery.match_tasks(&matcher).unwrap();
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_matches_args_both_contains_and_regex() {
+        let args = vec!["run".to_string(), ".projenrc.ts".to_string()];
+
+        // When both contains and matches are provided, either can match
+        let matchers = vec![ArgMatcher {
+            contains: Some("notfound".to_string()),
+            matches: Some(r"\.ts$".to_string()),
+        }];
+        assert!(matches_args(&args, &matchers));
+
+        // Check contains matches
+        let matchers = vec![ArgMatcher {
+            contains: Some(".projenrc".to_string()),
+            matches: Some(r"notfound".to_string()),
+        }];
+        assert!(matches_args(&args, &matchers));
+    }
+
+    #[test]
+    fn test_matches_args_multiple_matchers() {
+        let args = vec![
+            "run".to_string(),
+            ".projenrc.ts".to_string(),
+            "--verbose".to_string(),
+        ];
+
+        // All matchers must match
+        let matchers = vec![
+            ArgMatcher {
+                contains: Some(".projenrc".to_string()),
+                matches: None,
+            },
+            ArgMatcher {
+                contains: Some("--verbose".to_string()),
+                matches: None,
+            },
+        ];
+        assert!(matches_args(&args, &matchers));
+
+        // If one doesn't match, result is false
+        let matchers = vec![
+            ArgMatcher {
+                contains: Some(".projenrc".to_string()),
+                matches: None,
+            },
+            ArgMatcher {
+                contains: Some("--quiet".to_string()),
+                matches: None,
+            },
+        ];
+        assert!(!matches_args(&args, &matchers));
+    }
+
+    #[test]
+    fn test_matches_args_empty_args() {
+        let args: Vec<String> = vec![];
+
+        let matchers = vec![ArgMatcher {
+            contains: Some("anything".to_string()),
+            matches: None,
+        }];
+        assert!(!matches_args(&args, &matchers));
+    }
+
+    #[test]
+    fn test_matches_args_empty_matchers() {
+        let args = vec!["anything".to_string()];
+        let matchers: Vec<ArgMatcher> = vec![];
+
+        // Empty matchers list means all tasks match (vacuous truth)
+        assert!(matches_args(&args, &matchers));
+    }
+
+    #[test]
+    fn test_discovery_error_display() {
+        let err = DiscoveryError::InvalidTaskRef("bad".to_string());
+        assert!(err.to_string().contains("Invalid TaskRef format"));
+
+        let err = DiscoveryError::ProjectNotFound("proj".to_string());
+        assert!(err.to_string().contains("Project not found"));
+
+        let err = DiscoveryError::TaskNotFound("proj".to_string(), "task".to_string());
+        assert!(err.to_string().contains("Task not found"));
+
+        let err = DiscoveryError::TaskIsGroup("proj".to_string(), "task".to_string());
+        assert!(err.to_string().contains("is a group"));
+
+        let err = DiscoveryError::NoEvalFunction;
+        assert!(err.to_string().contains("No evaluation function"));
+
+        let err = DiscoveryError::InvalidRegex("bad".to_string(), "error".to_string());
+        assert!(err.to_string().contains("Invalid regex"));
+
+        let err = DiscoveryError::InvalidPath(PathBuf::from("/bad"));
+        assert!(err.to_string().contains("Invalid path"));
+
+        let err = DiscoveryError::TaskIndexError(PathBuf::from("/env.cue"), "error".to_string());
+        assert!(err.to_string().contains("Failed to index"));
+    }
+
+    #[test]
+    fn test_discovered_project_fields() {
+        let project = DiscoveredProject {
+            env_cue_path: PathBuf::from("/workspace/env.cue"),
+            project_root: PathBuf::from("/workspace"),
+            manifest: Project::new("test"),
+        };
+
+        assert_eq!(project.env_cue_path, PathBuf::from("/workspace/env.cue"));
+        assert_eq!(project.project_root, PathBuf::from("/workspace"));
+        assert_eq!(project.manifest.name, "test");
+    }
+
+    #[test]
+    fn test_matched_task_fields() {
+        let matched = MatchedTask {
+            project_root: PathBuf::from("/workspace"),
+            task_name: "build".to_string(),
+            task: Task {
+                command: "cargo".into(),
+                ..Default::default()
+            },
+            project_name: Some("my-project".to_string()),
+        };
+
+        assert_eq!(matched.project_root, PathBuf::from("/workspace"));
+        assert_eq!(matched.task_name, "build");
+        assert_eq!(matched.task.command, "cargo");
+        assert_eq!(matched.project_name, Some("my-project".to_string()));
+    }
+
+    #[test]
+    fn test_matched_task_no_project_name() {
+        let matched = MatchedTask {
+            project_root: PathBuf::from("/workspace"),
+            task_name: "build".to_string(),
+            task: Task::default(),
+            project_name: None,
+        };
+
+        assert!(matched.project_name.is_none());
+    }
 }
