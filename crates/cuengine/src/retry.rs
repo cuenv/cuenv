@@ -70,8 +70,8 @@ where
 mod tests {
     use super::*;
     use crate::error::CueEngineError;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn test_retry_config_default() {
@@ -98,9 +98,8 @@ mod tests {
             exponential_base: 2.0,
         };
 
-        let result: Result<i32> = with_retry(&config, || {
-            Err(CueEngineError::validation("always fails"))
-        });
+        let result: Result<i32> =
+            with_retry(&config, || Err(CueEngineError::validation("always fails")));
 
         assert!(result.is_err());
     }

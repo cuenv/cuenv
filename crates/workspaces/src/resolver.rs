@@ -317,16 +317,15 @@ mod tests {
     #[test]
     fn test_resolve_dependencies_creates_graph() {
         let resolver = GenericDependencyResolver;
-        let workspace = Workspace::new(
-            PathBuf::from("/project"),
-            PackageManager::Npm,
-        );
+        let workspace = Workspace::new(PathBuf::from("/project"), PackageManager::Npm);
         let lockfile = vec![
             make_entry("pkg-a", "1.0.0", false),
             make_entry("pkg-b", "2.0.0", false),
         ];
 
-        let graph = resolver.resolve_dependencies(&workspace, &lockfile).unwrap();
+        let graph = resolver
+            .resolve_dependencies(&workspace, &lockfile)
+            .unwrap();
 
         assert_eq!(graph.node_count(), 2);
     }
@@ -334,21 +333,22 @@ mod tests {
     #[test]
     fn test_resolve_dependencies_with_edges() {
         let resolver = GenericDependencyResolver;
-        let workspace = Workspace::new(
-            PathBuf::from("/project"),
-            PackageManager::Npm,
-        );
+        let workspace = Workspace::new(PathBuf::from("/project"), PackageManager::Npm);
         let lockfile = vec![
-            make_entry_with_deps("pkg-a", "1.0.0", vec![
-                DependencyRef {
+            make_entry_with_deps(
+                "pkg-a",
+                "1.0.0",
+                vec![DependencyRef {
                     name: "pkg-b".to_string(),
                     version_req: "2.0.0".to_string(),
-                },
-            ]),
+                }],
+            ),
             make_entry("pkg-b", "2.0.0", false),
         ];
 
-        let graph = resolver.resolve_dependencies(&workspace, &lockfile).unwrap();
+        let graph = resolver
+            .resolve_dependencies(&workspace, &lockfile)
+            .unwrap();
 
         assert_eq!(graph.node_count(), 2);
         assert_eq!(graph.edge_count(), 1);
@@ -357,13 +357,12 @@ mod tests {
     #[test]
     fn test_resolve_dependencies_empty_lockfile() {
         let resolver = GenericDependencyResolver;
-        let workspace = Workspace::new(
-            PathBuf::from("/project"),
-            PackageManager::Npm,
-        );
+        let workspace = Workspace::new(PathBuf::from("/project"), PackageManager::Npm);
         let lockfile: Vec<LockfileEntry> = vec![];
 
-        let graph = resolver.resolve_dependencies(&workspace, &lockfile).unwrap();
+        let graph = resolver
+            .resolve_dependencies(&workspace, &lockfile)
+            .unwrap();
 
         assert_eq!(graph.node_count(), 0);
         assert_eq!(graph.edge_count(), 0);
@@ -373,20 +372,19 @@ mod tests {
     fn test_resolve_dependencies_missing_dep_skipped() {
         // When a dependency references a package not in the lockfile, it should be skipped
         let resolver = GenericDependencyResolver;
-        let workspace = Workspace::new(
-            PathBuf::from("/project"),
-            PackageManager::Npm,
-        );
-        let lockfile = vec![
-            make_entry_with_deps("pkg-a", "1.0.0", vec![
-                DependencyRef {
-                    name: "missing-pkg".to_string(),
-                    version_req: "1.0.0".to_string(),
-                },
-            ]),
-        ];
+        let workspace = Workspace::new(PathBuf::from("/project"), PackageManager::Npm);
+        let lockfile = vec![make_entry_with_deps(
+            "pkg-a",
+            "1.0.0",
+            vec![DependencyRef {
+                name: "missing-pkg".to_string(),
+                version_req: "1.0.0".to_string(),
+            }],
+        )];
 
-        let graph = resolver.resolve_dependencies(&workspace, &lockfile).unwrap();
+        let graph = resolver
+            .resolve_dependencies(&workspace, &lockfile)
+            .unwrap();
 
         // Node for pkg-a, but no edge to missing-pkg
         assert_eq!(graph.node_count(), 1);
@@ -397,16 +395,15 @@ mod tests {
     fn test_resolve_dependencies_multiple_versions() {
         // Multiple versions of the same package should be separate nodes
         let resolver = GenericDependencyResolver;
-        let workspace = Workspace::new(
-            PathBuf::from("/project"),
-            PackageManager::Npm,
-        );
+        let workspace = Workspace::new(PathBuf::from("/project"), PackageManager::Npm);
         let lockfile = vec![
             make_entry("lodash", "4.0.0", false),
             make_entry("lodash", "3.0.0", false),
         ];
 
-        let graph = resolver.resolve_dependencies(&workspace, &lockfile).unwrap();
+        let graph = resolver
+            .resolve_dependencies(&workspace, &lockfile)
+            .unwrap();
 
         // Two separate nodes for different versions
         assert_eq!(graph.node_count(), 2);
@@ -420,7 +417,9 @@ mod tests {
     fn test_parse_js_deps_workspace_dependencies() {
         let temp_dir = TempDir::new().unwrap();
         let pkg_json = temp_dir.path().join("package.json");
-        fs::write(&pkg_json, r#"{
+        fs::write(
+            &pkg_json,
+            r#"{
             "dependencies": {
                 "external": "^1.0.0",
                 "workspace-pkg": "workspace:*"
@@ -428,7 +427,9 @@ mod tests {
             "devDependencies": {
                 "dev-workspace": "workspace:^1.0.0"
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let resolver = GenericDependencyResolver;
         let deps = resolver.parse_js_deps(&pkg_json).unwrap();
@@ -444,12 +445,16 @@ mod tests {
     fn test_parse_js_deps_no_workspace_deps() {
         let temp_dir = TempDir::new().unwrap();
         let pkg_json = temp_dir.path().join("package.json");
-        fs::write(&pkg_json, r#"{
+        fs::write(
+            &pkg_json,
+            r#"{
             "dependencies": {
                 "lodash": "^4.0.0",
                 "react": "^18.0.0"
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
 
         let resolver = GenericDependencyResolver;
         let deps = resolver.parse_js_deps(&pkg_json).unwrap();
@@ -478,14 +483,18 @@ mod tests {
     fn test_parse_rust_deps_workspace_dependencies() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(&cargo_toml, r#"
+        fs::write(
+            &cargo_toml,
+            r#"
 [dependencies]
 serde = "1.0"
 my-lib = { workspace = true }
 
 [dev-dependencies]
 test-helper = { workspace = true }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let deps = GenericDependencyResolver::parse_rust_deps(&cargo_toml).unwrap();
 
@@ -500,11 +509,15 @@ test-helper = { workspace = true }
     fn test_parse_rust_deps_no_workspace_deps() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(&cargo_toml, r#"
+        fs::write(
+            &cargo_toml,
+            r#"
 [dependencies]
 serde = "1.0"
 tokio = { version = "1.0", features = ["full"] }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let deps = GenericDependencyResolver::parse_rust_deps(&cargo_toml).unwrap();
 
@@ -516,10 +529,14 @@ tokio = { version = "1.0", features = ["full"] }
     fn test_parse_rust_deps_workspace_false_ignored() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(&cargo_toml, r#"
+        fs::write(
+            &cargo_toml,
+            r#"
 [dependencies]
 my-lib = { workspace = false, version = "1.0" }
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let deps = GenericDependencyResolver::parse_rust_deps(&cargo_toml).unwrap();
 
@@ -531,11 +548,15 @@ my-lib = { workspace = false, version = "1.0" }
     fn test_parse_rust_deps_empty() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(&cargo_toml, r#"
+        fs::write(
+            &cargo_toml,
+            r#"
 [package]
 name = "my-crate"
 version = "0.1.0"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let deps = GenericDependencyResolver::parse_rust_deps(&cargo_toml).unwrap();
 
@@ -547,10 +568,14 @@ version = "0.1.0"
     fn test_parse_rust_deps_string_version_ignored() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(&cargo_toml, r#"
+        fs::write(
+            &cargo_toml,
+            r#"
 [dependencies]
 serde = "1.0"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         // String version deps should not be treated as workspace deps
         let deps = GenericDependencyResolver::parse_rust_deps(&cargo_toml).unwrap();

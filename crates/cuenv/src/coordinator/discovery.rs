@@ -278,7 +278,10 @@ mod tests {
             pid: 1234,
             socket: PathBuf::from("/tmp/test.sock"),
         };
-        assert!(matches!(running, CoordinatorStatus::Running { pid: 1234, .. }));
+        assert!(matches!(
+            running,
+            CoordinatorStatus::Running { pid: 1234, .. }
+        ));
 
         let not_running = CoordinatorStatus::NotRunning;
         assert!(matches!(not_running, CoordinatorStatus::NotRunning));
@@ -313,7 +316,10 @@ mod tests {
             socket: PathBuf::from("/tmp/clone.sock"),
         };
         let cloned = running.clone();
-        assert!(matches!(cloned, CoordinatorStatus::Running { pid: 1000, .. }));
+        assert!(matches!(
+            cloned,
+            CoordinatorStatus::Running { pid: 1000, .. }
+        ));
     }
 
     #[test]

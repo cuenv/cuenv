@@ -280,7 +280,13 @@ mod tests {
     #[test]
     fn test_register_consumer() {
         let client_id = Uuid::new_v4();
-        let msg = WireMessage::register(client_id, ClientType::Consumer { ui_type: UiType::Tui }, 5678);
+        let msg = WireMessage::register(
+            client_id,
+            ClientType::Consumer {
+                ui_type: UiType::Tui,
+            },
+            5678,
+        );
 
         assert_eq!(msg.msg_type, MessageType::Register);
         assert_eq!(msg.correlation_id, client_id);
@@ -291,20 +297,30 @@ mod tests {
         assert_eq!(payload.pid, 5678);
         assert!(matches!(
             payload.client_type,
-            ClientType::Consumer { ui_type: UiType::Tui }
+            ClientType::Consumer {
+                ui_type: UiType::Tui
+            }
         ));
     }
 
     #[test]
     fn test_register_consumer_web() {
         let client_id = Uuid::new_v4();
-        let msg = WireMessage::register(client_id, ClientType::Consumer { ui_type: UiType::Web }, 9999);
+        let msg = WireMessage::register(
+            client_id,
+            ClientType::Consumer {
+                ui_type: UiType::Web,
+            },
+            9999,
+        );
 
         let payload: RegisterPayload =
             serde_json::from_value(msg.payload).expect("should deserialize");
         assert!(matches!(
             payload.client_type,
-            ClientType::Consumer { ui_type: UiType::Web }
+            ClientType::Consumer {
+                ui_type: UiType::Web
+            }
         ));
     }
 

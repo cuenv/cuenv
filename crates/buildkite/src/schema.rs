@@ -538,10 +538,7 @@ mod tests {
     fn test_pipeline_with_env() {
         let mut env = HashMap::new();
         env.insert("CI".to_string(), "true".to_string());
-        let pipeline = Pipeline {
-            steps: vec![],
-            env,
-        };
+        let pipeline = Pipeline { steps: vec![], env };
         let yaml = serde_yaml::to_string(&pipeline).unwrap();
         assert!(yaml.contains("env:"));
         assert!(yaml.contains("CI: 'true'"));

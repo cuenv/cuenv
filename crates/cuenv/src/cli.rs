@@ -2304,16 +2304,9 @@ mod tests {
 
     #[test]
     fn test_task_command_with_labels() {
-        let cli = Cli::try_parse_from([
-            "cuenv",
-            "task",
-            "--label",
-            "ci",
-            "--label",
-            "test",
-            "build",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["cuenv", "task", "--label", "ci", "--label", "test", "build"])
+                .unwrap();
 
         if let Some(Commands::Task { labels, name, .. }) = cli.command {
             assert_eq!(labels.len(), 2);

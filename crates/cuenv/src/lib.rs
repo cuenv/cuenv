@@ -250,4 +250,51 @@ mod tests {
         let subcommand_count = sync_cmd.get_subcommands().count();
         assert_eq!(subcommand_count, 0);
     }
+
+    #[test]
+    fn test_run_with_empty_registry() {
+        let cuenv = Cuenv::builder().build();
+        let result = cuenv.run();
+        // Should succeed (placeholder returns OK)
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_run_with_defaults() {
+        let cuenv = Cuenv::with_defaults();
+        let result = cuenv.run();
+        // Should succeed (placeholder returns OK)
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_exit_sigint_constant() {
+        // SIGINT exit code is 128 + 2 = 130
+        assert_eq!(EXIT_SIGINT, 130);
+    }
+
+    #[test]
+    fn test_llms_content_not_empty() {
+        // LLM content should contain some text
+        assert!(!LLMS_CONTENT.is_empty());
+    }
+
+    #[test]
+    fn test_sync_command_has_path_arg() {
+        let cuenv = Cuenv::with_defaults();
+        let sync_cmd = cuenv.build_sync_command();
+
+        let args: Vec<_> = sync_cmd.get_arguments().map(|a| a.get_id().as_str()).collect();
+        assert!(args.contains(&"path"));
+        assert!(args.contains(&"package"));
+        assert!(args.contains(&"dry-run"));
+        assert!(args.contains(&"check"));
+        assert!(args.contains(&"all"));
+    }
+
+    #[test]
+    fn test_run_cli_with_registry_returns_ok() {
+        let exit_code = run_cli_with_registry(Cuenv::builder().build());
+        assert_eq!(exit_code, EXIT_OK);
+    }
 }

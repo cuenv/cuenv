@@ -272,6 +272,10 @@ mod tests {
         assert!(lines.iter().any(|l| l.starts_with("max_width = ")));
         assert!(lines.iter().any(|l| l.starts_with("hard_tabs = ")));
         assert!(lines.iter().any(|l| l.starts_with("tab_spaces = ")));
-        assert!(lines.iter().any(|l| l.starts_with("use_small_heuristics = ")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("use_small_heuristics = "))
+        );
     }
 }

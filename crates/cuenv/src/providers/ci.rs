@@ -161,6 +161,7 @@ mod tests {
     fn test_ci_provider_description() {
         let provider = CiProvider::new();
         assert!(!provider.description().is_empty());
+        assert!(provider.description().contains("CI"));
     }
 
     #[test]
@@ -171,9 +172,44 @@ mod tests {
     }
 
     #[test]
+    fn test_ci_provider_as_any_mut() {
+        let mut provider = CiProvider::new();
+        let any = provider.as_any_mut();
+        assert!(any.is::<CiProvider>());
+    }
+
+    #[test]
     fn test_ci_provider_command() {
         let provider = CiProvider::new();
         let cmd = provider.build_sync_command();
         assert_eq!(cmd.get_name(), "ci");
+    }
+
+    #[test]
+    fn test_ci_provider_command_has_args() {
+        let provider = CiProvider::new();
+        let cmd = provider.build_sync_command();
+
+        let args: Vec<_> = cmd.get_arguments().map(|a| a.get_id().as_str()).collect();
+        assert!(args.contains(&"path"));
+        assert!(args.contains(&"package"));
+        assert!(args.contains(&"dry-run"));
+        assert!(args.contains(&"check"));
+        assert!(args.contains(&"all"));
+        assert!(args.contains(&"provider"));
+    }
+
+    #[test]
+    fn test_ci_provider_default() {
+        let provider = CiProvider::default();
+        assert_eq!(provider.name(), "ci");
+    }
+
+    #[test]
+    fn test_ci_provider_has_config() {
+        let provider = CiProvider::new();
+        let base = Base::default();
+        // CI config is on Project, not Base, so this returns false
+        assert!(!provider.has_config(&base));
     }
 }

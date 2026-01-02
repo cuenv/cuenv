@@ -258,8 +258,7 @@ mod tests {
 
     #[test]
     fn test_gcp_config_new_with_string_types() {
-        let config =
-            GcpSecretConfig::new(String::from("project-id"), String::from("secret-name"));
+        let config = GcpSecretConfig::new(String::from("project-id"), String::from("secret-name"));
         assert_eq!(config.project, "project-id");
         assert_eq!(config.secret, "secret-name");
     }
@@ -315,12 +314,16 @@ mod tests {
 
     #[test]
     fn test_parse_resource_name_missing_projects() {
-        assert!(GcpResolver::parse_resource_name("my-project/secrets/my-secret/versions/1").is_none());
+        assert!(
+            GcpResolver::parse_resource_name("my-project/secrets/my-secret/versions/1").is_none()
+        );
     }
 
     #[test]
     fn test_parse_resource_name_missing_secrets() {
-        assert!(GcpResolver::parse_resource_name("projects/my-project/my-secret/versions/1").is_none());
+        assert!(
+            GcpResolver::parse_resource_name("projects/my-project/my-secret/versions/1").is_none()
+        );
     }
 
     #[test]

@@ -245,7 +245,9 @@ mod tests {
     fn make_project(tasks: Vec<(&str, Task)>) -> Project {
         let mut project = Project::default();
         for (name, task) in tasks {
-            project.tasks.insert(name.to_string(), TaskDefinition::Single(Box::new(task)));
+            project
+                .tasks
+                .insert(name.to_string(), TaskDefinition::Single(Box::new(task)));
         }
         project
     }
@@ -253,7 +255,10 @@ mod tests {
     /// Helper to create a minimal Task with inputs and depends_on
     fn make_task(inputs: Vec<&str>, depends_on: Vec<&str>) -> Task {
         Task {
-            inputs: inputs.into_iter().map(|s| Input::Path(s.to_string())).collect(),
+            inputs: inputs
+                .into_iter()
+                .map(|s| Input::Path(s.to_string()))
+                .collect(),
             depends_on: depends_on.into_iter().map(String::from).collect(),
             command: "echo test".to_string(),
             ..Default::default()
@@ -402,10 +407,7 @@ mod tests {
     fn test_matched_inputs_for_task_multiple_matches() {
         let task = make_task(vec!["src/**", "lib/**", "Cargo.toml"], vec![]);
         let project = make_project(vec![("build", task)]);
-        let changed_files = vec![
-            PathBuf::from("src/lib.rs"),
-            PathBuf::from("lib/util.rs"),
-        ];
+        let changed_files = vec![PathBuf::from("src/lib.rs"), PathBuf::from("lib/util.rs")];
         let root = Path::new(".");
 
         let matched = matched_inputs_for_task("build", &project, &changed_files, root);
@@ -464,10 +466,7 @@ mod tests {
         // test depends on build, build is affected -> test should also be affected
         let build_task = make_task(vec!["src/**"], vec![]);
         let test_task = make_task(vec![], vec!["build"]);
-        let project = make_project(vec![
-            ("build", build_task),
-            ("test", test_task),
-        ]);
+        let project = make_project(vec![("build", build_task), ("test", test_task)]);
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
         let pipeline_tasks = vec!["build".to_string(), "test".to_string()];
@@ -498,7 +497,11 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
         // Pipeline order: build, test, deploy
-        let pipeline_tasks = vec!["build".to_string(), "test".to_string(), "deploy".to_string()];
+        let pipeline_tasks = vec![
+            "build".to_string(),
+            "test".to_string(),
+            "deploy".to_string(),
+        ];
         let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
 
         let affected = compute_affected_tasks(
@@ -518,10 +521,7 @@ mod tests {
         // If a task is not in pipeline_tasks, it shouldn't be in the result
         let build_task = make_task(vec!["src/**"], vec![]);
         let test_task = make_task(vec![], vec!["build"]);
-        let project = make_project(vec![
-            ("build", build_task),
-            ("test", test_task),
-        ]);
+        let project = make_project(vec![("build", build_task), ("test", test_task)]);
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
         // Only build in the pipeline, not test
@@ -587,7 +587,10 @@ mod tests {
         // External dependency is affected -> task should be affected
         let external_build = make_task(vec!["src/**"], vec![]);
         let mut external_project = Project::default();
-        external_project.tasks.insert("build".to_string(), TaskDefinition::Single(Box::new(external_build)));
+        external_project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(external_build)),
+        );
 
         let deploy_task = make_task(vec![], vec!["#external:build"]);
         let project = make_project(vec![("deploy", deploy_task)]);
@@ -649,7 +652,12 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
 
-        assert!(is_task_directly_affected("build", &project, &changed_files, root));
+        assert!(is_task_directly_affected(
+            "build",
+            &project,
+            &changed_files,
+            root
+        ));
     }
 
     #[test]
@@ -659,7 +667,12 @@ mod tests {
         let changed_files = vec![PathBuf::from("docs/readme.md")];
         let root = Path::new(".");
 
-        assert!(!is_task_directly_affected("build", &project, &changed_files, root));
+        assert!(!is_task_directly_affected(
+            "build",
+            &project,
+            &changed_files,
+            root
+        ));
     }
 
     #[test]
@@ -668,7 +681,12 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
 
-        assert!(!is_task_directly_affected("nonexistent", &project, &changed_files, root));
+        assert!(!is_task_directly_affected(
+            "nonexistent",
+            &project,
+            &changed_files,
+            root
+        ));
     }
 
     #[test]
@@ -678,7 +696,12 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
 
-        assert!(!is_task_directly_affected("build", &project, &changed_files, root));
+        assert!(!is_task_directly_affected(
+            "build",
+            &project,
+            &changed_files,
+            root
+        ));
     }
 
     // ==========================================================================
@@ -692,7 +715,8 @@ mod tests {
         let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
         let changed_files: Vec<PathBuf> = vec![];
 
-        let result = check_external_dependency("#project:task", &all_projects, &changed_files, &mut cache);
+        let result =
+            check_external_dependency("#project:task", &all_projects, &changed_files, &mut cache);
 
         assert!(result);
     }
@@ -704,7 +728,8 @@ mod tests {
         let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
         let changed_files: Vec<PathBuf> = vec![];
 
-        let result = check_external_dependency("#project:task", &all_projects, &changed_files, &mut cache);
+        let result =
+            check_external_dependency("#project:task", &all_projects, &changed_files, &mut cache);
 
         assert!(!result);
     }
@@ -715,7 +740,8 @@ mod tests {
         let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
         let changed_files = vec![PathBuf::from("src/lib.rs")];
 
-        let result = check_external_dependency("#missing:task", &all_projects, &changed_files, &mut cache);
+        let result =
+            check_external_dependency("#missing:task", &all_projects, &changed_files, &mut cache);
 
         assert!(!result);
     }
@@ -724,7 +750,10 @@ mod tests {
     fn test_check_external_dependency_directly_affected() {
         let external_build = make_task(vec!["src/**"], vec![]);
         let mut external_project = Project::default();
-        external_project.tasks.insert("build".to_string(), TaskDefinition::Single(Box::new(external_build)));
+        external_project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(external_build)),
+        );
 
         let external_discovered = DiscoveredCIProject {
             path: PathBuf::from("/repo/external/env.cue"),
@@ -739,7 +768,8 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let mut cache = HashMap::new();
 
-        let result = check_external_dependency("#external:build", &all_projects, &changed_files, &mut cache);
+        let result =
+            check_external_dependency("#external:build", &all_projects, &changed_files, &mut cache);
 
         assert!(result);
         assert_eq!(cache.get("#external:build"), Some(&true));
@@ -752,8 +782,14 @@ mod tests {
         let external_build = make_task(vec!["src/**"], vec![]);
         let external_test = make_task(vec![], vec!["build"]);
         let mut external_project = Project::default();
-        external_project.tasks.insert("build".to_string(), TaskDefinition::Single(Box::new(external_build)));
-        external_project.tasks.insert("test".to_string(), TaskDefinition::Single(Box::new(external_test)));
+        external_project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(external_build)),
+        );
+        external_project.tasks.insert(
+            "test".to_string(),
+            TaskDefinition::Single(Box::new(external_test)),
+        );
 
         let external_discovered = DiscoveredCIProject {
             path: PathBuf::from("/repo/external/env.cue"),
@@ -768,7 +804,8 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let mut cache = HashMap::new();
 
-        let result = check_external_dependency("#external:test", &all_projects, &changed_files, &mut cache);
+        let result =
+            check_external_dependency("#external:test", &all_projects, &changed_files, &mut cache);
 
         assert!(result);
     }
@@ -778,7 +815,10 @@ mod tests {
         // Task A depends on itself (circular) - should not infinite loop
         let circular_task = make_task(vec![], vec!["#proj:taskA"]);
         let mut project = Project::default();
-        project.tasks.insert("taskA".to_string(), TaskDefinition::Single(Box::new(circular_task)));
+        project.tasks.insert(
+            "taskA".to_string(),
+            TaskDefinition::Single(Box::new(circular_task)),
+        );
 
         let discovered = DiscoveredCIProject {
             path: PathBuf::from("/repo/proj/env.cue"),
@@ -794,7 +834,8 @@ mod tests {
         let mut cache = HashMap::new();
 
         // Should return false without infinite loop
-        let result = check_external_dependency("#proj:taskA", &all_projects, &changed_files, &mut cache);
+        let result =
+            check_external_dependency("#proj:taskA", &all_projects, &changed_files, &mut cache);
 
         assert!(!result);
     }

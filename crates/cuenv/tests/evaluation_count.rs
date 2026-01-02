@@ -19,13 +19,8 @@ fn count_evaluate_module_calls_in_repo(args: &[&str]) -> usize {
         .and_then(|p| p.parent()) // project root
         .expect("Failed to find project root");
 
-    let mut cmd = Command::new("cargo");
-    cmd.arg("run")
-        .arg("--bin")
-        .arg("cuenv")
-        .arg("--")
-        .arg("-L")
-        .arg("debug");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cuenv"));
+    cmd.arg("-L").arg("debug");
 
     for arg in args {
         cmd.arg(arg);

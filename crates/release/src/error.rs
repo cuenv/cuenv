@@ -277,8 +277,31 @@ mod tests {
     }
 
     #[test]
+    fn test_changeset_io_error_no_path() {
+        let err = Error::changeset_io("failed to write", None);
+        assert!(err.to_string().contains("Changeset I/O error"));
+    }
+
+    #[test]
+    fn test_changeset_io_with_source() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err = Error::changeset_io_with_source(
+            "failed to read",
+            Some(PathBuf::from("test.md")),
+            io_err,
+        );
+        assert!(err.to_string().contains("Changeset I/O error"));
+    }
+
+    #[test]
     fn test_changeset_parse_error() {
         let err = Error::changeset_parse("invalid frontmatter", None);
+        assert!(err.to_string().contains("Invalid changeset format"));
+    }
+
+    #[test]
+    fn test_changeset_parse_error_with_path() {
+        let err = Error::changeset_parse("bad yaml", Some(PathBuf::from("changes.md")));
         assert!(err.to_string().contains("Invalid changeset format"));
     }
 
@@ -307,6 +330,12 @@ mod tests {
     }
 
     #[test]
+    fn test_manifest_error_no_path() {
+        let err = Error::manifest("missing field", None);
+        assert!(err.to_string().contains("Manifest error"));
+    }
+
+    #[test]
     fn test_git_error() {
         let err = Error::git("not a repository");
         assert!(err.to_string().contains("Git error"));
@@ -319,8 +348,53 @@ mod tests {
     }
 
     #[test]
+    fn test_publish_error_no_package() {
+        let err = Error::publish("network error", None);
+        assert!(err.to_string().contains("Publish failed"));
+    }
+
+    #[test]
     fn test_no_changesets_error() {
         let err = Error::NoChangesets;
         assert!(err.to_string().contains("No changesets found"));
+    }
+
+    #[test]
+    fn test_artifact_error() {
+        let err = Error::artifact("binary not found", Some(PathBuf::from("target/release/bin")));
+        assert!(err.to_string().contains("Artifact error"));
+    }
+
+    #[test]
+    fn test_artifact_error_no_path() {
+        let err = Error::artifact("compression failed", None);
+        assert!(err.to_string().contains("Artifact error"));
+    }
+
+    #[test]
+    fn test_backend_error() {
+        let err = Error::backend("GitHub", "rate limited", Some("wait 1 hour".to_string()));
+        assert!(err.to_string().contains("GitHub"));
+        assert!(err.to_string().contains("rate limited"));
+    }
+
+    #[test]
+    fn test_backend_error_no_help() {
+        let err = Error::backend("Homebrew", "push failed", None);
+        assert!(err.to_string().contains("Homebrew"));
+    }
+
+    #[test]
+    fn test_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let err: Error = io_err.into();
+        assert!(err.to_string().contains("I/O error"));
+    }
+
+    #[test]
+    fn test_error_debug() {
+        let err = Error::NoChangesets;
+        let debug = format!("{:?}", err);
+        assert!(debug.contains("NoChangesets"));
     }
 }

@@ -178,7 +178,11 @@ mod tests {
     fn test_exec_resolver_serde_roundtrip() {
         let resolver = ExecResolver {
             command: "/usr/bin/vault".to_string(),
-            args: vec!["read".to_string(), "-field=value".to_string(), "secret/data".to_string()],
+            args: vec![
+                "read".to_string(),
+                "-field=value".to_string(),
+                "secret/data".to_string(),
+            ],
         };
 
         let json = serde_json::to_string(&resolver).unwrap();
@@ -249,7 +253,10 @@ mod tests {
         let secret = Secret::onepassword(String::from("op://my-vault/my-item/password"));
 
         assert_eq!(secret.resolver, "onepassword");
-        assert_eq!(secret.op_ref, Some("op://my-vault/my-item/password".to_string()));
+        assert_eq!(
+            secret.op_ref,
+            Some("op://my-vault/my-item/password".to_string())
+        );
     }
 
     #[test]
@@ -325,7 +332,7 @@ mod tests {
             resolver: "onepassword".to_string(),
             command: String::new(),
             args: Vec::new(),
-            op_ref: None,  // Missing ref
+            op_ref: None, // Missing ref
             extra: HashMap::new(),
         };
         let spec = secret.to_spec();

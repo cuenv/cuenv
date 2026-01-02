@@ -195,8 +195,7 @@ mod tests {
     #[test]
     fn test_rules_discovery_with_eval_fn() {
         let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
-        let discovery = RulesDiscovery::new(PathBuf::from("/root"))
-            .with_eval_fn(eval_fn);
+        let discovery = RulesDiscovery::new(PathBuf::from("/root")).with_eval_fn(eval_fn);
 
         // Can't directly check if eval_fn is set, but we can verify discover doesn't fail
         // with NoEvalFunction error (we'll test that separately)
@@ -224,8 +223,8 @@ mod tests {
     fn test_discover_empty_directory() {
         let temp_dir = TempDir::new().unwrap();
         let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
-        let mut discovery = RulesDiscovery::new(temp_dir.path().to_path_buf())
-            .with_eval_fn(eval_fn);
+        let mut discovery =
+            RulesDiscovery::new(temp_dir.path().to_path_buf()).with_eval_fn(eval_fn);
 
         let result = discovery.discover();
 
@@ -241,8 +240,7 @@ mod tests {
 
         // Discovery with no .rules.cue files should succeed with empty results
         let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
-        let mut discovery = RulesDiscovery::new(root.to_path_buf())
-            .with_eval_fn(eval_fn);
+        let mut discovery = RulesDiscovery::new(root.to_path_buf()).with_eval_fn(eval_fn);
 
         let result = discovery.discover();
 
@@ -257,13 +255,12 @@ mod tests {
         let root = temp_dir.path();
 
         // Create various files that should NOT be picked up
-        fs::write(root.join("rules.cue"), "").unwrap();  // Missing leading dot
+        fs::write(root.join("rules.cue"), "").unwrap(); // Missing leading dot
         fs::write(root.join(".rules.txt"), "").unwrap(); // Wrong extension
         fs::write(root.join("config.cue"), "").unwrap(); // Different name
 
         let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
-        let mut discovery = RulesDiscovery::new(root.to_path_buf())
-            .with_eval_fn(eval_fn);
+        let mut discovery = RulesDiscovery::new(root.to_path_buf()).with_eval_fn(eval_fn);
 
         let result = discovery.discover();
 
@@ -283,11 +280,8 @@ mod tests {
 
         // Eval function that always fails - discovery should still succeed
         // (failures are logged but not fatal)
-        let eval_fn: RulesEvalFn = Box::new(|_path| {
-            Err(crate::Error::configuration("test error"))
-        });
-        let mut discovery = RulesDiscovery::new(root.to_path_buf())
-            .with_eval_fn(eval_fn);
+        let eval_fn: RulesEvalFn = Box::new(|_path| Err(crate::Error::configuration("test error")));
+        let mut discovery = RulesDiscovery::new(root.to_path_buf()).with_eval_fn(eval_fn);
 
         let result = discovery.discover();
 
@@ -303,8 +297,7 @@ mod tests {
         let root = temp_dir.path();
 
         let eval_fn: RulesEvalFn = Box::new(|_| Ok(DirectoryRules::default()));
-        let mut discovery = RulesDiscovery::new(root.to_path_buf())
-            .with_eval_fn(eval_fn);
+        let mut discovery = RulesDiscovery::new(root.to_path_buf()).with_eval_fn(eval_fn);
 
         // First discovery
         discovery.discover().unwrap();
@@ -331,7 +324,10 @@ mod tests {
             config: DirectoryRules::default(),
         };
 
-        assert_eq!(discovered.file_path, PathBuf::from("/repo/frontend/.rules.cue"));
+        assert_eq!(
+            discovered.file_path,
+            PathBuf::from("/repo/frontend/.rules.cue")
+        );
         assert_eq!(discovered.directory, PathBuf::from("/repo/frontend"));
     }
 
@@ -375,10 +371,8 @@ mod tests {
     #[test]
     fn test_rules_discovery_error_eval_error_display() {
         let inner_err = crate::Error::configuration("CUE syntax error");
-        let err = RulesDiscoveryError::EvalError(
-            PathBuf::from("/repo/.rules.cue"),
-            Box::new(inner_err),
-        );
+        let err =
+            RulesDiscoveryError::EvalError(PathBuf::from("/repo/.rules.cue"), Box::new(inner_err));
         let display = err.to_string();
         assert!(display.contains("/repo/.rules.cue"));
         assert!(display.contains("CUE syntax error"));
@@ -422,9 +416,7 @@ mod tests {
         let rules_file = temp_dir.path().join(".rules.cue");
         fs::write(&rules_file, "").unwrap();
 
-        let eval_fn: RulesEvalFn = Box::new(|_| {
-            Err(crate::Error::configuration("parse failed"))
-        });
+        let eval_fn: RulesEvalFn = Box::new(|_| Err(crate::Error::configuration("parse failed")));
 
         let result = RulesDiscovery::load_rules(&rules_file, &eval_fn);
 

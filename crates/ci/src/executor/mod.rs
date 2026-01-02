@@ -586,8 +586,8 @@ mod tests {
 
     #[test]
     fn test_executor_config_with_capture_output() {
-        let config = CIExecutorConfig::new(std::path::PathBuf::from("/project"))
-            .with_capture_output(true);
+        let config =
+            CIExecutorConfig::new(std::path::PathBuf::from("/project")).with_capture_output(true);
 
         assert!(config.capture_output);
     }

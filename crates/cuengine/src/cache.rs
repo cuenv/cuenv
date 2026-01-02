@@ -188,8 +188,14 @@ mod tests {
         cache.insert(Path::new("/path2"), "pkg", "value2".to_string());
 
         assert_eq!(cache.len(), 2);
-        assert_eq!(cache.get(Path::new("/path1"), "pkg"), Some("value1".to_string()));
-        assert_eq!(cache.get(Path::new("/path2"), "pkg"), Some("value2".to_string()));
+        assert_eq!(
+            cache.get(Path::new("/path1"), "pkg"),
+            Some("value1".to_string())
+        );
+        assert_eq!(
+            cache.get(Path::new("/path2"), "pkg"),
+            Some("value2".to_string())
+        );
     }
 
     #[test]

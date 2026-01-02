@@ -693,9 +693,15 @@ mod tests {
 
     #[test]
     fn test_section_equality() {
-        let s1 = EditorConfigSection::new().indent_style("space").indent_size(4);
-        let s2 = EditorConfigSection::new().indent_style("space").indent_size(4);
-        let s3 = EditorConfigSection::new().indent_style("tab").indent_size(4);
+        let s1 = EditorConfigSection::new()
+            .indent_style("space")
+            .indent_size(4);
+        let s2 = EditorConfigSection::new()
+            .indent_style("space")
+            .indent_size(4);
+        let s3 = EditorConfigSection::new()
+            .indent_style("tab")
+            .indent_size(4);
 
         assert_eq!(s1, s2);
         assert_ne!(s1, s3);
@@ -703,7 +709,9 @@ mod tests {
 
     #[test]
     fn test_section_clone() {
-        let original = EditorConfigSection::new().indent_style("space").charset("utf-8");
+        let original = EditorConfigSection::new()
+            .indent_style("space")
+            .charset("utf-8");
         let cloned = original.clone();
         assert_eq!(original, cloned);
     }
@@ -720,7 +728,10 @@ mod tests {
     fn test_builder_sections_method() {
         let sections = vec![
             ("*", EditorConfigSection::new().indent_style("space")),
-            ("*.md", EditorConfigSection::new().trim_trailing_whitespace(false)),
+            (
+                "*.md",
+                EditorConfigSection::new().trim_trailing_whitespace(false),
+            ),
         ];
 
         let content = EditorConfigFile::builder()

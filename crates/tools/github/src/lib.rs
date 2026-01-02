@@ -1149,7 +1149,10 @@ mod tests {
         use reqwest::header::{HeaderMap, HeaderValue};
 
         let mut headers = HeaderMap::new();
-        headers.insert("x-ratelimit-limit", HeaderValue::from_static("not-a-number"));
+        headers.insert(
+            "x-ratelimit-limit",
+            HeaderValue::from_static("not-a-number"),
+        );
         headers.insert("x-ratelimit-remaining", HeaderValue::from_static("invalid"));
 
         let info = RateLimitInfo::from_headers(&headers);
