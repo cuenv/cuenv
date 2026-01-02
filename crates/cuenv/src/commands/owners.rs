@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 /// Uses the provider system to write to the correct location based on platform.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///
@@ -107,7 +107,7 @@ pub async fn execute_owners_sync(
 /// Checks if the CODEOWNERS file is in sync with the CUE configuration.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///

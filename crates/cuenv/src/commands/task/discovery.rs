@@ -70,7 +70,7 @@ pub fn format_label_root(labels: &[String]) -> String {
 /// when the config uses Base schema instead of Project (tasks require Project).
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 pub fn evaluate_manifest(
     dir: &Path,
     package: &str,

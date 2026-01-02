@@ -143,10 +143,6 @@ struct YarnModernPackage {
     /// Checksum
     #[serde(default)]
     checksum: Option<String>,
-    /// Language and package manager metadata
-    #[serde(default, rename = "languageName")]
-    #[allow(dead_code)]
-    language_name: Option<String>,
     /// Link type
     #[serde(default, rename = "linkType")]
     link_type: Option<String>,

@@ -66,7 +66,7 @@ fn require_env_file(path: &Path, package: &str) -> Result<PathBuf> {
 /// configuration at the specified directory path.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 fn evaluate_config(
     directory: &Path,
     package: &str,
@@ -226,7 +226,7 @@ fn format_starship_status(state: &HookExecutionState) -> String {
 /// Execute env load command - evaluates config, checks approval, starts hook execution
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///
@@ -303,7 +303,7 @@ pub async fn execute_env_load(
 /// This reduces latency from ~300ms to <20ms for Starship integration.
 ///
 /// When a `cmd_executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///
@@ -399,7 +399,7 @@ pub fn execute_env_status_sync(path: &str, package: &str, format: StatusFormat) 
 /// Inspect cached hook state and captured environment
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///
@@ -525,7 +525,7 @@ pub async fn execute_env_inspect(
 /// Execute allow command - approve current directory's configuration
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///
@@ -647,7 +647,7 @@ pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<Strin
 /// Execute env check command - check hook status and output env for shell
 ///
 /// When a `cmd_executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///

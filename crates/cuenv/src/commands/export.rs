@@ -31,7 +31,7 @@ const LOADED_DIR_ENV: &str = "CUENV_LOADED_DIR";
 /// Evaluate CUE configuration using module-wide evaluation.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 fn evaluate_project(
     directory: &Path,
     package: &str,
@@ -211,7 +211,7 @@ pub fn execute_export_sync(
 /// Execute the export command - the main entry point for shell integration.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///

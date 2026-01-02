@@ -32,7 +32,7 @@ fn load_project_config(
 /// Returns the instance and the module root path.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 fn load_instance_at_path(
     path: &Path,
     package: &str,
@@ -102,7 +102,7 @@ fn load_instance_at_path(
 /// Use `execute_sync_cubes_workspace` for workspace-wide syncing.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///

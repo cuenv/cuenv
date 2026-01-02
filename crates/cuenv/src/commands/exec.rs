@@ -21,7 +21,7 @@ use super::export::{extract_static_env_vars, get_environment_with_hooks};
 /// Execute an arbitrary command with the CUE environment.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 ///
 /// # Errors
 ///

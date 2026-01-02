@@ -14,7 +14,7 @@ use tracing::instrument;
 /// Load the module and get the Base configuration at the specified path.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Otherwise, performs a fresh evaluation.
 fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor>) -> Result<Base> {
     let target_path = Path::new(path)
         .canonicalize()

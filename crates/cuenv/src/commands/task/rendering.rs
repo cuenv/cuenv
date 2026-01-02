@@ -121,13 +121,7 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
 }
 
 /// Collect all tasks from discovered projects into `WorkspaceTask` format
-///
-/// The `module_root` parameter is unused but kept for API compatibility.
-#[allow(unused_variables)]
-pub fn collect_workspace_tasks(
-    discovery: &TaskDiscovery,
-    module_root: &Path,
-) -> Vec<WorkspaceTask> {
+pub fn collect_workspace_tasks(discovery: &TaskDiscovery, _module_root: &Path) -> Vec<WorkspaceTask> {
     let mut result = Vec::new();
 
     for project in discovery.projects() {
