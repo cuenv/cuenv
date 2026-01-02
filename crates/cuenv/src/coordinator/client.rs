@@ -202,3 +202,81 @@ impl CoordinatorHandle {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_coordinator_handle_existing() {
+        let socket = PathBuf::from("/tmp/test.sock");
+        let handle = CoordinatorHandle::existing(1234, socket.clone());
+
+        assert_eq!(handle.pid, Some(1234));
+        assert_eq!(handle.socket, socket);
+        assert!(!handle.we_started_it);
+    }
+
+    #[test]
+    fn test_coordinator_handle_new() {
+        let socket = PathBuf::from("/tmp/new.sock");
+        let handle = CoordinatorHandle::new(5678, socket.clone());
+
+        assert_eq!(handle.pid, Some(5678));
+        assert_eq!(handle.socket, socket);
+        assert!(handle.we_started_it);
+    }
+
+    #[test]
+    fn test_coordinator_handle_clone() {
+        let socket = PathBuf::from("/tmp/clone.sock");
+        let handle = CoordinatorHandle::new(1111, socket);
+        let cloned = handle.clone();
+
+        assert_eq!(handle.pid, cloned.pid);
+        assert_eq!(handle.socket, cloned.socket);
+        assert_eq!(handle.we_started_it, cloned.we_started_it);
+    }
+
+    #[test]
+    fn test_coordinator_handle_debug() {
+        let socket = PathBuf::from("/var/run/cuenv.sock");
+        let handle = CoordinatorHandle::existing(2222, socket);
+
+        let debug = format!("{handle:?}");
+        assert!(debug.contains("CoordinatorHandle"));
+        assert!(debug.contains("2222"));
+        assert!(debug.contains("cuenv.sock"));
+    }
+
+    #[test]
+    fn test_coordinator_handle_socket_with_spaces() {
+        let socket = PathBuf::from("/tmp/path with spaces/test.sock");
+        let handle = CoordinatorHandle::new(3333, socket.clone());
+
+        assert_eq!(handle.socket, socket);
+    }
+
+    #[test]
+    fn test_coordinator_handle_relative_socket() {
+        let socket = PathBuf::from("./local.sock");
+        let handle = CoordinatorHandle::existing(4444, socket.clone());
+
+        assert_eq!(handle.socket, socket);
+    }
+
+    #[test]
+    fn test_coordinator_handle_existing_vs_new_difference() {
+        let socket = PathBuf::from("/tmp/test.sock");
+
+        let existing = CoordinatorHandle::existing(100, socket.clone());
+        let new = CoordinatorHandle::new(100, socket);
+
+        // Both have same pid and socket, but different we_started_it
+        assert_eq!(existing.pid, new.pid);
+        assert_eq!(existing.socket, new.socket);
+        assert!(!existing.we_started_it);
+        assert!(new.we_started_it);
+    }
+}

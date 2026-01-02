@@ -351,4 +351,89 @@ mod tests {
         assert!(!non_empty.is_empty());
         assert_eq!(non_empty.total_count(), 1);
     }
+
+    #[test]
+    fn test_discovered_files_total_count_all_types() {
+        let files = DiscoveredFiles {
+            rust_files: vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")],
+            nix_files: vec![PathBuf::from("flake.nix")],
+            go_files: vec![PathBuf::from("main.go"), PathBuf::from("util.go")],
+            cue_files: vec![PathBuf::from("env.cue")],
+        };
+        assert_eq!(files.total_count(), 6);
+        assert!(!files.is_empty());
+    }
+
+    #[test]
+    fn test_discovered_files_single_type_not_empty() {
+        // Test each type individually
+        let rust_only = DiscoveredFiles {
+            rust_files: vec![PathBuf::from("lib.rs")],
+            nix_files: vec![],
+            go_files: vec![],
+            cue_files: vec![],
+        };
+        assert!(!rust_only.is_empty());
+
+        let nix_only = DiscoveredFiles {
+            rust_files: vec![],
+            nix_files: vec![PathBuf::from("shell.nix")],
+            go_files: vec![],
+            cue_files: vec![],
+        };
+        assert!(!nix_only.is_empty());
+
+        let go_only = DiscoveredFiles {
+            rust_files: vec![],
+            nix_files: vec![],
+            go_files: vec![PathBuf::from("main.go")],
+            cue_files: vec![],
+        };
+        assert!(!go_only.is_empty());
+
+        let cue_only = DiscoveredFiles {
+            rust_files: vec![],
+            nix_files: vec![],
+            go_files: vec![],
+            cue_files: vec![PathBuf::from("env.cue")],
+        };
+        assert!(!cue_only.is_empty());
+    }
+
+    #[test]
+    fn test_should_include_empty_filter_list() {
+        let empty: Vec<String> = vec![];
+        // Empty list means nothing matches
+        assert!(!should_include("rust", Some(&empty)));
+        assert!(!should_include("nix", Some(&empty)));
+    }
+
+    #[test]
+    fn test_should_include_single_formatter() {
+        let only = vec!["cue".to_string()];
+        assert!(!should_include("rust", Some(&only)));
+        assert!(!should_include("nix", Some(&only)));
+        assert!(!should_include("go", Some(&only)));
+        assert!(should_include("cue", Some(&only)));
+    }
+
+    #[test]
+    fn test_execute_fmt_invalid_path() {
+        let result = execute_fmt("/nonexistent/path", "cuenv", false, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_fmt_no_cue_module() {
+        // Use temp dir without cue.mod
+        let temp = std::env::temp_dir();
+        let result = execute_fmt(temp.to_str().unwrap(), "cuenv", false, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_base_config_invalid_path() {
+        let result = load_base_config("/nonexistent/path", "cuenv");
+        assert!(result.is_err());
+    }
 }

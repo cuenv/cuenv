@@ -255,6 +255,30 @@ For each crate, verify:
 
 ---
 
+### 2026-01-02: Coverage improvement session (eighth pass)
+
+**Starting coverage: 76.92%**
+**Ending coverage: 77.51%** (+0.59%)
+
+#### Tests Added (this session):
+
+1. **cuenv/src/coordinator/client.rs** (coverage improved)
+   - Added 7 tests: CoordinatorHandle::existing, ::new, clone, debug, socket with spaces, relative socket, existing vs new difference
+
+2. **cuenv/src/completions.rs** (33.33% -> improved)
+   - Added 11 tests: find_cue_module_root edge cases (nonexistent, no cue.mod, with cue.mod, subdirectory), get_available_tasks (empty path, invalid package), complete_task_params, get_task_params, task_completer
+
+3. **events/src/renderers/cli.rs** (86.03% -> 96.13%)
+   - Added 37 tests: CliRendererConfig (default, debug, clone), CliRenderer (new, default, with_config, debug), render methods for all event types (TaskEvent variants, CiEvent variants, CommandEvent, InteractiveEvent, SystemEvent, OutputEvent), verbose vs non-verbose modes
+
+4. **cuenv/src/commands/info.rs** (20.51% -> improved)
+   - Added 7 tests: ProjectInfo/InfoOutput/MetaOutput debug and serialization, multiple projects, execute_info error paths (invalid path, no CUE module)
+
+5. **cuenv/src/commands/fmt.rs** (22.75% -> improved)
+   - Added 7 tests: DiscoveredFiles (all types not empty, total count), should_include (empty filter, single formatter), execute_fmt/load_base_config error paths
+
+---
+
 ### 2026-01-02: Coverage improvement session (sixth pass)
 
 **Starting coverage: 75.81%**
