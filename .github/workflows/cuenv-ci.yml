@@ -34,6 +34,8 @@ jobs:
     name: check.lint
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
+<<<<<<< HEAD
+<<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
       with:
@@ -69,10 +71,122 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+||||||| parent of 1e7eebc (refactor: embed task into phasetask and add codecov)
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: check.lint
+      run: cuenv task check.lint --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RUSTC_WRAPPER: sccache
+=======
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: check.lint
+        run: cuenv task check.lint --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTC_WRAPPER: sccache
+>>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: check.lint
+        run: cuenv task check.lint --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTC_WRAPPER: sccache
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: check.lint
+      run: cuenv task check.lint --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RUSTC_WRAPPER: sccache
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
   check-security:
     name: check.security
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
+<<<<<<< HEAD
+<<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
       with:
@@ -108,10 +222,122 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+||||||| parent of 1e7eebc (refactor: embed task into phasetask and add codecov)
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: check.security
+      run: cuenv task check.security --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RUSTC_WRAPPER: sccache
+=======
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: check.security
+        run: cuenv task check.security --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTC_WRAPPER: sccache
+>>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: check.security
+        run: cuenv task check.security --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTC_WRAPPER: sccache
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: check.security
+      run: cuenv task check.security --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RUSTC_WRAPPER: sccache
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)
   check-test:
     name: check.test
     runs-on: blacksmith-8vcpu-ubuntu-2404
     steps:
+<<<<<<< HEAD
+<<<<<<< HEAD
     - name: Checkout
       uses: actions/checkout@v4
       with:
@@ -147,3 +373,113 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+||||||| parent of 1e7eebc (refactor: embed task into phasetask and add codecov)
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: check.test
+      run: cuenv task check.test --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RUSTC_WRAPPER: sccache
+=======
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: check.test
+        run: cuenv task check.test --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTC_WRAPPER: sccache
+>>>>>>> 1e7eebc (refactor: embed task into phasetask and add codecov)
+||||||| parent of 9e7f6cb (fix: resolve CI issues after rebase)
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+        with:
+          extra-conf: accept-flake-config = true
+      - name: Build cuenv
+        run: |-
+          . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+          nix develop -c cargo build --release -p cuenv && \
+          { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+            echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+          ./target/release/cuenv sync -A
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: check.test
+        run: cuenv task check.test --skip-dependencies
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTC_WRAPPER: sccache
+=======
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Build cuenv
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+        nix develop -c cargo build --release -p cuenv && \
+        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
+          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
+        ./target/release/cuenv sync -A
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+    - name: check.test
+      run: cuenv task check.test --skip-dependencies
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RUSTC_WRAPPER: sccache
+>>>>>>> 9e7f6cb (fix: resolve CI issues after rebase)

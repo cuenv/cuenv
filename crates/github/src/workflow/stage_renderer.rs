@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::convert::Infallible;
 
 /// Transform CI-agnostic secret reference syntax to GitHub Actions syntax.
 ///
@@ -47,15 +46,14 @@ pub fn transform_secret_ref(value: &str) -> String {
     format!("${{{{ secrets.{var_name} }}}}")
 }
 
-use cuenv_ci::StageRenderer;
-use cuenv_ci::ir::StageTask;
+use cuenv_ci::ir::Task;
 
 use super::schema::Step;
 
 /// Specification for a GitHub Action step.
 ///
 /// This is GitHub-specific and extracted from the provider-agnostic `provider_hints`
-/// field in `StageTask`. When present under the `github_action` key, GitHub emitters
+/// field in `Task`. When present under the `github_action` key, GitHub emitters
 /// will render this task as a `uses:` step instead of a `run:` step.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -69,18 +67,18 @@ pub struct ActionSpec {
 }
 
 impl ActionSpec {
-    /// Try to extract an ActionSpec from a StageTask's provider_hints.
+    /// Try to extract an ActionSpec from a Task's provider_hints.
     ///
     /// Looks for the `github_action` key in the provider_hints JSON.
     #[must_use]
-    pub fn from_stage_task(task: &StageTask) -> Option<Self> {
+    pub fn from_task(task: &Task) -> Option<Self> {
         let hints = task.provider_hints.as_ref()?;
         let action_value = hints.get("github_action")?;
         serde_json::from_value(action_value.clone()).ok()
     }
 }
 
-/// Renders stage tasks as GitHub Actions workflow steps.
+/// Renders phase tasks as GitHub Actions workflow steps.
 ///
 /// Handles both action-based steps (via `ActionSpec` in provider_hints) and run-based steps.
 #[derive(Debug, Clone, Default)]
@@ -92,15 +90,15 @@ impl GitHubStageRenderer {
     pub const fn new() -> Self {
         Self
     }
-}
 
-impl StageRenderer for GitHubStageRenderer {
-    type Step = Step;
-    type Error = Infallible;
-
-    fn render_task(&self, task: &StageTask) -> Result<Step, Self::Error> {
+    /// Render a single task to a GitHub Actions step.
+    ///
+    /// If the task has GitHub-specific provider_hints with a `github_action` key,
+    /// this renders as a `uses:` step. Otherwise, it renders as a `run:` step.
+    #[must_use]
+    pub fn render_task(&self, task: &Task) -> Step {
         // If a GitHub Action is specified in provider_hints, use it
-        if let Some(action) = ActionSpec::from_stage_task(task) {
+        if let Some(action) = ActionSpec::from_task(task) {
             let mut step = Step::uses(&action.uses).with_name(task.label());
 
             // Add action inputs (converting from serde_json::Value to serde_yaml::Value)
@@ -114,7 +112,7 @@ impl StageRenderer for GitHubStageRenderer {
                 step.env.insert(key.clone(), transform_secret_ref(value));
             }
 
-            return Ok(step);
+            return step;
         }
 
         // Otherwise, render as a run step
@@ -126,7 +124,13 @@ impl StageRenderer for GitHubStageRenderer {
             step.env.insert(key.clone(), transform_secret_ref(value));
         }
 
-        Ok(step)
+        step
+    }
+
+    /// Render a slice of tasks to GitHub Actions steps.
+    #[must_use]
+    pub fn render_tasks(&self, tasks: &[&Task]) -> Vec<Step> {
+        tasks.iter().map(|t| self.render_task(t)).collect()
     }
 }
 
@@ -161,7 +165,7 @@ fn json_to_yaml_value(json: &serde_json::Value) -> serde_yaml::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_ci::ir::StageConfiguration;
+    use cuenv_ci::ir::CachePolicy;
     use std::collections::BTreeMap;
 
     /// Helper to create provider_hints with a GitHub action
@@ -188,30 +192,46 @@ mod tests {
         serde_json::Value::Object(hints)
     }
 
+    /// Helper to create a test Task with minimal fields
+    fn make_test_task(id: &str, command: &[&str]) -> Task {
+        Task {
+            id: id.to_string(),
+            runtime: None,
+            command: command.iter().map(|s| (*s).to_string()).collect(),
+            shell: false,
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Disabled,
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
+        }
+    }
+
     #[test]
     fn test_render_run_step() {
-        let task = StageTask {
-            id: "setup-cuenv".to_string(),
-            provider: "cuenv".to_string(),
-            label: Some("Setup cuenv".to_string()),
-            command: vec![
-                "nix".to_string(),
-                "build".to_string(),
-                ".#cuenv".to_string(),
-            ],
-            env: {
-                let mut env = BTreeMap::new();
-                env.insert(
-                    "GITHUB_TOKEN".to_string(),
-                    "${{ secrets.GITHUB_TOKEN }}".to_string(),
-                );
-                env
-            },
-            ..Default::default()
-        };
+        let mut task = make_test_task("setup-cuenv", &["nix", "build", ".#cuenv"]);
+        task.label = Some("Setup cuenv".to_string());
+        task.env.insert(
+            "GITHUB_TOKEN".to_string(),
+            "${{ secrets.GITHUB_TOKEN }}".to_string(),
+        );
 
         let renderer = GitHubStageRenderer::new();
-        let step = renderer.render_task(&task).unwrap();
+        let step = renderer.render_task(&task);
 
         assert_eq!(step.name, Some("Setup cuenv".to_string()));
         assert_eq!(step.run, Some("nix build .#cuenv".to_string()));
@@ -230,24 +250,15 @@ mod tests {
             serde_json::Value::String("accept-flake-config = true".to_string()),
         );
 
-        let task = StageTask {
-            id: "install-nix".to_string(),
-            provider: "nix".to_string(),
-            label: Some("Install Nix".to_string()),
-            command: vec![
-                "curl".to_string(),
-                "-L".to_string(),
-                "https://install.nix".to_string(),
-            ],
-            provider_hints: Some(make_github_action_hints(
-                "DeterminateSystems/nix-installer-action@v16",
-                inputs,
-            )),
-            ..Default::default()
-        };
+        let mut task = make_test_task("install-nix", &["curl", "-L", "https://install.nix"]);
+        task.label = Some("Install Nix".to_string());
+        task.provider_hints = Some(make_github_action_hints(
+            "DeterminateSystems/nix-installer-action@v16",
+            inputs,
+        ));
 
         let renderer = GitHubStageRenderer::new();
-        let step = renderer.render_task(&task).unwrap();
+        let step = renderer.render_task(&task);
 
         assert_eq!(step.name, Some("Install Nix".to_string()));
         assert_eq!(
@@ -259,35 +270,20 @@ mod tests {
     }
 
     #[test]
-    fn test_render_setup_stages() {
-        let mut stages = StageConfiguration::default();
-        stages.setup.push(StageTask {
-            id: "setup-cuenv".to_string(),
-            command: vec!["nix".to_string(), "build".to_string()],
-            ..Default::default()
-        });
-        stages.setup.push(StageTask {
-            id: "setup-1password".to_string(),
-            command: vec![
-                "cuenv".to_string(),
-                "secrets".to_string(),
-                "setup".to_string(),
-                "onepassword".to_string(),
-            ],
-            env: {
-                let mut env = BTreeMap::new();
-                // Use CI-agnostic format (what contributors produce)
-                env.insert(
-                    "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
-                    "${OP_SERVICE_ACCOUNT_TOKEN}".to_string(),
-                );
-                env
-            },
-            ..Default::default()
-        });
+    fn test_render_tasks() {
+        let task1 = make_test_task("setup-cuenv", &["nix", "build"]);
+        let mut task2 = make_test_task(
+            "setup-1password",
+            &["cuenv", "secrets", "setup", "onepassword"],
+        );
+        task2.env.insert(
+            "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
+            "${OP_SERVICE_ACCOUNT_TOKEN}".to_string(),
+        );
 
+        let task_refs = vec![&task1, &task2];
         let renderer = GitHubStageRenderer::new();
-        let steps = renderer.render_setup(&stages).unwrap();
+        let steps = renderer.render_tasks(&task_refs);
 
         assert_eq!(steps.len(), 2);
         assert_eq!(steps[0].run, Some("nix build".to_string()));
@@ -304,14 +300,10 @@ mod tests {
 
     #[test]
     fn test_label_fallback() {
-        let task_without_label = StageTask {
-            id: "setup-1password".to_string(),
-            command: vec!["cuenv".to_string()],
-            ..Default::default()
-        };
+        let task = make_test_task("setup-1password", &["cuenv"]);
 
         let renderer = GitHubStageRenderer::new();
-        let step = renderer.render_task(&task_without_label).unwrap();
+        let step = renderer.render_task(&task);
 
         // Falls back to ID when no label
         assert_eq!(step.name, Some("setup-1password".to_string()));
@@ -360,32 +352,25 @@ mod tests {
     }
 
     #[test]
-    fn test_action_spec_from_stage_task() {
+    fn test_action_spec_from_task() {
         let mut inputs = HashMap::new();
         inputs.insert(
             "key".to_string(),
             serde_json::Value::String("value".to_string()),
         );
 
-        let task = StageTask {
-            id: "test".to_string(),
-            provider_hints: Some(make_github_action_hints("actions/checkout@v4", inputs)),
-            ..Default::default()
-        };
+        let mut task = make_test_task("test", &["echo"]);
+        task.provider_hints = Some(make_github_action_hints("actions/checkout@v4", inputs));
 
-        let action = ActionSpec::from_stage_task(&task).expect("Should extract action");
+        let action = ActionSpec::from_task(&task).expect("Should extract action");
         assert_eq!(action.uses, "actions/checkout@v4");
         assert!(action.inputs.contains_key("key"));
     }
 
     #[test]
-    fn test_action_spec_from_stage_task_without_hints() {
-        let task = StageTask {
-            id: "test".to_string(),
-            provider_hints: None,
-            ..Default::default()
-        };
+    fn test_action_spec_from_task_without_hints() {
+        let task = make_test_task("test", &["echo"]);
 
-        assert!(ActionSpec::from_stage_task(&task).is_none());
+        assert!(ActionSpec::from_task(&task).is_none());
     }
 }

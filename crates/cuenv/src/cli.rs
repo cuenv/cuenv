@@ -2296,7 +2296,7 @@ mod tests {
             path: ".".to_string(),
             package: "mypackage".to_string(),
             labels: vec![],
-            output_format: OutputFormat::Text,
+            output_format: Some(OutputFormat::Text),
             materialize_outputs: None,
             show_cache_path: false,
             backend: None,

@@ -147,18 +147,27 @@ package schema
 	cacheKey?: bool | *false     // Include in cache key via salted HMAC
 })
 
+// Execution condition for phase tasks
+#TaskCondition: "on_success" | "on_failure" | "always"
+
 // A task contributed to a build phase
 #PhaseTask: close({
 	id!:       string              // Unique task identifier (e.g., "install-nix")
 	phase!:    #BuildPhase         // Target phase (bootstrap, setup, success, failure)
 	label?:    string              // Human-readable display name
 	command?:  string              // Shell command to execute
+	args?:     [...string]         // Command arguments
 	script?:   string              // Multi-line script (alternative to command)
 	shell?:    bool | *false       // Wrap command in shell
 	env?:      [string]: string    // Environment variables
 	secrets?:  [string]: #SecretRef | string  // Secret references (key=env var name)
 	dependsOn?: [...string]        // Dependencies on other phase tasks
 	priority?: int | *10           // Ordering within phase (lower = earlier)
+
+	// Execution condition (on_success, on_failure, always)
+	// Determines when the task runs based on prior task outcomes.
+	// Emitters translate this to native constructs (e.g., `if: failure()` in GitHub Actions).
+	condition?: #TaskCondition
 
 	// Provider-specific overrides (e.g., GitHub Actions)
 	provider?: #PhaseTaskProviderConfig

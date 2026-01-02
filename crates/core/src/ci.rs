@@ -193,6 +193,23 @@ pub enum BuildPhase {
     Failure,
 }
 
+/// Execution condition for phase tasks
+///
+/// Determines when a phase task runs based on the outcome of prior tasks.
+/// Used by emitters to generate conditional execution logic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskCondition {
+    /// Run only if all prior tasks succeeded (default for success phase)
+    OnSuccess,
+
+    /// Run only if any prior task failed (default for failure phase)
+    OnFailure,
+
+    /// Run regardless of prior task outcomes
+    Always,
+}
+
 /// Activation condition for contributors
 /// All specified conditions must be true (AND logic)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -311,6 +328,13 @@ pub struct PhaseTask {
     /// Ordering within phase (lower = earlier)
     #[serde(default = "default_priority")]
     pub priority: i32,
+
+    /// Execution condition (on_success, on_failure, always)
+    ///
+    /// Determines when the task runs based on prior task outcomes.
+    /// Emitters translate this to native constructs (e.g., `if: failure()` in GitHub Actions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<TaskCondition>,
 
     /// Provider-specific overrides (e.g., GitHub Actions)
     #[serde(skip_serializing_if = "Option::is_none")]
