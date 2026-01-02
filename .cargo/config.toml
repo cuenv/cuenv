@@ -1,0 +1,11 @@
+# Cargo build configuration for faster compilation
+# See: https://doc.rust-lang.org/cargo/reference/config.html
+
+# Note: sccache is configured via RUSTC_WRAPPER environment variable
+# - Nix flake devShell sets RUSTC_WRAPPER automatically
+# - cuenv tasks use sccache via xRust.#Sccache CI contributor
+
+# For faster linking on Linux with mold (optional, requires Nix devShell):
+# Set these env vars when using `nix develop`:
+#   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
+#   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
