@@ -9,7 +9,6 @@ use cuenv_ci::discovery::discover_projects;
 use cuenv_ci::emitter::Emitter;
 use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
 use cuenv_core::Result;
-use std::collections::HashMap;
 use std::io::Write;
 
 /// Execute export mode - generate pipeline YAML.
@@ -49,32 +48,13 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
 
     tracing::info!(count = projects.len(), "Found projects");
 
-    // Build project map for dependency resolution
-    let project_map: HashMap<_, _> = projects
-        .iter()
-        .filter_map(|p| {
-            let name = p.config.name.trim();
-            if name.is_empty() {
-                None
-            } else {
-                Some((name.to_string(), p.clone()))
-            }
-        })
-        .collect();
-
     let pipeline_name = args.pipeline_name();
 
-    // Collect affected tasks
-    let collected = collect_affected_tasks_for_export(
-        &projects,
-        &project_map,
-        pipeline_name,
-        &changed_files,
-        &context.event,
-    )?;
+    // Collect all tasks for export
+    let collected = collect_tasks_for_export(&projects, pipeline_name)?;
 
     if collected.tasks.is_empty() {
-        tracing::info!("No affected tasks to run");
+        tracing::info!("No tasks to export");
         let empty_yaml = match format {
             ExportFormat::Buildkite => "steps: []\n",
             ExportFormat::Gitlab => "{}\n",
@@ -114,15 +94,14 @@ struct CollectedTasks {
     environment: Option<String>,
 }
 
-/// Collect affected IR tasks from all projects for a given pipeline.
-fn collect_affected_tasks_for_export(
+/// Collect all IR tasks from all projects for a given pipeline.
+///
+/// For export mode, we collect ALL tasks defined in the pipeline rather than
+/// filtering by affected files. The CI orchestrator handles trigger logic.
+fn collect_tasks_for_export(
     projects: &[cuenv_ci::discovery::DiscoveredCIProject],
-    project_map: &HashMap<String, cuenv_ci::discovery::DiscoveredCIProject>,
     pipeline_name: &str,
-    changed_files: &[std::path::PathBuf],
-    event: &str,
 ) -> Result<CollectedTasks> {
-    use cuenv_ci::affected::compute_affected_tasks;
     use cuenv_ci::compiler::{Compiler, CompilerOptions};
 
     let mut all_ir_tasks = Vec::new();
@@ -136,55 +115,31 @@ fn collect_affected_tasks_for_export(
             continue;
         };
 
-        let Some(ci_pipeline) = ci.pipelines.iter().find(|p| p.name == pipeline_name) else {
+        let Some(ci_pipeline) = ci.pipelines.get(pipeline_name) else {
             continue;
         };
 
         pipeline_environment.clone_from(&ci_pipeline.environment);
 
-        let project_root = project.path.parent().map_or_else(
-            || std::path::Path::new("."),
-            |p| {
-                if p.as_os_str().is_empty() {
-                    std::path::Path::new(".")
-                } else {
-                    p
-                }
-            },
-        );
-
-        // Extract task names from pipeline
+        // Extract task names from pipeline for logging
         let pipeline_task_names: Vec<String> = ci_pipeline
             .tasks
             .iter()
             .map(|t| t.task_name().to_string())
             .collect();
 
-        // Determine tasks to run based on event type
-        let tasks_to_run = if event == "release" {
-            pipeline_task_names
-        } else {
-            compute_affected_tasks(
-                changed_files,
-                &pipeline_task_names,
-                project_root,
-                config,
-                project_map,
-            )
-        };
-
-        if tasks_to_run.is_empty() {
+        if pipeline_task_names.is_empty() {
             tracing::debug!(
                 project = %project.path.display(),
-                "No affected tasks"
+                "No tasks in pipeline"
             );
             continue;
         }
 
         tracing::info!(
             project = %project.path.display(),
-            tasks = ?tasks_to_run,
-            "Affected tasks"
+            tasks = ?pipeline_task_names,
+            "Exporting pipeline tasks"
         );
 
         // Compile with pipeline context
@@ -197,22 +152,9 @@ fn collect_affected_tasks_for_export(
             cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
         })?;
 
-        // Separate phase tasks and regular tasks
-        let phase_tasks: Vec<_> = ir
-            .tasks
-            .iter()
-            .filter(|t| t.phase.is_some())
-            .cloned()
-            .collect();
-        let affected_tasks: Vec<_> = ir
-            .tasks
-            .into_iter()
-            .filter(|t| t.phase.is_none() && tasks_to_run.contains(&t.id))
-            .collect();
-
+        // Collect all tasks from the compiled IR (phase tasks + regular tasks)
         compiled_runtimes = ir.runtimes;
-        all_ir_tasks.extend(phase_tasks);
-        all_ir_tasks.extend(affected_tasks);
+        all_ir_tasks.extend(ir.tasks);
     }
 
     Ok(CollectedTasks {
