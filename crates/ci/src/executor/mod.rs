@@ -419,8 +419,8 @@ mod tests {
     use super::*;
     use crate::ir::{CachePolicy, PipelineMetadata, StageConfiguration, Task as IRTask};
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
-    #[allow(dead_code)]
     fn make_simple_ir(tasks: Vec<IRTask>) -> IntermediateRepresentation {
         IntermediateRepresentation {
             version: "1.4".to_string(),
@@ -438,7 +438,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
     fn make_task(id: &str, deps: &[&str]) -> IRTask {
         IRTask {
             id: id.to_string(),
@@ -461,6 +460,113 @@ mod tests {
         }
     }
 
+    // ==========================================================================
+    // ExecutorError display tests
+    // ==========================================================================
+
+    #[test]
+    fn test_executor_error_compilation_display() {
+        let err = ExecutorError::Compilation("Syntax error in line 5".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("Failed to compile"));
+        assert!(msg.contains("Syntax error in line 5"));
+    }
+
+    #[test]
+    fn test_executor_error_task_panic_display() {
+        let err = ExecutorError::TaskPanic("thread 'main' panicked".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("Task panicked"));
+        assert!(msg.contains("thread 'main' panicked"));
+    }
+
+    #[test]
+    fn test_executor_error_pipeline_not_found_display() {
+        let err = ExecutorError::PipelineNotFound {
+            name: "build".to_string(),
+            available: "default, test, deploy".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Pipeline 'build' not found"));
+        assert!(msg.contains("default, test, deploy"));
+    }
+
+    #[test]
+    fn test_executor_error_no_ci_config_display() {
+        let err = ExecutorError::NoCIConfig;
+        let msg = err.to_string();
+        assert!(msg.contains("has no CI configuration"));
+    }
+
+    // ==========================================================================
+    // PipelineResult tests
+    // ==========================================================================
+
+    #[test]
+    fn test_pipeline_result_fields() {
+        let result = PipelineResult {
+            success: true,
+            tasks: vec![TaskOutput::dry_run("task1".to_string())],
+            duration_ms: 1500,
+        };
+
+        assert!(result.success);
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.duration_ms, 1500);
+    }
+
+    #[test]
+    fn test_pipeline_result_failed() {
+        let result = PipelineResult {
+            success: false,
+            tasks: vec![],
+            duration_ms: 0,
+        };
+
+        assert!(!result.success);
+    }
+
+    // ==========================================================================
+    // CIExecutor construction tests
+    // ==========================================================================
+
+    #[test]
+    fn test_ci_executor_new() {
+        let config = CIExecutorConfig::default();
+        let executor = CIExecutor::new(config);
+
+        assert!(!executor.has_custom_cache_backend());
+        assert_eq!(executor.cache_backend_name(), "local");
+    }
+
+    #[test]
+    fn test_ci_executor_with_cache_backend() {
+        let config = CIExecutorConfig::default();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let backend = Arc::new(LocalCacheBackend::new(temp_dir.path()));
+        let executor = CIExecutor::with_cache_backend(config, backend);
+
+        assert!(executor.has_custom_cache_backend());
+        // LocalCacheBackend::name() returns "local"
+        assert_eq!(executor.cache_backend_name(), "local");
+    }
+
+    #[test]
+    fn test_ci_executor_has_custom_cache_backend_false() {
+        let executor = CIExecutor::new(CIExecutorConfig::default());
+        assert!(!executor.has_custom_cache_backend());
+    }
+
+    #[test]
+    fn test_ci_executor_cache_backend_name_default() {
+        let executor = CIExecutor::new(CIExecutorConfig::default());
+        assert_eq!(executor.cache_backend_name(), "local");
+    }
+
+    // ==========================================================================
+    // CIExecutorConfig builder tests
+    // ==========================================================================
+
     #[test]
     fn test_executor_config_builder() {
         let config = CIExecutorConfig::new(std::path::PathBuf::from("/project"))
@@ -470,6 +576,58 @@ mod tests {
         assert_eq!(config.max_parallel, 8);
         assert!(config.dry_run);
     }
+
+    #[test]
+    fn test_executor_config_default() {
+        let config = CIExecutorConfig::default();
+        assert!(!config.dry_run);
+        assert!(config.max_parallel >= 1);
+    }
+
+    #[test]
+    fn test_executor_config_with_capture_output() {
+        let config = CIExecutorConfig::new(std::path::PathBuf::from("/project"))
+            .with_capture_output(true);
+
+        assert!(config.capture_output);
+    }
+
+    // ==========================================================================
+    // Helper function tests
+    // ==========================================================================
+
+    #[test]
+    fn test_make_simple_ir() {
+        let task = make_task("build", &[]);
+        let ir = make_simple_ir(vec![task]);
+
+        assert_eq!(ir.version, "1.4");
+        assert_eq!(ir.pipeline.name, "test");
+        assert_eq!(ir.tasks.len(), 1);
+        assert_eq!(ir.tasks[0].id, "build");
+    }
+
+    #[test]
+    fn test_make_task_with_dependencies() {
+        let task = make_task("test", &["build", "lint"]);
+
+        assert_eq!(task.id, "test");
+        assert_eq!(task.depends_on, vec!["build", "lint"]);
+        assert_eq!(task.command, vec!["echo", "test"]);
+        assert!(!task.shell);
+    }
+
+    #[test]
+    fn test_make_task_no_dependencies() {
+        let task = make_task("root", &[]);
+
+        assert_eq!(task.id, "root");
+        assert!(task.depends_on.is_empty());
+    }
+
+    // ==========================================================================
+    // extract_fingerprints tests
+    // ==========================================================================
 
     #[test]
     fn test_extract_fingerprints() {
@@ -495,5 +653,72 @@ mod tests {
             assert!(fingerprints.contains_key("task1"));
             assert!(fingerprints["task1"].contains_key("api_key"));
         });
+    }
+
+    #[test]
+    fn test_extract_fingerprints_empty() {
+        let secrets: HashMap<String, CIResolvedSecrets> = HashMap::new();
+        let fingerprints = CIExecutor::extract_fingerprints(&secrets);
+        assert!(fingerprints.is_empty());
+    }
+
+    #[test]
+    fn test_extract_fingerprints_multiple_tasks() {
+        temp_env::with_vars(
+            [
+                ("TEST_FP_SECRET1", Some("value1")),
+                ("TEST_FP_SECRET2", Some("value2")),
+            ],
+            || {
+                let mut secrets = HashMap::new();
+
+                let secret_configs1 = BTreeMap::from([(
+                    "secret1".to_string(),
+                    crate::ir::SecretConfig {
+                        source: "TEST_FP_SECRET1".to_string(),
+                        cache_key: true,
+                    },
+                )]);
+                let resolved1 =
+                    CIResolvedSecrets::from_env(&secret_configs1, Some("salt")).unwrap();
+                secrets.insert("task1".to_string(), resolved1);
+
+                let secret_configs2 = BTreeMap::from([(
+                    "secret2".to_string(),
+                    crate::ir::SecretConfig {
+                        source: "TEST_FP_SECRET2".to_string(),
+                        cache_key: true,
+                    },
+                )]);
+                let resolved2 =
+                    CIResolvedSecrets::from_env(&secret_configs2, Some("salt")).unwrap();
+                secrets.insert("task2".to_string(), resolved2);
+
+                let fingerprints = CIExecutor::extract_fingerprints(&secrets);
+
+                assert_eq!(fingerprints.len(), 2);
+                assert!(fingerprints.contains_key("task1"));
+                assert!(fingerprints.contains_key("task2"));
+            },
+        );
+    }
+
+    // ==========================================================================
+    // TaskOutput helper tests
+    // ==========================================================================
+
+    #[test]
+    fn test_task_output_dry_run() {
+        let output = TaskOutput::dry_run("my-task".to_string());
+        assert!(output.success);
+        assert_eq!(output.task_id, "my-task");
+    }
+
+    #[test]
+    fn test_task_output_from_cache() {
+        let output = TaskOutput::from_cache("cached-task".to_string(), 500);
+        assert!(output.success);
+        assert_eq!(output.task_id, "cached-task");
+        assert_eq!(output.duration_ms, 500);
     }
 }
