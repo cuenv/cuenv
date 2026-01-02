@@ -915,7 +915,7 @@ impl TaskListFormatter for EmojiFormatter {
         }
 
         // Collect and categorize tasks
-        let mut categorized_tasks: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new();
+        let mut categorized_tasks: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
         
         for group in &data.sources {
             collect_tasks_for_emoji(&group.nodes, &mut categorized_tasks, "");
@@ -926,7 +926,7 @@ impl TaskListFormatter for EmojiFormatter {
             let emoji = get_category_emoji(category);
             let _ = writeln!(output, "\n{} {}", emoji, category);
             
-            for (name, desc, _full_name) in tasks {
+            for (name, desc) in tasks {
                 if desc.is_empty() {
                     let _ = writeln!(output, "   {}", name);
                 } else {
@@ -952,7 +952,7 @@ impl TaskListFormatter for EmojiFormatter {
 /// Collect tasks into categories for emoji formatter
 fn collect_tasks_for_emoji(
     nodes: &[TaskNode],
-    categories: &mut BTreeMap<String, Vec<(String, String, String)>>,
+    categories: &mut BTreeMap<String, Vec<(String, String)>>,
     prefix: &str,
 ) {
     for node in nodes {
@@ -965,14 +965,13 @@ fn collect_tasks_for_emoji(
         if !node.is_group {
             // Determine category from task name
             let category = infer_category_from_name(&full_name, node.description.as_deref());
-            let task_name = node.name.clone();
-            let description = node.description.as_deref().unwrap_or("").to_string();
             let task_full_name = node.full_name.as_deref().unwrap_or(&node.name).to_string();
+            let description = node.description.as_deref().unwrap_or("").to_string();
             
             categories
                 .entry(category)
                 .or_default()
-                .push((task_name, description, task_full_name));
+                .push((task_full_name, description));
         }
 
         // Recurse into children
