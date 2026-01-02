@@ -396,9 +396,51 @@ mod tests {
     }
 
     #[test]
+    fn test_platform_parse_edge_cases() {
+        // Too few parts
+        assert!(Platform::parse("darwin").is_none());
+        // Too many parts
+        assert!(Platform::parse("darwin-arm64-extra").is_none());
+        // Empty string
+        assert!(Platform::parse("").is_none());
+        // Invalid OS
+        assert!(Platform::parse("windows-arm64").is_none());
+        // Invalid arch
+        assert!(Platform::parse("darwin-mips").is_none());
+    }
+
+    #[test]
     fn test_platform_display() {
         let p = Platform::new(Os::Darwin, Arch::Arm64);
         assert_eq!(p.to_string(), "darwin-arm64");
+    }
+
+    #[test]
+    fn test_platform_display_all_combinations() {
+        assert_eq!(
+            Platform::new(Os::Darwin, Arch::Arm64).to_string(),
+            "darwin-arm64"
+        );
+        assert_eq!(
+            Platform::new(Os::Darwin, Arch::X86_64).to_string(),
+            "darwin-x86_64"
+        );
+        assert_eq!(
+            Platform::new(Os::Linux, Arch::Arm64).to_string(),
+            "linux-arm64"
+        );
+        assert_eq!(
+            Platform::new(Os::Linux, Arch::X86_64).to_string(),
+            "linux-x86_64"
+        );
+    }
+
+    #[test]
+    fn test_platform_current() {
+        let p = Platform::current();
+        // Should return a valid platform for the current system
+        assert!(matches!(p.os, Os::Darwin | Os::Linux));
+        assert!(matches!(p.arch, Arch::Arm64 | Arch::X86_64));
     }
 
     #[test]
@@ -410,11 +452,69 @@ mod tests {
     }
 
     #[test]
+    fn test_os_parse_case_insensitive() {
+        assert_eq!(Os::parse("DARWIN"), Some(Os::Darwin));
+        assert_eq!(Os::parse("Darwin"), Some(Os::Darwin));
+        assert_eq!(Os::parse("LINUX"), Some(Os::Linux));
+        assert_eq!(Os::parse("Linux"), Some(Os::Linux));
+        assert_eq!(Os::parse("MACOS"), Some(Os::Darwin));
+        assert_eq!(Os::parse("MacOS"), Some(Os::Darwin));
+    }
+
+    #[test]
+    fn test_os_display() {
+        assert_eq!(Os::Darwin.to_string(), "darwin");
+        assert_eq!(Os::Linux.to_string(), "linux");
+    }
+
+    #[test]
+    fn test_os_current() {
+        let os = Os::current();
+        // Should return a valid OS for the current system
+        assert!(matches!(os, Os::Darwin | Os::Linux));
+    }
+
+    #[test]
     fn test_arch_parse() {
         assert_eq!(Arch::parse("arm64"), Some(Arch::Arm64));
         assert_eq!(Arch::parse("aarch64"), Some(Arch::Arm64));
         assert_eq!(Arch::parse("x86_64"), Some(Arch::X86_64));
         assert_eq!(Arch::parse("amd64"), Some(Arch::X86_64));
+    }
+
+    #[test]
+    fn test_arch_parse_case_insensitive() {
+        assert_eq!(Arch::parse("ARM64"), Some(Arch::Arm64));
+        assert_eq!(Arch::parse("Arm64"), Some(Arch::Arm64));
+        assert_eq!(Arch::parse("AARCH64"), Some(Arch::Arm64));
+        assert_eq!(Arch::parse("X86_64"), Some(Arch::X86_64));
+        assert_eq!(Arch::parse("AMD64"), Some(Arch::X86_64));
+    }
+
+    #[test]
+    fn test_arch_parse_x64_alias() {
+        assert_eq!(Arch::parse("x64"), Some(Arch::X86_64));
+        assert_eq!(Arch::parse("X64"), Some(Arch::X86_64));
+    }
+
+    #[test]
+    fn test_arch_parse_invalid() {
+        assert!(Arch::parse("mips").is_none());
+        assert!(Arch::parse("riscv").is_none());
+        assert!(Arch::parse("").is_none());
+    }
+
+    #[test]
+    fn test_arch_display() {
+        assert_eq!(Arch::Arm64.to_string(), "arm64");
+        assert_eq!(Arch::X86_64.to_string(), "x86_64");
+    }
+
+    #[test]
+    fn test_arch_current() {
+        let arch = Arch::current();
+        // Should return a valid arch for the current system
+        assert!(matches!(arch, Arch::Arm64 | Arch::X86_64));
     }
 
     #[test]
@@ -441,5 +541,172 @@ mod tests {
             targets: vec!["x86_64-unknown-linux-gnu".into()],
         };
         assert_eq!(s.provider_type(), "rustup");
+    }
+
+    #[test]
+    fn test_tool_source_oci_provider_type() {
+        let s = ToolSource::Oci {
+            image: "docker.io/library/alpine:latest".into(),
+            path: "/usr/bin/jq".into(),
+        };
+        assert_eq!(s.provider_type(), "oci");
+    }
+
+    #[test]
+    fn test_tool_source_serialization() {
+        let source = ToolSource::GitHub {
+            repo: "jqlang/jq".into(),
+            tag: "jq-1.7.1".into(),
+            asset: "jq-macos-arm64".into(),
+            path: Some("jq-macos-arm64/jq".into()),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("\"type\":\"github\""));
+        assert!(json.contains("\"repo\":\"jqlang/jq\""));
+        assert!(json.contains("\"path\":\"jq-macos-arm64/jq\""));
+    }
+
+    #[test]
+    fn test_tool_source_deserialization() {
+        let json = r#"{"type":"github","repo":"jqlang/jq","tag":"jq-1.7.1","asset":"jq-macos-arm64"}"#;
+        let source: ToolSource = serde_json::from_str(json).unwrap();
+        match source {
+            ToolSource::GitHub {
+                repo, tag, asset, ..
+            } => {
+                assert_eq!(repo, "jqlang/jq");
+                assert_eq!(tag, "jq-1.7.1");
+                assert_eq!(asset, "jq-macos-arm64");
+            }
+            _ => panic!("Expected GitHub source"),
+        }
+    }
+
+    #[test]
+    fn test_tool_source_nix_serialization() {
+        let source = ToolSource::Nix {
+            flake: "nixpkgs".into(),
+            package: "jq".into(),
+            output: Some("bin".into()),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("\"type\":\"nix\""));
+        assert!(json.contains("\"output\":\"bin\""));
+    }
+
+    #[test]
+    fn test_tool_source_rustup_serialization() {
+        let source = ToolSource::Rustup {
+            toolchain: "stable".into(),
+            profile: None,
+            components: vec![],
+            targets: vec![],
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("\"type\":\"rustup\""));
+        // Empty vecs should not be serialized
+        assert!(!json.contains("components"));
+        assert!(!json.contains("targets"));
+    }
+
+    #[test]
+    fn test_resolved_tool_serialization() {
+        let tool = ResolvedTool {
+            name: "jq".into(),
+            version: "1.7.1".into(),
+            platform: Platform::new(Os::Darwin, Arch::Arm64),
+            source: ToolSource::GitHub {
+                repo: "jqlang/jq".into(),
+                tag: "jq-1.7.1".into(),
+                asset: "jq-macos-arm64".into(),
+                path: None,
+            },
+        };
+        let json = serde_json::to_string(&tool).unwrap();
+        assert!(json.contains("\"name\":\"jq\""));
+        assert!(json.contains("\"version\":\"1.7.1\""));
+    }
+
+    #[test]
+    fn test_tool_options_default() {
+        let opts = ToolOptions::default();
+        assert!(opts.cache_dir.is_none());
+        assert!(!opts.force_refetch);
+    }
+
+    #[test]
+    fn test_tool_options_new() {
+        let opts = ToolOptions::new();
+        assert!(opts.cache_dir.is_none());
+        assert!(!opts.force_refetch);
+    }
+
+    #[test]
+    fn test_tool_options_builder() {
+        let opts = ToolOptions::new()
+            .with_cache_dir(PathBuf::from("/custom/cache"))
+            .with_force_refetch(true);
+
+        assert_eq!(opts.cache_dir, Some(PathBuf::from("/custom/cache")));
+        assert!(opts.force_refetch);
+    }
+
+    #[test]
+    fn test_tool_options_cache_dir_default() {
+        let opts = ToolOptions::new();
+        let cache_dir = opts.cache_dir();
+        // Should end with cuenv/tools
+        assert!(cache_dir.ends_with("cuenv/tools"));
+    }
+
+    #[test]
+    fn test_tool_options_cache_dir_custom() {
+        let opts = ToolOptions::new().with_cache_dir(PathBuf::from("/my/cache"));
+        assert_eq!(opts.cache_dir(), PathBuf::from("/my/cache"));
+    }
+
+    #[test]
+    fn test_default_cache_dir() {
+        let cache_dir = default_cache_dir();
+        // Should end with cuenv/tools
+        assert!(cache_dir.ends_with("cuenv/tools"));
+    }
+
+    #[test]
+    fn test_platform_equality() {
+        let p1 = Platform::new(Os::Darwin, Arch::Arm64);
+        let p2 = Platform::new(Os::Darwin, Arch::Arm64);
+        let p3 = Platform::new(Os::Linux, Arch::Arm64);
+
+        assert_eq!(p1, p2);
+        assert_ne!(p1, p3);
+    }
+
+    #[test]
+    fn test_platform_hash() {
+        use std::collections::HashSet;
+
+        let mut set = HashSet::new();
+        set.insert(Platform::new(Os::Darwin, Arch::Arm64));
+        set.insert(Platform::new(Os::Darwin, Arch::Arm64)); // Duplicate
+
+        assert_eq!(set.len(), 1);
+
+        set.insert(Platform::new(Os::Linux, Arch::Arm64));
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn test_os_equality() {
+        assert_eq!(Os::Darwin, Os::Darwin);
+        assert_eq!(Os::Linux, Os::Linux);
+        assert_ne!(Os::Darwin, Os::Linux);
+    }
+
+    #[test]
+    fn test_arch_equality() {
+        assert_eq!(Arch::Arm64, Arch::Arm64);
+        assert_eq!(Arch::X86_64, Arch::X86_64);
+        assert_ne!(Arch::Arm64, Arch::X86_64);
     }
 }
