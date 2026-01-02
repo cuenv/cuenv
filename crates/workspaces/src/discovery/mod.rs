@@ -217,3 +217,230 @@ pub fn read_toml_file<T: DeserializeOwned>(path: &Path) -> Result<T> {
         path: Some(path.to_path_buf()),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_resolve_glob_patterns_basic() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        // Create directory structure
+        fs::create_dir_all(root.join("packages/a")).unwrap();
+        fs::create_dir_all(root.join("packages/b")).unwrap();
+        fs::create_dir_all(root.join("apps/app1")).unwrap();
+
+        let patterns = vec!["packages/*".to_string()];
+        let result = resolve_glob_patterns(root, &patterns, &[]).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|p| p.ends_with("packages/a")));
+        assert!(result.iter().any(|p| p.ends_with("packages/b")));
+    }
+
+    #[test]
+    fn test_resolve_glob_patterns_with_exclusions() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("packages/a")).unwrap();
+        fs::create_dir_all(root.join("packages/b")).unwrap();
+        fs::create_dir_all(root.join("packages/excluded")).unwrap();
+
+        let patterns = vec!["packages/*".to_string()];
+        let exclusions = vec!["packages/excluded".to_string()];
+        let result = resolve_glob_patterns(root, &patterns, &exclusions).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|p| p.ends_with("packages/a")));
+        assert!(result.iter().any(|p| p.ends_with("packages/b")));
+        assert!(!result.iter().any(|p| p.ends_with("packages/excluded")));
+    }
+
+    #[test]
+    fn test_resolve_glob_patterns_negation_prefix() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("packages/a")).unwrap();
+        fs::create_dir_all(root.join("packages/b")).unwrap();
+        fs::create_dir_all(root.join("packages/ignored")).unwrap();
+
+        let patterns = vec!["packages/*".to_string(), "!packages/ignored".to_string()];
+        let result = resolve_glob_patterns(root, &patterns, &[]).unwrap();
+
+        assert!(result.len() >= 2);
+        assert!(!result.iter().any(|p| p.ends_with("packages/ignored")));
+    }
+
+    #[test]
+    fn test_resolve_glob_patterns_skips_node_modules() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("packages/a")).unwrap();
+        fs::create_dir_all(root.join("node_modules/package")).unwrap();
+
+        let patterns = vec!["**/*".to_string()];
+        let result = resolve_glob_patterns(root, &patterns, &[]).unwrap();
+
+        // Should not include node_modules
+        assert!(!result.iter().any(|p| p.to_str().unwrap().contains("node_modules")));
+    }
+
+    #[test]
+    fn test_resolve_glob_patterns_multiple_patterns() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("packages/a")).unwrap();
+        fs::create_dir_all(root.join("apps/b")).unwrap();
+
+        let patterns = vec!["packages/*".to_string(), "apps/*".to_string()];
+        let result = resolve_glob_patterns(root, &patterns, &[]).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|p| p.ends_with("packages/a")));
+        assert!(result.iter().any(|p| p.ends_with("apps/b")));
+    }
+
+    #[test]
+    fn test_resolve_glob_patterns_nested() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        fs::create_dir_all(root.join("src/nested/deep")).unwrap();
+
+        let patterns = vec!["src/nested/*".to_string()];
+        let result = resolve_glob_patterns(root, &patterns, &[]).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert!(result[0].ends_with("src/nested/deep"));
+    }
+
+    #[test]
+    fn test_resolve_glob_patterns_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+
+        let patterns = vec!["packages/*".to_string()];
+        let result = resolve_glob_patterns(root, &patterns, &[]).unwrap();
+
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_read_json_file_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("test.json");
+
+        #[derive(serde::Deserialize)]
+        struct TestData {
+            name: String,
+        }
+
+        fs::write(&file, r#"{"name": "test"}"#).unwrap();
+        let data: TestData = read_json_file(&file).unwrap();
+
+        assert_eq!(data.name, "test");
+    }
+
+    #[test]
+    fn test_read_json_file_invalid() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("test.json");
+
+        #[derive(serde::Deserialize)]
+        struct TestData {
+            _name: String,
+        }
+
+        fs::write(&file, r#"{"invalid json"#).unwrap();
+        let result: Result<TestData> = read_json_file(&file);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_json_file_missing() {
+        #[derive(serde::Deserialize)]
+        struct TestData {
+            _name: String,
+        }
+
+        let result: Result<TestData> = read_json_file(Path::new("/nonexistent/file.json"));
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "toml")]
+    #[test]
+    fn test_read_toml_file_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("test.toml");
+
+        #[derive(serde::Deserialize)]
+        struct TestData {
+            name: String,
+        }
+
+        fs::write(&file, r#"name = "test""#).unwrap();
+        let data: TestData = read_toml_file(&file).unwrap();
+
+        assert_eq!(data.name, "test");
+    }
+
+    #[cfg(feature = "toml")]
+    #[test]
+    fn test_read_toml_file_invalid() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("test.toml");
+
+        #[derive(serde::Deserialize)]
+        struct TestData {
+            _name: String,
+        }
+
+        fs::write(&file, r#"invalid toml ="#).unwrap();
+        let result: Result<TestData> = read_toml_file(&file);
+
+        assert!(result.is_err());
+    }
+
+    #[cfg(feature = "serde_yaml")]
+    #[test]
+    fn test_read_yaml_file_valid() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("test.yaml");
+
+        #[derive(serde::Deserialize)]
+        struct TestData {
+            name: String,
+        }
+
+        fs::write(&file, "name: test").unwrap();
+        let data: TestData = read_yaml_file(&file).unwrap();
+
+        assert_eq!(data.name, "test");
+    }
+
+    #[cfg(feature = "serde_yaml")]
+    #[test]
+    fn test_read_yaml_file_invalid() {
+        let temp_dir = TempDir::new().unwrap();
+        let file = temp_dir.path().join("test.yaml");
+
+        #[derive(serde::Deserialize)]
+        struct TestData {
+            _name: String,
+        }
+
+        fs::write(&file, "invalid: yaml: structure:").unwrap();
+        let result: Result<TestData> = read_yaml_file(&file);
+
+        assert!(result.is_err());
+    }
+}
