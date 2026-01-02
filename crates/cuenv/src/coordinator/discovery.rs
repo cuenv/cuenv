@@ -253,6 +253,7 @@ impl Drop for LockGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[tokio::test]
     async fn test_detect_coordinator_not_running() {
@@ -268,5 +269,88 @@ mod tests {
             status,
             CoordinatorStatus::NotRunning | CoordinatorStatus::Stale { .. }
         ));
+    }
+
+    #[test]
+    fn test_coordinator_status_variants() {
+        // Test that all variants can be created and matched
+        let running = CoordinatorStatus::Running {
+            pid: 1234,
+            socket: PathBuf::from("/tmp/test.sock"),
+        };
+        assert!(matches!(running, CoordinatorStatus::Running { pid: 1234, .. }));
+
+        let not_running = CoordinatorStatus::NotRunning;
+        assert!(matches!(not_running, CoordinatorStatus::NotRunning));
+
+        let stale = CoordinatorStatus::Stale {
+            socket: PathBuf::from("/tmp/stale.sock"),
+        };
+        assert!(matches!(stale, CoordinatorStatus::Stale { .. }));
+    }
+
+    #[test]
+    fn test_coordinator_status_debug() {
+        let running = CoordinatorStatus::Running {
+            pid: 5678,
+            socket: PathBuf::from("/var/run/cuenv.sock"),
+        };
+        let debug_str = format!("{running:?}");
+        assert!(debug_str.contains("Running"));
+        assert!(debug_str.contains("5678"));
+
+        let stale = CoordinatorStatus::Stale {
+            socket: PathBuf::from("/tmp/stale.sock"),
+        };
+        let debug_str = format!("{stale:?}");
+        assert!(debug_str.contains("Stale"));
+    }
+
+    #[test]
+    fn test_coordinator_status_clone() {
+        let running = CoordinatorStatus::Running {
+            pid: 1000,
+            socket: PathBuf::from("/tmp/clone.sock"),
+        };
+        let cloned = running.clone();
+        assert!(matches!(cloned, CoordinatorStatus::Running { pid: 1000, .. }));
+    }
+
+    #[test]
+    fn test_lock_guard_drops_file() {
+        let temp_dir = std::env::temp_dir();
+        let lock_path = temp_dir.join(format!("test_lock_{}.lock", std::process::id()));
+
+        // Create the lock file first
+        std::fs::write(&lock_path, "locked").expect("could not create lock file");
+        assert!(lock_path.exists());
+
+        {
+            let _guard = LockGuard {
+                path: lock_path.clone(),
+            };
+            // Lock file still exists while guard is in scope
+        }
+        // After guard is dropped, lock file should be removed
+        assert!(!lock_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_cuenv_process_for_nonexistent_pid() {
+        // Test with a very high PID that's unlikely to exist
+        let result = is_cuenv_process(99999999);
+        // On macOS, ps will fail for nonexistent PIDs, returning false
+        // On Linux, /proc/99999999/cmdline won't exist, returning false
+        assert!(!result);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_cuenv_process_for_current_process() {
+        // Current process is not a cuenv coordinator (it's the test runner)
+        let result = is_cuenv_process(std::process::id() as i32);
+        // Should return false since test runner is not cuenv __coordinator
+        assert!(!result);
     }
 }

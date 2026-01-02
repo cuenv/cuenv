@@ -2136,4 +2136,277 @@ mod tests {
         assert!(display.contains("Dagger execution failed"));
         assert!(!display.contains("Task execution failed: Task execution failed"));
     }
+
+    #[test]
+    fn test_output_format_display() {
+        assert_eq!(OutputFormat::Json.to_string(), "json");
+        assert_eq!(OutputFormat::Env.to_string(), "env");
+        assert_eq!(OutputFormat::Text.to_string(), "text");
+        assert_eq!(OutputFormat::Rich.to_string(), "rich");
+    }
+
+    #[test]
+    fn test_output_format_as_ref() {
+        assert_eq!(OutputFormat::Json.as_ref(), "json");
+        assert_eq!(OutputFormat::Env.as_ref(), "env");
+        assert_eq!(OutputFormat::Text.as_ref(), "text");
+        assert_eq!(OutputFormat::Rich.as_ref(), "rich");
+    }
+
+    #[test]
+    fn test_status_format_display() {
+        assert_eq!(StatusFormat::Text.to_string(), "text");
+        assert_eq!(StatusFormat::Short.to_string(), "short");
+        assert_eq!(StatusFormat::Starship.to_string(), "starship");
+    }
+
+    #[test]
+    fn test_status_format_default() {
+        assert_eq!(StatusFormat::default(), StatusFormat::Text);
+    }
+
+    #[test]
+    fn test_cli_error_with_help_method() {
+        // Test adding help to Config error
+        let config_err = CliError::config("original config error");
+        let with_help = config_err.with_help("try running with --fix");
+        if let CliError::Config { message, help } = with_help {
+            assert_eq!(message, "original config error");
+            assert_eq!(help, Some("try running with --fix".to_string()));
+        } else {
+            panic!("Expected Config error");
+        }
+
+        // Test adding help to Eval error
+        let eval_err = CliError::eval("eval error");
+        let with_help = eval_err.with_help("check your CUE syntax");
+        if let CliError::Eval { message, help } = with_help {
+            assert_eq!(message, "eval error");
+            assert_eq!(help, Some("check your CUE syntax".to_string()));
+        } else {
+            panic!("Expected Eval error");
+        }
+
+        // Test adding help to Other error
+        let other_err = CliError::other("other error");
+        let with_help = other_err.with_help("contact support");
+        if let CliError::Other { message, help } = with_help {
+            assert_eq!(message, "other error");
+            assert_eq!(help, Some("contact support".to_string()));
+        } else {
+            panic!("Expected Other error");
+        }
+    }
+
+    #[test]
+    fn test_cli_error_other_with_help() {
+        let err = CliError::other_with_help("something went wrong", "try again later");
+        if let CliError::Other { message, help } = err {
+            assert_eq!(message, "something went wrong");
+            assert_eq!(help, Some("try again later".to_string()));
+        } else {
+            panic!("Expected Other error");
+        }
+    }
+
+    #[test]
+    fn test_cuenv_core_io_error_with_path() {
+        // Test I/O error with a path
+        let io_err = cuenv_core::Error::Io {
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied"),
+            path: Some(std::path::Path::new("/etc/secrets").into()),
+            operation: "write".to_string(),
+        };
+        let cli_err: CliError = io_err.into();
+        let display = format!("{cli_err}");
+        assert!(display.contains("I/O write failed"));
+        assert!(display.contains("/etc/secrets"));
+    }
+
+    #[test]
+    fn test_cuenv_core_tool_resolution_error_without_help() {
+        let tool_err = cuenv_core::Error::ToolResolution {
+            message: "tool not found".to_string(),
+            help: None,
+        };
+        let cli_err: CliError = tool_err.into();
+        assert!(matches!(cli_err, CliError::Eval { .. }));
+        let display = format!("{cli_err}");
+        assert!(display.contains("tool not found"));
+    }
+
+    #[test]
+    fn test_cuenv_core_tool_resolution_error_with_help() {
+        let tool_err = cuenv_core::Error::ToolResolution {
+            message: "tool not found".to_string(),
+            help: Some("install via brew".to_string()),
+        };
+        let cli_err: CliError = tool_err.into();
+        if let CliError::Eval { message, help } = cli_err {
+            assert_eq!(message, "tool not found");
+            assert_eq!(help, Some("install via brew".to_string()));
+        } else {
+            panic!("Expected Eval error");
+        }
+    }
+
+    #[test]
+    fn test_cuenv_core_platform_error() {
+        let platform_err = cuenv_core::Error::Platform {
+            message: "unsupported architecture".to_string(),
+        };
+        let cli_err: CliError = platform_err.into();
+        assert!(matches!(cli_err, CliError::Eval { .. }));
+        let display = format!("{cli_err}");
+        assert!(display.contains("unsupported architecture"));
+    }
+
+    #[test]
+    fn test_cuenv_core_utf8_error() {
+        // Create an actual UTF-8 error by parsing invalid bytes
+        let invalid_bytes = [0xff, 0xfe];
+        let utf8_error = std::str::from_utf8(&invalid_bytes).unwrap_err();
+        let utf8_err = cuenv_core::Error::Utf8 {
+            source: utf8_error,
+            file: None,
+        };
+        let cli_err: CliError = utf8_err.into();
+        assert!(matches!(cli_err, CliError::Other { .. }));
+    }
+
+    #[test]
+    fn test_commands_package_method() {
+        // Test commands that have package parameter
+        let task_cmd = Commands::Task {
+            name: Some("build".to_string()),
+            path: ".".to_string(),
+            package: "mypackage".to_string(),
+            labels: vec![],
+            output_format: OutputFormat::Text,
+            materialize_outputs: None,
+            show_cache_path: false,
+            backend: None,
+            tui: false,
+            interactive: false,
+            help: false,
+            all: false,
+            skip_dependencies: false,
+            task_args: vec![],
+        };
+        assert_eq!(task_cmd.package(), "mypackage");
+
+        // Test commands without package parameter
+        let version_cmd = Commands::Version {
+            output_format: OutputFormat::Text,
+        };
+        assert_eq!(version_cmd.package(), "cuenv"); // default
+    }
+
+    #[test]
+    fn test_task_command_with_labels() {
+        let cli = Cli::try_parse_from([
+            "cuenv",
+            "task",
+            "--label",
+            "ci",
+            "--label",
+            "test",
+            "build",
+        ])
+        .unwrap();
+
+        if let Some(Commands::Task { labels, name, .. }) = cli.command {
+            assert_eq!(labels.len(), 2);
+            assert!(labels.contains(&"ci".to_string()));
+            assert!(labels.contains(&"test".to_string()));
+            assert_eq!(name, Some("build".to_string()));
+        } else {
+            panic!("Expected Task command");
+        }
+    }
+
+    #[test]
+    fn test_task_command_interactive_flag() {
+        let cli = Cli::try_parse_from(["cuenv", "task", "-i"]).unwrap();
+
+        if let Some(Commands::Task { interactive, .. }) = cli.command {
+            assert!(interactive);
+        } else {
+            panic!("Expected Task command");
+        }
+    }
+
+    #[test]
+    fn test_sync_lock_update_flag() {
+        // Test -u alone (update all)
+        let cli = Cli::try_parse_from(["cuenv", "sync", "lock", "-u"]).unwrap();
+        if let Some(Commands::Sync {
+            subcommand: Some(SyncCommands::Lock { update, .. }),
+            ..
+        }) = cli.command
+        {
+            // -u alone should give Some(vec![]) or Some(vec![""]) depending on clap behavior
+            assert!(update.is_some());
+        } else {
+            panic!("Expected Sync Lock command");
+        }
+    }
+
+    #[test]
+    fn test_release_binaries_command() {
+        let cli = Cli::try_parse_from([
+            "cuenv",
+            "release",
+            "binaries",
+            "--dry-run",
+            "--build-only",
+            "--target",
+            "x86_64-unknown-linux-gnu,aarch64-apple-darwin",
+        ])
+        .unwrap();
+
+        if let Some(Commands::Release {
+            subcommand:
+                ReleaseCommands::Binaries {
+                    dry_run,
+                    build_only,
+                    target,
+                    ..
+                },
+        }) = cli.command
+        {
+            assert!(dry_run);
+            assert!(build_only);
+            assert!(target.is_some());
+            let targets = target.unwrap();
+            assert_eq!(targets.len(), 2);
+        } else {
+            panic!("Expected Release Binaries command");
+        }
+    }
+
+    #[test]
+    fn test_changeset_add_package_parsing() {
+        let cmd = Commands::Changeset {
+            subcommand: ChangesetCommands::Add {
+                path: ".".to_string(),
+                summary: Some("test summary".to_string()),
+                description: None,
+                packages: vec![
+                    "pkg-a:minor".to_string(),
+                    "pkg-b:patch".to_string(),
+                    "invalid".to_string(), // no colon, should be filtered
+                ],
+            },
+        };
+
+        let command = cmd.into_command(None);
+        if let Command::ChangesetAdd { packages, .. } = command {
+            assert_eq!(packages.len(), 2); // invalid one filtered out
+            assert!(packages.contains(&("pkg-a".to_string(), "minor".to_string())));
+            assert!(packages.contains(&("pkg-b".to_string(), "patch".to_string())));
+        } else {
+            panic!("Expected ChangesetAdd command");
+        }
+    }
 }
