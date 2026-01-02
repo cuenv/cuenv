@@ -127,3 +127,134 @@ pub fn validate_output(output: &str, limits: &Limits) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_limits_default() {
+        let limits = Limits::default();
+        assert_eq!(limits.max_path_length, 4096);
+        assert_eq!(limits.max_package_name_length, 256);
+        assert_eq!(limits.max_output_size, 100 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_limits_clone() {
+        let limits = Limits::default();
+        let cloned = limits.clone();
+        assert_eq!(limits.max_path_length, cloned.max_path_length);
+    }
+
+    #[test]
+    fn test_validate_path_nonexistent() {
+        let limits = Limits::default();
+        let result = validate_path(Path::new("/nonexistent/path"), &limits);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn test_validate_path_not_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "test").unwrap();
+
+        let limits = Limits::default();
+        let result = validate_path(&file_path, &limits);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not a directory"));
+    }
+
+    #[test]
+    fn test_validate_path_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let limits = Limits::default();
+        let result = validate_path(temp_dir.path(), &limits);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_too_long() {
+        let temp_dir = TempDir::new().unwrap();
+        let limits = Limits {
+            max_path_length: 5,
+            ..Default::default()
+        };
+        let result = validate_path(temp_dir.path(), &limits);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_validate_package_name_empty() {
+        let limits = Limits::default();
+        let result = validate_package_name("", &limits);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_package_name_too_long() {
+        let limits = Limits {
+            max_package_name_length: 5,
+            ..Default::default()
+        };
+        let result = validate_package_name("toolong", &limits);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_validate_package_name_invalid_chars() {
+        let limits = Limits::default();
+        let result = validate_package_name("invalid@name", &limits);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("invalid characters"));
+    }
+
+    #[test]
+    fn test_validate_package_name_invalid_start() {
+        let limits = Limits::default();
+        let result = validate_package_name("123abc", &limits);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("must start with"));
+    }
+
+    #[test]
+    fn test_validate_package_name_success() {
+        let limits = Limits::default();
+        assert!(validate_package_name("valid_name", &limits).is_ok());
+        assert!(validate_package_name("_hidden", &limits).is_ok());
+        assert!(validate_package_name("with-hyphen", &limits).is_ok());
+        assert!(validate_package_name("MixedCase123", &limits).is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_success() {
+        let limits = Limits::default();
+        let result = validate_output("small output", &limits);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_output_too_large() {
+        let limits = Limits {
+            max_output_size: 10,
+            ..Default::default()
+        };
+        let result = validate_output("this output is too large", &limits);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exceeds maximum size"));
+    }
+}
