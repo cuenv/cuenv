@@ -355,64 +355,6 @@ fn determine_dry_run_status(filepath: &Path, content: &str) -> Result<FileStatus
 }
 
 // ============================================================================
-// Legacy API for backwards compatibility
-// ============================================================================
-
-/// Configuration for generating a single ignore file.
-///
-/// This is the legacy API. Consider using [`IgnoreFile`] with the builder pattern instead.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct IgnoreConfig {
-    /// Tool name (e.g., "git", "docker", "npm").
-    pub tool: String,
-    /// List of patterns to include in the ignore file.
-    pub patterns: Vec<String>,
-    /// Optional filename override.
-    pub filename: Option<String>,
-}
-
-/// Generate ignore files from the given configurations.
-///
-/// This is the legacy API. Consider using [`IgnoreFiles::builder()`] instead.
-///
-/// # Arguments
-///
-/// * `dir` - Directory where ignore files will be generated
-/// * `configs` - List of ignore configurations
-/// * `dry_run` - If true, don't write files, just report what would happen
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The directory is not within a Git repository
-/// - A tool name contains invalid characters
-/// - File I/O fails
-pub fn generate_ignore_files(
-    dir: &Path,
-    configs: Vec<IgnoreConfig>,
-    dry_run: bool,
-) -> Result<SyncResult> {
-    let files: Vec<IgnoreFile> = configs
-        .into_iter()
-        .map(|c| {
-            let mut file = IgnoreFile::new(c.tool).patterns(c.patterns);
-            if let Some(filename) = c.filename {
-                file = file.filename(filename);
-            }
-            file
-        })
-        .collect();
-
-    IgnoreFiles::builder()
-        .directory(dir)
-        .require_git_repo(true) // Legacy API always required git
-        .dry_run(dry_run)
-        .files(files)
-        .generate()
-}
-
-// ============================================================================
 // Result types
 // ============================================================================
 
@@ -678,22 +620,5 @@ mod tests {
         assert_eq!(FileStatus::Unchanged.to_string(), "Unchanged");
         assert_eq!(FileStatus::WouldCreate.to_string(), "Would create");
         assert_eq!(FileStatus::WouldUpdate.to_string(), "Would update");
-    }
-
-    // Legacy API tests
-    #[test]
-    fn test_ignore_config_to_ignore_file() {
-        let config = IgnoreConfig {
-            tool: "git".to_string(),
-            patterns: vec!["node_modules/".to_string()],
-            filename: Some(".custom".to_string()),
-        };
-
-        let file = IgnoreFile::new(config.tool)
-            .patterns(config.patterns)
-            .filename_opt(config.filename);
-
-        assert_eq!(file.tool(), "git");
-        assert_eq!(file.output_filename(), ".custom");
     }
 }
