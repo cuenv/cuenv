@@ -31,7 +31,7 @@ For each crate, verify:
 | github | 75.4% | [x] | [x] | Added 10 tests: config (Default, serde, merge, permissions) |
 | release | 77.2% | [x] | [x] | Added 12 tests: backends (BackendContext, PublishResult builders) |
 | cubes | 79.8% | [x] | [x] | Added 60 tests: lib.rs (5 error types), cube.rs (24 for FileMode, FormatConfig, accessors, CUE loading), formatter.rs (12 for all languages, edge cases), generator.rs (12 for scaffold/managed modes, check mode), config.rs (15 for biome/prettier/rustfmt configs) |
-| core | 83.6% | [ ] | [ ] | Pending review (large crate: 10161 lines) |
+| core | 83.6% | [x] | [x] | Large crate, already well-tested. Added 12 tests in shell.rs (detect, serde, Default, case-insensitive parsing, env vars). Existing tests are comprehensive for Error types, paths, module, tasks, hooks. |
 | workspaces | 84.3% | [ ] | [ ] | Pending review |
 | buildkite | 87.0% | [ ] | [ ] | Pending review |
 | cuengine | 87.6% | [ ] | [ ] | Pending review |
