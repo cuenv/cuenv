@@ -417,13 +417,13 @@ impl CIExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CachePolicy, PipelineMetadata, StageConfiguration, Task as IRTask};
+    use crate::ir::{CachePolicy, PipelineMetadata, Task as IRTask};
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
     fn make_simple_ir(tasks: Vec<IRTask>) -> IntermediateRepresentation {
         IntermediateRepresentation {
-            version: "1.4".to_string(),
+            version: "1.5".to_string(),
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
                 environment: None,
@@ -433,7 +433,6 @@ mod tests {
                 pipeline_tasks: vec![],
             },
             runtimes: vec![],
-            stages: StageConfiguration::default(),
             tasks,
         }
     }

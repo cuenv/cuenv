@@ -71,8 +71,8 @@ async fn execute_dynamic_output(
 /// Result of collecting affected tasks from projects
 #[cfg(feature = "buildkite")]
 struct CollectedTasks {
+    /// All tasks including phase tasks (phase tasks have phase field set)
     tasks: Vec<cuenv_ci::ir::Task>,
-    stages: cuenv_ci::ir::StageConfiguration,
     runtimes: Vec<cuenv_ci::ir::Runtime>,
     environment: Option<String>,
 }
@@ -88,11 +88,9 @@ fn collect_affected_tasks_for_pipeline(
 ) -> Result<CollectedTasks> {
     use cuenv_ci::affected::compute_affected_tasks;
     use cuenv_ci::compiler::{Compiler, CompilerOptions};
-    use cuenv_ci::ir::StageConfiguration;
 
     let mut all_ir_tasks = Vec::new();
     let mut pipeline_environment: Option<String> = None;
-    let mut compiled_stages = StageConfiguration::default();
     let mut compiled_runtimes = Vec::new();
 
     for project in projects {
@@ -159,22 +157,26 @@ fn collect_affected_tasks_for_pipeline(
             cuenv_core::Error::configuration(format!("Failed to compile project: {e}"))
         })?;
 
+        // Get phase tasks (bootstrap, setup, success, failure)
+        let phase_tasks: Vec<_> = ir.tasks.iter().filter(|t| t.phase.is_some()).cloned().collect();
+
+        // Get affected regular tasks
         let affected_tasks: Vec<_> = ir
             .tasks
             .into_iter()
-            .filter(|t| tasks_to_run.contains(&t.id))
+            .filter(|t| t.phase.is_none() && tasks_to_run.contains(&t.id))
             .collect();
 
-        // Capture stages and runtimes from compiled IR
-        compiled_stages = ir.stages;
+        // Capture runtimes from compiled IR
         compiled_runtimes = ir.runtimes;
 
+        // Add phase tasks first, then affected regular tasks
+        all_ir_tasks.extend(phase_tasks);
         all_ir_tasks.extend(affected_tasks);
     }
 
     Ok(CollectedTasks {
         tasks: all_ir_tasks,
-        stages: compiled_stages,
         runtimes: compiled_runtimes,
         environment: pipeline_environment,
     })
@@ -231,19 +233,18 @@ async fn execute_dynamic_buildkite(pipeline: Option<String>, from: Option<String
         return Ok(());
     }
 
-    // Note: requires_onepassword is now derived from stages (1Password contributor)
+    // Note: requires_onepassword is now derived from phase tasks (1Password contributor)
     let combined_ir = IntermediateRepresentation {
-        version: "1.4".to_string(),
+        version: "1.5".to_string(),
         pipeline: PipelineMetadata {
             name: pipeline_name,
             environment: collected.environment,
-            requires_onepassword: false, // Derived from stages, not stored
+            requires_onepassword: false, // Derived from phase tasks, not stored
             project_name: None,
             trigger: None,
             pipeline_tasks: vec![],
         },
         runtimes: collected.runtimes,
-        stages: collected.stages,
         tasks: collected.tasks,
     };
 

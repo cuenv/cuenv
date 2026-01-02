@@ -706,11 +706,35 @@ struct PipelineContext {
     /// Relative path to project directory (for working-directory in monorepos)
     project_path: Option<String>,
     environment: Option<String>,
-    stages: cuenv_ci::ir::StageConfiguration,
     runtimes: Vec<cuenv_ci::ir::Runtime>,
+    /// All tasks including phase tasks (phase tasks have phase field set)
     tasks: Vec<cuenv_ci::ir::Task>,
     /// Original pipeline tasks (with matrix/artifacts/params info)
     pipeline_tasks: Vec<cuenv_core::ci::PipelineTask>,
+}
+
+impl PipelineContext {
+    /// Build an IntermediateRepresentation from this context.
+    fn to_ir(&self, pipeline_name: &str) -> cuenv_ci::ir::IntermediateRepresentation {
+        cuenv_ci::ir::IntermediateRepresentation {
+            version: "1.5".to_string(),
+            pipeline: cuenv_ci::ir::PipelineMetadata {
+                name: pipeline_name.to_string(),
+                environment: self.environment.clone(),
+                requires_onepassword: false,
+                project_name: self.project_name.clone(),
+                trigger: Some(self.trigger.clone()),
+                pipeline_tasks: vec![],
+            },
+            runtimes: self.runtimes.clone(),
+            tasks: self.tasks.clone(),
+        }
+    }
+
+    /// Get regular (non-phase) tasks from this context.
+    fn regular_tasks(&self) -> Vec<&cuenv_ci::ir::Task> {
+        self.tasks.iter().filter(|t| t.phase.is_none()).collect()
+    }
 }
 
 /// Check if any pipeline tasks have matrix configurations.
@@ -784,7 +808,18 @@ fn build_project_pipeline_context(
         .iter()
         .map(|t| t.task_name().to_string())
         .collect();
-    let tasks = cuenv_ci::pipeline::filter_tasks(&pipeline_task_names, ir.tasks);
+
+    // Get pipeline tasks (non-phase tasks)
+    let filtered_tasks = cuenv_ci::pipeline::filter_tasks(&pipeline_task_names, ir.tasks.clone());
+
+    // Combine phase tasks (bootstrap, setup, success, failure) with pipeline tasks
+    let phase_tasks: Vec<cuenv_ci::ir::Task> = ir
+        .tasks
+        .into_iter()
+        .filter(|t| t.phase.is_some())
+        .collect();
+    let mut all_tasks = phase_tasks;
+    all_tasks.extend(filtered_tasks);
 
     // Use the compiler-derived trigger which includes paths from task inputs
     let trigger = ir
@@ -799,9 +834,8 @@ fn build_project_pipeline_context(
         project_name: Some(project.config.name.clone()),
         project_path: project_path_for_compiler,
         environment: pipeline.environment.clone(),
-        stages: ir.stages,
         runtimes: ir.runtimes,
-        tasks,
+        tasks: all_tasks,
         pipeline_tasks: pipeline.tasks.clone(),
     })
 }
@@ -811,23 +845,9 @@ fn emit_release_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
     use cuenv_github::workflow::{GitHubActionsEmitter, ReleaseWorkflowBuilder};
 
-    let ir = IntermediateRepresentation {
-        version: "1.4".to_string(),
-        pipeline: PipelineMetadata {
-            name: pipeline_name.to_string(),
-            environment: ctx.environment.clone(),
-            requires_onepassword: false,
-            project_name: ctx.project_name.clone(),
-            trigger: Some(ctx.trigger.clone()),
-            pipeline_tasks: vec![],
-        },
-        runtimes: ctx.runtimes.clone(),
-        stages: ctx.stages.clone(),
-        tasks: Vec::new(),
-    };
+    let ir = ctx.to_ir(pipeline_name);
 
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
     let workflow = ReleaseWorkflowBuilder::new(emitter).build(&ir);
@@ -863,14 +883,16 @@ fn emit_standard_workflow(
         None => pipeline_name.to_string(),
     };
 
+    let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
 
     // Build jobs using build_simple_job (which supports project_path for working-directory)
+    // Only iterate over regular tasks (non-phase tasks) - phase tasks are handled internally
     let mut jobs = IndexMap::new();
-    for task in &ctx.tasks {
+    for task in ctx.regular_tasks() {
         let mut job = emitter.build_simple_job(
             task,
-            &ctx.stages,
+            &ir,
             ctx.environment.as_ref(),
             ctx.project_path.as_deref(),
         );
@@ -936,6 +958,7 @@ fn emit_standard_workflow(
 fn build_pipeline_jobs(
     expanded_tasks: &[cuenv_core::ci::PipelineTask],
     ctx: &PipelineContext,
+    ir: &cuenv_ci::ir::IntermediateRepresentation,
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
 ) -> indexmap::IndexMap<String, cuenv_github::workflow::schema::Job> {
     use indexmap::IndexMap;
@@ -955,7 +978,7 @@ fn build_pipeline_jobs(
                     // Use emitter method directly
                     let mut job = emitter.build_simple_job(
                         ir_task,
-                        &ctx.stages,
+                        ir,
                         ctx.environment.as_ref(),
                         ctx.project_path.as_deref(),
                     );
@@ -990,7 +1013,7 @@ fn build_pipeline_jobs(
                     let synthetic_task = create_synthetic_aggregation_task(task_name, matrix_task);
                     let job = emitter.build_artifact_aggregation_job(
                         &synthetic_task,
-                        &ctx.stages,
+                        ir,
                         ctx.environment.as_ref(),
                         &combined_needs,
                         ctx.project_path.as_deref(),
@@ -1011,7 +1034,7 @@ fn build_pipeline_jobs(
 
                     let expanded_jobs = emitter.build_matrix_jobs(
                         &synthetic_task,
-                        &ctx.stages,
+                        ir,
                         ctx.environment.as_ref(),
                         arch_runners.as_ref(),
                         &[],
@@ -1042,7 +1065,7 @@ fn build_pipeline_jobs(
         // Use emitter method directly
         let mut job = emitter.build_simple_job(
             ir_task,
-            &ctx.stages,
+            ir,
             ctx.environment.as_ref(),
             ctx.project_path.as_deref(),
         );
@@ -1189,6 +1212,7 @@ fn emit_matrix_workflow(
         None => pipeline_name.to_string(),
     };
 
+    let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
 
     let explicit_task_names: HashSet<String> = ctx
@@ -1203,7 +1227,7 @@ fn emit_matrix_workflow(
         &explicit_task_names,
     );
 
-    let jobs = build_pipeline_jobs(&expanded_tasks, ctx, &emitter);
+    let jobs = build_pipeline_jobs(&expanded_tasks, ctx, &ir, &emitter);
 
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 

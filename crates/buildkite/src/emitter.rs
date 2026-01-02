@@ -7,7 +7,7 @@
 
 use crate::schema::{AgentRules, BlockStep, CommandStep, CommandValue, DependsOn, Pipeline, Step};
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
-use cuenv_ci::ir::{IntermediateRepresentation, OutputType, StageTask, Task};
+use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task};
 use std::collections::HashMap;
 
 /// Buildkite pipeline emitter
@@ -61,29 +61,33 @@ impl BuildkiteEmitter {
     fn build_pipeline(&self, ir: &IntermediateRepresentation) -> Pipeline {
         let mut steps: Vec<Step> = Vec::new();
 
-        // Emit bootstrap stage steps (e.g., install-nix)
-        for stage_task in &ir.stages.bootstrap {
-            steps.push(Step::Command(Box::new(self.stage_task_to_step(stage_task))));
+        // Emit bootstrap phase tasks (e.g., install-nix)
+        for task in ir.sorted_phase_tasks(BuildStage::Bootstrap) {
+            steps.push(Step::Command(Box::new(self.phase_task_to_step(task))));
         }
 
-        // Emit setup stage steps (e.g., cachix, setup-cuenv, 1password)
-        for stage_task in &ir.stages.setup {
-            steps.push(Step::Command(Box::new(self.stage_task_to_step(stage_task))));
+        // Emit setup phase tasks (e.g., cachix, setup-cuenv, 1password)
+        for task in ir.sorted_phase_tasks(BuildStage::Setup) {
+            steps.push(Step::Command(Box::new(self.phase_task_to_step(task))));
         }
 
-        // Collect all setup step IDs for task dependencies
-        let setup_keys: Vec<String> = ir.stages.setup_task_ids();
+        // Collect all bootstrap + setup task IDs for dependencies
+        let setup_keys: Vec<String> = ir
+            .sorted_phase_tasks(BuildStage::Bootstrap)
+            .iter()
+            .chain(ir.sorted_phase_tasks(BuildStage::Setup).iter())
+            .map(|t| t.id.clone())
+            .collect();
 
         // Build approval keys map for tasks that need manual approval
         let approval_keys: HashMap<String, String> = ir
-            .tasks
-            .iter()
+            .regular_tasks()
             .filter(|task| task.manual_approval)
             .map(|task| (task.id.clone(), format!("{}-approval", task.id)))
             .collect();
 
         // Build task steps: block steps for approvals, then command steps
-        for task in &ir.tasks {
+        for task in ir.regular_tasks() {
             // Add block step if task requires manual approval
             if let Some(approval_key) = approval_keys.get(&task.id) {
                 steps.push(Step::Block(self.build_block_step(task, approval_key)));
@@ -104,8 +108,8 @@ impl BuildkiteEmitter {
         }
     }
 
-    /// Convert a stage task to a Buildkite command step
-    fn stage_task_to_step(&self, task: &StageTask) -> CommandStep {
+    /// Convert a phase task (bootstrap/setup/success/failure) to a Buildkite command step
+    fn phase_task_to_step(&self, task: &Task) -> CommandStep {
         let label = task.label.as_ref().map(|l| self.format_label(l, false));
 
         // Build command - use shell wrapper if needed
@@ -333,7 +337,7 @@ mod tests {
     use super::*;
     use cuenv_ci::ir::{
         CachePolicy, OutputDeclaration, PipelineMetadata, PurityMode, ResourceRequirements,
-        Runtime, SecretConfig, StageConfiguration,
+        Runtime, SecretConfig,
     };
     use std::collections::BTreeMap;
 
@@ -349,7 +353,6 @@ mod tests {
                 pipeline_tasks: vec![],
             },
             runtimes: vec![],
-            stages: StageConfiguration::default(),
             tasks,
         }
     }
@@ -543,6 +546,35 @@ mod tests {
         assert_eq!(emitter.file_extension(), "yml");
     }
 
+    /// Helper to create a phase task for testing
+    fn make_phase_task(id: &str, command: &[&str], phase: BuildStage, priority: i32) -> Task {
+        Task {
+            id: id.to_string(),
+            runtime: None,
+            command: command.iter().map(|s| (*s).to_string()).collect(),
+            shell: command.len() == 1, // Single command = shell mode
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Disabled,
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: BTreeMap::new(),
+            phase: Some(phase),
+            label: None,
+            priority: Some(priority),
+            contributor: None,
+            condition: None,
+            provider_hints: None,
+        }
+    }
+
     #[test]
     fn test_with_nix_runtime() {
         let emitter = BuildkiteEmitter::new();
@@ -551,8 +583,28 @@ mod tests {
         let mut task = make_task("build", &["cargo", "build"]);
         task.runtime = Some("nix-rust".to_string());
 
-        // Create IR with runtime definition and stages
-        let mut ir = make_ir(vec![task]);
+        // Create phase tasks that would be contributed by NixContributor
+        let mut bootstrap_task = make_phase_task(
+            "install-nix",
+            &["curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none"],
+            BuildStage::Bootstrap,
+            0,
+        );
+        bootstrap_task.label = Some("Install Nix".to_string());
+        bootstrap_task.contributor = Some("nix".to_string());
+
+        let mut setup_task = make_phase_task(
+            "setup-cuenv",
+            &[". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config"],
+            BuildStage::Setup,
+            10,
+        );
+        setup_task.label = Some("Setup cuenv".to_string());
+        setup_task.contributor = Some("cuenv".to_string());
+        setup_task.depends_on = vec!["install-nix".to_string()];
+
+        // Create IR with runtime definition and phase tasks
+        let mut ir = make_ir(vec![bootstrap_task, setup_task, task]);
         ir.runtimes.push(Runtime {
             id: "nix-rust".to_string(),
             flake: "github:NixOS/nixpkgs/nixos-unstable".to_string(),
@@ -562,34 +614,9 @@ mod tests {
             purity: PurityMode::Strict,
         });
 
-        // Add stage tasks that would be contributed by NixContributor
-        ir.stages.bootstrap.push(StageTask {
-            id: "install-nix".to_string(),
-            provider: "nix".to_string(),
-            label: Some("Install Nix".to_string()),
-            command: vec![
-                "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none".to_string()
-            ],
-            shell: true,
-            priority: 0,
-            ..Default::default()
-        });
-        ir.stages.setup.push(StageTask {
-            id: "setup-cuenv".to_string(),
-            provider: "cuenv".to_string(),
-            label: Some("Setup cuenv".to_string()),
-            command: vec![
-                ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix build .#cuenv --accept-flake-config".to_string()
-            ],
-            shell: true,
-            depends_on: vec!["install-nix".to_string()],
-            priority: 10,
-            ..Default::default()
-        });
-
         let yaml = emitter.emit(&ir).unwrap();
 
-        // Should contain Nix bootstrap from stages
+        // Should contain Nix bootstrap from phase tasks
         assert!(yaml.contains("install.determinate.systems/nix"));
         assert!(yaml.contains("nix-daemon.sh"));
 

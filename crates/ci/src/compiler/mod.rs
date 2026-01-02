@@ -1,4 +1,4 @@
-//! Compiler from cuenv task definitions to IR v1.4
+//! Compiler from cuenv task definitions to IR v1.5
 //!
 //! Transforms a cuenv `Project` with tasks into an intermediate representation
 //! suitable for emitting orchestrator-native CI configurations.
@@ -18,7 +18,7 @@ use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
 use crate::ir::{
     ArtifactDownload, BuildStage, CachePolicy, IntermediateRepresentation, IrValidator,
     ManualTriggerConfig, OutputDeclaration, OutputType, PurityMode, Runtime, SecretConfig,
-    StageTask, Task as IrTask, TaskCondition, TriggerCondition, WorkflowDispatchInputDef,
+    Task as IrTask, TaskCondition, TriggerCondition, WorkflowDispatchInputDef,
 };
 use cuenv_core::ci::{
     BuildPhase as CueBuildPhase, CI, Contributor, ManualTrigger, PhaseTask, Pipeline, PipelineTask,
@@ -328,9 +328,6 @@ impl Compiler {
 
         // Apply CUE-defined contributors
         self.apply_cue_contributors(&mut ir);
-
-        // Sort stages by dependencies
-        ir.stages.sort_by_dependencies();
 
         // Validate the IR
         let validator = IrValidator::new(&ir);
@@ -723,14 +720,11 @@ impl Compiler {
                 continue;
             }
 
-            // Already contributed check (idempotency)
+            // Already contributed check (idempotency) - check all phase tasks
             let contributed_ids: HashSet<String> = ir
-                .stages
-                .bootstrap
+                .tasks
                 .iter()
-                .chain(ir.stages.setup.iter())
-                .chain(ir.stages.success.iter())
-                .chain(ir.stages.failure.iter())
+                .filter(|t| t.phase.is_some())
                 .map(|t| t.id.clone())
                 .collect();
 
@@ -742,15 +736,8 @@ impl Compiler {
                 }
 
                 let stage = Self::cue_build_phase_to_ir(phase_task.phase);
-
-                // Add to legacy stage configuration (backwards compatibility)
-                let stage_task = Self::phase_task_to_ir(phase_task, &contributor.id);
-                ir.stages.add(stage, stage_task);
-
-                // Add to unified task model (phase tasks in ir.tasks)
-                let unified_task =
-                    Self::phase_task_to_unified_ir(phase_task, &contributor.id, stage);
-                ir.tasks.push(unified_task);
+                let task = Self::phase_task_to_ir(phase_task, &contributor.id, stage);
+                ir.tasks.push(task);
             }
         }
     }
@@ -1053,85 +1040,6 @@ impl Compiler {
         }
     }
 
-    /// Convert a CUE PhaseTask to an IR StageTask
-    fn phase_task_to_ir(phase_task: &PhaseTask, provider: &str) -> StageTask {
-        // Build command array
-        let (command, shell) = if let Some(ref cmd) = phase_task.command {
-            let mut cmd_vec = vec![cmd.clone()];
-            cmd_vec.extend(phase_task.args.clone());
-            (cmd_vec, phase_task.shell)
-        } else if let Some(ref script) = phase_task.script {
-            (vec![script.clone()], true)
-        } else {
-            (vec![], false)
-        };
-
-        // Convert secrets
-        let secrets: BTreeMap<String, SecretConfig> = phase_task
-            .secrets
-            .iter()
-            .map(|(k, v)| {
-                let config = match v {
-                    SecretRef::Simple(s) => SecretConfig {
-                        source: s.clone(),
-                        cache_key: false,
-                    },
-                    SecretRef::Detailed(d) => SecretConfig {
-                        source: d.source.clone(),
-                        cache_key: d.cache_key,
-                    },
-                };
-                (k.clone(), config)
-            })
-            .collect();
-
-        // Convert provider hints
-        let provider_hints = phase_task.provider.as_ref().and_then(|p| {
-            p.github.as_ref().map(|gh| {
-                let mut github_action = serde_json::Map::new();
-                github_action.insert(
-                    "uses".to_string(),
-                    serde_json::Value::String(gh.uses.clone()),
-                );
-                if !gh.inputs.is_empty() {
-                    github_action.insert(
-                        "inputs".to_string(),
-                        serde_json::Value::Object(
-                            gh.inputs
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect(),
-                        ),
-                    );
-                }
-
-                let mut hints = serde_json::Map::new();
-                hints.insert(
-                    "github_action".to_string(),
-                    serde_json::Value::Object(github_action),
-                );
-                serde_json::Value::Object(hints)
-            })
-        });
-
-        StageTask {
-            id: phase_task.id.clone(),
-            provider: provider.to_string(),
-            label: phase_task.label.clone(),
-            command,
-            shell,
-            env: phase_task
-                .env
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-            secrets,
-            depends_on: phase_task.depends_on.clone(),
-            priority: phase_task.priority,
-            provider_hints,
-        }
-    }
-
     /// Convert a CUE TaskCondition to an IR TaskCondition
     fn cue_task_condition_to_ir(condition: CueTaskCondition) -> TaskCondition {
         match condition {
@@ -1141,11 +1049,11 @@ impl Compiler {
         }
     }
 
-    /// Convert a CUE PhaseTask to a unified IR Task
+    /// Convert a CUE PhaseTask to an IR Task
     ///
-    /// This creates an IR Task with phase metadata, enabling the unified task model
-    /// where phase tasks are stored alongside regular tasks in `ir.tasks`.
-    fn phase_task_to_unified_ir(
+    /// Creates an IR Task with phase metadata. Phase tasks are stored alongside
+    /// regular tasks in `ir.tasks` and distinguished by their `phase` field.
+    fn phase_task_to_ir(
         phase_task: &PhaseTask,
         contributor_id: &str,
         phase: BuildStage,
@@ -1267,7 +1175,7 @@ mod tests {
         let compiler = Compiler::new(project);
         let ir = compiler.compile().unwrap();
 
-        assert_eq!(ir.version, "1.4");
+        assert_eq!(ir.version, "1.5");
         assert_eq!(ir.pipeline.name, "test-project");
         assert_eq!(ir.tasks.len(), 1);
         assert_eq!(ir.tasks[0].id, "build");
@@ -1800,7 +1708,6 @@ mod tests {
     // Contributor Activation Tests
     // =========================================================================
 
-    use crate::ir::StageConfiguration;
     use cuenv_core::ci::ActivationCondition;
     use std::collections::HashMap;
 
@@ -1816,7 +1723,7 @@ mod tests {
     /// Helper to create a minimal IR for testing
     fn test_ir() -> IntermediateRepresentation {
         IntermediateRepresentation {
-            version: "1.4".to_string(),
+            version: "1.5".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "test".to_string(),
                 environment: None,
@@ -1826,7 +1733,6 @@ mod tests {
                 pipeline_tasks: vec![],
             },
             runtimes: vec![],
-            stages: StageConfiguration::default(),
             tasks: vec![],
         }
     }
@@ -2015,12 +1921,13 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Setup);
 
         assert_eq!(ir_task.id, "test-task");
         assert_eq!(ir_task.command, vec!["echo hello"]);
         assert!(!ir_task.shell);
-        assert_eq!(ir_task.priority, 10);
+        assert_eq!(ir_task.priority, Some(10));
+        assert_eq!(ir_task.phase, Some(BuildStage::Setup));
     }
 
     #[test]
@@ -2043,13 +1950,14 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Bootstrap);
 
         assert_eq!(ir_task.id, "script-task");
         assert_eq!(ir_task.command, vec!["echo line1\necho line2"]);
         assert!(ir_task.shell);
         assert_eq!(ir_task.depends_on, vec!["other"]);
-        assert_eq!(ir_task.priority, 5);
+        assert_eq!(ir_task.priority, Some(5));
+        assert_eq!(ir_task.phase, Some(BuildStage::Bootstrap));
     }
 
     #[test]
@@ -2083,11 +1991,12 @@ mod tests {
             }),
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Bootstrap);
 
         assert_eq!(ir_task.id, "nix-install");
         assert!(ir_task.command.is_empty()); // No command, uses action
         assert!(ir_task.provider_hints.is_some());
+        assert_eq!(ir_task.phase, Some(BuildStage::Bootstrap));
 
         // Verify the GitHub action is in provider_hints
         let hints = ir_task.provider_hints.as_ref().unwrap();
@@ -2131,9 +2040,10 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Setup);
 
         assert_eq!(ir_task.secrets.len(), 2);
+        assert_eq!(ir_task.phase, Some(BuildStage::Setup));
 
         // Check simple secret conversion
         let simple = ir_task.secrets.get("SIMPLE_SECRET").unwrap();
@@ -2170,11 +2080,12 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Setup);
 
         assert_eq!(ir_task.env.len(), 2);
         assert_eq!(ir_task.env.get("VAR1"), Some(&"value1".to_string()));
         assert_eq!(ir_task.env.get("VAR2"), Some(&"value2".to_string()));
+        assert_eq!(ir_task.phase, Some(BuildStage::Setup));
     }
 
     #[test]
@@ -2203,7 +2114,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github");
+        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Setup);
 
         assert_eq!(ir_task.id, "bun-install");
         assert_eq!(
@@ -2211,5 +2122,25 @@ mod tests {
             vec!["cuenv", "exec", "--", "bun", "install", "--frozen-lockfile"]
         );
         assert!(!ir_task.shell);
+        assert_eq!(ir_task.phase, Some(BuildStage::Setup));
+    }
+
+    // Tests for cue_task_condition_to_ir
+    #[test]
+    fn test_cue_task_condition_to_ir_on_success() {
+        let result = Compiler::cue_task_condition_to_ir(CueTaskCondition::OnSuccess);
+        assert_eq!(result, TaskCondition::OnSuccess);
+    }
+
+    #[test]
+    fn test_cue_task_condition_to_ir_on_failure() {
+        let result = Compiler::cue_task_condition_to_ir(CueTaskCondition::OnFailure);
+        assert_eq!(result, TaskCondition::OnFailure);
+    }
+
+    #[test]
+    fn test_cue_task_condition_to_ir_always() {
+        let result = Compiler::cue_task_condition_to_ir(CueTaskCondition::Always);
+        assert_eq!(result, TaskCondition::Always);
     }
 }

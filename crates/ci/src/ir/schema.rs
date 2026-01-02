@@ -1,21 +1,22 @@
-//! IR v1.4 Schema Types
+//! IR v1.5 Schema Types
 //!
 //! JSON schema for the intermediate representation used by the CI pipeline compiler.
 //!
 //! ## Version History
-//! - v1.4: Added `stages` field for provider-injected setup tasks
+//! - v1.5: Unified task model - phase tasks have `phase` field instead of separate `stages`
+//! - v1.4: Added `stages` field for provider-injected setup tasks (deprecated in v1.5)
 //! - v1.3: Initial stable version
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// IR version identifier
-pub const IR_VERSION: &str = "1.4";
+pub const IR_VERSION: &str = "1.5";
 
 /// Root IR document
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IntermediateRepresentation {
-    /// IR version (always "1.4")
+    /// IR version (always "1.5")
     pub version: String,
 
     /// Pipeline metadata
@@ -25,11 +26,7 @@ pub struct IntermediateRepresentation {
     #[serde(default)]
     pub runtimes: Vec<Runtime>,
 
-    /// Stage configuration for provider-injected tasks (bootstrap, setup, etc.)
-    #[serde(default, skip_serializing_if = "StageConfiguration::is_empty")]
-    pub stages: StageConfiguration,
-
-    /// Task definitions
+    /// Task definitions (includes both regular tasks and phase tasks)
     pub tasks: Vec<Task>,
 }
 
@@ -47,7 +44,6 @@ impl IntermediateRepresentation {
                 pipeline_tasks: Vec::new(),
             },
             runtimes: Vec::new(),
-            stages: StageConfiguration::default(),
             tasks: Vec::new(),
         }
     }
@@ -327,6 +323,22 @@ pub struct Task {
 }
 
 impl Task {
+    /// Get the display label for this task, falling back to the ID.
+    ///
+    /// Used by renderers when generating step names in CI workflows.
+    #[must_use]
+    pub fn label(&self) -> String {
+        self.label.clone().unwrap_or_else(|| self.id.clone())
+    }
+
+    /// Get the command as a single string (for shell execution).
+    ///
+    /// Joins the command array with spaces.
+    #[must_use]
+    pub fn command_string(&self) -> String {
+        self.command.join(" ")
+    }
+
     /// Create a synthetic task for artifact aggregation.
     ///
     /// Used when converting `MatrixTask` (with artifacts/params but no matrix dimensions)
@@ -548,232 +560,6 @@ pub enum TaskCondition {
     Always,
 }
 
-/// A task contributed by a stage provider
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-#[derive(Default)]
-pub struct StageTask {
-    /// Unique task identifier within the stage
-    pub id: String,
-
-    /// Provider that contributed this task (e.g., "nix", "1password", "cachix")
-    pub provider: String,
-
-    /// Human-readable label for display
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-
-    /// Command to execute (used by all platforms unless `action` overrides for GitHub)
-    pub command: Vec<String>,
-
-    /// Shell execution mode (false = direct execve, true = wrap in /bin/sh -c)
-    #[serde(default)]
-    pub shell: bool,
-
-    /// Environment variables
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub env: BTreeMap<String, String>,
-
-    /// Secret configurations
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub secrets: BTreeMap<String, SecretConfig>,
-
-    /// Dependencies on other stage tasks (by ID)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<String>,
-
-    /// Priority within the stage (lower = earlier, default 0)
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub priority: i32,
-
-    /// Provider-specific hints (e.g., GitHub Action specs, Buildkite plugins)
-    ///
-    /// This is an opaque JSON value that provider-specific emitters can interpret.
-    /// For example, GitHub emitters may look for an `action` key containing
-    /// `{ "uses": "actions/checkout@v4", "inputs": {...} }`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_hints: Option<serde_json::Value>,
-}
-
-/// Helper to skip serializing zero priority
-/// Serde's `skip_serializing_if` requires a reference parameter
-#[allow(clippy::trivially_copy_pass_by_ref)]
-const fn is_zero(v: &i32) -> bool {
-    *v == 0
-}
-
-/// Stage configuration containing all provider-injected tasks
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct StageConfiguration {
-    /// Bootstrap tasks (environment setup, runs first)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bootstrap: Vec<StageTask>,
-
-    /// Setup tasks (provider configuration, runs after bootstrap)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub setup: Vec<StageTask>,
-
-    /// Success tasks (post-success actions)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub success: Vec<StageTask>,
-
-    /// Failure tasks (post-failure actions)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub failure: Vec<StageTask>,
-}
-
-impl StageConfiguration {
-    /// Check if all stages are empty
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        self.bootstrap.is_empty()
-            && self.setup.is_empty()
-            && self.success.is_empty()
-            && self.failure.is_empty()
-    }
-
-    /// Add a task to the appropriate stage
-    pub fn add(&mut self, stage: BuildStage, task: StageTask) {
-        match stage {
-            BuildStage::Bootstrap => self.bootstrap.push(task),
-            BuildStage::Setup => self.setup.push(task),
-            BuildStage::Success => self.success.push(task),
-            BuildStage::Failure => self.failure.push(task),
-        }
-    }
-
-    /// Sort all stages by priority (lower priority = earlier)
-    #[deprecated(
-        note = "Use sort_by_dependencies instead, which respects depends_on relationships"
-    )]
-    pub fn sort_by_priority(&mut self) {
-        self.bootstrap.sort_by_key(|t| t.priority);
-        self.setup.sort_by_key(|t| t.priority);
-        self.success.sort_by_key(|t| t.priority);
-        self.failure.sort_by_key(|t| t.priority);
-    }
-
-    /// Sort all stages respecting `depends_on` relationships, with priority as tiebreaker.
-    ///
-    /// Uses Kahn's algorithm for topological sorting. When multiple tasks have no
-    /// pending dependencies, the one with the lowest priority value is selected first.
-    ///
-    /// Tasks that depend on non-existent tasks are placed at the end (dependencies
-    /// are considered satisfied for external/unknown dependencies).
-    pub fn sort_by_dependencies(&mut self) {
-        self.bootstrap = Self::topological_sort_with_priority(std::mem::take(&mut self.bootstrap));
-        self.setup = Self::topological_sort_with_priority(std::mem::take(&mut self.setup));
-        self.success = Self::topological_sort_with_priority(std::mem::take(&mut self.success));
-        self.failure = Self::topological_sort_with_priority(std::mem::take(&mut self.failure));
-    }
-
-    /// Topological sort with priority-aware selection (Kahn's algorithm).
-    ///
-    /// When multiple tasks are ready (no pending dependencies), selects the one
-    /// with the lowest priority value first.
-    fn topological_sort_with_priority(tasks: Vec<StageTask>) -> Vec<StageTask> {
-        use std::collections::{BinaryHeap, HashMap, HashSet};
-
-        if tasks.is_empty() {
-            return tasks;
-        }
-
-        // Build a set of known task IDs for filtering external dependencies
-        let known_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-
-        // Build adjacency list and in-degree count
-        // in_degree[task_id] = number of dependencies that must complete first
-        let mut in_degree: HashMap<&str, usize> = HashMap::new();
-        // dependents[task_id] = list of tasks that depend on this task
-        let mut dependents: HashMap<&str, Vec<&str>> = HashMap::new();
-
-        for task in &tasks {
-            in_degree.entry(task.id.as_str()).or_insert(0);
-            for dep in &task.depends_on {
-                // Only count dependencies on known tasks (ignore external dependencies)
-                if known_ids.contains(dep.as_str()) {
-                    *in_degree.entry(task.id.as_str()).or_insert(0) += 1;
-                    dependents
-                        .entry(dep.as_str())
-                        .or_default()
-                        .push(task.id.as_str());
-                }
-            }
-        }
-
-        // Create index lookup
-        let task_indices: HashMap<&str, usize> = tasks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.id.as_str(), i))
-            .collect();
-
-        // Initialize ready queue with tasks that have no dependencies
-        // Using (neg_priority, index) tuples - BinaryHeap is max-heap so negate priority
-        let mut ready: BinaryHeap<(i32, usize)> = BinaryHeap::new();
-        for (id, &degree) in &in_degree {
-            if degree == 0 {
-                let idx = task_indices[id];
-                // Negate priority so lowest priority comes first (max-heap behavior)
-                // Use negative index as secondary key for stable ordering
-                ready.push((-tasks[idx].priority, usize::MAX - idx));
-            }
-        }
-
-        // Kahn's algorithm
-        let mut result_indices = Vec::with_capacity(tasks.len());
-        let mut in_degree_mut = in_degree.clone();
-
-        while let Some((_, neg_idx)) = ready.pop() {
-            let index = usize::MAX - neg_idx;
-            result_indices.push(index);
-            let task_id = tasks[index].id.as_str();
-
-            // Decrease in-degree of dependents
-            if let Some(deps) = dependents.get(task_id) {
-                for &dep_id in deps {
-                    if let Some(degree) = in_degree_mut.get_mut(dep_id) {
-                        *degree -= 1;
-                        if *degree == 0 {
-                            let dep_idx = task_indices[dep_id];
-                            ready.push((-tasks[dep_idx].priority, usize::MAX - dep_idx));
-                        }
-                    }
-                }
-            }
-        }
-
-        // If cycle detected (not all tasks processed), fall back to priority sort
-        // This shouldn't happen with valid stage configurations
-        if result_indices.len() != tasks.len() {
-            tracing::warn!(
-                "Cycle detected in stage task dependencies, falling back to priority sort"
-            );
-            let mut fallback = tasks;
-            fallback.sort_by_key(|t| t.priority);
-            return fallback;
-        }
-
-        // Reorder tasks according to topological order
-        // SAFETY: Each index appears exactly once, so each take() succeeds
-        let mut tasks_vec: Vec<Option<StageTask>> = tasks.into_iter().map(Some).collect();
-        result_indices
-            .into_iter()
-            .filter_map(|i| tasks_vec[i].take())
-            .collect()
-    }
-
-    /// Get all task IDs from bootstrap and setup stages (for task dependencies)
-    #[must_use]
-    pub fn setup_task_ids(&self) -> Vec<String> {
-        self.bootstrap
-            .iter()
-            .chain(self.setup.iter())
-            .map(|t| t.id.clone())
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,7 +570,6 @@ mod tests {
         assert_eq!(ir.version, "1.4");
         assert_eq!(ir.pipeline.name, "test-pipeline");
         assert!(ir.runtimes.is_empty());
-        assert!(ir.stages.is_empty());
         assert!(ir.tasks.is_empty());
     }
 
@@ -1062,350 +847,5 @@ mod tests {
             serde_json::to_string(&BuildStage::Failure).unwrap(),
             r#""failure""#
         );
-    }
-
-    #[test]
-    fn test_stage_task_serialization() {
-        let task = StageTask {
-            id: "install-nix".to_string(),
-            provider: "nix".to_string(),
-            label: Some("Install Nix".to_string()),
-            command: vec!["curl -sSf https://install.determinate.systems/nix | sh".to_string()],
-            shell: true,
-            env: [(
-                "NIX_INSTALLER_DIAGNOSTIC_ENDPOINT".to_string(),
-                String::new(),
-            )]
-            .into_iter()
-            .collect(),
-            secrets: BTreeMap::new(),
-            depends_on: vec![],
-            priority: 0,
-            provider_hints: None,
-        };
-
-        let json = serde_json::to_value(&task).unwrap();
-        assert_eq!(json["id"], "install-nix");
-        assert_eq!(json["provider"], "nix");
-        assert_eq!(json["label"], "Install Nix");
-        assert_eq!(json["shell"], true);
-    }
-
-    #[test]
-    fn test_stage_task_default() {
-        let task = StageTask::default();
-        assert!(task.id.is_empty());
-        assert!(task.provider.is_empty());
-        assert!(task.label.is_none());
-        assert!(task.command.is_empty());
-        assert!(!task.shell);
-        assert!(task.env.is_empty());
-        assert!(task.depends_on.is_empty());
-        assert_eq!(task.priority, 0);
-        assert!(task.provider_hints.is_none());
-    }
-
-    #[test]
-    fn test_stage_configuration_empty() {
-        let config = StageConfiguration::default();
-        assert!(config.is_empty());
-        assert!(config.bootstrap.is_empty());
-        assert!(config.setup.is_empty());
-        assert!(config.success.is_empty());
-        assert!(config.failure.is_empty());
-    }
-
-    #[test]
-    fn test_stage_configuration_add() {
-        let mut config = StageConfiguration::default();
-
-        config.add(
-            BuildStage::Bootstrap,
-            StageTask {
-                id: "install-nix".to_string(),
-                provider: "nix".to_string(),
-                ..Default::default()
-            },
-        );
-
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-1password".to_string(),
-                provider: "1password".to_string(),
-                ..Default::default()
-            },
-        );
-
-        assert!(!config.is_empty());
-        assert_eq!(config.bootstrap.len(), 1);
-        assert_eq!(config.setup.len(), 1);
-        assert_eq!(config.bootstrap[0].id, "install-nix");
-        assert_eq!(config.setup[0].id, "setup-1password");
-    }
-
-    #[test]
-    fn test_stage_configuration_sort_by_priority() {
-        let mut config = StageConfiguration::default();
-
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-1password".to_string(),
-                priority: 20,
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-cachix".to_string(),
-                priority: 5,
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-cuenv".to_string(),
-                priority: 10,
-                ..Default::default()
-            },
-        );
-
-        config.sort_by_dependencies();
-
-        assert_eq!(config.setup[0].id, "setup-cachix");
-        assert_eq!(config.setup[1].id, "setup-cuenv");
-        assert_eq!(config.setup[2].id, "setup-1password");
-    }
-
-    #[test]
-    fn test_stage_configuration_setup_task_ids() {
-        let mut config = StageConfiguration::default();
-
-        config.add(
-            BuildStage::Bootstrap,
-            StageTask {
-                id: "install-nix".to_string(),
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-cuenv".to_string(),
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Success,
-            StageTask {
-                id: "notify".to_string(),
-                ..Default::default()
-            },
-        );
-
-        let ids = config.setup_task_ids();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&"install-nix".to_string()));
-        assert!(ids.contains(&"setup-cuenv".to_string()));
-        // Success stage should not be included
-        assert!(!ids.contains(&"notify".to_string()));
-    }
-
-    #[test]
-    fn test_ir_with_stages() {
-        let mut ir = IntermediateRepresentation::new("ci-pipeline");
-
-        ir.stages.add(
-            BuildStage::Bootstrap,
-            StageTask {
-                id: "install-nix".to_string(),
-                provider: "nix".to_string(),
-                label: Some("Install Nix".to_string()),
-                command: vec!["curl -sSf https://install.determinate.systems/nix | sh".to_string()],
-                shell: true,
-                priority: 0,
-                ..Default::default()
-            },
-        );
-
-        ir.stages.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-1password".to_string(),
-                provider: "1password".to_string(),
-                label: Some("Setup 1Password".to_string()),
-                command: vec!["cuenv secrets setup onepassword".to_string()],
-                depends_on: vec!["install-nix".to_string()],
-                priority: 20,
-                ..Default::default()
-            },
-        );
-
-        let json = serde_json::to_string_pretty(&ir).unwrap();
-        assert!(json.contains(r#""version": "1.4""#));
-        assert!(json.contains("install-nix"));
-        assert!(json.contains("setup-1password"));
-        assert!(json.contains("1password"));
-    }
-
-    #[test]
-    fn test_sort_by_dependencies_respects_depends_on() {
-        let mut config = StageConfiguration::default();
-
-        // 1Password has lower priority (20) but depends on cuenv (55)
-        // Without dependency-aware sorting, 1Password would come first
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-1password".to_string(),
-                priority: 20,
-                depends_on: vec!["setup-cuenv".to_string()],
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-cuenv".to_string(),
-                priority: 55,
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-cachix".to_string(),
-                priority: 5,
-                ..Default::default()
-            },
-        );
-
-        config.sort_by_dependencies();
-
-        // cachix has no deps and lowest priority -> first
-        assert_eq!(config.setup[0].id, "setup-cachix");
-        // cuenv has no deps -> second (by priority)
-        assert_eq!(config.setup[1].id, "setup-cuenv");
-        // 1password depends on cuenv -> must come after cuenv
-        assert_eq!(config.setup[2].id, "setup-1password");
-    }
-
-    #[test]
-    fn test_sort_by_dependencies_uses_priority_as_tiebreaker() {
-        let mut config = StageConfiguration::default();
-
-        // All tasks have no dependencies, should sort by priority
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "task-c".to_string(),
-                priority: 30,
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "task-a".to_string(),
-                priority: 10,
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "task-b".to_string(),
-                priority: 20,
-                ..Default::default()
-            },
-        );
-
-        config.sort_by_dependencies();
-
-        assert_eq!(config.setup[0].id, "task-a");
-        assert_eq!(config.setup[1].id, "task-b");
-        assert_eq!(config.setup[2].id, "task-c");
-    }
-
-    #[test]
-    fn test_sort_by_dependencies_ignores_external_dependencies() {
-        let mut config = StageConfiguration::default();
-
-        // Task depends on something not in this stage (external dependency)
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-1password".to_string(),
-                priority: 20,
-                depends_on: vec!["install-nix".to_string()], // Not in setup stage
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "setup-cuenv".to_string(),
-                priority: 55,
-                ..Default::default()
-            },
-        );
-
-        config.sort_by_dependencies();
-
-        // External deps are ignored, so sort by priority
-        assert_eq!(config.setup[0].id, "setup-1password");
-        assert_eq!(config.setup[1].id, "setup-cuenv");
-    }
-
-    #[test]
-    fn test_sort_by_dependencies_chain() {
-        let mut config = StageConfiguration::default();
-
-        // Chain: A -> B -> C (where -> means "depends on")
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "task-c".to_string(),
-                priority: 10, // Lowest priority, but depends on B
-                depends_on: vec!["task-b".to_string()],
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "task-a".to_string(),
-                priority: 30, // Highest priority, no deps
-                ..Default::default()
-            },
-        );
-        config.add(
-            BuildStage::Setup,
-            StageTask {
-                id: "task-b".to_string(),
-                priority: 20, // Middle priority, depends on A
-                depends_on: vec!["task-a".to_string()],
-                ..Default::default()
-            },
-        );
-
-        config.sort_by_dependencies();
-
-        // A has no deps -> first
-        // B depends on A -> second
-        // C depends on B -> third
-        assert_eq!(config.setup[0].id, "task-a");
-        assert_eq!(config.setup[1].id, "task-b");
-        assert_eq!(config.setup[2].id, "task-c");
-    }
-
-    #[test]
-    fn test_sort_by_dependencies_empty() {
-        let mut config = StageConfiguration::default();
-        config.sort_by_dependencies();
-        assert!(config.setup.is_empty());
     }
 }
