@@ -127,6 +127,8 @@ impl Default for CuenvConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CuenvSource {
+    /// Build using native Rust/Go toolchains (no Nix)
+    Native,
     /// Build from git checkout (requires Nix)
     Git,
     /// Install via Nix flake (auto-configures Cachix)
@@ -143,6 +145,7 @@ impl CuenvSource {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
+            Self::Native => "native",
             Self::Git => "git",
             Self::Nix => "nix",
             Self::Homebrew => "homebrew",

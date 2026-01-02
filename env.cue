@@ -71,9 +71,9 @@ schema.#Project & {
 
 	formatters: rust: {edition: "2024"}
 
-	// Build cuenv from source instead of using released binaries
-	// We really need to find a way to speed this up later.
-	config: ci: cuenv: {source: "git", version: "self"}
+	// Build cuenv from source using native Rust/Go toolchains
+	// Uses native setup instead of nix to avoid sccache env var issues
+	config: ci: cuenv: {source: "native", version: "self"}
 
 	env: {
 		CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
@@ -89,8 +89,7 @@ schema.#Project & {
 
 	ci: {
 		contributors: [
-			xContributors.#Nix,
-			xContributors.#CuenvGit,
+			xContributors.#CuenvNative,
 			xContributors.#OnePassword,
 			xRust.#Sccache,
 		]

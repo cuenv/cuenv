@@ -73,15 +73,69 @@ import "github.com/cuenv/cuenv/schema"
 		shell:     true
 		dependsOn: ["install-nix"]
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		// Note: --impure allows environment variables like SCCACHE_DIR to pass through
 		command: """
 			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \\
-			nix develop --impure -c cargo build --release -p cuenv && \\
+			nix develop -c cargo build --release -p cuenv && \\
 			{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
 			  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
 			./target/release/cuenv sync -A
 			"""
 	}]
+}
+
+// #CuenvNative builds cuenv using native Rust/Go toolchains (no Nix)
+// Avoids nix develop's hermetic environment issues with sccache
+#CuenvNative: schema.#Contributor & {
+	id: "cuenv"
+	when: cuenvSource: ["native"]
+	tasks: [
+		{
+			id:       "setup-rust"
+			phase:    "setup"
+			label:    "Setup Rust"
+			priority: 6
+			provider: github: uses: "dtolnay/rust-toolchain@stable"
+		},
+		{
+			id:       "setup-go"
+			phase:    "setup"
+			label:    "Setup Go"
+			priority: 6
+			provider: github: {
+				uses: "actions/setup-go@v5"
+				with: "go-version": "1.24"
+			}
+		},
+		{
+			id:        "build-cue-bridge"
+			phase:     "setup"
+			label:     "Build CUE bridge"
+			priority:  8
+			shell:     true
+			dependsOn: ["setup-go"]
+			command: """
+				cd crates/cuengine && \\
+				mkdir -p ../../target/release && \\
+				CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \\
+				cp libcue_bridge.h ../../target/release/
+				"""
+		},
+		{
+			id:        "setup-cuenv"
+			phase:     "setup"
+			label:     "Build cuenv"
+			priority:  10
+			shell:     true
+			dependsOn: ["setup-rust", "build-cue-bridge"]
+			env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+			command: """
+				cargo build --release -p cuenv && \\
+				{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
+				  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
+				./target/release/cuenv sync -A
+				"""
+		},
+	]
 }
 
 // #CuenvNix installs cuenv via Nix flake

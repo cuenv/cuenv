@@ -43,11 +43,12 @@ package schema
 // Configuration for cuenv installation in CI
 #CuenvConfig: close({
 	// Source for cuenv binary in CI
+	// - "native": Build using native Rust/Go toolchains (no Nix)
 	// - "git": Build from git checkout (requires Nix)
 	// - "nix": Install via Nix flake (auto-configures Cachix)
 	// - "homebrew": Install via Homebrew tap (no Nix required)
 	// - "release": Download pre-built binary from GitHub Releases (default)
-	source?: "git" | "nix" | "homebrew" | *"release"
+	source?: "native" | "git" | "nix" | "homebrew" | *"release"
 
 	// Version to install
 	// - "self": Use current checkout (default, for git/nix source)

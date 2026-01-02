@@ -38,21 +38,28 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+    - name: Build CUE bridge
+      run: |-
+        cd crates/cuengine && \
+        mkdir -p ../../target/release && \
+        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
+        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop --impure -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
@@ -72,21 +79,28 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+    - name: Build CUE bridge
+      run: |-
+        cd crates/cuengine && \
+        mkdir -p ../../target/release && \
+        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
+        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop --impure -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
@@ -106,21 +120,28 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+    - name: Build CUE bridge
+      run: |-
+        cd crates/cuengine && \
+        mkdir -p ../../target/release && \
+        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
+        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
-        nix develop --impure -c cargo build --release -p cuenv && \
+        cargo build --release -p cuenv && \
         { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
           echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
         ./target/release/cuenv sync -A
