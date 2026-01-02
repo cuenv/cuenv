@@ -92,4 +92,51 @@ mod tests {
         let ctx = MetadataContext::new().with_target("cuenv::test");
         assert_eq!(ctx.default_target, Some("cuenv::test".to_string()));
     }
+
+    #[test]
+    fn test_metadata_context_default() {
+        let ctx = MetadataContext::default();
+        assert!(!ctx.correlation_id.is_nil());
+        assert!(ctx.default_target.is_none());
+    }
+
+    #[test]
+    fn test_metadata_context_with_correlation_id() {
+        let id = Uuid::new_v4();
+        let ctx = MetadataContext::with_correlation_id(id);
+        assert_eq!(ctx.correlation_id, id);
+        assert!(ctx.default_target.is_none());
+    }
+
+    #[test]
+    fn test_metadata_context_debug() {
+        let ctx = MetadataContext::new();
+        let debug = format!("{:?}", ctx);
+        assert!(debug.contains("MetadataContext"));
+        assert!(debug.contains("correlation_id"));
+    }
+
+    #[test]
+    fn test_metadata_context_clone() {
+        let ctx = MetadataContext::new().with_target("test");
+        let cloned = ctx.clone();
+        assert_eq!(ctx.correlation_id, cloned.correlation_id);
+        assert_eq!(ctx.default_target, cloned.default_target);
+    }
+
+    #[test]
+    fn test_metadata_context_with_string_target() {
+        let ctx = MetadataContext::new().with_target(String::from("owned-target"));
+        assert_eq!(ctx.default_target, Some("owned-target".to_string()));
+    }
+
+    #[test]
+    fn test_set_correlation_id_after_init() {
+        // After correlation_id() has been called, set_correlation_id should return false
+        let _ = correlation_id(); // Ensure it's initialized
+        let new_id = Uuid::new_v4();
+        let result = set_correlation_id(new_id);
+        // Since we've already called correlation_id(), this should return false
+        assert!(!result);
+    }
 }

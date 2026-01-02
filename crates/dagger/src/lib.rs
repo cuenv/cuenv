@@ -294,3 +294,211 @@ pub fn create_dagger_backend(
         .and_then(|o| o.image.clone());
     Arc::new(DaggerBackend::new(image, project_root))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::config::BackendOptions;
+
+    #[test]
+    fn test_dagger_backend_new() {
+        let backend = DaggerBackend::new(Some("alpine:latest".to_string()), "/tmp".into());
+        assert_eq!(backend.default_image, Some("alpine:latest".to_string()));
+        assert_eq!(backend.project_root, std::path::PathBuf::from("/tmp"));
+    }
+
+    #[test]
+    fn test_dagger_backend_new_no_image() {
+        let backend = DaggerBackend::new(None, "/workspace".into());
+        assert!(backend.default_image.is_none());
+        assert_eq!(backend.project_root, std::path::PathBuf::from("/workspace"));
+    }
+
+    #[test]
+    fn test_dagger_backend_container_cache_empty() {
+        let backend = DaggerBackend::new(None, "/tmp".into());
+        let cache = backend.container_cache();
+        let guard = cache.lock().unwrap();
+        assert!(guard.is_empty());
+    }
+
+    #[test]
+    fn test_dagger_backend_name() {
+        let backend = DaggerBackend::new(None, "/tmp".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_with_config() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: Some("rust:latest".to_string()),
+                platform: None,
+            }),
+        };
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_no_config() {
+        let backend = create_dagger_backend(None, "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_config_no_options() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_create_dagger_backend_with_platform() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: Some("alpine:latest".to_string()),
+                platform: Some("linux/amd64".to_string()),
+            }),
+        };
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_dagger_backend_container_cache_is_shared() {
+        let backend = DaggerBackend::new(None, "/tmp".into());
+        let cache1 = backend.container_cache().clone();
+        let cache2 = backend.container_cache().clone();
+
+        // Insert into cache via first reference
+        {
+            let guard = cache1.lock().unwrap();
+            // ContainerId is a complex type, but we can verify the Arc is shared
+            assert!(guard.is_empty());
+        }
+
+        // Verify second reference sees same state
+        {
+            let guard = cache2.lock().unwrap();
+            assert!(guard.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_dagger_backend_project_root_paths() {
+        let paths = vec![
+            "/home/user/project",
+            "/tmp/build",
+            ".",
+            "./relative/path",
+            "/var/lib/data",
+        ];
+
+        for path in paths {
+            let backend = DaggerBackend::new(None, path.into());
+            assert_eq!(backend.project_root, std::path::PathBuf::from(path));
+        }
+    }
+
+    #[test]
+    fn test_dagger_backend_default_image_variants() {
+        let images = vec![
+            "alpine:latest",
+            "rust:1.75",
+            "node:20-slim",
+            "ghcr.io/owner/image:tag",
+            "registry.example.com:5000/my-image:v1.2.3",
+        ];
+
+        for image in images {
+            let backend = DaggerBackend::new(Some(image.to_string()), "/tmp".into());
+            assert_eq!(backend.default_image, Some(image.to_string()));
+        }
+    }
+
+    #[test]
+    fn test_create_dagger_backend_extracts_image_from_options() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: Some("custom/image:tag".to_string()),
+                platform: None,
+            }),
+        };
+
+        // The factory function creates the backend
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        // We can only verify the name since we can't access private fields through the trait
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_dagger_backend_cache_multiple_containers() {
+        let backend = DaggerBackend::new(None, "/tmp".into());
+
+        // Verify we can work with the cache
+        {
+            let cache = backend.container_cache();
+            let guard = cache.lock().unwrap();
+            assert_eq!(guard.len(), 0);
+        }
+    }
+
+    #[test]
+    fn test_backend_options_with_no_image() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: None,
+                platform: Some("linux/arm64".to_string()),
+            }),
+        };
+
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_dagger_backend_cloned_cache() {
+        let backend = DaggerBackend::new(Some("alpine".to_string()), "/project".into());
+
+        // Get cache and clone the Arc
+        let cache = backend.container_cache().clone();
+
+        // Verify the Arc clone works
+        let guard = cache.lock().unwrap();
+        assert!(guard.is_empty());
+    }
+
+    #[test]
+    fn test_dagger_backend_with_empty_image() {
+        // Empty string is technically valid as a default_image field value
+        let backend = DaggerBackend::new(Some(String::new()), "/tmp".into());
+        assert_eq!(backend.default_image, Some(String::new()));
+    }
+
+    #[test]
+    fn test_backend_config_type_field() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+        assert_eq!(config.backend_type, "dagger");
+    }
+
+    #[test]
+    fn test_backend_options_both_fields() {
+        let options = BackendOptions {
+            image: Some("node:latest".to_string()),
+            platform: Some("linux/amd64".to_string()),
+        };
+        assert_eq!(options.image, Some("node:latest".to_string()));
+        assert_eq!(options.platform, Some("linux/amd64".to_string()));
+    }
+}

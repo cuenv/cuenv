@@ -745,6 +745,72 @@ mod tests {
     }
 
     #[test]
+    fn test_config_from_env_with_url() {
+        temp_env::with_vars(
+            [
+                ("CUENV_REMOTE_CACHE_URL", Some("grpc://cache.example.com:9092")),
+                ("CUENV_REMOTE_CACHE_INSTANCE", Some("my-instance")),
+                ("CUENV_REMOTE_CACHE_TLS", Some("true")),
+                ("CUENV_REMOTE_CACHE_TLS_CERT", Some("/path/to/cert.pem")),
+            ],
+            || {
+                let config = RemoteCacheConfig::from_env().unwrap();
+                assert_eq!(config.url, "grpc://cache.example.com:9092");
+                assert_eq!(config.instance_name, "my-instance");
+                assert!(config.tls_enabled);
+                assert_eq!(config.tls_cert_path, Some("/path/to/cert.pem".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn test_config_from_env_tls_values() {
+        // Test TLS with "1"
+        temp_env::with_vars(
+            [
+                ("CUENV_REMOTE_CACHE_URL", Some("grpc://cache.example.com")),
+                ("CUENV_REMOTE_CACHE_TLS", Some("1")),
+            ],
+            || {
+                let config = RemoteCacheConfig::from_env().unwrap();
+                assert!(config.tls_enabled);
+            },
+        );
+
+        // Test TLS with "false"
+        temp_env::with_vars(
+            [
+                ("CUENV_REMOTE_CACHE_URL", Some("grpc://cache.example.com")),
+                ("CUENV_REMOTE_CACHE_TLS", Some("false")),
+            ],
+            || {
+                let config = RemoteCacheConfig::from_env().unwrap();
+                assert!(!config.tls_enabled);
+            },
+        );
+    }
+
+    #[test]
+    fn test_config_from_env_empty_url() {
+        temp_env::with_var("CUENV_REMOTE_CACHE_URL", Some(""), || {
+            let config = RemoteCacheConfig::from_env();
+            assert!(config.is_none());
+        });
+    }
+
+    #[test]
+    fn test_config_default() {
+        let config = RemoteCacheConfig::default();
+        assert!(config.url.is_empty());
+        assert!(config.instance_name.is_empty());
+        assert!(!config.tls_enabled);
+        assert!(config.tls_cert_path.is_none());
+        assert_eq!(config.connect_timeout, Duration::from_secs(10));
+        assert_eq!(config.request_timeout, Duration::from_secs(60));
+        assert_eq!(config.max_retries, 3);
+    }
+
+    #[test]
     fn test_to_bazel_digest() {
         let digest = RemoteCacheBackend::to_bazel_digest("sha256:abc123");
         assert_eq!(digest.hash, "abc123");
@@ -762,10 +828,73 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_digest_empty() {
+        let data = b"";
+        let digest = RemoteCacheBackend::compute_digest(data);
+        assert!(!digest.hash.is_empty());
+        assert_eq!(digest.size_bytes, 0);
+    }
+
+    #[test]
+    fn test_compute_digest_deterministic() {
+        let data = b"test data";
+        let digest1 = RemoteCacheBackend::compute_digest(data);
+        let digest2 = RemoteCacheBackend::compute_digest(data);
+        assert_eq!(digest1.hash, digest2.hash);
+        assert_eq!(digest1.size_bytes, digest2.size_bytes);
+    }
+
+    #[test]
     fn test_is_retryable() {
         assert!(is_retryable(&tonic::Status::unavailable("test")));
         assert!(is_retryable(&tonic::Status::resource_exhausted("test")));
+        assert!(is_retryable(&tonic::Status::aborted("test")));
+        assert!(is_retryable(&tonic::Status::internal("test")));
+        assert!(is_retryable(&tonic::Status::unknown("test")));
         assert!(!is_retryable(&tonic::Status::not_found("test")));
         assert!(!is_retryable(&tonic::Status::permission_denied("test")));
+        assert!(!is_retryable(&tonic::Status::unauthenticated("test")));
+        assert!(!is_retryable(&tonic::Status::invalid_argument("test")));
+    }
+
+    #[test]
+    fn test_remote_cache_backend_new() {
+        let config = RemoteCacheConfig {
+            url: "grpc://localhost:9092".to_string(),
+            instance_name: "test".to_string(),
+            ..Default::default()
+        };
+        let backend = RemoteCacheBackend::new(config);
+        assert_eq!(backend.name(), "remote");
+    }
+
+    #[test]
+    fn test_remote_cache_backend_from_env_none() {
+        temp_env::with_var_unset("CUENV_REMOTE_CACHE_URL", || {
+            let backend = RemoteCacheBackend::from_env();
+            assert!(backend.is_none());
+        });
+    }
+
+    #[test]
+    fn test_remote_cache_backend_debug() {
+        let config = RemoteCacheConfig {
+            url: "grpc://localhost:9092".to_string(),
+            instance_name: "test".to_string(),
+            ..Default::default()
+        };
+        let backend = RemoteCacheBackend::new(config);
+        let debug_str = format!("{:?}", backend);
+        assert!(debug_str.contains("RemoteCacheBackend"));
+        assert!(debug_str.contains("config"));
+    }
+
+    #[test]
+    fn test_create_backoff() {
+        let backoff = RemoteCacheBackend::create_backoff();
+        assert_eq!(backoff.initial_interval, Duration::from_millis(100));
+        assert_eq!(backoff.max_interval, Duration::from_secs(2));
+        assert_eq!(backoff.max_elapsed_time, Some(Duration::from_secs(30)));
+        assert!((backoff.multiplier - 2.0).abs() < f64::EPSILON);
     }
 }

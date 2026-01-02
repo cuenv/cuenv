@@ -196,4 +196,102 @@ mod tests {
         assert!(json.contains("\"base_count\": 2"));
         assert!(json.contains("\"project_count\": 5"));
     }
+
+    #[test]
+    fn test_project_info_debug() {
+        let info = ProjectInfo {
+            name: "test-project".to_string(),
+            path: "projects/test".to_string(),
+        };
+
+        let debug = format!("{info:?}");
+        assert!(debug.contains("ProjectInfo"));
+        assert!(debug.contains("test-project"));
+    }
+
+    #[test]
+    fn test_info_output_debug() {
+        let output = InfoOutput {
+            module_root: "/test/repo".to_string(),
+            base_count: 0,
+            project_count: 0,
+            projects: vec![],
+        };
+
+        let debug = format!("{output:?}");
+        assert!(debug.contains("InfoOutput"));
+        assert!(debug.contains("/test/repo"));
+    }
+
+    #[test]
+    fn test_meta_output_serialization() {
+        let mut instances = std::collections::HashMap::new();
+        instances.insert("./".to_string(), serde_json::json!({"name": "test"}));
+
+        let output = MetaOutput {
+            module_root: "/test/repo".to_string(),
+            instances,
+            meta: std::collections::HashMap::new(),
+        };
+
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        assert!(json.contains("/test/repo"));
+        assert!(json.contains("instances"));
+    }
+
+    #[test]
+    fn test_meta_output_debug() {
+        let output = MetaOutput {
+            module_root: "/test".to_string(),
+            instances: std::collections::HashMap::new(),
+            meta: std::collections::HashMap::new(),
+        };
+
+        let debug = format!("{output:?}");
+        assert!(debug.contains("MetaOutput"));
+    }
+
+    #[test]
+    fn test_info_output_multiple_projects() {
+        let output = InfoOutput {
+            module_root: "/repo".to_string(),
+            base_count: 1,
+            project_count: 3,
+            projects: vec![
+                ProjectInfo {
+                    name: "api".to_string(),
+                    path: "services/api".to_string(),
+                },
+                ProjectInfo {
+                    name: "web".to_string(),
+                    path: "services/web".to_string(),
+                },
+                ProjectInfo {
+                    name: "worker".to_string(),
+                    path: "services/worker".to_string(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        assert!(json.contains("api"));
+        assert!(json.contains("web"));
+        assert!(json.contains("worker"));
+        assert!(json.contains("\"project_count\": 3"));
+    }
+
+    #[test]
+    fn test_execute_info_invalid_path() {
+        let result = execute_info(Some("/nonexistent/path"), "cuenv", false, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execute_info_no_cue_module() {
+        // Use temp directory with no cue.mod
+        let temp = std::env::temp_dir();
+        let result = execute_info(Some(temp.to_str().unwrap()), "cuenv", false, false);
+        // Should fail with "No CUE module found"
+        assert!(result.is_err());
+    }
 }

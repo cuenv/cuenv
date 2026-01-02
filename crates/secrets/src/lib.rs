@@ -215,3 +215,132 @@ pub trait SecretResolver: Send + Sync {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_secret_error_not_found() {
+        let err = SecretError::NotFound {
+            name: "API_KEY".to_string(),
+            secret_source: "env:API_KEY".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("API_KEY"));
+        assert!(msg.contains("env:API_KEY"));
+    }
+
+    #[test]
+    fn test_secret_error_too_short() {
+        let err = SecretError::TooShort {
+            name: "SHORT_SECRET".to_string(),
+            len: 2,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("SHORT_SECRET"));
+        assert!(msg.contains("2 chars"));
+        assert!(msg.contains("minimum 4"));
+    }
+
+    #[test]
+    fn test_secret_error_missing_salt() {
+        let err = SecretError::MissingSalt;
+        let msg = err.to_string();
+        assert!(msg.contains("CUENV_SECRET_SALT"));
+        assert!(msg.contains("cache_key: true"));
+    }
+
+    #[test]
+    fn test_secret_error_resolution_failed() {
+        let err = SecretError::ResolutionFailed {
+            name: "DATABASE_URL".to_string(),
+            message: "connection timeout".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("DATABASE_URL"));
+        assert!(msg.contains("connection timeout"));
+    }
+
+    #[test]
+    fn test_secret_error_unsupported_resolver() {
+        let err = SecretError::UnsupportedResolver {
+            resolver: "unknown".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("unknown"));
+    }
+
+    #[test]
+    fn test_secret_error_debug() {
+        let err = SecretError::MissingSalt;
+        let debug = format!("{err:?}");
+        assert!(debug.contains("MissingSalt"));
+    }
+
+    #[test]
+    fn test_secret_spec_new() {
+        let spec = SecretSpec::new("env:API_KEY");
+        assert_eq!(spec.source, "env:API_KEY");
+        assert!(!spec.cache_key);
+    }
+
+    #[test]
+    fn test_secret_spec_with_cache_key() {
+        let spec = SecretSpec::with_cache_key("env:CACHE_AFFECTING_SECRET");
+        assert_eq!(spec.source, "env:CACHE_AFFECTING_SECRET");
+        assert!(spec.cache_key);
+    }
+
+    #[test]
+    fn test_secret_spec_new_with_string() {
+        let spec = SecretSpec::new(String::from("vault://path/to/secret"));
+        assert_eq!(spec.source, "vault://path/to/secret");
+    }
+
+    #[test]
+    fn test_secret_spec_equality() {
+        let spec1 = SecretSpec::new("source1");
+        let spec2 = SecretSpec::new("source1");
+        let spec3 = SecretSpec::new("source2");
+        let spec4 = SecretSpec::with_cache_key("source1");
+
+        assert_eq!(spec1, spec2);
+        assert_ne!(spec1, spec3);
+        assert_ne!(spec1, spec4); // Different cache_key
+    }
+
+    #[test]
+    fn test_secret_spec_clone() {
+        let spec = SecretSpec::with_cache_key("important");
+        let cloned = spec.clone();
+        assert_eq!(spec, cloned);
+    }
+
+    #[test]
+    fn test_secret_spec_debug() {
+        let spec = SecretSpec::new("test-source");
+        let debug = format!("{spec:?}");
+        assert!(debug.contains("SecretSpec"));
+        assert!(debug.contains("test-source"));
+    }
+
+    #[test]
+    fn test_secret_spec_serialization() {
+        let spec = SecretSpec::with_cache_key("op://vault/item/field");
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("op://vault/item/field"));
+        assert!(json.contains("cache_key"));
+
+        let parsed: SecretSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(spec, parsed);
+    }
+
+    #[test]
+    fn test_secret_spec_deserialization_default_cache_key() {
+        let json = r#"{"source": "test"}"#;
+        let spec: SecretSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(spec.source, "test");
+        assert!(!spec.cache_key); // Default is false
+    }
+}

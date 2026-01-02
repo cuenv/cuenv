@@ -247,4 +247,149 @@ mod tests {
         // This test just ensures the function exists and doesn't panic
         let _ = GcpResolver::http_credentials_available();
     }
+
+    #[test]
+    fn test_gcp_config_new() {
+        let config = GcpSecretConfig::new("my-project", "api-key");
+        assert_eq!(config.project, "my-project");
+        assert_eq!(config.secret, "api-key");
+        assert_eq!(config.version, "latest");
+    }
+
+    #[test]
+    fn test_gcp_config_new_with_string_types() {
+        let config = GcpSecretConfig::new(String::from("project-id"), String::from("secret-name"));
+        assert_eq!(config.project, "project-id");
+        assert_eq!(config.secret, "secret-name");
+    }
+
+    #[test]
+    fn test_default_version_function() {
+        assert_eq!(default_version(), "latest");
+    }
+
+    #[test]
+    fn test_resource_name_with_specific_version() {
+        let config = GcpSecretConfig {
+            project: "prod-project".to_string(),
+            secret: "database-password".to_string(),
+            version: "42".to_string(),
+        };
+        assert_eq!(
+            config.resource_name(),
+            "projects/prod-project/secrets/database-password/versions/42"
+        );
+    }
+
+    #[test]
+    fn test_gcp_config_clone() {
+        let config = GcpSecretConfig {
+            project: "my-project".to_string(),
+            secret: "my-secret".to_string(),
+            version: "latest".to_string(),
+        };
+        let cloned = config.clone();
+        assert_eq!(config, cloned);
+    }
+
+    #[test]
+    fn test_gcp_config_debug() {
+        let config = GcpSecretConfig::new("test-project", "test-secret");
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("GcpSecretConfig"));
+        assert!(debug_str.contains("test-project"));
+        assert!(debug_str.contains("test-secret"));
+    }
+
+    #[test]
+    fn test_parse_resource_name_with_latest() {
+        let config = GcpResolver::parse_resource_name(
+            "projects/my-project/secrets/my-secret/versions/latest",
+        )
+        .unwrap();
+        assert_eq!(config.project, "my-project");
+        assert_eq!(config.secret, "my-secret");
+        assert_eq!(config.version, "latest");
+    }
+
+    #[test]
+    fn test_parse_resource_name_missing_projects() {
+        assert!(
+            GcpResolver::parse_resource_name("my-project/secrets/my-secret/versions/1").is_none()
+        );
+    }
+
+    #[test]
+    fn test_parse_resource_name_missing_secrets() {
+        assert!(
+            GcpResolver::parse_resource_name("projects/my-project/my-secret/versions/1").is_none()
+        );
+    }
+
+    #[test]
+    fn test_parse_resource_name_missing_versions() {
+        assert!(
+            GcpResolver::parse_resource_name("projects/my-project/secrets/my-secret/1").is_none()
+        );
+    }
+
+    #[test]
+    fn test_parse_resource_name_too_short() {
+        assert!(GcpResolver::parse_resource_name("projects/my-project/secrets").is_none());
+    }
+
+    #[test]
+    fn test_gcp_config_deserialization_with_defaults() {
+        // When version is missing, it should default to "latest"
+        let json = r#"{"project": "my-project", "secret": "my-secret"}"#;
+        let config: GcpSecretConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.project, "my-project");
+        assert_eq!(config.secret, "my-secret");
+        assert_eq!(config.version, "latest");
+    }
+
+    #[test]
+    fn test_gcp_config_full_serialization() {
+        let config = GcpSecretConfig {
+            project: "prod".to_string(),
+            secret: "api-key".to_string(),
+            version: "5".to_string(),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        // Verify camelCase serialization
+        assert!(json.contains("\"project\":\"prod\""));
+        assert!(json.contains("\"secret\":\"api-key\""));
+        assert!(json.contains("\"version\":\"5\""));
+    }
+
+    #[test]
+    fn test_gcp_config_equality() {
+        let config1 = GcpSecretConfig::new("project", "secret");
+        let config2 = GcpSecretConfig::new("project", "secret");
+        let config3 = GcpSecretConfig::new("project", "other-secret");
+
+        assert_eq!(config1, config2);
+        assert_ne!(config1, config3);
+    }
+
+    #[test]
+    fn test_gcp_resolver_new() {
+        let resolver = GcpResolver::new();
+        assert!(resolver.is_ok());
+    }
+
+    #[test]
+    fn test_gcp_resolver_debug() {
+        let resolver = GcpResolver::new().unwrap();
+        let debug_str = format!("{resolver:?}");
+        assert!(debug_str.contains("GcpResolver"));
+        // Should show either "http" or "cli" mode
+        assert!(debug_str.contains("mode"));
+    }
+
+    #[test]
+    fn test_gcp_resolver_provider_name() {
+        let resolver = GcpResolver::new().unwrap();
+        assert_eq!(resolver.provider_name(), "gcp");
+    }
 }

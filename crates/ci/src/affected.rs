@@ -234,3 +234,609 @@ fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
 
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::manifest::Project;
+    use cuenv_core::tasks::{Input, Task, TaskDefinition};
+
+    /// Helper to create a minimal Project with tasks
+    fn make_project(tasks: Vec<(&str, Task)>) -> Project {
+        let mut project = Project::default();
+        for (name, task) in tasks {
+            project
+                .tasks
+                .insert(name.to_string(), TaskDefinition::Single(Box::new(task)));
+        }
+        project
+    }
+
+    /// Helper to create a minimal Task with inputs and depends_on
+    fn make_task(inputs: Vec<&str>, depends_on: Vec<&str>) -> Task {
+        Task {
+            inputs: inputs
+                .into_iter()
+                .map(|s| Input::Path(s.to_string()))
+                .collect(),
+            depends_on: depends_on.into_iter().map(String::from).collect(),
+            command: "echo test".to_string(),
+            ..Default::default()
+        }
+    }
+
+    // ==========================================================================
+    // matches_any tests
+    // ==========================================================================
+
+    #[test]
+    fn test_matches_any_simple_prefix_match() {
+        let files = vec![PathBuf::from("crates/foo/bar.rs")];
+        let root = Path::new(".");
+
+        assert!(matches_any(&files, root, "crates"));
+        assert!(matches_any(&files, root, "crates/foo"));
+        assert!(matches_any(&files, root, "crates/foo/bar.rs"));
+    }
+
+    #[test]
+    fn test_matches_any_no_match() {
+        let files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        assert!(!matches_any(&files, root, "crates"));
+        assert!(!matches_any(&files, root, "tests"));
+    }
+
+    #[test]
+    fn test_matches_any_glob_pattern() {
+        let files = vec![
+            PathBuf::from("src/lib.rs"),
+            PathBuf::from("src/main.rs"),
+            PathBuf::from("tests/test.rs"),
+        ];
+        let root = Path::new(".");
+
+        assert!(matches_any(&files, root, "*.rs"));
+        assert!(matches_any(&files, root, "src/*.rs"));
+        assert!(!matches_any(&files, root, "*.txt"));
+    }
+
+    #[test]
+    fn test_matches_any_glob_with_question_mark() {
+        let files = vec![PathBuf::from("src/a.rs"), PathBuf::from("src/ab.rs")];
+        let root = Path::new(".");
+
+        assert!(matches_any(&files, root, "src/?.rs"));
+        assert!(!matches_any(&files, root, "src/???.rs"));
+    }
+
+    #[test]
+    fn test_matches_any_glob_with_brackets() {
+        let files = vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")];
+        let root = Path::new(".");
+
+        assert!(matches_any(&files, root, "src/[ab].rs"));
+        assert!(!matches_any(&files, root, "src/[cd].rs"));
+    }
+
+    #[test]
+    fn test_matches_any_with_absolute_paths() {
+        let files = vec![PathBuf::from("/project/src/lib.rs")];
+        let root = Path::new("/project");
+
+        assert!(matches_any(&files, root, "src"));
+        assert!(matches_any(&files, root, "src/lib.rs"));
+    }
+
+    #[test]
+    fn test_matches_any_relative_files_absolute_root() {
+        // Files from git diff are relative, but project_root may be absolute
+        let files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new("/some/absolute/path");
+
+        // Should still match because file is relative
+        assert!(matches_any(&files, root, "src"));
+    }
+
+    #[test]
+    fn test_matches_any_empty_root() {
+        let files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new("");
+
+        assert!(matches_any(&files, root, "src"));
+    }
+
+    #[test]
+    fn test_matches_any_empty_files() {
+        let files: Vec<PathBuf> = vec![];
+        let root = Path::new(".");
+
+        assert!(!matches_any(&files, root, "src"));
+    }
+
+    #[test]
+    fn test_matches_any_invalid_glob_pattern() {
+        let files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        // Invalid glob pattern should be skipped (returns false)
+        assert!(!matches_any(&files, root, "[invalid"));
+    }
+
+    // ==========================================================================
+    // matched_inputs_for_task tests
+    // ==========================================================================
+
+    #[test]
+    fn test_matched_inputs_for_task_returns_matching_patterns() {
+        let task = make_task(vec!["src/**", "Cargo.toml"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        let matched = matched_inputs_for_task("build", &project, &changed_files, root);
+
+        assert_eq!(matched, vec!["src/**".to_string()]);
+    }
+
+    #[test]
+    fn test_matched_inputs_for_task_no_match() {
+        let task = make_task(vec!["src/**"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("tests/test.rs")];
+        let root = Path::new(".");
+
+        let matched = matched_inputs_for_task("build", &project, &changed_files, root);
+
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn test_matched_inputs_for_task_nonexistent_task() {
+        let project = Project::default();
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        let matched = matched_inputs_for_task("nonexistent", &project, &changed_files, root);
+
+        assert!(matched.is_empty());
+    }
+
+    #[test]
+    fn test_matched_inputs_for_task_multiple_matches() {
+        let task = make_task(vec!["src/**", "lib/**", "Cargo.toml"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs"), PathBuf::from("lib/util.rs")];
+        let root = Path::new(".");
+
+        let matched = matched_inputs_for_task("build", &project, &changed_files, root);
+
+        assert!(matched.contains(&"src/**".to_string()));
+        assert!(matched.contains(&"lib/**".to_string()));
+        assert!(!matched.contains(&"Cargo.toml".to_string()));
+    }
+
+    // ==========================================================================
+    // compute_affected_tasks tests
+    // ==========================================================================
+
+    #[test]
+    fn test_compute_affected_tasks_direct_match() {
+        let task = make_task(vec!["src/**"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["build".to_string()];
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert_eq!(affected, vec!["build".to_string()]);
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_no_match() {
+        let task = make_task(vec!["src/**"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("docs/readme.md")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["build".to_string()];
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert!(affected.is_empty());
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_transitive_internal_deps() {
+        // test depends on build, build is affected -> test should also be affected
+        let build_task = make_task(vec!["src/**"], vec![]);
+        let test_task = make_task(vec![], vec!["build"]);
+        let project = make_project(vec![("build", build_task), ("test", test_task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["build".to_string(), "test".to_string()];
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert!(affected.contains(&"build".to_string()));
+        assert!(affected.contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_preserves_pipeline_order() {
+        let build_task = make_task(vec!["src/**"], vec![]);
+        let test_task = make_task(vec![], vec!["build"]);
+        let deploy_task = make_task(vec![], vec!["test"]);
+        let project = make_project(vec![
+            ("build", build_task),
+            ("test", test_task),
+            ("deploy", deploy_task),
+        ]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        // Pipeline order: build, test, deploy
+        let pipeline_tasks = vec![
+            "build".to_string(),
+            "test".to_string(),
+            "deploy".to_string(),
+        ];
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        // Should be in pipeline order
+        assert_eq!(affected, vec!["build", "test", "deploy"]);
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_only_affected_in_pipeline() {
+        // If a task is not in pipeline_tasks, it shouldn't be in the result
+        let build_task = make_task(vec!["src/**"], vec![]);
+        let test_task = make_task(vec![], vec!["build"]);
+        let project = make_project(vec![("build", build_task), ("test", test_task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        // Only build in the pipeline, not test
+        let pipeline_tasks = vec!["build".to_string()];
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        // Only build should be returned (test not in pipeline)
+        assert_eq!(affected, vec!["build"]);
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_empty_pipeline() {
+        let task = make_task(vec!["src/**"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        let pipeline_tasks: Vec<String> = vec![];
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert!(affected.is_empty());
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_external_dep_not_found() {
+        // External dependency to non-existent project should be skipped
+        let task = make_task(vec![], vec!["#nonexistent:build"]);
+        let project = make_project(vec![("deploy", task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["deploy".to_string()];
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        // deploy shouldn't be affected because its dep project doesn't exist
+        assert!(affected.is_empty());
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_external_dep_affected() {
+        // External dependency is affected -> task should be affected
+        let external_build = make_task(vec!["src/**"], vec![]);
+        let mut external_project = Project::default();
+        external_project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(external_build)),
+        );
+
+        let deploy_task = make_task(vec![], vec!["#external:build"]);
+        let project = make_project(vec![("deploy", deploy_task)]);
+
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["deploy".to_string()];
+
+        let external_discovered = DiscoveredCIProject {
+            path: PathBuf::from("/repo/external/env.cue"),
+            module_root: PathBuf::from("/repo"),
+            relative_path: PathBuf::from("external"),
+            config: external_project,
+        };
+        let mut all_projects = HashMap::new();
+        all_projects.insert("external".to_string(), external_discovered);
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert!(affected.contains(&"deploy".to_string()));
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_malformed_external_dep() {
+        // Malformed external dependency (missing colon) should be skipped
+        let task = make_task(vec![], vec!["#badformat"]);
+        let project = make_project(vec![("deploy", task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["deploy".to_string()];
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        // Malformed external dep is skipped
+        assert!(affected.is_empty());
+    }
+
+    // ==========================================================================
+    // is_task_directly_affected tests
+    // ==========================================================================
+
+    #[test]
+    fn test_is_task_directly_affected_match() {
+        let task = make_task(vec!["src/**"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        assert!(is_task_directly_affected(
+            "build",
+            &project,
+            &changed_files,
+            root
+        ));
+    }
+
+    #[test]
+    fn test_is_task_directly_affected_no_match() {
+        let task = make_task(vec!["src/**"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("docs/readme.md")];
+        let root = Path::new(".");
+
+        assert!(!is_task_directly_affected(
+            "build",
+            &project,
+            &changed_files,
+            root
+        ));
+    }
+
+    #[test]
+    fn test_is_task_directly_affected_nonexistent_task() {
+        let project = Project::default();
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        assert!(!is_task_directly_affected(
+            "nonexistent",
+            &project,
+            &changed_files,
+            root
+        ));
+    }
+
+    #[test]
+    fn test_is_task_directly_affected_task_no_inputs() {
+        let task = make_task(vec![], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        assert!(!is_task_directly_affected(
+            "build",
+            &project,
+            &changed_files,
+            root
+        ));
+    }
+
+    // ==========================================================================
+    // check_external_dependency tests
+    // ==========================================================================
+
+    #[test]
+    fn test_check_external_dependency_cache_hit() {
+        let mut cache = HashMap::new();
+        cache.insert("#project:task".to_string(), true);
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let changed_files: Vec<PathBuf> = vec![];
+
+        let result =
+            check_external_dependency("#project:task", &all_projects, &changed_files, &mut cache);
+
+        assert!(result);
+    }
+
+    #[test]
+    fn test_check_external_dependency_cache_miss_false() {
+        let mut cache = HashMap::new();
+        cache.insert("#project:task".to_string(), false);
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let changed_files: Vec<PathBuf> = vec![];
+
+        let result =
+            check_external_dependency("#project:task", &all_projects, &changed_files, &mut cache);
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_check_external_dependency_project_not_found() {
+        let mut cache = HashMap::new();
+        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+
+        let result =
+            check_external_dependency("#missing:task", &all_projects, &changed_files, &mut cache);
+
+        assert!(!result);
+    }
+
+    #[test]
+    fn test_check_external_dependency_directly_affected() {
+        let external_build = make_task(vec!["src/**"], vec![]);
+        let mut external_project = Project::default();
+        external_project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(external_build)),
+        );
+
+        let external_discovered = DiscoveredCIProject {
+            path: PathBuf::from("/repo/external/env.cue"),
+            module_root: PathBuf::from("/repo"),
+            relative_path: PathBuf::from("external"),
+            config: external_project,
+        };
+
+        let mut all_projects = HashMap::new();
+        all_projects.insert("external".to_string(), external_discovered);
+
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let mut cache = HashMap::new();
+
+        let result =
+            check_external_dependency("#external:build", &all_projects, &changed_files, &mut cache);
+
+        assert!(result);
+        assert_eq!(cache.get("#external:build"), Some(&true));
+    }
+
+    #[test]
+    fn test_check_external_dependency_transitive_internal() {
+        // External project has: test depends on build, build is affected
+        // -> #external:test should be affected
+        let external_build = make_task(vec!["src/**"], vec![]);
+        let external_test = make_task(vec![], vec!["build"]);
+        let mut external_project = Project::default();
+        external_project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(external_build)),
+        );
+        external_project.tasks.insert(
+            "test".to_string(),
+            TaskDefinition::Single(Box::new(external_test)),
+        );
+
+        let external_discovered = DiscoveredCIProject {
+            path: PathBuf::from("/repo/external/env.cue"),
+            module_root: PathBuf::from("/repo"),
+            relative_path: PathBuf::from("external"),
+            config: external_project,
+        };
+
+        let mut all_projects = HashMap::new();
+        all_projects.insert("external".to_string(), external_discovered);
+
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let mut cache = HashMap::new();
+
+        let result =
+            check_external_dependency("#external:test", &all_projects, &changed_files, &mut cache);
+
+        assert!(result);
+    }
+
+    #[test]
+    fn test_check_external_dependency_circular_prevention() {
+        // Task A depends on itself (circular) - should not infinite loop
+        let circular_task = make_task(vec![], vec!["#proj:taskA"]);
+        let mut project = Project::default();
+        project.tasks.insert(
+            "taskA".to_string(),
+            TaskDefinition::Single(Box::new(circular_task)),
+        );
+
+        let discovered = DiscoveredCIProject {
+            path: PathBuf::from("/repo/proj/env.cue"),
+            module_root: PathBuf::from("/repo"),
+            relative_path: PathBuf::from("proj"),
+            config: project,
+        };
+
+        let mut all_projects = HashMap::new();
+        all_projects.insert("proj".to_string(), discovered);
+
+        let changed_files: Vec<PathBuf> = vec![];
+        let mut cache = HashMap::new();
+
+        // Should return false without infinite loop
+        let result =
+            check_external_dependency("#proj:taskA", &all_projects, &changed_files, &mut cache);
+
+        assert!(!result);
+    }
+}

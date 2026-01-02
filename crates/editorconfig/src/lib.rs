@@ -647,4 +647,257 @@ mod tests {
         assert_eq!(FileStatus::WouldCreate.to_string(), "Would create");
         assert_eq!(FileStatus::WouldUpdate.to_string(), "Would update");
     }
+
+    #[test]
+    fn test_section_optional_builders_none() {
+        let section = EditorConfigSection::new()
+            .indent_style_opt(None::<String>)
+            .indent_size_opt(None)
+            .tab_width_opt(None)
+            .end_of_line_opt(None::<String>)
+            .charset_opt(None::<String>)
+            .trim_trailing_whitespace_opt(None)
+            .insert_final_newline_opt(None)
+            .max_line_length_opt(None);
+
+        assert!(section.is_empty());
+    }
+
+    #[test]
+    fn test_section_optional_builders_some() {
+        let section = EditorConfigSection::new()
+            .indent_style_opt(Some("space"))
+            .indent_size_opt(Some(EditorConfigValue::Int(4)))
+            .tab_width_opt(Some(4))
+            .end_of_line_opt(Some("lf"))
+            .charset_opt(Some("utf-8"))
+            .trim_trailing_whitespace_opt(Some(true))
+            .insert_final_newline_opt(Some(true))
+            .max_line_length_opt(Some(EditorConfigValue::Int(120)));
+
+        let content = section.generate_content();
+        assert_eq!(content.len(), 8);
+    }
+
+    #[test]
+    fn test_editor_config_value_int() {
+        let val = EditorConfigValue::Int(42);
+        assert_eq!(val.to_editorconfig_value(), "42");
+    }
+
+    #[test]
+    fn test_editor_config_value_string() {
+        let val = EditorConfigValue::String("tab".to_string());
+        assert_eq!(val.to_editorconfig_value(), "tab");
+    }
+
+    #[test]
+    fn test_section_equality() {
+        let s1 = EditorConfigSection::new()
+            .indent_style("space")
+            .indent_size(4);
+        let s2 = EditorConfigSection::new()
+            .indent_style("space")
+            .indent_size(4);
+        let s3 = EditorConfigSection::new()
+            .indent_style("tab")
+            .indent_size(4);
+
+        assert_eq!(s1, s2);
+        assert_ne!(s1, s3);
+    }
+
+    #[test]
+    fn test_section_clone() {
+        let original = EditorConfigSection::new()
+            .indent_style("space")
+            .charset("utf-8");
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_section_debug() {
+        let section = EditorConfigSection::new().indent_style("space");
+        let debug = format!("{section:?}");
+        assert!(debug.contains("EditorConfigSection"));
+        assert!(debug.contains("space"));
+    }
+
+    #[test]
+    fn test_builder_sections_method() {
+        let sections = vec![
+            ("*", EditorConfigSection::new().indent_style("space")),
+            (
+                "*.md",
+                EditorConfigSection::new().trim_trailing_whitespace(false),
+            ),
+        ];
+
+        let content = EditorConfigFile::builder()
+            .sections(sections)
+            .generate_content();
+
+        assert!(content.contains("[*]"));
+        assert!(content.contains("[*.md]"));
+    }
+
+    #[test]
+    fn test_builder_empty_content() {
+        let content = EditorConfigFile::builder().generate_content();
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn test_builder_only_root() {
+        let content = EditorConfigFile::builder().is_root(true).generate_content();
+        assert_eq!(content, "root = true\n");
+    }
+
+    #[test]
+    fn test_builder_directory() {
+        let builder = EditorConfigFile::builder().directory("/tmp/test");
+        let debug = format!("{builder:?}");
+        assert!(debug.contains("/tmp/test"));
+    }
+
+    #[test]
+    fn test_builder_dry_run() {
+        let builder = EditorConfigFile::builder().dry_run(true);
+        let debug = format!("{builder:?}");
+        assert!(debug.contains("dry_run: true"));
+    }
+
+    #[test]
+    fn test_multiline_header() {
+        let content = EditorConfigFile::builder()
+            .header("Line 1\nLine 2\nLine 3")
+            .section("*", EditorConfigSection::new().indent_style("space"))
+            .generate_content();
+
+        assert!(content.contains("# Line 1\n"));
+        assert!(content.contains("# Line 2\n"));
+        assert!(content.contains("# Line 3\n"));
+    }
+
+    #[test]
+    fn test_file_status_equality() {
+        assert_eq!(FileStatus::Created, FileStatus::Created);
+        assert_ne!(FileStatus::Created, FileStatus::Updated);
+    }
+
+    #[test]
+    fn test_file_status_clone() {
+        let status = FileStatus::Created;
+        let cloned = status;
+        assert_eq!(status, cloned);
+    }
+
+    #[test]
+    fn test_file_status_debug() {
+        let debug = format!("{:?}", FileStatus::WouldCreate);
+        assert!(debug.contains("WouldCreate"));
+    }
+
+    #[test]
+    fn test_sync_result_debug() {
+        let result = SyncResult {
+            status: FileStatus::Created,
+        };
+        let debug = format!("{result:?}");
+        assert!(debug.contains("SyncResult"));
+        assert!(debug.contains("Created"));
+    }
+
+    #[test]
+    fn test_error_io() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let err: Error = io_err.into();
+        let msg = err.to_string();
+        assert!(msg.contains("IO error"));
+    }
+
+    #[test]
+    fn test_error_debug() {
+        let io_err = std::io::Error::other("test error");
+        let err: Error = io_err.into();
+        let debug = format!("{err:?}");
+        assert!(debug.contains("Io"));
+    }
+
+    #[test]
+    fn test_generate_with_dry_run_would_create() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let result = EditorConfigFile::builder()
+            .directory(temp.path())
+            .is_root(true)
+            .section("*", EditorConfigSection::new().indent_style("space"))
+            .dry_run(true)
+            .generate()
+            .unwrap();
+
+        assert_eq!(result.status, FileStatus::WouldCreate);
+        // File should not exist
+        assert!(!temp.path().join(".editorconfig").exists());
+    }
+
+    #[test]
+    fn test_generate_creates_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let result = EditorConfigFile::builder()
+            .directory(temp.path())
+            .is_root(true)
+            .section("*", EditorConfigSection::new().indent_style("space"))
+            .generate()
+            .unwrap();
+
+        assert_eq!(result.status, FileStatus::Created);
+        assert!(temp.path().join(".editorconfig").exists());
+    }
+
+    #[test]
+    fn test_generate_unchanged() {
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // First write
+        let _ = EditorConfigFile::builder()
+            .directory(temp.path())
+            .is_root(true)
+            .section("*", EditorConfigSection::new().indent_style("space"))
+            .generate()
+            .unwrap();
+
+        // Second write with same content
+        let result = EditorConfigFile::builder()
+            .directory(temp.path())
+            .is_root(true)
+            .section("*", EditorConfigSection::new().indent_style("space"))
+            .generate()
+            .unwrap();
+
+        assert_eq!(result.status, FileStatus::Unchanged);
+    }
+
+    #[test]
+    fn test_generate_updated() {
+        let temp = tempfile::TempDir::new().unwrap();
+
+        // First write
+        let _ = EditorConfigFile::builder()
+            .directory(temp.path())
+            .is_root(true)
+            .section("*", EditorConfigSection::new().indent_style("space"))
+            .generate()
+            .unwrap();
+
+        // Second write with different content
+        let result = EditorConfigFile::builder()
+            .directory(temp.path())
+            .is_root(true)
+            .section("*", EditorConfigSection::new().indent_style("tab"))
+            .generate()
+            .unwrap();
+
+        assert_eq!(result.status, FileStatus::Updated);
+    }
 }

@@ -80,13 +80,67 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_shell_detection() {
+    fn test_shell_default() {
+        let shell = Shell::default();
+        assert_eq!(shell, Shell::Bash);
+    }
+
+    #[test]
+    fn test_shell_parse() {
         assert_eq!(Shell::parse("bash"), Shell::Bash);
         assert_eq!(Shell::parse("zsh"), Shell::Zsh);
         assert_eq!(Shell::parse("fish"), Shell::Fish);
         assert_eq!(Shell::parse("powershell"), Shell::PowerShell);
         assert_eq!(Shell::parse("pwsh"), Shell::PowerShell);
         assert_eq!(Shell::parse("unknown"), Shell::Bash);
+    }
+
+    #[test]
+    fn test_shell_parse_case_insensitive() {
+        assert_eq!(Shell::parse("BASH"), Shell::Bash);
+        assert_eq!(Shell::parse("ZSH"), Shell::Zsh);
+        assert_eq!(Shell::parse("Fish"), Shell::Fish);
+        assert_eq!(Shell::parse("PowerShell"), Shell::PowerShell);
+        assert_eq!(Shell::parse("PWSH"), Shell::PowerShell);
+    }
+
+    #[test]
+    fn test_shell_detect_with_target() {
+        assert_eq!(Shell::detect(Some("bash")), Shell::Bash);
+        assert_eq!(Shell::detect(Some("zsh")), Shell::Zsh);
+        assert_eq!(Shell::detect(Some("fish")), Shell::Fish);
+        assert_eq!(Shell::detect(Some("powershell")), Shell::PowerShell);
+    }
+
+    #[test]
+    fn test_shell_detect_from_env_fish() {
+        unsafe { std::env::set_var("SHELL", "/usr/bin/fish") };
+        let shell = Shell::detect(None);
+        assert_eq!(shell, Shell::Fish);
+        unsafe { std::env::remove_var("SHELL") };
+    }
+
+    #[test]
+    fn test_shell_detect_from_env_zsh() {
+        unsafe { std::env::set_var("SHELL", "/bin/zsh") };
+        let shell = Shell::detect(None);
+        assert_eq!(shell, Shell::Zsh);
+        unsafe { std::env::remove_var("SHELL") };
+    }
+
+    #[test]
+    fn test_shell_detect_from_env_bash() {
+        unsafe { std::env::set_var("SHELL", "/bin/bash") };
+        let shell = Shell::detect(None);
+        assert_eq!(shell, Shell::Bash);
+        unsafe { std::env::remove_var("SHELL") };
+    }
+
+    #[test]
+    fn test_shell_detect_default_fallback() {
+        unsafe { std::env::remove_var("SHELL") };
+        let shell = Shell::detect(None);
+        assert_eq!(shell, Shell::Bash);
     }
 
     #[test]
@@ -111,5 +165,42 @@ mod tests {
         assert_eq!(format!("{}", Shell::Zsh), "zsh");
         assert_eq!(format!("{}", Shell::Fish), "fish");
         assert_eq!(format!("{}", Shell::PowerShell), "powershell");
+    }
+
+    #[test]
+    fn test_shell_serde_roundtrip() {
+        let shells = vec![Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell];
+        for shell in shells {
+            let json = serde_json::to_string(&shell).unwrap();
+            let parsed: Shell = serde_json::from_str(&json).unwrap();
+            assert_eq!(shell, parsed);
+        }
+    }
+
+    #[test]
+    fn test_shell_serde_powershell_rename() {
+        let shell = Shell::PowerShell;
+        let json = serde_json::to_string(&shell).unwrap();
+        assert_eq!(json, "\"powershell\"");
+    }
+
+    #[test]
+    fn test_shell_clone() {
+        let shell = Shell::Fish;
+        let cloned = shell;
+        assert_eq!(shell, cloned);
+    }
+
+    #[test]
+    fn test_shell_copy() {
+        let shell = Shell::Zsh;
+        let copied = shell;
+        assert_eq!(shell, copied);
+    }
+
+    #[test]
+    fn test_shell_debug() {
+        let debug = format!("{:?}", Shell::Bash);
+        assert!(debug.contains("Bash"));
     }
 }
