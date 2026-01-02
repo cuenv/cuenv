@@ -42,3 +42,22 @@ For each crate, verify:
 ## Session Log
 
 <!-- Claude will append notes here as it reviews each crate -->
+
+### 2026-01-02: Coverage improvement session
+
+**Starting coverage: 71.89%**
+**Ending coverage: 73.05%**
+
+#### Tests Added:
+
+1. **ci/src/affected.rs** (0% -> high coverage)
+   - Added 33 tests covering: `matches_any` (glob matching, prefix matching, edge cases), `matched_inputs_for_task`, `compute_affected_tasks` (direct match, transitive deps, external deps, pipeline ordering), `is_task_directly_affected`, `check_external_dependency` (caching, circular prevention)
+
+2. **core/src/rules/discovery.rs** (0% -> moderate coverage)
+   - Added 19 tests covering: `RulesDiscovery` construction, `discover` method (empty dirs, eval failures, clears previous results), `DiscoveredRules` struct, `RulesDiscoveryError` variants, `load_rules` function
+
+3. **core/src/secrets/mod.rs** (8.64% -> high coverage)
+   - Added 25 tests covering: `ExecResolver` (construction, serde, clone, eq), `Secret` construction (`new`, `onepassword`, `with_extra`), `provider` method, `to_spec` method, serde roundtrips (skip empty fields, extra fields)
+
+4. **workspaces/src/resolver.rs** (0% -> 96.08%)
+   - Added 20 tests covering: `detect_workspace_protocol` (JS workspace:*, version, Rust workspace), `resolve_external_deps` (filtering workspace members), `resolve_dependencies` (graph creation, edges, missing deps, multiple versions), `parse_js_deps` (workspace deps, regular deps, empty), `parse_rust_deps` (workspace deps, non-workspace deps)
