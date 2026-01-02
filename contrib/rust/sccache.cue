@@ -23,19 +23,30 @@ import "github.com/cuenv/cuenv/schema"
 #Sccache: schema.#Contributor & {
 	id: "sccache"
 	when: always: true
-	tasks: [{
-		id:       "setup-sccache"
-		phase:    "setup"
-		label:    "Setup sccache"
-		priority: 5
-		script: """
-			# Configure cargo to use sccache (provided via cuenv tools)
-			export RUSTC_WRAPPER=sccache
-			"""
-		env: {
-			RUSTC_WRAPPER: "sccache"
-			SCCACHE_DIR:   "${{ runner.temp }}/sccache"
-		}
-		provider: github: uses: "mozilla-actions/sccache-action@v0.0.9"
-	}]
+	tasks: [
+		{
+			id:       "setup-sccache"
+			phase:    "setup"
+			label:    "Setup sccache"
+			priority: 5
+			script: """
+				# Configure cargo to use sccache (provided via cuenv tools)
+				export RUSTC_WRAPPER=sccache
+				"""
+			env: {
+				RUSTC_WRAPPER: "sccache"
+				SCCACHE_DIR:   "${{ runner.temp }}/sccache"
+			}
+			provider: github: uses: "mozilla-actions/sccache-action@v0.0.9"
+		},
+		{
+			id:        "export-sccache-env"
+			phase:     "setup"
+			label:     "Export sccache environment"
+			priority:  6
+			dependsOn: ["setup-sccache"]
+			shell:     true
+			command:   "echo \"SCCACHE_DIR=${{ runner.temp }}/sccache\" >> $GITHUB_ENV"
+		},
+	]
 }

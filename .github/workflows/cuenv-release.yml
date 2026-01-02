@@ -37,6 +37,8 @@ jobs:
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -83,6 +85,8 @@ jobs:
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -132,6 +136,8 @@ jobs:
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -185,6 +191,8 @@ jobs:
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -236,6 +244,8 @@ jobs:
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
@@ -278,6 +288,8 @@ jobs:
       env:
         RUSTC_WRAPPER: sccache
         SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
