@@ -429,6 +429,13 @@ async fn execute_single_task_by_name(
         matrix: None,
         artifact_downloads: vec![],
         params: BTreeMap::new(),
+        // Phase task fields (not applicable for regular tasks)
+        phase: None,
+        label: None,
+        priority: None,
+        contributor: None,
+        condition: None,
+        provider_hints: None,
     };
 
     // Build environment

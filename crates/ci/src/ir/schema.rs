@@ -51,6 +51,33 @@ impl IntermediateRepresentation {
             tasks: Vec::new(),
         }
     }
+
+    /// Get all tasks belonging to a specific phase (unified model).
+    ///
+    /// Returns an iterator over tasks that have `phase` set to the given stage.
+    /// These are tasks contributed by CUE contributors.
+    pub fn phase_tasks(&self, stage: BuildStage) -> impl Iterator<Item = &Task> {
+        self.tasks.iter().filter(move |t| t.phase == Some(stage))
+    }
+
+    /// Get all regular tasks (not phase tasks).
+    ///
+    /// Returns an iterator over tasks that have no phase set.
+    /// These are the main pipeline tasks defined in the project.
+    pub fn regular_tasks(&self) -> impl Iterator<Item = &Task> {
+        self.tasks.iter().filter(|t| t.phase.is_none())
+    }
+
+    /// Get phase tasks sorted by priority (lower = earlier).
+    ///
+    /// Collects phase tasks into a Vec and sorts them by priority.
+    /// Uses priority 10 as default if not specified.
+    #[must_use]
+    pub fn sorted_phase_tasks(&self, stage: BuildStage) -> Vec<&Task> {
+        let mut tasks: Vec<_> = self.phase_tasks(stage).collect();
+        tasks.sort_by_key(|t| t.priority.unwrap_or(10));
+        tasks
+    }
 }
 
 /// Pipeline metadata and trigger configuration
@@ -254,6 +281,49 @@ pub struct Task {
     /// Parameters to pass to the task command
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, String>,
+
+    // ==========================================================================
+    // Phase task fields (for unified task model)
+    // ==========================================================================
+    /// Phase this task belongs to (None = regular task, Some = phase task)
+    ///
+    /// Phase tasks are contributed by CUE contributors and run at specific
+    /// lifecycle points: bootstrap, setup, success, or failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<BuildStage>,
+
+    /// Human-readable label for display (primarily for phase tasks)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+
+    /// Priority within phase (lower = earlier, default 10)
+    ///
+    /// Only meaningful for phase tasks. Used for ordering when multiple
+    /// contributors add tasks to the same phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
+
+    /// Contributor that added this task (e.g., "nix", "codecov")
+    ///
+    /// Set when this task was contributed by a CUE contributor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contributor: Option<String>,
+
+    /// Execution condition for phase tasks
+    ///
+    /// Determines when the task runs relative to other task outcomes:
+    /// - `OnSuccess`: Run only if all prior tasks succeeded
+    /// - `OnFailure`: Run only if any prior task failed
+    /// - `Always`: Run regardless of prior task outcomes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<TaskCondition>,
+
+    /// Provider-specific hints (e.g., GitHub Action specs)
+    ///
+    /// Opaque JSON value that provider-specific emitters can interpret.
+    /// For GitHub, may contain `{ "github_action": { "uses": "...", "with": {...} } }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_hints: Option<serde_json::Value>,
 }
 
 impl Task {
@@ -285,6 +355,13 @@ impl Task {
             matrix: None,
             artifact_downloads,
             params,
+            // Phase task fields (not applicable for synthetic tasks)
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         }
     }
 
@@ -312,6 +389,13 @@ impl Task {
             matrix: Some(matrix),
             artifact_downloads: vec![],
             params: BTreeMap::new(),
+            // Phase task fields (not applicable for synthetic tasks)
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         }
     }
 }
@@ -445,6 +529,23 @@ pub enum BuildStage {
 
     /// Post-failure actions (e.g., alerts, debugging)
     Failure,
+}
+
+/// Execution condition for phase tasks
+///
+/// Determines when a phase task runs based on the outcome of prior tasks.
+/// Used by emitters to generate conditional execution logic (e.g., `if: failure()` in GitHub Actions).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskCondition {
+    /// Run only if all prior tasks succeeded (default for success phase)
+    OnSuccess,
+
+    /// Run only if any prior task failed (default for failure phase)
+    OnFailure,
+
+    /// Run regardless of prior task outcomes
+    Always,
 }
 
 /// A task contributed by a stage provider
@@ -749,6 +850,12 @@ mod tests {
             matrix: None,
             artifact_downloads: vec![],
             params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -777,6 +884,12 @@ mod tests {
             matrix: None,
             artifact_downloads: vec![],
             params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -814,6 +927,12 @@ mod tests {
             }),
             artifact_downloads: vec![],
             params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         };
 
         let json = serde_json::to_value(&task).unwrap();
@@ -907,6 +1026,12 @@ mod tests {
             matrix: None,
             artifact_downloads: vec![],
             params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         });
 
         let json = serde_json::to_string_pretty(&ir).unwrap();

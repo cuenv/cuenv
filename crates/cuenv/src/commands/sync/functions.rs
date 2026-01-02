@@ -1108,6 +1108,13 @@ fn create_synthetic_aggregation_task(
         matrix: None,
         artifact_downloads,
         params,
+        // Phase task fields (not applicable for sync tasks)
+        phase: None,
+        label: None,
+        priority: None,
+        contributor: None,
+        condition: None,
+        provider_hints: None,
     }
 }
 
@@ -1159,6 +1166,13 @@ fn create_synthetic_matrix_task(
         matrix: Some(matrix),
         artifact_downloads: vec![],
         params: BTreeMap::new(),
+        // Phase task fields (not applicable for matrix tasks)
+        phase: None,
+        label: None,
+        priority: None,
+        contributor: None,
+        condition: None,
+        provider_hints: None,
     }
 }
 

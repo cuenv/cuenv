@@ -18,11 +18,11 @@ use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
 use crate::ir::{
     ArtifactDownload, BuildStage, CachePolicy, IntermediateRepresentation, IrValidator,
     ManualTriggerConfig, OutputDeclaration, OutputType, PurityMode, Runtime, SecretConfig,
-    StageTask, Task as IrTask, TriggerCondition, WorkflowDispatchInputDef,
+    StageTask, Task as IrTask, TaskCondition, TriggerCondition, WorkflowDispatchInputDef,
 };
 use cuenv_core::ci::{
     BuildPhase as CueBuildPhase, CI, Contributor, ManualTrigger, PhaseTask, Pipeline, PipelineTask,
-    SecretRef,
+    SecretRef, TaskCondition as CueTaskCondition,
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
@@ -661,6 +661,13 @@ impl Compiler {
             matrix: None,
             artifact_downloads,
             params: BTreeMap::new(),
+            // Phase task fields (not applicable for regular tasks)
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
         })
     }
 
@@ -734,9 +741,16 @@ impl Compiler {
                     continue;
                 }
 
-                let stage_task = Self::phase_task_to_ir(phase_task, &contributor.id);
                 let stage = Self::cue_build_phase_to_ir(phase_task.phase);
+
+                // Add to legacy stage configuration (backwards compatibility)
+                let stage_task = Self::phase_task_to_ir(phase_task, &contributor.id);
                 ir.stages.add(stage, stage_task);
+
+                // Add to unified task model (phase tasks in ir.tasks)
+                let unified_task =
+                    Self::phase_task_to_unified_ir(phase_task, &contributor.id, stage);
+                ir.tasks.push(unified_task);
             }
         }
     }
@@ -1114,6 +1128,118 @@ impl Compiler {
             secrets,
             depends_on: phase_task.depends_on.clone(),
             priority: phase_task.priority,
+            provider_hints,
+        }
+    }
+
+    /// Convert a CUE TaskCondition to an IR TaskCondition
+    fn cue_task_condition_to_ir(condition: CueTaskCondition) -> TaskCondition {
+        match condition {
+            CueTaskCondition::OnSuccess => TaskCondition::OnSuccess,
+            CueTaskCondition::OnFailure => TaskCondition::OnFailure,
+            CueTaskCondition::Always => TaskCondition::Always,
+        }
+    }
+
+    /// Convert a CUE PhaseTask to a unified IR Task
+    ///
+    /// This creates an IR Task with phase metadata, enabling the unified task model
+    /// where phase tasks are stored alongside regular tasks in `ir.tasks`.
+    fn phase_task_to_unified_ir(
+        phase_task: &PhaseTask,
+        contributor_id: &str,
+        phase: BuildStage,
+    ) -> IrTask {
+        // Build command array
+        let (command, shell) = if let Some(ref cmd) = phase_task.command {
+            let mut cmd_vec = vec![cmd.clone()];
+            cmd_vec.extend(phase_task.args.clone());
+            (cmd_vec, phase_task.shell)
+        } else if let Some(ref script) = phase_task.script {
+            (vec![script.clone()], true)
+        } else {
+            (vec![], false)
+        };
+
+        // Convert secrets
+        let secrets: BTreeMap<String, SecretConfig> = phase_task
+            .secrets
+            .iter()
+            .map(|(k, v)| {
+                let config = match v {
+                    SecretRef::Simple(s) => SecretConfig {
+                        source: s.clone(),
+                        cache_key: false,
+                    },
+                    SecretRef::Detailed(d) => SecretConfig {
+                        source: d.source.clone(),
+                        cache_key: d.cache_key,
+                    },
+                };
+                (k.clone(), config)
+            })
+            .collect();
+
+        // Convert provider hints
+        let provider_hints = phase_task.provider.as_ref().and_then(|p| {
+            p.github.as_ref().map(|gh| {
+                let mut github_action = serde_json::Map::new();
+                github_action.insert(
+                    "uses".to_string(),
+                    serde_json::Value::String(gh.uses.clone()),
+                );
+                if !gh.inputs.is_empty() {
+                    github_action.insert(
+                        "inputs".to_string(),
+                        serde_json::Value::Object(
+                            gh.inputs
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
+                        ),
+                    );
+                }
+
+                let mut hints = serde_json::Map::new();
+                hints.insert(
+                    "github_action".to_string(),
+                    serde_json::Value::Object(github_action),
+                );
+                serde_json::Value::Object(hints)
+            })
+        });
+
+        // Convert condition
+        let condition = phase_task.condition.map(Self::cue_task_condition_to_ir);
+
+        IrTask {
+            id: phase_task.id.clone(),
+            runtime: None,
+            command,
+            shell,
+            env: phase_task
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            secrets,
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: phase_task.depends_on.clone(),
+            cache_policy: CachePolicy::Disabled, // Phase tasks don't use caching
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: BTreeMap::new(),
+            // Phase task specific fields
+            phase: Some(phase),
+            label: phase_task.label.clone(),
+            priority: Some(phase_task.priority),
+            contributor: Some(contributor_id.to_string()),
+            condition,
             provider_hints,
         }
     }
@@ -1885,6 +2011,7 @@ mod tests {
             secrets: HashMap::default(),
             depends_on: vec![],
             priority: 10,
+            condition: None,
             provider: None,
         };
 
@@ -1912,6 +2039,7 @@ mod tests {
             secrets: HashMap::default(),
             depends_on: vec!["other".to_string()],
             priority: 5,
+            condition: None,
             provider: None,
         };
 
@@ -1946,6 +2074,7 @@ mod tests {
             secrets: HashMap::default(),
             depends_on: vec![],
             priority: 0,
+            condition: None,
             provider: Some(PhaseTaskProviderConfig {
                 github: Some(GitHubActionConfig {
                     uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
@@ -1998,6 +2127,7 @@ mod tests {
             secrets,
             depends_on: vec![],
             priority: 10,
+            condition: None,
             provider: None,
         };
 
@@ -2036,6 +2166,7 @@ mod tests {
             secrets: HashMap::default(),
             depends_on: vec![],
             priority: 10,
+            condition: None,
             provider: None,
         };
 
@@ -2068,6 +2199,7 @@ mod tests {
             secrets: HashMap::default(),
             depends_on: vec![],
             priority: 10,
+            condition: None,
             provider: None,
         };
 
