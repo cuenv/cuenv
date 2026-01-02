@@ -28,7 +28,7 @@ For each crate, verify:
 | editorconfig | 72.9% | [x] | [x] | Added 19 tests for optional builders, file ops, error handling |
 | events | 74.0% | [x] | [x] | Added 54 tests: bus (18), event (36 for all event types) |
 | ci | 74.2% | [x] | [x] | Added 26 tests: context (7), flake/error (10), provider/local (9) |
-| github | 75.4% | [ ] | [ ] | Pending review |
+| github | 75.4% | [x] | [x] | Added 10 tests: config (Default, serde, merge, permissions) |
 | release | 77.2% | [ ] | [ ] | Pending review |
 | cubes | 79.8% | [ ] | [ ] | Pending review |
 | core | 83.6% | [ ] | [ ] | Pending review (large crate: 10161 lines) |
