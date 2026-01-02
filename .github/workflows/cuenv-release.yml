@@ -19,8 +19,8 @@ permissions:
   contents: write
   id-token: write
 jobs:
-  nix-build-darwin-arm64:
-    name: nix.build (darwin-arm64)
+  cargo-build-darwin-arm64:
+    name: cargo.build (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
     timeout-minutes: 60
     steps:
@@ -41,12 +41,6 @@ jobs:
         go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
-    - name: Build CUE bridge
-      run: |-
-        cd crates/cuengine && \
-        mkdir -p ../../target/release && \
-        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
-        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv && \
@@ -59,8 +53,8 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: nix.build (darwin-arm64)
-      run: cuenv task nix.build -e production --skip-dependencies
+    - name: cargo.build (darwin-arm64)
+      run: cuenv task cargo.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: darwin-arm64
@@ -70,12 +64,12 @@ jobs:
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: nix-build-darwin-arm64
-        path: result/bin/*
+        name: cargo-build-darwin-arm64
+        path: target/release/cuenv
         if-no-files-found: ignore
         include-hidden-files: true
-  nix-build-linux-x64:
-    name: nix.build (linux-x64)
+  cargo-build-linux-x64:
+    name: cargo.build (linux-x64)
     runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 60
     steps:
@@ -96,12 +90,6 @@ jobs:
         go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
-    - name: Build CUE bridge
-      run: |-
-        cd crates/cuengine && \
-        mkdir -p ../../target/release && \
-        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
-        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv && \
@@ -114,8 +102,8 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: nix.build (linux-x64)
-      run: cuenv task nix.build -e production --skip-dependencies
+    - name: cargo.build (linux-x64)
+      run: cuenv task cargo.build -e production --skip-dependencies
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: linux-x64
@@ -125,16 +113,16 @@ jobs:
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: nix-build-linux-x64
-        path: result/bin/*
+        name: cargo-build-linux-x64
+        path: target/release/cuenv
         if-no-files-found: ignore
         include-hidden-files: true
   publish-cue:
     name: publish.cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-    - nix-build-darwin-arm64
-    - nix-build-linux-x64
+    - cargo-build-darwin-arm64
+    - cargo-build-linux-x64
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -154,12 +142,6 @@ jobs:
         go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
-    - name: Build CUE bridge
-      run: |-
-        cd crates/cuengine && \
-        mkdir -p ../../target/release && \
-        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
-        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv && \
@@ -172,15 +154,15 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Download nix-build-darwin-arm64
+    - name: Download cargo-build-darwin-arm64
       uses: actions/download-artifact@v4
       with:
-        name: nix-build-darwin-arm64
+        name: cargo-build-darwin-arm64
         path: dist/darwin-arm64
-    - name: Download nix-build-linux-x64
+    - name: Download cargo-build-linux-x64
       uses: actions/download-artifact@v4
       with:
-        name: nix-build-linux-x64
+        name: cargo-build-linux-x64
         path: dist/linux-x64
     - name: publish.cue
       run: cuenv task publish.cue -e production --skip-dependencies
@@ -195,8 +177,8 @@ jobs:
     name: publish.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
-    - nix-build-darwin-arm64
-    - nix-build-linux-x64
+    - cargo-build-darwin-arm64
+    - cargo-build-linux-x64
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -216,12 +198,6 @@ jobs:
         go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
-    - name: Build CUE bridge
-      run: |-
-        cd crates/cuengine && \
-        mkdir -p ../../target/release && \
-        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
-        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv && \
@@ -234,15 +210,15 @@ jobs:
       run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Download nix-build-darwin-arm64
+    - name: Download cargo-build-darwin-arm64
       uses: actions/download-artifact@v4
       with:
-        name: nix-build-darwin-arm64
+        name: cargo-build-darwin-arm64
         path: dist/darwin-arm64
-    - name: Download nix-build-linux-x64
+    - name: Download cargo-build-linux-x64
       uses: actions/download-artifact@v4
       with:
-        name: nix-build-linux-x64
+        name: cargo-build-linux-x64
         path: dist/linux-x64
     - name: publish.github
       run: cuenv task publish.github -e production --skip-dependencies
@@ -276,12 +252,6 @@ jobs:
         go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
-    - name: Build CUE bridge
-      run: |-
-        cd crates/cuengine && \
-        mkdir -p ../../target/release && \
-        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
-        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv && \
@@ -327,12 +297,6 @@ jobs:
         go-version: '1.24'
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
-    - name: Build CUE bridge
-      run: |-
-        cd crates/cuengine && \
-        mkdir -p ../../target/release && \
-        CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \
-        cp libcue_bridge.h ../../target/release/
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv && \

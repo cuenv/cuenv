@@ -129,6 +129,8 @@ impl Default for CuenvConfig {
 pub enum CuenvSource {
     /// Build using native Rust/Go toolchains (no Nix)
     Native,
+    /// Use pre-built artifact from earlier CI job
+    Artifact,
     /// Build from git checkout (requires Nix)
     Git,
     /// Install via Nix flake (auto-configures Cachix)
@@ -146,6 +148,7 @@ impl CuenvSource {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Native => "native",
+            Self::Artifact => "artifact",
             Self::Git => "git",
             Self::Nix => "nix",
             Self::Homebrew => "homebrew",

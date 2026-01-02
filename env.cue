@@ -165,7 +165,7 @@ schema.#Project & {
 				}
 				tasks: [
 					{
-						task: "nix.build"
+						task: "cargo.build"
 						matrix: {
 							arch: ["linux-x64", "darwin-arm64"]
 						}
@@ -173,7 +173,7 @@ schema.#Project & {
 					{
 						task: "publish"
 						artifacts: [{
-							from:   "nix.build"
+							from:   "cargo.build"
 							to:     "dist"
 							filter: "" // All variants (default)
 						}]
@@ -352,13 +352,12 @@ schema.#Project & {
 			}
 		}
 
-		nix: {
-			build: {
-				command: "nix"
-				args: ["build", ".#cuenv"]
-				inputs: _baseInputs
-				outputs: ["result/bin/cuenv"]
-			}
+		// Build cuenv binary for releases (cargo + build.rs handles Go bridge)
+		cargo: build: {
+			command: "cargo"
+			args: ["build", "--release", "-p", "cuenv"]
+			inputs: _baseInputs
+			outputs: ["target/release/cuenv"]
 		}
 
 		publish: github: {

@@ -84,7 +84,7 @@ import "github.com/cuenv/cuenv/schema"
 }
 
 // #CuenvNative builds cuenv using native Rust/Go toolchains (no Nix)
-// Avoids nix develop's hermetic environment issues with sccache
+// build.rs automatically compiles the Go CUE bridge via `go build`
 #CuenvNative: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["native"]
@@ -107,26 +107,12 @@ import "github.com/cuenv/cuenv/schema"
 			}
 		},
 		{
-			id:        "build-cue-bridge"
-			phase:     "setup"
-			label:     "Build CUE bridge"
-			priority:  8
-			shell:     true
-			dependsOn: ["setup-go"]
-			command: """
-				cd crates/cuengine && \\
-				mkdir -p ../../target/release && \\
-				CGO_ENABLED=1 go build -buildmode=c-archive -ldflags="-s -w" -o ../../target/release/libcue_bridge.a bridge.go && \\
-				cp libcue_bridge.h ../../target/release/
-				"""
-		},
-		{
 			id:        "setup-cuenv"
 			phase:     "setup"
 			label:     "Build cuenv"
 			priority:  10
 			shell:     true
-			dependsOn: ["setup-rust", "build-cue-bridge"]
+			dependsOn: ["setup-rust", "setup-go"]
 			env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 			command: """
 				cargo build --release -p cuenv && \\
@@ -136,6 +122,26 @@ import "github.com/cuenv/cuenv/schema"
 				"""
 		},
 	]
+}
+
+// #CuenvFromArtifact sets up cuenv from a previously built artifact
+// Used by CI jobs that depend on the build.cuenv job
+#CuenvFromArtifact: schema.#Contributor & {
+	id: "cuenv"
+	when: cuenvSource: ["artifact"]
+	tasks: [{
+		id:       "setup-cuenv"
+		phase:    "setup"
+		label:    "Setup cuenv (from artifact)"
+		priority: 10
+		shell:    true
+		command: """
+			chmod +x target/release/cuenv && \\
+			{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
+			  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
+			./target/release/cuenv sync -A
+			"""
+	}]
 }
 
 // #CuenvNix installs cuenv via Nix flake
