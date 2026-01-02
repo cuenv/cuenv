@@ -415,9 +415,11 @@ mod tests {
         );
         let diff = compare_reports(&report_a, &report_b).unwrap();
         assert_eq!(diff.task_diffs[0].change_type, ChangeType::Modified);
-        assert!(diff.task_diffs[0]
-            .changed_files
-            .contains(&"src/lib.rs".to_string()));
+        assert!(
+            diff.task_diffs[0]
+                .changed_files
+                .contains(&"src/lib.rs".to_string())
+        );
     }
 
     #[test]

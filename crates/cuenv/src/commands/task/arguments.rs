@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use cuenv_core::tasks::{ResolvedArgs, Task, TaskParams};
 use cuenv_core::Result;
+use cuenv_core::tasks::{ResolvedArgs, Task, TaskParams};
 
 /// Check if an argument looks like a flag (starts with `-` but is not a negative number)
 pub fn looks_like_flag(arg: &str) -> bool {

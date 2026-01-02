@@ -6,13 +6,13 @@
 use std::path::Path;
 
 use cuengine::ModuleEvalOptions;
-use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{TaskDefinition, Tasks};
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
+use cuenv_core::manifest::Project;
+use cuenv_core::tasks::{TaskDefinition, Tasks};
 
 use crate::commands::env_file::find_cue_module_root;
-use crate::commands::{convert_engine_error, relative_path_from_root, CommandExecutor};
+use crate::commands::{CommandExecutor, convert_engine_error, relative_path_from_root};
 
 /// Normalize a list of labels by sorting, deduplicating, and filtering empty strings.
 ///

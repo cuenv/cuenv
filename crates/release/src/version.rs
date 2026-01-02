@@ -427,9 +427,11 @@ mod tests {
     #[test]
     fn test_version_is_prerelease() {
         assert!(!Version::new(1, 0, 0).is_prerelease());
-        assert!(Version::new(1, 0, 0)
-            .with_prerelease("alpha")
-            .is_prerelease());
+        assert!(
+            Version::new(1, 0, 0)
+                .with_prerelease("alpha")
+                .is_prerelease()
+        );
     }
 
     #[test]

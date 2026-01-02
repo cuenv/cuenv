@@ -97,8 +97,8 @@ pub fn list_archive_contents(archive_path: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::write::GzEncoder;
     use flate2::Compression;
+    use flate2::write::GzEncoder;
     use tar::Builder;
     use tempfile::TempDir;
 
