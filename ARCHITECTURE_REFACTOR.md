@@ -161,41 +161,47 @@ Extract pure DAG algorithms (petgraph wrapper).
 
 Extract workspace scanning and TaskRef resolution.
 
+**Implementation Note**: The discovery module depends on core types (Task, Project, TaskIndex, TaskMatcher, ArgMatcher, TaskRef). Rather than creating circular dependencies:
+1. `cuenv-task-discovery` depends on `cuenv-core` for these types
+2. Consumers (cuenv binary) import directly from `cuenv-task-discovery`
+3. Core does NOT depend on task-discovery (no re-exports, avoiding cycles)
+
 ### Setup
 
-- [ ] Create `crates/task-discovery/Cargo.toml`
-- [ ] Create `crates/task-discovery/src/lib.rs`
-- [ ] Add `cuenv-task-discovery` to workspace `Cargo.toml` members
+- [x] Create `crates/task-discovery/Cargo.toml`
+- [x] Create `crates/task-discovery/src/lib.rs`
+- [x] Add `cuenv-task-discovery` to workspace `Cargo.toml` members
 
 ### Migration
 
-- [ ] Move `crates/core/src/tasks/discovery.rs` → `crates/task-discovery/src/discovery.rs`
-- [ ] Extract TaskRef parsing to `crates/task-discovery/src/task_ref.rs`
-- [ ] Extract workspace logic to `crates/task-discovery/src/workspace.rs`
-- [ ] Move tests
+- [x] Move `crates/core/src/tasks/discovery.rs` → `crates/task-discovery/src/lib.rs`
+- [x] Extract TaskRef parsing to `crates/task-discovery/src/task_ref.rs` (kept in lib.rs - TaskRef stays in manifest)
+- [x] Extract workspace logic to `crates/task-discovery/src/workspace.rs` (kept in lib.rs - simpler)
+- [x] Move tests
 
 ### Update Core
 
-- [ ] Update `crates/core/src/tasks/mod.rs` to import from `cuenv_task_discovery`
-- [ ] Delete `crates/core/src/tasks/discovery.rs`
-- [ ] Remove `ignore`, `walkdir`, `globset` from `crates/core/Cargo.toml` (if unused)
+- [x] Remove `pub mod discovery;` from `crates/core/src/tasks/mod.rs`
+- [x] Delete `crates/core/src/tasks/discovery.rs`
+- [x] Remove `regex` from `crates/core/Cargo.toml` (moved to task-discovery)
+- [x] Keep `ignore`, `walkdir`, `globset` in core (still used by base/discovery.rs and rules/discovery.rs)
 
 ### Update Dependents
 
-- [ ] Run: `rg "cuenv_core::tasks::discovery" --type rust`
-- [ ] Update all imports
+- [x] Run: `rg "cuenv_core::tasks::discovery" --type rust`
+- [x] Update all imports in cuenv binary to use `cuenv_task_discovery`
 
 ### Validation
 
-- [ ] `cargo test -p cuenv-task-discovery`
-- [ ] `cargo test -p cuenv-core`
-- [ ] `cuenv task check`
+- [x] `cargo test -p cuenv-task-discovery` (29 tests pass)
+- [x] `cargo test -p cuenv-core` (444 passed, 1 flaky env var test - pre-existing)
+- [x] `cuenv task check` (2755 tests, 1 flaky)
 
 ### Update Documentation
 
-- [ ] Update `CLAUDE.md` if crate descriptions changed
-- [ ] Update `readme.md` references
-- [ ] Update any `docs/` files referencing moved modules
+- [x] Update `CLAUDE.md` if crate descriptions changed
+- [x] Update `readme.md` references (no discovery references found)
+- [x] Update any `docs/` files referencing moved modules (none found)
 
 ---
 

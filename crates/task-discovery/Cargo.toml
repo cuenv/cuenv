@@ -1,0 +1,21 @@
+[package]
+name = "cuenv-task-discovery"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Workspace scanning and TaskRef resolution for cuenv"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = "1.10"
+ignore = "0.4"
+
+# Core types - Task, Project, TaskIndex, TaskMatcher, ArgMatcher, TaskRef
+cuenv-core = { workspace = true }

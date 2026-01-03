@@ -41,7 +41,6 @@ sha2 = { workspace = true }
 chrono = { workspace = true }
 # For input resolution and hashing
 globset = "0.4"
-regex = "1.10"
 walkdir = "2.5"
 ignore = "0.4"
 hex = "0.4"

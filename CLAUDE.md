@@ -56,6 +56,7 @@ The project uses `cuenv` with a `#NixFlake` hook that automatically runs `nix pr
 | **cuenv-hooks**                   | Hook execution, state management, and approval system         |
 | **cuenv-cache**                   | Content-addressed task caching infrastructure                 |
 | **cuenv-task-graph**              | Task graph DAG algorithms and dependency resolution           |
+| **cuenv-task-discovery**          | Workspace scanning and TaskRef resolution                     |
 | **cuenv**                         | CLI binary with TUI (clap + ratatui)                          |
 | **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)            |
 | **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.)  |

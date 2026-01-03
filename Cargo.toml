@@ -7,6 +7,7 @@ members = [
     "crates/hooks",
     "crates/cache",
     "crates/task-graph",
+    "crates/task-discovery",
     "crates/dagger",
     "crates/cuengine",
     "crates/cuenv",
@@ -54,6 +55,7 @@ cuenv-core = { path = "crates/core", version = "0.22.1" }
 cuenv-hooks = { path = "crates/hooks", version = "0.22.1" }
 cuenv-cache = { path = "crates/cache", version = "0.22.1" }
 cuenv-task-graph = { path = "crates/task-graph", version = "0.22.1" }
+cuenv-task-discovery = { path = "crates/task-discovery", version = "0.22.1" }
 cuenv-dagger = { path = "crates/dagger", version = "0.22.1" }
 cuenv-workspaces = { path = "crates/workspaces", version = "0.22.1" }
 cuenv-ci = { path = "crates/ci", version = "0.22.1" }

@@ -22,8 +22,8 @@ use std::path::{Path, PathBuf};
 
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::{Input, Task, TaskDefinition, TaskGroup, TaskIndex, Tasks};
+use cuenv_task_discovery::{EvalFn, TaskDiscovery};
 use cuenv_workspaces::{PackageManager, detect_from_command, detect_package_managers};
 
 use crate::commands::CommandExecutor;
