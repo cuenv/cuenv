@@ -279,6 +279,43 @@ For each crate, verify:
 
 ---
 
+### 2026-01-03: Coverage improvement session (ninth pass)
+
+**Starting coverage: 76.70%**
+**Ending coverage: 77.07%** (+0.37%)
+
+#### Tests Added (this session):
+
+1. **1password/src/secrets/wasm.rs** (coverage improved)
+   - Added 7 tests: filename verification, path structure, error messages
+
+2. **1password/src/secrets/resolver.rs** (coverage improved)
+   - Added 18 tests: config edge cases, serialization, equality
+
+3. **tools/github/src/lib.rs** (coverage improved)
+   - Added 17 tests: format_reset_duration, extract_binary, find_main_binary, compute_file_sha256
+
+4. **aws/src/secrets.rs** (coverage improved)
+   - Added 16 tests: config serialization, JSON extraction edge cases
+
+5. **dagger/src/lib.rs** (coverage improved)
+   - Added 12 tests: cache, paths, threading, config edge cases
+
+6. **vault/src/secrets.rs** (coverage improved)
+   - Added 14 tests: path handling, mount names, config edge cases
+
+7. **github/src/ci.rs** (coverage improved)
+   - Added 13 tests: repo parsing, PR refs, path handling
+   - Removed 5 flaky env var tests that caused race conditions
+
+8. **ignore/src/lib.rs** (coverage improved)
+   - Added 19 tests: pattern generation, validation edge cases
+
+9. **gcp/src/secrets.rs** (coverage improved)
+   - Added 18 tests: resource name parsing, config edge cases
+
+---
+
 ### 2026-01-02: Coverage improvement session (sixth pass)
 
 **Starting coverage: 75.81%**
