@@ -1350,4 +1350,319 @@ mod tests {
         let release: Release = serde_json::from_str(json).unwrap();
         assert!(release.assets.is_empty());
     }
+
+    // ==========================================================================
+    // format_reset_duration tests for various time periods
+    // ==========================================================================
+
+    #[test]
+    fn test_rate_limit_info_format_reset_duration_seconds() {
+        // Future timestamp - current time + 45 seconds
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let info = RateLimitInfo {
+            limit: None,
+            remaining: None,
+            reset: Some(now + 45),
+        };
+        let duration = info.format_reset_duration();
+        assert!(duration.is_some());
+        assert!(duration.unwrap().contains("second(s)"));
+    }
+
+    #[test]
+    fn test_rate_limit_info_format_reset_duration_minutes() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let info = RateLimitInfo {
+            limit: None,
+            remaining: None,
+            reset: Some(now + 300), // 5 minutes
+        };
+        let duration = info.format_reset_duration();
+        assert!(duration.is_some());
+        assert!(duration.unwrap().contains("minute(s)"));
+    }
+
+    #[test]
+    fn test_rate_limit_info_format_reset_duration_hours() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let info = RateLimitInfo {
+            limit: None,
+            remaining: None,
+            reset: Some(now + 7200), // 2 hours
+        };
+        let duration = info.format_reset_duration();
+        assert!(duration.is_some());
+        assert!(duration.unwrap().contains("hour(s)"));
+    }
+
+    // ==========================================================================
+    // extract_binary tests
+    // ==========================================================================
+
+    #[test]
+    fn test_extract_binary_raw_binary() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let data = b"#!/bin/sh\necho hello\n";
+        let result = provider.extract_binary(data, "mytool", None, temp_dir.path());
+
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        assert!(path.exists());
+        assert!(path.file_name().unwrap().to_string_lossy().contains("mytool"));
+    }
+
+    #[test]
+    fn test_extract_binary_raw_binary_with_extension() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let data = b"binary content here";
+        let result = provider.extract_binary(data, "tool.exe", None, temp_dir.path());
+
+        assert!(result.is_ok());
+        let path = result.unwrap();
+        // Should strip extension when naming the binary
+        assert!(path.file_name().unwrap().to_string_lossy() == "tool");
+    }
+
+    // ==========================================================================
+    // find_main_binary tests
+    // ==========================================================================
+
+    #[test]
+    fn test_find_main_binary_in_bin_dir() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create bin directory with executable
+        let bin_dir = temp_dir.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let binary_path = bin_dir.join("tool");
+        std::fs::write(&binary_path, b"binary").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&binary_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&binary_path, perms).unwrap();
+        }
+
+        let result = provider.find_main_binary(temp_dir.path());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), binary_path);
+    }
+
+    #[test]
+    fn test_find_main_binary_in_root() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create executable in root
+        let binary_path = temp_dir.path().join("tool");
+        std::fs::write(&binary_path, b"binary").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&binary_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&binary_path, perms).unwrap();
+        }
+
+        let result = provider.find_main_binary(temp_dir.path());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_find_main_binary_empty_dir() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let result = provider.find_main_binary(temp_dir.path());
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("No binary found"));
+    }
+
+    #[test]
+    fn test_find_main_binary_empty_bin_dir_fallback_to_root() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create empty bin directory
+        std::fs::create_dir_all(temp_dir.path().join("bin")).unwrap();
+
+        // Create executable in root
+        let binary_path = temp_dir.path().join("tool");
+        std::fs::write(&binary_path, b"binary").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&binary_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&binary_path, perms).unwrap();
+        }
+
+        let result = provider.find_main_binary(temp_dir.path());
+        assert!(result.is_ok());
+    }
+
+    // ==========================================================================
+    // compute_file_sha256 tests
+    // ==========================================================================
+
+    #[tokio::test]
+    async fn test_compute_file_sha256() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.bin");
+        std::fs::write(&file_path, b"hello world").unwrap();
+
+        let sha256 = compute_file_sha256(&file_path).await.unwrap();
+
+        // SHA256 of "hello world" is known
+        assert_eq!(
+            sha256,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compute_file_sha256_empty_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("empty.bin");
+        std::fs::write(&file_path, b"").unwrap();
+
+        let sha256 = compute_file_sha256(&file_path).await.unwrap();
+
+        // SHA256 of empty string
+        assert_eq!(
+            sha256,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compute_file_sha256_large_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("large.bin");
+
+        // Create a file larger than the buffer size (8192)
+        let data = vec![0u8; 10000];
+        std::fs::write(&file_path, &data).unwrap();
+
+        let result = compute_file_sha256(&file_path).await;
+        assert!(result.is_ok());
+        // Just verify it's a valid hex string
+        assert_eq!(result.unwrap().len(), 64);
+    }
+
+    // ==========================================================================
+    // ToolSource variant tests
+    // ==========================================================================
+
+    #[test]
+    fn test_can_handle_oci_source() {
+        let provider = GitHubToolProvider::new();
+
+        let oci_source = ToolSource::Oci {
+            image: "docker.io/library/alpine:latest".into(),
+            path: "/bin/sh".into(),
+        };
+        assert!(!provider.can_handle(&oci_source));
+    }
+
+    #[test]
+    fn test_can_handle_rustup_source() {
+        let provider = GitHubToolProvider::new();
+
+        let rustup_source = ToolSource::Rustup {
+            toolchain: "stable".into(),
+            profile: Some("minimal".into()),
+            components: vec![],
+            targets: vec![],
+        };
+        assert!(!provider.can_handle(&rustup_source));
+    }
+
+    // ==========================================================================
+    // Additional edge case tests
+    // ==========================================================================
+
+    #[test]
+    fn test_expand_template_multiple_same_placeholder() {
+        let provider = GitHubToolProvider::new();
+        let platform = Platform::new(Os::Linux, Arch::X86_64);
+
+        let result =
+            provider.expand_template("{os}-{os}-{arch}-{arch}", "1.0.0", &platform);
+        assert_eq!(result, "linux-linux-x86_64-x86_64");
+    }
+
+    #[test]
+    fn test_expand_template_version_at_multiple_positions() {
+        let provider = GitHubToolProvider::new();
+        let platform = Platform::new(Os::Darwin, Arch::Arm64);
+
+        let result = provider.expand_template("v{version}/tool-{version}.zip", "2.0.0", &platform);
+        assert_eq!(result, "v2.0.0/tool-2.0.0.zip");
+    }
+
+    #[test]
+    fn test_tool_cache_dir_special_characters_in_name() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+        let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
+
+        // Tool names with hyphens and underscores
+        let cache_dir = provider.tool_cache_dir(&options, "my-cool_tool", "1.0.0-beta.1");
+        assert!(cache_dir.ends_with("github/my-cool_tool/1.0.0-beta.1"));
+    }
+
+    #[test]
+    fn test_rate_limit_info_debug() {
+        let info = RateLimitInfo {
+            limit: Some(60),
+            remaining: Some(30),
+            reset: Some(1_735_689_600),
+        };
+        let debug = format!("{:?}", info);
+        assert!(debug.contains("RateLimitInfo"));
+        assert!(debug.contains("60"));
+        assert!(debug.contains("30"));
+    }
+
+    #[test]
+    fn test_asset_debug() {
+        let asset = Asset {
+            name: "tool.tar.gz".to_string(),
+            browser_download_url: "https://example.com/tool.tar.gz".to_string(),
+        };
+        let debug = format!("{:?}", asset);
+        assert!(debug.contains("Asset"));
+        assert!(debug.contains("tool.tar.gz"));
+    }
+
+    #[test]
+    fn test_release_debug() {
+        let release = Release {
+            tag_name: "v1.0.0".to_string(),
+            assets: vec![],
+        };
+        let debug = format!("{:?}", release);
+        assert!(debug.contains("Release"));
+        assert!(debug.contains("v1.0.0"));
+    }
 }
