@@ -536,7 +536,10 @@ mod tests {
         let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
         let result = discovery.discover();
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), DiscoveryError::NoEvalFunction));
+        assert!(matches!(
+            result.unwrap_err(),
+            DiscoveryError::NoEvalFunction
+        ));
     }
 
     #[test]

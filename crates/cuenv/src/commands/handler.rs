@@ -477,14 +477,8 @@ impl CommandHandler for TaskHandler {
 
 /// Handler for `ci` command.
 pub struct CiHandler {
-    /// Whether to run in dry-run mode without executing.
-    pub dry_run: bool,
-    /// Optional pipeline name to execute.
-    pub pipeline: Option<String>,
-    /// Optional dynamic configuration source.
-    pub dynamic: Option<String>,
-    /// Optional starting point for pipeline execution.
-    pub from: Option<String>,
+    /// CI command arguments.
+    pub args: ci::CiArgs,
 }
 
 #[async_trait]
@@ -498,13 +492,7 @@ impl CommandHandler for CiHandler {
     }
 
     async fn execute(&self, _executor: &CommandExecutor) -> Result<String> {
-        ci::execute_ci(
-            self.dry_run,
-            self.pipeline.clone(),
-            self.dynamic.clone(),
-            self.from.clone(),
-        )
-        .await?;
+        ci::execute_ci(self.args.clone()).await?;
         Ok("CI execution completed".to_string())
     }
 }
@@ -575,6 +563,7 @@ impl CommandHandler for SyncHandler {
                 let module = executor.get_module(&target_path)?;
                 let is_root = module.root == target_path;
                 let is_project = module.projects().any(|instance| {
+                    // instance.path is the relative path to the project directory
                     module
                         .root
                         .join(&instance.path)

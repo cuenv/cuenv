@@ -386,7 +386,11 @@ mod tests {
         assert!(io_err.to_string().contains("Cache IO error"));
 
         let serialization_err = BackendError::Serialization("invalid json".to_string());
-        assert!(serialization_err.to_string().contains("Serialization error"));
+        assert!(
+            serialization_err
+                .to_string()
+                .contains("Serialization error")
+        );
 
         let connection_err = BackendError::Connection("timeout".to_string());
         assert!(connection_err.to_string().contains("connection error"));

@@ -527,10 +527,7 @@ mod tests {
         assert!(config.targets.contains(&Target::LinuxX64));
         assert!(config.targets.contains(&Target::LinuxArm64));
         assert!(config.targets.contains(&Target::DarwinArm64));
-        assert_eq!(
-            config.output_dir,
-            PathBuf::from("target/release-artifacts")
-        );
+        assert_eq!(config.output_dir, PathBuf::from("target/release-artifacts"));
         assert!(!config.dry_run);
         assert!(config.download_base_url.is_none());
     }

@@ -12,12 +12,11 @@ config: ci: cuenv: {
 	version: "0.19.0" // Install specific version via nix profile
 }
 
-ci: pipelines: [
-	{
-		name:  "build"
+ci: pipelines: {
+	build: {
 		tasks: ["build"]
-	},
-]
+	}
+}
 
 tasks: {
 	build: {

@@ -79,6 +79,11 @@ pub struct CompilerOptions {
     /// Maps input name to override digest value
     pub input_overrides: HashMap<String, String>,
 
+    /// Pipeline name (for environment-aware compilation)
+    ///
+    /// When set, this is used for workflow naming and identification.
+    pub pipeline_name: Option<String>,
+
     /// Pipeline being compiled (for environment-aware compilation)
     ///
     /// When set, the compiler will set `ir.pipeline.environment` from
@@ -115,6 +120,7 @@ impl std::fmt::Debug for CompilerOptions {
             .field("flake_lock_path", &self.flake_lock_path)
             .field("project_root", &self.project_root)
             .field("input_overrides", &self.input_overrides)
+            .field("pipeline_name", &self.pipeline_name)
             .field("pipeline", &self.pipeline)
             .field("ci_mode", &self.ci_mode)
             .field("module_root", &self.module_root)
@@ -1152,6 +1158,7 @@ impl Compiler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::ci::PipelineMode;
     use cuenv_core::tasks::Task;
 
     #[test]
@@ -1457,6 +1464,7 @@ mod tests {
     #[test]
     fn test_derive_trigger_paths_with_project_path() {
         use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
+        use std::collections::BTreeMap;
 
         let mut project = Project::new("test-project");
         project.tasks.insert(
@@ -1473,7 +1481,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            name: "default".to_string(),
+            mode: PipelineMode::default(),
             environment: None,
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
@@ -1491,11 +1499,12 @@ mod tests {
 
         // Add CI config with a pipeline
         project.ci = Some(CI {
-            pipelines: vec![pipeline.clone()],
+            pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
             ..Default::default()
         });
 
         let options = CompilerOptions {
+            pipeline_name: Some("default".to_string()),
             pipeline: Some(pipeline),
             project_path: Some("projects/api".to_string()),
             ..Default::default()
@@ -1533,6 +1542,7 @@ mod tests {
     #[test]
     fn test_derive_trigger_paths_fallback_to_project_dir() {
         use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
+        use std::collections::BTreeMap;
 
         let mut project = Project::new("test-project");
         // Task with NO inputs
@@ -1546,7 +1556,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            name: "default".to_string(),
+            mode: PipelineMode::default(),
             environment: None,
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
@@ -1563,11 +1573,12 @@ mod tests {
         };
 
         project.ci = Some(CI {
-            pipelines: vec![pipeline.clone()],
+            pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
             ..Default::default()
         });
 
         let options = CompilerOptions {
+            pipeline_name: Some("default".to_string()),
             pipeline: Some(pipeline),
             project_path: Some("projects/rawkode.academy/api".to_string()),
             ..Default::default()
@@ -1591,6 +1602,7 @@ mod tests {
     #[test]
     fn test_derive_trigger_paths_root_project() {
         use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
+        use std::collections::BTreeMap;
 
         let mut project = Project::new("test-project");
         project.tasks.insert(
@@ -1604,7 +1616,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            name: "default".to_string(),
+            mode: PipelineMode::default(),
             environment: None,
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
@@ -1621,12 +1633,13 @@ mod tests {
         };
 
         project.ci = Some(CI {
-            pipelines: vec![pipeline.clone()],
+            pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
             ..Default::default()
         });
 
         // No project_path = root project
         let options = CompilerOptions {
+            pipeline_name: Some("default".to_string()),
             pipeline: Some(pipeline),
             project_path: None,
             ..Default::default()
@@ -1646,6 +1659,7 @@ mod tests {
     #[test]
     fn test_derive_trigger_paths_root_project_no_inputs_fallback() {
         use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
+        use std::collections::BTreeMap;
 
         let mut project = Project::new("test-project");
         // Task with NO inputs
@@ -1659,7 +1673,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            name: "default".to_string(),
+            mode: PipelineMode::default(),
             environment: None,
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
@@ -1676,12 +1690,13 @@ mod tests {
         };
 
         project.ci = Some(CI {
-            pipelines: vec![pipeline.clone()],
+            pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
             ..Default::default()
         });
 
         // No project_path = root project
         let options = CompilerOptions {
+            pipeline_name: Some("default".to_string()),
             pipeline: Some(pipeline),
             project_path: None,
             ..Default::default()
@@ -1722,6 +1737,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "test".to_string(),
+                mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,
@@ -1839,11 +1855,12 @@ mod tests {
     fn test_contributor_cuenv_source_matches() {
         use cuenv_core::ci::CI;
         use cuenv_core::config::{CIConfig, CuenvConfig, CuenvSource};
+        use std::collections::BTreeMap;
 
         let mut project = Project::new("test");
         project.config = Some(cuenv_core::config::Config::default());
         project.ci = Some(CI {
-            pipelines: vec![],
+            pipelines: BTreeMap::new(),
             provider: None,
             contributors: vec![],
         });

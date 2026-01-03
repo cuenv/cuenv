@@ -88,8 +88,7 @@ impl GitHubConfigExt for CI {
 
         let pipeline_config = self
             .pipelines
-            .iter()
-            .find(|p| p.name == pipeline_name)
+            .get(pipeline_name)
             .and_then(|p| p.provider.as_ref())
             .and_then(|p| p.get("github"))
             .and_then(|v| serde_json::from_value::<GitHubConfig>(v.clone()).ok());
@@ -115,8 +114,9 @@ impl GitHubConfigExt for CI {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::ci::{Pipeline, PipelineTask};
+    use cuenv_core::ci::{Pipeline, PipelineMode, PipelineTask};
     use serde_json::json;
+    use std::collections::BTreeMap;
 
     #[test]
     fn test_github_config_merge() {
@@ -133,31 +133,37 @@ mod tests {
                 .unwrap(),
             ),
             contributors: vec![],
-            pipelines: vec![
-                Pipeline {
-                    name: "ci".to_string(),
-                    environment: None,
-                    when: None,
-                    tasks: vec![PipelineTask::Simple("test".to_string())],
-                    derive_paths: None,
-                    provider: Some(
-                        serde_json::from_value(json!({
-                            "github": {
-                                "runner": "self-hosted"
-                            }
-                        }))
-                        .unwrap(),
-                    ),
-                },
-                Pipeline {
-                    name: "release".to_string(),
-                    environment: None,
-                    when: None,
-                    tasks: vec![PipelineTask::Simple("deploy".to_string())],
-                    derive_paths: None,
-                    provider: None,
-                },
-            ],
+            pipelines: BTreeMap::from([
+                (
+                    "ci".to_string(),
+                    Pipeline {
+                        mode: PipelineMode::default(),
+                        environment: None,
+                        when: None,
+                        tasks: vec![PipelineTask::Simple("test".to_string())],
+                        derive_paths: None,
+                        provider: Some(
+                            serde_json::from_value(json!({
+                                "github": {
+                                    "runner": "self-hosted"
+                                }
+                            }))
+                            .unwrap(),
+                        ),
+                    },
+                ),
+                (
+                    "release".to_string(),
+                    Pipeline {
+                        mode: PipelineMode::default(),
+                        environment: None,
+                        when: None,
+                        tasks: vec![PipelineTask::Simple("deploy".to_string())],
+                        derive_paths: None,
+                        provider: None,
+                    },
+                ),
+            ]),
         };
 
         // Pipeline with override
@@ -246,7 +252,7 @@ mod tests {
                 .unwrap(),
             ),
             contributors: vec![],
-            pipelines: vec![],
+            pipelines: BTreeMap::new(),
         };
 
         // Returns global config when pipeline doesn't exist
@@ -262,7 +268,7 @@ mod tests {
         let ci = CI {
             provider: None,
             contributors: vec![],
-            pipelines: vec![],
+            pipelines: BTreeMap::new(),
         };
 
         let config = ci.github_config_for_pipeline("any");

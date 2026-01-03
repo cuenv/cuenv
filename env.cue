@@ -125,10 +125,8 @@ schema.#Project & {
 			}
 		}
 
-		// TODO: This could be a map
-		pipelines: [
-			{
-				name: "sync-check"
+		pipelines: {
+			"sync-check": {
 				when: {
 					branch:      "main"
 					pullRequest: true
@@ -137,9 +135,8 @@ schema.#Project & {
 					"id-token": "write"
 				}
 				tasks: ["ci.sync-check"]
-			},
-			{
-				name: "ci"
+			}
+			ci: {
 				when: {
 					branch:      "main"
 					pullRequest: true
@@ -148,9 +145,8 @@ schema.#Project & {
 					"id-token": "write"
 				}
 				tasks: ["check"]
-			},
-			{
-				name:        "release"
+			}
+			release: {
 				environment: "production"
 				when: {
 					release: ["published"]
@@ -187,8 +183,8 @@ schema.#Project & {
 					},
 					"docs.deploy",
 				]
-			},
-		]
+			}
+		}
 	}
 
 	tasks: {

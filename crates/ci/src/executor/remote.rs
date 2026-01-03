@@ -748,7 +748,10 @@ mod tests {
     fn test_config_from_env_with_url() {
         temp_env::with_vars(
             [
-                ("CUENV_REMOTE_CACHE_URL", Some("grpc://cache.example.com:9092")),
+                (
+                    "CUENV_REMOTE_CACHE_URL",
+                    Some("grpc://cache.example.com:9092"),
+                ),
                 ("CUENV_REMOTE_CACHE_INSTANCE", Some("my-instance")),
                 ("CUENV_REMOTE_CACHE_TLS", Some("true")),
                 ("CUENV_REMOTE_CACHE_TLS_CERT", Some("/path/to/cert.pem")),

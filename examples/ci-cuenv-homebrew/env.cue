@@ -12,12 +12,11 @@ config: ci: cuenv: {
 	version: "latest" // Version is ignored for homebrew
 }
 
-ci: pipelines: [
-	{
-		name:  "build"
+ci: pipelines: {
+	build: {
 		tasks: ["build"]
-	},
-]
+	}
+}
 
 tasks: {
 	build: {

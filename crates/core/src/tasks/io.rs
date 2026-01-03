@@ -500,8 +500,14 @@ mod tests {
     fn test_normalize_rel_path() {
         assert_eq!(normalize_rel_path(Path::new("./a/b")), PathBuf::from("a/b"));
         assert_eq!(normalize_rel_path(Path::new("a/../b")), PathBuf::from("b"));
-        assert_eq!(normalize_rel_path(Path::new("./a/./b/../c")), PathBuf::from("a/c"));
-        assert_eq!(normalize_rel_path(Path::new("a/b/c")), PathBuf::from("a/b/c"));
+        assert_eq!(
+            normalize_rel_path(Path::new("./a/./b/../c")),
+            PathBuf::from("a/c")
+        );
+        assert_eq!(
+            normalize_rel_path(Path::new("a/b/c")),
+            PathBuf::from("a/b/c")
+        );
     }
 
     #[test]
@@ -514,7 +520,10 @@ mod tests {
         assert!(!hash.is_empty());
         assert_eq!(size, 11); // "hello world" is 11 bytes
         // SHA256 of "hello world" is well-known
-        assert_eq!(hash, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
     }
 
     #[test]
@@ -734,6 +743,11 @@ mod tests {
         let resolver = InputResolver::new(root);
         let inputs = resolver.resolve(&["a?.txt".into()]).unwrap();
         assert_eq!(inputs.files.len(), 1);
-        assert!(inputs.files[0].rel_path.to_string_lossy().contains("ab.txt"));
+        assert!(
+            inputs.files[0]
+                .rel_path
+                .to_string_lossy()
+                .contains("ab.txt")
+        );
     }
 }

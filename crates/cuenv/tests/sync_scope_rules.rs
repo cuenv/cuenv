@@ -104,12 +104,11 @@ owners: {{
   }}
 }}
 
-ci: pipelines: [
-  {{
-    name: "{pipeline}"
+ci: pipelines: {{
+  "{pipeline}": {{
     tasks: ["{task}"]
   }}
-]
+}}
 
 tasks: {{
   {task}: {{

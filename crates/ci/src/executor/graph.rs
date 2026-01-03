@@ -308,6 +308,7 @@ impl CITaskGraph {
 mod tests {
     use super::*;
     use crate::ir::{CachePolicy, Task};
+    use cuenv_core::ci::PipelineMode;
     use std::collections::BTreeMap;
 
     fn make_task(id: &str, deps: &[&str]) -> Task {
@@ -343,6 +344,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "test".to_string(),
+                mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,

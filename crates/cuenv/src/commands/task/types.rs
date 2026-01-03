@@ -382,7 +382,8 @@ mod tests {
 
     #[test]
     fn test_request_labels() {
-        let req = TaskExecutionRequest::labels("./", "cuenv", vec!["ci".to_string(), "fast".to_string()]);
+        let req =
+            TaskExecutionRequest::labels("./", "cuenv", vec!["ci".to_string(), "fast".to_string()]);
         assert!(matches!(
             req.selection,
             TaskSelection::Labels(ref labels) if labels == &vec!["ci".to_string(), "fast".to_string()]
@@ -403,15 +404,13 @@ mod tests {
 
     #[test]
     fn test_with_backend() {
-        let req = TaskExecutionRequest::named("./", "cuenv", "build")
-            .with_backend("dagger");
+        let req = TaskExecutionRequest::named("./", "cuenv", "build").with_backend("dagger");
         assert_eq!(req.backend, Some("dagger".to_string()));
     }
 
     #[test]
     fn test_with_help() {
-        let req = TaskExecutionRequest::named("./", "cuenv", "build")
-            .with_help();
+        let req = TaskExecutionRequest::named("./", "cuenv", "build").with_help();
         assert!(req.output.help);
     }
 
@@ -419,13 +418,15 @@ mod tests {
     fn test_with_materialize_outputs() {
         let req = TaskExecutionRequest::named("./", "cuenv", "build")
             .with_materialize_outputs("/tmp/outputs");
-        assert_eq!(req.output.materialize_outputs, Some(PathBuf::from("/tmp/outputs")));
+        assert_eq!(
+            req.output.materialize_outputs,
+            Some(PathBuf::from("/tmp/outputs"))
+        );
     }
 
     #[test]
     fn test_with_show_cache_path() {
-        let req = TaskExecutionRequest::named("./", "cuenv", "build")
-            .with_show_cache_path();
+        let req = TaskExecutionRequest::named("./", "cuenv", "build").with_show_cache_path();
         assert!(req.output.show_cache_path);
     }
 
@@ -511,8 +512,7 @@ mod tests {
     #[test]
     fn test_with_args_on_non_named_selection() {
         // with_args should be a no-op for non-Named selections
-        let req = TaskExecutionRequest::list("./", "cuenv")
-            .with_args(vec!["arg".to_string()]);
+        let req = TaskExecutionRequest::list("./", "cuenv").with_args(vec!["arg".to_string()]);
         assert!(matches!(req.selection, TaskSelection::List));
     }
 }

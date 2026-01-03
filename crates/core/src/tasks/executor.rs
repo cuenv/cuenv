@@ -1153,7 +1153,10 @@ mod tests {
         let result = TaskResult {
             name: "verbose".to_string(),
             exit_code: Some(1),
-            stdout: (1..=50).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n"),
+            stdout: (1..=50)
+                .map(|i| format!("line {}", i))
+                .collect::<Vec<_>>()
+                .join("\n"),
             stderr: String::new(),
             success: false,
         };
@@ -1202,7 +1205,8 @@ mod tests {
         std::fs::write(
             tmp.path().join("package.json"),
             r#"{"workspaces": ["packages/*"]}"#,
-        ).unwrap();
+        )
+        .unwrap();
         let subdir = tmp.path().join("packages").join("subpkg");
         std::fs::create_dir_all(&subdir).unwrap();
 
@@ -1216,7 +1220,8 @@ mod tests {
         std::fs::write(
             tmp.path().join("pnpm-workspace.yaml"),
             "packages:\n  - 'packages/*'",
-        ).unwrap();
+        )
+        .unwrap();
         let subdir = tmp.path().join("packages").join("app");
         std::fs::create_dir_all(&subdir).unwrap();
 
@@ -1230,7 +1235,8 @@ mod tests {
         std::fs::write(
             tmp.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"crates/*\"]",
-        ).unwrap();
+        )
+        .unwrap();
         let subdir = tmp.path().join("crates").join("core");
         std::fs::create_dir_all(&subdir).unwrap();
 
@@ -1252,7 +1258,8 @@ mod tests {
         std::fs::write(
             tmp.path().join("package.json"),
             r#"{"workspaces": ["packages/*"]}"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(package_json_has_workspaces(tmp.path()));
     }
 
@@ -1262,27 +1269,22 @@ mod tests {
         std::fs::write(
             tmp.path().join("package.json"),
             r#"{"workspaces": {"packages": ["packages/*"]}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(package_json_has_workspaces(tmp.path()));
     }
 
     #[test]
     fn test_package_json_no_workspaces() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("package.json"),
-            r#"{"name": "test"}"#,
-        ).unwrap();
+        std::fs::write(tmp.path().join("package.json"), r#"{"name": "test"}"#).unwrap();
         assert!(!package_json_has_workspaces(tmp.path()));
     }
 
     #[test]
     fn test_package_json_empty_workspaces() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("package.json"),
-            r#"{"workspaces": []}"#,
-        ).unwrap();
+        std::fs::write(tmp.path().join("package.json"), r#"{"workspaces": []}"#).unwrap();
         assert!(!package_json_has_workspaces(tmp.path()));
     }
 
@@ -1298,17 +1300,15 @@ mod tests {
         std::fs::write(
             tmp.path().join("Cargo.toml"),
             "[workspace]\nmembers = [\"crates/*\"]",
-        ).unwrap();
+        )
+        .unwrap();
         assert!(cargo_toml_has_workspace(tmp.path()));
     }
 
     #[test]
     fn test_cargo_toml_no_workspace() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("Cargo.toml"),
-            "[package]\nname = \"test\"",
-        ).unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"test\"").unwrap();
         assert!(!cargo_toml_has_workspace(tmp.path()));
     }
 
@@ -1324,7 +1324,8 @@ mod tests {
         std::fs::write(
             tmp.path().join("deno.json"),
             r#"{"workspace": ["./packages/*"]}"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(deno_json_has_workspace(tmp.path()));
     }
 
@@ -1334,17 +1335,15 @@ mod tests {
         std::fs::write(
             tmp.path().join("deno.json"),
             r#"{"workspace": {"members": ["./packages/*"]}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(deno_json_has_workspace(tmp.path()));
     }
 
     #[test]
     fn test_deno_json_no_workspace() {
         let tmp = TempDir::new().unwrap();
-        std::fs::write(
-            tmp.path().join("deno.json"),
-            r#"{"name": "test"}"#,
-        ).unwrap();
+        std::fs::write(tmp.path().join("deno.json"), r#"{"name": "test"}"#).unwrap();
         assert!(!deno_json_has_workspace(tmp.path()));
     }
 

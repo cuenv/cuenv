@@ -17,13 +17,12 @@ ci: {
 	provider: github: cachix: {
 		name: "my-project-cache"
 	}
-	pipelines: [
-		{
-			name:  "build"
+	pipelines: {
+		build: {
 			tasks: ["build"]
 			when: branch: "main"
-		},
-	]
+		}
+	}
 }
 
 tasks: {

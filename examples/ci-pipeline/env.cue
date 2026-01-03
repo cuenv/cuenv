@@ -6,12 +6,11 @@ schema.#Project
 
 name: "ci-pipeline"
 
-ci: pipelines: [
-    {
-        name: "default"
+ci: pipelines: {
+    default: {
         tasks: ["test"]
     }
-]
+}
 
 tasks: {
     test: {

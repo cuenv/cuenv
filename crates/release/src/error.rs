@@ -361,7 +361,10 @@ mod tests {
 
     #[test]
     fn test_artifact_error() {
-        let err = Error::artifact("binary not found", Some(PathBuf::from("target/release/bin")));
+        let err = Error::artifact(
+            "binary not found",
+            Some(PathBuf::from("target/release/bin")),
+        );
         assert!(err.to_string().contains("Artifact error"));
     }
 

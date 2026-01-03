@@ -186,8 +186,17 @@ package schema
 	tasks!: [...#PhaseTask]           // Tasks to contribute when active
 })
 
+// Pipeline generation mode
+// - "thin": Generate minimal workflow with cuenv ci orchestration (default)
+//   Structure: bootstrap contributors → cuenv ci --pipeline <name> → finalizer contributors
+// - "expanded": Generate full workflow with all tasks as individual jobs/steps
+//   Structure: All tasks expanded inline with proper dependencies
+#PipelineMode: "thin" | "expanded"
+
 #Pipeline: close({
-	name:         string
+	// Generation mode for this pipeline (default: "thin")
+	mode?: #PipelineMode | *"thin"
+
 	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
 
@@ -199,7 +208,7 @@ package schema
 })
 
 #CI: close({
-	pipelines: [...#Pipeline]
+	pipelines: [string]: #Pipeline
 	provider?: #ProviderConfig
 
 	// Contributors that inject tasks into build phases
