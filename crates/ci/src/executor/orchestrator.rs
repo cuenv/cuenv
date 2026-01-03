@@ -210,6 +210,10 @@ async fn execute_project_pipeline(
         executor_config
     };
 
+    // Register common CI secret patterns for redaction.
+    // These are typically passed via GitHub Actions secrets or similar.
+    register_ci_secrets();
+
     // Execute tasks
     for task_name in tasks_to_run {
         let inputs_matched =
@@ -361,6 +365,42 @@ fn is_fork_pr(context: &crate::context::CIContext) -> bool {
     // Fork PRs typically have a different head repo than base repo
     // This is a simplified check - providers may need more sophisticated detection
     context.event == "pull_request" && context.ref_name.starts_with("refs/pull/")
+}
+
+/// Register common CI secret environment variables for redaction.
+///
+/// This ensures that secrets passed via CI provider (GitHub Actions, etc.)
+/// are automatically redacted from task output.
+fn register_ci_secrets() {
+    // Common secret environment variable patterns
+    const SECRET_PATTERNS: &[&str] = &[
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "ACTIONS_RUNTIME_TOKEN",
+        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AZURE_CLIENT_SECRET",
+        "GCP_SERVICE_ACCOUNT_KEY",
+        "CACHIX_AUTH_TOKEN",
+        "CODECOV_TOKEN",
+        "CUE_REGISTRY_TOKEN",
+        "VSCE_PAT",
+        "NPM_TOKEN",
+        "CARGO_REGISTRY_TOKEN",
+        "PYPI_TOKEN",
+        "DOCKER_PASSWORD",
+        "CLOUDFLARE_API_TOKEN",
+        "OP_SERVICE_ACCOUNT_TOKEN",
+        "CUENV_SECRET_SALT",
+        "CUENV_SECRET_SALT_PREV",
+    ];
+
+    for pattern in SECRET_PATTERNS {
+        if let Ok(value) = std::env::var(pattern) {
+            cuenv_events::register_secret(value);
+        }
+    }
 }
 
 /// Execute a single task by name using the existing project config

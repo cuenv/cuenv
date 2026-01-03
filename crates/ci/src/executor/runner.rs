@@ -1,9 +1,9 @@
 //! IR Task Runner
 //!
 //! Executes individual IR tasks with proper command handling, environment
-//! injection, and output capture.
+//! injection, and output streaming with secret redaction.
 
-// Task execution with output capture and error handling
+// Task execution with output streaming and error handling
 #![allow(clippy::too_many_lines)]
 
 use crate::ir::Task as IRTask;
@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 /// Error types for task execution
@@ -188,7 +189,7 @@ impl IRTaskRunner {
             cmd.env("HOME", home);
         }
 
-        // Configure output capture
+        // Configure output - always pipe for streaming, or inherit if not capturing
         if self.capture_output {
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
@@ -200,17 +201,65 @@ impl IRTaskRunner {
         // Execute
         tracing::info!(task = %task.id, "Starting task execution");
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| RunnerError::ExecutionFailed {
-                task: task.id.clone(),
-                source: e,
-            })?;
+        // Spawn the process
+        let mut child = cmd.spawn().map_err(|e| RunnerError::SpawnFailed {
+            task: task.id.clone(),
+            source: e,
+        })?;
+
+        // Collect output while streaming via events
+        let (stdout_content, stderr_content) = if self.capture_output {
+            let stdout_handle = child.stdout.take();
+            let stderr_handle = child.stderr.take();
+
+            let task_id_stdout = task.id.clone();
+            let task_id_stderr = task.id.clone();
+
+            // Stream stdout line-by-line
+            let stdout_task = tokio::spawn(async move {
+                let mut lines = Vec::new();
+                if let Some(stdout) = stdout_handle {
+                    let mut reader = BufReader::new(stdout).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        // Emit via event system - redaction happens in the event layer
+                        cuenv_events::emit_task_output!(&task_id_stdout, "stdout", &line);
+                        lines.push(line);
+                    }
+                }
+                lines.join("\n")
+            });
+
+            // Stream stderr line-by-line
+            let stderr_task = tokio::spawn(async move {
+                let mut lines = Vec::new();
+                if let Some(stderr) = stderr_handle {
+                    let mut reader = BufReader::new(stderr).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        // Emit via event system - redaction happens in the event layer
+                        cuenv_events::emit_task_output!(&task_id_stderr, "stderr", &line);
+                        lines.push(line);
+                    }
+                }
+                lines.join("\n")
+            });
+
+            // Wait for both streams to complete
+            let stdout = stdout_task.await.unwrap_or_default();
+            let stderr = stderr_task.await.unwrap_or_default();
+            (stdout, stderr)
+        } else {
+            (String::new(), String::new())
+        };
+
+        // Wait for the process to complete
+        let status = child.wait().await.map_err(|e| RunnerError::ExecutionFailed {
+            task: task.id.clone(),
+            source: e,
+        })?;
 
         let duration = start.elapsed();
-        let exit_code = output.status.code().unwrap_or(-1);
-        let success = output.status.success();
+        let exit_code = status.code().unwrap_or(-1);
+        let success = status.success();
 
         let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         tracing::info!(
@@ -224,8 +273,8 @@ impl IRTaskRunner {
         Ok(TaskOutput {
             task_id: task.id.clone(),
             exit_code,
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            stdout: stdout_content,
+            stderr: stderr_content,
             success,
             from_cache: false,
             duration_ms,
