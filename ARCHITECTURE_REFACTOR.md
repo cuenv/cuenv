@@ -304,9 +304,21 @@ Remove 1Password hardcoding, use trait-based registry.
 
 ---
 
-## Phase 7: CI Consolidation
+## Phase 7: CI Consolidation - DEFERRED
 
 Merge `core/ci.rs` (618 LOC) into existing cuenv-ci crate.
+
+**Decision: DEFERRED** - The CI types in `core/ci.rs` are used by multiple crates:
+- `cuenv-ci` (executor, compiler, emitter, pipeline)
+- `cuenv-github` (workflow emitter, config)
+- `cuenv-buildkite` (emitter)
+- `cuenv` binary (CI commands)
+
+Moving these types to `cuenv-ci` would create a circular dependency since `cuenv-ci` already depends on `cuenv-core`. Options:
+1. Create a new `cuenv-ci-types` crate (similar to how `cuenv-task-graph` was extracted)
+2. Keep types in core and move execution logic only
+
+The effort doesn't justify the benefit for ~618 LOC. This module can be extracted later if we create a shared types crate.
 
 ### Migration
 
