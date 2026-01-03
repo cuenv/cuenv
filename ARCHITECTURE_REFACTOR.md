@@ -2,6 +2,13 @@
 
 Split cuenv-core (22,237 LOC) into 6 focused crates, reducing core to ~8K LOC.
 
+**Progress:** 60% complete (98/163 tasks)
+- Phases 1-4: Complete
+- Phase 5: Deferred (task index extraction - complex coupling)
+- Phase 6: Complete (secrets registry pattern)
+- Phase 7: Deferred (CI consolidation - circular dependency)
+- Phase 8: Deferred (cuenv-cubes rename - breaking change)
+
 ## ⚠️ Breaking Changes Policy
 
 **Backwards compatibility is explicitly NOT a goal.** This refactor prioritizes clean architecture over migration paths. All imports, re-exports, and public APIs will change without deprecation warnings or shims.
