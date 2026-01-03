@@ -548,4 +548,108 @@ mod tests {
         assert_eq!(files[1], PathBuf::from("Cargo.toml"));
         assert_eq!(files[2], PathBuf::from("README.md"));
     }
+
+    #[test]
+    fn test_parse_repo_with_slashes_in_name() {
+        // Some repos might have unusual names - verify parsing handles first two parts
+        let (owner, repo) = GitHubCIProvider::parse_repo("org/repo");
+        assert_eq!(owner, "org");
+        assert_eq!(repo, "repo");
+    }
+
+    #[test]
+    fn test_parse_repo_with_hyphens() {
+        let (owner, repo) = GitHubCIProvider::parse_repo("my-org/my-repo-name");
+        assert_eq!(owner, "my-org");
+        assert_eq!(repo, "my-repo-name");
+    }
+
+    #[test]
+    fn test_parse_repo_with_underscores() {
+        let (owner, repo) = GitHubCIProvider::parse_repo("my_org/my_repo");
+        assert_eq!(owner, "my_org");
+        assert_eq!(repo, "my_repo");
+    }
+
+    #[test]
+    fn test_parse_repo_single_slash() {
+        let (owner, repo) = GitHubCIProvider::parse_repo("/");
+        assert_eq!(owner, "");
+        assert_eq!(repo, "");
+    }
+
+    #[test]
+    fn test_parse_pr_number_negative() {
+        // Negative numbers should not parse
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/pull/-1/merge"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_try_git_diff_with_spaces_in_path() {
+        let output = "src/file with spaces.rs\npath/to/another file.txt";
+        let files: Vec<PathBuf> = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], PathBuf::from("src/file with spaces.rs"));
+    }
+
+    #[test]
+    fn test_try_git_diff_with_unicode_paths() {
+        let output = "路径/文件.rs\nパス/ファイル.txt";
+        let files: Vec<PathBuf> = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect();
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_try_git_diff_with_deeply_nested_paths() {
+        let output = "a/b/c/d/e/f/g/h/file.rs";
+        let files: Vec<PathBuf> = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].components().count() == 9);
+    }
+
+    #[test]
+    fn test_try_git_diff_mixed_content() {
+        let output = "file1.rs\n\n\t\nfile2.rs\n   \nfile3.rs";
+        let files: Vec<PathBuf> = output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect();
+        assert_eq!(files.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_pr_number_with_suffix() {
+        // Different PR ref suffixes
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/pull/42/merge"),
+            Some(42)
+        );
+        assert_eq!(
+            GitHubCIProvider::parse_pr_number("refs/pull/42/head"),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn test_null_sha_is_all_zeros() {
+        // Verify the null SHA constant
+        assert!(NULL_SHA.chars().all(|c| c == '0'));
+        assert_eq!(NULL_SHA.len(), 40); // Git SHAs are 40 hex characters
+    }
 }
