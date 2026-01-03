@@ -15,7 +15,8 @@ exclude = [
 ]
 
 [features]
-default = []
+default = ["1password"]
+1password = ["dep:cuenv-1password"]
 
 [dependencies]
 thiserror = "2.0"
@@ -30,7 +31,7 @@ async-recursion = "1.1"
 async-trait = "0.1"
 futures = "0.3"
 cuenv-secrets = { workspace = true }
-cuenv-1password = { workspace = true }
+cuenv-1password = { workspace = true, optional = true }
 cuenv-hooks = { workspace = true }
 cuenv-cache = { workspace = true }
 cuenv-task-graph = { workspace = true }
