@@ -979,7 +979,7 @@ impl Emitter for GitHubActionsEmitter {
         );
 
         // Bootstrap and setup phase steps
-        let (phase_steps, _secret_env) = Self::render_phase_steps(ir);
+        let (phase_steps, secret_env) = Self::render_phase_steps(ir);
         steps.extend(phase_steps);
 
         // Main execution step: cuenv ci --pipeline <name>
@@ -992,6 +992,12 @@ impl Emitter for GitHubActionsEmitter {
 
         if let Some(env) = &ir.pipeline.environment {
             main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
+        }
+
+        // Pass secret env vars from setup tasks to main step (e.g., OP_SERVICE_ACCOUNT_TOKEN)
+        // Transform ${VAR} to ${{ secrets.VAR }} format for GitHub Actions
+        for (key, value) in secret_env {
+            main_step = main_step.with_env(key, transform_secret_ref(&value));
         }
 
         steps.push(main_step);

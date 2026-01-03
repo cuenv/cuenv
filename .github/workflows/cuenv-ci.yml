@@ -76,3 +76,5 @@ jobs:
       run: cuenv ci --pipeline ci --path .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
