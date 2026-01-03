@@ -1922,6 +1922,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-hooks"
+version = "0.21.4"
+dependencies = [
+ "chrono",
+ "cuenv-core",
+ "fs4",
+ "libc",
+ "miette",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo",
+ "temp-env",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-ignore"
 version = "0.22.1"
 dependencies = [
