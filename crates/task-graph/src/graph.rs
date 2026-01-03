@@ -3,7 +3,7 @@
 //! This module builds directed acyclic graphs (DAGs) from task definitions
 //! to handle dependencies and determine execution order.
 
-use crate::{Error, Result, TaskNodeData};
+use crate::{Error, Result, TaskNodeData, TaskResolution, TaskResolver};
 use petgraph::algo::{is_cyclic_directed, toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::IntoNodeReferences;
@@ -305,6 +305,123 @@ impl<T: TaskNodeData> TaskGraph<T> {
 
         Ok(())
     }
+
+    /// Build graph for a specific task using a resolver that handles group expansion.
+    ///
+    /// This method uses the [`TaskResolver`] trait to resolve task names, which enables
+    /// unified handling of single tasks and groups (sequential/parallel).
+    ///
+    /// # Arguments
+    ///
+    /// * `task_name` - The name of the task to build the graph for
+    /// * `resolver` - Implementation of [`TaskResolver`] that provides task lookup and group expansion
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if dependencies cannot be resolved.
+    pub fn build_for_task_with_resolver<R>(&mut self, task_name: &str, resolver: &R) -> Result<()>
+    where
+        R: TaskResolver<T>,
+    {
+        let mut to_process = vec![task_name.to_string()];
+        let mut processed = HashSet::new();
+        // Track sequential orderings for second pass
+        let mut sequential_orderings: Vec<Vec<String>> = Vec::new();
+        // Track parallel group depends_on to apply to leaf tasks
+        let mut pending_group_deps: HashMap<String, Vec<String>> = HashMap::new();
+
+        debug!("Building graph with resolver for '{}'", task_name);
+
+        // First pass: Collect all tasks and track sequential groups
+        while let Some(current_name) = to_process.pop() {
+            if processed.contains(&current_name) {
+                continue;
+            }
+            processed.insert(current_name.clone());
+
+            match resolver.resolve(&current_name) {
+                Some(TaskResolution::Single(mut task)) => {
+                    // Apply any pending group-level dependencies
+                    // Walk up the path to find parent groups
+                    let path_parts: Vec<&str> = current_name.split('.').collect();
+                    for i in 1..path_parts.len() {
+                        let parent_path = path_parts[..i].join(".");
+                        if let Some(deps) = pending_group_deps.get(&parent_path) {
+                            for dep in deps {
+                                task.add_dependency(dep.clone());
+                            }
+                        }
+                    }
+                    // Also check for bracket notation parents (e.g., "build[0]" -> "build")
+                    if let Some(bracket_idx) = current_name.find('[') {
+                        let parent_path = &current_name[..bracket_idx];
+                        if let Some(deps) = pending_group_deps.get(parent_path) {
+                            for dep in deps {
+                                task.add_dependency(dep.clone());
+                            }
+                        }
+                    }
+
+                    self.add_task(&current_name, task.clone())?;
+
+                    // Add dependencies to processing queue
+                    for dep in task.depends_on() {
+                        if !processed.contains(dep) {
+                            to_process.push(dep.clone());
+                        }
+                    }
+                }
+                Some(TaskResolution::Sequential { children }) => {
+                    self.register_group(&current_name, children.clone());
+                    // Track ordering for second pass
+                    sequential_orderings.push(children.clone());
+                    for child in children {
+                        if !processed.contains(&child) {
+                            to_process.push(child);
+                        }
+                    }
+                }
+                Some(TaskResolution::Parallel { children, depends_on }) => {
+                    self.register_group(&current_name, children.clone());
+                    // Store group-level deps to apply to leaf tasks
+                    if !depends_on.is_empty() {
+                        pending_group_deps.insert(current_name.clone(), depends_on.clone());
+                        // Also add the group deps to processing queue
+                        for dep in &depends_on {
+                            if !processed.contains(dep) {
+                                to_process.push(dep.clone());
+                            }
+                        }
+                    }
+                    for child in children {
+                        if !processed.contains(&child) {
+                            to_process.push(child);
+                        }
+                    }
+                }
+                None => {
+                    debug!("Task '{}' not found while building graph", current_name);
+                }
+            }
+        }
+
+        // Second pass: Add sequential ordering edges
+        for ordering in sequential_orderings {
+            for window in ordering.windows(2) {
+                if let [prev, next] = window {
+                    // Add edge from prev to next (prev must complete before next)
+                    if let (Some(prev_idx), Some(next_idx)) =
+                        (self.get_node_index(prev), self.get_node_index(next))
+                    {
+                        self.add_edge(prev_idx, next_idx);
+                    }
+                }
+            }
+        }
+
+        // Third pass: Add dependency edges from task.depends_on
+        self.add_dependency_edges()
+    }
 }
 
 impl<T: TaskNodeData> Default for TaskGraph<T> {
@@ -579,5 +696,202 @@ mod tests {
         assert!(graph.contains_task("b"));
         assert!(graph.contains_task("c"));
         assert!(!graph.contains_task("d"));
+    }
+
+    // Tests for TaskResolver functionality
+
+    use crate::{TaskResolution, TaskResolver};
+
+    /// Test resolver that supports groups
+    struct TestResolver {
+        tasks: HashMap<String, TestTask>,
+        sequential_groups: HashMap<String, Vec<String>>,
+        parallel_groups: HashMap<String, (Vec<String>, Vec<String>)>, // (children, depends_on)
+    }
+
+    impl TestResolver {
+        fn new() -> Self {
+            Self {
+                tasks: HashMap::new(),
+                sequential_groups: HashMap::new(),
+                parallel_groups: HashMap::new(),
+            }
+        }
+
+        fn add_task(&mut self, name: &str, task: TestTask) {
+            self.tasks.insert(name.to_string(), task);
+        }
+
+        fn add_sequential_group(&mut self, name: &str, children: &[&str]) {
+            self.sequential_groups.insert(
+                name.to_string(),
+                children.iter().map(|s| (*s).to_string()).collect(),
+            );
+        }
+
+        fn add_parallel_group(&mut self, name: &str, children: &[&str], depends_on: &[&str]) {
+            self.parallel_groups.insert(
+                name.to_string(),
+                (
+                    children.iter().map(|s| (*s).to_string()).collect(),
+                    depends_on.iter().map(|s| (*s).to_string()).collect(),
+                ),
+            );
+        }
+    }
+
+    impl TaskResolver<TestTask> for TestResolver {
+        fn resolve(&self, name: &str) -> Option<TaskResolution<TestTask>> {
+            // Check if it's a direct task
+            if let Some(task) = self.tasks.get(name) {
+                return Some(TaskResolution::Single(task.clone()));
+            }
+            // Check if it's a sequential group
+            if let Some(children) = self.sequential_groups.get(name) {
+                return Some(TaskResolution::Sequential {
+                    children: children.clone(),
+                });
+            }
+            // Check if it's a parallel group
+            if let Some((children, depends_on)) = self.parallel_groups.get(name) {
+                return Some(TaskResolution::Parallel {
+                    children: children.clone(),
+                    depends_on: depends_on.clone(),
+                });
+            }
+            None
+        }
+    }
+
+    #[test]
+    fn test_resolver_single_task() {
+        let mut resolver = TestResolver::new();
+        resolver.add_task("build", TestTask::new(&[]));
+        resolver.add_task("test", TestTask::new(&["build"]));
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task_with_resolver("test", &resolver).unwrap();
+
+        assert_eq!(graph.task_count(), 2);
+        assert!(graph.contains_task("build"));
+        assert!(graph.contains_task("test"));
+
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.name.clone(), i))
+            .collect();
+
+        assert!(positions["build"] < positions["test"]);
+    }
+
+    #[test]
+    fn test_resolver_sequential_group() {
+        let mut resolver = TestResolver::new();
+        // Sequential group: build[0] -> build[1] -> build[2]
+        resolver.add_sequential_group("build", &["build[0]", "build[1]", "build[2]"]);
+        resolver.add_task("build[0]", TestTask::new(&[]));
+        resolver.add_task("build[1]", TestTask::new(&[]));
+        resolver.add_task("build[2]", TestTask::new(&[]));
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task_with_resolver("build", &resolver).unwrap();
+
+        assert_eq!(graph.task_count(), 3);
+
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.name.clone(), i))
+            .collect();
+
+        // Sequential ordering must be preserved
+        assert!(positions["build[0]"] < positions["build[1]"]);
+        assert!(positions["build[1]"] < positions["build[2]"]);
+    }
+
+    #[test]
+    fn test_resolver_parallel_group() {
+        let mut resolver = TestResolver::new();
+        // Parallel group with children
+        resolver.add_parallel_group(
+            "build",
+            &["build.frontend", "build.backend"],
+            &[], // no group-level deps
+        );
+        resolver.add_task("build.frontend", TestTask::new(&[]));
+        resolver.add_task("build.backend", TestTask::new(&[]));
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task_with_resolver("build", &resolver).unwrap();
+
+        assert_eq!(graph.task_count(), 2);
+        assert!(graph.contains_task("build.frontend"));
+        assert!(graph.contains_task("build.backend"));
+
+        // Both should be at same level (can run in parallel)
+        let groups = graph.get_parallel_groups().unwrap();
+        assert_eq!(groups.len(), 1); // Single level
+        assert_eq!(groups[0].len(), 2); // Both tasks
+    }
+
+    #[test]
+    fn test_resolver_parallel_group_with_depends_on() {
+        let mut resolver = TestResolver::new();
+        // Setup task first
+        resolver.add_task("setup", TestTask::new(&[]));
+        // Parallel group with group-level depends_on
+        resolver.add_parallel_group(
+            "build",
+            &["build.frontend", "build.backend"],
+            &["setup"], // group depends on setup
+        );
+        resolver.add_task("build.frontend", TestTask::new(&[]));
+        resolver.add_task("build.backend", TestTask::new(&[]));
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task_with_resolver("build", &resolver).unwrap();
+
+        assert_eq!(graph.task_count(), 3);
+
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.name.clone(), i))
+            .collect();
+
+        // Setup must come before both children
+        assert!(positions["setup"] < positions["build.frontend"]);
+        assert!(positions["setup"] < positions["build.backend"]);
+    }
+
+    #[test]
+    fn test_resolver_nested_groups() {
+        let mut resolver = TestResolver::new();
+        // Top level parallel group
+        resolver.add_parallel_group("build", &["build.frontend", "build.backend"], &[]);
+        // Nested sequential group
+        resolver.add_sequential_group("build.frontend", &["build.frontend[0]", "build.frontend[1]"]);
+        resolver.add_task("build.frontend[0]", TestTask::new(&[]));
+        resolver.add_task("build.frontend[1]", TestTask::new(&[]));
+        resolver.add_task("build.backend", TestTask::new(&[]));
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task_with_resolver("build", &resolver).unwrap();
+
+        assert_eq!(graph.task_count(), 3);
+
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.name.clone(), i))
+            .collect();
+
+        // Sequential ordering within frontend must be preserved
+        assert!(positions["build.frontend[0]"] < positions["build.frontend[1]"]);
     }
 }

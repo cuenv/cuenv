@@ -37,11 +37,13 @@
 
 mod error;
 mod graph;
+mod resolver;
 mod traversal;
 mod validation;
 
 pub use error::{Error, Result};
 pub use graph::{GraphNode, TaskGraph};
+pub use resolver::{TaskResolution, TaskResolver};
 pub use traversal::{ParallelGroups, TopologicalOrder};
 pub use validation::ValidationResult;
 

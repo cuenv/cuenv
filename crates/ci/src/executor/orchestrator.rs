@@ -491,6 +491,23 @@ async fn compile_and_execute_ir(
         )));
     }
 
+    // Resolve secrets from project environment (same as CLI)
+    // This handles op:// references and other secret providers
+    let project_env_vars = config
+        .env
+        .as_ref()
+        .map(|env| env.for_environment(""))
+        .unwrap_or_default();
+    let (resolved_env, secrets) = cuenv_core::environment::Environment::resolve_for_task_with_secrets(
+        task_name,
+        &project_env_vars,
+    )
+    .await
+    .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
+
+    // Register resolved secrets for redaction
+    cuenv_events::register_secrets(secrets.into_iter());
+
     // Execute all compiled IR tasks sequentially
     let runner = IRTaskRunner::new(project_root.to_path_buf(), true);
     let mut combined_stdout = String::new();
@@ -514,8 +531,14 @@ async fn compile_and_execute_ir(
     };
 
     for ir_task in &ir.tasks {
-        // Build environment
+        // Build environment: start with IR task env (task-specific vars)
         let mut env: BTreeMap<String, String> = ir_task.env.clone();
+
+        // Merge project-level resolved environment (includes secrets)
+        // Project env is lower priority - task-specific overrides win
+        for (key, value) in &resolved_env {
+            env.entry(key.clone()).or_insert_with(|| value.clone());
+        }
 
         // Add PATH with tool directories prepended, then HOME
         if let Ok(system_path) = std::env::var("PATH") {
