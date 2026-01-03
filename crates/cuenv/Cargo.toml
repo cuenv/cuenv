@@ -40,6 +40,7 @@ name = "bdd"
 harness = false
 
 [dependencies]
+cuenv-cache = { workspace = true }
 cuenv-codeowners = { workspace = true }
 cuenv-core = { workspace = true }
 cuenv-hooks = { workspace = true }

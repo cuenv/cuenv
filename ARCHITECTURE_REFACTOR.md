@@ -67,40 +67,43 @@ Extract content-addressed task caching infrastructure.
 
 ### Setup
 
-- [ ] Create `crates/cache/Cargo.toml`
-- [ ] Create `crates/cache/src/lib.rs`
-- [ ] Add `cuenv-cache` to workspace `Cargo.toml` members
+- [x] Create `crates/cache/Cargo.toml`
+- [x] Create `crates/cache/src/lib.rs`
+- [x] Add `cuenv-cache` to workspace `Cargo.toml` members
 
 ### Migration
 
-- [ ] Move `crates/core/src/cache/tasks.rs` → `crates/cache/src/tasks.rs`
-- [ ] Extract cache key logic to `crates/cache/src/keys.rs`
-- [ ] Extract storage logic to `crates/cache/src/storage.rs`
-- [ ] Move tests
+- [x] Move `crates/core/src/cache/tasks.rs` → `crates/cache/src/tasks.rs`
+- [x] Extract cache key logic to `crates/cache/src/keys.rs` (kept in tasks.rs - simpler)
+- [x] Extract storage logic to `crates/cache/src/storage.rs` (kept in tasks.rs - simpler)
+- [x] Move tests
+- [x] Move `snapshot_workspace_tar_zst` from `core/tasks/io.rs` to cache crate
+- [x] Create `crates/cache/src/error.rs` for cache-specific errors
 
 ### Update Core
 
-- [ ] Remove `pub mod cache;` from `crates/core/src/lib.rs`
-- [ ] Delete `crates/core/src/cache/` directory
-- [ ] Remove `sha2`, `hex` from `crates/core/Cargo.toml` (if unused elsewhere)
+- [x] Remove `pub mod cache;` from `crates/core/src/lib.rs`
+- [x] Delete `crates/core/src/cache/` directory
+- [x] Remove `tar`, `zstd` from `crates/core/Cargo.toml` (moved to cache crate)
+- [x] Keep `sha2`, `hex` in core (still used by tasks/io.rs)
 
 ### Update Dependents
 
-- [ ] Run: `rg "cuenv_core::cache" --type rust`
-- [ ] Update all imports: `cuenv_core::cache::*` → `cuenv_cache::*`
-- [ ] Update `crates/core/src/tasks/executor.rs` to import from `cuenv_cache`
+- [x] Run: `rg "cuenv_core::cache" --type rust`
+- [x] Update all imports: `cuenv_core::cache::*` → `cuenv_cache::*`
+- [x] Update `crates/cuenv/src/commands/task_list.rs` to import from `cuenv_cache`
 
 ### Validation
 
-- [ ] `cargo test -p cuenv-cache`
-- [ ] `cargo test -p cuenv-core`
-- [ ] `cuenv task check`
+- [x] `cargo test -p cuenv-cache`
+- [x] `cargo test -p cuenv-core`
+- [x] `cuenv task check`
 
 ### Update Documentation
 
-- [ ] Update `CLAUDE.md` if crate descriptions changed
-- [ ] Update `readme.md` references
-- [ ] Update any `docs/` files referencing moved modules
+- [x] Update `CLAUDE.md` if crate descriptions changed
+- [x] Update `readme.md` references (no cache references found)
+- [x] Update any `docs/` files referencing moved modules (none found)
 
 ---
 

@@ -1613,6 +1613,7 @@ dependencies = [
  "cuengine",
  "cuenv-bitbucket",
  "cuenv-buildkite",
+ "cuenv-cache",
  "cuenv-ci",
  "cuenv-codeowners",
  "cuenv-core",
@@ -1724,6 +1725,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-cache"
+version = "0.21.4"
+dependencies = [
+ "chrono",
+ "cuenv-events",
+ "dirs 6.0.0",
+ "hex",
+ "miette",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tracing",
+ "walkdir",
+ "zstd",
+]
+
+[[package]]
 name = "cuenv-ci"
 version = "0.22.1"
 dependencies = [
@@ -1778,13 +1799,13 @@ dependencies = [
  "chrono",
  "cucumber",
  "cuenv-1password",
+ "cuenv-cache",
  "cuenv-events",
  "cuenv-hooks",
  "cuenv-secrets",
  "cuenv-workspaces",
  "dirs 6.0.0",
  "eyre",
- "fs4",
  "futures",
  "globset",
  "hex",
@@ -1797,8 +1818,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "sysinfo",
- "tar",
  "temp-env",
  "tempfile",
  "thiserror 2.0.17",
@@ -1807,7 +1826,6 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "walkdir",
- "zstd",
 ]
 
 [[package]]

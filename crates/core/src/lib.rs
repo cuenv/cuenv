@@ -40,7 +40,6 @@
 #![allow(unused_assignments)]
 
 pub mod base;
-pub mod cache;
 pub mod ci;
 pub mod config;
 pub mod environment;

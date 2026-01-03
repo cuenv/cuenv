@@ -52,8 +52,9 @@ The project uses `cuenv` with a `#NixFlake` hook that automatically runs `nix pr
 | Crate                             | Purpose                                                       |
 | --------------------------------- | ------------------------------------------------------------- |
 | **cuengine**                      | Go-Rust FFI bridge for CUE evaluation                         |
-| **cuenv-core**                    | Shared types, task execution, caching, environment management |
+| **cuenv-core**                    | Shared types, task execution, environment management          |
 | **cuenv-hooks**                   | Hook execution, state management, and approval system         |
+| **cuenv-cache**                   | Content-addressed task caching infrastructure                 |
 | **cuenv**                         | CLI binary with TUI (clap + ratatui)                          |
 | **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)            |
 | **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.)  |

@@ -1,3 +1,5 @@
+//! Task result caching with content-addressed storage
+
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use dirs::{cache_dir, home_dir};
@@ -7,35 +9,56 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Entry in the output file index
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputIndexEntry {
+    /// Relative path within output directory
     pub rel_path: String,
+    /// File size in bytes
     pub size: u64,
+    /// SHA256 hash of file contents
     pub sha256: String,
 }
 
+/// Metadata about a cached task result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResultMeta {
+    /// Name of the task
     pub task_name: String,
+    /// Command that was executed
     pub command: String,
+    /// Arguments passed to the command
     pub args: Vec<String>,
+    /// Summary of environment variables (non-secret)
     pub env_summary: BTreeMap<String, String>,
+    /// Summary of input file hashes
     pub inputs_summary: BTreeMap<String, String>,
+    /// When the result was created
     pub created_at: DateTime<Utc>,
+    /// Version of cuenv that created this cache entry
     pub cuenv_version: String,
+    /// Platform identifier
     pub platform: String,
+    /// Execution duration in milliseconds
     pub duration_ms: u128,
+    /// Exit code of the command
     pub exit_code: i32,
+    /// Full cache key envelope for debugging
     pub cache_key_envelope: serde_json::Value,
+    /// Index of output files
     pub output_index: Vec<OutputIndexEntry>,
 }
 
+/// A resolved cache entry
 #[derive(Debug, Clone)]
 pub struct CacheEntry {
+    /// The cache key
     pub key: String,
+    /// Path to the cache entry directory
     pub path: PathBuf,
 }
 
+/// Inputs for determining cache root directory
 #[derive(Debug, Clone)]
 struct CacheInputs {
     cuenv_cache_dir: Option<PathBuf>,
@@ -73,7 +96,7 @@ fn cache_root_from_inputs(inputs: CacheInputs) -> Result<PathBuf> {
             continue;
         }
         // If the path already exists, ensure it is writable; some CI environments
-        // provide read‑only cache directories under $HOME.
+        // provide read-only cache directories under $HOME.
         if path.exists() {
             let probe = path.join(".write_probe");
             match std::fs::OpenOptions::new()
@@ -92,11 +115,10 @@ fn cache_root_from_inputs(inputs: CacheInputs) -> Result<PathBuf> {
                 }
             }
         }
-        match std::fs::create_dir_all(&path) {
-            Ok(_) => return Ok(path),
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => continue,
-            Err(_) => continue,
+        if std::fs::create_dir_all(&path).is_ok() {
+            return Ok(path);
         }
+        // Permission denied or other errors - try next candidate
     }
     Err(Error::configuration(
         "Failed to determine a writable cache directory",
@@ -120,6 +142,7 @@ fn cache_root() -> Result<PathBuf> {
     cache_root_from_inputs(inputs)
 }
 
+/// Convert a cache key to its storage path
 pub fn key_to_path(key: &str, root: Option<&Path>) -> Result<PathBuf> {
     let base = if let Some(r) = root {
         r.to_path_buf()
@@ -129,10 +152,11 @@ pub fn key_to_path(key: &str, root: Option<&Path>) -> Result<PathBuf> {
     Ok(base.join(key))
 }
 
+/// Look up a cache entry by key
+#[must_use]
 pub fn lookup(key: &str, root: Option<&Path>) -> Option<CacheEntry> {
-    let path = match key_to_path(key, root) {
-        Ok(p) => p,
-        Err(_) => return None,
+    let Ok(path) = key_to_path(key, root) else {
+        return None;
     };
     if path.exists() {
         Some(CacheEntry {
@@ -144,44 +168,36 @@ pub fn lookup(key: &str, root: Option<&Path>) -> Option<CacheEntry> {
     }
 }
 
+/// Task execution logs
 pub struct TaskLogs {
+    /// Standard output from task
     pub stdout: Option<String>,
+    /// Standard error from task
     pub stderr: Option<String>,
 }
 
+/// Save a task result to the cache
 #[allow(clippy::too_many_arguments)] // Task result caching requires multiple path parameters
 pub fn save_result(
     key: &str,
     meta: &TaskResultMeta,
     outputs_root: &Path,
     hermetic_root: &Path,
-    logs: TaskLogs,
+    logs: &TaskLogs,
     root: Option<&Path>,
 ) -> Result<()> {
     let path = key_to_path(key, root)?;
-    fs::create_dir_all(&path).map_err(|e| Error::Io {
-        source: e,
-        path: Some(path.clone().into()),
-        operation: "create_dir_all".into(),
-    })?;
+    fs::create_dir_all(&path).map_err(|e| Error::io(e, &path, "create_dir_all"))?;
 
     // metadata.json
     let meta_path = path.join("metadata.json");
     let json = serde_json::to_vec_pretty(meta)
-        .map_err(|e| Error::configuration(format!("Failed to serialize metadata: {e}")))?;
-    fs::write(&meta_path, json).map_err(|e| Error::Io {
-        source: e,
-        path: Some(meta_path.into()),
-        operation: "write".into(),
-    })?;
+        .map_err(|e| Error::serialization(format!("Failed to serialize metadata: {e}")))?;
+    fs::write(&meta_path, json).map_err(|e| Error::io(e, &meta_path, "write"))?;
 
     // outputs/
     let out_dir = path.join("outputs");
-    fs::create_dir_all(&out_dir).map_err(|e| Error::Io {
-        source: e,
-        path: Some(out_dir.clone().into()),
-        operation: "create_dir_all".into(),
-    })?;
+    fs::create_dir_all(&out_dir).map_err(|e| Error::io(e, &out_dir, "create_dir_all"))?;
     // Copy tree from outputs_root (already collected) if exists
     if outputs_root.exists() {
         for entry in walkdir::WalkDir::new(outputs_root)
@@ -203,11 +219,7 @@ pub fn save_result(
             if let Some(parent) = dst.parent() {
                 fs::create_dir_all(parent).ok();
             }
-            fs::copy(p, &dst).map_err(|e| Error::Io {
-                source: e,
-                path: Some(dst.into()),
-                operation: "copy".into(),
-            })?;
+            fs::copy(p, &dst).map_err(|e| Error::io(e, &dst, "copy"))?;
         }
     }
 
@@ -225,14 +237,15 @@ pub fn save_result(
 
     // workspace snapshot
     let snapshot = path.join("workspace.tar.zst");
-    crate::tasks::io::snapshot_workspace_tar_zst(hermetic_root, &snapshot)?;
+    snapshot_workspace_tar_zst(hermetic_root, &snapshot)?;
 
     Ok(())
 }
 
+/// Materialize cached outputs to a destination directory
 pub fn materialize_outputs(key: &str, destination: &Path, root: Option<&Path>) -> Result<usize> {
-    let entry = lookup(key, root)
-        .ok_or_else(|| Error::configuration(format!("Cache key not found: {key}")))?;
+    let entry =
+        lookup(key, root).ok_or_else(|| Error::not_found(key))?;
     let out_dir = entry.path.join("outputs");
     if !out_dir.exists() {
         return Ok(0);
@@ -257,11 +270,7 @@ pub fn materialize_outputs(key: &str, destination: &Path, root: Option<&Path>) -
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).ok();
         }
-        fs::copy(p, &dst).map_err(|e| Error::Io {
-            source: e,
-            path: Some(dst.into()),
-            operation: "copy".into(),
-        })?;
+        fs::copy(p, &dst).map_err(|e| Error::io(e, &dst, "copy"))?;
         count += 1;
     }
     Ok(count)
@@ -311,19 +320,16 @@ pub fn record_latest(
         .insert(task_name.to_string(), cache_key.to_string());
 
     let json = serde_json::to_string_pretty(&index)
-        .map_err(|e| Error::configuration(format!("Failed to serialize latest index: {e}")))?;
+        .map_err(|e| Error::serialization(format!("Failed to serialize latest index: {e}")))?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
-    fs::write(&path, json).map_err(|e| Error::Io {
-        source: e,
-        path: Some(path.into()),
-        operation: "write".into(),
-    })?;
+    fs::write(&path, json).map_err(|e| Error::io(e, &path, "write"))?;
     Ok(())
 }
 
 /// Look up the latest cache key for a task in a project
+#[must_use]
 pub fn lookup_latest(project_root: &Path, task_name: &str, root: Option<&Path>) -> Option<String> {
     let path = latest_index_path(root).ok()?;
     if !path.exists() {
@@ -344,25 +350,29 @@ pub fn get_project_cache_keys(
     if !path.exists() {
         return Ok(None);
     }
-    let content = fs::read_to_string(&path).map_err(|e| Error::Io {
-        source: e,
-        path: Some(path.clone().into()),
-        operation: "read".into(),
-    })?;
+    let content = fs::read_to_string(&path).map_err(|e| Error::io(e, &path, "read"))?;
     let index: TaskLatestIndex = serde_json::from_str(&content)
-        .map_err(|e| Error::configuration(format!("Failed to parse task index: {e}")))?;
+        .map_err(|e| Error::serialization(format!("Failed to parse task index: {e}")))?;
     let proj_hash = project_hash(project_root);
     Ok(index.entries.get(&proj_hash).cloned())
 }
 
+/// Cache key envelope for computing deterministic cache keys
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheKeyEnvelope {
+    /// Input file hashes
     pub inputs: BTreeMap<String, String>,
+    /// Command to execute
     pub command: String,
+    /// Command arguments
     pub args: Vec<String>,
+    /// Shell configuration
     pub shell: Option<serde_json::Value>,
+    /// Environment variables
     pub env: BTreeMap<String, String>,
+    /// cuenv version
     pub cuenv_version: String,
+    /// Platform identifier
     pub platform: String,
     /// Hashes of the workspace lockfiles (key = workspace name)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -372,14 +382,48 @@ pub struct CacheKeyEnvelope {
     pub workspace_package_hashes: Option<BTreeMap<String, String>>,
 }
 
+/// Compute a deterministic cache key from the envelope
 pub fn compute_cache_key(envelope: &CacheKeyEnvelope) -> Result<(String, serde_json::Value)> {
     // Canonical JSON with sorted keys (BTreeMap ensures deterministic ordering for maps)
     let json = serde_json::to_value(envelope)
-        .map_err(|e| Error::configuration(format!("Failed to encode envelope: {e}")))?;
+        .map_err(|e| Error::serialization(format!("Failed to encode envelope: {e}")))?;
     let bytes = serde_json::to_vec(&json)
-        .map_err(|e| Error::configuration(format!("Failed to serialize envelope: {e}")))?;
+        .map_err(|e| Error::serialization(format!("Failed to serialize envelope: {e}")))?;
     let digest = Sha256::digest(bytes);
     Ok((hex::encode(digest), json))
+}
+
+/// Create a compressed tar archive of a workspace directory
+pub fn snapshot_workspace_tar_zst(src_root: &Path, dst_file: &Path) -> Result<()> {
+    let file = fs::File::create(dst_file).map_err(|e| Error::io(e, dst_file, "create"))?;
+    let enc = zstd::Encoder::new(file, 3)
+        .map_err(|e| Error::configuration(format!("zstd encoder error: {e}")))?;
+    let mut builder = tar::Builder::new(enc);
+
+    match builder.append_dir_all(".", src_root) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Workspace contents can legitimately disappear during a task (e.g.
+            // package managers removing temp files). Skip snapshotting instead
+            // of failing the whole task cache write.
+            let _ = fs::remove_file(dst_file);
+            tracing::warn!(
+                root = %src_root.display(),
+                "Skipping workspace snapshot; files disappeared during archive: {e}"
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            return Err(Error::configuration(format!("tar append failed: {e}")));
+        }
+    }
+
+    let enc = builder
+        .into_inner()
+        .map_err(|e| Error::configuration(format!("tar finalize failed: {e}")))?;
+    enc.finish()
+        .map_err(|e| Error::configuration(format!("zstd finish failed: {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1082,7 +1126,7 @@ mod tests {
 
         let logs = TaskLogs {
             stdout: Some("hello".into()),
-            stderr: Some("".into()),
+            stderr: Some(String::new()),
         };
 
         let key = "roundtrip-key-123";
@@ -1091,7 +1135,7 @@ mod tests {
             &meta,
             outputs.path(),
             herm.path(),
-            logs,
+            &logs,
             Some(cache_tmp.path()),
         )
         .expect("save_result");
@@ -1116,5 +1160,22 @@ mod tests {
             std::fs::read(dest.path().join("dir/bar.bin")).unwrap(),
             b"bar"
         );
+    }
+
+    #[test]
+    fn test_snapshot_workspace_tar_zst() {
+        let src = TempDir::new().unwrap();
+        std::fs::create_dir_all(src.path().join("subdir")).unwrap();
+        std::fs::write(src.path().join("file.txt"), "content").unwrap();
+        std::fs::write(src.path().join("subdir/nested.txt"), "nested").unwrap();
+
+        let dst = TempDir::new().unwrap();
+        let archive_path = dst.path().join("archive.tar.zst");
+
+        snapshot_workspace_tar_zst(src.path(), &archive_path).unwrap();
+        assert!(archive_path.exists());
+        // Verify the archive is non-empty
+        let metadata = std::fs::metadata(&archive_path).unwrap();
+        assert!(metadata.len() > 0);
     }
 }
