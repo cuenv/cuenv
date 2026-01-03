@@ -5,7 +5,7 @@
 //! - Sensitivity: Different inputs produce different cache keys
 //! - Order invariance: Map ordering doesn't affect the cache key
 
-use cuenv_cache::{compute_cache_key, CacheKeyEnvelope};
+use cuenv_cache::{CacheKeyEnvelope, compute_cache_key};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
@@ -45,7 +45,11 @@ fn envelope_strategy() -> impl Strategy<Value = CacheKeyEnvelope> {
         prop::collection::btree_map(input_path_strategy(), hash_strategy(), 0..5),
         command_strategy(),
         prop::collection::vec(command_strategy(), 0..3),
-        prop::collection::btree_map(env_var_name_strategy(), "[a-z0-9]{1,10}".prop_map(String::from), 0..3),
+        prop::collection::btree_map(
+            env_var_name_strategy(),
+            "[a-z0-9]{1,10}".prop_map(String::from),
+            0..3,
+        ),
         "[0-9]+\\.[0-9]+\\.[0-9]+".prop_map(String::from), // version
         prop_oneof![
             Just("linux-x86_64".to_string()),
@@ -53,8 +57,8 @@ fn envelope_strategy() -> impl Strategy<Value = CacheKeyEnvelope> {
             Just("windows-x86_64".to_string()),
         ],
     )
-        .prop_map(|(inputs, command, args, env, cuenv_version, platform)| {
-            CacheKeyEnvelope {
+        .prop_map(
+            |(inputs, command, args, env, cuenv_version, platform)| CacheKeyEnvelope {
                 inputs,
                 command,
                 args,
@@ -64,8 +68,8 @@ fn envelope_strategy() -> impl Strategy<Value = CacheKeyEnvelope> {
                 platform,
                 workspace_lockfile_hashes: None,
                 workspace_package_hashes: None,
-            }
-        })
+            },
+        )
 }
 
 // =============================================================================

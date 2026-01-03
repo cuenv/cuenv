@@ -755,7 +755,12 @@ impl PipelineContext {
                 requires_onepassword: false,
                 project_name: self.project_name.clone(),
                 trigger: Some(self.trigger.clone()),
-                pipeline_tasks: vec![],
+                pipeline_tasks: self
+                    .pipeline_tasks
+                    .iter()
+                    .map(|t| t.task_name().to_string())
+                    .collect(),
+                pipeline_task_defs: self.pipeline_tasks.clone(),
             },
             runtimes: self.runtimes.clone(),
             tasks: self.tasks.clone(),
@@ -786,10 +791,17 @@ fn generate_github_workflow_for_project(
     let ctx = build_project_pipeline_context(project, pipeline_name, pipeline)?;
 
     // Dispatch based on pipeline mode
+    // Note: Matrix tasks ALWAYS require multi-job workflow regardless of mode,
+    // since they need to run on different runners for each matrix dimension.
     match ctx.mode {
         PipelineMode::Thin => {
-            // Thin mode: single job with cuenv ci orchestration
-            emit_thin_workflow(pipeline_name, &ctx)
+            // Thin mode with matrix tasks still needs multi-job workflow
+            if has_matrix_tasks(&ctx.pipeline_tasks) {
+                emit_matrix_workflow(pipeline_name, &ctx)
+            } else {
+                // Pure thin mode: single job with cuenv ci orchestration
+                emit_thin_workflow(pipeline_name, &ctx)
+            }
         }
         PipelineMode::Expanded => {
             // Expanded mode: all tasks as individual jobs with dependencies

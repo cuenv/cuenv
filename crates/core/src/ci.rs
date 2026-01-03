@@ -85,23 +85,23 @@ pub struct ArtifactDownload {
 }
 
 /// Matrix task configuration for pipeline
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MatrixTask {
     /// Task name to run
     pub task: String,
     /// Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
-    pub matrix: HashMap<String, Vec<String>>,
+    pub matrix: BTreeMap<String, Vec<String>>,
     /// Artifacts to download before running
     #[serde(default)]
     pub artifacts: Option<Vec<ArtifactDownload>>,
     /// Parameters to pass to the task
     #[serde(default)]
-    pub params: Option<HashMap<String, String>>,
+    pub params: Option<BTreeMap<String, String>>,
 }
 
 /// Pipeline task reference - either a simple task name or a matrix task
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum PipelineTask {
     /// Simple task reference by name
@@ -125,7 +125,7 @@ impl PipelineTask {
     }
 
     /// Get matrix dimensions if this is a matrix task
-    pub fn matrix(&self) -> Option<&HashMap<String, Vec<String>>> {
+    pub fn matrix(&self) -> Option<&BTreeMap<String, Vec<String>>> {
         match self {
             PipelineTask::Simple(_) => None,
             PipelineTask::Matrix(m) => Some(&m.matrix),

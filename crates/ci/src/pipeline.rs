@@ -5,7 +5,7 @@
 
 use crate::ir::Task;
 use cuenv_core::ci::{MatrixTask, PipelineTask};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Filter IR tasks to only those needed by the pipeline.
 ///
@@ -156,7 +156,7 @@ pub fn expand_task_groups(
                                     task: ir_task.id.clone(),
                                     artifacts: matrix_task.artifacts.clone(),
                                     params: matrix_task.params.clone(),
-                                    matrix: HashMap::new(),
+                                    matrix: BTreeMap::new(),
                                 })
                             }
                         }

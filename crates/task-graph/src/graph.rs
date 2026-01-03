@@ -381,7 +381,10 @@ impl<T: TaskNodeData> TaskGraph<T> {
                         }
                     }
                 }
-                Some(TaskResolution::Parallel { children, depends_on }) => {
+                Some(TaskResolution::Parallel {
+                    children,
+                    depends_on,
+                }) => {
                     self.register_group(&current_name, children.clone());
                     // Store group-level deps to apply to leaf tasks
                     if !depends_on.is_empty() {
@@ -770,7 +773,9 @@ mod tests {
         resolver.add_task("test", TestTask::new(&["build"]));
 
         let mut graph = TaskGraph::new();
-        graph.build_for_task_with_resolver("test", &resolver).unwrap();
+        graph
+            .build_for_task_with_resolver("test", &resolver)
+            .unwrap();
 
         assert_eq!(graph.task_count(), 2);
         assert!(graph.contains_task("build"));
@@ -796,7 +801,9 @@ mod tests {
         resolver.add_task("build[2]", TestTask::new(&[]));
 
         let mut graph = TaskGraph::new();
-        graph.build_for_task_with_resolver("build", &resolver).unwrap();
+        graph
+            .build_for_task_with_resolver("build", &resolver)
+            .unwrap();
 
         assert_eq!(graph.task_count(), 3);
 
@@ -825,7 +832,9 @@ mod tests {
         resolver.add_task("build.backend", TestTask::new(&[]));
 
         let mut graph = TaskGraph::new();
-        graph.build_for_task_with_resolver("build", &resolver).unwrap();
+        graph
+            .build_for_task_with_resolver("build", &resolver)
+            .unwrap();
 
         assert_eq!(graph.task_count(), 2);
         assert!(graph.contains_task("build.frontend"));
@@ -852,7 +861,9 @@ mod tests {
         resolver.add_task("build.backend", TestTask::new(&[]));
 
         let mut graph = TaskGraph::new();
-        graph.build_for_task_with_resolver("build", &resolver).unwrap();
+        graph
+            .build_for_task_with_resolver("build", &resolver)
+            .unwrap();
 
         assert_eq!(graph.task_count(), 3);
 
@@ -874,13 +885,18 @@ mod tests {
         // Top level parallel group
         resolver.add_parallel_group("build", &["build.frontend", "build.backend"], &[]);
         // Nested sequential group
-        resolver.add_sequential_group("build.frontend", &["build.frontend[0]", "build.frontend[1]"]);
+        resolver.add_sequential_group(
+            "build.frontend",
+            &["build.frontend[0]", "build.frontend[1]"],
+        );
         resolver.add_task("build.frontend[0]", TestTask::new(&[]));
         resolver.add_task("build.frontend[1]", TestTask::new(&[]));
         resolver.add_task("build.backend", TestTask::new(&[]));
 
         let mut graph = TaskGraph::new();
-        graph.build_for_task_with_resolver("build", &resolver).unwrap();
+        graph
+            .build_for_task_with_resolver("build", &resolver)
+            .unwrap();
 
         assert_eq!(graph.task_count(), 3);
 

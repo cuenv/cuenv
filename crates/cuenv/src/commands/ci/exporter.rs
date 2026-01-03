@@ -88,6 +88,7 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
             project_name: None,
             trigger: None,
             pipeline_tasks: vec![],
+            pipeline_task_defs: vec![],
         },
         runtimes: collected.runtimes,
         tasks: collected.tasks,
