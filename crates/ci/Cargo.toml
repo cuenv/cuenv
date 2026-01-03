@@ -18,6 +18,7 @@ workspace = true
 cuenv-core = { workspace = true }
 cuenv-secrets = { workspace = true }
 cuenv-workspaces = { workspace = true }
+cuenv-tools-nix = { path = "../tools/nix" }
 cuengine = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -29,6 +30,7 @@ miette = { workspace = true }
 async-trait = "0.1"
 chrono = { workspace = true }
 cuenv-events = { workspace = true }
+dirs = { workspace = true }
 glob = "0.3"
 regex = "1.10"
 sha2 = { workspace = true }
