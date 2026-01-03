@@ -353,9 +353,18 @@ The effort doesn't justify the benefit for ~618 LOC. This module can be extracte
 
 ---
 
-## Phase 8: cuenv-cubes → cuenv-codegen Rename
+## Phase 8: cuenv-cubes → cuenv-codegen Rename - DEFERRED
 
 Rename cuenv-cubes crate to cuenv-codegen for clarity.
+
+**Decision: DEFERRED** - This rename is a breaking change that affects:
+1. CLI command: `cuenv sync cubes` → `cuenv sync codegen`
+2. CUE manifest field: `cube` → `codegen`
+3. CUE schema directory: `schema/cubes/` → `schema/codegen/`
+4. All user documentation and examples
+
+The rename should be coordinated with a major version bump or deprecation cycle.
+Consider adding an alias for backwards compatibility if implemented.
 
 ### Directory Rename
 
