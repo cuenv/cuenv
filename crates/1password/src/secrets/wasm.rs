@@ -144,4 +144,72 @@ mod tests {
             assert_eq!(extension, Some("wasm"), "Path should have .wasm extension");
         }
     }
+
+    #[test]
+    fn test_wasm_path_has_filename() {
+        let path = onepassword_wasm_path().unwrap();
+        assert!(path.file_name().is_some(), "Path should have a filename");
+    }
+
+    #[test]
+    fn test_wasm_path_parent_exists_or_is_subpath() {
+        let path = onepassword_wasm_path().unwrap();
+        // Parent should be determinable
+        assert!(path.parent().is_some(), "Path should have a parent");
+    }
+
+    #[test]
+    fn test_wasm_available_matches_path_exists() {
+        let path_result = onepassword_wasm_path();
+        let available = onepassword_wasm_available();
+
+        // If path exists, available should be true
+        if let Ok(path) = path_result {
+            if path.exists() {
+                assert!(available, "Should be available when path exists");
+            }
+        }
+    }
+
+    #[test]
+    fn test_wasm_path_ends_with_expected_filename() {
+        // Unless overridden, the filename should be standard
+        if std::env::var("ONEPASSWORD_WASM_PATH").is_err() {
+            let path = onepassword_wasm_path().unwrap();
+            let filename = path.file_name().unwrap().to_string_lossy();
+            assert_eq!(filename, "onepassword-core.wasm");
+        }
+    }
+
+    #[test]
+    fn test_load_wasm_error_message_contains_path() {
+        // Only test if file doesn't exist
+        if std::env::var("ONEPASSWORD_WASM_PATH").is_err() && !onepassword_wasm_available() {
+            let result = load_onepassword_wasm();
+            if let Err(err) = result {
+                let err_msg = format!("{err:?}");
+                // Error should include path for debugging
+                assert!(
+                    err_msg.contains("onepassword-core.wasm") || err_msg.contains("Expected at"),
+                    "Error should include path info: {err_msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_load_wasm_error_suggests_setup_command() {
+        // Only test if file doesn't exist
+        if std::env::var("ONEPASSWORD_WASM_PATH").is_err() && !onepassword_wasm_available() {
+            let result = load_onepassword_wasm();
+            if let Err(err) = result {
+                let err_msg = format!("{err:?}");
+                // Error should suggest setup command
+                assert!(
+                    err_msg.contains("cuenv secrets setup onepassword"),
+                    "Error should suggest setup command: {err_msg}"
+                );
+            }
+        }
+    }
 }

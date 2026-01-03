@@ -604,4 +604,116 @@ mod tests {
         let config = OnePasswordConfig::new("op://vault/项目/密码");
         assert_eq!(config.reference, "op://vault/项目/密码");
     }
+
+    #[test]
+    fn test_config_with_nested_path() {
+        let config = OnePasswordConfig::new("op://vault/folder/subfolder/item/field");
+        assert!(config.reference.contains("folder/subfolder"));
+    }
+
+    #[test]
+    fn test_config_with_dots_in_reference() {
+        let config = OnePasswordConfig::new("op://vault/api.example.com/key");
+        assert!(config.reference.contains("api.example.com"));
+    }
+
+    #[test]
+    fn test_config_with_hyphens() {
+        let config = OnePasswordConfig::new("op://my-vault/my-item/api-key");
+        assert!(config.reference.contains("my-vault"));
+        assert!(config.reference.contains("my-item"));
+        assert!(config.reference.contains("api-key"));
+    }
+
+    #[test]
+    fn test_config_with_numbers() {
+        let config = OnePasswordConfig::new("op://vault123/item456/field789");
+        assert!(config.reference.contains("123"));
+        assert!(config.reference.contains("456"));
+        assert!(config.reference.contains("789"));
+    }
+
+    #[test]
+    fn test_config_minimal_reference() {
+        // Minimal valid-looking reference
+        let config = OnePasswordConfig::new("op://a/b/c");
+        assert_eq!(config.reference, "op://a/b/c");
+    }
+
+    #[test]
+    fn test_config_deserialization_extra_fields_ignored() {
+        // Extra fields should be ignored during deserialization
+        let json = r#"{"ref": "op://vault/item/field", "extra": "ignored"}"#;
+        let config: OnePasswordConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.reference, "op://vault/item/field");
+    }
+
+    #[test]
+    fn test_config_eq_trait() {
+        // OnePasswordConfig derives Eq, test equality works
+        let config1 = OnePasswordConfig::new("op://vault/item/field");
+        let config2 = OnePasswordConfig::new("op://vault/item/field");
+        let config3 = OnePasswordConfig::new("op://other/item/field");
+
+        assert!(config1 == config2);
+        assert!(config1 != config3);
+    }
+
+    #[test]
+    fn test_resolver_drop_without_client() {
+        // Creating and dropping a resolver without HTTP client should be safe
+        if (!wasm::onepassword_wasm_available()
+            || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
+            && let Ok(resolver) = OnePasswordResolver::new()
+        {
+            // Dropping should be safe
+            drop(resolver);
+        }
+    }
+
+    #[test]
+    fn test_resolver_debug_shows_mode() {
+        if (!wasm::onepassword_wasm_available()
+            || std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_err())
+            && let Ok(resolver) = OnePasswordResolver::new()
+        {
+            let debug = format!("{resolver:?}");
+            // Should contain mode information
+            assert!(
+                debug.contains("mode") || debug.contains("cli") || debug.contains("http"),
+                "Debug should show mode: {debug}"
+            );
+        }
+    }
+
+
+    #[test]
+    fn test_config_serialization_produces_ref_key() {
+        let config = OnePasswordConfig::new("op://vault/item/field");
+        let json = serde_json::to_string(&config).unwrap();
+        // Should use "ref" key due to serde rename
+        assert!(json.contains("\"ref\""));
+        assert!(!json.contains("\"reference\""));
+    }
+
+    #[test]
+    fn test_config_from_owned_string() {
+        let owned = String::from("op://vault/item/field");
+        let config = OnePasswordConfig::new(owned.clone());
+        assert_eq!(config.reference, owned);
+    }
+
+    #[test]
+    fn test_config_reference_not_validated() {
+        // Config creation doesn't validate the reference format
+        let invalid = OnePasswordConfig::new("not-a-valid-reference");
+        assert_eq!(invalid.reference, "not-a-valid-reference");
+    }
+
+    #[test]
+    fn test_config_with_query_params_like_syntax() {
+        // References shouldn't have query params but struct allows it
+        let config = OnePasswordConfig::new("op://vault/item/field?version=1");
+        assert!(config.reference.contains("?version=1"));
+    }
 }
