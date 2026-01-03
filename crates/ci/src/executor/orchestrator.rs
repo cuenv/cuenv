@@ -19,6 +19,7 @@ use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, T
 use chrono::Utc;
 use cuenv_core::lockfile::{Lockfile, LockedToolPlatform, LOCKFILE_NAME};
 use cuenv_core::manifest::Project;
+use cuenv_core::tasks::{TaskGraph, TaskIndex};
 use cuenv_core::tools::{Platform, ResolvedTool, ToolOptions, ToolRegistry, ToolSource};
 use cuenv_core::Result;
 use std::collections::{BTreeMap, HashSet};
@@ -232,10 +233,9 @@ async fn execute_project_pipeline(
         cuenv_events::emit_ci_task_executing!(&project_display, task_name);
         let task_start = std::time::Instant::now();
 
-        // Execute the task using the runner
+        // Execute the task with all dependencies (uses TaskGraph for proper ordering)
         let result =
-            execute_single_task_by_name(config, task_name, project_path, cache_policy_override)
-                .await;
+            execute_task_with_deps(config, task_name, project_path, cache_policy_override).await;
 
         let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
 
@@ -406,12 +406,68 @@ fn register_ci_secrets() {
     }
 }
 
-/// Execute a task by name using the existing project config
+/// Execute a task with all its dependencies in correct order.
 ///
-/// This bridges the gap between the task name-based execution in `run_ci`
-/// and the IR-based execution in `CIExecutor`. Uses the Compiler to handle
-/// both single tasks and task groups (sequential and parallel).
-async fn execute_single_task_by_name(
+/// Uses TaskIndex to flatten nested tasks and TaskGraph to resolve dependencies,
+/// ensuring tasks run in proper topological order (same as CLI).
+async fn execute_task_with_deps(
+    config: &Project,
+    task_name: &str,
+    project_root: &Path,
+    cache_policy_override: Option<CachePolicy>,
+) -> std::result::Result<TaskOutput, ExecutorError> {
+    // 1. Build TaskIndex (same flattening as CLI)
+    let index = TaskIndex::build(&config.tasks)
+        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+
+    // 2. Resolve to canonical name
+    let entry = index
+        .resolve(task_name)
+        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+    let canonical_name = entry.name.clone();
+
+    // 3. Get flattened tasks where all names are top-level
+    let flattened_tasks = index.to_tasks();
+
+    // 4. Build TaskGraph (respects dependsOn!)
+    let mut graph = TaskGraph::new();
+    graph
+        .build_for_task(&canonical_name, &flattened_tasks)
+        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+
+    // 5. Get topological execution order
+    let execution_order = graph
+        .topological_sort()
+        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+
+    tracing::info!(
+        task = task_name,
+        canonical = %canonical_name,
+        execution_order = ?execution_order.iter().map(|n| &n.name).collect::<Vec<_>>(),
+        "Resolved task dependencies"
+    );
+
+    // 6. Execute each task in dependency order
+    let mut final_output = None;
+    for node in execution_order {
+        let output =
+            compile_and_execute_ir(config, &node.name, project_root, cache_policy_override).await?;
+
+        if !output.success {
+            return Ok(output); // Stop on first failure
+        }
+        final_output = Some(output);
+    }
+
+    final_output.ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
+}
+
+/// Compile a single task to IR and execute it.
+///
+/// This is the inner execution loop - it does NOT handle dependencies.
+/// Dependencies are resolved by the outer loop using TaskGraph.
+/// Uses the Compiler to convert task definitions to IR.
+async fn compile_and_execute_ir(
     config: &Project,
     task_name: &str,
     project_root: &Path,
