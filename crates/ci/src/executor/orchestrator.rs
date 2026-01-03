@@ -10,6 +10,7 @@
 #![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 
 use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
+use crate::compiler::Compiler;
 use crate::discovery::evaluate_module_from_cwd;
 use crate::ir::CachePolicy;
 use crate::provider::CIProvider;
@@ -403,89 +404,82 @@ fn register_ci_secrets() {
     }
 }
 
-/// Execute a single task by name using the existing project config
+/// Execute a task by name using the existing project config
 ///
 /// This bridges the gap between the task name-based execution in `run_ci`
-/// and the IR-based execution in `CIExecutor`.
+/// and the IR-based execution in `CIExecutor`. Uses the Compiler to handle
+/// both single tasks and task groups (sequential and parallel).
 async fn execute_single_task_by_name(
     config: &Project,
     task_name: &str,
     project_root: &Path,
     cache_policy_override: Option<CachePolicy>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
-    // Get task definition
-    let Some(task_def) = config.tasks.get(task_name) else {
+    let start = std::time::Instant::now();
+
+    // Use the Compiler to compile the task (handles both single tasks and groups)
+    let options = crate::compiler::CompilerOptions {
+        project_root: Some(project_root.to_path_buf()),
+        ..Default::default()
+    };
+    let compiler = Compiler::with_options(config.clone(), options);
+    let ir = compiler
+        .compile_task(task_name)
+        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+
+    if ir.tasks.is_empty() {
         return Err(ExecutorError::Compilation(format!(
-            "Task '{task_name}' not found in project config"
+            "Task '{task_name}' produced no executable tasks"
         )));
-    };
-
-    let Some(task) = task_def.as_single() else {
-        return Err(ExecutorError::Compilation(format!(
-            "Task '{task_name}' is a group, not a single task"
-        )));
-    };
-
-    // Build a minimal IR task for execution
-    let ir_task = crate::ir::Task {
-        id: task_name.to_string(),
-        runtime: None, // TODO: Support runtime from task config
-        command: if task.command.is_empty() {
-            // If no command, use script
-            vec![task.script.clone().unwrap_or_default()]
-        } else {
-            vec![task.command.clone()]
-        },
-        shell: task.script.is_some() || !task.command.is_empty(),
-        env: task
-            .env
-            .iter()
-            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-            .collect(),
-        secrets: BTreeMap::new(), // Secrets handled separately
-        resources: None,
-        concurrency_group: None,
-        inputs: task
-            .inputs
-            .iter()
-            .filter_map(|i| i.as_path())
-            .cloned()
-            .collect(),
-        outputs: vec![],
-        depends_on: task.depends_on.clone(),
-        cache_policy: cache_policy_override.unwrap_or(CachePolicy::Normal),
-        deployment: false,
-        manual_approval: false,
-        matrix: None,
-        artifact_downloads: vec![],
-        params: BTreeMap::new(),
-        // Phase task fields (not applicable for regular tasks)
-        phase: None,
-        label: None,
-        priority: None,
-        contributor: None,
-        condition: None,
-        provider_hints: None,
-    };
-
-    // Build environment
-    let mut env: BTreeMap<String, String> = task
-        .env
-        .iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-        .collect();
-
-    // Add PATH and HOME
-    if let Ok(path) = std::env::var("PATH") {
-        env.insert("PATH".to_string(), path);
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        env.insert("HOME".to_string(), home);
     }
 
-    // Execute using runner directly
+    // Execute all compiled IR tasks sequentially
     let runner = IRTaskRunner::new(project_root.to_path_buf(), true);
-    let output = runner.execute(&ir_task, env).await?;
+    let mut combined_stdout = String::new();
+    let mut combined_stderr = String::new();
+    let mut all_success = true;
+    let mut last_exit_code = 0;
 
-    Ok(output)
+    for ir_task in &ir.tasks {
+        // Build environment
+        let mut env: BTreeMap<String, String> = ir_task.env.clone();
+
+        // Add PATH and HOME
+        if let Ok(path) = std::env::var("PATH") {
+            env.insert("PATH".to_string(), path);
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            env.insert("HOME".to_string(), home);
+        }
+
+        // Apply cache policy override if specified
+        let mut task_to_run = ir_task.clone();
+        if let Some(policy) = cache_policy_override {
+            task_to_run.cache_policy = policy;
+        }
+
+        let output = runner.execute(&task_to_run, env).await?;
+
+        combined_stdout.push_str(&output.stdout);
+        combined_stderr.push_str(&output.stderr);
+        last_exit_code = output.exit_code;
+
+        if !output.success {
+            all_success = false;
+            break; // Stop on first failure
+        }
+    }
+
+    let duration = start.elapsed();
+    let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+
+    Ok(TaskOutput {
+        task_id: task_name.to_string(),
+        exit_code: last_exit_code,
+        stdout: combined_stdout,
+        stderr: combined_stderr,
+        success: all_success,
+        from_cache: false,
+        duration_ms,
+    })
 }

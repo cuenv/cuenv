@@ -724,10 +724,13 @@ async fn real_main() -> Result<(), CliError> {
     // Execute the command with the shared executor for module caching
     let result = execute_command_safe(command, init_result.cli.json, &executor).await;
 
+    // Signal renderers to finish processing and exit gracefully
+    cuenv_events::emit_shutdown!();
+
     // Wait for renderer to finish processing any remaining events
     if let Some(handle) = init_result.renderer_handle {
-        // Give renderer a moment to process final events, then abort if stuck
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(100), handle).await;
+        // Give renderer time to process final events, then abort if stuck
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     }
 
     result
