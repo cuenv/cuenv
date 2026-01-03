@@ -754,4 +754,135 @@ mod tests {
         let expected = key_id && secret;
         assert_eq!(AwsResolver::http_credentials_available(), expected);
     }
+
+    #[test]
+    fn test_aws_config_from_string_type() {
+        let owned_string = String::from("my-secret-id");
+        let config = AwsSecretConfig::new(owned_string);
+        assert_eq!(config.secret_id, "my-secret-id");
+    }
+
+    #[test]
+    fn test_aws_config_serialization_skips_none() {
+        let config = AwsSecretConfig {
+            secret_id: "secret".to_string(),
+            version_id: None,
+            version_stage: None,
+            json_key: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        // None fields should be skipped
+        assert!(!json.contains("versionId"));
+        assert!(!json.contains("versionStage"));
+        assert!(!json.contains("jsonKey"));
+        // Only secretId should be present
+        assert!(json.contains("secretId"));
+    }
+
+    #[test]
+    fn test_aws_config_with_all_version_options() {
+        let config = AwsSecretConfig {
+            secret_id: "prod/db/password".to_string(),
+            version_id: Some("version-1234".to_string()),
+            version_stage: Some("AWSPREVIOUS".to_string()),
+            json_key: Some("connection_string".to_string()),
+        };
+
+        // Verify all fields are set
+        assert_eq!(config.secret_id, "prod/db/password");
+        assert_eq!(config.version_id.as_deref(), Some("version-1234"));
+        assert_eq!(config.version_stage.as_deref(), Some("AWSPREVIOUS"));
+        assert_eq!(config.json_key.as_deref(), Some("connection_string"));
+    }
+
+    #[test]
+    fn test_extract_json_key_deeply_nested() {
+        let secret = r#"{"level1": {"level2": {"level3": "deep_value"}}}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"level1".to_string()));
+        let value = result.unwrap();
+        // Should return the entire level1 object as JSON
+        assert!(value.contains("level2"));
+        assert!(value.contains("level3"));
+        assert!(value.contains("deep_value"));
+    }
+
+    #[test]
+    fn test_extract_json_key_mixed_types_array() {
+        let secret = r#"{"mixed": [1, "two", true, null]}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"mixed".to_string()));
+        let value = result.unwrap();
+        assert!(value.contains("1"));
+        assert!(value.contains("two"));
+        assert!(value.contains("true"));
+        assert!(value.contains("null"));
+    }
+
+    #[test]
+    fn test_extract_json_key_empty_object() {
+        let secret = r#"{"empty": {}}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"empty".to_string()));
+        assert_eq!(result.unwrap(), "{}");
+    }
+
+    #[test]
+    fn test_extract_json_key_empty_array() {
+        let secret = r#"{"empty": []}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"empty".to_string()));
+        assert_eq!(result.unwrap(), "[]");
+    }
+
+    #[test]
+    fn test_extract_json_key_whitespace_in_key() {
+        let secret = r#"{"key with spaces": "value"}"#;
+        let result =
+            AwsResolver::extract_json_key("test", secret, Some(&"key with spaces".to_string()));
+        assert_eq!(result.unwrap(), "value");
+    }
+
+    #[test]
+    fn test_aws_config_deserialization_extra_fields_ignored() {
+        let json =
+            r#"{"secretId": "my-secret", "unknownField": "ignored", "anotherUnknown": 42}"#;
+        let config: AwsSecretConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.secret_id, "my-secret");
+    }
+
+    #[test]
+    fn test_aws_config_empty_secret_id() {
+        let config = AwsSecretConfig::new("");
+        assert_eq!(config.secret_id, "");
+    }
+
+    #[test]
+    fn test_aws_config_secret_id_with_slashes() {
+        let config = AwsSecretConfig::new("prod/database/credentials");
+        assert_eq!(config.secret_id, "prod/database/credentials");
+    }
+
+    #[test]
+    fn test_extract_json_key_negative_number() {
+        let secret = r#"{"count": -42}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"count".to_string()));
+        assert_eq!(result.unwrap(), "-42");
+    }
+
+    #[test]
+    fn test_extract_json_key_large_number() {
+        let secret = r#"{"large": 9999999999999999999}"#;
+        let result = AwsResolver::extract_json_key("test", secret, Some(&"large".to_string()));
+        // Large numbers might be represented differently
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_resolver_can_use_http_matches_client_presence() {
+        if std::env::var("AWS_ACCESS_KEY_ID").is_err()
+            || std::env::var("AWS_SECRET_ACCESS_KEY").is_err()
+        {
+            let resolver = AwsResolver::new().await.unwrap();
+            // When no credentials, http_client is None, can_use_http should be false
+            assert!(!resolver.can_use_http());
+            assert!(resolver.http_client.is_none());
+        }
+    }
 }
