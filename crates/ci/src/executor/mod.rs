@@ -1,33 +1,13 @@
 //! CI Pipeline Executor
 //!
-//! Executes CI pipelines with proper dependency ordering, caching,
-//! and parallel execution.
+//! Orchestrates CI pipeline execution with provider integration.
 
-// CI executor outputs to stdout/stderr as part of its normal operation
-// Executor has inherent complexity from parallel task management and caching
-#![allow(
-    clippy::print_stdout,
-    clippy::print_stderr,
-    clippy::cognitive_complexity,
-    clippy::too_many_lines
-)]
-
-pub mod backend;
-pub mod cache;
 pub mod config;
-pub mod lock;
-pub mod metrics;
 mod orchestrator;
 pub mod runner;
 pub mod secrets;
 
-pub use backend::{
-    BackendError, BackendResult, CacheBackend, CacheEntry, CacheLookupResult, CacheOutput,
-};
-pub use cache::LocalCacheBackend;
 pub use config::CIExecutorConfig;
-pub use lock::{ConcurrencyLock, LockConfig, LockError, LockGuard};
-pub use metrics::{CacheMetrics, RestoreErrorType, global_metrics};
 pub use orchestrator::run_ci;
 pub use runner::TaskOutput;
 pub use secrets::{EnvSecretResolver, MockSecretResolver, SaltConfig, SecretResolver};
@@ -44,10 +24,6 @@ pub enum ExecutorError {
     /// Secret resolution error
     #[error(transparent)]
     Secret(#[from] secrets::SecretError),
-
-    /// Cache error
-    #[error(transparent)]
-    Cache(#[from] cache::CacheError),
 
     /// Task execution error
     #[error(transparent)]
