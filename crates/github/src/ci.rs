@@ -324,6 +324,7 @@ impl CIProvider for GitHubCIProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_parse_repo() {
@@ -430,6 +431,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[allow(unsafe_code)]
     fn test_get_before_sha_filters_null_sha() {
         // The NULL_SHA should be filtered out
@@ -446,6 +448,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[allow(unsafe_code)]
     fn test_get_before_sha_filters_empty() {
         // Empty string should be filtered out
@@ -462,6 +465,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[allow(unsafe_code)]
     fn test_get_before_sha_valid() {
         // A valid SHA should be returned
@@ -482,6 +486,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[allow(unsafe_code)]
     fn test_detect_not_github_actions() {
         // Clear GitHub Actions environment variables
@@ -496,6 +501,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     #[allow(unsafe_code)]
     fn test_detect_github_actions_false() {
         // SAFETY: Test runs in isolation

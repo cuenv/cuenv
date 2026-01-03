@@ -7,7 +7,7 @@
 //! - v1.4: Added `stages` field for provider-injected setup tasks (deprecated in v1.5)
 //! - v1.3: Initial stable version
 
-use cuenv_core::ci::PipelineMode;
+use cuenv_core::ci::{PipelineMode, PipelineTask};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -44,6 +44,7 @@ impl IntermediateRepresentation {
                 project_name: None,
                 trigger: None,
                 pipeline_tasks: Vec::new(),
+                pipeline_task_defs: Vec::new(),
             },
             runtimes: Vec::new(),
             tasks: Vec::new(),
@@ -107,6 +108,10 @@ pub struct PipelineMetadata {
     /// Task IDs that this pipeline runs (for contributor filtering)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pipeline_tasks: Vec<String>,
+
+    /// Full pipeline task definitions with matrix configurations preserved
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipeline_task_defs: Vec<PipelineTask>,
 }
 
 /// Trigger conditions for pipeline execution

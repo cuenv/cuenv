@@ -410,6 +410,7 @@ mod tests {
                 project_name: None,
                 trigger: None,
                 pipeline_tasks: vec![],
+                pipeline_task_defs: vec![],
             },
             runtimes: vec![],
             tasks,

@@ -318,6 +318,8 @@ impl Compiler {
                 .map(PipelineTask::task_name)
                 .map(String::from)
                 .collect();
+            // Preserve full pipeline task definitions (including matrix configs)
+            ir.pipeline.pipeline_task_defs.clone_from(&pipeline.tasks);
         }
 
         // Set up trigger conditions from CI configuration using the pipeline from options
@@ -1807,6 +1809,7 @@ mod tests {
                 project_name: None,
                 trigger: None,
                 pipeline_tasks: vec![],
+                pipeline_task_defs: vec![],
             },
             runtimes: vec![],
             tasks: vec![],
