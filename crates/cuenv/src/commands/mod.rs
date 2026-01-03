@@ -51,7 +51,6 @@ use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::time::{Duration, sleep};
-use tracing::{Level, event};
 
 /// Represents all available CLI commands with their associated parameters.
 ///
@@ -739,11 +738,11 @@ impl CommandExecutor {
     /// Send an event to all registered UI renderers.
     ///
     /// This method broadcasts events through the event channel. If sending fails
-    /// (e.g., all receivers have been dropped), the error is logged but not propagated.
+    /// (e.g., all receivers have been dropped), the error is silently ignored
+    /// since this is expected when the channel is not being consumed.
     pub(crate) fn send_event(&self, event: Event) {
-        if let Err(e) = self.event_sender.send(event) {
-            event!(Level::ERROR, "Failed to send event: {}", e);
-        }
+        // Silently ignore send failures - this is expected when no receiver is attached
+        let _ = self.event_sender.send(event);
     }
 }
 
