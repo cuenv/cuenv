@@ -15,6 +15,7 @@
 pub mod backend;
 pub mod cache;
 pub mod config;
+pub mod engine;
 pub mod graph;
 pub mod lock;
 pub mod metrics;
@@ -29,6 +30,7 @@ pub use backend::{
 };
 pub use cache::LocalCacheBackend;
 pub use config::CIExecutorConfig;
+pub use engine::{EngineConfig, EngineResult, ExecutionEngine};
 pub use lock::{ConcurrencyLock, LockConfig, LockError, LockGuard};
 pub use metrics::{CacheMetrics, RestoreErrorType, global_metrics};
 pub use orchestrator::run_ci;
@@ -418,6 +420,7 @@ impl CIExecutor {
 mod tests {
     use super::*;
     use crate::ir::{CachePolicy, PipelineMetadata, Task as IRTask};
+    use cuenv_core::ci::PipelineMode;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -426,6 +429,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
+                mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,

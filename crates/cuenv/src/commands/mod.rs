@@ -223,14 +223,8 @@ pub enum Command {
     },
     /// Run CI pipeline generation or execution.
     Ci {
-        /// Perform a dry run without making changes.
-        dry_run: bool,
-        /// Specific pipeline name to run.
-        pipeline: Option<String>,
-        /// Dynamic pipeline configuration.
-        dynamic: Option<String>,
-        /// Git ref to generate CI from.
-        from: Option<String>,
+        /// CI command arguments.
+        args: ci::CiArgs,
     },
     /// Launch the terminal user interface.
     Tui,
@@ -650,20 +644,7 @@ impl CommandExecutor {
                 })
                 .await
             }
-            Command::Ci {
-                dry_run,
-                pipeline,
-                dynamic,
-                from,
-            } => {
-                self.run_command(handler::CiHandler {
-                    dry_run,
-                    pipeline,
-                    dynamic,
-                    from,
-                })
-                .await
-            }
+            Command::Ci { args } => self.run_command(handler::CiHandler { args }).await,
             Command::Sync {
                 subcommand,
                 path,

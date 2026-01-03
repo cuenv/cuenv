@@ -9,11 +9,12 @@ name: "ci-codecov"
 
 ci: {
 	contributors: [xCodecov.#Codecov]
-	pipelines: [{
-		name: "test"
-		tasks: ["test"]
-		when: pullRequest: true
-	}]
+	pipelines: {
+		test: {
+			tasks: ["test"]
+			when: pullRequest: true
+		}
+	}
 }
 
 tasks: {

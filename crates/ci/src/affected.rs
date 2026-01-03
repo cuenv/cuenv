@@ -1,4 +1,3 @@
-use crate::discovery::DiscoveredCIProject;
 use cuenv_core::manifest::Project;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -10,7 +9,7 @@ pub fn compute_affected_tasks(
     pipeline_tasks: &[String],
     project_root: &Path,
     config: &Project,
-    all_projects: &HashMap<String, DiscoveredCIProject>,
+    all_projects: &HashMap<String, (PathBuf, Project)>,
 ) -> Vec<String> {
     let mut affected = HashSet::new();
     let mut visited_external_cache: HashMap<String, bool> = HashMap::new();
@@ -123,7 +122,7 @@ fn is_task_directly_affected(
 #[allow(clippy::implicit_hasher)]
 fn check_external_dependency(
     dep: &str,
-    all_projects: &HashMap<String, DiscoveredCIProject>,
+    all_projects: &HashMap<String, (PathBuf, Project)>,
     changed_files: &[PathBuf],
     cache: &mut HashMap<String, bool>,
 ) -> bool {
@@ -143,20 +142,18 @@ fn check_external_dependency(
     let project_name = parts[0];
     let task_name = parts[1];
 
-    let Some(project) = all_projects.get(project_name) else {
+    let Some((project_path, project_config)) = all_projects.get(project_name) else {
         return false;
     };
 
-    let project_root = project.path.parent().unwrap_or_else(|| Path::new("."));
-
     // Check if directly affected
-    if is_task_directly_affected(task_name, &project.config, changed_files, project_root) {
+    if is_task_directly_affected(task_name, project_config, changed_files, project_path) {
         cache.insert(dep.to_string(), true);
         return true;
     }
 
     // Check transitive dependencies of the external task
-    if let Some(task_def) = project.config.tasks.get(task_name)
+    if let Some(task_def) = project_config.tasks.get(task_name)
         && let Some(task) = task_def.as_single()
     {
         for sub_dep in &task.depends_on {
@@ -428,7 +425,7 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
         let pipeline_tasks = vec!["build".to_string()];
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -448,7 +445,7 @@ mod tests {
         let changed_files = vec![PathBuf::from("docs/readme.md")];
         let root = Path::new(".");
         let pipeline_tasks = vec!["build".to_string()];
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -470,7 +467,7 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
         let pipeline_tasks = vec!["build".to_string(), "test".to_string()];
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -502,7 +499,7 @@ mod tests {
             "test".to_string(),
             "deploy".to_string(),
         ];
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -526,7 +523,7 @@ mod tests {
         let root = Path::new(".");
         // Only build in the pipeline, not test
         let pipeline_tasks = vec!["build".to_string()];
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -547,7 +544,7 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
         let pipeline_tasks: Vec<String> = vec![];
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -568,7 +565,7 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
         let pipeline_tasks = vec!["deploy".to_string()];
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -599,14 +596,11 @@ mod tests {
         let root = Path::new(".");
         let pipeline_tasks = vec!["deploy".to_string()];
 
-        let external_discovered = DiscoveredCIProject {
-            path: PathBuf::from("/repo/external/env.cue"),
-            module_root: PathBuf::from("/repo"),
-            relative_path: PathBuf::from("external"),
-            config: external_project,
-        };
         let mut all_projects = HashMap::new();
-        all_projects.insert("external".to_string(), external_discovered);
+        all_projects.insert(
+            "external".to_string(),
+            (PathBuf::from("/repo/external"), external_project),
+        );
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -627,7 +621,7 @@ mod tests {
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
         let pipeline_tasks = vec!["deploy".to_string()];
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
 
         let affected = compute_affected_tasks(
             &changed_files,
@@ -712,7 +706,7 @@ mod tests {
     fn test_check_external_dependency_cache_hit() {
         let mut cache = HashMap::new();
         cache.insert("#project:task".to_string(), true);
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
         let changed_files: Vec<PathBuf> = vec![];
 
         let result =
@@ -725,7 +719,7 @@ mod tests {
     fn test_check_external_dependency_cache_miss_false() {
         let mut cache = HashMap::new();
         cache.insert("#project:task".to_string(), false);
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
         let changed_files: Vec<PathBuf> = vec![];
 
         let result =
@@ -737,7 +731,7 @@ mod tests {
     #[test]
     fn test_check_external_dependency_project_not_found() {
         let mut cache = HashMap::new();
-        let all_projects: HashMap<String, DiscoveredCIProject> = HashMap::new();
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
         let changed_files = vec![PathBuf::from("src/lib.rs")];
 
         let result =
@@ -755,15 +749,11 @@ mod tests {
             TaskDefinition::Single(Box::new(external_build)),
         );
 
-        let external_discovered = DiscoveredCIProject {
-            path: PathBuf::from("/repo/external/env.cue"),
-            module_root: PathBuf::from("/repo"),
-            relative_path: PathBuf::from("external"),
-            config: external_project,
-        };
-
         let mut all_projects = HashMap::new();
-        all_projects.insert("external".to_string(), external_discovered);
+        all_projects.insert(
+            "external".to_string(),
+            (PathBuf::from("/repo/external"), external_project),
+        );
 
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let mut cache = HashMap::new();
@@ -791,15 +781,11 @@ mod tests {
             TaskDefinition::Single(Box::new(external_test)),
         );
 
-        let external_discovered = DiscoveredCIProject {
-            path: PathBuf::from("/repo/external/env.cue"),
-            module_root: PathBuf::from("/repo"),
-            relative_path: PathBuf::from("external"),
-            config: external_project,
-        };
-
         let mut all_projects = HashMap::new();
-        all_projects.insert("external".to_string(), external_discovered);
+        all_projects.insert(
+            "external".to_string(),
+            (PathBuf::from("/repo/external"), external_project),
+        );
 
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let mut cache = HashMap::new();
@@ -820,15 +806,8 @@ mod tests {
             TaskDefinition::Single(Box::new(circular_task)),
         );
 
-        let discovered = DiscoveredCIProject {
-            path: PathBuf::from("/repo/proj/env.cue"),
-            module_root: PathBuf::from("/repo"),
-            relative_path: PathBuf::from("proj"),
-            config: project,
-        };
-
         let mut all_projects = HashMap::new();
-        all_projects.insert("proj".to_string(), discovered);
+        all_projects.insert("proj".to_string(), (PathBuf::from("/repo/proj"), project));
 
         let changed_files: Vec<PathBuf> = vec![];
         let mut cache = HashMap::new();

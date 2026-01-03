@@ -568,7 +568,8 @@ mod tests {
 
     #[test]
     fn test_tool_source_deserialization() {
-        let json = r#"{"type":"github","repo":"jqlang/jq","tag":"jq-1.7.1","asset":"jq-macos-arm64"}"#;
+        let json =
+            r#"{"type":"github","repo":"jqlang/jq","tag":"jq-1.7.1","asset":"jq-macos-arm64"}"#;
         let source: ToolSource = serde_json::from_str(json).unwrap();
         match source {
             ToolSource::GitHub {

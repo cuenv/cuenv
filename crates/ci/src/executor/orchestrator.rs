@@ -10,7 +10,7 @@
 #![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 
 use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
-use crate::discovery::discover_projects;
+use crate::discovery::evaluate_module_from_cwd;
 use crate::ir::CachePolicy;
 use crate::provider::CIProvider;
 use crate::report::json::write_report;
@@ -19,6 +19,7 @@ use chrono::Utc;
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::ExecutorError;
@@ -51,21 +52,30 @@ pub async fn run_ci(
     let changed_files = provider.changed_files().await?;
     cuenv_events::emit_ci_changed_files!(changed_files.len());
 
-    // Discover projects
-    let projects = discover_projects()?;
-    if projects.is_empty() {
+    // Evaluate module and discover projects
+    let module = evaluate_module_from_cwd()?;
+    let project_count = module.project_count();
+    if project_count == 0 {
         return Err(cuenv_core::Error::configuration(
             "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
         ));
     }
-    cuenv_events::emit_ci_projects_discovered!(projects.len());
+    cuenv_events::emit_ci_projects_discovered!(project_count);
+
+    // Collect projects with their configs
+    let mut projects: Vec<(PathBuf, Project)> = Vec::new();
+    for instance in module.projects() {
+        let config = Project::try_from(instance)?;
+        let project_path = module.root.join(&instance.path);
+        projects.push((project_path, config));
+    }
 
     // Build project map for cross-project dependency resolution
     let mut project_map = std::collections::HashMap::new();
-    for project in &projects {
-        let name = project.config.name.trim();
+    for (path, config) in &projects {
+        let name = config.name.trim();
         if !name.is_empty() {
-            project_map.insert(name.to_string(), project.clone());
+            project_map.insert(name.to_string(), (path.clone(), config.clone()));
         }
     }
 
@@ -73,9 +83,7 @@ pub async fn run_ci(
     let mut any_failed = false;
 
     // Process each project
-    for project in &projects {
-        let config = &project.config;
-
+    for (project_path, config) in &projects {
         // Determine pipeline to run
         let pipeline_name = specific_pipeline
             .clone()
@@ -85,31 +93,19 @@ pub async fn run_ci(
         let Some(ci) = &config.ci else {
             return Err(cuenv_core::Error::configuration(format!(
                 "Project {} has no CI configuration",
-                project.path.display()
+                project_path.display()
             )));
         };
 
-        let available_pipelines: Vec<&str> = ci.pipelines.iter().map(|p| p.name.as_str()).collect();
-        let Some(pipeline) = ci.pipelines.iter().find(|p| p.name == pipeline_name) else {
+        let available_pipelines: Vec<&str> = ci.pipelines.keys().map(String::as_str).collect();
+        let Some(pipeline) = ci.pipelines.get(&pipeline_name) else {
             return Err(cuenv_core::Error::configuration(format!(
                 "Pipeline '{}' not found in project {}. Available pipelines: {}",
                 pipeline_name,
-                project.path.display(),
+                project_path.display(),
                 available_pipelines.join(", ")
             )));
         };
-
-        // Get the directory containing the env.cue file
-        let project_root = project.path.parent().map_or_else(
-            || std::path::Path::new("."),
-            |p| {
-                if p.as_os_str().is_empty() {
-                    std::path::Path::new(".")
-                } else {
-                    p
-                }
-            },
-        );
 
         // Extract task names from pipeline tasks (which can be simple strings or matrix tasks)
         let pipeline_task_names: Vec<String> = pipeline
@@ -125,30 +121,29 @@ pub async fn run_ci(
             compute_affected_tasks(
                 &changed_files,
                 &pipeline_task_names,
-                project_root,
+                project_path,
                 config,
                 &project_map,
             )
         };
 
         if tasks_to_run.is_empty() {
-            cuenv_events::emit_ci_project_skipped!(project.path.display(), "No affected tasks");
+            cuenv_events::emit_ci_project_skipped!(project_path.display(), "No affected tasks");
             continue;
         }
 
         tracing::info!(
-            project = %project.path.display(),
+            project = %project_path.display(),
             tasks = ?tasks_to_run,
             "Running tasks for project"
         );
 
         if !dry_run {
             let result = execute_project_pipeline(
-                project,
+                project_path,
                 config,
-                &pipeline.name,
+                &pipeline_name,
                 &tasks_to_run,
-                project_root,
                 context,
                 &changed_files,
                 provider.as_ref(),
@@ -177,13 +172,12 @@ pub async fn run_ci(
 #[allow(clippy::too_many_arguments)] // Pipeline execution requires many context params
 #[allow(clippy::too_many_lines)] // Complex orchestration logic
 async fn execute_project_pipeline(
-    project: &crate::discovery::DiscoveredCIProject,
+    project_path: &Path,
     config: &Project,
     pipeline_name: &str,
     tasks_to_run: &[String],
-    project_root: &std::path::Path,
     context: &crate::context::CIContext,
-    changed_files: &[std::path::PathBuf],
+    changed_files: &[PathBuf],
     provider: &dyn CIProvider,
 ) -> Result<PipelineStatus> {
     let start_time = Utc::now();
@@ -198,7 +192,7 @@ async fn execute_project_pipeline(
     };
 
     // Create executor configuration with salt rotation support
-    let mut executor_config = CIExecutorConfig::new(project_root.to_path_buf())
+    let mut executor_config = CIExecutorConfig::new(project_path.to_path_buf())
         .with_capture_output(true)
         .with_dry_run(false)
         .with_secret_salt(std::env::var("CUENV_SECRET_SALT").unwrap_or_default());
@@ -219,7 +213,7 @@ async fn execute_project_pipeline(
     // Execute tasks
     for task_name in tasks_to_run {
         let inputs_matched =
-            matched_inputs_for_task(task_name, config, changed_files, project_root);
+            matched_inputs_for_task(task_name, config, changed_files, project_path);
         let outputs = config
             .tasks
             .get(task_name)
@@ -227,13 +221,13 @@ async fn execute_project_pipeline(
             .map(|task| task.outputs.clone())
             .unwrap_or_default();
 
-        let project_display = project.path.display().to_string();
+        let project_display = project_path.display().to_string();
         cuenv_events::emit_ci_task_executing!(&project_display, task_name);
         let task_start = std::time::Instant::now();
 
         // Execute the task using the runner
         let result =
-            execute_single_task_by_name(config, task_name, project_root, cache_policy_override)
+            execute_single_task_by_name(config, task_name, project_path, cache_policy_override)
                 .await;
 
         let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
@@ -248,7 +242,7 @@ async fn execute_project_pipeline(
                         if output.from_cache {
                             Some(format!("cached:{}", output.task_id))
                         } else {
-                            None
+                            Some(output.task_id)
                         },
                     )
                 } else {
@@ -258,14 +252,10 @@ async fn execute_project_pipeline(
                 }
             }
             Err(e) => {
-                cuenv_events::emit_ci_task_result!(
-                    &project_display,
-                    task_name,
-                    false,
-                    e.to_string()
-                );
+                tracing::error!(error = %e, task = task_name, "Task execution error");
+                cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
                 pipeline_status = PipelineStatus::Failed;
-                (TaskStatus::Failed, Some(1), None)
+                (TaskStatus::Failed, None, None)
             }
         };
 
@@ -274,8 +264,8 @@ async fn execute_project_pipeline(
             status,
             duration_ms: duration,
             exit_code,
-            inputs_matched,
             cache_key,
+            inputs_matched,
             outputs,
         });
     }
@@ -287,7 +277,7 @@ async fn execute_project_pipeline(
     // Generate report
     let report = PipelineReport {
         version: cuenv_core::VERSION.to_string(),
-        project: project.path.display().to_string(),
+        project: project_path.display().to_string(),
         pipeline: pipeline_name.to_string(),
         context: ContextReport {
             provider: context.provider.clone(),
@@ -308,7 +298,7 @@ async fn execute_project_pipeline(
     };
 
     // Write reports and notify provider
-    write_pipeline_report(&report, context, project);
+    write_pipeline_report(&report, context, project_path);
     notify_provider(provider, &report, pipeline_name).await;
 
     Ok(pipeline_status)
@@ -318,10 +308,10 @@ async fn execute_project_pipeline(
 fn write_pipeline_report(
     report: &PipelineReport,
     context: &crate::context::CIContext,
-    project: &crate::discovery::DiscoveredCIProject,
+    project_path: &Path,
 ) {
     // Ensure report directory exists
-    let report_dir = std::path::Path::new(".cuenv/reports");
+    let report_dir = Path::new(".cuenv/reports");
     if let Err(e) = std::fs::create_dir_all(report_dir) {
         tracing::warn!(error = %e, "Failed to create report directory");
         return;
@@ -330,7 +320,7 @@ fn write_pipeline_report(
     let sha_dir = report_dir.join(&context.sha);
     let _ = std::fs::create_dir_all(&sha_dir);
 
-    let project_filename = project.path.display().to_string().replace(['/', '\\'], "-") + ".json";
+    let project_filename = project_path.display().to_string().replace(['/', '\\'], "-") + ".json";
     let report_path = sha_dir.join(project_filename);
 
     if let Err(e) = write_report(report, &report_path) {
@@ -380,7 +370,7 @@ fn is_fork_pr(context: &crate::context::CIContext) -> bool {
 async fn execute_single_task_by_name(
     config: &Project,
     task_name: &str,
-    project_root: &std::path::Path,
+    project_root: &Path,
     cache_policy_override: Option<CachePolicy>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
     // Get task definition

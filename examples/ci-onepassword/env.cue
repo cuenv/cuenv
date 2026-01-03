@@ -23,11 +23,10 @@ tasks: {
 	}
 }
 
-ci: pipelines: [
-	{
-		name:        "deploy"
+ci: pipelines: {
+	deploy: {
 		environment: "production"
 		tasks: ["deploy"]
 		when: branch: "main"
-	},
-]
+	}
+}

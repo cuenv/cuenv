@@ -443,7 +443,10 @@ mod tests {
         let resolver = EnvSecretResolver::new();
         let mut secrets = HashMap::new();
         // Without cache_key, no fingerprint is computed
-        secrets.insert("my_secret".to_string(), SecretSpec::new("BATCH_TEST_NO_CACHE"));
+        secrets.insert(
+            "my_secret".to_string(),
+            SecretSpec::new("BATCH_TEST_NO_CACHE"),
+        );
         let salt = SaltConfig::default();
 
         let result = resolve_batch(&resolver, &secrets, &salt).await.unwrap();

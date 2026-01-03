@@ -19,11 +19,12 @@ runtime: schema.#ToolsRuntime & {
 
 ci: {
 	contributors: [c.#Cuenv, c.#Bun]
-	pipelines: [{
-		name:  "default"
-		tasks: ["version"]
-		when: branch: "main"
-	}]
+	pipelines: {
+		default: {
+			tasks: ["version"]
+			when: branch: "main"
+		}
+	}
 }
 
 env: {}

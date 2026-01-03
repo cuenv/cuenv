@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Workflow dispatch input definition for manual triggers
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,10 +162,29 @@ pub struct GitHubActionConfig {
     pub inputs: HashMap<String, serde_json::Value>,
 }
 
+/// Pipeline generation mode
+///
+/// Controls how the CI workflow is generated:
+/// - `Thin`: Minimal workflow with cuenv orchestration (default)
+/// - `Expanded`: Full workflow with all tasks as individual jobs/steps
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PipelineMode {
+    /// Generate minimal workflow with cuenv ci orchestration
+    /// Structure: bootstrap contributors → cuenv ci --pipeline <name> → finalizer contributors
+    #[default]
+    Thin,
+    /// Generate full workflow with all tasks as individual jobs/steps
+    /// Structure: All tasks expanded inline with proper dependencies
+    Expanded,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
-    pub name: String,
+    /// Generation mode for this pipeline (default: thin)
+    #[serde(default)]
+    pub mode: PipelineMode,
     /// Environment for secret resolution (e.g., "production")
     pub environment: Option<String>,
     pub when: Option<PipelineCondition>,
@@ -363,7 +382,8 @@ pub struct Contributor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CI {
-    pub pipelines: Vec<Pipeline>,
+    #[serde(default)]
+    pub pipelines: BTreeMap<String, Pipeline>,
     /// Global provider configuration defaults
     pub provider: Option<ProviderConfig>,
     /// Contributors that inject tasks into build phases
@@ -499,15 +519,15 @@ mod tests {
 
     #[test]
     fn test_pipeline_derive_paths() {
-        let json = r#"{"name": "ci", "tasks": ["test"], "derivePaths": true}"#;
+        let json = r#"{"tasks": ["test"], "derivePaths": true}"#;
         let pipeline: Pipeline = serde_json::from_str(json).unwrap();
         assert_eq!(pipeline.derive_paths, Some(true));
 
-        let json = r#"{"name": "scheduled", "tasks": ["sync"], "derivePaths": false}"#;
+        let json = r#"{"tasks": ["sync"], "derivePaths": false}"#;
         let pipeline: Pipeline = serde_json::from_str(json).unwrap();
         assert_eq!(pipeline.derive_paths, Some(false));
 
-        let json = r#"{"name": "default", "tasks": ["build"]}"#;
+        let json = r#"{"tasks": ["build"]}"#;
         let pipeline: Pipeline = serde_json::from_str(json).unwrap();
         assert_eq!(pipeline.derive_paths, None);
     }
@@ -563,7 +583,6 @@ mod tests {
     #[test]
     fn test_pipeline_mixed_tasks() {
         let json = r#"{
-            "name": "release",
             "tasks": [
                 {"task": "release.build", "matrix": {"arch": ["linux-x64", "darwin-arm64"]}},
                 "release.publish:github",

@@ -285,7 +285,10 @@ mod tests {
         let cuenv = Cuenv::with_defaults();
         let sync_cmd = cuenv.build_sync_command();
 
-        let args: Vec<_> = sync_cmd.get_arguments().map(|a| a.get_id().as_str()).collect();
+        let args: Vec<_> = sync_cmd
+            .get_arguments()
+            .map(|a| a.get_id().as_str())
+            .collect();
         assert!(args.contains(&"path"));
         assert!(args.contains(&"package"));
         assert!(args.contains(&"dry-run"));
