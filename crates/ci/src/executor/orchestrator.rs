@@ -513,26 +513,33 @@ async fn execute_single_task_by_name(
 /// Returns a list of bin directories that should be prepended to PATH
 /// to make tools available for task execution.
 fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
+    cuenv_events::emit_stderr!("[ci] Getting tool bin directories...");
+
     let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
 
     // Find lockfile in project root or parent directories
     let lockfile_path = project_root.join("cuenv.lock");
     let lockfile = match Lockfile::load(&lockfile_path) {
         Ok(Some(lf)) => lf,
-        Ok(None) => return vec![],
+        Ok(None) => {
+            cuenv_events::emit_stderr!("[ci] No lockfile found for bin dirs");
+            return vec![];
+        }
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to load lockfile for tool activation");
+            cuenv_events::emit_stderr!(&format!("[ci] Failed to load lockfile for bin dirs: {e}"));
             return vec![];
         }
     };
 
     if lockfile.tools.is_empty() {
+        cuenv_events::emit_stderr!("[ci] No tools in lockfile for bin dirs");
         return vec![];
     }
 
     let platform = Platform::current();
     let platform_str = platform.to_string();
     let cache_dir = ToolOptions::default().cache_dir();
+    cuenv_events::emit_stderr!(&format!("[ci] Cache dir: {}", cache_dir.display()));
 
     // Check for Nix profile
     if let Ok(profile_path) = cuenv_tools_nix::profile::profile_path_for_project(project_root) {
@@ -591,17 +598,28 @@ fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
             .join(name)
             .join(&tool.version);
 
+        cuenv_events::emit_stderr!(&format!("[ci] Checking tool dir: {}", tool_dir.display()));
+
         if tool_dir.exists() {
             // Check if tool_dir itself contains the binary (flat structure)
             if tool_dir.join(name).exists() || tool_dir.join(format!("{name}.exe")).exists() {
+                cuenv_events::emit_stderr!(&format!("[ci] Found bin at tool dir: {}", tool_dir.display()));
                 bin_dirs.insert(tool_dir.clone());
             }
             // Also check bin subdirectory
             let bin = tool_dir.join("bin");
             if bin.exists() {
+                cuenv_events::emit_stderr!(&format!("[ci] Found bin subdir: {}", bin.display()));
                 bin_dirs.insert(bin);
             }
+        } else {
+            cuenv_events::emit_stderr!(&format!("[ci] Tool dir does not exist: {}", tool_dir.display()));
         }
+    }
+
+    cuenv_events::emit_stderr!(&format!("[ci] Found {} bin directories", bin_dirs.len()));
+    for dir in &bin_dirs {
+        cuenv_events::emit_stderr!(&format!("[ci]   - {}", dir.display()));
     }
 
     bin_dirs.into_iter().collect()
@@ -740,26 +758,33 @@ fn lockfile_entry_to_source(
 ///
 /// This is called before task execution to make sure tools are available.
 async fn ensure_tools_downloaded(project_root: &Path) {
+    cuenv_events::emit_stderr!("[ci] Ensuring tools are downloaded from lockfile...");
+
     let lockfile_path = project_root.join("cuenv.lock");
+    cuenv_events::emit_stderr!(&format!("[ci] Looking for lockfile at: {}", lockfile_path.display()));
+
     let lockfile = match Lockfile::load(&lockfile_path) {
         Ok(Some(lf)) => lf,
         Ok(None) => {
-            tracing::debug!("No lockfile found - skipping tool download");
+            cuenv_events::emit_stderr!("[ci] No lockfile found - skipping tool download");
             return;
         }
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to load lockfile for tool download");
+            cuenv_events::emit_stderr!(&format!("[ci] Failed to load lockfile: {e}"));
             return;
         }
     };
 
     if lockfile.tools.is_empty() {
-        tracing::debug!("No tools in lockfile - skipping download");
+        cuenv_events::emit_stderr!("[ci] No tools in lockfile - skipping download");
         return;
     }
 
+    cuenv_events::emit_stderr!(&format!("[ci] Found {} tools in lockfile", lockfile.tools.len()));
+
     let platform = Platform::current();
     let platform_str = platform.to_string();
+    cuenv_events::emit_stderr!(&format!("[ci] Current platform: {platform_str}"));
     let options = ToolOptions::default();
     let registry = create_tool_registry();
 
@@ -788,20 +813,19 @@ async fn ensure_tools_downloaded(project_root: &Path) {
 
     for (name, tool) in &lockfile.tools {
         let Some(locked) = tool.platforms.get(&platform_str) else {
+            cuenv_events::emit_stderr!(&format!("[ci] Tool '{name}' not available for platform {platform_str}"));
             continue;
         };
 
+        cuenv_events::emit_stderr!(&format!("[ci] Checking tool '{}' v{} (provider: {})", name, tool.version, locked.provider));
+
         let Some(source) = lockfile_entry_to_source(locked) else {
-            tracing::debug!(
-                "Unknown provider '{}' for tool '{}' - skipping",
-                locked.provider,
-                name
-            );
+            cuenv_events::emit_stderr!(&format!("[ci] Unknown provider '{}' for tool '{}'", locked.provider, name));
             continue;
         };
 
         let Some(provider) = registry.find_for_source(&source) else {
-            tracing::debug!("No provider found for tool '{}' - skipping", name);
+            cuenv_events::emit_stderr!(&format!("[ci] No provider found for tool '{name}'"));
             continue;
         };
 
@@ -813,27 +837,25 @@ async fn ensure_tools_downloaded(project_root: &Path) {
         };
 
         if provider.is_cached(&resolved, &options) {
+            cuenv_events::emit_stderr!(&format!("[ci] Tool '{}' already cached", name));
             continue;
         }
 
-        tracing::info!("Downloading {} v{}...", name, tool.version);
+        cuenv_events::emit_stderr!(&format!("[ci] Downloading {} v{}...", name, tool.version));
         match provider.fetch(&resolved, &options).await {
             Ok(fetched) => {
-                tracing::info!(
-                    "Downloaded {} -> {} ({})",
+                cuenv_events::emit_stderr!(&format!(
+                    "[ci] Downloaded {} -> {}",
                     name,
-                    fetched.binary_path.display(),
-                    fetched.sha256
-                );
+                    fetched.binary_path.display()
+                ));
                 downloaded += 1;
             }
             Err(e) => {
-                tracing::warn!("Failed to download '{}': {} - continuing anyway", name, e);
+                cuenv_events::emit_stderr!(&format!("[ci] Failed to download '{}': {}", name, e));
             }
         }
     }
 
-    if downloaded > 0 {
-        tracing::info!("Downloaded {} tools", downloaded);
-    }
+    cuenv_events::emit_stderr!(&format!("[ci] Tool download complete. Downloaded {} tools", downloaded));
 }
