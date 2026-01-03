@@ -8,7 +8,9 @@
     clippy::print_stderr,
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::branches_sharing_code
+    clippy::branches_sharing_code,
+    clippy::panic,
+    clippy::needless_pass_by_value
 )]
 
 use cucumber::{World, given, then, when};
