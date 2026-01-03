@@ -38,6 +38,9 @@ pub enum CompilerError {
     #[error("Task graph validation failed: {0}")]
     ValidationFailed(String),
 
+    #[error("Task '{0}' not found")]
+    TaskNotFound(String),
+
     #[error("Task '{0}' uses shell script but IR requires command array")]
     ShellScriptNotSupported(String),
 
@@ -344,6 +347,31 @@ impl Compiler {
                 .collect();
             CompilerError::ValidationFailed(error_messages.join(", "))
         })?;
+
+        Ok(ir)
+    }
+
+    /// Compile a single task by name to IR
+    ///
+    /// This method handles both single tasks and task groups, compiling them
+    /// into an IR representation that can be executed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CompilerError` if the task is not found or compilation fails.
+    pub fn compile_task(
+        &self,
+        task_name: &str,
+    ) -> Result<IntermediateRepresentation, CompilerError> {
+        let mut ir = IntermediateRepresentation::new(&self.project.name);
+
+        // Find the task definition
+        let Some(task_def) = self.find_task_definition(task_name) else {
+            return Err(CompilerError::TaskNotFound(task_name.to_string()));
+        };
+
+        // Compile just this task definition
+        self.compile_task_definition(task_name, task_def, &mut ir)?;
 
         Ok(ir)
     }

@@ -6,7 +6,7 @@
 #![allow(clippy::print_stdout)]
 
 use crate::bus::EventReceiver;
-use crate::event::CuenvEvent;
+use crate::event::{CuenvEvent, EventCategory, SystemEvent};
 
 /// JSON renderer that outputs events as JSON lines.
 #[derive(Debug, Default)]
@@ -29,9 +29,16 @@ impl JsonRenderer {
     }
 
     /// Run the renderer, consuming events from the receiver.
+    ///
+    /// The renderer will exit gracefully when it receives a `SystemEvent::Shutdown` event,
+    /// ensuring all pending events are processed before termination.
     pub async fn run(self, mut receiver: EventReceiver) {
         while let Some(event) = receiver.recv().await {
             self.render(&event);
+            // Exit after rendering shutdown event
+            if matches!(event.category, EventCategory::System(SystemEvent::Shutdown)) {
+                break;
+            }
         }
     }
 

@@ -252,10 +252,13 @@ impl IRTaskRunner {
         };
 
         // Wait for the process to complete
-        let status = child.wait().await.map_err(|e| RunnerError::ExecutionFailed {
-            task: task.id.clone(),
-            source: e,
-        })?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| RunnerError::ExecutionFailed {
+                task: task.id.clone(),
+                source: e,
+            })?;
 
         let duration = start.elapsed();
         let exit_code = status.code().unwrap_or(-1);

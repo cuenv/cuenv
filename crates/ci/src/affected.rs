@@ -103,9 +103,7 @@ fn is_definition_affected(
         TaskDefinition::Single(task) => task
             .iter_path_inputs()
             .any(|input_glob| matches_any(changed_files, project_root, input_glob)),
-        TaskDefinition::Group(group) => {
-            is_group_affected(group, changed_files, project_root)
-        }
+        TaskDefinition::Group(group) => is_group_affected(group, changed_files, project_root),
     }
 }
 
@@ -743,8 +741,14 @@ mod tests {
         let test_task = make_task(vec!["tests/**"], vec![]);
 
         let mut parallel_tasks = std::collections::HashMap::new();
-        parallel_tasks.insert("lint".to_string(), TaskDefinition::Single(Box::new(lint_task)));
-        parallel_tasks.insert("test".to_string(), TaskDefinition::Single(Box::new(test_task)));
+        parallel_tasks.insert(
+            "lint".to_string(),
+            TaskDefinition::Single(Box::new(lint_task)),
+        );
+        parallel_tasks.insert(
+            "test".to_string(),
+            TaskDefinition::Single(Box::new(test_task)),
+        );
 
         let group = TaskGroup::Parallel(ParallelGroup {
             tasks: parallel_tasks,
@@ -775,8 +779,14 @@ mod tests {
         let test_task = make_task(vec!["tests/**"], vec![]);
 
         let mut parallel_tasks = std::collections::HashMap::new();
-        parallel_tasks.insert("lint".to_string(), TaskDefinition::Single(Box::new(lint_task)));
-        parallel_tasks.insert("test".to_string(), TaskDefinition::Single(Box::new(test_task)));
+        parallel_tasks.insert(
+            "lint".to_string(),
+            TaskDefinition::Single(Box::new(lint_task)),
+        );
+        parallel_tasks.insert(
+            "test".to_string(),
+            TaskDefinition::Single(Box::new(test_task)),
+        );
 
         let group = TaskGroup::Parallel(ParallelGroup {
             tasks: parallel_tasks,
@@ -833,8 +843,14 @@ mod tests {
         let test_task = make_task(vec!["tests/**"], vec![]);
 
         let mut parallel_tasks = std::collections::HashMap::new();
-        parallel_tasks.insert("lint".to_string(), TaskDefinition::Single(Box::new(lint_task)));
-        parallel_tasks.insert("test".to_string(), TaskDefinition::Single(Box::new(test_task)));
+        parallel_tasks.insert(
+            "lint".to_string(),
+            TaskDefinition::Single(Box::new(lint_task)),
+        );
+        parallel_tasks.insert(
+            "test".to_string(),
+            TaskDefinition::Single(Box::new(test_task)),
+        );
 
         let group = TaskGroup::Parallel(ParallelGroup {
             tasks: parallel_tasks,
