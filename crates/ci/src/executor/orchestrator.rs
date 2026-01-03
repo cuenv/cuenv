@@ -10,24 +10,20 @@
 #![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 
 use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
-use crate::compiler::Compiler;
 use crate::discovery::evaluate_module_from_cwd;
-use crate::ir::CachePolicy;
 use crate::provider::CIProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
+use cuenv_core::environment::Environment;
 use cuenv_core::lockfile::{Lockfile, LockedToolPlatform, LOCKFILE_NAME};
 use cuenv_core::manifest::Project;
+use cuenv_core::tasks::{ExecutorConfig, TaskExecutor, TaskGraph, TaskResult, Tasks};
 use cuenv_core::tools::{Platform, ResolvedTool, ToolOptions, ToolRegistry, ToolSource};
 use cuenv_core::Result;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use super::ExecutorError;
-use super::config::CIExecutorConfig;
-use super::runner::{IRTaskRunner, TaskOutput};
 
 /// Run the CI pipeline logic
 ///
@@ -187,94 +183,136 @@ async fn execute_project_pipeline(
     let mut tasks_reports = Vec::new();
     let mut pipeline_status = PipelineStatus::Success;
 
-    // Determine cache policy override based on context
-    let cache_policy_override = if is_fork_pr(context) {
-        Some(CachePolicy::Readonly)
-    } else {
-        None
-    };
-
-    // Create executor configuration with salt rotation support
-    let mut executor_config = CIExecutorConfig::new(project_path.to_path_buf())
-        .with_capture_output(true)
-        .with_dry_run(false)
-        .with_secret_salt(std::env::var("CUENV_SECRET_SALT").unwrap_or_default());
-
-    // Add previous salt for rotation support
-    if let Ok(prev_salt) = std::env::var("CUENV_SECRET_SALT_PREV")
-        && !prev_salt.is_empty()
-    {
-        executor_config = executor_config.with_secret_salt_prev(prev_salt);
-    }
-
-    let _executor_config = if let Some(policy) = cache_policy_override {
-        executor_config.with_cache_policy_override(policy)
-    } else {
-        executor_config
-    };
-
     // Register common CI secret patterns for redaction.
     // These are typically passed via GitHub Actions secrets or similar.
     register_ci_secrets();
 
-    // Execute tasks
-    for task_name in tasks_to_run {
-        let inputs_matched =
-            matched_inputs_for_task(task_name, config, changed_files, project_path);
-        let outputs = config
-            .tasks
-            .get(task_name)
-            .and_then(|def| def.as_single())
-            .map(|task| task.outputs.clone())
-            .unwrap_or_default();
+    // Build Tasks from config
+    let all_tasks = Tasks {
+        tasks: config.tasks.clone(),
+    };
 
+    // Ensure tools are downloaded before execution
+    ensure_tools_downloaded(project_path).await;
+
+    // Build environment with tool paths
+    let tool_bin_dirs = get_tool_bin_dirs(project_path);
+    let mut environment = Environment::new();
+
+    // Add PATH with tool directories prepended
+    if !tool_bin_dirs.is_empty() {
+        let tool_path = tool_bin_dirs
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":");
+        if let Ok(system_path) = std::env::var("PATH") {
+            environment.set("PATH".to_string(), format!("{tool_path}:{system_path}"));
+        } else {
+            environment.set("PATH".to_string(), tool_path);
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        environment.set("HOME".to_string(), home);
+    }
+
+    // Track tasks we've already executed to avoid duplicates
+    let mut executed_tasks: HashSet<String> = HashSet::new();
+
+    // Execute tasks using DAG
+    for task_name in tasks_to_run {
         let project_display = project_path.display().to_string();
         cuenv_events::emit_ci_task_executing!(&project_display, task_name);
         let task_start = std::time::Instant::now();
 
-        // Execute the task using the runner
-        let result =
-            execute_single_task_by_name(config, task_name, project_path, cache_policy_override)
-                .await;
+        // Build DAG from task name (includes all dependencies)
+        let mut task_graph = TaskGraph::new();
+        if let Err(e) = task_graph.build_for_task(task_name, &all_tasks) {
+            tracing::error!(error = %e, task = task_name, "Failed to build task graph");
+            cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
+            pipeline_status = PipelineStatus::Failed;
+            tasks_reports.push(TaskReport {
+                name: task_name.clone(),
+                status: TaskStatus::Failed,
+                duration_ms: 0,
+                exit_code: None,
+                cache_key: None,
+                inputs_matched: vec![],
+                outputs: vec![],
+            });
+            continue;
+        }
 
-        let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
+        // Create executor config
+        let executor_config = ExecutorConfig {
+            capture_output: true,
+            project_root: project_path.to_path_buf(),
+            environment: environment.clone(),
+            ..Default::default()
+        };
 
-        let (status, exit_code, cache_key) = match result {
-            Ok(output) => {
-                if output.success {
-                    cuenv_events::emit_ci_task_result!(&project_display, task_name, true);
-                    (
-                        TaskStatus::Success,
-                        Some(output.exit_code),
-                        if output.from_cache {
-                            Some(format!("cached:{}", output.task_id))
-                        } else {
-                            Some(output.task_id)
-                        },
-                    )
-                } else {
-                    cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
-                    pipeline_status = PipelineStatus::Failed;
-                    (TaskStatus::Failed, Some(output.exit_code), None)
-                }
-            }
+        // Execute DAG
+        let executor = TaskExecutor::new(executor_config);
+        let results: Vec<TaskResult> = match executor.execute_graph(&task_graph).await {
+            Ok(results) => results,
             Err(e) => {
                 tracing::error!(error = %e, task = task_name, "Task execution error");
                 cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
                 pipeline_status = PipelineStatus::Failed;
-                (TaskStatus::Failed, None, None)
+                tasks_reports.push(TaskReport {
+                    name: task_name.clone(),
+                    status: TaskStatus::Failed,
+                    duration_ms: u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0),
+                    exit_code: None,
+                    cache_key: None,
+                    inputs_matched: vec![],
+                    outputs: vec![],
+                });
+                continue;
             }
         };
 
-        tasks_reports.push(TaskReport {
-            name: task_name.clone(),
-            status,
-            duration_ms: duration,
-            exit_code,
-            cache_key,
-            inputs_matched,
-            outputs,
-        });
+        let total_duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
+
+        // Process all results from the DAG execution
+        for result in &results {
+            // Skip tasks we've already reported on (from earlier DAG executions)
+            if executed_tasks.contains(&result.name) {
+                continue;
+            }
+            executed_tasks.insert(result.name.clone());
+
+            let inputs_matched =
+                matched_inputs_for_task(&result.name, config, changed_files, project_path);
+            let outputs = config
+                .tasks
+                .get(&result.name)
+                .and_then(|def| def.as_single())
+                .map(|task| task.outputs.clone())
+                .unwrap_or_default();
+
+            let (status, exit_code, cache_key) = if result.success {
+                cuenv_events::emit_ci_task_result!(&project_display, &result.name, true);
+                (TaskStatus::Success, result.exit_code, Some(result.name.clone()))
+            } else {
+                cuenv_events::emit_ci_task_result!(&project_display, &result.name, false);
+                pipeline_status = PipelineStatus::Failed;
+                (TaskStatus::Failed, result.exit_code, None)
+            };
+
+            // Approximate per-task duration (total / number of tasks in this execution)
+            let per_task_duration = total_duration / u64::try_from(results.len()).unwrap_or(1);
+
+            tasks_reports.push(TaskReport {
+                name: result.name.clone(),
+                status,
+                duration_ms: per_task_duration,
+                exit_code,
+                cache_key,
+                inputs_matched,
+                outputs,
+            });
+        }
     }
 
     let completed_at = Utc::now();
@@ -363,13 +401,6 @@ async fn notify_provider(provider: &dyn CIProvider, report: &PipelineReport, pip
     }
 }
 
-/// Check if this is a fork PR (should use readonly cache)
-fn is_fork_pr(context: &crate::context::CIContext) -> bool {
-    // Fork PRs typically have a different head repo than base repo
-    // This is a simplified check - providers may need more sophisticated detection
-    context.event == "pull_request" && context.ref_name.starts_with("refs/pull/")
-}
-
 /// Register common CI secret environment variables for redaction.
 ///
 /// This ensures that secrets passed via CI provider (GitHub Actions, etc.)
@@ -404,108 +435,6 @@ fn register_ci_secrets() {
             cuenv_events::register_secret(value);
         }
     }
-}
-
-/// Execute a task by name using the existing project config
-///
-/// This bridges the gap between the task name-based execution in `run_ci`
-/// and the IR-based execution in `CIExecutor`. Uses the Compiler to handle
-/// both single tasks and task groups (sequential and parallel).
-async fn execute_single_task_by_name(
-    config: &Project,
-    task_name: &str,
-    project_root: &Path,
-    cache_policy_override: Option<CachePolicy>,
-) -> std::result::Result<TaskOutput, ExecutorError> {
-    let start = std::time::Instant::now();
-
-    // Use the Compiler to compile the task (handles both single tasks and groups)
-    let options = crate::compiler::CompilerOptions {
-        project_root: Some(project_root.to_path_buf()),
-        ..Default::default()
-    };
-    let compiler = Compiler::with_options(config.clone(), options);
-    let ir = compiler
-        .compile_task(task_name)
-        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-
-    if ir.tasks.is_empty() {
-        return Err(ExecutorError::Compilation(format!(
-            "Task '{task_name}' produced no executable tasks"
-        )));
-    }
-
-    // Execute all compiled IR tasks sequentially
-    let runner = IRTaskRunner::new(project_root.to_path_buf(), true);
-    let mut combined_stdout = String::new();
-    let mut combined_stderr = String::new();
-    let mut all_success = true;
-    let mut last_exit_code = 0;
-
-    // Ensure tools are downloaded before getting their paths
-    ensure_tools_downloaded(project_root).await;
-
-    // Get tool bin directories from lockfile
-    let tool_bin_dirs = get_tool_bin_dirs(project_root);
-    let tool_path_prepend = if tool_bin_dirs.is_empty() {
-        String::new()
-    } else {
-        tool_bin_dirs
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(":")
-    };
-
-    for ir_task in &ir.tasks {
-        // Build environment
-        let mut env: BTreeMap<String, String> = ir_task.env.clone();
-
-        // Add PATH with tool directories prepended, then HOME
-        if let Ok(system_path) = std::env::var("PATH") {
-            let path = if tool_path_prepend.is_empty() {
-                system_path
-            } else {
-                format!("{tool_path_prepend}:{system_path}")
-            };
-            env.insert("PATH".to_string(), path);
-        } else if !tool_path_prepend.is_empty() {
-            env.insert("PATH".to_string(), tool_path_prepend.clone());
-        }
-        if let Ok(home) = std::env::var("HOME") {
-            env.insert("HOME".to_string(), home);
-        }
-
-        // Apply cache policy override if specified
-        let mut task_to_run = ir_task.clone();
-        if let Some(policy) = cache_policy_override {
-            task_to_run.cache_policy = policy;
-        }
-
-        let output = runner.execute(&task_to_run, env).await?;
-
-        combined_stdout.push_str(&output.stdout);
-        combined_stderr.push_str(&output.stderr);
-        last_exit_code = output.exit_code;
-
-        if !output.success {
-            all_success = false;
-            break; // Stop on first failure
-        }
-    }
-
-    let duration = start.elapsed();
-    let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-
-    Ok(TaskOutput {
-        task_id: task_name.to_string(),
-        exit_code: last_exit_code,
-        stdout: combined_stdout,
-        stderr: combined_stderr,
-        success: all_success,
-        from_cache: false,
-        duration_ms,
-    })
 }
 
 // ============================================================================
