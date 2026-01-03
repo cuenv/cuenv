@@ -18,8 +18,10 @@ use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
 use cuenv_core::Result;
+use cuenv_core::lockfile::Lockfile;
 use cuenv_core::manifest::Project;
-use std::collections::BTreeMap;
+use cuenv_core::tools::{Platform, ToolOptions};
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -440,13 +442,32 @@ async fn execute_single_task_by_name(
     let mut all_success = true;
     let mut last_exit_code = 0;
 
+    // Get tool bin directories from lockfile
+    let tool_bin_dirs = get_tool_bin_dirs(project_root);
+    let tool_path_prepend = if tool_bin_dirs.is_empty() {
+        String::new()
+    } else {
+        tool_bin_dirs
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+
     for ir_task in &ir.tasks {
         // Build environment
         let mut env: BTreeMap<String, String> = ir_task.env.clone();
 
-        // Add PATH and HOME
-        if let Ok(path) = std::env::var("PATH") {
+        // Add PATH with tool directories prepended, then HOME
+        if let Ok(system_path) = std::env::var("PATH") {
+            let path = if tool_path_prepend.is_empty() {
+                system_path
+            } else {
+                format!("{tool_path_prepend}:{system_path}")
+            };
             env.insert("PATH".to_string(), path);
+        } else if !tool_path_prepend.is_empty() {
+            env.insert("PATH".to_string(), tool_path_prepend.clone());
         }
         if let Ok(home) = std::env::var("HOME") {
             env.insert("HOME".to_string(), home);
@@ -482,4 +503,103 @@ async fn execute_single_task_by_name(
         from_cache: false,
         duration_ms,
     })
+}
+
+/// Get tool bin directories from the lockfile for PATH injection.
+///
+/// Returns a list of bin directories that should be prepended to PATH
+/// to make tools available for task execution.
+fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
+    let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
+
+    // Find lockfile in project root or parent directories
+    let lockfile_path = project_root.join("cuenv.lock");
+    let lockfile = match Lockfile::load(&lockfile_path) {
+        Ok(Some(lf)) => lf,
+        Ok(None) => return vec![],
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load lockfile for tool activation");
+            return vec![];
+        }
+    };
+
+    if lockfile.tools.is_empty() {
+        return vec![];
+    }
+
+    let platform = Platform::current();
+    let platform_str = platform.to_string();
+    let cache_dir = ToolOptions::default().cache_dir();
+
+    // Check for Nix profile
+    if let Ok(profile_path) = cuenv_tools_nix::profile::profile_path_for_project(project_root) {
+        let bin = profile_path.join("bin");
+        if bin.exists() {
+            bin_dirs.insert(bin);
+        }
+    }
+
+    // Process non-Nix tools
+    for (name, tool) in &lockfile.tools {
+        let Some(locked) = tool.platforms.get(&platform_str) else {
+            continue;
+        };
+
+        // Skip Nix tools - they use profile
+        if locked.provider == "nix" {
+            continue;
+        }
+
+        // Handle rustup tools
+        if locked.provider == "rustup" {
+            if let Some(toolchain) = locked.source.get("toolchain").and_then(|v| v.as_str()) {
+                let rustup_home = std::env::var("RUSTUP_HOME").map_or_else(
+                    |_| {
+                        dirs::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join(".rustup")
+                    },
+                    PathBuf::from,
+                );
+
+                let host_triple = format!(
+                    "{}-{}",
+                    match platform.arch {
+                        cuenv_core::tools::Arch::Arm64 => "aarch64",
+                        cuenv_core::tools::Arch::X86_64 => "x86_64",
+                    },
+                    match platform.os {
+                        cuenv_core::tools::Os::Darwin => "apple-darwin",
+                        cuenv_core::tools::Os::Linux => "unknown-linux-gnu",
+                    }
+                );
+                let toolchain_name = format!("{toolchain}-{host_triple}");
+                let bin = rustup_home.join("toolchains").join(toolchain_name).join("bin");
+                if bin.exists() {
+                    bin_dirs.insert(bin);
+                }
+            }
+            continue;
+        }
+
+        // GitHub and other cache-based tools
+        let tool_dir = cache_dir
+            .join(&locked.provider)
+            .join(name)
+            .join(&tool.version);
+
+        if tool_dir.exists() {
+            // Check if tool_dir itself contains the binary (flat structure)
+            if tool_dir.join(name).exists() || tool_dir.join(format!("{name}.exe")).exists() {
+                bin_dirs.insert(tool_dir.clone());
+            }
+            // Also check bin subdirectory
+            let bin = tool_dir.join("bin");
+            if bin.exists() {
+                bin_dirs.insert(bin);
+            }
+        }
+    }
+
+    bin_dirs.into_iter().collect()
 }
