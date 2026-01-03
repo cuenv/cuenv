@@ -501,4 +501,131 @@ mod tests {
         assert_eq!(options.image, Some("node:latest".to_string()));
         assert_eq!(options.platform, Some("linux/amd64".to_string()));
     }
+
+    #[test]
+    fn test_dagger_backend_unicode_in_path() {
+        let backend = DaggerBackend::new(None, "/tmp/项目".into());
+        assert_eq!(backend.project_root, std::path::PathBuf::from("/tmp/项目"));
+    }
+
+    #[test]
+    fn test_dagger_backend_path_with_spaces() {
+        let backend = DaggerBackend::new(None, "/my projects/test project".into());
+        assert_eq!(
+            backend.project_root,
+            std::path::PathBuf::from("/my projects/test project")
+        );
+    }
+
+    #[test]
+    fn test_dagger_backend_cache_returns_same_arc() {
+        let backend = DaggerBackend::new(None, "/tmp".into());
+        let cache1 = backend.container_cache();
+        let cache2 = backend.container_cache();
+        // Both should point to the same Arc
+        assert!(Arc::ptr_eq(cache1, cache2));
+    }
+
+    #[test]
+    fn test_create_dagger_backend_with_options_no_image() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: None,
+                platform: None,
+            }),
+        };
+        let backend = create_dagger_backend(Some(&config), "/project".into());
+        assert_eq!(backend.name(), "dagger");
+    }
+
+    #[test]
+    fn test_dagger_backend_image_with_digest() {
+        let backend = DaggerBackend::new(
+            Some(
+                "alpine@sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b"
+                    .to_string(),
+            ),
+            "/tmp".into(),
+        );
+        assert!(backend.default_image.unwrap().contains("sha256:"));
+    }
+
+    #[test]
+    fn test_dagger_backend_private_registry_image() {
+        let backend = DaggerBackend::new(
+            Some("my-registry.example.com:5000/myorg/myimage:v1.0.0".to_string()),
+            "/tmp".into(),
+        );
+        assert!(backend.default_image.unwrap().contains("my-registry.example.com"));
+    }
+
+    #[test]
+    fn test_backend_options_empty_strings() {
+        let options = BackendOptions {
+            image: Some(String::new()),
+            platform: Some(String::new()),
+        };
+        assert_eq!(options.image, Some(String::new()));
+        assert_eq!(options.platform, Some(String::new()));
+    }
+
+    #[test]
+    fn test_dagger_backend_absolute_vs_relative_path() {
+        let abs_backend = DaggerBackend::new(None, "/absolute/path".into());
+        let rel_backend = DaggerBackend::new(None, "relative/path".into());
+
+        assert!(abs_backend.project_root.is_absolute() || abs_backend.project_root.starts_with("/"));
+        assert!(
+            !rel_backend.project_root.is_absolute() || rel_backend.project_root.starts_with("relative")
+        );
+    }
+
+    #[test]
+    fn test_dagger_backend_cache_thread_safety() {
+        use std::thread;
+
+        let backend = DaggerBackend::new(None, "/tmp".into());
+        let cache = backend.container_cache().clone();
+
+        // Spawn threads that all try to access the cache
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let cache = cache.clone();
+                thread::spawn(move || {
+                    let guard = cache.lock().unwrap();
+                    guard.len()
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            let _result = handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_backend_config_clone() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: Some("test".to_string()),
+                platform: Some("linux/amd64".to_string()),
+            }),
+        };
+        let cloned = config.clone();
+        assert_eq!(config.backend_type, cloned.backend_type);
+        assert_eq!(config.options, cloned.options);
+    }
+
+    #[test]
+    fn test_backend_config_debug() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: None,
+        };
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("BackendConfig"));
+        assert!(debug.contains("dagger"));
+    }
 }
