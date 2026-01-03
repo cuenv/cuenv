@@ -935,4 +935,198 @@ mod tests {
         assert!(graph.has_cycles());
         assert!(graph.topological_sort().is_err());
     }
+
+    // =========================================================================
+    // Behavioral Contract Tests
+    // =========================================================================
+    // These tests document and verify behavioral contracts that must hold.
+    // They are written to catch subtle bugs that might not break line coverage.
+
+    #[test]
+    fn contract_diamond_dependency_executes_shared_dep_once() {
+        // Contract: In a diamond dependency (A -> B, A -> C, B -> D, C -> D),
+        // task D should appear exactly once in the topological sort.
+        let mut graph = TaskGraph::new();
+
+        let task_d = create_task("d", vec![], vec![]);
+        let task_b = create_task("b", vec!["d"], vec![]);
+        let task_c = create_task("c", vec!["d"], vec![]);
+        let task_a = create_task("a", vec!["b", "c"], vec![]);
+
+        graph.add_task("d", task_d).unwrap();
+        graph.add_task("b", task_b).unwrap();
+        graph.add_task("c", task_c).unwrap();
+        graph.add_task("a", task_a).unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        let sorted = graph.topological_sort().unwrap();
+        let names: Vec<&str> = sorted.iter().map(|n| n.name.as_str()).collect();
+
+        // D should appear exactly once
+        let d_count = names.iter().filter(|&&n| n == "d").count();
+        assert_eq!(d_count, 1, "Diamond dependency: shared task should appear exactly once");
+
+        // D must come before B and C
+        let d_pos = names.iter().position(|&n| n == "d").unwrap();
+        let b_pos = names.iter().position(|&n| n == "b").unwrap();
+        let c_pos = names.iter().position(|&n| n == "c").unwrap();
+        let a_pos = names.iter().position(|&n| n == "a").unwrap();
+
+        assert!(d_pos < b_pos, "D must execute before B");
+        assert!(d_pos < c_pos, "D must execute before C");
+        assert!(b_pos < a_pos, "B must execute before A");
+        assert!(c_pos < a_pos, "C must execute before A");
+    }
+
+    #[test]
+    fn contract_parallel_group_children_have_no_implicit_ordering() {
+        // Contract: Children in a parallel group should NOT have implicit
+        // ordering dependencies between them (they can run concurrently).
+        let mut graph = TaskGraph::new();
+        let tasks = Tasks::new();
+
+        let task1 = create_task("task1", vec![], vec![]);
+        let task2 = create_task("task2", vec![], vec![]);
+        let task3 = create_task("task3", vec![], vec![]);
+
+        let mut parallel_tasks = HashMap::new();
+        parallel_tasks.insert("task1".to_string(), TaskDefinition::Single(Box::new(task1)));
+        parallel_tasks.insert("task2".to_string(), TaskDefinition::Single(Box::new(task2)));
+        parallel_tasks.insert("task3".to_string(), TaskDefinition::Single(Box::new(task3)));
+
+        let parallel = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
+
+        graph.build_from_group("parallel", &parallel, &tasks).unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        // All three tasks should be in the first (and only) parallel group
+        let groups = graph.get_parallel_groups().unwrap();
+        assert_eq!(groups.len(), 1, "All tasks should be in one parallel group");
+        assert_eq!(groups[0].len(), 3, "All three tasks should be executable in parallel");
+    }
+
+    #[test]
+    fn contract_sequential_group_children_have_strict_ordering() {
+        // Contract: Children in a sequential group MUST execute in order,
+        // with each task depending on the previous one.
+        let mut graph = TaskGraph::new();
+        let tasks = Tasks::new();
+
+        let task1 = create_task("first", vec![], vec![]);
+        let task2 = create_task("second", vec![], vec![]);
+        let task3 = create_task("third", vec![], vec![]);
+
+        let sequential = TaskGroup::Sequential(vec![
+            TaskDefinition::Single(Box::new(task1)),
+            TaskDefinition::Single(Box::new(task2)),
+            TaskDefinition::Single(Box::new(task3)),
+        ]);
+
+        graph.build_from_group("seq", &sequential, &tasks).unwrap();
+
+        // Topological sort should maintain strict order
+        let sorted = graph.topological_sort().unwrap();
+        let names: Vec<&str> = sorted.iter().map(|n| n.name.as_str()).collect();
+
+        // Strict ordering: seq[0] < seq[1] < seq[2]
+        let first_pos = names.iter().position(|&n| n == "seq[0]").unwrap();
+        let second_pos = names.iter().position(|&n| n == "seq[1]").unwrap();
+        let third_pos = names.iter().position(|&n| n == "seq[2]").unwrap();
+
+        assert!(first_pos < second_pos, "seq[0] must execute before seq[1]");
+        assert!(second_pos < third_pos, "seq[1] must execute before seq[2]");
+    }
+
+    #[test]
+    fn contract_task_with_label_is_discoverable() {
+        // Contract: Tasks with labels can be found by label
+        let task = create_task("build", vec![], vec!["ci", "fast"]);
+        assert!(task.labels.contains(&"ci".to_string()));
+        assert!(task.labels.contains(&"fast".to_string()));
+    }
+
+    #[test]
+    fn contract_topological_sort_is_deterministic() {
+        // Contract: Multiple calls to topological_sort on the same graph
+        // should produce the same order (deterministic for reproducibility).
+        let mut graph = TaskGraph::new();
+
+        let task_a = create_task("a", vec![], vec![]);
+        let task_b = create_task("b", vec!["a"], vec![]);
+        let task_c = create_task("c", vec!["a"], vec![]);
+        let task_d = create_task("d", vec!["b", "c"], vec![]);
+
+        graph.add_task("a", task_a).unwrap();
+        graph.add_task("b", task_b).unwrap();
+        graph.add_task("c", task_c).unwrap();
+        graph.add_task("d", task_d).unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        let sort1 = graph.topological_sort().unwrap();
+        let sort2 = graph.topological_sort().unwrap();
+        let sort3 = graph.topological_sort().unwrap();
+
+        let names1: Vec<&str> = sort1.iter().map(|n| n.name.as_str()).collect();
+        let names2: Vec<&str> = sort2.iter().map(|n| n.name.as_str()).collect();
+        let names3: Vec<&str> = sort3.iter().map(|n| n.name.as_str()).collect();
+
+        assert_eq!(names1, names2, "Topological sort should be deterministic");
+        assert_eq!(names2, names3, "Topological sort should be deterministic");
+    }
+
+    #[test]
+    fn contract_cycle_detection_catches_all_cycle_types() {
+        // Contract: Cycle detection must work for:
+        // 1. Self-cycles (A -> A)
+        // 2. Two-node cycles (A -> B -> A)
+        // 3. Multi-node cycles (A -> B -> C -> A)
+
+        // Self-cycle
+        let mut graph1 = TaskGraph::new();
+        let self_loop = create_task("self", vec!["self"], vec![]);
+        graph1.add_task("self", self_loop).unwrap();
+        graph1.add_dependency_edges().unwrap();
+        assert!(graph1.has_cycles(), "Self-cycle must be detected");
+
+        // Two-node cycle
+        let mut graph2 = TaskGraph::new();
+        let a = create_task("a", vec!["b"], vec![]);
+        let b = create_task("b", vec!["a"], vec![]);
+        graph2.add_task("a", a).unwrap();
+        graph2.add_task("b", b).unwrap();
+        graph2.add_dependency_edges().unwrap();
+        assert!(graph2.has_cycles(), "Two-node cycle must be detected");
+
+        // Three-node cycle
+        let mut graph3 = TaskGraph::new();
+        let x = create_task("x", vec!["y"], vec![]);
+        let y = create_task("y", vec!["z"], vec![]);
+        let z = create_task("z", vec!["x"], vec![]);
+        graph3.add_task("x", x).unwrap();
+        graph3.add_task("y", y).unwrap();
+        graph3.add_task("z", z).unwrap();
+        graph3.add_dependency_edges().unwrap();
+        assert!(graph3.has_cycles(), "Three-node cycle must be detected");
+    }
+
+    #[test]
+    fn contract_missing_dependency_is_reported() {
+        // Contract: If a task depends on a non-existent task, an error
+        // should be returned with the missing task name.
+        let mut graph = TaskGraph::new();
+        let task = create_task("build", vec!["nonexistent"], vec![]);
+        graph.add_task("build", task).unwrap();
+
+        let result = graph.add_dependency_edges();
+        assert!(result.is_err(), "Missing dependency should be an error");
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("nonexistent") || err.contains("not found"),
+            "Error should mention the missing task name: {err}"
+        );
+    }
 }
