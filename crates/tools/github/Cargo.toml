@@ -13,7 +13,6 @@ categories.workspace = true
 [dependencies]
 async-trait = "0.1"
 cuenv-core = { path = "../../core" }
-cuenv-github = { path = "../../github" }
 flate2 = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
