@@ -181,11 +181,16 @@ impl IRTaskRunner {
             cmd.env(k, v);
         }
 
-        // Also inject essential env vars
-        if let Ok(path) = std::env::var("PATH") {
+        // Only inject essential env vars if not already provided in the env map
+        // (CI orchestrator may provide custom PATH with tool directories)
+        if !env.contains_key("PATH")
+            && let Ok(path) = std::env::var("PATH")
+        {
             cmd.env("PATH", path);
         }
-        if let Ok(home) = std::env::var("HOME") {
+        if !env.contains_key("HOME")
+            && let Ok(home) = std::env::var("HOME")
+        {
             cmd.env("HOME", home);
         }
 
