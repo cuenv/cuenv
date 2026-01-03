@@ -57,6 +57,7 @@ pub struct HookResult {
 
 impl HookResult {
     /// Create a successful hook result
+    #[must_use] 
     pub fn success(
         hook: Hook,
         exit_status: ExitStatus,
@@ -77,6 +78,7 @@ impl HookResult {
 
     /// Create a failed hook result
     #[allow(clippy::too_many_arguments)] // Hook result requires full execution context
+    #[must_use] 
     pub fn failure(
         hook: Hook,
         exit_status: Option<ExitStatus>,
@@ -97,6 +99,7 @@ impl HookResult {
     }
 
     /// Create a timeout hook result
+    #[must_use] 
     pub fn timeout(hook: Hook, stdout: String, stderr: String, timeout_seconds: u64) -> Self {
         Self {
             hook,
@@ -150,10 +153,10 @@ pub enum ExecutionStatus {
 impl std::fmt::Display for ExecutionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExecutionStatus::Running => write!(f, "Running"),
-            ExecutionStatus::Completed => write!(f, "Completed"),
-            ExecutionStatus::Failed => write!(f, "Failed"),
-            ExecutionStatus::Cancelled => write!(f, "Cancelled"),
+            Self::Running => write!(f, "Running"),
+            Self::Completed => write!(f, "Completed"),
+            Self::Failed => write!(f, "Failed"),
+            Self::Cancelled => write!(f, "Cancelled"),
         }
     }
 }
@@ -239,7 +242,7 @@ mod tests {
             hook.clone(),
             exit_status,
             "test\n".to_string(),
-            "".to_string(),
+            String::new(),
             100,
         );
 
@@ -280,7 +283,7 @@ mod tests {
         let result = HookResult::failure(
             hook.clone(),
             exit_status,
-            "".to_string(),
+            String::new(),
             "command failed".to_string(),
             50,
             "Process exited with non-zero status".to_string(),
@@ -309,7 +312,7 @@ mod tests {
             source: None,
         };
 
-        let result = HookResult::timeout(hook.clone(), "".to_string(), "".to_string(), 10);
+        let result = HookResult::timeout(hook.clone(), String::new(), String::new(), 10);
 
         assert!(!result.success);
         assert_eq!(result.hook, hook);

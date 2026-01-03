@@ -29,35 +29,35 @@ Extract background execution, state management, and approval system.
 
 ### Migration
 
-- [ ] Move `crates/core/src/hooks/executor.rs` → `crates/hooks/src/executor.rs`
-- [ ] Move `crates/core/src/hooks/state.rs` → `crates/hooks/src/state.rs`
-- [ ] Move `crates/core/src/hooks/approval.rs` → `crates/hooks/src/approval.rs`
-- [ ] Move `crates/core/src/hooks/types.rs` → `crates/hooks/src/types.rs`
-- [ ] Move tests from `crates/core/src/hooks/` to `crates/hooks/src/`
+- [x] Move `crates/core/src/hooks/executor.rs` → `crates/hooks/src/executor.rs`
+- [x] Move `crates/core/src/hooks/state.rs` → `crates/hooks/src/state.rs`
+- [x] Move `crates/core/src/hooks/approval.rs` → `crates/hooks/src/approval.rs`
+- [x] Move `crates/core/src/hooks/types.rs` → `crates/hooks/src/types.rs`
+- [x] Move tests from `crates/core/src/hooks/` to `crates/hooks/src/`
 
 ### Update Core
 
-- [ ] Remove `pub mod hooks;` from `crates/core/src/lib.rs`
-- [ ] Delete `crates/core/src/hooks/` directory
-- [ ] Remove `fs4`, `sysinfo` from `crates/core/Cargo.toml` (if unused elsewhere)
+- [x] Remove `pub mod hooks;` from `crates/core/src/lib.rs`
+- [x] Delete `crates/core/src/hooks/` directory
+- [x] Remove `fs4`, `sysinfo` from `crates/core/Cargo.toml` (if unused elsewhere)
 
 ### Update Dependents
 
-- [ ] Run: `rg "cuenv_core::hooks" --type rust`
-- [ ] Update all imports: `cuenv_core::hooks::*` → `cuenv_hooks::*`
-- [ ] Add `cuenv-hooks` dependency where needed
+- [x] Run: `rg "cuenv_core::hooks" --type rust`
+- [x] Update all imports: `cuenv_core::hooks::*` → `cuenv_hooks::*`
+- [x] Add `cuenv-hooks` dependency where needed
 
 ### Validation
 
-- [ ] `cargo test -p cuenv-hooks`
-- [ ] `cargo test -p cuenv-core`
-- [ ] `cuenv task check`
+- [x] `cargo test -p cuenv-hooks`
+- [x] `cargo test -p cuenv-core`
+- [x] `cuenv task check`
 
 ### Update Documentation
 
-- [ ] Update `CLAUDE.md` if crate descriptions changed
-- [ ] Update `readme.md` references
-- [ ] Update any `docs/` files referencing moved modules
+- [x] Update `CLAUDE.md` if crate descriptions changed
+- [x] Update `readme.md` references (no hooks references found)
+- [x] Update any `docs/` files referencing moved modules
 
 ---
 

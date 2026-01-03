@@ -20,6 +20,9 @@
 //! In CI environments, hooks are auto-approved since the environment is
 //! assumed to be already secured.
 
+// TODO(hooks-docs): Add # Errors documentation to all fallible public functions
+#![expect(clippy::missing_errors_doc, reason = "Error documentation to be added incrementally")]
+
 mod approval;
 mod error;
 mod executor;

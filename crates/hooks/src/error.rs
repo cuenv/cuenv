@@ -10,37 +10,55 @@ pub enum Error {
     /// Configuration error
     #[error("Configuration error: {message}")]
     #[diagnostic(code(cuenv_hooks::config::invalid))]
-    Configuration { message: String },
+    Configuration {
+        /// The error message describing the configuration issue
+        message: String,
+    },
 
     /// I/O error with path context
     #[error("I/O error during {operation}: {source}")]
     #[diagnostic(code(cuenv_hooks::io::error))]
     Io {
+        /// The underlying I/O error
         #[source]
         source: std::io::Error,
+        /// The path where the I/O error occurred, if applicable
         path: Option<Box<std::path::Path>>,
+        /// Description of the operation that failed
         operation: String,
     },
 
     /// Timeout error
     #[error("Operation timed out after {seconds} seconds")]
     #[diagnostic(code(cuenv_hooks::timeout))]
-    Timeout { seconds: u64 },
+    Timeout {
+        /// The number of seconds before the timeout occurred
+        seconds: u64,
+    },
 
     /// State not found error
     #[error("Execution state not found for instance: {instance_id}")]
     #[diagnostic(code(cuenv_hooks::state::not_found))]
-    StateNotFound { instance_id: String },
+    StateNotFound {
+        /// The instance ID that was not found
+        instance_id: String,
+    },
 
     /// Serialization/deserialization error
     #[error("Serialization error: {message}")]
     #[diagnostic(code(cuenv_hooks::serialization))]
-    Serialization { message: String },
+    Serialization {
+        /// The error message describing the serialization issue
+        message: String,
+    },
 
     /// Process execution error
     #[error("Process execution failed: {message}")]
     #[diagnostic(code(cuenv_hooks::process))]
-    Process { message: String },
+    Process {
+        /// The error message describing the process failure
+        message: String,
+    },
 }
 
 impl Error {

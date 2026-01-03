@@ -54,6 +54,8 @@ impl HookExecutor {
         config_hash: String,
         hooks: Vec<Hook>,
     ) -> Result<String> {
+        use std::process::{Command, Stdio};
+
         if hooks.is_empty() {
             return Ok("No hooks to execute".to_string());
         }
@@ -163,8 +165,6 @@ impl HookExecutor {
         };
 
         // Spawn a detached supervisor process
-        use std::process::{Command, Stdio};
-
         let mut cmd = Command::new(&current_exe);
         cmd.arg("__hook-supervisor") // Special hidden command
             .arg("--directory")
@@ -216,6 +216,11 @@ impl HookExecutor {
         {
             use std::os::unix::process::CommandExt;
             // Detach from parent process group using setsid
+            // SAFETY: setsid() is a standard POSIX function that creates a new session
+            // and process group. This is needed to properly detach background hook
+            // processes from the parent terminal. The only failure case is EPERM
+            // (already a session leader), which we propagate as an io::Error.
+            #[expect(unsafe_code, reason = "Required for POSIX process detachment via setsid()")]
             unsafe {
                 cmd.pre_exec(|| {
                     // Create a new session, detaching from controlling terminal
@@ -320,6 +325,7 @@ impl HookExecutor {
     }
 
     /// Get a reference to the state manager (for marker operations from execute_hooks)
+    #[must_use] 
     pub fn state_manager(&self) -> &StateManager {
         &self.state_manager
     }
@@ -542,7 +548,12 @@ pub async fn execute_hooks(
                 // might output valid environment exports before crashing or exiting with error.
                 // We rely on our robust delimiter-based parsing to extract what we can.
                 if hook.source.unwrap_or(false) {
-                    if !hook_result.stdout.is_empty() {
+                    if hook_result.stdout.is_empty() {
+                        warn!(
+                            "Source hook produced empty stdout. Stderr content:\n{}",
+                            hook_result.stderr
+                        );
+                    } else {
                         debug!(
                             "Evaluating source hook output for environment variables (success={})",
                             hook_result.success
@@ -563,11 +574,6 @@ pub async fn execute_hooks(
                                 // Don't fail the hook execution further, just log the error
                             }
                         }
-                    } else {
-                        warn!(
-                            "Source hook produced empty stdout. Stderr content:\n{}",
-                            hook_result.stderr
-                        );
                     }
                 }
 
@@ -652,6 +658,8 @@ async fn is_shell_capable(shell: &str) -> bool {
 
 /// Evaluate shell script and extract resulting environment variables
 async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String, String>> {
+    const DELIMITER: &str = "__CUENV_ENV_START__";
+
     debug!(
         "Evaluating shell script to extract environment ({} bytes)",
         shell_script.len()
@@ -728,7 +736,6 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     let mut cmd = Command::new(shell);
     cmd.arg("-c");
 
-    const DELIMITER: &str = "__CUENV_ENV_START__";
     let script = format!(
         "{}\necho -ne '\\0{}\\0'; env -0",
         filtered_script, DELIMITER
@@ -857,6 +864,8 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
     // Execute with timeout
     let execution_result = timeout(Duration::from_secs(*timeout_seconds), cmd.output()).await;
 
+    // Truncation is fine here - a u64 can hold ~584M years in milliseconds
+    #[expect(clippy::cast_possible_truncation, reason = "u128 to u64 truncation is acceptable for duration")]
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
     match execution_result {
@@ -909,6 +918,7 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
 }
 
 #[cfg(test)]
+#[expect(clippy::print_stderr, reason = "Tests may use eprintln! to report skip conditions")]
 mod tests {
     use super::*;
     use crate::types::Hook;
@@ -930,6 +940,7 @@ mod tests {
         if cuenv_binary.exists() {
             // SAFETY: This is only called in tests where we control the environment.
             // No other threads should be accessing this environment variable.
+            #[expect(unsafe_code, reason = "Test helper setting env var in controlled test environment")]
             unsafe {
                 std::env::set_var("CUENV_EXECUTABLE", &cuenv_binary);
             }

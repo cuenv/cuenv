@@ -13,6 +13,21 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info, warn};
 
+/// CI provider environment variables to check when detecting CI environments
+const CI_VARS: &[&str] = &[
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "BUILDKITE",
+    "JENKINS_URL",
+    "CIRCLECI",
+    "TRAVIS",
+    "BITBUCKET_PIPELINES",
+    "AZURE_PIPELINES",
+    "TF_BUILD",
+    "DRONE",
+    "TEAMCITY_VERSION",
+];
+
 /// Check if the current process is running in a CI environment.
 ///
 /// This checks for common CI environment variables used by popular CI/CD systems:
@@ -41,20 +56,6 @@ pub fn is_ci() -> bool {
     }
 
     // Check for specific CI provider variables
-    const CI_VARS: &[&str] = &[
-        "GITHUB_ACTIONS",
-        "GITLAB_CI",
-        "BUILDKITE",
-        "JENKINS_URL",
-        "CIRCLECI",
-        "TRAVIS",
-        "BITBUCKET_PIPELINES",
-        "AZURE_PIPELINES",
-        "TF_BUILD",
-        "DRONE",
-        "TEAMCITY_VERSION",
-    ];
-
     CI_VARS.iter().any(|var| std::env::var(var).is_ok())
 }
 
@@ -67,6 +68,7 @@ pub struct ApprovalManager {
 
 impl ApprovalManager {
     /// Create a new approval manager with specified approval file
+    #[must_use] 
     pub fn new(approval_file: PathBuf) -> Self {
         Self {
             approval_file,
@@ -104,6 +106,7 @@ impl ApprovalManager {
     }
 
     /// Get approval for a specific directory
+    #[must_use] 
     pub fn get_approval(&self, directory: &str) -> Option<&ApprovalRecord> {
         let path = PathBuf::from(directory);
         let dir_key = compute_directory_key(&path);
@@ -295,6 +298,7 @@ impl ApprovalManager {
     }
 
     /// List all approved directories
+    #[must_use] 
     pub fn list_approved(&self) -> Vec<&ApprovalRecord> {
         self.approvals.values().collect()
     }
@@ -322,6 +326,7 @@ impl ApprovalManager {
     }
 
     /// Check if the approvals map contains a specific directory key
+    #[must_use] 
     pub fn contains_key(&self, directory_path: &Path) -> bool {
         let dir_key = compute_directory_key(directory_path);
         self.approvals.contains_key(&dir_key)
@@ -349,9 +354,15 @@ pub enum ApprovalStatus {
     /// Configuration is approved and can be executed
     Approved,
     /// Configuration has changed and requires new approval
-    RequiresApproval { current_hash: String },
+    RequiresApproval {
+        /// The hash of the current configuration that needs approval
+        current_hash: String,
+    },
     /// Configuration is not approved
-    NotApproved { current_hash: String },
+    NotApproved {
+        /// The hash of the current configuration that is not approved
+        current_hash: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -431,8 +442,10 @@ fn check_approval_status_core(
 }
 
 /// Compute a hash for approval based only on security-sensitive hooks.
+///
 /// Only onEnter, onExit, and prePush hooks are included since they execute arbitrary commands.
 /// Changes to env vars, tasks, config settings do NOT require re-approval.
+#[must_use] 
 pub fn compute_approval_hash(hooks: Option<&Hooks>) -> String {
     let mut hasher = Sha256::new();
 
@@ -457,6 +470,7 @@ pub fn compute_approval_hash(hooks: Option<&Hooks>) -> String {
 }
 
 /// Compute a directory key for the approvals map
+#[must_use] 
 pub fn compute_directory_key(path: &Path) -> String {
     // Try to canonicalize the path for consistency
     // If canonicalization fails (e.g., path doesn't exist), use the path as-is
@@ -469,17 +483,20 @@ pub fn compute_directory_key(path: &Path) -> String {
 
 /// Validate and canonicalize a path to prevent path traversal attacks
 fn validate_and_canonicalize_path(path: &Path) -> Result<PathBuf> {
-    // Check for suspicious path components
+    // All path components are allowed - parent directory references and prefixes
+    // are resolved through canonicalization, and we validate the final result
     for component in path.components() {
         match component {
-            Component::Normal(_) | Component::RootDir | Component::CurDir => {}
-            Component::ParentDir => {
-                // Allow parent directory references only if they don't escape the base directory
-                // We'll resolve them through canonicalization
-            }
-            Component::Prefix(_) => {
-                // Windows drive prefixes are okay
-            }
+            // All component types are valid for input paths:
+            // - Normal: regular path segments
+            // - RootDir/CurDir: explicit root or current directory
+            // - ParentDir: resolved through canonicalization
+            // - Prefix: Windows drive prefixes
+            Component::Normal(_)
+            | Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir
+            | Component::Prefix(_) => {}
         }
     }
 
@@ -552,12 +569,15 @@ fn validate_path_structure(path: &Path) -> Result<()> {
 /// Summary of hook counts for display
 #[derive(Debug, Clone)]
 pub struct ConfigSummary {
+    /// Whether any hooks are defined
     pub has_hooks: bool,
+    /// Total number of hooks across all hook types
     pub hook_count: usize,
 }
 
 impl ConfigSummary {
     /// Create a summary from hooks
+    #[must_use] 
     pub fn from_hooks(hooks: Option<&Hooks>) -> Self {
         let mut summary = Self {
             has_hooks: false,
@@ -576,6 +596,7 @@ impl ConfigSummary {
     }
 
     /// Get a human-readable description of the hooks
+    #[must_use] 
     pub fn description(&self) -> String {
         if !self.has_hooks {
             "no hooks".to_string()
