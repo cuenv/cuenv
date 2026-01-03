@@ -119,9 +119,20 @@ impl PipelineTask {
         }
     }
 
-    /// Check if this is a matrix task
+    /// Check if this is a matrix task (Matrix variant, regardless of dimensions)
     pub fn is_matrix(&self) -> bool {
         matches!(self, PipelineTask::Matrix(_))
+    }
+
+    /// Check if this task has actual matrix dimensions that require expansion.
+    ///
+    /// Returns true only for Matrix tasks with non-empty matrix map.
+    /// Aggregation tasks (empty matrix with artifacts) return false.
+    pub fn has_matrix_dimensions(&self) -> bool {
+        match self {
+            PipelineTask::Simple(_) => false,
+            PipelineTask::Matrix(m) => !m.matrix.is_empty(),
+        }
     }
 
     /// Get matrix dimensions if this is a matrix task
