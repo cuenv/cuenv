@@ -392,4 +392,116 @@ mod tests {
         let resolver = GcpResolver::new().unwrap();
         assert_eq!(resolver.provider_name(), "gcp");
     }
+
+    #[test]
+    fn test_gcp_config_with_numeric_version() {
+        let config = GcpSecretConfig {
+            project: "prod".to_string(),
+            secret: "db-password".to_string(),
+            version: "123".to_string(),
+        };
+        assert_eq!(
+            config.resource_name(),
+            "projects/prod/secrets/db-password/versions/123"
+        );
+    }
+
+    #[test]
+    fn test_gcp_config_project_with_numbers() {
+        let config = GcpSecretConfig::new("project-123-456", "secret");
+        assert!(config.resource_name().contains("project-123-456"));
+    }
+
+    #[test]
+    fn test_gcp_config_secret_with_underscores() {
+        let config = GcpSecretConfig::new("project", "my_secret_key");
+        assert!(config.resource_name().contains("my_secret_key"));
+    }
+
+    #[test]
+    fn test_parse_resource_name_empty() {
+        assert!(GcpResolver::parse_resource_name("").is_none());
+    }
+
+    #[test]
+    fn test_parse_resource_name_only_slashes() {
+        assert!(GcpResolver::parse_resource_name("/////").is_none());
+    }
+
+    #[test]
+    fn test_parse_resource_name_extra_parts() {
+        // Extra parts should be ignored - we only check first 6
+        let config = GcpResolver::parse_resource_name(
+            "projects/my-project/secrets/my-secret/versions/1/extra/parts",
+        )
+        .unwrap();
+        assert_eq!(config.project, "my-project");
+        assert_eq!(config.version, "1");
+    }
+
+    #[test]
+    fn test_gcp_config_deserialization_extra_fields_ignored() {
+        let json = r#"{"project": "proj", "secret": "sec", "unknownField": "ignored"}"#;
+        let config: GcpSecretConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.project, "proj");
+        assert_eq!(config.secret, "sec");
+    }
+
+    #[test]
+    fn test_gcp_config_empty_project() {
+        let config = GcpSecretConfig::new("", "secret");
+        assert_eq!(config.project, "");
+        // Resource name is still valid format
+        assert!(config.resource_name().contains("projects//secrets/secret"));
+    }
+
+    #[test]
+    fn test_gcp_config_empty_secret() {
+        let config = GcpSecretConfig::new("project", "");
+        assert_eq!(config.secret, "");
+    }
+
+    #[test]
+    fn test_gcp_config_unicode_secret_name() {
+        let config = GcpSecretConfig::new("project", "密钥");
+        assert!(config.resource_name().contains("密钥"));
+    }
+
+    #[test]
+    fn test_gcp_resolver_can_use_http_matches_env() {
+        let resolver = GcpResolver::new().unwrap();
+        let expected = std::env::var("GOOGLE_APPLICATION_CREDENTIALS").is_ok();
+        assert_eq!(resolver.can_use_http(), expected);
+    }
+
+    #[test]
+    fn test_gcp_config_roundtrip() {
+        let original = GcpSecretConfig {
+            project: "prod-project".to_string(),
+            secret: "database-credentials".to_string(),
+            version: "42".to_string(),
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: GcpSecretConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn test_parse_resource_name_project_with_special_chars() {
+        let config =
+            GcpResolver::parse_resource_name("projects/my-org-123/secrets/api-key/versions/latest")
+                .unwrap();
+        assert_eq!(config.project, "my-org-123");
+    }
+
+    #[test]
+    fn test_gcp_config_version_is_not_validated() {
+        // Any string is accepted as version
+        let config = GcpSecretConfig {
+            project: "proj".to_string(),
+            secret: "sec".to_string(),
+            version: "not-a-valid-version".to_string(),
+        };
+        assert_eq!(config.version, "not-a-valid-version");
+    }
 }
