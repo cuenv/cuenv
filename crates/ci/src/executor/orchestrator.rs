@@ -17,11 +17,11 @@ use crate::provider::CIProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
-use cuenv_core::lockfile::{Lockfile, LockedToolPlatform, LOCKFILE_NAME};
+use cuenv_core::Result;
+use cuenv_core::lockfile::{LOCKFILE_NAME, LockedToolPlatform, Lockfile};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskGraph, TaskIndex};
 use cuenv_core::tools::{Platform, ResolvedTool, ToolOptions, ToolRegistry, ToolSource};
-use cuenv_core::Result;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -241,9 +241,14 @@ async fn execute_project_pipeline(
         let task_start = std::time::Instant::now();
 
         // Execute the task with all dependencies (uses TaskGraph for proper ordering)
-        let result =
-            execute_task_with_deps(config, task_name, project_path, cache_policy_override, environment)
-                .await;
+        let result = execute_task_with_deps(
+            config,
+            task_name,
+            project_path,
+            cache_policy_override,
+            environment,
+        )
+        .await;
 
         let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
 
@@ -445,8 +450,8 @@ async fn execute_task_with_deps(
     environment: Option<&str>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
     // 1. Build TaskIndex (same flattening as CLI)
-    let index = TaskIndex::build(&config.tasks)
-        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
+    let index =
+        TaskIndex::build(&config.tasks).map_err(|e| ExecutorError::Compilation(e.to_string()))?;
 
     // 2. Resolve to canonical name
     let entry = index
@@ -478,15 +483,14 @@ async fn execute_task_with_deps(
     // 6. Execute each task in dependency order
     let mut final_output = None;
     for node in execution_order {
-        let output =
-            compile_and_execute_ir(
-                config,
-                &node.name,
-                project_root,
-                cache_policy_override,
-                environment,
-            )
-            .await?;
+        let output = compile_and_execute_ir(
+            config,
+            &node.name,
+            project_root,
+            cache_policy_override,
+            environment,
+        )
+        .await?;
 
         if !output.success {
             return Ok(output); // Stop on first failure
@@ -545,12 +549,13 @@ async fn compile_and_execute_ir(
             None => env.base.clone(),
         })
         .unwrap_or_default();
-    let (resolved_env, secrets) = cuenv_core::environment::Environment::resolve_for_task_with_secrets(
-        task_name,
-        &project_env_vars,
-    )
-    .await
-    .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
+    let (resolved_env, secrets) =
+        cuenv_core::environment::Environment::resolve_for_task_with_secrets(
+            task_name,
+            &project_env_vars,
+        )
+        .await
+        .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
 
     // Register resolved secrets for redaction
     cuenv_events::register_secrets(secrets.into_iter());
@@ -850,7 +855,10 @@ fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
                     }
                 );
                 let toolchain_name = format!("{toolchain}-{host_triple}");
-                let bin = rustup_home.join("toolchains").join(toolchain_name).join("bin");
+                let bin = rustup_home
+                    .join("toolchains")
+                    .join(toolchain_name)
+                    .join("bin");
                 if bin.exists() {
                     bin_dirs.insert(bin);
                 }
@@ -965,11 +973,7 @@ async fn ensure_tools_downloaded(project_root: &Path) {
         tracing::info!("Downloading {} v{}...", name, tool.version);
         match provider.fetch(&resolved, &options).await {
             Ok(fetched) => {
-                tracing::info!(
-                    "Downloaded {} -> {}",
-                    name,
-                    fetched.binary_path.display()
-                );
+                tracing::info!("Downloaded {} -> {}", name, fetched.binary_path.display());
             }
             Err(e) => {
                 tracing::warn!("Failed to download tool '{}': {}", name, e);

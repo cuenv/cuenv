@@ -84,8 +84,9 @@ impl Tasks {
         match definition {
             TaskDefinition::Single(task) => TaskResolution::Single(task.as_ref().clone()),
             TaskDefinition::Group(TaskGroup::Sequential(tasks)) => {
-                let children: Vec<String> =
-                    (0..tasks.len()).map(|i| format!("{}[{}]", name, i)).collect();
+                let children: Vec<String> = (0..tasks.len())
+                    .map(|i| format!("{}[{}]", name, i))
+                    .collect();
                 TaskResolution::Sequential { children }
             }
             TaskDefinition::Group(TaskGroup::Parallel(group)) => {
@@ -968,7 +969,10 @@ mod tests {
 
         // D should appear exactly once
         let d_count = names.iter().filter(|&&n| n == "d").count();
-        assert_eq!(d_count, 1, "Diamond dependency: shared task should appear exactly once");
+        assert_eq!(
+            d_count, 1,
+            "Diamond dependency: shared task should appear exactly once"
+        );
 
         // D must come before B and C
         let d_pos = names.iter().position(|&n| n == "d").unwrap();
@@ -1003,13 +1007,19 @@ mod tests {
             depends_on: vec![],
         });
 
-        graph.build_from_group("parallel", &parallel, &tasks).unwrap();
+        graph
+            .build_from_group("parallel", &parallel, &tasks)
+            .unwrap();
         graph.add_dependency_edges().unwrap();
 
         // All three tasks should be in the first (and only) parallel group
         let groups = graph.get_parallel_groups().unwrap();
         assert_eq!(groups.len(), 1, "All tasks should be in one parallel group");
-        assert_eq!(groups[0].len(), 3, "All three tasks should be executable in parallel");
+        assert_eq!(
+            groups[0].len(),
+            3,
+            "All three tasks should be executable in parallel"
+        );
     }
 
     #[test]
@@ -1207,7 +1217,10 @@ mod tests {
         let backend = create_task("backend", vec![], vec![]);
 
         let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("frontend".into(), TaskDefinition::Single(Box::new(frontend)));
+        parallel_tasks.insert(
+            "frontend".into(),
+            TaskDefinition::Single(Box::new(frontend)),
+        );
         parallel_tasks.insert("backend".into(), TaskDefinition::Single(Box::new(backend)));
 
         let group = ParallelGroup {
@@ -1216,14 +1229,18 @@ mod tests {
         };
 
         let mut tasks = Tasks::new();
-        tasks
-            .tasks
-            .insert("build".into(), TaskDefinition::Group(TaskGroup::Parallel(group)));
+        tasks.tasks.insert(
+            "build".into(),
+            TaskDefinition::Group(TaskGroup::Parallel(group)),
+        );
 
         let resolution = tasks.resolve("build");
         assert!(resolution.is_some());
         match resolution.unwrap() {
-            TaskResolution::Parallel { children, depends_on } => {
+            TaskResolution::Parallel {
+                children,
+                depends_on,
+            } => {
                 assert_eq!(children.len(), 2);
                 assert!(children.contains(&"build.frontend".to_string()));
                 assert!(children.contains(&"build.backend".to_string()));
@@ -1246,9 +1263,10 @@ mod tests {
         ];
 
         let mut tasks = Tasks::new();
-        tasks
-            .tasks
-            .insert("build".into(), TaskDefinition::Group(TaskGroup::Sequential(seq)));
+        tasks.tasks.insert(
+            "build".into(),
+            TaskDefinition::Group(TaskGroup::Sequential(seq)),
+        );
 
         let resolution = tasks.resolve("build");
         assert!(resolution.is_some());
@@ -1275,9 +1293,10 @@ mod tests {
         };
 
         let mut tasks = Tasks::new();
-        tasks
-            .tasks
-            .insert("build".into(), TaskDefinition::Group(TaskGroup::Parallel(group)));
+        tasks.tasks.insert(
+            "build".into(),
+            TaskDefinition::Group(TaskGroup::Parallel(group)),
+        );
 
         // Resolve nested path
         let resolution = tasks.resolve("build.frontend");
