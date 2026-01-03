@@ -773,11 +773,14 @@ impl PipelineContext {
     }
 }
 
-/// Check if any pipeline tasks have matrix configurations.
+/// Check if any pipeline tasks have matrix configurations that require expansion.
+///
+/// Returns true only for tasks with actual matrix dimensions (non-empty matrix map).
+/// Aggregation tasks (empty matrix with artifacts) return false.
 fn has_matrix_tasks(pipeline_tasks: &[cuenv_core::ci::PipelineTask]) -> bool {
     pipeline_tasks
         .iter()
-        .any(cuenv_core::ci::PipelineTask::is_matrix)
+        .any(cuenv_core::ci::PipelineTask::has_matrix_dimensions)
 }
 
 /// Generate GitHub workflow files for a single project and pipeline.
@@ -1219,7 +1222,14 @@ fn build_pipeline_jobs(
     }
 
     // Add transitive dependencies not in pipeline tasks
+    // NOTE: We ONLY add non-phase tasks here. Phase tasks (bootstrap, setup, success, failure)
+    // are rendered as STEPS within jobs via render_phase_steps(), NOT as separate jobs.
     for ir_task in &ctx.tasks {
+        // Skip phase tasks - they're rendered as STEPS within jobs, not separate jobs
+        if ir_task.phase.is_some() {
+            continue;
+        }
+
         // Skip if this task was explicitly in the pipeline (including as matrix task)
         if processed_task_names.contains(&ir_task.id) {
             continue;
@@ -1686,5 +1696,75 @@ steps:
         Ok("Buildkite: Updated pipeline.yml".to_string())
     } else {
         Ok("Buildkite: Created pipeline.yml".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::ci::{MatrixTask, PipelineTask};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn test_has_matrix_tasks_empty() {
+        let tasks: Vec<PipelineTask> = vec![];
+        assert!(!has_matrix_tasks(&tasks));
+    }
+
+    #[test]
+    fn test_has_matrix_tasks_simple_only() {
+        let tasks = vec![
+            PipelineTask::Simple("build".to_string()),
+            PipelineTask::Simple("test".to_string()),
+        ];
+        assert!(!has_matrix_tasks(&tasks));
+    }
+
+    #[test]
+    fn test_has_matrix_tasks_with_matrix() {
+        let mut matrix = BTreeMap::new();
+        matrix.insert(
+            "arch".to_string(),
+            vec!["linux-x64".to_string(), "darwin-arm64".to_string()],
+        );
+
+        let tasks = vec![PipelineTask::Matrix(MatrixTask {
+            task: "cargo.build".to_string(),
+            matrix,
+            artifacts: None,
+            params: None,
+        })];
+        assert!(has_matrix_tasks(&tasks));
+    }
+
+    #[test]
+    fn test_has_matrix_tasks_aggregation_only() {
+        // Aggregation task has empty matrix but artifacts
+        let tasks = vec![PipelineTask::Matrix(MatrixTask {
+            task: "publish".to_string(),
+            matrix: BTreeMap::new(),
+            artifacts: Some(vec![]),
+            params: None,
+        })];
+        // Aggregation tasks are NOT matrix tasks (they don't have matrix dimensions)
+        assert!(!has_matrix_tasks(&tasks));
+    }
+
+    #[test]
+    fn test_has_matrix_tasks_mixed() {
+        let mut matrix = BTreeMap::new();
+        matrix.insert("arch".to_string(), vec!["linux-x64".to_string()]);
+
+        let tasks = vec![
+            PipelineTask::Simple("check".to_string()),
+            PipelineTask::Matrix(MatrixTask {
+                task: "build".to_string(),
+                matrix,
+                artifacts: None,
+                params: None,
+            }),
+            PipelineTask::Simple("deploy".to_string()),
+        ];
+        assert!(has_matrix_tasks(&tasks));
     }
 }
