@@ -436,35 +436,34 @@ impl Compiler {
 
         let mut paths = HashSet::new();
 
-        // Prefix task inputs with project_path to make them relative to module root
-        if let Some(project_path) = &self.options.project_path {
-            for input in &task_inputs {
-                paths.insert(format!("{project_path}/{input}"));
+        // Helper to prefix a path with project_path, handling "." (root) specially
+        // GitHub Actions doesn't handle "./" prefix correctly
+        let prefix_path = |path: &str| -> String {
+            match &self.options.project_path {
+                Some(pp) if pp == "." => path.to_string(),
+                Some(pp) => format!("{pp}/{path}"),
+                None => path.to_string(),
             }
-        } else {
-            paths.extend(task_inputs.clone());
+        };
+
+        // Add task inputs with appropriate prefix
+        for input in &task_inputs {
+            paths.insert(prefix_path(input));
         }
 
         // If no task inputs were collected, use the project directory as fallback
         // This ensures workflows trigger on any file change within the project
         if task_inputs.is_empty() {
-            if let Some(project_path) = &self.options.project_path {
-                paths.insert(format!("{project_path}/**"));
-            } else {
-                // Root project with no inputs - use wildcard for all files
-                paths.insert("**".to_string());
-            }
+            match &self.options.project_path {
+                Some(pp) if pp == "." => paths.insert("**".to_string()),
+                Some(pp) => paths.insert(format!("{pp}/**")),
+                None => paths.insert("**".to_string()),
+            };
         }
 
         // Add implicit CUE inputs (changes here should always trigger)
-        // Prefix with project_path if set
-        if let Some(project_path) = &self.options.project_path {
-            paths.insert(format!("{project_path}/env.cue"));
-            paths.insert(format!("{project_path}/schema/**"));
-        } else {
-            paths.insert("env.cue".to_string());
-            paths.insert("schema/**".to_string());
-        }
+        paths.insert(prefix_path("env.cue"));
+        paths.insert(prefix_path("schema/**"));
         // cue.mod is always at module root, not prefixed with project_path
         paths.insert("cue.mod/**".to_string());
 
@@ -476,27 +475,56 @@ impl Compiler {
 
     /// Recursively collect task inputs including dependencies
     fn collect_task_inputs(&self, task_name: &str, paths: &mut HashSet<String>) {
-        if let Some(task) = self.find_task(task_name) {
-            // Add direct inputs
-            for input in task.iter_path_inputs() {
-                paths.insert(input.clone());
+        if let Some(def) = self.find_task_definition(task_name) {
+            self.collect_inputs_from_definition(def, paths);
+        }
+    }
+
+    /// Collect inputs from a task definition (handles both single tasks and groups)
+    fn collect_inputs_from_definition(&self, def: &TaskDefinition, paths: &mut HashSet<String>) {
+        match def {
+            TaskDefinition::Single(task) => {
+                // Add direct inputs
+                for input in task.iter_path_inputs() {
+                    paths.insert(input.clone());
+                }
+                // Recurse into dependencies
+                for dep in &task.depends_on {
+                    self.collect_task_inputs(dep, paths);
+                }
             }
-            // Recurse into dependencies
-            for dep in &task.depends_on {
-                self.collect_task_inputs(dep, paths);
+            TaskDefinition::Group(group) => {
+                self.collect_inputs_from_group(group, paths);
             }
         }
     }
 
-    /// Find a task by name (handles dotted paths for nested tasks)
-    fn find_task(&self, name: &str) -> Option<&Task> {
+    /// Collect inputs from all tasks in a group
+    fn collect_inputs_from_group(&self, group: &TaskGroup, paths: &mut HashSet<String>) {
+        match group {
+            TaskGroup::Parallel(parallel) => {
+                for def in parallel.tasks.values() {
+                    self.collect_inputs_from_definition(def, paths);
+                }
+            }
+            TaskGroup::Sequential(seq) => {
+                for def in seq {
+                    self.collect_inputs_from_definition(def, paths);
+                }
+            }
+        }
+    }
+
+    /// Find a task definition by name (handles dotted paths for nested tasks)
+    /// Returns the TaskDefinition which can be either a single task or a group
+    fn find_task_definition(&self, name: &str) -> Option<&TaskDefinition> {
         let parts: Vec<&str> = name.split('.').collect();
         let mut current_tasks = &self.project.tasks;
 
         for (i, part) in parts.iter().enumerate() {
             match current_tasks.get(*part) {
-                Some(TaskDefinition::Single(task)) if i == parts.len() - 1 => {
-                    return Some(task);
+                Some(def) if i == parts.len() - 1 => {
+                    return Some(def);
                 }
                 Some(TaskDefinition::Group(TaskGroup::Parallel(parallel))) => {
                     current_tasks = &parallel.tasks;
@@ -505,6 +533,14 @@ impl Compiler {
             }
         }
         None
+    }
+
+    /// Find a leaf task by name (handles dotted paths for nested tasks)
+    fn find_task(&self, name: &str) -> Option<&Task> {
+        match self.find_task_definition(name) {
+            Some(TaskDefinition::Single(task)) => Some(task),
+            _ => None,
+        }
     }
 
     /// Compile task definitions into IR tasks
@@ -2155,5 +2191,242 @@ mod tests {
     fn test_cue_task_condition_to_ir_always() {
         let result = Compiler::cue_task_condition_to_ir(CueTaskCondition::Always);
         assert_eq!(result, TaskCondition::Always);
+    }
+
+    // =========================================================================
+    // Path Derivation Tests
+    // =========================================================================
+
+    use cuenv_core::ci::{PipelineCondition, PipelineTask, StringOrVec};
+    use cuenv_core::tasks::{Input, ParallelGroup};
+
+    #[test]
+    fn test_derive_paths_from_task_group() {
+        // Create a task group (like "check" with nested tasks "lint", "test", etc.)
+        let mut project = Project::new("test-project");
+
+        let mut group_tasks = HashMap::new();
+        group_tasks.insert(
+            "lint".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["clippy".to_string()],
+                inputs: vec![
+                    Input::Path("Cargo.toml".to_string()),
+                    Input::Path("crates/**".to_string()),
+                ],
+                ..Default::default()
+            })),
+        );
+        group_tasks.insert(
+            "test".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["test".to_string()],
+                inputs: vec![
+                    Input::Path("Cargo.toml".to_string()),
+                    Input::Path("crates/**".to_string()),
+                    Input::Path("tests/**".to_string()),
+                ],
+                ..Default::default()
+            })),
+        );
+
+        project.tasks.insert(
+            "check".to_string(),
+            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
+                tasks: group_tasks,
+                depends_on: vec![],
+            })),
+        );
+
+        let pipeline = Pipeline {
+            mode: PipelineMode::default(),
+            environment: None,
+            tasks: vec![PipelineTask::Simple("check".to_string())],
+            when: Some(PipelineCondition {
+                branch: Some(StringOrVec::String("main".to_string())),
+                pull_request: None,
+                tag: None,
+                default_branch: None,
+                scheduled: None,
+                manual: None,
+                release: None,
+            }),
+            derive_paths: None,
+            provider: None,
+        };
+
+        project.ci = Some(CI {
+            pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
+            ..Default::default()
+        });
+
+        // Root project (no project_path prefix)
+        let options = CompilerOptions {
+            pipeline_name: Some("default".to_string()),
+            pipeline: Some(pipeline),
+            project_path: None,
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let ir = compiler.compile().unwrap();
+
+        let trigger = ir.pipeline.trigger.expect("should have trigger");
+
+        // Should collect inputs from all nested tasks in the group
+        assert!(
+            trigger.paths.contains(&"Cargo.toml".to_string()),
+            "Should contain Cargo.toml from group tasks. Paths: {:?}",
+            trigger.paths
+        );
+        assert!(
+            trigger.paths.contains(&"crates/**".to_string()),
+            "Should contain crates/** from group tasks. Paths: {:?}",
+            trigger.paths
+        );
+        assert!(
+            trigger.paths.contains(&"tests/**".to_string()),
+            "Should contain tests/** from group tasks. Paths: {:?}",
+            trigger.paths
+        );
+        // Should NOT fallback to ** since we have inputs
+        assert!(
+            !trigger.paths.contains(&"**".to_string()),
+            "Should not fallback to ** when task group has inputs. Paths: {:?}",
+            trigger.paths
+        );
+    }
+
+    #[test]
+    fn test_derive_paths_root_project_no_dot_prefix() {
+        // When project_path is "." (root), paths should not have "./" prefix
+        let mut project = Project::new("test-project");
+
+        project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["build".to_string()],
+                inputs: vec![Input::Path("src/**".to_string())],
+                ..Default::default()
+            })),
+        );
+
+        let pipeline = Pipeline {
+            mode: PipelineMode::default(),
+            environment: None,
+            tasks: vec![PipelineTask::Simple("build".to_string())],
+            when: Some(PipelineCondition {
+                branch: Some(StringOrVec::String("main".to_string())),
+                pull_request: None,
+                tag: None,
+                default_branch: None,
+                scheduled: None,
+                manual: None,
+                release: None,
+            }),
+            derive_paths: None,
+            provider: None,
+        };
+
+        project.ci = Some(CI {
+            pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
+            ..Default::default()
+        });
+
+        // project_path = "." (root project, as set by sync command)
+        let options = CompilerOptions {
+            pipeline_name: Some("default".to_string()),
+            pipeline: Some(pipeline),
+            project_path: Some(".".to_string()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let ir = compiler.compile().unwrap();
+
+        let trigger = ir.pipeline.trigger.expect("should have trigger");
+
+        // Paths should NOT have "./" prefix - GitHub Actions doesn't handle it correctly
+        assert!(
+            trigger.paths.contains(&"src/**".to_string()),
+            "Should contain src/** without ./ prefix. Paths: {:?}",
+            trigger.paths
+        );
+        assert!(
+            !trigger.paths.iter().any(|p| p.starts_with("./")),
+            "No path should have ./ prefix. Paths: {:?}",
+            trigger.paths
+        );
+        assert!(
+            trigger.paths.contains(&"env.cue".to_string()),
+            "Should contain env.cue without ./ prefix. Paths: {:?}",
+            trigger.paths
+        );
+    }
+
+    #[test]
+    fn test_derive_paths_subproject_has_prefix() {
+        // When project_path is "projects/api", paths should be prefixed
+        let mut project = Project::new("test-project");
+
+        project.tasks.insert(
+            "build".to_string(),
+            TaskDefinition::Single(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["build".to_string()],
+                inputs: vec![Input::Path("src/**".to_string())],
+                ..Default::default()
+            })),
+        );
+
+        let pipeline = Pipeline {
+            mode: PipelineMode::default(),
+            environment: None,
+            tasks: vec![PipelineTask::Simple("build".to_string())],
+            when: Some(PipelineCondition {
+                branch: Some(StringOrVec::String("main".to_string())),
+                pull_request: None,
+                tag: None,
+                default_branch: None,
+                scheduled: None,
+                manual: None,
+                release: None,
+            }),
+            derive_paths: None,
+            provider: None,
+        };
+
+        project.ci = Some(CI {
+            pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
+            ..Default::default()
+        });
+
+        // Subproject path
+        let options = CompilerOptions {
+            pipeline_name: Some("default".to_string()),
+            pipeline: Some(pipeline),
+            project_path: Some("projects/api".to_string()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let ir = compiler.compile().unwrap();
+
+        let trigger = ir.pipeline.trigger.expect("should have trigger");
+
+        // Paths should have the project prefix
+        assert!(
+            trigger.paths.contains(&"projects/api/src/**".to_string()),
+            "Should contain prefixed path. Paths: {:?}",
+            trigger.paths
+        );
+        assert!(
+            trigger.paths.contains(&"projects/api/env.cue".to_string()),
+            "Should contain prefixed env.cue. Paths: {:?}",
+            trigger.paths
+        );
     }
 }
