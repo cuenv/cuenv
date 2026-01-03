@@ -7,22 +7,20 @@ on:
     branches:
     - main
     paths:
-    - ./contrib/**
-    - ./cue.mod/**
-    - ./env.cue
-    - ./schema/**
     - .github/workflows/cuenv-sync-check.yml
+    - contrib/**
     - cue.mod/**
+    - env.cue
+    - schema/**
   pull_request:
     branches:
     - main
     paths:
-    - ./contrib/**
-    - ./cue.mod/**
-    - ./env.cue
-    - ./schema/**
     - .github/workflows/cuenv-sync-check.yml
+    - contrib/**
     - cue.mod/**
+    - env.cue
+    - schema/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
