@@ -4,24 +4,58 @@
 //!
 //! This module provides:
 //! - `Secret`: CUE-compatible secret definition with resolver-based resolution
+//! - `SecretRegistry`: Dynamic resolver registration and lookup
+//! - `create_default_registry()`: Creates a registry with built-in resolvers
 //! - Re-exports from `cuenv_secrets`: Trait-based secret resolution system
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // Re-export core secret resolution types from cuenv-secrets
 pub use cuenv_secrets::{
-    BatchResolver, ResolvedSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec,
-    compute_secret_fingerprint,
+    BatchResolver, ResolvedSecrets, SaltConfig, SecretError, SecretRegistry, SecretResolver,
+    SecretSpec, compute_secret_fingerprint,
 };
 
 // Re-export resolver implementations
 pub use cuenv_secrets::resolvers::{EnvSecretResolver, ExecSecretResolver};
 
-// Re-export 1Password resolver from its dedicated crate
+// Conditionally re-export 1Password resolver when feature is enabled
+#[cfg(feature = "1password")]
 pub use cuenv_1password::secrets::{OnePasswordConfig, OnePasswordResolver};
+
+/// Create a default secret registry with all built-in resolvers
+///
+/// This registers:
+/// - `env`: Environment variable resolver
+/// - `exec`: Command execution resolver
+/// - `onepassword`: 1Password resolver (when `1password` feature is enabled)
+///
+/// # Errors
+///
+/// Returns an error if 1Password resolver initialization fails (when enabled).
+#[allow(clippy::unnecessary_wraps)]
+pub fn create_default_registry() -> Result<SecretRegistry> {
+    let mut registry = SecretRegistry::new();
+
+    // Register built-in resolvers
+    registry.register(Arc::new(EnvSecretResolver::new()));
+    registry.register(Arc::new(ExecSecretResolver::new()));
+
+    // Register 1Password resolver if feature is enabled
+    #[cfg(feature = "1password")]
+    {
+        let op_resolver = OnePasswordResolver::new().map_err(|e| {
+            Error::configuration(format!("Failed to initialize 1Password resolver: {e}"))
+        })?;
+        registry.register(Arc::new(op_resolver));
+    }
+
+    Ok(registry)
+}
 
 /// Resolver for executing commands to retrieve secret values
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -125,32 +159,26 @@ impl Secret {
 
     /// Resolve the secret value using the trait-based resolver system
     ///
+    /// Uses the default registry with all built-in resolvers.
+    ///
     /// # Errors
     /// Returns error if resolution fails
     pub async fn resolve(&self) -> Result<String> {
+        let registry = create_default_registry()?;
+        self.resolve_with_registry(&registry).await
+    }
+
+    /// Resolve the secret value using a custom registry
+    ///
+    /// # Errors
+    /// Returns error if resolution fails
+    pub async fn resolve_with_registry(&self, registry: &SecretRegistry) -> Result<String> {
         let spec = self.to_spec();
 
-        match self.resolver.as_str() {
-            "onepassword" => {
-                let resolver = OnePasswordResolver::new().map_err(|e| {
-                    Error::configuration(format!("Failed to initialize 1Password resolver: {e}"))
-                })?;
-                resolver
-                    .resolve("secret", &spec)
-                    .await
-                    .map_err(|e| Error::configuration(format!("{e}")))
-            }
-            "exec" => {
-                let resolver = ExecSecretResolver::new();
-                resolver
-                    .resolve("secret", &spec)
-                    .await
-                    .map_err(|e| Error::configuration(format!("{e}")))
-            }
-            other => Err(Error::configuration(format!(
-                "Unsupported secret resolver: {other}"
-            ))),
-        }
+        registry
+            .resolve(&self.resolver, "secret", &spec)
+            .await
+            .map_err(|e| Error::configuration(format!("{e}")))
     }
 }
 

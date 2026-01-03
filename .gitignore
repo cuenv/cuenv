@@ -3,6 +3,7 @@
 
 # Project ignores
 .cache
+lcov.info
 .cargo
 .cuenv
 .test

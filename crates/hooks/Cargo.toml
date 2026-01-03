@@ -1,0 +1,57 @@
+[package]
+name = "cuenv-hooks"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Hook execution system for cuenv environments"
+
+[features]
+default = []
+
+[dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# File locking
+fs4 = { version = "0.13", features = ["tokio"] }
+
+# Hashing
+sha2 = { workspace = true }
+
+# Time handling
+chrono = { workspace = true }
+
+# Process management
+sysinfo = "0.37"
+
+# Error handling
+thiserror = "2.0"
+miette = { workspace = true }
+
+# Path resolution
+dirs = { workspace = true }
+
+# Platform-specific
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+temp-env = "0.3"
+
+[lints]
+workspace = true

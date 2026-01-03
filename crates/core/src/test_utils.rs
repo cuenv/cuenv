@@ -51,8 +51,8 @@ pub fn create_task_with_project_ref(
 }
 
 /// Create a test hook for onEnter/onExit testing
-pub fn create_test_hook(order: i32, command: &str) -> crate::hooks::Hook {
-    crate::hooks::Hook {
+pub fn create_test_hook(order: i32, command: &str) -> cuenv_hooks::Hook {
+    cuenv_hooks::Hook {
         order,
         propagate: false,
         command: command.to_string(),

@@ -3,7 +3,6 @@
 //! This module provides the core types for task execution, matching the CUE schema.
 
 pub mod backend;
-pub mod discovery;
 pub mod executor;
 pub mod graph;
 pub mod index;

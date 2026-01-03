@@ -4,7 +4,7 @@
 //! The `TaskListData` structure captures all information about available tasks,
 //! while `TaskListFormatter` implementations handle different output formats.
 
-use cuenv_core::cache::tasks as task_cache;
+use cuenv_cache::tasks as task_cache;
 use cuenv_core::tasks::{IndexedTask, TaskDefinition, TaskGroup};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;

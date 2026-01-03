@@ -1,6 +1,6 @@
 //! State management for hook execution tracking
 
-use crate::hooks::types::{ExecutionStatus, HookResult};
+use crate::types::{ExecutionStatus, Hook, HookResult};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 #[allow(unused_imports)] // Used by load_state_sync for file locking
@@ -23,6 +23,7 @@ pub struct StateManager {
 
 impl StateManager {
     /// Create a new state manager with the specified state directory
+    #[must_use]
     pub fn new(state_dir: PathBuf) -> Self {
         Self { state_dir }
     }
@@ -30,11 +31,14 @@ impl StateManager {
     /// Get the default state directory.
     ///
     /// Uses platform-appropriate paths:
-    /// - Linux: `~/.local/state/cuenv/state`
-    /// - macOS: `~/Library/Application Support/cuenv/state`
-    /// - Windows: `%APPDATA%\cuenv\state`
+    /// - Linux: `~/.local/state/cuenv/hooks`
+    /// - macOS: `~/Library/Application Support/cuenv/hooks`
+    /// - Windows: `%APPDATA%\cuenv\hooks`
     pub fn default_state_dir() -> Result<PathBuf> {
-        crate::paths::hook_state_dir()
+        let base = dirs::state_dir()
+            .or_else(dirs::data_dir)
+            .ok_or_else(|| Error::configuration("Could not determine state directory"))?;
+        Ok(base.join("cuenv").join("hooks"))
     }
 
     /// Create a state manager using the default state directory
@@ -43,6 +47,7 @@ impl StateManager {
     }
 
     /// Get the state directory path
+    #[must_use]
     pub fn get_state_dir(&self) -> &Path {
         &self.state_dir
     }
@@ -68,6 +73,7 @@ impl StateManager {
     }
 
     /// Get the state file path for a given directory hash (public for PID files)
+    #[must_use]
     pub fn get_state_file_path(&self, instance_hash: &str) -> PathBuf {
         self.state_dir.join(format!("{}.json", instance_hash))
     }
@@ -78,7 +84,7 @@ impl StateManager {
 
         let state_file = self.state_file_path(&state.instance_hash);
         let json = serde_json::to_string_pretty(state)
-            .map_err(|e| Error::configuration(format!("Failed to serialize state: {e}")))?;
+            .map_err(|e| Error::serialization(format!("Failed to serialize state: {e}")))?;
 
         // Write to a temporary file first, then rename atomically
         let temp_path = state_file.with_extension("tmp");
@@ -182,7 +188,7 @@ impl StateManager {
         drop(file);
 
         let state: HookExecutionState = serde_json::from_str(&contents)
-            .map_err(|e| Error::configuration(format!("Failed to deserialize state: {e}")))?;
+            .map_err(|e| Error::serialization(format!("Failed to deserialize state: {e}")))?;
 
         debug!(
             "Loaded execution state for directory hash: {}",
@@ -246,6 +252,7 @@ impl StateManager {
 
     /// Compute a key for directory-only lookups (used for fast status checks).
     /// This hashes just the canonicalized directory path, without config hash.
+    #[must_use]
     pub fn compute_directory_key(path: &Path) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -301,6 +308,7 @@ impl StateManager {
 
     /// Fast synchronous check: does a marker exist for this directory?
     /// This is the hot path for Starship - just a single stat() syscall.
+    #[must_use]
     pub fn has_active_marker(&self, directory_path: &Path) -> bool {
         let dir_key = Self::compute_directory_key(directory_path);
         self.directory_marker_path(&dir_key).exists()
@@ -322,6 +330,7 @@ impl StateManager {
 
     /// Read the instance hash from a marker file synchronously.
     /// This is the sync equivalent of `get_marker_instance_hash` for the fast path.
+    #[must_use]
     pub fn get_marker_instance_hash_sync(&self, directory_path: &Path) -> Option<String> {
         let dir_key = Self::compute_directory_key(directory_path);
         let marker_path = self.directory_marker_path(&dir_key);
@@ -374,7 +383,7 @@ impl StateManager {
         drop(file);
 
         let state: HookExecutionState = serde_json::from_str(&contents)
-            .map_err(|e| Error::configuration(format!("Failed to deserialize state: {e}")))?;
+            .map_err(|e| Error::serialization(format!("Failed to deserialize state: {e}")))?;
 
         Ok(Some(state))
     }
@@ -529,7 +538,7 @@ pub struct HookExecutionState {
     pub current_hook_index: Option<usize>,
     /// The list of hooks being executed (for display purposes)
     #[serde(default)]
-    pub hooks: Vec<crate::hooks::types::Hook>,
+    pub hooks: Vec<Hook>,
     /// Results of completed hooks
     pub hook_results: HashMap<usize, HookResult>,
     /// Timestamp when execution started
@@ -550,11 +559,12 @@ pub struct HookExecutionState {
 
 impl HookExecutionState {
     /// Create a new execution state
+    #[must_use]
     pub fn new(
         directory_path: PathBuf,
         instance_hash: String,
         config_hash: String,
-        hooks: Vec<crate::hooks::types::Hook>,
+        hooks: Vec<Hook>,
     ) -> Self {
         let total_hooks = hooks.len();
         Self {
@@ -589,6 +599,10 @@ impl HookExecutionState {
     }
 
     /// Record the result of a hook execution
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Takes ownership for API clarity, cloning is intentional"
+    )]
     pub fn record_hook_result(&mut self, hook_index: usize, result: HookResult) {
         self.hook_results.insert(hook_index, result.clone());
         self.completed_hooks += 1;
@@ -609,7 +623,7 @@ impl HookExecutionState {
                 result.error
             );
             self.status = ExecutionStatus::Failed;
-            self.error_message = result.error.clone();
+            self.error_message.clone_from(&result.error);
             self.finished_at = Some(Utc::now());
             // Keep failed state visible for 2 seconds (enough for at least one starship poll)
             self.completed_display_until = Some(Utc::now() + chrono::Duration::seconds(2));
@@ -636,6 +650,7 @@ impl HookExecutionState {
     }
 
     /// Check if execution is complete (success, failure, or cancelled)
+    #[must_use]
     pub fn is_complete(&self) -> bool {
         matches!(
             self.status,
@@ -644,6 +659,7 @@ impl HookExecutionState {
     }
 
     /// Get a human-readable progress display
+    #[must_use]
     pub fn progress_display(&self) -> String {
         match &self.status {
             ExecutionStatus::Running => {
@@ -686,24 +702,33 @@ impl HookExecutionState {
     }
 
     /// Get current hook duration (if a hook is currently running)
+    #[must_use]
     pub fn current_hook_duration(&self) -> Option<chrono::Duration> {
         self.current_hook_started_at
             .map(|started| Utc::now() - started)
     }
 
     /// Get the currently executing hook
-    pub fn current_hook(&self) -> Option<&crate::hooks::types::Hook> {
+    #[must_use]
+    pub fn current_hook(&self) -> Option<&Hook> {
         self.current_hook_index.and_then(|idx| self.hooks.get(idx))
     }
 
     /// Format duration in human-readable format (e.g., "2.3s", "1m 15s", "2h 5m")
+    #[must_use]
     pub fn format_duration(duration: chrono::Duration) -> String {
         let total_secs = duration.num_seconds();
 
         if total_secs < 60 {
             // Less than 1 minute: show as decimal seconds
             let millis = duration.num_milliseconds();
-            format!("{:.1}s", millis as f64 / 1000.0)
+            // Precision loss is acceptable for display purposes
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "Display formatting, precision loss is acceptable"
+            )]
+            let secs = millis as f64 / 1000.0;
+            format!("{secs:.1}s")
         } else if total_secs < 3600 {
             // Less than 1 hour: show minutes and seconds
             let mins = total_secs / 60;
@@ -726,6 +751,7 @@ impl HookExecutionState {
     }
 
     /// Get a short description of the current or next hook for display
+    #[must_use]
     pub fn current_hook_display(&self) -> Option<String> {
         // If there's a current hook index, use that
         let hook = if let Some(hook) = self.current_hook() {
@@ -748,6 +774,7 @@ impl HookExecutionState {
     }
 
     /// Check if the completed state should still be displayed
+    #[must_use]
     pub fn should_display_completed(&self) -> bool {
         if let Some(display_until) = self.completed_display_until {
             Utc::now() < display_until
@@ -758,6 +785,7 @@ impl HookExecutionState {
 }
 
 /// Compute a hash for a unique execution instance (directory + config)
+#[must_use]
 pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -767,14 +795,15 @@ pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     // Include cuenv version in hash to invalidate cache on upgrades
     // This is important when internal logic (like environment capturing) changes
     hasher.update(b":");
-    hasher.update(crate::VERSION.as_bytes());
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
 /// Compute a hash for hook execution that includes input file contents.
+///
 /// This is separate from the approval hash - approval only cares about the hook
 /// definition, but execution cache needs to invalidate when input files change.
-pub fn compute_execution_hash(hooks: &[crate::hooks::types::Hook], base_dir: &Path) -> String {
+pub fn compute_execution_hash(hooks: &[Hook], base_dir: &Path) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
 
@@ -789,8 +818,7 @@ pub fn compute_execution_hash(hooks: &[crate::hooks::types::Hook], base_dir: &Pa
         let hook_dir = hook
             .dir
             .as_ref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| base_dir.to_path_buf());
+            .map_or_else(|| base_dir.to_path_buf(), PathBuf::from);
 
         for input in &hook.inputs {
             let input_path = hook_dir.join(input);
@@ -805,7 +833,7 @@ pub fn compute_execution_hash(hooks: &[crate::hooks::types::Hook], base_dir: &Pa
 
     // Include cuenv version
     hasher.update(b":version:");
-    hasher.update(crate::VERSION.as_bytes());
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
 
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
@@ -813,7 +841,7 @@ pub fn compute_execution_hash(hooks: &[crate::hooks::types::Hook], base_dir: &Pa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::types::{Hook, HookResult};
+    use crate::types::{Hook, HookResult};
     use std::collections::HashMap;
     use std::os::unix::process::ExitStatusExt;
     use std::sync::Arc;
@@ -902,7 +930,7 @@ mod tests {
             hook,
             std::process::ExitStatus::from_raw(0),
             "test\n".to_string(),
-            "".to_string(),
+            String::new(),
             100,
         );
 
@@ -984,8 +1012,8 @@ mod tests {
         let result = HookResult::success(
             hook.clone(),
             std::process::ExitStatus::from_raw(0),
-            "".to_string(),
-            "".to_string(),
+            String::new(),
+            String::new(),
             100,
         );
 
@@ -999,7 +1027,7 @@ mod tests {
         let failed_result = HookResult::failure(
             hook,
             Some(std::process::ExitStatus::from_raw(256)),
-            "".to_string(),
+            String::new(),
             "error".to_string(),
             50,
             "Command failed".to_string(),
@@ -1334,7 +1362,7 @@ mod tests {
         // Create state with unicode and special characters
         let mut unicode_state = HookExecutionState {
             instance_hash: "unicode_hash".to_string(),
-            directory_path: PathBuf::from("/测试/目录/🚀"),
+            directory_path: PathBuf::from("/測試/目錄/🚀"),
             config_hash: "config_ñ_é_ü".to_string(),
             status: ExecutionStatus::Failed,
             total_hooks: 1,
@@ -1347,7 +1375,7 @@ mod tests {
             finished_at: Some(Utc::now()),
             current_hook_started_at: None,
             completed_display_until: None,
-            error_message: Some("Error: 错误信息 with émojis 🔥💥".to_string()),
+            error_message: Some("Error: 錯誤信息 with émojis 🔥💥".to_string()),
             previous_env: None,
         };
 
@@ -1365,10 +1393,10 @@ mod tests {
             hook: unicode_hook,
             success: false,
             exit_status: Some(1),
-            stdout: "输出: Hello 世界! 🌍".to_string(),
-            stderr: "错误: ñoño error ⚠️".to_string(),
+            stdout: "輸出: Hello 世界! 🌍".to_string(),
+            stderr: "錯誤: ñoño error ⚠️".to_string(),
             duration_ms: 100,
-            error: Some("失败了 😢".to_string()),
+            error: Some("失敗了 😢".to_string()),
         };
         unicode_state.hook_results.insert(0, unicode_result);
 
@@ -1385,13 +1413,13 @@ mod tests {
         assert_eq!(loaded.config_hash, "config_ñ_é_ü");
         assert_eq!(
             loaded.error_message,
-            Some("Error: 错误信息 with émojis 🔥💥".to_string())
+            Some("Error: 錯誤信息 with émojis 🔥💥".to_string())
         );
 
         let hook_result = loaded.hook_results.get(&0).unwrap();
-        assert_eq!(hook_result.stdout, "输出: Hello 世界! 🌍");
-        assert_eq!(hook_result.stderr, "错误: ñoño error ⚠️");
-        assert_eq!(hook_result.error, Some("失败了 😢".to_string()));
+        assert_eq!(hook_result.stdout, "輸出: Hello 世界! 🌍");
+        assert_eq!(hook_result.stderr, "錯誤: ñoño error ⚠️");
+        assert_eq!(hook_result.error, Some("失敗了 😢".to_string()));
     }
 
     #[tokio::test]
@@ -1413,16 +1441,16 @@ mod tests {
                     ExecutionStatus::Failed
                 },
                 total_hooks: 1,
-                completed_hooks: if i % 3 == 0 { 1 } else { 0 },
+                completed_hooks: usize::from(i % 3 == 0),
                 current_hook_index: if i % 3 == 1 { Some(0) } else { None },
                 hooks: vec![],
                 hook_results: HashMap::new(),
                 environment_vars: HashMap::new(),
-                started_at: Utc::now() - chrono::Duration::hours(i as i64),
-                finished_at: if i % 3 != 1 {
-                    Some(Utc::now() - chrono::Duration::hours(i as i64 - 1))
-                } else {
+                started_at: Utc::now() - chrono::Duration::hours(i64::from(i)),
+                finished_at: if i % 3 == 1 {
                     None
+                } else {
+                    Some(Utc::now() - chrono::Duration::hours(i64::from(i) - 1))
                 },
                 current_hook_started_at: None,
                 completed_display_until: None,
