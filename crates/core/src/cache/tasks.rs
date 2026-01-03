@@ -757,6 +757,239 @@ mod tests {
         assert_eq!(k1, k2);
     }
 
+    // ==========================================================================
+    // Cache Invalidation Behavioral Tests
+    // ==========================================================================
+    // These tests verify the behavioral contracts around cache invalidation:
+    // When any component of the cache key changes, the key MUST change.
+
+    /// Helper to create a baseline envelope for invalidation tests
+    fn baseline_envelope() -> CacheKeyEnvelope {
+        CacheKeyEnvelope {
+            inputs: BTreeMap::from([
+                ("src/main.rs".to_string(), "abc123".to_string()),
+                ("Cargo.toml".to_string(), "def456".to_string()),
+            ]),
+            command: "cargo".to_string(),
+            args: vec!["build".to_string(), "--release".to_string()],
+            shell: None,
+            env: BTreeMap::from([
+                ("RUST_LOG".to_string(), "debug".to_string()),
+                ("CC".to_string(), "clang".to_string()),
+            ]),
+            cuenv_version: "1.0.0".to_string(),
+            platform: "linux-x86_64".to_string(),
+            workspace_lockfile_hashes: None,
+            workspace_package_hashes: None,
+        }
+    }
+
+    #[test]
+    fn cache_invalidates_when_input_file_content_changes() {
+        // Given: A task with specific input file hashes
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: An input file's content changes (different hash)
+        let mut modified = base.clone();
+        modified
+            .inputs
+            .insert("src/main.rs".to_string(), "changed_hash".to_string());
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different (cache is invalidated)
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when input file content changes"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_new_input_file_added() {
+        // Given: A task with specific inputs
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: A new input file is added
+        let mut modified = base.clone();
+        modified
+            .inputs
+            .insert("src/lib.rs".to_string(), "new_file_hash".to_string());
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when new input file is added"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_input_file_removed() {
+        // Given: A task with specific inputs
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: An input file is removed
+        let mut modified = base.clone();
+        modified.inputs.remove("src/main.rs");
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when input file is removed"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_command_changes() {
+        // Given: A task with a specific command
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: The command changes
+        let mut modified = base.clone();
+        modified.command = "rustc".to_string();
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when command changes"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_args_change() {
+        // Given: A task with specific arguments
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: Arguments change
+        let mut modified = base.clone();
+        modified.args = vec!["build".to_string()]; // removed --release
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when command arguments change"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_env_var_value_changes() {
+        // Given: A task with specific environment variables
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: An environment variable value changes
+        let mut modified = base.clone();
+        modified
+            .env
+            .insert("RUST_LOG".to_string(), "info".to_string());
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when environment variable value changes"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_env_var_added() {
+        // Given: A task with specific environment variables
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: A new environment variable is added
+        let mut modified = base.clone();
+        modified
+            .env
+            .insert("NEW_VAR".to_string(), "value".to_string());
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when new environment variable is added"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_platform_changes() {
+        // Given: A task built for a specific platform
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: The platform changes (cross-compilation or different machine)
+        let mut modified = base.clone();
+        modified.platform = "darwin-aarch64".to_string();
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when platform changes"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_cuenv_version_changes() {
+        // Given: A task built with a specific cuenv version
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: cuenv version changes (may affect execution semantics)
+        let mut modified = base.clone();
+        modified.cuenv_version = "2.0.0".to_string();
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when cuenv version changes"
+        );
+    }
+
+    #[test]
+    fn cache_invalidates_when_workspace_lockfile_changes() {
+        // Given: A task with no workspace lockfile hashes
+        let base = baseline_envelope();
+        let (base_key, _) = compute_cache_key(&base).unwrap();
+
+        // When: Workspace lockfile is added or changes
+        let mut modified = base.clone();
+        modified.workspace_lockfile_hashes = Some(BTreeMap::from([(
+            "cargo".to_string(),
+            "lockfile_hash_123".to_string(),
+        )]));
+        let (new_key, _) = compute_cache_key(&modified).unwrap();
+
+        // Then: Cache key must be different
+        assert_ne!(
+            base_key, new_key,
+            "Cache must invalidate when workspace lockfile changes"
+        );
+    }
+
+    #[test]
+    fn cache_stable_when_nothing_changes() {
+        // Given: A task configuration
+        let envelope = baseline_envelope();
+
+        // When: We compute the cache key multiple times
+        let (key1, _) = compute_cache_key(&envelope).unwrap();
+        let (key2, _) = compute_cache_key(&envelope).unwrap();
+        let (key3, _) = compute_cache_key(&envelope).unwrap();
+
+        // Then: All keys should be identical (cache hits work correctly)
+        assert_eq!(key1, key2, "Cache key must be stable across calls");
+        assert_eq!(key2, key3, "Cache key must be stable across calls");
+    }
+
     #[test]
     fn cache_root_skips_homeless_shelter() {
         let tmp = std::env::temp_dir();
