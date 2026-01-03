@@ -316,6 +316,38 @@ For each crate, verify:
 
 ---
 
+### 2026-01-03: Coverage improvement session (tenth pass)
+
+**Starting coverage: 77.59%**
+**Ending coverage: 78.06%** (+0.47%)
+
+#### Tests Added (this session):
+
+1. **ci/src/report/mod.rs** (coverage improved)
+   - Added 20 tests: TaskStatus serde, PipelineStatus serde, TaskReport roundtrip, ContextReport handling, PipelineReport cache_hits(), CheckHandle clone/debug
+
+2. **core/src/config/mod.rs** (coverage improved)
+   - Added 30+ tests: Config default/serde/clone, OutputFormat variants, TaskListFormat as_str, CacheMode serde, CuenvSource as_str/default, BackendConfig/BackendOptions, CommandsConfig hierarchy, full config roundtrip
+
+3. **release/src/conventional.rs** (coverage improved)
+   - Added 15 tests: levenshtein_distance, parse_calver, extract_version, ComparableVersion ordering, ConventionalCommit clone/debug, bump_type for perf, aggregate_bump with breaking, summarize edge cases
+
+4. **buildkite/src/provider.rs** (coverage improved)
+   - Added 15 tests: detect edge cases (false value, missing commit/source), get_base_ref with PR/default branch, context accessor, create/update/complete check lifecycle for all status types
+
+5. **ci/src/executor/engine.rs** (coverage improved)
+   - Added 12 tests: EngineConfig with_cache_policy, clone, debug, from CIExecutorConfig, EngineResult debug, extract_fingerprints with secrets
+
+6. **events/src/layer.rs** (coverage improved)
+   - Added 13 tests: task cache hit/miss/output/completed events, stderr output, CI context/changed_files events, system shutdown, unknown event type, missing required fields, visitor initial state
+
+7. **Fixed clippy warnings** in test code:
+   - Single-char patterns (ignore/lib.rs, aws/secrets.rs)
+   - Unreadable literals (ci/report/mod.rs)
+   - Format string inlining (release/conventional.rs)
+
+---
+
 ### 2026-01-02: Coverage improvement session (sixth pass)
 
 **Starting coverage: 75.81%**
