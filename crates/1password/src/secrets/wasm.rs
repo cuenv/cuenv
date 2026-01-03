@@ -164,10 +164,10 @@ mod tests {
         let available = onepassword_wasm_available();
 
         // If path exists, available should be true
-        if let Ok(path) = path_result {
-            if path.exists() {
-                assert!(available, "Should be available when path exists");
-            }
+        if let Ok(path) = path_result
+            && path.exists()
+        {
+            assert!(available, "Should be available when path exists");
         }
     }
 

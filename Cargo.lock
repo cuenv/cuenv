@@ -1711,6 +1711,7 @@ name = "cuenv-buildkite"
 version = "0.21.4"
 dependencies = [
  "async-trait",
+ "chrono",
  "cuenv-ci",
  "cuenv-core",
  "serde",
@@ -1719,6 +1720,7 @@ dependencies = [
  "temp-env",
  "tempfile",
  "thiserror 2.0.17",
+ "tokio",
  "tracing",
 ]
 

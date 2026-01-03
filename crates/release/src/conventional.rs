@@ -503,4 +503,180 @@ mod tests {
         assert_eq!(levenshtein_distance("hello", ""), 5);
         assert_eq!(levenshtein_distance("", ""), 0);
     }
+
+    #[test]
+    fn test_levenshtein_distance_multi_edit() {
+        assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn test_parse_calver_valid() {
+        assert_eq!(parse_calver("2024.12.23"), Some(vec![2024, 12, 23]));
+        assert_eq!(parse_calver("24.04"), Some(vec![24, 4]));
+        assert_eq!(parse_calver("2024.1"), Some(vec![2024, 1]));
+    }
+
+    #[test]
+    fn test_parse_calver_invalid() {
+        assert_eq!(parse_calver("v1.0.0"), None);
+        assert_eq!(parse_calver("2024"), None);
+        assert_eq!(parse_calver("invalid"), None);
+    }
+
+    #[test]
+    fn test_extract_version_semver() {
+        let v = extract_version("v1.2.3", "v", TagType::Semver);
+        assert!(matches!(v, Some(ComparableVersion::Semver(_))));
+    }
+
+    #[test]
+    fn test_extract_version_calver() {
+        let v = extract_version("v2024.12.01", "v", TagType::Calver);
+        assert!(matches!(v, Some(ComparableVersion::Calver(_))));
+    }
+
+    #[test]
+    fn test_extract_version_wrong_prefix() {
+        let v = extract_version("release-1.2.3", "v", TagType::Semver);
+        assert!(v.is_none());
+    }
+
+    #[test]
+    fn test_comparable_version_semver_ordering() {
+        let v1 = ComparableVersion::Semver(SemverVersion::parse("1.0.0").unwrap());
+        let v2 = ComparableVersion::Semver(SemverVersion::parse("2.0.0").unwrap());
+        assert!(v1 < v2);
+    }
+
+    #[test]
+    fn test_comparable_version_calver_ordering() {
+        let v1 = ComparableVersion::Calver(vec![2024, 1, 1]);
+        let v2 = ComparableVersion::Calver(vec![2024, 12, 1]);
+        assert!(v1 < v2);
+    }
+
+    #[test]
+    fn test_comparable_version_partial_cmp() {
+        let v1 = ComparableVersion::Semver(SemverVersion::parse("1.0.0").unwrap());
+        let v2 = ComparableVersion::Semver(SemverVersion::parse("1.0.0").unwrap());
+        assert_eq!(v1.partial_cmp(&v2), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn test_comparable_version_equality() {
+        let v1 = ComparableVersion::Calver(vec![2024, 6, 15]);
+        let v2 = ComparableVersion::Calver(vec![2024, 6, 15]);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_conventional_commit_clone() {
+        let commit = ConventionalCommit {
+            commit_type: "feat".to_string(),
+            scope: Some("core".to_string()),
+            breaking: false,
+            description: "add feature".to_string(),
+            body: Some("detailed body".to_string()),
+            hash: "abc123".to_string(),
+        };
+        let cloned = commit.clone();
+        assert_eq!(cloned.commit_type, "feat");
+        assert_eq!(cloned.scope, Some("core".to_string()));
+    }
+
+    #[test]
+    fn test_conventional_commit_debug() {
+        let commit = ConventionalCommit {
+            commit_type: "fix".to_string(),
+            scope: None,
+            breaking: true,
+            description: "breaking fix".to_string(),
+            body: None,
+            hash: "def456".to_string(),
+        };
+        let debug = format!("{commit:?}");
+        assert!(debug.contains("fix"));
+        assert!(debug.contains("breaking: true"));
+    }
+
+    #[test]
+    fn test_bump_type_perf() {
+        let commit = ConventionalCommit {
+            commit_type: "perf".to_string(),
+            scope: None,
+            breaking: false,
+            description: "optimize query".to_string(),
+            body: None,
+            hash: "abc".to_string(),
+        };
+        assert_eq!(commit.bump_type(), BumpType::Patch);
+    }
+
+    #[test]
+    fn test_aggregate_bump_empty() {
+        let commits: Vec<ConventionalCommit> = vec![];
+        assert_eq!(CommitParser::aggregate_bump(&commits), BumpType::None);
+    }
+
+    #[test]
+    fn test_aggregate_bump_with_breaking() {
+        let commits = vec![
+            ConventionalCommit {
+                commit_type: "fix".to_string(),
+                scope: None,
+                breaking: false,
+                description: "fix".to_string(),
+                body: None,
+                hash: "1".to_string(),
+            },
+            ConventionalCommit {
+                commit_type: "feat".to_string(),
+                scope: None,
+                breaking: true,
+                description: "breaking feat".to_string(),
+                body: None,
+                hash: "2".to_string(),
+            },
+        ];
+        assert_eq!(CommitParser::aggregate_bump(&commits), BumpType::Major);
+    }
+
+    #[test]
+    fn test_summarize_with_breaking() {
+        let commits = vec![ConventionalCommit {
+            commit_type: "feat".to_string(),
+            scope: Some("api".to_string()),
+            breaking: true,
+            description: "remove endpoint".to_string(),
+            body: None,
+            hash: "1".to_string(),
+        }];
+        let summary = CommitParser::summarize(&commits);
+        assert!(summary.contains("### Breaking Changes"));
+        assert!(summary.contains("**api**: remove endpoint"));
+        assert!(summary.contains("### Features")); // Also listed as feature
+    }
+
+    #[test]
+    fn test_summarize_empty() {
+        let commits: Vec<ConventionalCommit> = vec![];
+        let summary = CommitParser::summarize(&commits);
+        assert_eq!(summary, "");
+    }
+
+    #[test]
+    fn test_summarize_chore_not_included() {
+        let commits = vec![ConventionalCommit {
+            commit_type: "chore".to_string(),
+            scope: None,
+            breaking: false,
+            description: "update deps".to_string(),
+            body: None,
+            hash: "1".to_string(),
+        }];
+        let summary = CommitParser::summarize(&commits);
+        assert!(!summary.contains("### Features"));
+        assert!(!summary.contains("### Bug Fixes"));
+        assert!(!summary.contains("update deps"));
+    }
 }

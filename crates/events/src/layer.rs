@@ -486,4 +486,279 @@ mod tests {
             _ => panic!("Expected task started event"),
         }
     }
+
+    #[tokio::test]
+    async fn test_layer_captures_task_cache_hit() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::task",
+                event_type = "task.cache_hit",
+                task_name = "test",
+                cache_key = "abc123",
+                "Cache hit"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Task(TaskEvent::CacheHit { name, cache_key }) => {
+                assert_eq!(name, "test");
+                assert_eq!(cache_key, "abc123");
+            }
+            _ => panic!("Expected cache hit event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_captures_task_cache_miss() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::task",
+                event_type = "task.cache_miss",
+                task_name = "build",
+                "Cache miss"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Task(TaskEvent::CacheMiss { name }) => {
+                assert_eq!(name, "build");
+            }
+            _ => panic!("Expected cache miss event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_captures_task_output() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::task",
+                event_type = "task.output",
+                task_name = "build",
+                stream = "stderr",
+                content = "warning: unused variable",
+                "Task output"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Task(TaskEvent::Output {
+                name,
+                stream,
+                content,
+            }) => {
+                assert_eq!(name, "build");
+                assert!(matches!(stream, Stream::Stderr));
+                assert_eq!(content, "warning: unused variable");
+            }
+            _ => panic!("Expected task output event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_captures_task_completed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::task",
+                event_type = "task.completed",
+                task_name = "build",
+                success = true,
+                exit_code = 0i64,
+                duration_ms = 1500u64,
+                "Task completed"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Task(TaskEvent::Completed {
+                name,
+                success,
+                exit_code,
+                duration_ms,
+            }) => {
+                assert_eq!(name, "build");
+                assert!(success);
+                assert_eq!(exit_code, Some(0));
+                assert_eq!(duration_ms, 1500);
+            }
+            _ => panic!("Expected task completed event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_captures_stderr_output() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::output",
+                event_type = "output.stderr",
+                content = "error message",
+                "Stderr output"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Output(OutputEvent::Stderr { content }) => {
+                assert_eq!(content, "error message");
+            }
+            _ => panic!("Expected stderr output event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_captures_ci_context() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::ci",
+                event_type = "ci.context_detected",
+                provider = "github",
+                ci_event_type = "push",
+                ref_name = "refs/heads/main",
+                "CI context detected"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Ci(CiEvent::ContextDetected {
+                provider,
+                event_type,
+                ref_name,
+            }) => {
+                assert_eq!(provider, "github");
+                assert_eq!(event_type, "push");
+                assert_eq!(ref_name, "refs/heads/main");
+            }
+            _ => panic!("Expected CI context event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_captures_changed_files() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::ci",
+                event_type = "ci.changed_files",
+                count = 5i64,
+                "Changed files found"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Ci(CiEvent::ChangedFilesFound { count }) => {
+                assert_eq!(count, 5);
+            }
+            _ => panic!("Expected changed files event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_captures_system_shutdown() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::system",
+                event_type = "system.shutdown",
+                "System shutdown"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        assert!(matches!(
+            event.category,
+            EventCategory::System(SystemEvent::Shutdown)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_layer_unknown_event_type_returns_none() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(
+                target: "cuenv::test",
+                event_type = "unknown.event.type",
+                "Unknown event"
+            );
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_layer_missing_required_fields() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            // task.started requires task_name and command
+            tracing::info!(
+                target: "cuenv::task",
+                event_type = "task.started",
+                // missing task_name and command
+                "Task started without required fields"
+            );
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_visitor_initial_state() {
+        let visitor = CuenvEventVisitor::new("cuenv::test");
+        assert!(visitor.progress.is_none());
+        assert!(visitor.event_type.is_none());
+        assert!(visitor.task_name.is_none());
+        assert_eq!(visitor.target, "cuenv::test");
+    }
 }

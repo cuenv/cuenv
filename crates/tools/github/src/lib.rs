@@ -1419,7 +1419,12 @@ mod tests {
         assert!(result.is_ok());
         let path = result.unwrap();
         assert!(path.exists());
-        assert!(path.file_name().unwrap().to_string_lossy().contains("mytool"));
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("mytool")
+        );
     }
 
     #[test]
@@ -1606,8 +1611,7 @@ mod tests {
         let provider = GitHubToolProvider::new();
         let platform = Platform::new(Os::Linux, Arch::X86_64);
 
-        let result =
-            provider.expand_template("{os}-{os}-{arch}-{arch}", "1.0.0", &platform);
+        let result = provider.expand_template("{os}-{os}-{arch}-{arch}", "1.0.0", &platform);
         assert_eq!(result, "linux-linux-x86_64-x86_64");
     }
 

@@ -313,4 +313,265 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn test_detect_buildkite_false_value() {
+        temp_env::with_vars([("BUILDKITE", Some("false"))], || {
+            assert!(BuildkiteCIProvider::detect().is_none());
+        });
+    }
+
+    #[test]
+    fn test_detect_buildkite_missing_commit() {
+        temp_env::with_vars(
+            [
+                ("BUILDKITE", Some("true")),
+                ("BUILDKITE_BRANCH", Some("main")),
+                ("BUILDKITE_SOURCE", Some("schedule")),
+            ],
+            || {
+                temp_env::with_var_unset("BUILDKITE_COMMIT", || {
+                    let provider = BuildkiteCIProvider::detect().unwrap();
+                    assert_eq!(provider.context.sha, "HEAD");
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn test_detect_buildkite_missing_source() {
+        temp_env::with_vars(
+            [
+                ("BUILDKITE", Some("true")),
+                ("BUILDKITE_BRANCH", Some("main")),
+                ("BUILDKITE_COMMIT", Some("abc123")),
+            ],
+            || {
+                temp_env::with_var_unset("BUILDKITE_SOURCE", || {
+                    let provider = BuildkiteCIProvider::detect().unwrap();
+                    assert_eq!(provider.context.event, "unknown");
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn test_get_base_ref_pr() {
+        temp_env::with_vars(
+            [("BUILDKITE_PULL_REQUEST_BASE_BRANCH", Some("develop"))],
+            || {
+                let base = BuildkiteCIProvider::get_base_ref();
+                assert_eq!(base, Some("develop".to_string()));
+            },
+        );
+    }
+
+    #[test]
+    fn test_get_base_ref_empty_pr() {
+        temp_env::with_vars([("BUILDKITE_PULL_REQUEST_BASE_BRANCH", Some(""))], || {
+            temp_env::with_var_unset("BUILDKITE_PIPELINE_DEFAULT_BRANCH", || {
+                let base = BuildkiteCIProvider::get_base_ref();
+                assert!(base.is_none());
+            });
+        });
+    }
+
+    #[test]
+    fn test_get_base_ref_pr_false() {
+        temp_env::with_vars(
+            [("BUILDKITE_PULL_REQUEST_BASE_BRANCH", Some("false"))],
+            || {
+                temp_env::with_var_unset("BUILDKITE_PIPELINE_DEFAULT_BRANCH", || {
+                    let base = BuildkiteCIProvider::get_base_ref();
+                    assert!(base.is_none());
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn test_get_base_ref_default_branch() {
+        temp_env::with_var_unset("BUILDKITE_PULL_REQUEST_BASE_BRANCH", || {
+            temp_env::with_vars(
+                [("BUILDKITE_PIPELINE_DEFAULT_BRANCH", Some("main"))],
+                || {
+                    let base = BuildkiteCIProvider::get_base_ref();
+                    assert_eq!(base, Some("main".to_string()));
+                },
+            );
+        });
+    }
+
+    #[test]
+    fn test_context_accessor() {
+        temp_env::with_vars(
+            [
+                ("BUILDKITE", Some("true")),
+                ("BUILDKITE_BRANCH", Some("feature/x")),
+                ("BUILDKITE_COMMIT", Some("sha123")),
+                ("BUILDKITE_SOURCE", Some("api")),
+            ],
+            || {
+                let provider = BuildkiteCIProvider::detect().unwrap();
+                let ctx = provider.context();
+                assert_eq!(ctx.provider, "buildkite");
+                assert_eq!(ctx.ref_name, "feature/x");
+                assert_eq!(ctx.sha, "sha123");
+                assert_eq!(ctx.event, "api");
+            },
+        );
+    }
+
+    // Helper to create a provider for testing
+    fn make_test_provider() -> BuildkiteCIProvider {
+        BuildkiteCIProvider {
+            context: CIContext {
+                provider: "buildkite".to_string(),
+                event: "webhook".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc123".to_string(),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_check() {
+        let provider = make_test_provider();
+        let handle = provider.create_check("Build Test").await.unwrap();
+        assert_eq!(handle.id, "cuenv-build-test");
+    }
+
+    #[tokio::test]
+    async fn test_create_check_with_spaces() {
+        let provider = make_test_provider();
+        let handle = provider
+            .create_check("Run Integration Tests")
+            .await
+            .unwrap();
+        assert_eq!(handle.id, "cuenv-run-integration-tests");
+    }
+
+    #[tokio::test]
+    async fn test_update_check() {
+        let provider = make_test_provider();
+        let handle = CheckHandle {
+            id: "test-context".to_string(),
+        };
+        // Should not fail even without buildkite-agent
+        let result = provider.update_check(&handle, "In progress...").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_complete_check_success() {
+        let provider = make_test_provider();
+        let handle = CheckHandle {
+            id: "test-context".to_string(),
+        };
+        let report = PipelineReport {
+            version: "1.0.0".to_string(),
+            project: "test".to_string(),
+            pipeline: "ci".to_string(),
+            context: cuenv_ci::report::ContextReport {
+                provider: "buildkite".to_string(),
+                event: "push".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc".to_string(),
+                changed_files: vec![],
+            },
+            started_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: Some(1000),
+            status: PipelineStatus::Success,
+            tasks: vec![],
+        };
+        let result = provider.complete_check(&handle, &report).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_complete_check_failed() {
+        let provider = make_test_provider();
+        let handle = CheckHandle {
+            id: "test-context".to_string(),
+        };
+        let report = PipelineReport {
+            version: "1.0.0".to_string(),
+            project: "test".to_string(),
+            pipeline: "ci".to_string(),
+            context: cuenv_ci::report::ContextReport {
+                provider: "buildkite".to_string(),
+                event: "push".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc".to_string(),
+                changed_files: vec![],
+            },
+            started_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: Some(2000),
+            status: PipelineStatus::Failed,
+            tasks: vec![],
+        };
+        let result = provider.complete_check(&handle, &report).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_complete_check_partial() {
+        let provider = make_test_provider();
+        let handle = CheckHandle {
+            id: "test-context".to_string(),
+        };
+        let report = PipelineReport {
+            version: "1.0.0".to_string(),
+            project: "test".to_string(),
+            pipeline: "ci".to_string(),
+            context: cuenv_ci::report::ContextReport {
+                provider: "buildkite".to_string(),
+                event: "push".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc".to_string(),
+                changed_files: vec![],
+            },
+            started_at: chrono::Utc::now(),
+            completed_at: Some(chrono::Utc::now()),
+            duration_ms: None,
+            status: PipelineStatus::Partial,
+            tasks: vec![],
+        };
+        let result = provider.complete_check(&handle, &report).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_complete_check_pending() {
+        let provider = make_test_provider();
+        let handle = CheckHandle {
+            id: "test-context".to_string(),
+        };
+        let report = PipelineReport {
+            version: "1.0.0".to_string(),
+            project: "test".to_string(),
+            pipeline: "ci".to_string(),
+            context: cuenv_ci::report::ContextReport {
+                provider: "buildkite".to_string(),
+                event: "push".to_string(),
+                ref_name: "main".to_string(),
+                base_ref: None,
+                sha: "abc".to_string(),
+                changed_files: vec![],
+            },
+            started_at: chrono::Utc::now(),
+            completed_at: None,
+            duration_ms: None,
+            status: PipelineStatus::Pending,
+            tasks: vec![],
+        };
+        let result = provider.complete_check(&handle, &report).await;
+        assert!(result.is_ok());
+    }
 }

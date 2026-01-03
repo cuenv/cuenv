@@ -811,7 +811,7 @@ mod tests {
         let secret = r#"{"mixed": [1, "two", true, null]}"#;
         let result = AwsResolver::extract_json_key("test", secret, Some(&"mixed".to_string()));
         let value = result.unwrap();
-        assert!(value.contains("1"));
+        assert!(value.contains('1'));
         assert!(value.contains("two"));
         assert!(value.contains("true"));
         assert!(value.contains("null"));
@@ -841,8 +841,7 @@ mod tests {
 
     #[test]
     fn test_aws_config_deserialization_extra_fields_ignored() {
-        let json =
-            r#"{"secretId": "my-secret", "unknownField": "ignored", "anotherUnknown": 42}"#;
+        let json = r#"{"secretId": "my-secret", "unknownField": "ignored", "anotherUnknown": 42}"#;
         let config: AwsSecretConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.secret_id, "my-secret");
     }

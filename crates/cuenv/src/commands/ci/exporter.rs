@@ -8,9 +8,9 @@ use crate::providers::detect_ci_provider;
 use cuenv_ci::discovery::evaluate_module_from_cwd;
 use cuenv_ci::emitter::Emitter;
 use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
-use cuenv_core::manifest::Project;
-use cuenv_core::ci::PipelineMode;
 use cuenv_core::Result;
+use cuenv_core::ci::PipelineMode;
+use cuenv_core::manifest::Project;
 use std::io::Write;
 use std::path::PathBuf;
 

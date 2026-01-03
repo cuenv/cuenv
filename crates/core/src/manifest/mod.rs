@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::ci::CI;
-use crate::module::Instance;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
+use crate::module::Instance;
 use crate::secrets::Secret;
 use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};

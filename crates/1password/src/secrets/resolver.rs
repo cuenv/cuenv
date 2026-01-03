@@ -686,7 +686,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_config_serialization_produces_ref_key() {
         let config = OnePasswordConfig::new("op://vault/item/field");

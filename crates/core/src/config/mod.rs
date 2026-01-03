@@ -235,3 +235,331 @@ pub struct BackendOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert!(config.output_format.is_none());
+        assert!(config.commands.is_none());
+        assert!(config.cache_mode.is_none());
+        assert!(config.cache_enabled.is_none());
+    }
+
+    #[test]
+    fn test_config_serde_roundtrip() {
+        let config = Config {
+            output_format: Some(OutputFormat::Json),
+            commands: None,
+            cache_mode: Some(CacheMode::ReadWrite),
+            cache_enabled: Some(true),
+            audit_mode: Some(false),
+            trace_output: None,
+            default_environment: Some("dev".to_string()),
+            default_capabilities: Some(vec!["cap1".to_string()]),
+            backend: None,
+            ci: None,
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn test_config_skip_none_fields() {
+        let config = Config::default();
+        let json = serde_json::to_string(&config).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn test_config_task_list_format_none() {
+        let config = Config::default();
+        assert!(config.task_list_format().is_none());
+    }
+
+    #[test]
+    fn test_config_task_list_format_some() {
+        let config = Config {
+            commands: Some(CommandsConfig {
+                task: Some(TaskCommandConfig {
+                    list: Some(TaskListConfig {
+                        format: Some(TaskListFormat::Dashboard),
+                    }),
+                }),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(config.task_list_format(), Some(TaskListFormat::Dashboard));
+    }
+
+    #[test]
+    fn test_config_task_list_format_partial_none() {
+        let config = Config {
+            commands: Some(CommandsConfig { task: None }),
+            ..Default::default()
+        };
+        assert!(config.task_list_format().is_none());
+    }
+
+    #[test]
+    fn test_output_format_serde() {
+        assert_eq!(
+            serde_json::to_string(&OutputFormat::Tui).unwrap(),
+            r#""tui""#
+        );
+        assert_eq!(
+            serde_json::to_string(&OutputFormat::Spinner).unwrap(),
+            r#""spinner""#
+        );
+        assert_eq!(
+            serde_json::to_string(&OutputFormat::Simple).unwrap(),
+            r#""simple""#
+        );
+        assert_eq!(
+            serde_json::to_string(&OutputFormat::Tree).unwrap(),
+            r#""tree""#
+        );
+        assert_eq!(
+            serde_json::to_string(&OutputFormat::Json).unwrap(),
+            r#""json""#
+        );
+    }
+
+    #[test]
+    fn test_output_format_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<OutputFormat>(r#""tui""#).unwrap(),
+            OutputFormat::Tui
+        );
+        assert_eq!(
+            serde_json::from_str::<OutputFormat>(r#""json""#).unwrap(),
+            OutputFormat::Json
+        );
+    }
+
+    #[test]
+    fn test_task_list_format_as_str() {
+        assert_eq!(TaskListFormat::Text.as_str(), "text");
+        assert_eq!(TaskListFormat::Rich.as_str(), "rich");
+        assert_eq!(TaskListFormat::Tables.as_str(), "tables");
+        assert_eq!(TaskListFormat::Dashboard.as_str(), "dashboard");
+        assert_eq!(TaskListFormat::Emoji.as_str(), "emoji");
+    }
+
+    #[test]
+    fn test_task_list_format_serde() {
+        assert_eq!(
+            serde_json::to_string(&TaskListFormat::Tables).unwrap(),
+            r#""tables""#
+        );
+        assert_eq!(
+            serde_json::from_str::<TaskListFormat>(r#""rich""#).unwrap(),
+            TaskListFormat::Rich
+        );
+    }
+
+    #[test]
+    fn test_cache_mode_serde() {
+        assert_eq!(serde_json::to_string(&CacheMode::Off).unwrap(), r#""off""#);
+        assert_eq!(
+            serde_json::to_string(&CacheMode::Read).unwrap(),
+            r#""read""#
+        );
+        assert_eq!(
+            serde_json::to_string(&CacheMode::ReadWrite).unwrap(),
+            r#""read-write""#
+        );
+        assert_eq!(
+            serde_json::to_string(&CacheMode::Write).unwrap(),
+            r#""write""#
+        );
+    }
+
+    #[test]
+    fn test_cache_mode_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<CacheMode>(r#""off""#).unwrap(),
+            CacheMode::Off
+        );
+        assert_eq!(
+            serde_json::from_str::<CacheMode>(r#""read-write""#).unwrap(),
+            CacheMode::ReadWrite
+        );
+    }
+
+    #[test]
+    fn test_cuenv_source_default() {
+        assert_eq!(CuenvSource::default(), CuenvSource::Release);
+    }
+
+    #[test]
+    fn test_cuenv_source_as_str() {
+        assert_eq!(CuenvSource::Native.as_str(), "native");
+        assert_eq!(CuenvSource::Artifact.as_str(), "artifact");
+        assert_eq!(CuenvSource::Git.as_str(), "git");
+        assert_eq!(CuenvSource::Nix.as_str(), "nix");
+        assert_eq!(CuenvSource::Homebrew.as_str(), "homebrew");
+        assert_eq!(CuenvSource::Release.as_str(), "release");
+    }
+
+    #[test]
+    fn test_cuenv_source_serde() {
+        assert_eq!(
+            serde_json::to_string(&CuenvSource::Nix).unwrap(),
+            r#""nix""#
+        );
+        assert_eq!(
+            serde_json::from_str::<CuenvSource>(r#""homebrew""#).unwrap(),
+            CuenvSource::Homebrew
+        );
+    }
+
+    #[test]
+    fn test_cuenv_config_default() {
+        let config = CuenvConfig::default();
+        assert_eq!(config.source, CuenvSource::Release);
+        assert_eq!(config.version, "self");
+    }
+
+    #[test]
+    fn test_cuenv_config_serde() {
+        let config = CuenvConfig {
+            source: CuenvSource::Nix,
+            version: "0.20.0".to_string(),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: CuenvConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.source, CuenvSource::Nix);
+        assert_eq!(parsed.version, "0.20.0");
+    }
+
+    #[test]
+    fn test_ci_config_default() {
+        let config = CIConfig::default();
+        assert!(config.cuenv.is_none());
+    }
+
+    #[test]
+    fn test_ci_config_with_cuenv() {
+        let config = CIConfig {
+            cuenv: Some(CuenvConfig::default()),
+        };
+        assert!(config.cuenv.is_some());
+        assert_eq!(config.cuenv.as_ref().unwrap().version, "self");
+    }
+
+    #[test]
+    fn test_backend_config_default() {
+        let config = BackendConfig::default();
+        assert_eq!(config.backend_type, "");
+        assert!(config.options.is_none());
+    }
+
+    #[test]
+    fn test_backend_config_serde_default_type() {
+        let json = r#"{}"#;
+        let config: BackendConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.backend_type, "host");
+    }
+
+    #[test]
+    fn test_backend_config_with_options() {
+        let config = BackendConfig {
+            backend_type: "dagger".to_string(),
+            options: Some(BackendOptions {
+                image: Some("alpine:latest".to_string()),
+                platform: Some("linux/amd64".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("dagger"));
+        assert!(json.contains("alpine:latest"));
+    }
+
+    #[test]
+    fn test_backend_options_default() {
+        let opts = BackendOptions::default();
+        assert!(opts.image.is_none());
+        assert!(opts.platform.is_none());
+    }
+
+    #[test]
+    fn test_commands_config_default() {
+        let config = CommandsConfig::default();
+        assert!(config.task.is_none());
+    }
+
+    #[test]
+    fn test_task_command_config_default() {
+        let config = TaskCommandConfig::default();
+        assert!(config.list.is_none());
+    }
+
+    #[test]
+    fn test_task_list_config_default() {
+        let config = TaskListConfig::default();
+        assert!(config.format.is_none());
+    }
+
+    #[test]
+    fn test_full_config_serde() {
+        let config = Config {
+            output_format: Some(OutputFormat::Tui),
+            commands: Some(CommandsConfig {
+                task: Some(TaskCommandConfig {
+                    list: Some(TaskListConfig {
+                        format: Some(TaskListFormat::Emoji),
+                    }),
+                }),
+            }),
+            cache_mode: Some(CacheMode::ReadWrite),
+            cache_enabled: Some(true),
+            audit_mode: Some(true),
+            trace_output: Some(true),
+            default_environment: Some("production".to_string()),
+            default_capabilities: Some(vec!["admin".to_string(), "write".to_string()]),
+            backend: Some(BackendConfig {
+                backend_type: "dagger".to_string(),
+                options: Some(BackendOptions {
+                    image: Some("node:18".to_string()),
+                    platform: None,
+                }),
+            }),
+            ci: Some(CIConfig {
+                cuenv: Some(CuenvConfig {
+                    source: CuenvSource::Git,
+                    version: "latest".to_string(),
+                }),
+            }),
+        };
+        let json = serde_json::to_string_pretty(&config).unwrap();
+        let parsed: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn test_config_clone() {
+        let config = Config {
+            output_format: Some(OutputFormat::Json),
+            ..Default::default()
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.output_format, Some(OutputFormat::Json));
+    }
+
+    #[test]
+    fn test_output_format_equality() {
+        assert_eq!(OutputFormat::Tui, OutputFormat::Tui);
+        assert_ne!(OutputFormat::Tui, OutputFormat::Json);
+    }
+
+    #[test]
+    fn test_cache_mode_equality() {
+        assert_eq!(CacheMode::ReadWrite, CacheMode::ReadWrite);
+        assert_ne!(CacheMode::Read, CacheMode::Write);
+    }
+}

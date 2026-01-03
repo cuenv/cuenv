@@ -810,7 +810,7 @@ mod tests {
         let file = IgnoreFile::new("git").pattern("");
         let content = file.generate();
         // Empty pattern should still be included
-        assert!(content.contains("\n"));
+        assert!(content.contains('\n'));
     }
 
     #[test]

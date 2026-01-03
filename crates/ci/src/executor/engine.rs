@@ -723,6 +723,9 @@ mod tests {
         assert_eq!(config.max_parallel, 0);
         assert!(!config.dry_run);
         assert!(config.capture_output);
+        assert!(config.secret_salt.is_none());
+        assert!(config.cache_policy_override.is_none());
+        assert!(config.cache_root.is_none());
     }
 
     #[test]
@@ -773,5 +776,97 @@ mod tests {
         let secrets: HashMap<String, CIResolvedSecrets> = HashMap::new();
         let fingerprints = ExecutionEngine::<NoOpReporter>::extract_fingerprints(&secrets);
         assert!(fingerprints.is_empty());
+    }
+
+    #[test]
+    fn test_engine_config_with_cache_policy() {
+        use crate::ir::CachePolicy;
+
+        let config =
+            EngineConfig::new("/project").with_cache_policy_override(CachePolicy::Readonly);
+        assert_eq!(config.cache_policy_override, Some(CachePolicy::Readonly));
+    }
+
+    #[test]
+    fn test_engine_config_clone() {
+        let config = EngineConfig::new("/project")
+            .with_max_parallel(4)
+            .with_dry_run(true)
+            .with_secret_salt("salt")
+            .with_cache_root("/cache");
+        let cloned = config.clone();
+
+        assert_eq!(cloned.max_parallel, 4);
+        assert!(cloned.dry_run);
+        assert_eq!(cloned.secret_salt, Some("salt".to_string()));
+        assert_eq!(cloned.cache_root, Some(PathBuf::from("/cache")));
+    }
+
+    #[test]
+    fn test_engine_config_debug() {
+        let config = EngineConfig::new("/project").with_max_parallel(2);
+        let debug = format!("{:?}", config);
+        assert!(debug.contains("max_parallel"));
+        assert!(debug.contains("project_root"));
+    }
+
+    #[test]
+    fn test_engine_config_from_ci_executor_config() {
+        let ci_config = CIExecutorConfig::new("/project".into())
+            .with_max_parallel(6)
+            .with_dry_run(true)
+            .with_capture_output(false);
+
+        let engine_config: EngineConfig = ci_config.into();
+
+        assert_eq!(engine_config.max_parallel, 6);
+        assert!(engine_config.dry_run);
+        assert!(!engine_config.capture_output);
+        assert_eq!(engine_config.project_root, PathBuf::from("/project"));
+    }
+
+    #[test]
+    fn test_engine_result_debug() {
+        let result = EngineResult {
+            success: true,
+            task_outputs: vec![],
+            duration: Duration::from_secs(10),
+            report: PipelineReport {
+                version: "1.0.0".to_string(),
+                project: "test".to_string(),
+                pipeline: "ci".to_string(),
+                context: ContextReport {
+                    provider: "local".to_string(),
+                    event: "push".to_string(),
+                    ref_name: "main".to_string(),
+                    base_ref: None,
+                    sha: "abc123".to_string(),
+                    changed_files: vec![],
+                },
+                started_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: Some(10000),
+                status: PipelineStatus::Success,
+                tasks: vec![],
+            },
+        };
+        let debug = format!("{:?}", result);
+        assert!(debug.contains("success: true"));
+    }
+
+    #[test]
+    fn test_engine_config_parallelism_1() {
+        let config = EngineConfig::default().with_max_parallel(1);
+        assert_eq!(config.effective_parallelism(), 1);
+    }
+
+    #[test]
+    fn test_extract_fingerprints_with_secrets() {
+        let mut secrets: HashMap<String, CIResolvedSecrets> = HashMap::new();
+        let resolved = CIResolvedSecrets::default();
+        secrets.insert("build".to_string(), resolved);
+
+        let fingerprints = ExecutionEngine::<NoOpReporter>::extract_fingerprints(&secrets);
+        assert!(fingerprints.contains_key("build"));
     }
 }

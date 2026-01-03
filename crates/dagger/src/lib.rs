@@ -557,7 +557,12 @@ mod tests {
             Some("my-registry.example.com:5000/myorg/myimage:v1.0.0".to_string()),
             "/tmp".into(),
         );
-        assert!(backend.default_image.unwrap().contains("my-registry.example.com"));
+        assert!(
+            backend
+                .default_image
+                .unwrap()
+                .contains("my-registry.example.com")
+        );
     }
 
     #[test]
@@ -575,9 +580,12 @@ mod tests {
         let abs_backend = DaggerBackend::new(None, "/absolute/path".into());
         let rel_backend = DaggerBackend::new(None, "relative/path".into());
 
-        assert!(abs_backend.project_root.is_absolute() || abs_backend.project_root.starts_with("/"));
         assert!(
-            !rel_backend.project_root.is_absolute() || rel_backend.project_root.starts_with("relative")
+            abs_backend.project_root.is_absolute() || abs_backend.project_root.starts_with("/")
+        );
+        assert!(
+            !rel_backend.project_root.is_absolute()
+                || rel_backend.project_root.starts_with("relative")
         );
     }
 
