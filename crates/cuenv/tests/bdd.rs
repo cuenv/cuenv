@@ -13,6 +13,7 @@
 
 use cucumber::{World, given, then, when};
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -916,23 +917,23 @@ tasks: {
             (command.clone(), None)
         };
 
-        cue.push_str(&format!("    {name}: {{\n"));
-        cue.push_str(&format!("        command: \"{cmd}\"\n"));
+        let _ = writeln!(cue, "    {name}: {{");
+        let _ = writeln!(cue, "        command: \"{cmd}\"");
 
         if let Some(args_str) = args {
             // Parse arguments - handle both quoted strings and shell commands
             if args_str.starts_with("-c") {
-                cue.push_str(&format!("        args: [\"-c\", \"{}\"]\n", args_str.trim_start_matches("-c").trim().trim_matches(|c| c == '\'' || c == '"')));
+                let _ = writeln!(cue, "        args: [\"-c\", \"{}\"]", args_str.trim_start_matches("-c").trim().trim_matches(|c| c == '\'' || c == '"'));
             } else {
-                cue.push_str(&format!("        args: [\"{}\"]\n", args_str.trim_matches('"')));
+                let _ = writeln!(cue, "        args: [\"{}\"]", args_str.trim_matches('"'));
             }
         } else {
-            cue.push_str(&format!("        args: [\"{name} executed\"]\n"));
+            let _ = writeln!(cue, "        args: [\"{name} executed\"]");
         }
 
         if !deps.is_empty() {
             let deps_str = deps.iter().map(|d| format!("\"{d}\"")).collect::<Vec<_>>().join(", ");
-            cue.push_str(&format!("        dependsOn: [{deps_str}]\n"));
+            let _ = writeln!(cue, "        dependsOn: [{deps_str}]");
         }
         cue.push_str("    }\n");
     }
