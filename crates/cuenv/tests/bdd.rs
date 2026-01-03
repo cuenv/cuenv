@@ -1191,6 +1191,250 @@ fn then_exit_code_is_not(world: &mut TestWorld, code: i32) {
     );
 }
 
+// =============================================================================
+// Environment Step Definitions
+// =============================================================================
+
+/// Generate a CUE file for environment testing
+fn generate_env_cue(vars: &[(String, String)]) -> String {
+    let mut cue = String::from(r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "env-test"
+
+env: {
+"#);
+
+    for (name, value) in vars {
+        cue.push_str(&format!("    {name}: \"{value}\"\n"));
+    }
+
+    cue.push_str("}\n");
+    cue
+}
+
+#[given(expr = "a project with environment variables:")]
+async fn given_project_with_env_vars(world: &mut TestWorld, step: &cucumber::gherkin::Step) {
+    let table = step.table.as_ref().expect("Expected a data table");
+
+    let vars: Vec<(String, String)> = table.rows.iter().skip(1).map(|row| {
+        (row[0].clone(), row[1].clone())
+    }).collect();
+
+    // Create a unique test directory
+    let unique_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let test_dir = repo_root.join("bdd_test_runs").join(format!("env_test_{unique_id}"));
+
+    fs::create_dir_all(&test_dir).await.unwrap();
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir = test_dir.clone();
+
+    // Create the CUE module structure
+    let cue_mod_dir = test_dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).await.unwrap();
+    fs::write(cue_mod_dir.join("module.cue"), "module: \"test.example/env-test\"\n").await.unwrap();
+
+    // Generate and write the CUE file
+    let cue_content = generate_env_cue(&vars);
+    fs::write(test_dir.join("env.cue"), &cue_content).await.unwrap();
+}
+
+#[given(expr = "a project with no environment variables")]
+async fn given_project_with_no_env_vars(world: &mut TestWorld) {
+    let cue_content = r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "empty-env-test"
+"#;
+
+    // Create a unique test directory
+    let unique_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let test_dir = repo_root.join("bdd_test_runs").join(format!("empty_env_test_{unique_id}"));
+
+    fs::create_dir_all(&test_dir).await.unwrap();
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir = test_dir.clone();
+
+    // Create the CUE module structure
+    let cue_mod_dir = test_dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).await.unwrap();
+    fs::write(cue_mod_dir.join("module.cue"), "module: \"test.example/empty-env\"\n").await.unwrap();
+    fs::write(test_dir.join("env.cue"), cue_content).await.unwrap();
+}
+
+#[given(expr = "a project with base environment {string}")]
+async fn given_project_with_base_env(world: &mut TestWorld, base_env: String) {
+    // Parse "VAR=value" format
+    let parts: Vec<&str> = base_env.splitn(2, '=').collect();
+    let (var_name, var_value) = if parts.len() == 2 {
+        (parts[0], parts[1])
+    } else {
+        ("BASE_VAR", "base")
+    };
+
+    let cue_content = format!(r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "env-inheritance-test"
+
+env: {{
+    {var_name}: "{var_value}"
+}}
+
+environments: {{
+    dev: {{
+        // Will be filled in by next step
+    }}
+}}
+"#);
+
+    // Create a unique test directory
+    let unique_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let test_dir = repo_root.join("bdd_test_runs").join(format!("env_inherit_test_{unique_id}"));
+
+    fs::create_dir_all(&test_dir).await.unwrap();
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir = test_dir.clone();
+
+    // Create the CUE module structure
+    let cue_mod_dir = test_dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).await.unwrap();
+    fs::write(cue_mod_dir.join("module.cue"), "module: \"test.example/env-inherit\"\n").await.unwrap();
+    fs::write(test_dir.join("env.cue"), cue_content).await.unwrap();
+
+    // Store the base var info for the next step
+    world.env_vars.insert("_base_var".to_string(), var_name.to_string());
+    world.env_vars.insert("_base_value".to_string(), var_value.to_string());
+}
+
+#[given(expr = "a derived environment {string} with {string}")]
+async fn given_derived_environment(world: &mut TestWorld, env_name: String, env_var: String) {
+    // Parse "VAR=value" format
+    let parts: Vec<&str> = env_var.splitn(2, '=').collect();
+    let (var_name, var_value) = if parts.len() == 2 {
+        (parts[0], parts[1])
+    } else {
+        ("DEV_VAR", "dev")
+    };
+
+    let base_var = world.env_vars.get("_base_var").cloned().unwrap_or("BASE_VAR".to_string());
+    let base_value = world.env_vars.get("_base_value").cloned().unwrap_or("base".to_string());
+
+    let cue_content = format!(r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "env-inheritance-test"
+
+env: {{
+    {base_var}: "{base_value}"
+}}
+
+environments: {{
+    {env_name}: {{
+        {var_name}: "{var_value}"
+    }}
+}}
+"#);
+
+    // Overwrite the env.cue file with the complete content
+    let test_dir = world.current_dir.clone();
+    fs::write(test_dir.join("env.cue"), cue_content).await.unwrap();
+}
+
+#[then(expr = "the output should be valid JSON")]
+fn then_output_is_valid_json(world: &mut TestWorld) {
+    let result: Result<serde_json::Value, _> = serde_json::from_str(&world.last_output);
+    assert!(
+        result.is_ok(),
+        "Output should be valid JSON. Actual output: {}",
+        world.last_output
+    );
+}
+
+// =============================================================================
+// Error Handling Step Definitions
+// =============================================================================
+
+#[given(expr = "a project with invalid CUE syntax")]
+async fn given_project_with_invalid_cue(world: &mut TestWorld) {
+    // Create a CUE file with intentionally broken syntax
+    let cue_content = r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "invalid-syntax-test"
+
+// Missing closing brace and invalid syntax
+env: {
+    BROKEN: "this is broken
+    UNCLOSED: {
+"#;
+
+    // Create a unique test directory
+    let unique_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let test_dir = repo_root.join("bdd_test_runs").join(format!("invalid_cue_test_{unique_id}"));
+
+    fs::create_dir_all(&test_dir).await.unwrap();
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir = test_dir.clone();
+
+    // Create the CUE module structure
+    let cue_mod_dir = test_dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).await.unwrap();
+    fs::write(cue_mod_dir.join("module.cue"), "module: \"test.example/invalid-cue\"\n").await.unwrap();
+    fs::write(test_dir.join("env.cue"), cue_content).await.unwrap();
+}
+
+#[given(expr = "a project with no tasks or environment")]
+async fn given_project_with_no_tasks_or_env(world: &mut TestWorld) {
+    let cue_content = r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "empty-project"
+"#;
+
+    // Create a unique test directory
+    let unique_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let test_dir = repo_root.join("bdd_test_runs").join(format!("empty_project_test_{unique_id}"));
+
+    fs::create_dir_all(&test_dir).await.unwrap();
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir = test_dir.clone();
+
+    // Create the CUE module structure
+    let cue_mod_dir = test_dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).await.unwrap();
+    fs::write(cue_mod_dir.join("module.cue"), "module: \"test.example/empty-project\"\n").await.unwrap();
+    fs::write(test_dir.join("env.cue"), cue_content).await.unwrap();
+}
+
 // Main test runner for cucumber BDD tests
 // Note: These tests are incompatible with nextest and should be run separately
 // with: cargo test --test bdd
