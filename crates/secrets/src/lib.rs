@@ -25,6 +25,7 @@
 
 mod batch;
 mod fingerprint;
+mod registry;
 mod resolved;
 pub mod resolvers;
 mod salt;
@@ -32,6 +33,7 @@ mod types;
 
 pub use batch::{BatchConfig, BatchResolver, resolve_batch};
 pub use fingerprint::compute_secret_fingerprint;
+pub use registry::SecretRegistry;
 pub use resolved::ResolvedSecrets;
 pub use salt::SaltConfig;
 pub use types::{BatchSecrets, SecureSecret};

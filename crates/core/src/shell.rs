@@ -114,33 +114,34 @@ mod tests {
 
     #[test]
     fn test_shell_detect_from_env_fish() {
-        unsafe { std::env::set_var("SHELL", "/usr/bin/fish") };
-        let shell = Shell::detect(None);
-        assert_eq!(shell, Shell::Fish);
-        unsafe { std::env::remove_var("SHELL") };
+        temp_env::with_var("SHELL", Some("/usr/bin/fish"), || {
+            let shell = Shell::detect(None);
+            assert_eq!(shell, Shell::Fish);
+        });
     }
 
     #[test]
     fn test_shell_detect_from_env_zsh() {
-        unsafe { std::env::set_var("SHELL", "/bin/zsh") };
-        let shell = Shell::detect(None);
-        assert_eq!(shell, Shell::Zsh);
-        unsafe { std::env::remove_var("SHELL") };
+        temp_env::with_var("SHELL", Some("/bin/zsh"), || {
+            let shell = Shell::detect(None);
+            assert_eq!(shell, Shell::Zsh);
+        });
     }
 
     #[test]
     fn test_shell_detect_from_env_bash() {
-        unsafe { std::env::set_var("SHELL", "/bin/bash") };
-        let shell = Shell::detect(None);
-        assert_eq!(shell, Shell::Bash);
-        unsafe { std::env::remove_var("SHELL") };
+        temp_env::with_var("SHELL", Some("/bin/bash"), || {
+            let shell = Shell::detect(None);
+            assert_eq!(shell, Shell::Bash);
+        });
     }
 
     #[test]
     fn test_shell_detect_default_fallback() {
-        unsafe { std::env::remove_var("SHELL") };
-        let shell = Shell::detect(None);
-        assert_eq!(shell, Shell::Bash);
+        temp_env::with_var_unset("SHELL", || {
+            let shell = Shell::detect(None);
+            assert_eq!(shell, Shell::Bash);
+        });
     }
 
     #[test]

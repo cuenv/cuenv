@@ -101,7 +101,7 @@ impl SyncProvider for GitHooksSyncProvider {
 /// Sync the pre-push hook script.
 fn sync_pre_push_hook(
     git_root: &Path,
-    _hooks: &std::collections::HashMap<String, cuenv_core::hooks::Hook>,
+    _hooks: &std::collections::HashMap<String, cuenv_hooks::Hook>,
     dry_run: bool,
     check: bool,
 ) -> Result<String> {

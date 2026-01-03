@@ -1,6 +1,6 @@
 //! Task discovery across monorepo workspaces
 //!
-//! This module provides functionality to discover tasks across a monorepo,
+//! This crate provides functionality to discover tasks across a monorepo,
 //! supporting TaskRef resolution and TaskMatcher-based task discovery.
 
 use std::collections::HashMap;
@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use ignore::WalkBuilder;
 use regex::Regex;
 
-use crate::manifest::{ArgMatcher, Project, TaskMatcher, TaskRef};
-use crate::tasks::{Task, TaskIndex};
+use cuenv_core::manifest::{ArgMatcher, Project, TaskMatcher, TaskRef};
+use cuenv_core::tasks::{Task, TaskIndex};
 
 /// A discovered project in the workspace
 #[derive(Debug, Clone)]
@@ -37,7 +37,7 @@ pub struct MatchedTask {
 }
 
 /// Function type for evaluating env.cue files
-pub type EvalFn = Box<dyn Fn(&Path) -> Result<Project, crate::Error> + Send + Sync>;
+pub type EvalFn = Box<dyn Fn(&Path) -> Result<Project, cuenv_core::Error> + Send + Sync>;
 
 /// Discovers tasks across a monorepo workspace
 pub struct TaskDiscovery {
@@ -363,7 +363,7 @@ pub enum DiscoveryError {
     InvalidPath(PathBuf),
 
     #[error("Failed to evaluate {}: {}", .0.display(), .1)]
-    EvalError(PathBuf, #[source] Box<crate::Error>),
+    EvalError(PathBuf, #[source] Box<cuenv_core::Error>),
 
     #[error("Invalid TaskRef format: {0}")]
     InvalidTaskRef(String),
@@ -393,7 +393,7 @@ pub enum DiscoveryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::{ParallelGroup, TaskDefinition, TaskGroup};
+    use cuenv_core::tasks::{ParallelGroup, TaskDefinition, TaskGroup};
     use std::collections::HashMap;
     use std::path::PathBuf;
 

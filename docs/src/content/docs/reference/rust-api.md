@@ -222,24 +222,26 @@ Environment values can be:
 - Structured values with policies
 - Secret references
 
-### Hooks
+## cuenv-hooks
 
-#### Hooks
+Hook execution, state management, and approval system. This crate was extracted from cuenv-core to provide a focused API for hook management.
+
+### Hooks
 
 Shell hook definitions.
 
 ```rust
-use cuenv_core::hooks::{Hooks, ExecHook};
+use cuenv_hooks::{Hook, Hooks};
 ```
 
 **Fields:**
 
 | Field      | Type                    | Description                     |
 | ---------- | ----------------------- | ------------------------------- |
-| `on_enter` | `Option<Vec<ExecHook>>` | Hooks to run on directory entry |
-| `on_exit`  | `Option<Vec<ExecHook>>` | Hooks to run on directory exit  |
+| `on_enter` | `Option<Vec<Hook>>`     | Hooks to run on directory entry |
+| `on_exit`  | `Option<Vec<Hook>>`     | Hooks to run on directory exit  |
 
-#### ExecHook
+### Hook
 
 A single hook execution.
 
@@ -253,6 +255,39 @@ A single hook execution.
 | `propagate` | `bool`        | false    | Export to child processes         |
 | `source`    | `bool`        | false    | Source output as shell script     |
 | `inputs`    | `Vec<String>` | `[]`     | Input files for cache tracking    |
+
+### HookExecutor
+
+Manages background hook execution.
+
+```rust
+use cuenv_hooks::{HookExecutor, HookExecutionConfig};
+
+let config = HookExecutionConfig::default();
+let executor = HookExecutor::new(config)?;
+```
+
+### ApprovalManager
+
+Manages hook configuration approvals for security.
+
+```rust
+use cuenv_hooks::{ApprovalManager, check_approval_status, ApprovalStatus};
+use std::path::Path;
+
+let manager = ApprovalManager::with_default_file()?;
+let status = check_approval_status(&manager, Path::new("."), hooks.as_ref())?;
+
+match status {
+    ApprovalStatus::Approved => println!("Config is approved"),
+    ApprovalStatus::RequiresApproval { current_hash } => {
+        println!("Needs approval, hash: {}", current_hash);
+    }
+    ApprovalStatus::NotApproved { current_hash } => {
+        println!("Not approved, hash: {}", current_hash);
+    }
+}
+```
 
 ### Secrets
 
@@ -373,10 +408,10 @@ let pkg_name = PackageName::try_from("cuenv")?;
 
 #### Task cache helpers
 
-The task cache utilities live under `cuenv_core::cache::tasks`.
+The task cache utilities live under the `cuenv-cache` crate.
 
 ```rust
-use cuenv_core::cache::tasks::{
+use cuenv_cache::{
     compute_cache_key, lookup, materialize_outputs, CacheKeyEnvelope,
 };
 use std::{collections::BTreeMap, path::Path};
