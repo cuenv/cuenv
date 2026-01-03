@@ -202,4 +202,175 @@ mod tests {
         let line = OutputPanelWidget::render_task_header("test_task", "✓", Color::Green);
         assert!(!line.spans.is_empty());
     }
+
+    #[test]
+    fn test_extract_display_name_full_format() {
+        // task:project:name format
+        assert_eq!(
+            OutputPanelWidget::extract_display_name("task:cuenv:test.bdd"),
+            "test.bdd"
+        );
+    }
+
+    #[test]
+    fn test_extract_display_name_two_parts() {
+        // project:name format
+        assert_eq!(
+            OutputPanelWidget::extract_display_name("cuenv:build"),
+            "build"
+        );
+    }
+
+    #[test]
+    fn test_extract_display_name_simple() {
+        // Simple name
+        assert_eq!(OutputPanelWidget::extract_display_name("build"), "build");
+    }
+
+    #[test]
+    fn test_parse_task_path_full_format() {
+        assert_eq!(
+            OutputPanelWidget::parse_task_path("task:cuenv:test.unit"),
+            "test.unit"
+        );
+    }
+
+    #[test]
+    fn test_parse_task_path_two_parts() {
+        assert_eq!(OutputPanelWidget::parse_task_path("cuenv:build"), "build");
+    }
+
+    #[test]
+    fn test_parse_task_path_simple() {
+        assert_eq!(OutputPanelWidget::parse_task_path("build"), "build");
+    }
+
+    #[test]
+    fn test_task_matches_filter_exact() {
+        assert!(OutputPanelWidget::task_matches_filter(
+            "task:cuenv:build",
+            "task:cuenv:build"
+        ));
+        assert!(!OutputPanelWidget::task_matches_filter(
+            "task:cuenv:build",
+            "task:cuenv:test"
+        ));
+    }
+
+    #[test]
+    fn test_task_matches_filter_group() {
+        // Group filter should match tasks that start with the group path
+        assert!(OutputPanelWidget::task_matches_filter(
+            "task:cuenv:test.unit",
+            "::group::test"
+        ));
+        assert!(OutputPanelWidget::task_matches_filter(
+            "task:cuenv:test.integration",
+            "::group::test"
+        ));
+        assert!(!OutputPanelWidget::task_matches_filter(
+            "task:cuenv:build",
+            "::group::test"
+        ));
+    }
+
+    #[test]
+    fn test_task_matches_filter_empty_group() {
+        // Empty group filter
+        assert!(OutputPanelWidget::task_matches_filter(
+            "task:cuenv:test",
+            "::group::"
+        ));
+    }
+
+    #[test]
+    fn test_get_visible_tasks_all() {
+        use crate::tui::state::TaskInfo;
+
+        let mut state = TuiState::new();
+        state.tasks.insert(
+            "task:proj:build".to_string(),
+            TaskInfo::new("task:proj:build".to_string(), vec![], 0),
+        );
+        state.tasks.insert(
+            "task:proj:test".to_string(),
+            TaskInfo::new("task:proj:test".to_string(), vec![], 0),
+        );
+
+        let widget = OutputPanelWidget::new(&state);
+        let visible = widget.get_visible_tasks();
+
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn test_get_visible_tasks_filtered() {
+        use crate::tui::state::TaskInfo;
+
+        let mut state = TuiState::new();
+        state.tasks.insert(
+            "task:proj:build".to_string(),
+            TaskInfo::new("task:proj:build".to_string(), vec![], 0),
+        );
+        state.tasks.insert(
+            "task:proj:test.unit".to_string(),
+            TaskInfo::new("task:proj:test.unit".to_string(), vec![], 0),
+        );
+        state.tasks.insert(
+            "task:proj:test.integration".to_string(),
+            TaskInfo::new("task:proj:test.integration".to_string(), vec![], 0),
+        );
+        state.selected_task = Some("::group::test".to_string());
+
+        let widget = OutputPanelWidget::new(&state);
+        let visible = widget.get_visible_tasks();
+
+        // Should only show test.unit and test.integration, not build
+        assert_eq!(visible.len(), 2);
+        assert!(visible.iter().all(|t| t.contains("test")));
+    }
+
+    #[test]
+    fn test_get_visible_tasks_specific_task() {
+        use crate::tui::state::TaskInfo;
+
+        let mut state = TuiState::new();
+        state.tasks.insert(
+            "task:proj:build".to_string(),
+            TaskInfo::new("task:proj:build".to_string(), vec![], 0),
+        );
+        state.tasks.insert(
+            "task:proj:test".to_string(),
+            TaskInfo::new("task:proj:test".to_string(), vec![], 0),
+        );
+        state.selected_task = Some("task:proj:build".to_string());
+
+        let widget = OutputPanelWidget::new(&state);
+        let visible = widget.get_visible_tasks();
+
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0], "task:proj:build");
+    }
+
+    #[test]
+    fn test_widget_render_empty() {
+        let state = TuiState::new();
+        let widget = OutputPanelWidget::new(&state);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 60, 10));
+        widget.render(Rect::new(0, 0, 60, 10), &mut buf);
+
+        // Should render without panicking
+    }
+
+    #[test]
+    fn test_render_task_header_format() {
+        let line = OutputPanelWidget::render_task_header("task:cuenv:build", "✓", Color::Green);
+
+        // Should have multiple spans
+        assert!(line.spans.len() >= 2);
+        // First span should contain the task name
+        let first_span_text = line.spans[0].content.to_string();
+        assert!(first_span_text.contains("build"));
+    }
 }

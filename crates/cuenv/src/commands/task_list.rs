@@ -1240,3 +1240,470 @@ mod cache_tests {
         assert!(!c2.is_cached);
     }
 }
+
+#[cfg(test)]
+mod formatter_tests {
+    use super::*;
+
+    fn sample_task_data() -> TaskListData {
+        TaskListData {
+            sources: vec![TaskSourceGroup {
+                source: String::new(),
+                header: "Tasks".to_string(),
+                nodes: vec![
+                    TaskNode {
+                        name: "build".to_string(),
+                        full_name: Some("build".to_string()),
+                        description: Some("Build the project".to_string()),
+                        is_group: false,
+                        dep_count: 0,
+                        is_cached: true,
+                        children: vec![],
+                    },
+                    TaskNode {
+                        name: "test".to_string(),
+                        full_name: Some("test".to_string()),
+                        description: Some("Run tests".to_string()),
+                        is_group: false,
+                        dep_count: 1,
+                        is_cached: false,
+                        children: vec![],
+                    },
+                    TaskNode {
+                        name: "bun".to_string(),
+                        full_name: None,
+                        description: None,
+                        is_group: true,
+                        dep_count: 0,
+                        is_cached: false,
+                        children: vec![TaskNode {
+                            name: "install".to_string(),
+                            full_name: Some("bun.install".to_string()),
+                            description: Some("Install dependencies".to_string()),
+                            is_group: false,
+                            dep_count: 0,
+                            is_cached: false,
+                            children: vec![],
+                        }],
+                    },
+                ],
+            }],
+            stats: TaskListStats {
+                total_tasks: 3,
+                total_groups: 1,
+                cached_count: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn test_text_formatter_output() {
+        let formatter = TextFormatter;
+        let data = sample_task_data();
+        let output = formatter.format(&data);
+
+        assert!(output.contains("Tasks:"));
+        assert!(output.contains("build"));
+        assert!(output.contains("test"));
+        assert!(output.contains("bun.install"));
+        assert!(output.contains("3 tasks"));
+        assert!(output.contains("1 groups"));
+        assert!(output.contains("1 cached"));
+    }
+
+    #[test]
+    fn test_text_formatter_empty() {
+        let formatter = TextFormatter;
+        let data = TaskListData {
+            sources: vec![],
+            stats: TaskListStats::default(),
+        };
+        let output = formatter.format(&data);
+        assert!(output.contains("No tasks"));
+    }
+
+    #[test]
+    fn test_rich_formatter_color_methods() {
+        let formatter = RichFormatter { use_colors: true };
+        let cyan = formatter.cyan("test");
+        let dim = formatter.dim("test");
+        let bold = formatter.bold("test");
+
+        assert!(cyan.contains("\x1b[36m"));
+        assert!(dim.contains("\x1b[2m"));
+        assert!(bold.contains("\x1b[1m"));
+    }
+
+    #[test]
+    fn test_rich_formatter_no_colors_methods() {
+        let formatter = RichFormatter { use_colors: false };
+        assert_eq!(formatter.cyan("test"), "test");
+        assert_eq!(formatter.dim("test"), "test");
+        assert_eq!(formatter.bold("test"), "test");
+    }
+
+    #[test]
+    fn test_rich_formatter_output() {
+        let formatter = RichFormatter { use_colors: false };
+        let data = sample_task_data();
+        let output = formatter.format(&data);
+
+        assert!(output.contains("Tasks:"));
+        assert!(output.contains("build"));
+        assert!(output.contains("test"));
+    }
+
+    #[test]
+    fn test_rich_formatter_empty() {
+        let formatter = RichFormatter { use_colors: false };
+        let data = TaskListData {
+            sources: vec![],
+            stats: TaskListStats::default(),
+        };
+        let output = formatter.format(&data);
+        assert!(output.contains("No tasks"));
+    }
+
+    #[test]
+    fn test_tables_formatter_color_methods() {
+        let formatter = TablesFormatter { use_colors: true };
+        let cyan = formatter.cyan("test");
+        let bold = formatter.bold("test");
+
+        assert!(cyan.contains("\x1b[36m"));
+        assert!(bold.contains("\x1b[1m"));
+    }
+
+    #[test]
+    fn test_tables_formatter_no_colors_methods() {
+        let formatter = TablesFormatter { use_colors: false };
+        assert_eq!(formatter.cyan("test"), "test");
+        assert_eq!(formatter.bold("test"), "test");
+    }
+
+    #[test]
+    fn test_tables_formatter_output() {
+        let formatter = TablesFormatter { use_colors: false };
+        let data = sample_task_data();
+        let output = formatter.format(&data);
+
+        // "build" task gets categorized as "BUILD & COMPILE" by format_category_name
+        assert!(output.contains("build"));
+        assert!(output.contains("3 tasks"));
+    }
+
+    #[test]
+    fn test_tables_formatter_empty() {
+        let formatter = TablesFormatter { use_colors: false };
+        let data = TaskListData {
+            sources: vec![],
+            stats: TaskListStats::default(),
+        };
+        let output = formatter.format(&data);
+        assert!(output.contains("No tasks"));
+    }
+
+    #[test]
+    fn test_dashboard_formatter_color_methods() {
+        let formatter = DashboardFormatter { use_colors: true };
+        let green = formatter.green("test");
+        let yellow = formatter.yellow("test");
+        let dim = formatter.dim("test");
+        let bold = formatter.bold("test");
+
+        assert!(green.contains("\x1b[32m"));
+        assert!(yellow.contains("\x1b[33m"));
+        assert!(dim.contains("\x1b[2m"));
+        assert!(bold.contains("\x1b[1m"));
+    }
+
+    #[test]
+    fn test_dashboard_formatter_no_colors_methods() {
+        let formatter = DashboardFormatter { use_colors: false };
+        assert_eq!(formatter.green("test"), "test");
+        assert_eq!(formatter.yellow("test"), "test");
+        assert_eq!(formatter.dim("test"), "test");
+        assert_eq!(formatter.bold("test"), "test");
+    }
+
+    #[test]
+    fn test_dashboard_formatter_output() {
+        let formatter = DashboardFormatter { use_colors: false };
+        let data = sample_task_data();
+        let output = formatter.format(&data);
+
+        assert!(output.contains("Tasks"));
+        assert!(output.contains("cached"));
+        assert!(output.contains("stale"));
+    }
+
+    #[test]
+    fn test_dashboard_formatter_empty() {
+        let formatter = DashboardFormatter { use_colors: false };
+        let data = TaskListData {
+            sources: vec![],
+            stats: TaskListStats::default(),
+        };
+        let output = formatter.format(&data);
+        assert!(output.contains("No tasks"));
+    }
+
+    #[test]
+    fn test_emoji_formatter_output() {
+        let formatter = EmojiFormatter;
+        let data = sample_task_data();
+        let output = formatter.format(&data);
+
+        assert!(output.contains("🔨")); // Build & Compile
+        assert!(output.contains("🧪")); // Testing
+        assert!(output.contains("📦")); // summary
+        assert!(output.contains("3 tasks"));
+    }
+
+    #[test]
+    fn test_source_proximity_exact_match() {
+        assert_eq!(source_proximity("foo/env.cue", Some("foo")), 0);
+    }
+
+    #[test]
+    fn test_source_proximity_parent_dir() {
+        assert_eq!(source_proximity("env.cue", Some("foo/bar")), 2);
+    }
+
+    #[test]
+    fn test_source_proximity_unrelated() {
+        let result = source_proximity("other/env.cue", Some("foo"));
+        assert!(result > 100);
+    }
+
+    #[test]
+    fn test_format_category_more_cases() {
+        assert_eq!(format_category_name("fmt"), "Code Quality");
+        assert_eq!(format_category_name("check"), "Code Quality");
+        assert_eq!(format_category_name("bun"), "BUN Tasks");
+        assert_eq!(format_category_name("npm"), "NPM Tasks");
+        assert_eq!(format_category_name("go"), "GO Tasks");
+        assert_eq!(format_category_name("audit"), "Security");
+        assert_eq!(format_category_name("publish"), "Release");
+        assert_eq!(format_category_name("release"), "Release");
+        assert_eq!(format_category_name("deploy"), "Release");
+        assert_eq!(format_category_name("docker"), "Containers");
+        assert_eq!(format_category_name("container"), "Containers");
+        assert_eq!(format_category_name("ci"), "CI/CD");
+        assert_eq!(format_category_name("cd"), "CI/CD");
+        assert_eq!(format_category_name("custom"), "custom Tasks");
+    }
+
+    #[test]
+    fn test_infer_category_from_description() {
+        assert_eq!(
+            infer_category_from_name("foo", Some("run security checks")),
+            "Security"
+        );
+        assert_eq!(
+            infer_category_from_name("bar", Some("deploy to production")),
+            "Release"
+        );
+        assert_eq!(
+            infer_category_from_name("baz", Some("build docker image")),
+            "Containers"
+        );
+    }
+
+    #[test]
+    fn test_infer_category_doc_patterns() {
+        assert_eq!(infer_category_from_name("docs", None), "Documentation");
+        assert_eq!(
+            infer_category_from_name("documentation", None),
+            "Documentation"
+        );
+    }
+
+    #[test]
+    fn test_infer_category_maintenance_patterns() {
+        assert_eq!(infer_category_from_name("clean", None), "Maintenance");
+        assert_eq!(infer_category_from_name("reset", None), "Maintenance");
+    }
+
+    #[test]
+    fn test_infer_category_cicd_patterns() {
+        assert_eq!(infer_category_from_name("ci", None), "CI/CD");
+        assert_eq!(infer_category_from_name("cd", None), "CI/CD");
+    }
+
+    #[test]
+    fn test_get_category_emoji_all_cases() {
+        assert_eq!(get_category_emoji("Documentation"), "📚");
+        assert_eq!(get_category_emoji("Maintenance"), "🧹");
+        assert_eq!(get_category_emoji("CI/CD"), "⚙️");
+        assert_eq!(get_category_emoji("Containers"), "🐳");
+        assert_eq!(get_category_emoji("Unknown Category"), "📋");
+    }
+
+    #[test]
+    fn test_task_node_clone() {
+        let node = TaskNode {
+            name: "test".to_string(),
+            full_name: Some("test".to_string()),
+            description: None,
+            is_group: false,
+            dep_count: 0,
+            is_cached: true,
+            children: vec![],
+        };
+        let cloned = node.clone();
+        assert_eq!(cloned.name, node.name);
+        assert_eq!(cloned.is_cached, node.is_cached);
+    }
+
+    #[test]
+    fn test_task_source_group_clone() {
+        let group = TaskSourceGroup {
+            source: "env.cue".to_string(),
+            header: "Tasks".to_string(),
+            nodes: vec![],
+        };
+        let cloned = group.clone();
+        assert_eq!(cloned.source, group.source);
+        assert_eq!(cloned.header, group.header);
+    }
+
+    #[test]
+    fn test_task_list_data_clone() {
+        let data = TaskListData {
+            sources: vec![],
+            stats: TaskListStats::default(),
+        };
+        let cloned = data.clone();
+        assert_eq!(cloned.sources.len(), data.sources.len());
+    }
+
+    #[test]
+    fn test_task_list_stats_clone() {
+        let stats = TaskListStats {
+            total_tasks: 5,
+            total_groups: 2,
+            cached_count: 3,
+        };
+        let cloned = stats.clone();
+        assert_eq!(cloned.total_tasks, 5);
+        assert_eq!(cloned.total_groups, 2);
+        assert_eq!(cloned.cached_count, 3);
+    }
+
+    #[test]
+    fn test_text_formatter_debug() {
+        let formatter = TextFormatter;
+        let debug = format!("{:?}", formatter);
+        assert!(debug.contains("TextFormatter"));
+    }
+
+    #[test]
+    fn test_rich_formatter_debug() {
+        let formatter = RichFormatter { use_colors: true };
+        let debug = format!("{:?}", formatter);
+        assert!(debug.contains("RichFormatter"));
+    }
+
+    #[test]
+    fn test_tables_formatter_debug() {
+        let formatter = TablesFormatter { use_colors: true };
+        let debug = format!("{:?}", formatter);
+        assert!(debug.contains("TablesFormatter"));
+    }
+
+    #[test]
+    fn test_dashboard_formatter_debug() {
+        let formatter = DashboardFormatter { use_colors: true };
+        let debug = format!("{:?}", formatter);
+        assert!(debug.contains("DashboardFormatter"));
+    }
+
+    #[test]
+    fn test_emoji_formatter_debug() {
+        let formatter = EmojiFormatter;
+        let debug = format!("{:?}", formatter);
+        assert!(debug.contains("EmojiFormatter"));
+    }
+
+    #[test]
+    fn test_calculate_max_width() {
+        let nodes = vec![
+            TaskNode {
+                name: "short".to_string(),
+                full_name: Some("short".to_string()),
+                description: None,
+                is_group: false,
+                dep_count: 0,
+                is_cached: false,
+                children: vec![],
+            },
+            TaskNode {
+                name: "verylongname".to_string(),
+                full_name: Some("verylongname".to_string()),
+                description: None,
+                is_group: false,
+                dep_count: 0,
+                is_cached: false,
+                children: vec![],
+            },
+        ];
+        let width = calculate_max_width(&nodes, 0);
+        // Width should account for the longer name
+        assert!(width >= "verylongname".len());
+    }
+
+    #[test]
+    fn test_text_formatter_with_dep_count() {
+        let formatter = TextFormatter;
+        let data = TaskListData {
+            sources: vec![TaskSourceGroup {
+                source: String::new(),
+                header: "Tasks".to_string(),
+                nodes: vec![TaskNode {
+                    name: "test".to_string(),
+                    full_name: Some("test".to_string()),
+                    description: None,
+                    is_group: false,
+                    dep_count: 3,
+                    is_cached: false,
+                    children: vec![],
+                }],
+            }],
+            stats: TaskListStats {
+                total_tasks: 1,
+                total_groups: 0,
+                cached_count: 0,
+            },
+        };
+        let output = formatter.format(&data);
+        assert!(output.contains("[3]"));
+    }
+
+    #[test]
+    fn test_text_formatter_with_source_file() {
+        let formatter = TextFormatter;
+        let data = TaskListData {
+            sources: vec![TaskSourceGroup {
+                source: "projects/foo/env.cue".to_string(),
+                header: "Tasks from projects/foo/env.cue".to_string(),
+                nodes: vec![TaskNode {
+                    name: "build".to_string(),
+                    full_name: Some("build".to_string()),
+                    description: None,
+                    is_group: false,
+                    dep_count: 0,
+                    is_cached: false,
+                    children: vec![],
+                }],
+            }],
+            stats: TaskListStats {
+                total_tasks: 1,
+                total_groups: 0,
+                cached_count: 0,
+            },
+        };
+        let output = formatter.format(&data);
+        assert!(output.contains("projects/foo/env.cue"));
+    }
+}

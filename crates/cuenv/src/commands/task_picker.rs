@@ -405,4 +405,217 @@ mod tests {
         picker.select_previous();
         assert_eq!(picker.list_state.selected(), Some(2));
     }
+
+    #[test]
+    fn test_selectable_task_clone() {
+        let task = SelectableTask {
+            name: "test".to_string(),
+            description: Some("description".to_string()),
+        };
+        let cloned = task.clone();
+        assert_eq!(cloned.name, task.name);
+        assert_eq!(cloned.description, task.description);
+    }
+
+    #[test]
+    fn test_selectable_task_debug() {
+        let task = SelectableTask {
+            name: "test".to_string(),
+            description: None,
+        };
+        let debug = format!("{:?}", task);
+        assert!(debug.contains("SelectableTask"));
+        assert!(debug.contains("test"));
+    }
+
+    #[test]
+    fn test_picker_result_debug() {
+        let selected = PickerResult::Selected("task".to_string());
+        let cancelled = PickerResult::Cancelled;
+
+        let debug_selected = format!("{:?}", selected);
+        let debug_cancelled = format!("{:?}", cancelled);
+
+        assert!(debug_selected.contains("Selected"));
+        assert!(debug_cancelled.contains("Cancelled"));
+    }
+
+    #[test]
+    fn test_task_picker_empty_tasks() {
+        let tasks = vec![];
+        let picker = TaskPicker::new(tasks);
+        assert!(picker.filtered_indices.is_empty());
+        assert_eq!(picker.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_task_picker_filter_empty_string() {
+        let tasks = vec![
+            SelectableTask {
+                name: "task1".to_string(),
+                description: None,
+            },
+            SelectableTask {
+                name: "task2".to_string(),
+                description: None,
+            },
+        ];
+
+        let mut picker = TaskPicker::new(tasks);
+        picker.filter = String::new();
+        picker.update_filter();
+        assert_eq!(picker.filtered_indices.len(), 2);
+    }
+
+    #[test]
+    fn test_task_picker_filter_by_description() {
+        let tasks = vec![
+            SelectableTask {
+                name: "task1".to_string(),
+                description: Some("builds the app".to_string()),
+            },
+            SelectableTask {
+                name: "task2".to_string(),
+                description: Some("runs tests".to_string()),
+            },
+        ];
+
+        let mut picker = TaskPicker::new(tasks);
+        picker.filter = "tests".to_string();
+        picker.update_filter();
+        assert_eq!(picker.filtered_indices.len(), 1);
+        assert_eq!(picker.filtered_indices[0], 1);
+    }
+
+    #[test]
+    fn test_task_picker_filter_case_insensitive() {
+        let tasks = vec![
+            SelectableTask {
+                name: "BuildApp".to_string(),
+                description: None,
+            },
+            SelectableTask {
+                name: "runtest".to_string(),
+                description: None,
+            },
+        ];
+
+        let mut picker = TaskPicker::new(tasks);
+
+        picker.filter = "BUILD".to_string();
+        picker.update_filter();
+        assert_eq!(picker.filtered_indices.len(), 1);
+        assert_eq!(picker.filtered_indices[0], 0);
+
+        picker.filter = "build".to_string();
+        picker.update_filter();
+        assert_eq!(picker.filtered_indices.len(), 1);
+    }
+
+    #[test]
+    fn test_task_picker_filter_no_match() {
+        let tasks = vec![
+            SelectableTask {
+                name: "task1".to_string(),
+                description: None,
+            },
+            SelectableTask {
+                name: "task2".to_string(),
+                description: None,
+            },
+        ];
+
+        let mut picker = TaskPicker::new(tasks);
+        picker.filter = "nonexistent".to_string();
+        picker.update_filter();
+        assert!(picker.filtered_indices.is_empty());
+        assert_eq!(picker.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_task_picker_selected_task() {
+        let tasks = vec![
+            SelectableTask {
+                name: "task1".to_string(),
+                description: None,
+            },
+            SelectableTask {
+                name: "task2".to_string(),
+                description: None,
+            },
+        ];
+
+        let mut picker = TaskPicker::new(tasks);
+        assert_eq!(picker.selected_task(), Some("task1".to_string()));
+
+        picker.select_next();
+        assert_eq!(picker.selected_task(), Some("task2".to_string()));
+    }
+
+    #[test]
+    fn test_task_picker_selected_task_empty() {
+        let tasks = vec![];
+        let picker = TaskPicker::new(tasks);
+        assert_eq!(picker.selected_task(), None);
+    }
+
+    #[test]
+    fn test_task_picker_select_previous_empty() {
+        let tasks = vec![];
+        let mut picker = TaskPicker::new(tasks);
+        picker.select_previous(); // Should not panic
+        assert_eq!(picker.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_task_picker_select_next_empty() {
+        let tasks = vec![];
+        let mut picker = TaskPicker::new(tasks);
+        picker.select_next(); // Should not panic
+        assert_eq!(picker.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_task_picker_select_previous_no_selection() {
+        let tasks = vec![SelectableTask {
+            name: "task1".to_string(),
+            description: None,
+        }];
+
+        let mut picker = TaskPicker::new(tasks);
+        // Force no selection by filtering with empty result and then putting back
+        picker.filter = "nonexistent".to_string();
+        picker.update_filter();
+        picker.filter.clear();
+        picker.update_filter();
+        // After re-filtering, selection should be at 0
+        assert_eq!(picker.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_task_picker_select_previous_wraps() {
+        let tasks = vec![
+            SelectableTask {
+                name: "a".to_string(),
+                description: None,
+            },
+            SelectableTask {
+                name: "b".to_string(),
+                description: None,
+            },
+        ];
+
+        let mut picker = TaskPicker::new(tasks);
+        assert_eq!(picker.list_state.selected(), Some(0));
+        picker.select_previous();
+        assert_eq!(picker.list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn test_run_picker_empty_tasks() {
+        // run_picker with empty tasks should return Cancelled immediately
+        // without trying to enter terminal mode
+        let result = run_picker(vec![]);
+        assert!(matches!(result, Ok(PickerResult::Cancelled)));
+    }
 }

@@ -211,6 +211,7 @@ impl Widget for TaskTreeWidget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::state::TaskInfo;
 
     #[test]
     fn test_task_tree_widget_new() {
@@ -289,5 +290,169 @@ mod tests {
         );
         // Single name fallback
         assert_eq!(TaskTreeWidget::parse_task_path("simple"), vec!["simple"]);
+    }
+
+    #[test]
+    fn test_get_group_status_empty() {
+        let state = TuiState::new();
+        let widget = TaskTreeWidget::new(&state);
+        let (status, completed, total) = widget.get_group_status("test");
+        assert_eq!(status, TaskStatus::Pending);
+        assert_eq!(completed, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_get_group_status_with_tasks() {
+        let mut state = TuiState::new();
+        let mut info = TaskInfo::new("task:proj:test.unit".to_string(), vec![], 0);
+        info.status = TaskStatus::Completed;
+        state.tasks.insert("task:proj:test.unit".to_string(), info);
+
+        let mut info2 = TaskInfo::new("task:proj:test.integration".to_string(), vec![], 0);
+        info2.status = TaskStatus::Running;
+        state
+            .tasks
+            .insert("task:proj:test.integration".to_string(), info2);
+
+        let widget = TaskTreeWidget::new(&state);
+        let (status, completed, total) = widget.get_group_status("test");
+
+        assert_eq!(status, TaskStatus::Running);
+        assert_eq!(completed, 1);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_get_group_status_all_completed() {
+        let mut state = TuiState::new();
+
+        let mut info = TaskInfo::new("task:proj:test.unit".to_string(), vec![], 0);
+        info.status = TaskStatus::Completed;
+        state.tasks.insert("task:proj:test.unit".to_string(), info);
+
+        let mut info2 = TaskInfo::new("task:proj:test.integration".to_string(), vec![], 0);
+        info2.status = TaskStatus::Cached;
+        state
+            .tasks
+            .insert("task:proj:test.integration".to_string(), info2);
+
+        let widget = TaskTreeWidget::new(&state);
+        let (status, completed, total) = widget.get_group_status("test");
+
+        assert_eq!(status, TaskStatus::Completed);
+        assert_eq!(completed, 2);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_get_group_status_with_failure() {
+        let mut state = TuiState::new();
+
+        let mut info = TaskInfo::new("task:proj:build".to_string(), vec![], 0);
+        info.status = TaskStatus::Completed;
+        state.tasks.insert("task:proj:build".to_string(), info);
+
+        let mut info2 = TaskInfo::new("task:proj:build.release".to_string(), vec![], 0);
+        info2.status = TaskStatus::Failed;
+        state
+            .tasks
+            .insert("task:proj:build.release".to_string(), info2);
+
+        let widget = TaskTreeWidget::new(&state);
+        let (status, _completed, _total) = widget.get_group_status("build");
+
+        assert_eq!(status, TaskStatus::Failed);
+    }
+
+    #[test]
+    fn test_get_group_status_empty_path() {
+        let mut state = TuiState::new();
+
+        let mut info = TaskInfo::new("task:proj:test".to_string(), vec![], 0);
+        info.status = TaskStatus::Completed;
+        state.tasks.insert("task:proj:test".to_string(), info);
+
+        let widget = TaskTreeWidget::new(&state);
+        let (_status, completed, total) = widget.get_group_status("");
+
+        assert_eq!(completed, 1);
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn test_tree_view_item_clone() {
+        let item = TreeViewItem {
+            node_type: TreeNodeType::Task("test".to_string()),
+            display_name: "test".to_string(),
+            depth: 0,
+            is_expanded: false,
+            has_children: false,
+        };
+        let cloned = item.clone();
+        assert_eq!(cloned.display_name, item.display_name);
+        assert_eq!(cloned.depth, item.depth);
+    }
+
+    #[test]
+    fn test_tree_node_type_debug() {
+        let all = TreeNodeType::All;
+        let group = TreeNodeType::Group("test".to_string());
+        let task = TreeNodeType::Task("test".to_string());
+
+        assert!(format!("{all:?}").contains("All"));
+        assert!(format!("{group:?}").contains("Group"));
+        assert!(format!("{task:?}").contains("Task"));
+    }
+
+    #[test]
+    fn test_render_tree_prefix_deep_nesting() {
+        let item = TreeViewItem {
+            node_type: TreeNodeType::Task("test".to_string()),
+            display_name: "deep".to_string(),
+            depth: 5,
+            is_expanded: false,
+            has_children: false,
+        };
+        let prefix = TaskTreeWidget::render_tree_prefix(&item);
+        // 5 * 2 spaces = 10 spaces, then "─ "
+        assert_eq!(prefix, "          ─ ");
+    }
+
+    #[test]
+    fn test_parse_task_path_with_many_dots() {
+        let path = TaskTreeWidget::parse_task_path("task:proj:a.b.c.d");
+        assert_eq!(path, vec!["a", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn test_widget_render_empty_state() {
+        let state = TuiState::new();
+        let widget = TaskTreeWidget::new(&state);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
+        widget.render(Rect::new(0, 0, 40, 10), &mut buf);
+
+        // The widget should render without panicking
+        // and should show "No tasks" when empty
+    }
+
+    #[test]
+    fn test_render_tree_item_all_type() {
+        let mut state = TuiState::new();
+        state.flattened_tree.push(TreeViewItem {
+            node_type: TreeNodeType::All,
+            display_name: "All Tasks".to_string(),
+            depth: 0,
+            is_expanded: true,
+            has_children: true,
+        });
+
+        let widget = TaskTreeWidget::new(&state);
+        let item = &state.flattened_tree[0];
+        let line = widget.render_tree_item(item, false, false);
+
+        // Should not panic and should produce a Line
+        assert!(!line.spans.is_empty());
     }
 }

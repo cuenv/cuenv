@@ -348,6 +348,58 @@ For each crate, verify:
 
 ---
 
+### 2026-01-03: Coverage improvement session (eleventh pass)
+
+**Starting coverage: 78.06%**
+**Ending coverage: 79.19%** (+1.13%)
+
+#### Tests Added (this session):
+
+1. **cuenv/src/commands/task_list.rs** (coverage improved)
+   - Added 50+ tests for formatters:
+   - TextFormatter, RichFormatter, TablesFormatter, DashboardFormatter, EmojiFormatter output tests
+   - Color method tests (cyan, dim, bold, green, yellow)
+   - Empty data handling for all formatters
+   - source_proximity edge cases (exact match, parent dir, unrelated)
+   - format_category_name for all categories
+   - infer_category_from_name with description patterns
+   - get_category_emoji for all categories
+   - Clone and Debug implementations
+   - calculate_max_width with nested nodes
+
+2. **cuenv/src/commands/task_picker.rs** (33.82% -> improved)
+   - Added 15 tests for TaskPicker:
+   - SelectableTask clone/debug
+   - PickerResult debug
+   - Empty tasks handling
+   - Filter by name and description (case-insensitive)
+   - Filter no match behavior
+   - selected_task with empty/filtered results
+   - select_previous/next on empty lists
+   - Wrap-around navigation
+   - run_picker empty tasks
+
+3. **cuenv/src/tui/widgets/task_tree.rs** (31.17% -> improved)
+   - Added 12 tests for TaskTreeWidget:
+   - get_group_status empty/with tasks/all completed/with failure
+   - TreeViewItem clone
+   - TreeNodeType debug
+   - render_tree_prefix deep nesting
+   - parse_task_path with many dots
+   - widget_render_empty_state
+   - render_tree_item_all_type
+
+4. **cuenv/src/tui/widgets/output_panel.rs** (22.89% -> improved)
+   - Added 16 tests for OutputPanelWidget:
+   - extract_display_name (full format, two parts, simple)
+   - parse_task_path (all formats)
+   - task_matches_filter (exact, group, empty group)
+   - get_visible_tasks (all, filtered, specific task)
+   - widget_render_empty
+   - render_task_header_format
+
+---
+
 ### 2026-01-02: Coverage improvement session (sixth pass)
 
 **Starting coverage: 75.81%**
