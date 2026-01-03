@@ -463,14 +463,8 @@ mod tests {
             }),
         };
 
-        assert_eq!(
-            instance.get_field("name"),
-            Some(&json!("my-project"))
-        );
-        assert_eq!(
-            instance.get_field("version"),
-            Some(&json!("1.0.0"))
-        );
+        assert_eq!(instance.get_field("name"), Some(&json!("my-project")));
+        assert_eq!(instance.get_field("version"), Some(&json!("1.0.0")));
         assert!(instance.get_field("nonexistent").is_none());
     }
 

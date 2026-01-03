@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::ci::CI;
+use crate::module::Instance;
 use crate::config::Config;
 use crate::environment::Env;
 use crate::hooks::Hook;
@@ -1008,6 +1009,16 @@ impl Project {
                 task.depends_on.push(dep);
             }
         }
+    }
+}
+
+impl TryFrom<&Instance> for Project {
+    type Error = crate::Error;
+
+    fn try_from(instance: &Instance) -> Result<Self, Self::Error> {
+        let mut project: Project = instance.deserialize()?;
+        project.expand_cross_project_references();
+        Ok(project)
     }
 }
 

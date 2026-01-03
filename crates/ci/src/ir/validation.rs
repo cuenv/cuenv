@@ -117,7 +117,16 @@ impl<'a> IrValidator<'a> {
     }
 
     /// Validate task command is well-formed
+    ///
+    /// Phase tasks with provider hints (e.g., GitHub Actions) are allowed to have
+    /// empty commands since they execute via the provider's native mechanism.
     fn validate_command(task: &Task) -> Result<(), ValidationError> {
+        // Phase tasks with provider hints don't need commands
+        // They execute via provider-native actions (e.g., GitHub Actions uses:)
+        if task.phase.is_some() && task.provider_hints.is_some() {
+            return Ok(());
+        }
+
         if task.command.is_empty() {
             return Err(ValidationError::EmptyCommand {
                 task: task.id.clone(),
@@ -421,5 +430,49 @@ mod tests {
 
         let validator = IrValidator::new(&ir);
         assert!(validator.validate().is_ok());
+    }
+
+    #[test]
+    fn test_phase_task_with_provider_hints_allowed_empty_command() {
+        // Phase tasks (contributed by CI providers) can have provider_hints
+        // instead of commands - e.g., GitHub Actions with uses:
+        let mut ir = IntermediateRepresentation::new("test");
+        let mut phase_task = create_test_task("install-nix", &[]);
+        phase_task.command = vec![]; // Empty command
+        phase_task.phase = Some(crate::ir::BuildStage::Bootstrap);
+        phase_task.provider_hints = Some(serde_json::json!({
+            "github_action": {
+                "uses": "DeterminateSystems/nix-installer-action@v16"
+            }
+        }));
+        ir.tasks.push(phase_task);
+
+        let validator = IrValidator::new(&ir);
+        assert!(
+            validator.validate().is_ok(),
+            "Phase tasks with provider_hints should be allowed to have empty commands"
+        );
+    }
+
+    #[test]
+    fn test_phase_task_without_provider_hints_requires_command() {
+        // Phase tasks without provider_hints still need commands
+        let mut ir = IntermediateRepresentation::new("test");
+        let mut phase_task = create_test_task("run-script", &[]);
+        phase_task.command = vec![]; // Empty command
+        phase_task.phase = Some(crate::ir::BuildStage::Setup);
+        // No provider_hints
+        ir.tasks.push(phase_task);
+
+        let validator = IrValidator::new(&ir);
+        let result = validator.validate();
+        assert!(result.is_err());
+
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, ValidationError::EmptyCommand { .. }))
+        );
     }
 }

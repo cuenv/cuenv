@@ -336,16 +336,15 @@ mod tests {
         std::fs::create_dir_all(temp.path().join("bad")).unwrap();
         std::fs::write(temp.path().join("bad/env.cue"), "invalid").unwrap();
 
-        let mut discovery = BaseDiscovery::new(temp.path().to_path_buf()).with_eval_fn(Box::new(
-            |path| {
+        let mut discovery =
+            BaseDiscovery::new(temp.path().to_path_buf()).with_eval_fn(Box::new(|path| {
                 // Simulate failure for "bad" directory
                 if path.ends_with("bad") {
                     Err(crate::Error::configuration("Invalid CUE"))
                 } else {
                     Ok(crate::manifest::Base::default())
                 }
-            },
-        ));
+            }));
 
         // Should succeed even with some failures
         discovery.discover().unwrap();
@@ -381,10 +380,12 @@ mod tests {
         // The ignore crate requires a git repo to respect .gitignore
         assert!(!discovery.bases().is_empty());
         // Verify included is always present
-        assert!(discovery
-            .bases()
-            .iter()
-            .any(|b| b.synthetic_name == "included"));
+        assert!(
+            discovery
+                .bases()
+                .iter()
+                .any(|b| b.synthetic_name == "included")
+        );
     }
 
     // ==========================================================================

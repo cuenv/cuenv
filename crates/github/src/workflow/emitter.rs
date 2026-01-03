@@ -953,7 +953,101 @@ impl GitHubActionsEmitter {
 }
 
 impl Emitter for GitHubActionsEmitter {
-    fn emit(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+    /// Emit a thin mode GitHub Actions workflow.
+    ///
+    /// Thin mode generates a single-job workflow that:
+    /// 1. Runs bootstrap phase steps (e.g., install Nix)
+    /// 2. Runs setup phase steps (e.g., build cuenv)
+    /// 3. Executes `cuenv ci --pipeline <name>` for orchestration
+    /// 4. Runs success/failure phase steps with conditions
+    fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+        use crate::workflow::stage_renderer::GitHubStageRenderer;
+
+        let workflow_name = Self::build_workflow_name(ir);
+        let workflow_filename = format!("{}.yml", sanitize_filename(&workflow_name));
+        let triggers = self.build_triggers(ir, &workflow_filename);
+        let permissions = self.build_permissions(ir);
+
+        let renderer = GitHubStageRenderer::new();
+        let mut steps = Vec::new();
+
+        // Checkout step
+        steps.push(
+            Step::uses("actions/checkout@v4")
+                .with_name("Checkout")
+                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
+        );
+
+        // Bootstrap and setup phase steps
+        let (phase_steps, _secret_env) = Self::render_phase_steps(ir);
+        steps.extend(phase_steps);
+
+        // Main execution step: cuenv ci --pipeline <name>
+        let pipeline_name = &ir.pipeline.name;
+        let cuenv_command = format!("cuenv ci --pipeline {pipeline_name}");
+
+        let mut main_step = Step::run(&cuenv_command)
+            .with_name(format!("Run pipeline: {pipeline_name}"))
+            .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+
+        if let Some(env) = &ir.pipeline.environment {
+            main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
+        }
+
+        steps.push(main_step);
+
+        // Success phase steps
+        for task in ir.sorted_phase_tasks(BuildStage::Success) {
+            let mut step = renderer.render_task(task);
+            step.if_condition = Some("success()".to_string());
+            steps.push(step);
+        }
+
+        // Failure phase steps
+        for task in ir.sorted_phase_tasks(BuildStage::Failure) {
+            let mut step = renderer.render_task(task);
+            step.if_condition = Some("failure()".to_string());
+            steps.push(step);
+        }
+
+        // Build single job
+        let job = Job {
+            name: Some(workflow_name.clone()),
+            runs_on: self.runner_as_runs_on(),
+            needs: Vec::new(),
+            if_condition: None,
+            strategy: None,
+            environment: ir.pipeline.environment.clone().map(Environment::Name),
+            env: IndexMap::new(),
+            concurrency: None,
+            continue_on_error: None,
+            timeout_minutes: None,
+            steps,
+        };
+
+        let mut jobs = IndexMap::new();
+        jobs.insert(sanitize_job_id(&workflow_name), job);
+
+        let workflow = Workflow {
+            name: workflow_name,
+            on: triggers,
+            concurrency: Some(Concurrency {
+                group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
+                cancel_in_progress: Some(true),
+            }),
+            permissions: Some(permissions),
+            env: IndexMap::new(),
+            jobs,
+        };
+
+        Self::serialize_workflow(&workflow)
+    }
+
+    /// Emit an expanded mode GitHub Actions workflow.
+    ///
+    /// Expanded mode generates a multi-job workflow where each task becomes
+    /// a separate job with dependencies managed by GitHub Actions (`needs:`).
+    fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
         let workflow_name = Self::build_workflow_name(ir);
         let workflow = self.build_workflow(ir, &workflow_name);
         Self::serialize_workflow(&workflow)
@@ -1354,13 +1448,17 @@ impl ReleaseWorkflowBuilder {
 mod tests {
     use super::*;
     use cuenv_ci::ir::{CachePolicy, PipelineMetadata, ResourceRequirements, TriggerCondition};
+    use cuenv_core::ci::PipelineMode;
     use std::collections::BTreeMap;
 
+    /// Create an IR for testing expanded mode behavior.
+    /// Uses PipelineMode::Expanded explicitly since tests check multi-job output.
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
         IntermediateRepresentation {
             version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
+                mode: PipelineMode::Expanded,
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,

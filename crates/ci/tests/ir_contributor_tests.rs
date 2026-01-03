@@ -59,11 +59,12 @@ fn compile_with_pipeline(
     let pipeline = project
         .ci
         .as_ref()
-        .and_then(|ci| ci.pipelines.iter().find(|p| p.name == pipeline_name))
+        .and_then(|ci| ci.pipelines.get(pipeline_name))
         .ok_or_else(|| format!("Pipeline '{pipeline_name}' not found"))?
         .clone();
 
     let options = CompilerOptions {
+        pipeline_name: Some(pipeline_name.to_string()),
         pipeline: Some(pipeline),
         ..Default::default()
     };
