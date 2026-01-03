@@ -979,7 +979,7 @@ async fn given_project_with_tasks(world: &mut TestWorld, step: &cucumber::gherki
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
-    world.current_dir = test_dir.clone();
+    world.current_dir.clone_from(&test_dir);
 
     // Create the CUE module structure
     let cue_mod_dir = test_dir.join("cue.mod");
@@ -1025,7 +1025,7 @@ tasks: {{
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
-    world.current_dir = test_dir.clone();
+    world.current_dir.clone_from(&test_dir);
 
     // Create CUE module structure
     let cue_mod_dir = test_dir.join("cue.mod");
@@ -1068,7 +1068,7 @@ tasks: {{
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
-    world.current_dir = test_dir.clone();
+    world.current_dir.clone_from(&test_dir);
 
     // Create CUE module structure
     let cue_mod_dir = test_dir.join("cue.mod");
@@ -1233,7 +1233,7 @@ async fn given_project_with_env_vars(world: &mut TestWorld, step: &cucumber::ghe
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
-    world.current_dir = test_dir.clone();
+    world.current_dir.clone_from(&test_dir);
 
     // Create the CUE module structure
     let cue_mod_dir = test_dir.join("cue.mod");
@@ -1264,7 +1264,7 @@ name: "empty-env-test"
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
-    world.current_dir = test_dir.clone();
+    world.current_dir.clone_from(&test_dir);
 
     // Create the CUE module structure
     let cue_mod_dir = test_dir.join("cue.mod");
@@ -1310,7 +1310,7 @@ environments: {{
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
-    world.current_dir = test_dir.clone();
+    world.current_dir.clone_from(&test_dir);
 
     // Create the CUE module structure
     let cue_mod_dir = test_dir.join("cue.mod");
@@ -1399,7 +1399,7 @@ env: {
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
-    world.current_dir = test_dir.clone();
+    world.current_dir.clone_from(&test_dir);
 
     // Create the CUE module structure
     let cue_mod_dir = test_dir.join("cue.mod");
@@ -1427,7 +1427,7 @@ name: "empty-project"
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
-    world.current_dir = test_dir.clone();
+    world.current_dir.clone_from(&test_dir);
 
     // Create the CUE module structure
     let cue_mod_dir = test_dir.join("cue.mod");
