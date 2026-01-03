@@ -205,9 +205,15 @@ Extract workspace scanning and TaskRef resolution.
 
 ---
 
-## Phase 5: cuenv-task-index (782 LOC)
+## Phase 5: cuenv-task-index (782 LOC) - DEFERRED
 
 Extract task indexing and path normalization.
+
+**Decision: DEFERRED** - The TaskIndex module is tightly coupled to core's Task, TaskDefinition, TaskGroup, ParallelGroup, and Tasks types. Extracting it would require either:
+1. Moving core task types to a shared types crate first
+2. Using traits/generics to abstract over task types
+
+The effort doesn't justify the benefit for ~400 LOC of actual code. This module can be extracted later if core's task types are factored out.
 
 ### Setup
 
