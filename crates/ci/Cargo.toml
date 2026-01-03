@@ -19,6 +19,8 @@ cuenv-core = { workspace = true }
 cuenv-secrets = { workspace = true }
 cuenv-workspaces = { workspace = true }
 cuenv-tools-nix = { path = "../tools/nix" }
+cuenv-tools-github = { path = "../tools/github" }
+cuenv_tools_rustup = { path = "../tools/rustup" }
 cuengine = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
