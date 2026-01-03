@@ -10,7 +10,8 @@
     clippy::expect_used,
     clippy::branches_sharing_code,
     clippy::panic,
-    clippy::needless_pass_by_value
+    clippy::needless_pass_by_value,
+    clippy::format_push_string
 )]
 
 use cucumber::{World, given, then, when};
