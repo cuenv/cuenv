@@ -408,10 +408,10 @@ let pkg_name = PackageName::try_from("cuenv")?;
 
 #### Task cache helpers
 
-The task cache utilities live under `cuenv_core::cache::tasks`.
+The task cache utilities live under the `cuenv-cache` crate.
 
 ```rust
-use cuenv_core::cache::tasks::{
+use cuenv_cache::{
     compute_cache_key, lookup, materialize_outputs, CacheKeyEnvelope,
 };
 use std::{collections::BTreeMap, path::Path};

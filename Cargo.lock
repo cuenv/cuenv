@@ -1627,6 +1627,7 @@ dependencies = [
  "cuenv-hooks",
  "cuenv-ignore",
  "cuenv-release",
+ "cuenv-task-discovery",
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-tools-oci",
@@ -1726,7 +1727,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cache"
-version = "0.21.4"
+version = "0.22.1"
 dependencies = [
  "chrono",
  "cuenv-events",
@@ -1815,7 +1816,6 @@ dependencies = [
  "miette",
  "petgraph",
  "proptest",
- "regex",
  "serde",
  "serde_json",
  "sha2",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-hooks"
-version = "0.21.4"
+version = "0.22.1"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -2023,8 +2023,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-task-discovery"
+version = "0.22.1"
+dependencies = [
+ "cuenv-core",
+ "ignore",
+ "regex",
+ "thiserror 2.0.17",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-task-graph"
-version = "0.21.4"
+version = "0.22.1"
 dependencies = [
  "petgraph",
  "tempfile",

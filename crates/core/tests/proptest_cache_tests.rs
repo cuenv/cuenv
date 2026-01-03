@@ -5,7 +5,7 @@
 //! - Sensitivity: Different inputs produce different cache keys
 //! - Order invariance: Map ordering doesn't affect the cache key
 
-use cuenv_core::cache::tasks::{compute_cache_key, CacheKeyEnvelope};
+use cuenv_cache::{compute_cache_key, CacheKeyEnvelope};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
