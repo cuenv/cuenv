@@ -768,4 +768,137 @@ mod tests {
         ];
         let _builder = IgnoreFiles::builder().files(files);
     }
+
+    #[test]
+    fn test_ignore_file_generate_multiline_header() {
+        let file = IgnoreFile::new("git")
+            .header("Line 1\nLine 2\nLine 3")
+            .pattern("file.txt");
+
+        let content = file.generate();
+        assert!(content.contains("# Line 1\n"));
+        assert!(content.contains("# Line 2\n"));
+        assert!(content.contains("# Line 3\n"));
+    }
+
+    #[test]
+    fn test_ignore_file_multiple_patterns_chained() {
+        let file = IgnoreFile::new("git")
+            .pattern("a")
+            .pattern("b")
+            .pattern("c");
+
+        assert_eq!(file.patterns_list().len(), 3);
+    }
+
+    #[test]
+    fn test_ignore_file_patterns_from_vec() {
+        let patterns: Vec<&str> = vec!["*.log", "*.tmp", "*.bak"];
+        let file = IgnoreFile::new("git").patterns(patterns);
+
+        assert_eq!(file.patterns_list().len(), 3);
+    }
+
+    #[test]
+    fn test_ignore_file_tool_with_numbers() {
+        let file = IgnoreFile::new("tool2");
+        assert_eq!(file.output_filename(), ".tool2ignore");
+    }
+
+    #[test]
+    fn test_ignore_file_generate_with_empty_pattern() {
+        let file = IgnoreFile::new("git").pattern("");
+        let content = file.generate();
+        // Empty pattern should still be included
+        assert!(content.contains("\n"));
+    }
+
+    #[test]
+    fn test_ignore_file_generate_with_comment_pattern() {
+        let file = IgnoreFile::new("git").pattern("# This is a comment");
+        let content = file.generate();
+        assert!(content.contains("# This is a comment"));
+    }
+
+    #[test]
+    fn test_ignore_file_generate_with_negation_pattern() {
+        let file = IgnoreFile::new("git").pattern("!important.txt");
+        let content = file.generate();
+        assert!(content.contains("!important.txt"));
+    }
+
+    #[test]
+    fn test_ignore_file_generate_with_glob_patterns() {
+        let file = IgnoreFile::new("git")
+            .pattern("**/*.log")
+            .pattern("*.bak")
+            .pattern("[Bb]uild/");
+
+        let content = file.generate();
+        assert!(content.contains("**/*.log"));
+        assert!(content.contains("*.bak"));
+        assert!(content.contains("[Bb]uild/"));
+    }
+
+    #[test]
+    fn test_validate_tool_name_with_dots() {
+        // Single dot is fine
+        assert!(validate_tool_name("my.tool").is_ok());
+        // Double dots are not
+        assert!(validate_tool_name("my..tool").is_err());
+    }
+
+    #[test]
+    fn test_validate_tool_name_unicode() {
+        // Unicode should be allowed
+        assert!(validate_tool_name("工具").is_ok());
+        assert!(validate_tool_name("инструмент").is_ok());
+    }
+
+    #[test]
+    fn test_validate_filename_unicode() {
+        assert!(validate_filename(".工具ignore").is_ok());
+    }
+
+    #[test]
+    fn test_file_status_copy() {
+        // FileStatus is Copy
+        let status: FileStatus = FileStatus::Created;
+        let copied = status;
+        assert_eq!(copied, FileStatus::Created);
+    }
+
+    #[test]
+    fn test_ignore_files_builder_chaining() {
+        let builder = IgnoreFiles::builder()
+            .directory("/tmp")
+            .require_git_repo(true)
+            .dry_run(true)
+            .file(IgnoreFile::new("git").pattern("*.log"));
+
+        let debug = format!("{builder:?}");
+        assert!(debug.contains("IgnoreFilesBuilder"));
+    }
+
+    #[test]
+    fn test_error_io_from() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "test");
+        let err: Error = io_err.into();
+        let display = format!("{err}");
+        assert!(display.contains("IO error"));
+    }
+
+    #[test]
+    fn test_ignore_file_new_from_string() {
+        let tool = String::from("git");
+        let file = IgnoreFile::new(tool);
+        assert_eq!(file.tool(), "git");
+    }
+
+    #[test]
+    fn test_ignore_file_patterns_from_strings() {
+        let patterns = vec!["a".to_string(), "b".to_string()];
+        let file = IgnoreFile::new("git").patterns(patterns);
+        assert_eq!(file.patterns_list().len(), 2);
+    }
 }
