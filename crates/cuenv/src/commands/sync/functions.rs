@@ -918,7 +918,7 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
     use cuenv_github::workflow::schema::{
         Concurrency, Environment, Job, PermissionLevel, Permissions, Step, Workflow,
     };
-    use cuenv_github::workflow::stage_renderer::GitHubStageRenderer;
+    use cuenv_github::workflow::stage_renderer::{GitHubStageRenderer, transform_secret_ref};
     use indexmap::IndexMap;
 
     let workflow_name = match &ctx.project_name {
@@ -937,7 +937,7 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
     steps.push(Step::uses("actions/checkout@v4").with_name("Checkout"));
 
     // Bootstrap and setup phase steps (from contributors)
-    let (phase_steps, _secret_env) = GitHubActionsEmitter::render_phase_steps(&ir);
+    let (phase_steps, secret_env) = GitHubActionsEmitter::render_phase_steps(&ir);
     steps.extend(phase_steps);
 
     // Main execution step: cuenv ci --pipeline <name>
@@ -953,6 +953,12 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
 
     if let Some(env) = &ctx.environment {
         main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
+    }
+
+    // Pass secret env vars from setup tasks to main step (e.g., OP_SERVICE_ACCOUNT_TOKEN)
+    // Transform ${VAR} to ${{ secrets.VAR }} format for GitHub Actions
+    for (key, value) in secret_env {
+        main_step = main_step.with_env(key, transform_secret_ref(&value));
     }
 
     steps.push(main_step);

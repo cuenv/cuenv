@@ -61,3 +61,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ENVIRONMENT: production
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
