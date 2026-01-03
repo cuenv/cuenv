@@ -1,4 +1,5 @@
 use cuenv_core::manifest::Project;
+use cuenv_core::tasks::{TaskDefinition, TaskGroup};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -89,23 +90,55 @@ pub fn matched_inputs_for_task(
         .collect()
 }
 
+/// Check if a task definition is directly affected by file changes.
+///
+/// Handles both single tasks and task groups (parallel/sequential).
+/// For groups, returns true if ANY subtask is affected.
+fn is_definition_affected(
+    def: &TaskDefinition,
+    changed_files: &[PathBuf],
+    project_root: &Path,
+) -> bool {
+    match def {
+        TaskDefinition::Single(task) => task
+            .iter_path_inputs()
+            .any(|input_glob| matches_any(changed_files, project_root, input_glob)),
+        TaskDefinition::Group(group) => {
+            is_group_affected(group, changed_files, project_root)
+        }
+    }
+}
+
+/// Check if a task group is directly affected by file changes.
+///
+/// A group is affected if ANY of its subtasks are affected.
+fn is_group_affected(group: &TaskGroup, changed_files: &[PathBuf], project_root: &Path) -> bool {
+    match group {
+        TaskGroup::Parallel(parallel) => parallel
+            .tasks
+            .values()
+            .any(|def| is_definition_affected(def, changed_files, project_root)),
+        TaskGroup::Sequential(tasks) => tasks
+            .iter()
+            .any(|def| is_definition_affected(def, changed_files, project_root)),
+    }
+}
+
 /// Check if a task is directly affected by file changes.
 ///
 /// A task is directly affected if any of its input patterns match any of the changed files.
+/// For task groups, returns true if any subtask in the group is affected.
 fn is_task_directly_affected(
     task_name: &str,
     config: &Project,
     changed_files: &[PathBuf],
     project_root: &Path,
 ) -> bool {
-    if let Some(task_def) = config.tasks.get(task_name)
-        && let Some(task) = task_def.as_single()
-    {
-        task.iter_path_inputs()
-            .any(|input_glob| matches_any(changed_files, project_root, input_glob))
-    } else {
-        false
-    }
+    let Some(task_def) = config.tasks.get(task_name) else {
+        return false;
+    };
+
+    is_definition_affected(task_def, changed_files, project_root)
 }
 
 /// Check if an external dependency (cross-project task) is affected by file changes.
@@ -236,7 +269,7 @@ fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
 mod tests {
     use super::*;
     use cuenv_core::manifest::Project;
-    use cuenv_core::tasks::{Input, Task, TaskDefinition};
+    use cuenv_core::tasks::{Input, ParallelGroup, Task, TaskDefinition, TaskGroup};
 
     /// Helper to create a minimal Project with tasks
     fn make_project(tasks: Vec<(&str, Task)>) -> Project {
@@ -696,6 +729,138 @@ mod tests {
             &changed_files,
             root
         ));
+    }
+
+    // ==========================================================================
+    // Task group affected detection tests
+    // ==========================================================================
+
+    #[test]
+    fn test_parallel_group_one_subtask_affected() {
+        // check group: { lint: inputs: ["src/**"], test: inputs: ["tests/**"] }
+        // Changed file: src/lib.rs -> lint is affected -> group is affected
+        let lint_task = make_task(vec!["src/**"], vec![]);
+        let test_task = make_task(vec!["tests/**"], vec![]);
+
+        let mut parallel_tasks = std::collections::HashMap::new();
+        parallel_tasks.insert("lint".to_string(), TaskDefinition::Single(Box::new(lint_task)));
+        parallel_tasks.insert("test".to_string(), TaskDefinition::Single(Box::new(test_task)));
+
+        let group = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
+
+        let mut project = Project::default();
+        project
+            .tasks
+            .insert("check".to_string(), TaskDefinition::Group(group));
+
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        assert!(is_task_directly_affected(
+            "check",
+            &project,
+            &changed_files,
+            root
+        ));
+    }
+
+    #[test]
+    fn test_parallel_group_no_subtask_affected() {
+        // check group: { lint: inputs: ["src/**"], test: inputs: ["tests/**"] }
+        // Changed file: docs/readme.md -> no subtask affected -> group not affected
+        let lint_task = make_task(vec!["src/**"], vec![]);
+        let test_task = make_task(vec!["tests/**"], vec![]);
+
+        let mut parallel_tasks = std::collections::HashMap::new();
+        parallel_tasks.insert("lint".to_string(), TaskDefinition::Single(Box::new(lint_task)));
+        parallel_tasks.insert("test".to_string(), TaskDefinition::Single(Box::new(test_task)));
+
+        let group = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
+
+        let mut project = Project::default();
+        project
+            .tasks
+            .insert("check".to_string(), TaskDefinition::Group(group));
+
+        let changed_files = vec![PathBuf::from("docs/readme.md")];
+        let root = Path::new(".");
+
+        assert!(!is_task_directly_affected(
+            "check",
+            &project,
+            &changed_files,
+            root
+        ));
+    }
+
+    #[test]
+    fn test_sequential_group_affected() {
+        // Sequential group: [lint, test] where lint is affected
+        let lint_task = make_task(vec!["src/**"], vec![]);
+        let test_task = make_task(vec!["tests/**"], vec![]);
+
+        let group = TaskGroup::Sequential(vec![
+            TaskDefinition::Single(Box::new(lint_task)),
+            TaskDefinition::Single(Box::new(test_task)),
+        ]);
+
+        let mut project = Project::default();
+        project
+            .tasks
+            .insert("check".to_string(), TaskDefinition::Group(group));
+
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+
+        assert!(is_task_directly_affected(
+            "check",
+            &project,
+            &changed_files,
+            root
+        ));
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_with_group() {
+        // Pipeline has ["check"] where check is a group containing lint (affected)
+        let lint_task = make_task(vec!["src/**"], vec![]);
+        let test_task = make_task(vec!["tests/**"], vec![]);
+
+        let mut parallel_tasks = std::collections::HashMap::new();
+        parallel_tasks.insert("lint".to_string(), TaskDefinition::Single(Box::new(lint_task)));
+        parallel_tasks.insert("test".to_string(), TaskDefinition::Single(Box::new(test_task)));
+
+        let group = TaskGroup::Parallel(ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        });
+
+        let mut project = Project::default();
+        project
+            .tasks
+            .insert("check".to_string(), TaskDefinition::Group(group));
+
+        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["check".to_string()];
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        // "check" should be in affected list because its "lint" subtask is affected
+        assert_eq!(affected, vec!["check".to_string()]);
     }
 
     // ==========================================================================
