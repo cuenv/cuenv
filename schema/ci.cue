@@ -208,7 +208,7 @@ package schema
 })
 
 #CI: close({
-	pipelines: [string]: #Pipeline
+	pipelines?: [string]: #Pipeline
 	provider?: #ProviderConfig
 
 	// Contributors that inject tasks into build phases
