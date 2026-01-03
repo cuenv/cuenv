@@ -515,4 +515,102 @@ mod tests {
         };
         assert_eq!(config.full_path(), "kv/data/other/path");
     }
+
+    #[test]
+    fn test_vault_config_long_path() {
+        let long_path = "a/".repeat(50) + "final";
+        let config = VaultSecretConfig::new(long_path.clone(), "key");
+        assert_eq!(config.path, long_path);
+        assert!(config.full_path().contains("secret/data/"));
+    }
+
+    #[test]
+    fn test_vault_config_special_mount_names() {
+        let mounts = vec!["kv", "secrets", "pki", "transit", "cubbyhole", "sys"];
+        for mount in mounts {
+            let config = VaultSecretConfig {
+                path: "path".to_string(),
+                key: "key".to_string(),
+                mount: mount.to_string(),
+            };
+            assert_eq!(config.mount, mount);
+        }
+    }
+
+    #[test]
+    fn test_vault_config_deserialization_extra_fields_ignored() {
+        let json = r#"{"path": "mypath", "key": "mykey", "unknownField": "ignored"}"#;
+        let config: VaultSecretConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.path, "mypath");
+        assert_eq!(config.key, "mykey");
+    }
+
+    #[test]
+    fn test_vault_config_key_with_special_chars() {
+        let config = VaultSecretConfig::new("path", "key-with_special.chars");
+        assert_eq!(config.key, "key-with_special.chars");
+    }
+
+    #[test]
+    fn test_vault_config_mount_with_numbers() {
+        let config = VaultSecretConfig {
+            path: "path".to_string(),
+            key: "key".to_string(),
+            mount: "kv2".to_string(),
+        };
+        assert_eq!(config.mount, "kv2");
+        assert_eq!(config.full_path(), "kv2/data/path");
+    }
+
+    #[test]
+    fn test_vault_config_path_with_trailing_slash() {
+        let config = VaultSecretConfig::new("path/to/secret/", "key");
+        assert_eq!(config.full_path(), "secret/data/path/to/secret/");
+    }
+
+    #[test]
+    fn test_vault_config_path_with_leading_slash() {
+        let config = VaultSecretConfig::new("/path/to/secret", "key");
+        assert_eq!(config.full_path(), "secret/data//path/to/secret");
+    }
+
+    #[test]
+    fn test_resolver_can_use_http_matches_client_presence() {
+        if std::env::var("VAULT_TOKEN").is_err() || std::env::var("VAULT_ADDR").is_err() {
+            let resolver = VaultResolver::new().unwrap();
+            assert!(!resolver.can_use_http());
+            assert!(resolver.client.is_none());
+        }
+    }
+
+    #[test]
+    fn test_vault_config_new_accepts_str_ref() {
+        let path: &str = "my/path";
+        let key: &str = "my_key";
+        let config = VaultSecretConfig::new(path, key);
+        assert_eq!(config.path, "my/path");
+        assert_eq!(config.key, "my_key");
+    }
+
+    #[test]
+    fn test_vault_config_from_json_with_camelcase_mount() {
+        // Verify camelCase deserialization works
+        let json = r#"{"path": "app/config", "key": "secret", "mount": "customMount"}"#;
+        let config: VaultSecretConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.mount, "customMount");
+    }
+
+    #[test]
+    fn test_vault_config_equality_with_different_paths() {
+        let config1 = VaultSecretConfig::new("path/a", "key");
+        let config2 = VaultSecretConfig::new("path/b", "key");
+        assert_ne!(config1, config2);
+    }
+
+    #[test]
+    fn test_vault_config_equality_with_different_keys() {
+        let config1 = VaultSecretConfig::new("path", "key_a");
+        let config2 = VaultSecretConfig::new("path", "key_b");
+        assert_ne!(config1, config2);
+    }
 }
