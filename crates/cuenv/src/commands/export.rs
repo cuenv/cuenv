@@ -9,15 +9,11 @@ use super::env_file::{self, EnvFileStatus, find_cue_module_root};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
-use cuenv_core::{
-    ModuleEvaluation, Result,
-    hooks::{
-        approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
-        executor::{HookExecutor, execute_hooks},
-        state::{HookExecutionState, StateManager, compute_instance_hash},
-        types::{ExecutionStatus, HookExecutionConfig},
-    },
-    shell::Shell,
+use cuenv_core::{ModuleEvaluation, Result, shell::Shell};
+use cuenv_hooks::{
+    ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, HookExecutionConfig,
+    HookExecutionState, HookExecutor, StateManager, check_approval_status,
+    compute_instance_hash, execute_hooks,
 };
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
@@ -253,11 +249,11 @@ pub async fn execute_export(
     approval_manager.load_approvals().await?;
 
     debug!("Checking approval for directory: {}", directory.display());
-    let approval_status = check_approval_status(&approval_manager, &directory, &config)?;
+    let approval_status = check_approval_status(&approval_manager, &directory, config.hooks.as_ref())?;
 
     match approval_status {
         ApprovalStatus::NotApproved { .. } | ApprovalStatus::RequiresApproval { .. } => {
-            let summary = ConfigSummary::from_project(&config);
+            let summary = ConfigSummary::from_hooks(config.hooks.as_ref());
             // Only require approval if there are hooks
             if summary.has_hooks {
                 // Return a comment that tells user to approve
@@ -271,7 +267,7 @@ pub async fn execute_export(
     }
 
     // Compute config hash for this directory + config (only hooks are included)
-    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config);
+    let config_hash = cuenv_hooks::compute_approval_hash(config.hooks.as_ref());
 
     // Check if state is ready
     let executor = HookExecutor::with_default_config()?;
@@ -354,7 +350,7 @@ pub async fn execute_export(
 }
 
 /// Extract hooks from CUE config
-fn extract_hooks_from_config(config: &Project) -> Vec<cuenv_core::hooks::types::Hook> {
+fn extract_hooks_from_config(config: &Project) -> Vec<cuenv_hooks::Hook> {
     config.on_enter_hooks()
 }
 
@@ -362,7 +358,7 @@ fn extract_hooks_from_config(config: &Project) -> Vec<cuenv_core::hooks::types::
 /// If `dir` is None or ".", it becomes the `env_cue_dir`.
 /// If `dir` is a relative path, it's resolved relative to `env_cue_dir`.
 /// The result is always an absolute path.
-fn resolve_hook_dir(hook: &mut cuenv_core::hooks::types::Hook, env_cue_dir: &Path) {
+fn resolve_hook_dir(hook: &mut cuenv_hooks::Hook, env_cue_dir: &Path) {
     let relative_dir = hook.dir.as_deref().unwrap_or(".");
     let absolute_dir = env_cue_dir.join(relative_dir);
 
@@ -376,7 +372,7 @@ fn resolve_hook_dir(hook: &mut cuenv_core::hooks::types::Hook, env_cue_dir: &Pat
 fn extract_hooks_with_resolved_dirs(
     config: &Project,
     env_cue_dir: &Path,
-) -> Vec<cuenv_core::hooks::types::Hook> {
+) -> Vec<cuenv_hooks::Hook> {
     let mut hooks = config.on_enter_hooks();
     for hook in &mut hooks {
         resolve_hook_dir(hook, env_cue_dir);
@@ -426,7 +422,7 @@ fn collect_all_env_vars(
 async fn run_hooks_foreground(
     directory: &Path,
     config_hash: &str,
-    hooks: Vec<cuenv_core::hooks::types::Hook>,
+    hooks: Vec<cuenv_hooks::Hook>,
     config: &Project,
 ) -> Result<HashMap<String, String>> {
     let static_env = extract_static_env_vars(config);
@@ -496,7 +492,7 @@ fn collect_hooks_from_ancestors(
     directory: &Path,
     package: &str,
     executor: Option<&CommandExecutor>,
-) -> Result<Vec<cuenv_core::hooks::types::Hook>> {
+) -> Result<Vec<cuenv_hooks::Hook>> {
     let ancestors = env_file::find_ancestor_env_files(directory, package)?;
 
     let mut all_hooks = Vec::new();
@@ -582,7 +578,7 @@ pub async fn get_environment_with_hooks(
     // Compute execution hash including hook definitions AND input file contents
     // This is separate from approval hash - approval only cares about hook definitions,
     // but execution cache needs to invalidate when input files (e.g., flake.nix) change
-    let config_hash = cuenv_core::hooks::state::compute_execution_hash(&all_hooks, directory);
+    let config_hash = cuenv_hooks::compute_execution_hash(&all_hooks, directory);
 
     // Check if foreground hook execution is requested (useful for CI environments
     // where detached supervisor processes may not work correctly).

@@ -1623,6 +1623,7 @@ dependencies = [
  "cuenv-github",
  "cuenv-gitlab",
  "cuenv-homebrew",
+ "cuenv-hooks",
  "cuenv-ignore",
  "cuenv-release",
  "cuenv-tools-github",
@@ -1778,6 +1779,7 @@ dependencies = [
  "cucumber",
  "cuenv-1password",
  "cuenv-events",
+ "cuenv-hooks",
  "cuenv-secrets",
  "cuenv-workspaces",
  "dirs 6.0.0",
@@ -1926,7 +1928,7 @@ name = "cuenv-hooks"
 version = "0.21.4"
 dependencies = [
  "chrono",
- "cuenv-core",
+ "dirs 6.0.0",
  "fs4",
  "libc",
  "miette",

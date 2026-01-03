@@ -32,8 +32,9 @@ futures = "0.3"
 fs4 = { version = "0.13", features = ["tokio"] }
 cuenv-secrets = { workspace = true }
 cuenv-1password = { workspace = true }
+cuenv-hooks = { workspace = true }
 
-# Dependencies for hook execution system
+# Dependencies for task caching and graph (hook deps moved to cuenv-hooks)
 dirs = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }

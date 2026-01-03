@@ -15,9 +15,6 @@ description = "Hook execution system for cuenv environments"
 default = []
 
 [dependencies]
-# Core cuenv dependencies
-cuenv-core = { workspace = true }
-
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
@@ -43,6 +40,9 @@ sysinfo = "0.37"
 # Error handling
 thiserror = "2.0"
 miette = { workspace = true }
+
+# Path resolution
+dirs = { workspace = true }
 
 # Platform-specific
 [target.'cfg(unix)'.dependencies]

@@ -30,9 +30,7 @@ use cuenv::cli::{self, CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, rend
 use cuenv::commands::{self, Command, CommandExecutor};
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
 use cuenv::{coordinator, tui};
-use cuenv_core::hooks::execute_hooks;
-use cuenv_core::hooks::state::StateManager;
-use cuenv_core::hooks::{ExecutionStatus, Hook, HookExecutionConfig};
+use cuenv_hooks::{execute_hooks, ExecutionStatus, Hook, HookExecutionConfig, StateManager};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use std::path::PathBuf;
 use std::sync::Arc;

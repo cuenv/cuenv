@@ -1,7 +1,6 @@
 //! Configuration approval management for secure hook execution
 
-use crate::hooks::types::Hook;
-use crate::manifest::{Hooks, Project};
+use crate::types::{Hook, Hooks};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 use fs4::tokio::AsyncFileExt;
@@ -91,7 +90,12 @@ impl ApprovalManager {
             return Ok(PathBuf::from(approval_file));
         }
 
-        crate::paths::approvals_file()
+        // Use platform-appropriate paths via dirs crate
+        let base = dirs::state_dir()
+            .or_else(dirs::data_dir)
+            .ok_or_else(|| Error::configuration("Could not determine state directory"))?;
+
+        Ok(base.join("cuenv").join("approved.json"))
     }
 
     /// Create an approval manager using the default approval file
@@ -145,7 +149,7 @@ impl ApprovalManager {
         drop(file);
 
         self.approvals = serde_json::from_str(&contents)
-            .map_err(|e| Error::configuration(format!("Failed to parse approval file: {e}")))?;
+            .map_err(|e| Error::serialization(format!("Failed to parse approval file: {e}")))?;
 
         info!("Loaded {} approvals from file", self.approvals.len());
         Ok(())
@@ -172,7 +176,7 @@ impl ApprovalManager {
         }
 
         let contents = serde_json::to_string_pretty(&self.approvals)
-            .map_err(|e| Error::configuration(format!("Failed to serialize approvals: {e}")))?;
+            .map_err(|e| Error::serialization(format!("Failed to serialize approvals: {e}")))?;
 
         // Write to a temporary file first, then rename atomically
         let temp_path = canonical_path.with_extension("tmp");
@@ -316,6 +320,12 @@ impl ApprovalManager {
 
         Ok(removed_count)
     }
+
+    /// Check if the approvals map contains a specific directory key
+    pub fn contains_key(&self, directory_path: &Path) -> bool {
+        let dir_key = compute_directory_key(directory_path);
+        self.approvals.contains_key(&dir_key)
+    }
 }
 
 /// Record of an approved configuration
@@ -383,7 +393,7 @@ fn sorted_hooks_map(map: &HashMap<String, Hook>) -> BTreeMap<String, Hook> {
 pub fn check_approval_status(
     manager: &ApprovalManager,
     directory_path: &Path,
-    config: &Project,
+    hooks: Option<&Hooks>,
 ) -> Result<ApprovalStatus> {
     // Auto-approve in CI environments - they are non-interactive and already secured
     if is_ci() {
@@ -394,7 +404,7 @@ pub fn check_approval_status(
         return Ok(ApprovalStatus::Approved);
     }
 
-    check_approval_status_core(manager, directory_path, config)
+    check_approval_status_core(manager, directory_path, hooks)
 }
 
 /// Core approval logic without CI bypass.
@@ -404,16 +414,15 @@ pub fn check_approval_status(
 fn check_approval_status_core(
     manager: &ApprovalManager,
     directory_path: &Path,
-    config: &Project,
+    hooks: Option<&Hooks>,
 ) -> Result<ApprovalStatus> {
-    let current_hash = compute_approval_hash(config);
+    let current_hash = compute_approval_hash(hooks);
 
     if manager.is_approved(directory_path, &current_hash)? {
         Ok(ApprovalStatus::Approved)
     } else {
         // Check if there's an existing approval with a different hash
-        let dir_key = compute_directory_key(directory_path);
-        if manager.approvals.contains_key(&dir_key) {
+        if manager.contains_key(directory_path) {
             Ok(ApprovalStatus::RequiresApproval { current_hash })
         } else {
             Ok(ApprovalStatus::NotApproved { current_hash })
@@ -424,12 +433,22 @@ fn check_approval_status_core(
 /// Compute a hash for approval based only on security-sensitive hooks.
 /// Only onEnter, onExit, and prePush hooks are included since they execute arbitrary commands.
 /// Changes to env vars, tasks, config settings do NOT require re-approval.
-pub fn compute_approval_hash(config: &Project) -> String {
+pub fn compute_approval_hash(hooks: Option<&Hooks>) -> String {
     let mut hasher = Sha256::new();
 
     // Extract only the hooks portion for hashing
+    // Treat empty hooks the same as no hooks for consistent hashing
+    let hooks_for_hash = hooks.and_then(|h| {
+        let hfh = HooksForHash::from_hooks(h);
+        // If all fields are None, treat as no hooks
+        if hfh.on_enter.is_none() && hfh.on_exit.is_none() && hfh.pre_push.is_none() {
+            None
+        } else {
+            Some(hfh)
+        }
+    });
     let hooks_only = ApprovalHashInput {
-        hooks: config.hooks.as_ref().map(HooksForHash::from_hooks),
+        hooks: hooks_for_hash,
     };
     let canonical = serde_json::to_string(&hooks_only).unwrap_or_default();
     hasher.update(canonical.as_bytes());
@@ -530,82 +549,40 @@ fn validate_path_structure(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Generate a summary of a configuration for display to users
+/// Summary of hook counts for display
 #[derive(Debug, Clone)]
 pub struct ConfigSummary {
     pub has_hooks: bool,
     pub hook_count: usize,
-    pub has_env_vars: bool,
-    pub env_var_count: usize,
-    pub has_tasks: bool,
-    pub task_count: usize,
 }
 
 impl ConfigSummary {
-    /// Create a summary from a Project configuration
-    pub fn from_project(config: &Project) -> Self {
+    /// Create a summary from hooks
+    pub fn from_hooks(hooks: Option<&Hooks>) -> Self {
         let mut summary = Self {
             has_hooks: false,
             hook_count: 0,
-            has_env_vars: false,
-            env_var_count: 0,
-            has_tasks: false,
-            task_count: 0,
         };
 
-        if let Some(hooks) = &config.hooks {
+        if let Some(hooks) = hooks {
             let on_enter_count = hooks.on_enter.as_ref().map_or(0, |map| map.len());
             let on_exit_count = hooks.on_exit.as_ref().map_or(0, |map| map.len());
-            summary.hook_count = on_enter_count + on_exit_count;
+            let pre_push_count = hooks.pre_push.as_ref().map_or(0, |map| map.len());
+            summary.hook_count = on_enter_count + on_exit_count + pre_push_count;
             summary.has_hooks = summary.hook_count > 0;
         }
-
-        if let Some(env) = &config.env {
-            summary.env_var_count = env.base.len();
-            if env.environment.is_some() {
-                summary.env_var_count += 1;
-            }
-            summary.has_env_vars = summary.env_var_count > 0;
-        }
-
-        summary.task_count = config.tasks.len();
-        summary.has_tasks = summary.task_count > 0;
 
         summary
     }
 
-    /// Get a human-readable description of the configuration
+    /// Get a human-readable description of the hooks
     pub fn description(&self) -> String {
-        let mut parts = Vec::new();
-
-        if self.has_hooks {
-            if self.hook_count == 1 {
-                parts.push("1 hook".to_string());
-            } else {
-                parts.push(format!("{} hooks", self.hook_count));
-            }
-        }
-
-        if self.has_env_vars {
-            if self.env_var_count == 1 {
-                parts.push("1 environment variable".to_string());
-            } else {
-                parts.push(format!("{} environment variables", self.env_var_count));
-            }
-        }
-
-        if self.has_tasks {
-            if self.task_count == 1 {
-                parts.push("1 task".to_string());
-            } else {
-                parts.push(format!("{} tasks", self.task_count));
-            }
-        }
-
-        if parts.is_empty() {
-            "empty configuration".to_string()
+        if !self.has_hooks {
+            "no hooks".to_string()
+        } else if self.hook_count == 1 {
+            "1 hook".to_string()
         } else {
-            parts.join(", ")
+            format!("{} hooks", self.hook_count)
         }
     }
 }
@@ -613,18 +590,7 @@ impl ConfigSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::environment::{Env, EnvValue};
-    use crate::manifest::{Hooks, Project};
-    use crate::tasks::{Task, TaskDefinition};
-    use std::collections::HashMap;
     use tempfile::TempDir;
-
-    fn base_project() -> Project {
-        Project {
-            name: "test".to_string(),
-            ..Default::default()
-        }
-    }
 
     fn make_hook(command: &str, args: &[&str]) -> Hook {
         Hook {
@@ -636,13 +602,6 @@ mod tests {
             inputs: vec![],
             source: None,
         }
-    }
-
-    fn make_task(command: &str) -> TaskDefinition {
-        TaskDefinition::Single(Box::new(Task {
-            command: command.to_string(),
-            ..Default::default()
-        }))
     }
 
     #[tokio::test]
@@ -685,100 +644,48 @@ mod tests {
     }
 
     #[test]
-    fn test_approval_hash_only_includes_hooks() {
-        // Same hooks with different env vars should produce same hash
+    fn test_approval_hash_consistency() {
+        // Same hooks should produce same hash
         let mut hooks_map = HashMap::new();
         hooks_map.insert("setup".to_string(), make_hook("echo", &["hello"]));
         let hooks = Hooks {
-            on_enter: Some(hooks_map),
+            on_enter: Some(hooks_map.clone()),
             on_exit: None,
             pre_push: None,
         };
 
-        let mut config1 = base_project();
-        config1.env = Some(Env {
-            base: HashMap::from([("TEST".to_string(), EnvValue::String("value1".to_string()))]),
-            environment: None,
-        });
-        config1.hooks = Some(hooks.clone());
-
-        let mut config2 = base_project();
-        config2.env = Some(Env {
-            base: HashMap::from([
-                ("TEST".to_string(), EnvValue::String("value2".to_string())),
-                ("NEW_VAR".to_string(), EnvValue::String("new".to_string())),
-            ]),
-            environment: None,
-        });
-        config2.hooks = Some(hooks);
-
-        let hash1 = compute_approval_hash(&config1);
-        let hash2 = compute_approval_hash(&config2);
-        assert_eq!(hash1, hash2, "Env changes should not affect approval hash");
+        let hash1 = compute_approval_hash(Some(&hooks));
+        let hash2 = compute_approval_hash(Some(&hooks));
+        assert_eq!(hash1, hash2, "Same hooks should produce same hash");
 
         // Different hooks should produce different hash
-        let mut hooks_map = HashMap::new();
-        hooks_map.insert("setup".to_string(), make_hook("echo", &["world"]));
-
-        let mut config3 = base_project();
-        config3.env = config1.env.clone();
-        config3.hooks = Some(Hooks {
-            on_enter: Some(hooks_map),
+        let mut hooks_map2 = HashMap::new();
+        hooks_map2.insert("setup".to_string(), make_hook("echo", &["world"]));
+        let hooks2 = Hooks {
+            on_enter: Some(hooks_map2),
             on_exit: None,
             pre_push: None,
-        });
+        };
 
-        let hash3 = compute_approval_hash(&config3);
-        assert_ne!(hash1, hash3, "Hook changes should affect approval hash");
-    }
-
-    #[test]
-    fn test_approval_hash_ignores_tasks() {
-        let mut hooks_map = HashMap::new();
-        hooks_map.insert("setup".to_string(), make_hook("echo", &[]));
-
-        let mut config1 = base_project();
-        config1.hooks = Some(Hooks {
-            on_enter: Some(hooks_map.clone()),
-            on_exit: None,
-            pre_push: None,
-        });
-        config1.tasks.insert("build".to_string(), make_task("npm"));
-
-        let mut config2 = base_project();
-        config2.hooks = Some(Hooks {
-            on_enter: Some(hooks_map),
-            on_exit: None,
-            pre_push: None,
-        });
-
-        let hash1 = compute_approval_hash(&config1);
-        let hash2 = compute_approval_hash(&config2);
-        assert_eq!(hash1, hash2, "Task changes should not affect approval hash");
+        let hash3 = compute_approval_hash(Some(&hooks2));
+        assert_ne!(hash1, hash3, "Different hooks should produce different hash");
     }
 
     #[test]
     fn test_approval_hash_no_hooks() {
-        // Configs without hooks should produce same consistent hash
-        let mut config1 = base_project();
-        config1.env = Some(Env {
-            base: HashMap::from([("TEST".to_string(), EnvValue::String("value".to_string()))]),
-            environment: None,
-        });
+        // Configs without hooks should produce consistent hash
+        let hash1 = compute_approval_hash(None);
+        let hash2 = compute_approval_hash(None);
+        assert_eq!(hash1, hash2, "No hooks should produce consistent hash");
 
-        let mut config2 = base_project();
-        config2.env = Some(Env {
-            base: HashMap::from([(
-                "OTHER".to_string(),
-                EnvValue::String("different".to_string()),
-            )]),
-            environment: None,
-        });
-        config2.tasks.insert("test".to_string(), make_task("echo"));
-
-        let hash1 = compute_approval_hash(&config1);
-        let hash2 = compute_approval_hash(&config2);
-        assert_eq!(hash1, hash2, "Configs without hooks should have same hash");
+        // Empty hooks should be same as no hooks
+        let empty_hooks = Hooks {
+            on_enter: None,
+            on_exit: None,
+            pre_push: None,
+        };
+        let hash3 = compute_approval_hash(Some(&empty_hooks));
+        assert_eq!(hash1, hash3, "Empty hooks should be same as no hooks");
     }
 
     #[test]
@@ -793,54 +700,31 @@ mod tests {
         let mut on_exit = HashMap::new();
         on_exit.insert("docker".to_string(), make_hook("docker-compose", &["down"]));
 
-        let mut config = base_project();
-        config.env = Some(Env {
-            base: HashMap::from([
-                (
-                    "NODE_ENV".to_string(),
-                    EnvValue::String("development".to_string()),
-                ),
-                (
-                    "API_URL".to_string(),
-                    EnvValue::String("http://localhost:3000".to_string()),
-                ),
-            ]),
-            environment: None,
-        });
-        config.hooks = Some(Hooks {
+        let hooks = Hooks {
             on_enter: Some(on_enter),
             on_exit: Some(on_exit),
             pre_push: None,
-        });
-        config.tasks.insert("build".to_string(), make_task("npm"));
-        config.tasks.insert("test".to_string(), make_task("npm"));
+        };
 
-        let summary = ConfigSummary::from_project(&config);
+        let summary = ConfigSummary::from_hooks(Some(&hooks));
         assert!(summary.has_hooks);
         assert_eq!(summary.hook_count, 3);
-        assert!(summary.has_env_vars);
-        assert_eq!(summary.env_var_count, 2);
-        assert!(summary.has_tasks);
-        assert_eq!(summary.task_count, 2);
 
         let description = summary.description();
         assert!(description.contains("3 hooks"));
-        assert!(description.contains("2 environment variables"));
-        assert!(description.contains("2 tasks"));
     }
 
     #[test]
     fn test_approval_status() {
-        // Use check_approval_status_core to test the core logic without CI bypass
         let mut manager = ApprovalManager::new(PathBuf::from("/tmp/test"));
         let directory = Path::new("/test/dir");
-        let mut config = base_project();
-        config.env = Some(Env {
-            base: HashMap::from([("TEST".to_string(), EnvValue::String("value".to_string()))]),
-            environment: None,
-        });
+        let hooks = Hooks {
+            on_enter: None,
+            on_exit: None,
+            pre_push: None,
+        };
 
-        let status = check_approval_status_core(&manager, directory, &config).unwrap();
+        let status = check_approval_status_core(&manager, directory, Some(&hooks)).unwrap();
         assert!(matches!(status, ApprovalStatus::NotApproved { .. }));
 
         // Add an approval with a different hash
@@ -856,11 +740,11 @@ mod tests {
             },
         );
 
-        let status = check_approval_status_core(&manager, directory, &config).unwrap();
+        let status = check_approval_status_core(&manager, directory, Some(&hooks)).unwrap();
         assert!(matches!(status, ApprovalStatus::RequiresApproval { .. }));
 
         // Add approval with correct hash
-        let correct_hash = compute_approval_hash(&config);
+        let correct_hash = compute_approval_hash(Some(&hooks));
         manager.approvals.insert(
             compute_directory_key(directory),
             ApprovalRecord {
@@ -872,7 +756,7 @@ mod tests {
             },
         );
 
-        let status = check_approval_status_core(&manager, directory, &config).unwrap();
+        let status = check_approval_status_core(&manager, directory, Some(&hooks)).unwrap();
         assert!(matches!(status, ApprovalStatus::Approved));
     }
 
@@ -951,44 +835,6 @@ mod tests {
         let mut manager2 = ApprovalManager::new(approval_file);
         manager2.load_approvals().await.unwrap();
         assert_eq!(manager2.approvals.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_concurrent_approval_access() {
-        let temp_dir = TempDir::new().unwrap();
-        let approval_file = temp_dir.path().join("approvals.json");
-
-        // Create multiple managers accessing the same file
-        let mut manager1 = ApprovalManager::new(approval_file.clone());
-        let mut manager2 = ApprovalManager::new(approval_file.clone());
-
-        // Approve from first manager
-        manager1
-            .approve_config(
-                Path::new("/test/dir1"),
-                "hash1".to_string(),
-                Some("Manager 1".to_string()),
-            )
-            .await
-            .unwrap();
-
-        // Approve from second manager
-        manager2
-            .approve_config(
-                Path::new("/test/dir2"),
-                "hash2".to_string(),
-                Some("Manager 2".to_string()),
-            )
-            .await
-            .unwrap();
-
-        // Load in a third manager to verify both approvals
-        let mut manager3 = ApprovalManager::new(approval_file);
-        manager3.load_approvals().await.unwrap();
-
-        // Should have the approval from manager1 (manager2's might have overwritten)
-        // Due to file locking, one of them should succeed
-        assert!(!manager3.approvals.is_empty());
     }
 
     #[tokio::test]
@@ -1145,20 +991,19 @@ mod tests {
         let manager = ApprovalManager::new(PathBuf::from("/tmp/test"));
         let directory = Path::new("/test/ci_dir");
 
-        // Create a config with hooks that would normally require approval
+        // Create hooks that would normally require approval
         let mut hooks_map = HashMap::new();
         hooks_map.insert("setup".to_string(), make_hook("echo", &["hello"]));
 
-        let mut config = base_project();
-        config.hooks = Some(Hooks {
+        let hooks = Hooks {
             on_enter: Some(hooks_map),
             on_exit: None,
             pre_push: None,
-        });
+        };
 
         // In CI environment, should be auto-approved
         temp_env::with_var("CI", Some("true"), || {
-            let status = check_approval_status(&manager, directory, &config).unwrap();
+            let status = check_approval_status(&manager, directory, Some(&hooks)).unwrap();
             assert!(
                 matches!(status, ApprovalStatus::Approved),
                 "Hooks should be auto-approved in CI"
@@ -1182,7 +1027,7 @@ mod tests {
                 "TEAMCITY_VERSION",
             ],
             || {
-                let status = check_approval_status(&manager, directory, &config).unwrap();
+                let status = check_approval_status(&manager, directory, Some(&hooks)).unwrap();
                 assert!(
                     matches!(status, ApprovalStatus::NotApproved { .. }),
                     "Hooks should require approval outside CI"

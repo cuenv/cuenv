@@ -1,6 +1,7 @@
 //! Type definitions for hooks and hook execution
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::ExitStatus;
 
@@ -155,6 +156,25 @@ impl std::fmt::Display for ExecutionStatus {
             ExecutionStatus::Cancelled => write!(f, "Cancelled"),
         }
     }
+}
+
+/// Collection of hooks that can be executed
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct Hooks {
+    /// Named hooks to execute when entering an environment (map of name -> hook)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "onEnter")]
+    pub on_enter: Option<HashMap<String, Hook>>,
+
+    /// Named hooks to execute when exiting an environment (map of name -> hook)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "onExit")]
+    pub on_exit: Option<HashMap<String, Hook>>,
+
+    /// Named hooks to execute before git push (map of name -> hook)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "prePush")]
+    pub pre_push: Option<HashMap<String, Hook>>,
 }
 
 #[cfg(test)]

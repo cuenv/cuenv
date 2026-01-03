@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
-use crate::hooks::Hook;
 use crate::module::Instance;
 use crate::secrets::Secret;
+use cuenv_hooks::{Hook, Hooks};
 use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 
@@ -102,25 +102,6 @@ pub struct ArgMatcher {
 
 fn default_true() -> bool {
     true
-}
-
-/// Collection of hooks that can be executed
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct Hooks {
-    /// Named hooks to execute when entering an environment (map of name -> hook)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "onEnter")]
-    pub on_enter: Option<HashMap<String, Hook>>,
-
-    /// Named hooks to execute when exiting an environment (map of name -> hook)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "onExit")]
-    pub on_exit: Option<HashMap<String, Hook>>,
-
-    /// Named hooks to execute before git push (map of name -> hook)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "prePush")]
-    pub pre_push: Option<HashMap<String, Hook>>,
 }
 
 /// Base configuration structure (composable across directories)

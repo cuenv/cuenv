@@ -5,15 +5,10 @@ use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use crate::cli::StatusFormat;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
-use cuenv_core::{
-    ModuleEvaluation, Result,
-    hooks::{
-        HookExecutionState,
-        approval::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status},
-        executor::HookExecutor,
-        state::{StateManager, compute_instance_hash},
-        types::{ExecutionStatus, Hook},
-    },
+use cuenv_core::{ModuleEvaluation, Result};
+use cuenv_hooks::{
+    ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, Hook, HookExecutionState,
+    HookExecutor, StateManager, check_approval_status, compute_instance_hash,
 };
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -147,7 +142,7 @@ fn get_config_hash(
     } else {
         // If not approved, compute it from current config
         let config = evaluate_config(directory, package, executor)?;
-        Ok(cuenv_core::hooks::approval::compute_approval_hash(&config))
+        Ok(cuenv_hooks::compute_approval_hash(config.hooks.as_ref()))
     }
 }
 
@@ -169,7 +164,7 @@ fn format_status(state: &HookExecutionState, format: StatusFormat) -> String {
 
 /// Format status for starship integration with rich information
 fn format_starship_status(state: &HookExecutionState) -> String {
-    use cuenv_core::hooks::state::HookExecutionState;
+    use cuenv_hooks::HookExecutionState;
 
     match state.status {
         ExecutionStatus::Running => {
@@ -249,7 +244,7 @@ pub async fn execute_env_load(
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
 
-    let approval_status = check_approval_status(&approval_manager, &directory, &config)?;
+    let approval_status = check_approval_status(&approval_manager, &directory, config.hooks.as_ref())?;
 
     match approval_status {
         ApprovalStatus::Approved => {
@@ -262,7 +257,7 @@ pub async fn execute_env_load(
 
             // Start background execution
             let executor = HookExecutor::with_default_config()?;
-            let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config);
+            let config_hash = cuenv_hooks::compute_approval_hash(config.hooks.as_ref());
 
             let result = executor
                 .execute_hooks_background(directory.clone(), config_hash, hooks)
@@ -271,7 +266,7 @@ pub async fn execute_env_load(
             Ok(result)
         }
         ApprovalStatus::RequiresApproval { current_hash } => {
-            let summary = ConfigSummary::from_project(&config);
+            let summary = ConfigSummary::from_hooks(config.hooks.as_ref());
             Ok(format!(
                 "Configuration has changed and requires approval.\n\
                  This configuration contains: {}\n\
@@ -283,7 +278,7 @@ pub async fn execute_env_load(
             ))
         }
         ApprovalStatus::NotApproved { current_hash } => {
-            let summary = ConfigSummary::from_project(&config);
+            let summary = ConfigSummary::from_hooks(config.hooks.as_ref());
             Ok(format!(
                 "Configuration not approved.\n\
                  This configuration contains: {}\n\
@@ -335,7 +330,7 @@ pub async fn execute_env_status(
             .await
         {
             Ok(state) => Ok(format_status(&state, format)),
-            Err(cuenv_core::Error::Timeout { .. }) => {
+            Err(cuenv_hooks::Error::Timeout { .. }) => {
                 // Timeout occurred, get current status
                 if let Some(state) = hook_executor
                     .get_execution_status_for_instance(&directory, &config_hash)
@@ -350,7 +345,7 @@ pub async fn execute_env_status(
                     Ok("No hook execution in progress".to_string())
                 }
             }
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
     } else {
         // FAST PATH: Skip config hash computation, use directory-based marker lookup.
@@ -544,7 +539,7 @@ pub async fn execute_allow(
     let config = evaluate_config(&directory, package, executor)?;
 
     // Compute configuration hash (only hooks are included for security purposes)
-    let config_hash = cuenv_core::hooks::approval::compute_approval_hash(&config);
+    let config_hash = cuenv_hooks::compute_approval_hash(config.hooks.as_ref());
 
     // Initialize approval manager
     let mut approval_manager = ApprovalManager::with_default_file()?;
@@ -559,7 +554,7 @@ pub async fn execute_allow(
     }
 
     // Show what we're approving
-    let summary = ConfigSummary::from_project(&config);
+    let summary = ConfigSummary::from_hooks(config.hooks.as_ref());
 
     // If we need confirmation and yes flag is not set
     if !yes {
@@ -675,7 +670,7 @@ pub async fn execute_env_check(
         .get_execution_status_for_instance(&directory, &config_hash)
         .await?
         && state.is_complete()
-        && state.status == cuenv_core::hooks::types::ExecutionStatus::Completed
+        && state.status == ExecutionStatus::Completed
     {
         let mut output = String::new();
         let mut all_env_vars = HashMap::new();
@@ -827,8 +822,8 @@ mod tests {
 
     #[test]
     fn test_extract_hooks_from_config() {
-        use cuenv_core::hooks::types::Hook;
-        use cuenv_core::manifest::{Hooks, Project};
+        use cuenv_hooks::{Hook, Hooks};
+        use cuenv_core::manifest::Project;
         use std::collections::HashMap;
 
         let mut on_enter = HashMap::new();
@@ -882,8 +877,8 @@ mod tests {
 
     #[test]
     fn test_extract_hooks_single_hook() {
-        use cuenv_core::hooks::types::Hook;
-        use cuenv_core::manifest::{Hooks, Project};
+        use cuenv_hooks::{Hook, Hooks};
+        use cuenv_core::manifest::Project;
         use std::collections::HashMap;
 
         let mut on_enter = HashMap::new();

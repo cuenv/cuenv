@@ -42,6 +42,7 @@ harness = false
 [dependencies]
 cuenv-codeowners = { workspace = true }
 cuenv-core = { workspace = true }
+cuenv-hooks = { workspace = true }
 cuenv-workspaces = { workspace = true, features = ["detection", "discovery-javascript", "discovery-rust"] }
 cuenv-cubes = { workspace = true }
 cuenv-dagger = { workspace = true, optional = true }

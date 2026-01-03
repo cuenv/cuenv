@@ -1,6 +1,6 @@
 //! State management for hook execution tracking
 
-use crate::hooks::types::{ExecutionStatus, HookResult};
+use crate::types::{ExecutionStatus, Hook, HookResult};
 use crate::{Error, Result};
 use chrono::{DateTime, Utc};
 #[allow(unused_imports)] // Used by load_state_sync for file locking
@@ -30,11 +30,14 @@ impl StateManager {
     /// Get the default state directory.
     ///
     /// Uses platform-appropriate paths:
-    /// - Linux: `~/.local/state/cuenv/state`
-    /// - macOS: `~/Library/Application Support/cuenv/state`
-    /// - Windows: `%APPDATA%\cuenv\state`
+    /// - Linux: `~/.local/state/cuenv/hooks`
+    /// - macOS: `~/Library/Application Support/cuenv/hooks`
+    /// - Windows: `%APPDATA%\cuenv\hooks`
     pub fn default_state_dir() -> Result<PathBuf> {
-        crate::paths::hook_state_dir()
+        let base = dirs::state_dir()
+            .or_else(dirs::data_dir)
+            .ok_or_else(|| Error::configuration("Could not determine state directory"))?;
+        Ok(base.join("cuenv").join("hooks"))
     }
 
     /// Create a state manager using the default state directory
@@ -78,7 +81,7 @@ impl StateManager {
 
         let state_file = self.state_file_path(&state.instance_hash);
         let json = serde_json::to_string_pretty(state)
-            .map_err(|e| Error::configuration(format!("Failed to serialize state: {e}")))?;
+            .map_err(|e| Error::serialization(format!("Failed to serialize state: {e}")))?;
 
         // Write to a temporary file first, then rename atomically
         let temp_path = state_file.with_extension("tmp");
@@ -182,7 +185,7 @@ impl StateManager {
         drop(file);
 
         let state: HookExecutionState = serde_json::from_str(&contents)
-            .map_err(|e| Error::configuration(format!("Failed to deserialize state: {e}")))?;
+            .map_err(|e| Error::serialization(format!("Failed to deserialize state: {e}")))?;
 
         debug!(
             "Loaded execution state for directory hash: {}",
@@ -374,7 +377,7 @@ impl StateManager {
         drop(file);
 
         let state: HookExecutionState = serde_json::from_str(&contents)
-            .map_err(|e| Error::configuration(format!("Failed to deserialize state: {e}")))?;
+            .map_err(|e| Error::serialization(format!("Failed to deserialize state: {e}")))?;
 
         Ok(Some(state))
     }
@@ -529,7 +532,7 @@ pub struct HookExecutionState {
     pub current_hook_index: Option<usize>,
     /// The list of hooks being executed (for display purposes)
     #[serde(default)]
-    pub hooks: Vec<crate::hooks::types::Hook>,
+    pub hooks: Vec<Hook>,
     /// Results of completed hooks
     pub hook_results: HashMap<usize, HookResult>,
     /// Timestamp when execution started
@@ -554,7 +557,7 @@ impl HookExecutionState {
         directory_path: PathBuf,
         instance_hash: String,
         config_hash: String,
-        hooks: Vec<crate::hooks::types::Hook>,
+        hooks: Vec<Hook>,
     ) -> Self {
         let total_hooks = hooks.len();
         Self {
@@ -692,7 +695,7 @@ impl HookExecutionState {
     }
 
     /// Get the currently executing hook
-    pub fn current_hook(&self) -> Option<&crate::hooks::types::Hook> {
+    pub fn current_hook(&self) -> Option<&Hook> {
         self.current_hook_index.and_then(|idx| self.hooks.get(idx))
     }
 
@@ -767,14 +770,14 @@ pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     // Include cuenv version in hash to invalidate cache on upgrades
     // This is important when internal logic (like environment capturing) changes
     hasher.update(b":");
-    hasher.update(crate::VERSION.as_bytes());
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
 /// Compute a hash for hook execution that includes input file contents.
 /// This is separate from the approval hash - approval only cares about the hook
 /// definition, but execution cache needs to invalidate when input files change.
-pub fn compute_execution_hash(hooks: &[crate::hooks::types::Hook], base_dir: &Path) -> String {
+pub fn compute_execution_hash(hooks: &[Hook], base_dir: &Path) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
 
@@ -805,7 +808,7 @@ pub fn compute_execution_hash(hooks: &[crate::hooks::types::Hook], base_dir: &Pa
 
     // Include cuenv version
     hasher.update(b":version:");
-    hasher.update(crate::VERSION.as_bytes());
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
 
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
@@ -813,7 +816,7 @@ pub fn compute_execution_hash(hooks: &[crate::hooks::types::Hook], base_dir: &Pa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::types::{Hook, HookResult};
+    use crate::types::{Hook, HookResult};
     use std::collections::HashMap;
     use std::os::unix::process::ExitStatusExt;
     use std::sync::Arc;
@@ -1334,7 +1337,7 @@ mod tests {
         // Create state with unicode and special characters
         let mut unicode_state = HookExecutionState {
             instance_hash: "unicode_hash".to_string(),
-            directory_path: PathBuf::from("/测试/目录/🚀"),
+            directory_path: PathBuf::from("/測試/目錄/🚀"),
             config_hash: "config_ñ_é_ü".to_string(),
             status: ExecutionStatus::Failed,
             total_hooks: 1,
@@ -1347,7 +1350,7 @@ mod tests {
             finished_at: Some(Utc::now()),
             current_hook_started_at: None,
             completed_display_until: None,
-            error_message: Some("Error: 错误信息 with émojis 🔥💥".to_string()),
+            error_message: Some("Error: 錯誤信息 with émojis 🔥💥".to_string()),
             previous_env: None,
         };
 
@@ -1365,10 +1368,10 @@ mod tests {
             hook: unicode_hook,
             success: false,
             exit_status: Some(1),
-            stdout: "输出: Hello 世界! 🌍".to_string(),
-            stderr: "错误: ñoño error ⚠️".to_string(),
+            stdout: "輸出: Hello 世界! 🌍".to_string(),
+            stderr: "錯誤: ñoño error ⚠️".to_string(),
             duration_ms: 100,
-            error: Some("失败了 😢".to_string()),
+            error: Some("失敗了 😢".to_string()),
         };
         unicode_state.hook_results.insert(0, unicode_result);
 
@@ -1385,13 +1388,13 @@ mod tests {
         assert_eq!(loaded.config_hash, "config_ñ_é_ü");
         assert_eq!(
             loaded.error_message,
-            Some("Error: 错误信息 with émojis 🔥💥".to_string())
+            Some("Error: 錯誤信息 with émojis 🔥💥".to_string())
         );
 
         let hook_result = loaded.hook_results.get(&0).unwrap();
-        assert_eq!(hook_result.stdout, "输出: Hello 世界! 🌍");
-        assert_eq!(hook_result.stderr, "错误: ñoño error ⚠️");
-        assert_eq!(hook_result.error, Some("失败了 😢".to_string()));
+        assert_eq!(hook_result.stdout, "輸出: Hello 世界! 🌍");
+        assert_eq!(hook_result.stderr, "錯誤: ñoño error ⚠️");
+        assert_eq!(hook_result.error, Some("失敗了 😢".to_string()));
     }
 
     #[tokio::test]

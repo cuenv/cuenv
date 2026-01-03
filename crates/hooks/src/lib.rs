@@ -20,4 +20,28 @@
 //! In CI environments, hooks are auto-approved since the environment is
 //! assumed to be already secured.
 
-// Placeholder module structure - actual code will be migrated in subsequent steps
+mod approval;
+mod error;
+mod executor;
+mod state;
+mod types;
+
+// Re-export error types at crate root
+pub use error::{Error, Result};
+
+// Re-export types
+pub use types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult, Hooks};
+
+// Re-export state management
+pub use state::{
+    compute_execution_hash, compute_instance_hash, HookExecutionState, StateManager,
+};
+
+// Re-export executor
+pub use executor::{execute_hooks, HookExecutor};
+
+// Re-export approval management
+pub use approval::{
+    check_approval_status, compute_approval_hash, compute_directory_key, is_ci, ApprovalManager,
+    ApprovalRecord, ApprovalStatus, ConfigSummary,
+};
