@@ -1786,6 +1786,7 @@ dependencies = [
  "libc",
  "miette",
  "petgraph",
+ "proptest",
  "regex",
  "serde",
  "serde_json",

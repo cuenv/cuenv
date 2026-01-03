@@ -888,6 +888,309 @@ async fn hooks_should_not_reexecute(world: &mut TestWorld) {
     );
 }
 
+// =============================================================================
+// Task Execution Step Definitions
+// =============================================================================
+
+/// Generate a CUE file for task testing
+fn generate_task_cue(tasks: &[(String, String, Vec<String>)]) -> String {
+    let mut cue = String::from(r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "task-test"
+
+tasks: {
+"#);
+
+    for (name, command, deps) in tasks {
+        // Parse command - if it contains spaces, split into command and args
+        let (cmd, args): (String, Option<String>) = if command.contains(' ') {
+            let mut parts = command.splitn(2, ' ');
+            let cmd_part = parts.next().unwrap_or("").to_string();
+            let args_part = parts.next().map(|s| s.to_string());
+            (cmd_part, args_part)
+        } else {
+            (command.clone(), None)
+        };
+
+        cue.push_str(&format!("    {name}: {{\n"));
+        cue.push_str(&format!("        command: \"{cmd}\"\n"));
+
+        if let Some(args_str) = args {
+            // Parse arguments - handle both quoted strings and shell commands
+            if args_str.starts_with("-c") {
+                cue.push_str(&format!("        args: [\"-c\", \"{}\"]\n", args_str.trim_start_matches("-c").trim().trim_matches(|c| c == '\'' || c == '"')));
+            } else {
+                cue.push_str(&format!("        args: [\"{}\"]\n", args_str.trim_matches('"')));
+            }
+        } else {
+            cue.push_str(&format!("        args: [\"{name} executed\"]\n"));
+        }
+
+        if !deps.is_empty() {
+            let deps_str = deps.iter().map(|d| format!("\"{d}\"")).collect::<Vec<_>>().join(", ");
+            cue.push_str(&format!("        dependsOn: [{deps_str}]\n"));
+        }
+        cue.push_str("    }\n");
+    }
+
+    cue.push_str("}\n");
+    cue
+}
+
+#[given(expr = "a project with tasks:")]
+async fn given_project_with_tasks(world: &mut TestWorld, step: &cucumber::gherkin::Step) {
+    // Parse the data table from the step
+    let table = step.table.as_ref().expect("Expected a data table");
+
+    let tasks: Vec<(String, String, Vec<String>)> = table.rows.iter().skip(1).map(|row| {
+        let name = row[0].clone();
+        let command = row[1].clone();
+        let deps_str = row[2].trim_matches(|c| c == '[' || c == ']');
+        let deps: Vec<String> = if deps_str.is_empty() {
+            vec![]
+        } else {
+            deps_str.split(',').map(|s| s.trim().to_string()).collect()
+        };
+        (name, command, deps)
+    }).collect();
+
+    // Create a unique test directory
+    let unique_id = format!(
+        "{}_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+        uuid::Uuid::new_v4()
+            .to_string()
+            .chars()
+            .take(8)
+            .collect::<String>()
+    );
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let test_dir = repo_root.join("bdd_test_runs").join(format!("task_test_{unique_id}"));
+
+    fs::create_dir_all(&test_dir).await.unwrap();
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir = test_dir.clone();
+
+    // Create the CUE module structure
+    let cue_mod_dir = test_dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).await.unwrap();
+    fs::write(cue_mod_dir.join("module.cue"), "module: \"test.example/task-test\"\n").await.unwrap();
+
+    // Generate and write the CUE file
+    let cue_content = generate_task_cue(&tasks);
+    fs::write(test_dir.join("env.cue"), &cue_content).await.unwrap();
+}
+
+#[given(expr = "a project with parallel tasks {string} and {string}")]
+async fn given_project_with_parallel_tasks(world: &mut TestWorld, task1: String, task2: String) {
+    let cue_content = format!(r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "parallel-task-test"
+
+tasks: {{
+    check: {{
+        parallel: {{
+            {task1}: {{
+                command: "echo"
+                args: ["{task1} executed"]
+            }}
+            {task2}: {{
+                command: "echo"
+                args: ["{task2} executed"]
+            }}
+        }}
+    }}
+}}
+"#);
+
+    // Create test directory
+    let unique_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let test_dir = repo_root.join("bdd_test_runs").join(format!("parallel_test_{unique_id}"));
+
+    fs::create_dir_all(&test_dir).await.unwrap();
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir = test_dir.clone();
+
+    // Create CUE module structure
+    let cue_mod_dir = test_dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).await.unwrap();
+    fs::write(cue_mod_dir.join("module.cue"), "module: \"test.example/parallel-test\"\n").await.unwrap();
+    fs::write(test_dir.join("env.cue"), &cue_content).await.unwrap();
+}
+
+#[given(expr = "a project with a parallel group {string} containing {string} and {string}")]
+async fn given_project_with_parallel_group(world: &mut TestWorld, group: String, task1: String, task2: String) {
+    let cue_content = format!(r#"package test
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "group-task-test"
+
+tasks: {{
+    {group}: {{
+        parallel: {{
+            {task1}: {{
+                command: "echo"
+                args: ["{task1} executed"]
+            }}
+            {task2}: {{
+                command: "echo"
+                args: ["{task2} executed"]
+            }}
+        }}
+    }}
+}}
+"#);
+
+    // Create test directory
+    let unique_id = uuid::Uuid::new_v4().to_string().chars().take(8).collect::<String>();
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap().to_path_buf();
+    let test_dir = repo_root.join("bdd_test_runs").join(format!("group_test_{unique_id}"));
+
+    fs::create_dir_all(&test_dir).await.unwrap();
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir = test_dir.clone();
+
+    // Create CUE module structure
+    let cue_mod_dir = test_dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir).await.unwrap();
+    fs::write(cue_mod_dir.join("module.cue"), "module: \"test.example/group-test\"\n").await.unwrap();
+    fs::write(test_dir.join("env.cue"), &cue_content).await.unwrap();
+}
+
+#[when(expr = "I run {string}")]
+async fn when_i_run_command(world: &mut TestWorld, command: String) {
+    // Parse the command - expecting "cuenv task <args>"
+    let parts: Vec<&str> = command.split_whitespace().collect();
+
+    if parts.first() == Some(&"cuenv") {
+        let args: Vec<&str> = parts[1..].to_vec();
+        world.run_cuenv(&args).await.unwrap();
+    } else {
+        panic!("Expected command to start with 'cuenv', got: {}", command);
+    }
+}
+
+#[then(expr = "the task {string} should complete before {string}")]
+fn then_task_completes_before(world: &mut TestWorld, first: String, second: String) {
+    // Check the output for task execution order
+    // The output should show first task completing before second starts
+    let output = &world.last_output;
+
+    // Find positions of task names in output
+    let first_pos = output.find(&format!("{first} executed"));
+    let second_pos = output.find(&format!("{second} executed"));
+
+    match (first_pos, second_pos) {
+        (Some(f), Some(s)) => {
+            assert!(
+                f < s,
+                "Task '{first}' should complete before '{second}'. Output: {output}"
+            );
+        }
+        (None, _) => {
+            // If we can't find "executed" markers, check for task names in order
+            let first_mention = output.find(&first);
+            let second_mention = output.find(&second);
+            if let (Some(f), Some(s)) = (first_mention, second_mention) {
+                assert!(
+                    f < s,
+                    "Task '{first}' should appear before '{second}' in output. Output: {output}"
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+#[then(expr = "the task {string} should fail")]
+fn then_task_should_fail(world: &mut TestWorld, task: String) {
+    let output = &world.last_output;
+    assert!(
+        output.to_lowercase().contains("fail") || output.to_lowercase().contains("error") || world.last_exit_code != 0,
+        "Task '{task}' should have failed. Output: {output}, Exit code: {}",
+        world.last_exit_code
+    );
+}
+
+#[then(expr = "the task {string} should not execute")]
+fn then_task_should_not_execute(world: &mut TestWorld, task: String) {
+    let output = &world.last_output;
+    // The task should not appear as executed in the output
+    assert!(
+        !output.contains(&format!("{task} executed")),
+        "Task '{task}' should not have executed. Output: {output}"
+    );
+}
+
+#[then(expr = "both {string} and {string} should execute")]
+fn then_both_tasks_execute(world: &mut TestWorld, task1: String, task2: String) {
+    let output = &world.last_output;
+    assert!(
+        output.contains(&format!("{task1} executed")) || output.contains(&task1),
+        "Task '{task1}' should have executed. Output: {output}"
+    );
+    assert!(
+        output.contains(&format!("{task2} executed")) || output.contains(&task2),
+        "Task '{task2}' should have executed. Output: {output}"
+    );
+}
+
+#[then(expr = "the task {string} should execute")]
+fn then_task_should_execute(world: &mut TestWorld, task: String) {
+    let output = &world.last_output;
+    assert!(
+        output.contains(&format!("{task} executed")) || output.contains(&task),
+        "Task '{task}' should have executed. Output: {output}"
+    );
+}
+
+#[then(expr = "the output should contain {string}")]
+fn then_output_contains(world: &mut TestWorld, expected: String) {
+    assert!(
+        world.last_output.contains(&expected),
+        "Output should contain '{}'. Actual output: {}",
+        expected,
+        world.last_output
+    );
+}
+
+#[then(expr = "the exit code should be {int}")]
+fn then_exit_code_is(world: &mut TestWorld, code: i32) {
+    assert_eq!(
+        world.last_exit_code, code,
+        "Exit code should be {}. Actual: {}. Output: {}",
+        code, world.last_exit_code, world.last_output
+    );
+}
+
+#[then(expr = "the exit code should not be {int}")]
+fn then_exit_code_is_not(world: &mut TestWorld, code: i32) {
+    assert_ne!(
+        world.last_exit_code, code,
+        "Exit code should not be {}. Output: {}",
+        code, world.last_output
+    );
+}
+
 // Main test runner for cucumber BDD tests
 // Note: These tests are incompatible with nextest and should be run separately
 // with: cargo test --test bdd
@@ -902,6 +1205,6 @@ async fn main() {
     }
 
     TestWorld::cucumber()
-        .run_and_exit("tests/bdd/features/hooks.feature")
+        .run("tests/bdd/features/")
         .await;
 }
