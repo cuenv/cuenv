@@ -366,42 +366,6 @@ pub fn collect_outputs(hermetic_root: &Path, patterns: &[String]) -> Result<Vec<
     Ok(results)
 }
 
-pub fn snapshot_workspace_tar_zst(src_root: &Path, dst_file: &Path) -> Result<()> {
-    let file = fs::File::create(dst_file).map_err(|e| Error::Io {
-        source: e,
-        path: Some(dst_file.into()),
-        operation: "create".into(),
-    })?;
-    let enc = zstd::Encoder::new(file, 3)
-        .map_err(|e| Error::configuration(format!("zstd encoder error: {e}")))?;
-    let mut builder = tar::Builder::new(enc);
-
-    match builder.append_dir_all(".", src_root) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            // Workspace contents can legitimately disappear during a task (e.g.
-            // package managers removing temp files). Skip snapshotting instead
-            // of failing the whole task cache write.
-            let _ = fs::remove_file(dst_file);
-            tracing::warn!(
-                root = %src_root.display(),
-                "Skipping workspace snapshot; files disappeared during archive: {e}"
-            );
-            return Ok(());
-        }
-        Err(e) => {
-            return Err(Error::configuration(format!("tar append failed: {e}")));
-        }
-    }
-
-    let enc = builder
-        .into_inner()
-        .map_err(|e| Error::configuration(format!("tar finalize failed: {e}")))?;
-    enc.finish()
-        .map_err(|e| Error::configuration(format!("zstd finish failed: {e}")))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,23 +604,6 @@ mod tests {
         assert_eq!(outputs[0], PathBuf::from("a.txt"));
         assert_eq!(outputs[1], PathBuf::from("b.txt"));
         assert_eq!(outputs[2], PathBuf::from("c.txt"));
-    }
-
-    #[test]
-    fn test_snapshot_workspace_tar_zst() {
-        let src = TempDir::new().unwrap();
-        std::fs::create_dir_all(src.path().join("subdir")).unwrap();
-        std::fs::write(src.path().join("file.txt"), "content").unwrap();
-        std::fs::write(src.path().join("subdir/nested.txt"), "nested").unwrap();
-
-        let dst = TempDir::new().unwrap();
-        let archive_path = dst.path().join("archive.tar.zst");
-
-        snapshot_workspace_tar_zst(src.path(), &archive_path).unwrap();
-        assert!(archive_path.exists());
-        // Verify the archive is non-empty
-        let metadata = std::fs::metadata(&archive_path).unwrap();
-        assert!(metadata.len() > 0);
     }
 
     #[test]

@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
 
-use cuenv_core::tasks::discovery::TaskDiscovery;
 use cuenv_core::tasks::{TaskDefinition, WorkspaceTask};
+use cuenv_task_discovery::TaskDiscovery;
 
 use super::list_builder::prepare_task_index;
 

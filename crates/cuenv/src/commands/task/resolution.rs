@@ -8,7 +8,7 @@ use std::fs;
 
 use cuenv_core::manifest::TaskRef;
 use cuenv_core::tasks::TaskDefinition;
-use cuenv_core::tasks::discovery::TaskDiscovery;
+use cuenv_task_discovery::TaskDiscovery;
 
 use super::normalization::{canonicalize_dep_for_task_name, normalize_dep};
 

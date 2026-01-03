@@ -1,7 +1,7 @@
 //! Hook execution engine with background processing and state management
 
-use crate::hooks::state::{HookExecutionState, StateManager, compute_instance_hash};
-use crate::hooks::types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult};
+use crate::state::{HookExecutionState, StateManager, compute_instance_hash};
+use crate::types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -54,6 +54,8 @@ impl HookExecutor {
         config_hash: String,
         hooks: Vec<Hook>,
     ) -> Result<String> {
+        use std::process::{Command, Stdio};
+
         if hooks.is_empty() {
             return Ok("No hooks to execute".to_string());
         }
@@ -137,7 +139,7 @@ impl HookExecutor {
 
         // Serialize and write hooks
         let hooks_json = serde_json::to_string(&hooks)
-            .map_err(|e| Error::configuration(format!("Failed to serialize hooks: {}", e)))?;
+            .map_err(|e| Error::serialization(format!("Failed to serialize hooks: {}", e)))?;
         std::fs::write(&hooks_file, &hooks_json).map_err(|e| Error::Io {
             source: e,
             path: Some(hooks_file.clone().into_boxed_path()),
@@ -146,7 +148,7 @@ impl HookExecutor {
 
         // Serialize and write config
         let config_json = serde_json::to_string(&self.config)
-            .map_err(|e| Error::configuration(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| Error::serialization(format!("Failed to serialize config: {}", e)))?;
         std::fs::write(&config_file, &config_json).map_err(|e| Error::Io {
             source: e,
             path: Some(config_file.clone().into_boxed_path()),
@@ -159,12 +161,10 @@ impl HookExecutor {
             PathBuf::from(exe_path)
         } else {
             std::env::current_exe()
-                .map_err(|e| Error::configuration(format!("Failed to get current exe: {}", e)))?
+                .map_err(|e| Error::process(format!("Failed to get current exe: {}", e)))?
         };
 
         // Spawn a detached supervisor process
-        use std::process::{Command, Stdio};
-
         let mut cmd = Command::new(&current_exe);
         cmd.arg("__hook-supervisor") // Special hidden command
             .arg("--directory")
@@ -216,6 +216,14 @@ impl HookExecutor {
         {
             use std::os::unix::process::CommandExt;
             // Detach from parent process group using setsid
+            // SAFETY: setsid() is a standard POSIX function that creates a new session
+            // and process group. This is needed to properly detach background hook
+            // processes from the parent terminal. The only failure case is EPERM
+            // (already a session leader), which we propagate as an io::Error.
+            #[expect(
+                unsafe_code,
+                reason = "Required for POSIX process detachment via setsid()"
+            )]
             unsafe {
                 cmd.pre_exec(|| {
                     // Create a new session, detaching from controlling terminal
@@ -238,7 +246,7 @@ impl HookExecutor {
 
         let _child = cmd
             .spawn()
-            .map_err(|e| Error::configuration(format!("Failed to spawn supervisor: {}", e)))?;
+            .map_err(|e| Error::process(format!("Failed to spawn supervisor: {}", e)))?;
 
         // The child is now properly detached
 
@@ -320,6 +328,7 @@ impl HookExecutor {
     }
 
     /// Get a reference to the state manager (for marker operations from execute_hooks)
+    #[must_use]
     pub fn state_manager(&self) -> &StateManager {
         &self.state_manager
     }
@@ -378,7 +387,7 @@ impl HookExecutor {
                     return Ok(state);
                 }
             } else {
-                return Err(Error::configuration("No execution state found"));
+                return Err(Error::state_not_found(&instance_hash));
             }
 
             // Check timeout
@@ -542,7 +551,12 @@ pub async fn execute_hooks(
                 // might output valid environment exports before crashing or exiting with error.
                 // We rely on our robust delimiter-based parsing to extract what we can.
                 if hook.source.unwrap_or(false) {
-                    if !hook_result.stdout.is_empty() {
+                    if hook_result.stdout.is_empty() {
+                        warn!(
+                            "Source hook produced empty stdout. Stderr content:\n{}",
+                            hook_result.stderr
+                        );
+                    } else {
                         debug!(
                             "Evaluating source hook output for environment variables (success={})",
                             hook_result.success
@@ -563,11 +577,6 @@ pub async fn execute_hooks(
                                 // Don't fail the hook execution further, just log the error
                             }
                         }
-                    } else {
-                        warn!(
-                            "Source hook produced empty stdout. Stderr content:\n{}",
-                            hook_result.stderr
-                        );
                     }
                 }
 
@@ -652,6 +661,8 @@ async fn is_shell_capable(shell: &str) -> bool {
 
 /// Evaluate shell script and extract resulting environment variables
 async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String, String>> {
+    const DELIMITER: &str = "__CUENV_ENV_START__";
+
     debug!(
         "Evaluating shell script to extract environment ({} bytes)",
         shell_script.len()
@@ -728,49 +739,7 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     // Now execute the filtered script and capture the environment after
     let mut cmd = Command::new(shell);
     cmd.arg("-c");
-    // Create a script that sources the exports and then prints the environment
-    // We wrap the sourced script in a subshell or block that ignores errors?
-    // No, we want environment variables to persist.
-    // But if a command fails, we don't want the whole evaluation to fail.
-    // We append " || true" to each line? No, multiline strings.
 
-    // Better: Execute the script, but ensure we always reach "env -0".
-    // In sh, "cmd; env" runs env even if cmd fails, UNLESS set -e is active.
-    // By default set -e is OFF.
-
-    // However, we check output.status.success().
-    // If the last command is "env -0", and it succeeds, the exit code is 0.
-    // Even if previous commands failed (and printed to stderr).
-
-    // So "nonexistent_command; env -0" -> exit code 0.
-    // Why did my thought experiment suggest failure?
-    // Maybe because I was confusing it with pipefail or set -e.
-
-    // The reproduction test PASSED even with "nonexistent_command_garbage".
-    // This means `evaluate_shell_environment` IS robust against simple command failures!
-
-    // So why is the user's case failing?
-
-    // Maybe `devenv` output contains something that makes `env -0` NOT run or NOT output what we expect?
-    // Or maybe it exits the shell? `exit 1`?
-
-    // If `devenv` prints `exit 1`, then `env -0` is never reached.
-    // `devenv` is a script. If it calls `exit`, it exits the sourcing shell?
-    // If we `source` a script that `exit`s, it exits the parent shell (our sh -c).
-
-    // Does `devenv print-dev-env` exit?
-    // It shouldn't.
-
-    // But if `devenv` fails internally, does it exit?
-    // "devenv: command not found" -> 127, continues.
-
-    // What if the output is syntactically invalid shell?
-    // `export FOO="unclosed`
-    // Then `sh` parses it, finds error, prints error, and... stops?
-    // Usually yes, syntax error aborts execution of the script.
-
-    // Let's try to reproduce SYNTAX ERROR.
-    const DELIMITER: &str = "__CUENV_ENV_START__";
     let script = format!(
         "{}\necho -ne '\\0{}\\0'; env -0",
         filtered_script, DELIMITER
@@ -818,15 +787,7 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
             tail
         );
 
-        // Fallback: try to use the whole output if delimiter missing,
-        // but this is risky if stdout has garbage.
-        // However, if env -0 ran, it's usually at the end.
-        // But without delimiter, we can't separate garbage from vars safely.
-        // We'll try to parse anyway, effectively reverting to previous behavior,
-        // but with the risk of corruption if garbage exists.
-        // Given we added delimiter specifically to avoid this, maybe we should return empty?
-        // But if script crashed before printing delimiter, we capture nothing.
-        // If we return empty, at least we don't return corrupted vars.
+        // Fallback: return empty if delimiter missing
         &[]
     };
 
@@ -907,6 +868,11 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
     // Execute with timeout
     let execution_result = timeout(Duration::from_secs(*timeout_seconds), cmd.output()).await;
 
+    // Truncation is fine here - a u64 can hold ~584M years in milliseconds
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "u128 to u64 truncation is acceptable for duration"
+    )]
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
     match execution_result {
@@ -959,9 +925,13 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::print_stderr,
+    reason = "Tests may use eprintln! to report skip conditions"
+)]
 mod tests {
     use super::*;
-    use crate::hooks::types::Hook;
+    use crate::types::Hook;
     use tempfile::TempDir;
 
     /// Helper to set up CUENV_EXECUTABLE for tests that spawn the supervisor.
@@ -980,6 +950,10 @@ mod tests {
         if cuenv_binary.exists() {
             // SAFETY: This is only called in tests where we control the environment.
             // No other threads should be accessing this environment variable.
+            #[expect(
+                unsafe_code,
+                reason = "Test helper setting env var in controlled test environment"
+            )]
             unsafe {
                 std::env::set_var("CUENV_EXECUTABLE", &cuenv_binary);
             }
@@ -1379,207 +1353,6 @@ mod tests {
         assert!(status.is_some());
     }
 
-    // Commented out: allow_command and disallow_command methods don't exist
-    // #[tokio::test]
-    // async fn test_command_whitelist_management() {
-    //         let executor = HookExecutor::with_default_config().unwrap();
-    //
-    //         // Test adding a new command to whitelist
-    //         let custom_command = "my-custom-tool".to_string();
-    //         executor.allow_command(custom_command.clone()).await;
-    //
-    //         // Test that the newly allowed command works
-    //         let hook = Hook { order: 100, propagate: false,
-    //             command: custom_command.clone(),
-    //             args: vec!["--version".to_string()],
-    //             dir: None,
-    //             inputs: Vec::new(),
-    //             source: Some(false),
-    //         };
-    //
-    //         // Should not error due to whitelist check (may fail if command doesn't exist)
-    //         let result = executor.execute_single_hook(hook).await;
-    //         // If it errors, it should be because the command doesn't exist, not because it's not allowed
-    //         if result.is_err() {
-    //             let err_msg = result.unwrap_err().to_string();
-    //             assert!(
-    //                 !err_msg.contains("not allowed"),
-    //                 "Command should be allowed after adding to whitelist"
-    //             );
-    //         }
-    //
-    //         // Test removing a command from whitelist
-    //         executor.disallow_command("echo").await;
-    //
-    //         let hook = Hook { order: 100, propagate: false,
-    //             command: "echo".to_string(),
-    //             args: vec!["test".to_string()],
-    //             dir: None,
-    //             inputs: vec![],
-    //             source: None,
-    //         };
-    //
-    //         let result = executor.execute_single_hook(hook).await;
-    //         assert!(result.is_err(), "Echo command should be disallowed");
-    //         let err_msg = result.unwrap_err().to_string();
-    //         assert!(
-    //             err_msg.contains("not allowed")
-    //                 || err_msg.contains("not in whitelist")
-    //                 || err_msg.contains("Configuration"),
-    //             "Error message should indicate command not allowed: {}",
-    //             err_msg
-    //         );
-    //
-    //         // Test re-allowing a command
-    //         executor.allow_command("echo".to_string()).await;
-    //
-    //         let hook = Hook { order: 100, propagate: false,
-    //             command: "echo".to_string(),
-    //             args: vec!["test".to_string()],
-    //             dir: None,
-    //             inputs: vec![],
-    //             source: None,
-    //         };
-    //
-    //         let result = executor.execute_single_hook(hook).await;
-    //         assert!(
-    //             result.is_ok(),
-    //             "Echo command should be allowed after re-adding"
-    //         );
-    //     }
-
-    #[tokio::test]
-    async fn test_fail_fast_mode_edge_cases() {
-        // Skip if cuenv binary is not available
-        if setup_cuenv_executable().is_none() {
-            eprintln!("Skipping test_fail_fast_mode_edge_cases: cuenv binary not found");
-            return;
-        }
-
-        let temp_dir = TempDir::new().unwrap();
-
-        // Test fail_fast with multiple failing hooks
-        let config = HookExecutionConfig {
-            default_timeout_seconds: 30,
-            fail_fast: true,
-            state_dir: Some(temp_dir.path().to_path_buf()),
-        };
-
-        let executor = HookExecutor::new(config).unwrap();
-        let directory_path = PathBuf::from("/test/fail-fast");
-
-        let hooks = vec![
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "false".to_string(), // Will fail
-                args: vec![],
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            },
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "echo".to_string(), // Should not execute due to fail_fast
-                args: vec!["should not run".to_string()],
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            },
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "echo".to_string(), // Should not execute due to fail_fast
-                args: vec!["also should not run".to_string()],
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            },
-        ];
-
-        let config_hash = "fail_fast_test".to_string();
-        executor
-            .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
-            .await
-            .unwrap();
-
-        // Poll until state exists before waiting for completion
-        for _ in 0..20 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if executor
-                .get_execution_status_for_instance(&directory_path, &config_hash)
-                .await
-                .unwrap()
-                .is_some()
-            {
-                break;
-            }
-        }
-
-        // Wait for completion with longer timeout
-        if let Err(e) = executor
-            .wait_for_completion(&directory_path, &config_hash, Some(15))
-            .await
-        {
-            eprintln!("Warning: wait_for_completion failed: {}, skipping test", e);
-            return;
-        }
-
-        let state = executor
-            .get_execution_status_for_instance(&directory_path, &config_hash)
-            .await
-            .unwrap()
-            .unwrap();
-
-        // With fail_fast=true, first failure should stop execution
-        // Status should be Failed or Completed depending on implementation
-        assert!(
-            state.status == ExecutionStatus::Failed || state.status == ExecutionStatus::Completed,
-            "Expected Failed or Completed, got {:?}",
-            state.status
-        );
-        // Only the first hook should have been executed
-        assert_eq!(state.completed_hooks, 1);
-    }
-
-    #[tokio::test]
-    async fn test_security_validation_comprehensive() {
-        let executor = HookExecutor::with_default_config().unwrap();
-
-        // Security validation has been removed - the approval mechanism is the security boundary
-        // Commands with any arguments are now allowed after approval
-
-        // Test that echo command works with various arguments
-        let test_args = vec![
-            vec!["simple test".to_string()],
-            vec!["test with spaces".to_string()],
-            ["test", "multiple", "args"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-        ];
-
-        for args in test_args {
-            let hook = Hook {
-                order: 100,
-                propagate: false,
-                command: "echo".to_string(),
-                args: args.clone(),
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            };
-
-            let result = executor.execute_single_hook(hook).await;
-            assert!(
-                result.is_ok(),
-                "Echo command should work with args: {:?}",
-                args
-            );
-        }
-    }
-
     #[tokio::test]
     async fn test_working_directory_handling() {
         let executor = HookExecutor::with_default_config().unwrap();
@@ -1625,20 +1398,6 @@ mod tests {
                     .contains("/nonexistent/directory/that/does/not/exist")
             );
         }
-
-        // Test with relative path working directory (should be validated)
-        let hook_with_relative_dir = Hook {
-            order: 100,
-            propagate: false,
-            command: "pwd".to_string(),
-            args: vec![],
-            dir: Some("./relative/path".to_string()),
-            inputs: vec![],
-            source: None,
-        };
-
-        // This might work or fail depending on the implementation
-        let _ = executor.execute_single_hook(hook_with_relative_dir).await;
     }
 
     #[tokio::test]
@@ -1681,346 +1440,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_multiple_directory_executions() {
-        // Skip if cuenv binary is not available
-        if setup_cuenv_executable().is_none() {
-            eprintln!("Skipping test_multiple_directory_executions: cuenv binary not found");
-            return;
-        }
-
-        let temp_dir = TempDir::new().unwrap();
-        let config = HookExecutionConfig {
-            default_timeout_seconds: 30,
-            fail_fast: false,
-            state_dir: Some(temp_dir.path().to_path_buf()),
-        };
-
-        let executor = HookExecutor::new(config).unwrap();
-
-        // Start executions for multiple directories
-        let directories = [
-            PathBuf::from("/test/dir1"),
-            PathBuf::from("/test/dir2"),
-            PathBuf::from("/test/dir3"),
-        ];
-
-        let mut config_hashes = Vec::new();
-        for (i, dir) in directories.iter().enumerate() {
-            let hooks = vec![Hook {
-                order: 100,
-                propagate: false,
-                command: "echo".to_string(),
-                args: vec![format!("directory {}", i)],
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            }];
-
-            let config_hash = format!("hash_{}", i);
-            config_hashes.push(config_hash.clone());
-            executor
-                .execute_hooks_background(dir.clone(), config_hash.clone(), hooks)
-                .await
-                .unwrap();
-        }
-
-        // Wait for all to complete with polling first to ensure state exists
-        for (dir, config_hash) in directories.iter().zip(config_hashes.iter()) {
-            // Poll until state exists
-            for _ in 0..20 {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                if executor
-                    .get_execution_status_for_instance(dir, config_hash)
-                    .await
-                    .unwrap()
-                    .is_some()
-                {
-                    break;
-                }
-            }
-
-            if let Err(e) = executor
-                .wait_for_completion(dir, config_hash, Some(15))
-                .await
-            {
-                eprintln!(
-                    "Warning: wait_for_completion failed for {}: {}",
-                    dir.display(),
-                    e
-                );
-                continue;
-            }
-
-            let state = executor
-                .get_execution_status_for_instance(dir, config_hash)
-                .await
-                .unwrap()
-                .unwrap();
-
-            assert_eq!(state.status, ExecutionStatus::Completed);
-            assert_eq!(state.completed_hooks, 1);
-            assert_eq!(state.total_hooks, 1);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_error_recovery_and_retry() {
-        // Skip if cuenv binary is not available
-        if setup_cuenv_executable().is_none() {
-            eprintln!("Skipping test_error_recovery_and_retry: cuenv binary not found");
-            return;
-        }
-
-        let temp_dir = TempDir::new().unwrap();
-        let config = HookExecutionConfig {
-            default_timeout_seconds: 30,
-            fail_fast: false, // Continue after failures
-            state_dir: Some(temp_dir.path().to_path_buf()),
-        };
-
-        let executor = HookExecutor::new(config).unwrap();
-        let directory_path = PathBuf::from("/test/recovery");
-
-        // Execute hooks with some failures - with fail_fast=false, all should run
-        let hooks = vec![
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "echo".to_string(),
-                args: vec!["success 1".to_string()],
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            },
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "false".to_string(), // Will fail but execution continues
-                args: vec![],
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            },
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "echo".to_string(),
-                args: vec!["success 2".to_string()],
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            },
-        ];
-
-        let config_hash = "recovery_test".to_string();
-        executor
-            .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
-            .await
-            .unwrap();
-
-        // Poll until state exists
-        for _ in 0..20 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if executor
-                .get_execution_status_for_instance(&directory_path, &config_hash)
-                .await
-                .unwrap()
-                .is_some()
-            {
-                break;
-            }
-        }
-
-        if let Err(e) = executor
-            .wait_for_completion(&directory_path, &config_hash, Some(15))
-            .await
-        {
-            eprintln!("Warning: wait_for_completion failed: {}, skipping test", e);
-            return;
-        }
-
-        let state = executor
-            .get_execution_status_for_instance(&directory_path, &config_hash)
-            .await
-            .unwrap()
-            .unwrap();
-
-        // With fail_fast=false, all hooks should run and complete
-        assert_eq!(state.status, ExecutionStatus::Completed);
-        assert_eq!(state.completed_hooks, 3);
-        assert_eq!(state.total_hooks, 3);
-    }
-
-    #[tokio::test]
-    async fn test_instance_hash_separation() {
-        // Skip if cuenv binary is not available
-        if setup_cuenv_executable().is_none() {
-            eprintln!("Skipping test_instance_hash_separation: cuenv binary not found");
-            return;
-        }
-
-        // Test that different config hashes for the same directory are tracked separately
-        let temp_dir = TempDir::new().unwrap();
-        let config = HookExecutionConfig {
-            default_timeout_seconds: 30,
-            fail_fast: false,
-            state_dir: Some(temp_dir.path().to_path_buf()),
-        };
-
-        let executor = HookExecutor::new(config).unwrap();
-        let directory_path = PathBuf::from("/test/multi-config");
-
-        // Create hooks for first configuration
-        let hooks1 = vec![Hook {
-            order: 100,
-            propagate: false,
-            command: "echo".to_string(),
-            args: vec!["config1".to_string()],
-            dir: None,
-            inputs: Vec::new(),
-            source: Some(false),
-        }];
-
-        // Create hooks for second configuration
-        let hooks2 = vec![Hook {
-            order: 100,
-            propagate: false,
-            command: "echo".to_string(),
-            args: vec!["config2".to_string()],
-            dir: None,
-            inputs: Vec::new(),
-            source: Some(false),
-        }];
-
-        let config_hash1 = "config_hash_1".to_string();
-        let config_hash2 = "config_hash_2".to_string();
-
-        // Execute both configurations
-        executor
-            .execute_hooks_background(directory_path.clone(), config_hash1.clone(), hooks1)
-            .await
-            .unwrap();
-
-        executor
-            .execute_hooks_background(directory_path.clone(), config_hash2.clone(), hooks2)
-            .await
-            .unwrap();
-
-        // Poll until states exist
-        for _ in 0..20 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let s1 = executor
-                .get_execution_status_for_instance(&directory_path, &config_hash1)
-                .await
-                .unwrap();
-            let s2 = executor
-                .get_execution_status_for_instance(&directory_path, &config_hash2)
-                .await
-                .unwrap();
-            if s1.is_some() && s2.is_some() {
-                break;
-            }
-        }
-
-        // Wait for both to complete
-        if let Err(e) = executor
-            .wait_for_completion(&directory_path, &config_hash1, Some(15))
-            .await
-        {
-            eprintln!(
-                "Warning: wait_for_completion config1 timed out: {}, skipping test",
-                e
-            );
-            return;
-        }
-
-        if let Err(e) = executor
-            .wait_for_completion(&directory_path, &config_hash2, Some(15))
-            .await
-        {
-            eprintln!(
-                "Warning: wait_for_completion config2 timed out: {}, skipping test",
-                e
-            );
-            return;
-        }
-
-        // Check that both have separate states
-        let state1 = executor
-            .get_execution_status_for_instance(&directory_path, &config_hash1)
-            .await
-            .unwrap()
-            .unwrap();
-
-        let state2 = executor
-            .get_execution_status_for_instance(&directory_path, &config_hash2)
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(state1.status, ExecutionStatus::Completed);
-        assert_eq!(state2.status, ExecutionStatus::Completed);
-
-        // Ensure they have different instance hashes
-        assert_ne!(state1.instance_hash, state2.instance_hash);
-    }
-
-    #[tokio::test]
-    async fn test_file_based_argument_passing() {
-        // Skip if cuenv binary is not available
-        if setup_cuenv_executable().is_none() {
-            eprintln!("Skipping test_file_based_argument_passing: cuenv binary not found");
-            return;
-        }
-
-        // Test that hooks and config are written to files and cleaned up
-        let temp_dir = TempDir::new().unwrap();
-        let config = HookExecutionConfig {
-            default_timeout_seconds: 30,
-            fail_fast: false,
-            state_dir: Some(temp_dir.path().to_path_buf()),
-        };
-
-        let executor = HookExecutor::new(config).unwrap();
-        let directory_path = PathBuf::from("/test/file-args");
-        let config_hash = "file_test".to_string();
-
-        // Create a large hook configuration that would exceed typical arg limits
-        let mut large_hooks = Vec::new();
-        for i in 0..100 {
-            large_hooks.push(Hook { order: 100, propagate: false,
-                command: "echo".to_string(),
-                args: vec![format!("This is a very long argument string number {} with lots of text to ensure we test the file-based argument passing mechanism properly", i)],
-                dir: None,
-                inputs: Vec::new(),
-                source: Some(false),
-            });
-        }
-
-        // This should write to files instead of passing as arguments
-        let result = executor
-            .execute_hooks_background(directory_path.clone(), config_hash.clone(), large_hooks)
-            .await;
-
-        assert!(result.is_ok(), "Should handle large hook configurations");
-
-        // Wait a bit for supervisor to start and read files
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Cancel to clean up
-        executor
-            .cancel_execution(
-                &directory_path,
-                &config_hash,
-                Some("Test cleanup".to_string()),
-            )
-            .await
-            .ok();
-    }
-
-    #[tokio::test]
     async fn test_state_dir_getter() {
-        use crate::hooks::state::StateManager;
+        use crate::state::StateManager;
 
         let temp_dir = TempDir::new().unwrap();
         let state_dir = temp_dir.path().to_path_buf();

@@ -40,11 +40,9 @@
 #![allow(unused_assignments)]
 
 pub mod base;
-pub mod cache;
 pub mod ci;
 pub mod config;
 pub mod environment;
-pub mod hooks;
 pub mod lockfile;
 pub mod manifest;
 pub mod module;
@@ -325,6 +323,15 @@ impl From<std::io::Error> for Error {
 impl From<std::str::Utf8Error> for Error {
     fn from(source: std::str::Utf8Error) -> Self {
         Error::Utf8 { source, file: None }
+    }
+}
+
+impl From<cuenv_hooks::Error> for Error {
+    fn from(source: cuenv_hooks::Error) -> Self {
+        Error::Execution {
+            message: source.to_string(),
+            help: None,
+        }
     }
 }
 

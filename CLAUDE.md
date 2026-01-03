@@ -52,7 +52,11 @@ The project uses `cuenv` with a `#NixFlake` hook that automatically runs `nix pr
 | Crate                             | Purpose                                                       |
 | --------------------------------- | ------------------------------------------------------------- |
 | **cuengine**                      | Go-Rust FFI bridge for CUE evaluation                         |
-| **cuenv-core**                    | Shared types, task execution, caching, environment management |
+| **cuenv-core**                    | Shared types, task execution, environment management          |
+| **cuenv-hooks**                   | Hook execution, state management, and approval system         |
+| **cuenv-cache**                   | Content-addressed task caching infrastructure                 |
+| **cuenv-task-graph**              | Task graph DAG algorithms and dependency resolution           |
+| **cuenv-task-discovery**          | Workspace scanning and TaskRef resolution                     |
 | **cuenv**                         | CLI binary with TUI (clap + ratatui)                          |
 | **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)            |
 | **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.)  |
@@ -69,7 +73,7 @@ The project uses `cuenv` with a `#NixFlake` hook that automatically runs `nix pr
 1. CLI parses args → loads `env.cue`
 2. CUE evaluated via Go FFI bridge (cuengine)
 3. Deserialized to Rust types (`Project`, `Env`, `Tasks`)
-4. Task graph built with petgraph (dependency resolution)
+4. Task graph built with cuenv-task-graph (petgraph-based dependency resolution)
 5. Tasks executed with hermetic isolation and caching
 6. Events broadcast to UI renderers
 

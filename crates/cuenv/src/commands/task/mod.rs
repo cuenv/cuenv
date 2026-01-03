@@ -26,11 +26,11 @@ use workspace::build_global_tasks;
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::discovery::{EvalFn, TaskDiscovery};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
     BackendFactory, ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, Tasks,
 };
+use cuenv_task_discovery::{EvalFn, TaskDiscovery};
 
 use super::CommandExecutor;
 use super::env_file::find_cue_module_root;
