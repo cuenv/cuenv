@@ -68,7 +68,7 @@ pub struct ApprovalManager {
 
 impl ApprovalManager {
     /// Create a new approval manager with specified approval file
-    #[must_use] 
+    #[must_use]
     pub fn new(approval_file: PathBuf) -> Self {
         Self {
             approval_file,
@@ -106,7 +106,7 @@ impl ApprovalManager {
     }
 
     /// Get approval for a specific directory
-    #[must_use] 
+    #[must_use]
     pub fn get_approval(&self, directory: &str) -> Option<&ApprovalRecord> {
         let path = PathBuf::from(directory);
         let dir_key = compute_directory_key(&path);
@@ -298,7 +298,7 @@ impl ApprovalManager {
     }
 
     /// List all approved directories
-    #[must_use] 
+    #[must_use]
     pub fn list_approved(&self) -> Vec<&ApprovalRecord> {
         self.approvals.values().collect()
     }
@@ -326,7 +326,7 @@ impl ApprovalManager {
     }
 
     /// Check if the approvals map contains a specific directory key
-    #[must_use] 
+    #[must_use]
     pub fn contains_key(&self, directory_path: &Path) -> bool {
         let dir_key = compute_directory_key(directory_path);
         self.approvals.contains_key(&dir_key)
@@ -445,7 +445,7 @@ fn check_approval_status_core(
 ///
 /// Only onEnter, onExit, and prePush hooks are included since they execute arbitrary commands.
 /// Changes to env vars, tasks, config settings do NOT require re-approval.
-#[must_use] 
+#[must_use]
 pub fn compute_approval_hash(hooks: Option<&Hooks>) -> String {
     let mut hasher = Sha256::new();
 
@@ -470,7 +470,7 @@ pub fn compute_approval_hash(hooks: Option<&Hooks>) -> String {
 }
 
 /// Compute a directory key for the approvals map
-#[must_use] 
+#[must_use]
 pub fn compute_directory_key(path: &Path) -> String {
     // Try to canonicalize the path for consistency
     // If canonicalization fails (e.g., path doesn't exist), use the path as-is
@@ -577,7 +577,7 @@ pub struct ConfigSummary {
 
 impl ConfigSummary {
     /// Create a summary from hooks
-    #[must_use] 
+    #[must_use]
     pub fn from_hooks(hooks: Option<&Hooks>) -> Self {
         let mut summary = Self {
             has_hooks: false,
@@ -596,7 +596,7 @@ impl ConfigSummary {
     }
 
     /// Get a human-readable description of the hooks
-    #[must_use] 
+    #[must_use]
     pub fn description(&self) -> String {
         if !self.has_hooks {
             "no hooks".to_string()
@@ -689,7 +689,10 @@ mod tests {
         };
 
         let hash3 = compute_approval_hash(Some(&hooks2));
-        assert_ne!(hash1, hash3, "Different hooks should produce different hash");
+        assert_ne!(
+            hash1, hash3,
+            "Different hooks should produce different hash"
+        );
     }
 
     #[test]

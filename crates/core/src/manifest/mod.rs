@@ -10,9 +10,9 @@ use crate::config::Config;
 use crate::environment::Env;
 use crate::module::Instance;
 use crate::secrets::Secret;
-use cuenv_hooks::{Hook, Hooks};
 use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
+use cuenv_hooks::{Hook, Hooks};
 
 /// A hook step to run as part of task dependencies.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

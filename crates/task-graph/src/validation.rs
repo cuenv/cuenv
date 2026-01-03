@@ -86,12 +86,7 @@ mod tests {
     fn test_validate_valid_graph() {
         let mut graph = TaskGraph::new();
         graph
-            .add_task(
-                "a",
-                TestTask {
-                    depends_on: vec![],
-                },
-            )
+            .add_task("a", TestTask { depends_on: vec![] })
             .unwrap();
         graph
             .add_task(

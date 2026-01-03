@@ -19,8 +19,8 @@ use cuenv_core::manifest::{Base, Project};
 use cuenv_core::tasks::execute_command_with_redaction;
 use std::path::Path;
 
-use cuenv_hooks::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status};
 use cuenv_events::emit_stderr;
+use cuenv_hooks::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status};
 
 use super::export::{extract_static_env_vars, get_environment_with_hooks};
 
@@ -177,7 +177,8 @@ pub async fn execute_exec(
         let hooks_approved = if summary.has_hooks {
             let mut approval_manager = ApprovalManager::with_default_file()?;
             approval_manager.load_approvals().await?;
-            let approval_status = check_approval_status(&approval_manager, &directory, project.hooks.as_ref())?;
+            let approval_status =
+                check_approval_status(&approval_manager, &directory, project.hooks.as_ref())?;
             matches!(approval_status, ApprovalStatus::Approved)
         } else {
             true // No hooks = nothing to approve

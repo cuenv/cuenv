@@ -21,7 +21,10 @@
 //! assumed to be already secured.
 
 // TODO(hooks-docs): Add # Errors documentation to all fallible public functions
-#![expect(clippy::missing_errors_doc, reason = "Error documentation to be added incrementally")]
+#![expect(
+    clippy::missing_errors_doc,
+    reason = "Error documentation to be added incrementally"
+)]
 
 mod approval;
 mod error;
@@ -36,15 +39,13 @@ pub use error::{Error, Result};
 pub use types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult, Hooks};
 
 // Re-export state management
-pub use state::{
-    compute_execution_hash, compute_instance_hash, HookExecutionState, StateManager,
-};
+pub use state::{HookExecutionState, StateManager, compute_execution_hash, compute_instance_hash};
 
 // Re-export executor
-pub use executor::{execute_hooks, HookExecutor};
+pub use executor::{HookExecutor, execute_hooks};
 
 // Re-export approval management
 pub use approval::{
-    check_approval_status, compute_approval_hash, compute_directory_key, is_ci, ApprovalManager,
-    ApprovalRecord, ApprovalStatus, ConfigSummary,
+    ApprovalManager, ApprovalRecord, ApprovalStatus, ConfigSummary, check_approval_status,
+    compute_approval_hash, compute_directory_key, is_ci,
 };

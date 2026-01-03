@@ -142,7 +142,9 @@ impl<T: TaskNodeData> TaskGraph<T> {
 
         // Report missing dependencies
         if !missing_deps.is_empty() {
-            return Err(Error::MissingDependencies { missing: missing_deps });
+            return Err(Error::MissingDependencies {
+                missing: missing_deps,
+            });
         }
 
         // Add all edges

@@ -79,9 +79,11 @@ impl SecretRegistry {
         name: &str,
         spec: &SecretSpec,
     ) -> Result<String, SecretError> {
-        let resolver = self.get(provider).ok_or_else(|| SecretError::UnsupportedResolver {
-            resolver: provider.to_string(),
-        })?;
+        let resolver = self
+            .get(provider)
+            .ok_or_else(|| SecretError::UnsupportedResolver {
+                resolver: provider.to_string(),
+            })?;
 
         resolver.resolve(name, spec).await
     }
@@ -186,16 +188,13 @@ mod tests {
         let mut registry = SecretRegistry::new();
         registry.register(Arc::new(EnvSecretResolver::new()));
 
-        temp_env::async_with_vars(
-            [("TEST_SECRET_REGISTRY", Some("test_value"))],
-            async {
-                let spec = SecretSpec::new("TEST_SECRET_REGISTRY");
+        temp_env::async_with_vars([("TEST_SECRET_REGISTRY", Some("test_value"))], async {
+            let spec = SecretSpec::new("TEST_SECRET_REGISTRY");
 
-                let result = registry.resolve("env", "TEST_SECRET_REGISTRY", &spec).await;
-                assert!(result.is_ok());
-                assert_eq!(result.unwrap(), "test_value");
-            },
-        )
+            let result = registry.resolve("env", "TEST_SECRET_REGISTRY", &spec).await;
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap(), "test_value");
+        })
         .await;
     }
 }

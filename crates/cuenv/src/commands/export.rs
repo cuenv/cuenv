@@ -12,8 +12,8 @@ use cuenv_core::manifest::Project;
 use cuenv_core::{ModuleEvaluation, Result, shell::Shell};
 use cuenv_hooks::{
     ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, HookExecutionConfig,
-    HookExecutionState, HookExecutor, StateManager, check_approval_status,
-    compute_instance_hash, execute_hooks,
+    HookExecutionState, HookExecutor, StateManager, check_approval_status, compute_instance_hash,
+    execute_hooks,
 };
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
@@ -249,7 +249,8 @@ pub async fn execute_export(
     approval_manager.load_approvals().await?;
 
     debug!("Checking approval for directory: {}", directory.display());
-    let approval_status = check_approval_status(&approval_manager, &directory, config.hooks.as_ref())?;
+    let approval_status =
+        check_approval_status(&approval_manager, &directory, config.hooks.as_ref())?;
 
     match approval_status {
         ApprovalStatus::NotApproved { .. } | ApprovalStatus::RequiresApproval { .. } => {

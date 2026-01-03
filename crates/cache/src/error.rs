@@ -66,7 +66,11 @@ impl Error {
 
     /// Create an I/O error with path context
     #[must_use]
-    pub fn io(source: std::io::Error, path: impl AsRef<Path>, operation: impl Into<String>) -> Self {
+    pub fn io(
+        source: std::io::Error,
+        path: impl AsRef<Path>,
+        operation: impl Into<String>,
+    ) -> Self {
         Self::Io {
             source,
             path: Some(path.as_ref().into()),

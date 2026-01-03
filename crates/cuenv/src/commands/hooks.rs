@@ -244,7 +244,8 @@ pub async fn execute_env_load(
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
 
-    let approval_status = check_approval_status(&approval_manager, &directory, config.hooks.as_ref())?;
+    let approval_status =
+        check_approval_status(&approval_manager, &directory, config.hooks.as_ref())?;
 
     match approval_status {
         ApprovalStatus::Approved => {
@@ -822,8 +823,8 @@ mod tests {
 
     #[test]
     fn test_extract_hooks_from_config() {
-        use cuenv_hooks::{Hook, Hooks};
         use cuenv_core::manifest::Project;
+        use cuenv_hooks::{Hook, Hooks};
         use std::collections::HashMap;
 
         let mut on_enter = HashMap::new();
@@ -877,8 +878,8 @@ mod tests {
 
     #[test]
     fn test_extract_hooks_single_hook() {
-        use cuenv_hooks::{Hook, Hooks};
         use cuenv_core::manifest::Project;
+        use cuenv_hooks::{Hook, Hooks};
         use std::collections::HashMap;
 
         let mut on_enter = HashMap::new();

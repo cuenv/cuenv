@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+### ⚠ BREAKING CHANGES
+
+- **hooks**: Moved from `cuenv_core::hooks` to new `cuenv-hooks` crate. Update imports:
+  - `cuenv_core::hooks::*` → `cuenv_hooks::*`
+- **cache**: Moved from `cuenv_core::cache` to new `cuenv-cache` crate. Update imports:
+  - `cuenv_core::cache::*` → `cuenv_cache::*`
+- **task-graph**: Extracted DAG algorithms to new `cuenv-task-graph` crate with generic `TaskGraph<T>`
+- **task-discovery**: Moved from `cuenv_core::tasks::discovery` to new `cuenv-task-discovery` crate. Update imports:
+  - `cuenv_core::tasks::discovery::*` → `cuenv_task_discovery::*`
+- **secrets**: 1Password resolver now behind feature flag. Enable with `features = ["1password"]` (enabled by default)
+- **secrets**: Added `SecretRegistry` for dynamic resolver registration via trait-based pattern
+
+### Refactor
+
+- Extract `cuenv-hooks` crate (4,489 LOC) for background execution, state management, and approval system
+- Extract `cuenv-cache` crate (1,095 LOC) for content-addressed task caching infrastructure
+- Extract `cuenv-task-graph` crate (863 LOC) for pure DAG algorithms with generic trait-based design
+- Extract `cuenv-task-discovery` crate (911 LOC) for workspace scanning and TaskRef resolution
+- Add `SecretRegistry` to `cuenv-secrets` for dynamic resolver registration
+- Reduce cuenv-core from 22,237 LOC to 15,334 LOC (~31% reduction)
+
 ## [0.2.0](https://github.com/cuenv/cuenv/compare/cuenv-core-v0.1.0...cuenv-core-v0.2.0) (2025-10-09)
 
 ### Features

@@ -57,7 +57,7 @@ pub struct HookResult {
 
 impl HookResult {
     /// Create a successful hook result
-    #[must_use] 
+    #[must_use]
     pub fn success(
         hook: Hook,
         exit_status: ExitStatus,
@@ -78,7 +78,7 @@ impl HookResult {
 
     /// Create a failed hook result
     #[allow(clippy::too_many_arguments)] // Hook result requires full execution context
-    #[must_use] 
+    #[must_use]
     pub fn failure(
         hook: Hook,
         exit_status: Option<ExitStatus>,
@@ -99,7 +99,7 @@ impl HookResult {
     }
 
     /// Create a timeout hook result
-    #[must_use] 
+    #[must_use]
     pub fn timeout(hook: Hook, stdout: String, stderr: String, timeout_seconds: u64) -> Self {
         Self {
             hook,

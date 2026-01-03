@@ -23,7 +23,7 @@ pub struct StateManager {
 
 impl StateManager {
     /// Create a new state manager with the specified state directory
-    #[must_use] 
+    #[must_use]
     pub fn new(state_dir: PathBuf) -> Self {
         Self { state_dir }
     }
@@ -47,7 +47,7 @@ impl StateManager {
     }
 
     /// Get the state directory path
-    #[must_use] 
+    #[must_use]
     pub fn get_state_dir(&self) -> &Path {
         &self.state_dir
     }
@@ -73,7 +73,7 @@ impl StateManager {
     }
 
     /// Get the state file path for a given directory hash (public for PID files)
-    #[must_use] 
+    #[must_use]
     pub fn get_state_file_path(&self, instance_hash: &str) -> PathBuf {
         self.state_dir.join(format!("{}.json", instance_hash))
     }
@@ -252,7 +252,7 @@ impl StateManager {
 
     /// Compute a key for directory-only lookups (used for fast status checks).
     /// This hashes just the canonicalized directory path, without config hash.
-    #[must_use] 
+    #[must_use]
     pub fn compute_directory_key(path: &Path) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -308,7 +308,7 @@ impl StateManager {
 
     /// Fast synchronous check: does a marker exist for this directory?
     /// This is the hot path for Starship - just a single stat() syscall.
-    #[must_use] 
+    #[must_use]
     pub fn has_active_marker(&self, directory_path: &Path) -> bool {
         let dir_key = Self::compute_directory_key(directory_path);
         self.directory_marker_path(&dir_key).exists()
@@ -330,7 +330,7 @@ impl StateManager {
 
     /// Read the instance hash from a marker file synchronously.
     /// This is the sync equivalent of `get_marker_instance_hash` for the fast path.
-    #[must_use] 
+    #[must_use]
     pub fn get_marker_instance_hash_sync(&self, directory_path: &Path) -> Option<String> {
         let dir_key = Self::compute_directory_key(directory_path);
         let marker_path = self.directory_marker_path(&dir_key);
@@ -559,7 +559,7 @@ pub struct HookExecutionState {
 
 impl HookExecutionState {
     /// Create a new execution state
-    #[must_use] 
+    #[must_use]
     pub fn new(
         directory_path: PathBuf,
         instance_hash: String,
@@ -599,7 +599,10 @@ impl HookExecutionState {
     }
 
     /// Record the result of a hook execution
-    #[expect(clippy::needless_pass_by_value, reason = "Takes ownership for API clarity, cloning is intentional")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "Takes ownership for API clarity, cloning is intentional"
+    )]
     pub fn record_hook_result(&mut self, hook_index: usize, result: HookResult) {
         self.hook_results.insert(hook_index, result.clone());
         self.completed_hooks += 1;
@@ -647,7 +650,7 @@ impl HookExecutionState {
     }
 
     /// Check if execution is complete (success, failure, or cancelled)
-    #[must_use] 
+    #[must_use]
     pub fn is_complete(&self) -> bool {
         matches!(
             self.status,
@@ -656,7 +659,7 @@ impl HookExecutionState {
     }
 
     /// Get a human-readable progress display
-    #[must_use] 
+    #[must_use]
     pub fn progress_display(&self) -> String {
         match &self.status {
             ExecutionStatus::Running => {
@@ -699,20 +702,20 @@ impl HookExecutionState {
     }
 
     /// Get current hook duration (if a hook is currently running)
-    #[must_use] 
+    #[must_use]
     pub fn current_hook_duration(&self) -> Option<chrono::Duration> {
         self.current_hook_started_at
             .map(|started| Utc::now() - started)
     }
 
     /// Get the currently executing hook
-    #[must_use] 
+    #[must_use]
     pub fn current_hook(&self) -> Option<&Hook> {
         self.current_hook_index.and_then(|idx| self.hooks.get(idx))
     }
 
     /// Format duration in human-readable format (e.g., "2.3s", "1m 15s", "2h 5m")
-    #[must_use] 
+    #[must_use]
     pub fn format_duration(duration: chrono::Duration) -> String {
         let total_secs = duration.num_seconds();
 
@@ -720,7 +723,10 @@ impl HookExecutionState {
             // Less than 1 minute: show as decimal seconds
             let millis = duration.num_milliseconds();
             // Precision loss is acceptable for display purposes
-            #[expect(clippy::cast_precision_loss, reason = "Display formatting, precision loss is acceptable")]
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "Display formatting, precision loss is acceptable"
+            )]
             let secs = millis as f64 / 1000.0;
             format!("{secs:.1}s")
         } else if total_secs < 3600 {
@@ -745,7 +751,7 @@ impl HookExecutionState {
     }
 
     /// Get a short description of the current or next hook for display
-    #[must_use] 
+    #[must_use]
     pub fn current_hook_display(&self) -> Option<String> {
         // If there's a current hook index, use that
         let hook = if let Some(hook) = self.current_hook() {
@@ -768,7 +774,7 @@ impl HookExecutionState {
     }
 
     /// Check if the completed state should still be displayed
-    #[must_use] 
+    #[must_use]
     pub fn should_display_completed(&self) -> bool {
         if let Some(display_until) = self.completed_display_until {
             Utc::now() < display_until
@@ -779,7 +785,7 @@ impl HookExecutionState {
 }
 
 /// Compute a hash for a unique execution instance (directory + config)
-#[must_use] 
+#[must_use]
 pub fn compute_instance_hash(path: &Path, config_hash: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -811,7 +817,8 @@ pub fn compute_execution_hash(hooks: &[Hook], base_dir: &Path) -> String {
         // Determine the working directory for this hook
         let hook_dir = hook
             .dir
-            .as_ref().map_or_else(|| base_dir.to_path_buf(), PathBuf::from);
+            .as_ref()
+            .map_or_else(|| base_dir.to_path_buf(), PathBuf::from);
 
         for input in &hook.inputs {
             let input_path = hook_dir.join(input);

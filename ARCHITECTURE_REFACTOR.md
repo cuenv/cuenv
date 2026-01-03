@@ -2,12 +2,13 @@
 
 Split cuenv-core (22,237 LOC) into 6 focused crates, reducing core to ~8K LOC.
 
-**Progress:** 60% complete (98/163 tasks)
+**Progress:** 65% complete (106/163 tasks)
 - Phases 1-4: Complete
 - Phase 5: Deferred (task index extraction - complex coupling)
 - Phase 6: Complete (secrets registry pattern)
 - Phase 7: Deferred (CI consolidation - circular dependency)
 - Phase 8: Deferred (cuenv-cubes rename - breaking change)
+- Final Validation: Complete
 
 ## ⚠️ Breaking Changes Policy
 
@@ -428,11 +429,12 @@ Consider adding an alias for backwards compatibility if implemented.
 
 After all phases complete:
 
-- [ ] `cuenv fmt --fix`
-- [ ] `cuenv task lint`
-- [ ] `cuenv task test.unit`
-- [ ] `cuenv task test.bdd`
-- [ ] `cuenv exec -- cargo run -- version`
-- [ ] `cuenv exec -- cargo run -- env print --path examples/env-basic --package examples`
-- [ ] Verify core LOC is ~8K (down from 22K)
-- [ ] Update CHANGELOG.md with breaking changes
+- [x] `cuenv fmt --fix`
+- [x] `cuenv task lint`
+- [x] `cuenv task tests.unit` (2765 tests pass)
+- [x] `cuenv task tests.bdd` (5 scenarios, 46 steps pass)
+- [x] `cuenv exec -- cargo run -- version`
+- [x] `cuenv exec -- cargo run -- env print --path examples/env-basic --package examples`
+- [x] Verify core LOC reduction (15,334 LOC, down from 22,237 - ~31% reduction)
+  - Note: Target of ~8K not achieved due to deferred Phases 5, 7, 8
+- [x] Update CHANGELOG.md with breaking changes

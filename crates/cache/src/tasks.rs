@@ -244,8 +244,7 @@ pub fn save_result(
 
 /// Materialize cached outputs to a destination directory
 pub fn materialize_outputs(key: &str, destination: &Path, root: Option<&Path>) -> Result<usize> {
-    let entry =
-        lookup(key, root).ok_or_else(|| Error::not_found(key))?;
+    let entry = lookup(key, root).ok_or_else(|| Error::not_found(key))?;
     let out_dir = entry.path.join("outputs");
     if !out_dir.exists() {
         return Ok(0);

@@ -22,7 +22,10 @@
 //! - cuenv version and platform
 
 // TODO(cache-docs): Add # Errors documentation to all fallible public functions
-#![expect(clippy::missing_errors_doc, reason = "Error documentation to be added incrementally")]
+#![expect(
+    clippy::missing_errors_doc,
+    reason = "Error documentation to be added incrementally"
+)]
 
 mod error;
 pub mod tasks;

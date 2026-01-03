@@ -1,6 +1,6 @@
 //! Hook execution engine with background processing and state management
 
-use crate::state::{compute_instance_hash, HookExecutionState, StateManager};
+use crate::state::{HookExecutionState, StateManager, compute_instance_hash};
 use crate::types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult};
 use crate::{Error, Result};
 use std::collections::HashMap;
@@ -220,7 +220,10 @@ impl HookExecutor {
             // and process group. This is needed to properly detach background hook
             // processes from the parent terminal. The only failure case is EPERM
             // (already a session leader), which we propagate as an io::Error.
-            #[expect(unsafe_code, reason = "Required for POSIX process detachment via setsid()")]
+            #[expect(
+                unsafe_code,
+                reason = "Required for POSIX process detachment via setsid()"
+            )]
             unsafe {
                 cmd.pre_exec(|| {
                     // Create a new session, detaching from controlling terminal
@@ -325,7 +328,7 @@ impl HookExecutor {
     }
 
     /// Get a reference to the state manager (for marker operations from execute_hooks)
-    #[must_use] 
+    #[must_use]
     pub fn state_manager(&self) -> &StateManager {
         &self.state_manager
     }
@@ -694,9 +697,10 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     cmd_before.stdout(Stdio::piped());
     cmd_before.stderr(Stdio::piped());
 
-    let output_before = cmd_before.output().await.map_err(|e| {
-        Error::configuration(format!("Failed to get initial environment: {}", e))
-    })?;
+    let output_before = cmd_before
+        .output()
+        .await
+        .map_err(|e| Error::configuration(format!("Failed to get initial environment: {}", e)))?;
 
     let env_before_output = String::from_utf8_lossy(&output_before.stdout);
     let mut env_before = HashMap::new();
@@ -865,7 +869,10 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
     let execution_result = timeout(Duration::from_secs(*timeout_seconds), cmd.output()).await;
 
     // Truncation is fine here - a u64 can hold ~584M years in milliseconds
-    #[expect(clippy::cast_possible_truncation, reason = "u128 to u64 truncation is acceptable for duration")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "u128 to u64 truncation is acceptable for duration"
+    )]
     let duration_ms = start_time.elapsed().as_millis() as u64;
 
     match execution_result {
@@ -918,7 +925,10 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
 }
 
 #[cfg(test)]
-#[expect(clippy::print_stderr, reason = "Tests may use eprintln! to report skip conditions")]
+#[expect(
+    clippy::print_stderr,
+    reason = "Tests may use eprintln! to report skip conditions"
+)]
 mod tests {
     use super::*;
     use crate::types::Hook;
@@ -940,7 +950,10 @@ mod tests {
         if cuenv_binary.exists() {
             // SAFETY: This is only called in tests where we control the environment.
             // No other threads should be accessing this environment variable.
-            #[expect(unsafe_code, reason = "Test helper setting env var in controlled test environment")]
+            #[expect(
+                unsafe_code,
+                reason = "Test helper setting env var in controlled test environment"
+            )]
             unsafe {
                 std::env::set_var("CUENV_EXECUTABLE", &cuenv_binary);
             }
