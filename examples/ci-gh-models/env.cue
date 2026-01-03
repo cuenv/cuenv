@@ -8,13 +8,12 @@ name: "ci-gh-models"
 
 // Pipeline that uses GitHub Models CLI for LLM evaluation
 // This triggers the GhModelsContributor to inject extension setup
-ci: pipelines: [
-	{
-		name:  "eval"
+ci: pipelines: {
+	eval: {
 		tasks: ["eval.prompts"]
 		when: branch: "main"
-	},
-]
+	}
+}
 
 tasks: {
 	"eval.prompts": {

@@ -1,22 +1,16 @@
+//! CI project discovery utilities.
+//!
+//! Provides functions for discovering CUE modules and projects for CI operations.
+//! Projects can be discovered from the current directory or from an already-evaluated module.
+
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
-use cuenv_core::manifest::Project;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone)]
-pub struct DiscoveredCIProject {
-    /// Full path to the env.cue file
-    pub path: PathBuf,
-    /// Module root (repo root where cue.mod/ lives)
-    pub module_root: PathBuf,
-    /// Relative path from module root to project (for working-directory in CI)
-    pub relative_path: PathBuf,
-    pub config: Project,
-}
-
 /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
-fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
+#[must_use]
+pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
     let mut current = start.canonicalize().ok()?;
     loop {
         if current.join("cue.mod").is_dir() {
@@ -28,15 +22,29 @@ fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Discover all projects in the current repository
+/// Evaluate the CUE module from the current working directory.
+///
+/// This is a convenience function that finds the module root from CWD,
+/// evaluates it, and returns the `ModuleEvaluation` for further processing.
 ///
 /// # Errors
-/// Returns an error if glob pattern matching fails or if not inside a CUE module
+/// Returns an error if:
+/// - Current directory cannot be determined
+/// - Not inside a CUE module (no `cue.mod/` found)
+/// - CUE evaluation fails
 ///
-/// # Panics
-/// Panics if the regex pattern is invalid (should not happen as it is hardcoded)
-pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
-    // Check if we're inside a CUE module first
+/// # Example
+/// ```ignore
+/// use cuenv_ci::discovery::evaluate_module_from_cwd;
+/// use cuenv_core::manifest::Project;
+///
+/// let module = evaluate_module_from_cwd()?;
+/// for instance in module.projects() {
+///     let project = Project::try_from(instance)?;
+///     println!("Found project: {}", project.name);
+/// }
+/// ```
+pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     let cwd = std::env::current_dir().map_err(|e| cuenv_core::Error::Io {
         source: e,
         path: None,
@@ -49,7 +57,6 @@ pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
         )
     })?;
 
-    // Use module-wide evaluation instead of per-project evaluation
     let options = ModuleEvalOptions {
         recursive: true,
         ..Default::default()
@@ -57,159 +64,16 @@ pub fn discover_projects() -> Result<Vec<DiscoveredCIProject>> {
     let raw_result = cuengine::evaluate_module(&module_root, "cuenv", Some(&options))
         .map_err(|e| cuenv_core::Error::configuration(format!("CUE evaluation failed: {e}")))?;
 
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
+    Ok(ModuleEvaluation::from_raw(
+        module_root,
         raw_result.instances,
         raw_result.projects,
-    );
-
-    // Iterate through all Project instances (schema-verified)
-    let projects: Vec<DiscoveredCIProject> = module
-        .projects()
-        .filter_map(|instance| {
-            instance.deserialize().ok().map(|mut config: Project| {
-                // Expand cross-project references and implicit dependencies
-                config.expand_cross_project_references();
-
-                // Build the path to the env.cue file
-                let env_cue_path = module_root.join(&instance.path).join("env.cue");
-
-                DiscoveredCIProject {
-                    path: env_cue_path,
-                    module_root: module_root.clone(),
-                    relative_path: instance.path.clone(),
-                    config,
-                }
-            })
-        })
-        .collect();
-
-    Ok(projects)
-}
-
-/// Discover projects from an already-evaluated module.
-///
-/// This avoids redundant CUE evaluation when the caller already has a cached module.
-/// Use this when integrating with `CommandExecutor` which caches module evaluation.
-#[must_use]
-pub fn discover_projects_from_module(module: &ModuleEvaluation) -> Vec<DiscoveredCIProject> {
-    module
-        .projects()
-        .filter_map(|instance| {
-            instance.deserialize().ok().map(|mut config: Project| {
-                // Expand cross-project references and implicit dependencies
-                config.expand_cross_project_references();
-
-                // Build the path to the env.cue file
-                let env_cue_path = module.root.join(&instance.path).join("env.cue");
-
-                DiscoveredCIProject {
-                    path: env_cue_path,
-                    module_root: module.root.clone(),
-                    relative_path: instance.path.clone(),
-                    config,
-                }
-            })
-        })
-        .collect()
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ==========================================================================
-    // DiscoveredCIProject tests
-    // ==========================================================================
-
-    #[test]
-    fn test_discovered_ci_project_fields() {
-        let project = DiscoveredCIProject {
-            path: PathBuf::from("/module/root/services/api/env.cue"),
-            module_root: PathBuf::from("/module/root"),
-            relative_path: PathBuf::from("services/api"),
-            config: Project::default(),
-        };
-
-        assert_eq!(
-            project.path,
-            PathBuf::from("/module/root/services/api/env.cue"),
-            "full path should be set correctly"
-        );
-        assert_eq!(
-            project.module_root,
-            PathBuf::from("/module/root"),
-            "module_root should be set correctly"
-        );
-        assert_eq!(
-            project.relative_path,
-            PathBuf::from("services/api"),
-            "relative_path should be set correctly"
-        );
-    }
-
-    #[test]
-    fn test_discovered_ci_project_root_relative_path() {
-        // Root projects should have "." as relative_path
-        let project = DiscoveredCIProject {
-            path: PathBuf::from("/module/root/env.cue"),
-            module_root: PathBuf::from("/module/root"),
-            relative_path: PathBuf::from("."),
-            config: Project::default(),
-        };
-
-        assert_eq!(
-            project.relative_path,
-            PathBuf::from("."),
-            "Root project should have '.' as relative_path"
-        );
-    }
-
-    #[test]
-    fn test_discovered_ci_project_nested_relative_path() {
-        // Deeply nested projects should preserve full relative path
-        let project = DiscoveredCIProject {
-            path: PathBuf::from(
-                "/repo/projects/rawkode.academy/platform/email-preferences/env.cue",
-            ),
-            module_root: PathBuf::from("/repo"),
-            relative_path: PathBuf::from("projects/rawkode.academy/platform/email-preferences"),
-            config: Project::default(),
-        };
-
-        assert_eq!(
-            project.relative_path,
-            PathBuf::from("projects/rawkode.academy/platform/email-preferences"),
-            "Nested project should have full relative path"
-        );
-    }
-
-    #[test]
-    fn test_discovered_ci_project_clone() {
-        let project = DiscoveredCIProject {
-            path: PathBuf::from("/project/env.cue"),
-            module_root: PathBuf::from("/project"),
-            relative_path: PathBuf::from("."),
-            config: Project::default(),
-        };
-
-        let cloned = project.clone();
-        assert_eq!(cloned.path, project.path);
-        assert_eq!(cloned.module_root, project.module_root);
-    }
-
-    #[test]
-    fn test_discovered_ci_project_debug() {
-        let project = DiscoveredCIProject {
-            path: PathBuf::from("/project/env.cue"),
-            module_root: PathBuf::from("/project"),
-            relative_path: PathBuf::from("."),
-            config: Project::default(),
-        };
-
-        let debug_str = format!("{:?}", project);
-        assert!(debug_str.contains("DiscoveredCIProject"));
-    }
 
     // ==========================================================================
     // find_cue_module_root tests

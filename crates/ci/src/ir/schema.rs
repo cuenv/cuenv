@@ -7,6 +7,7 @@
 //! - v1.4: Added `stages` field for provider-injected setup tasks (deprecated in v1.5)
 //! - v1.3: Initial stable version
 
+use cuenv_core::ci::PipelineMode;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -37,6 +38,7 @@ impl IntermediateRepresentation {
             version: IR_VERSION.to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name.into(),
+                mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,
@@ -81,6 +83,10 @@ impl IntermediateRepresentation {
 pub struct PipelineMetadata {
     /// Pipeline name
     pub name: String,
+
+    /// Generation mode (thin or expanded)
+    #[serde(default)]
+    pub mode: PipelineMode,
 
     /// Environment for secret resolution (e.g., "production")
     #[serde(skip_serializing_if = "Option::is_none")]

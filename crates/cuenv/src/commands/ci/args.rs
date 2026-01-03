@@ -107,8 +107,7 @@ impl ExportFormat {
     #[must_use]
     pub const fn extension(&self) -> &'static str {
         match self {
-            Self::Buildkite | Self::Gitlab | Self::GithubActions => "yml",
-            Self::Circleci => "yml",
+            Self::Buildkite | Self::Gitlab | Self::GithubActions | Self::Circleci => "yml",
         }
     }
 }

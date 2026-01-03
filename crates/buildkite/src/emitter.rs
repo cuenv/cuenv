@@ -286,9 +286,64 @@ impl BuildkiteEmitter {
 }
 
 impl Emitter for BuildkiteEmitter {
-    fn emit(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
-        let pipeline = self.build_pipeline(ir);
+    /// Emit a thin mode Buildkite pipeline.
+    ///
+    /// Thin mode generates a bootstrap pipeline that:
+    /// 1. Installs Nix
+    /// 2. Builds cuenv
+    /// 3. Calls `cuenv ci --pipeline <name>` for orchestration
+    fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+        let pipeline_name = &ir.pipeline.name;
 
+        // Build a bootstrap pipeline that delegates to cuenv
+        let mut steps = Vec::new();
+
+        // Bootstrap phase tasks (e.g., install-nix)
+        for task in ir.sorted_phase_tasks(BuildStage::Bootstrap) {
+            steps.push(Step::Command(Box::new(self.phase_task_to_step(task))));
+        }
+
+        // Setup phase tasks (e.g., cachix, setup-cuenv)
+        for task in ir.sorted_phase_tasks(BuildStage::Setup) {
+            steps.push(Step::Command(Box::new(self.phase_task_to_step(task))));
+        }
+
+        // Main execution step: cuenv ci --pipeline <name>
+        let cuenv_command = format!("cuenv ci --pipeline {pipeline_name}");
+        let main_step = CommandStep {
+            label: Some(self.format_label(&format!("Run pipeline: {pipeline_name}"), false)),
+            key: Some("cuenv-ci".to_string()),
+            command: Some(CommandValue::Single(cuenv_command)),
+            env: HashMap::new(),
+            agents: self.default_queue.as_ref().map(AgentRules::with_queue),
+            artifact_paths: vec![],
+            depends_on: ir
+                .sorted_phase_tasks(BuildStage::Setup)
+                .last()
+                .map(|t| vec![DependsOn::Key(t.id.clone())])
+                .unwrap_or_default(),
+            concurrency_group: None,
+            concurrency: None,
+            retry: None,
+            timeout_in_minutes: None,
+            soft_fail: None,
+        };
+        steps.push(Step::Command(Box::new(main_step)));
+
+        let pipeline = Pipeline {
+            steps,
+            env: HashMap::new(),
+        };
+
+        serde_yaml::to_string(&pipeline).map_err(|e| EmitterError::Serialization(e.to_string()))
+    }
+
+    /// Emit an expanded mode Buildkite pipeline.
+    ///
+    /// Expanded mode generates a full pipeline where each task becomes a separate step
+    /// with dependencies managed by Buildkite.
+    fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+        let pipeline = self.build_pipeline(ir);
         serde_yaml::to_string(&pipeline).map_err(|e| EmitterError::Serialization(e.to_string()))
     }
 
@@ -339,13 +394,17 @@ mod tests {
         CachePolicy, OutputDeclaration, PipelineMetadata, PurityMode, ResourceRequirements,
         Runtime, SecretConfig,
     };
+    use cuenv_core::ci::PipelineMode;
     use std::collections::BTreeMap;
 
+    /// Create an IR for testing expanded mode behavior.
+    /// Uses PipelineMode::Expanded explicitly since tests check multi-job output.
     fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
         IntermediateRepresentation {
             version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
+                mode: PipelineMode::Expanded,
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,

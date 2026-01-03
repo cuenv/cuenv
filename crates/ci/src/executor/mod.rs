@@ -420,6 +420,7 @@ impl CIExecutor {
 mod tests {
     use super::*;
     use crate::ir::{CachePolicy, PipelineMetadata, Task as IRTask};
+    use cuenv_core::ci::PipelineMode;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -428,6 +429,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
+                mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,

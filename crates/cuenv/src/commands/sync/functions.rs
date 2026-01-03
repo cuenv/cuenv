@@ -18,6 +18,41 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use tracing::instrument;
 
+/// Project information for CI sync operations.
+///
+/// This is a local struct that holds the data needed for workflow generation,
+/// derived from `ModuleEvaluation` and `Instance`.
+struct ProjectInfo {
+    /// Absolute path to the project directory.
+    project_path: PathBuf,
+    /// Relative path from module root to project directory.
+    relative_path: PathBuf,
+    /// Module root path.
+    module_root: PathBuf,
+    /// Parsed project configuration.
+    config: Project,
+}
+
+impl ProjectInfo {
+    /// Collect all projects from a module evaluation.
+    fn collect_from_module(module: &ModuleEvaluation) -> Result<Vec<Self>> {
+        let mut projects = Vec::new();
+        for instance in module.projects() {
+            let config = Project::try_from(instance)?;
+            // instance.path is the relative path to the project directory (not env.cue)
+            let relative_path = instance.path.clone();
+            let project_path = module.root.join(&relative_path);
+            projects.push(Self {
+                project_path,
+                relative_path,
+                module_root: module.root.clone(),
+                config,
+            });
+        }
+        Ok(projects)
+    }
+}
+
 /// Load Project configuration from CUE using module-wide evaluation.
 fn load_project_config(
     path: &Path,
@@ -441,17 +476,18 @@ pub async fn execute_sync_ci(
             operation: "canonicalize path".to_string(),
         })?;
         let module = executor.get_module(&target_path)?;
-        let projects = cuenv_ci::discovery::discover_projects_from_module(&module);
+        let projects = ProjectInfo::collect_from_module(&module)?;
         (projects, module.root.clone(), target_path)
     };
 
     let target_projects: Vec<_> = projects
         .into_iter()
         .filter(|project| {
+            // project_path is absolute path to project directory
             project
-                .path
-                .parent()
-                .and_then(|path| path.canonicalize().ok())
+                .project_path
+                .canonicalize()
+                .ok()
                 .is_some_and(|path| path == target_path)
         })
         .collect();
@@ -535,7 +571,7 @@ pub async fn execute_sync_ci_workspace(
             cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
         })?;
         let module = executor.get_module(&cwd)?;
-        cuenv_ci::discovery::discover_projects_from_module(&module)
+        ProjectInfo::collect_from_module(&module)?
     };
 
     if projects.is_empty() {
@@ -545,19 +581,11 @@ pub async fn execute_sync_ci_workspace(
     let mut outputs = Vec::new();
 
     for project in &projects {
-        let project_path = project.path.parent().map_or_else(
-            || Path::new("."),
-            |p| {
-                if p.as_os_str().is_empty() {
-                    Path::new(".")
-                } else {
-                    p
-                }
-            },
-        );
+        // Use absolute path - relative_path is relative to module root, not CWD
+        let project_path_str = project.project_path.to_string_lossy();
 
         let result = execute_sync_ci(
-            project_path.to_str().unwrap_or("."),
+            &project_path_str,
             "cuenv",
             dry_run,
             check,
@@ -591,7 +619,7 @@ async fn execute_sync_github(
     repo_root: &Path,
     dry_run: bool,
     check: bool,
-    projects: &[cuenv_ci::discovery::DiscoveredCIProject],
+    projects: &[ProjectInfo],
 ) -> Result<String> {
     if projects.is_empty() {
         return Err(cuenv_core::Error::configuration(
@@ -606,8 +634,8 @@ async fn execute_sync_github(
         let Some(ci) = &project.config.ci else {
             continue;
         };
-        for pipeline in &ci.pipelines {
-            let workflows = generate_github_workflow_for_project(project, pipeline)?;
+        for (pipeline_name, pipeline) in &ci.pipelines {
+            let workflows = generate_github_workflow_for_project(project, pipeline_name, pipeline)?;
             all_workflows.extend(workflows);
         }
     }
@@ -700,6 +728,8 @@ async fn execute_sync_github(
 /// Collected pipeline context from project discovery.
 struct PipelineContext {
     is_release: bool,
+    /// Pipeline generation mode (thin vs expanded)
+    mode: cuenv_core::ci::PipelineMode,
     github_config: cuenv_github::config::GitHubConfig,
     trigger: cuenv_ci::ir::TriggerCondition,
     project_name: Option<String>,
@@ -720,6 +750,7 @@ impl PipelineContext {
             version: "1.5".to_string(),
             pipeline: cuenv_ci::ir::PipelineMetadata {
                 name: pipeline_name.to_string(),
+                mode: self.mode,
                 environment: self.environment.clone(),
                 requires_onepassword: false,
                 project_name: self.project_name.clone(),
@@ -746,30 +777,39 @@ fn has_matrix_tasks(pipeline_tasks: &[cuenv_core::ci::PipelineTask]) -> bool {
 
 /// Generate GitHub workflow files for a single project and pipeline.
 fn generate_github_workflow_for_project(
-    project: &cuenv_ci::discovery::DiscoveredCIProject,
+    project: &ProjectInfo,
+    pipeline_name: &str,
     pipeline: &cuenv_core::ci::Pipeline,
 ) -> Result<Vec<(String, String)>> {
-    let ctx = build_project_pipeline_context(project, pipeline)?;
+    use cuenv_core::ci::PipelineMode;
 
-    // Check for matrix tasks (these need special handling)
-    if has_matrix_tasks(&ctx.pipeline_tasks) {
-        return emit_matrix_workflow(&pipeline.name, &ctx);
+    let ctx = build_project_pipeline_context(project, pipeline_name, pipeline)?;
+
+    // Dispatch based on pipeline mode
+    match ctx.mode {
+        PipelineMode::Thin => {
+            // Thin mode: single job with cuenv ci orchestration
+            emit_thin_workflow(pipeline_name, &ctx)
+        }
+        PipelineMode::Expanded => {
+            // Expanded mode: all tasks as individual jobs with dependencies
+            if has_matrix_tasks(&ctx.pipeline_tasks) {
+                emit_matrix_workflow(pipeline_name, &ctx)
+            } else if ctx.is_release {
+                emit_release_workflow(pipeline_name, &ctx)
+            } else if ctx.tasks.is_empty() {
+                Ok(Vec::new())
+            } else {
+                emit_standard_workflow(pipeline_name, &ctx)
+            }
+        }
     }
-
-    if ctx.is_release {
-        return emit_release_workflow(&pipeline.name, &ctx);
-    }
-
-    if ctx.tasks.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    emit_standard_workflow(&pipeline.name, &ctx)
 }
 
 /// Build pipeline context for a single project and pipeline.
 fn build_project_pipeline_context(
-    project: &cuenv_ci::discovery::DiscoveredCIProject,
+    project: &ProjectInfo,
+    pipeline_name: &str,
     pipeline: &cuenv_core::ci::Pipeline,
 ) -> Result<PipelineContext> {
     use cuenv_ci::compiler::{Compiler, CompilerOptions};
@@ -783,14 +823,15 @@ fn build_project_pipeline_context(
     // Detect release pipelines by checking if they have release event triggers
     let is_release = pipeline.when.as_ref().is_some_and(|w| w.release.is_some());
 
-    // Compute project_path for compiler (None if root, i.e., ".")
-    let project_path_for_compiler = if project.relative_path == Path::new(".") {
+    // Compute project_path for compiler (None if root, i.e., empty relative_path)
+    let project_path_for_compiler = if project.relative_path.as_os_str().is_empty() {
         None
     } else {
         Some(project.relative_path.to_string_lossy().to_string())
     };
 
     let options = CompilerOptions {
+        pipeline_name: Some(pipeline_name.to_string()),
         pipeline: Some(pipeline.clone()),
         ci_mode: true,
         module_root: Some(project.module_root.clone()),
@@ -822,11 +863,12 @@ fn build_project_pipeline_context(
     let trigger = ir
         .pipeline
         .trigger
-        .unwrap_or_else(|| build_github_trigger_condition(pipeline, ci));
+        .unwrap_or_else(|| build_github_trigger_condition(pipeline_name, pipeline, ci));
 
     Ok(PipelineContext {
         is_release,
-        github_config: ci.github_config_for_pipeline(&pipeline.name),
+        mode: pipeline.mode,
+        github_config: ci.github_config_for_pipeline(pipeline_name),
         trigger,
         project_name: Some(project.config.name.clone()),
         project_path: project_path_for_compiler,
@@ -854,6 +896,117 @@ fn emit_release_workflow(
         None => ir.pipeline.name.clone(),
     };
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+
+    let yaml = workflow.to_yaml().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
+    })?;
+
+    Ok(vec![(filename, yaml)])
+}
+
+/// Emit a thin mode workflow.
+///
+/// Thin mode generates a single-job workflow that delegates execution to cuenv:
+/// 1. Bootstrap phase steps (from contributors)
+/// 2. Setup phase steps (from contributors)
+/// 3. Main execution: `cuenv ci --pipeline <name>`
+/// 4. Success phase steps (if: success())
+/// 5. Failure phase steps (if: failure())
+fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<(String, String)>> {
+    use cuenv_ci::ir::BuildStage;
+    use cuenv_github::workflow::GitHubActionsEmitter;
+    use cuenv_github::workflow::schema::{
+        Concurrency, Environment, Job, PermissionLevel, Permissions, Step, Workflow,
+    };
+    use cuenv_github::workflow::stage_renderer::GitHubStageRenderer;
+    use indexmap::IndexMap;
+
+    let workflow_name = match &ctx.project_name {
+        Some(project) => format!("{project}-{pipeline_name}"),
+        None => pipeline_name.to_string(),
+    };
+
+    let ir = ctx.to_ir(pipeline_name);
+    let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
+    let renderer = GitHubStageRenderer::new();
+
+    // Build steps for the single job
+    let mut steps = Vec::new();
+
+    // Checkout step
+    steps.push(Step::uses("actions/checkout@v4").with_name("Checkout"));
+
+    // Bootstrap and setup phase steps (from contributors)
+    let (phase_steps, _secret_env) = GitHubActionsEmitter::render_phase_steps(&ir);
+    steps.extend(phase_steps);
+
+    // Main execution step: cuenv ci --pipeline <name>
+    let cuenv_command = if let Some(ref project_path) = ctx.project_path {
+        format!("cuenv ci --pipeline {pipeline_name} --path {project_path}")
+    } else {
+        format!("cuenv ci --pipeline {pipeline_name}")
+    };
+
+    let mut main_step = Step::run(&cuenv_command)
+        .with_name(format!("Run pipeline: {pipeline_name}"))
+        .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+
+    if let Some(env) = &ctx.environment {
+        main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
+    }
+
+    steps.push(main_step);
+
+    // Success phase steps (from contributors)
+    for task in ir.sorted_phase_tasks(BuildStage::Success) {
+        let mut step = renderer.render_task(task);
+        step.if_condition = Some("success()".to_string());
+        steps.push(step);
+    }
+
+    // Failure phase steps (from contributors)
+    for task in ir.sorted_phase_tasks(BuildStage::Failure) {
+        let mut step = renderer.render_task(task);
+        step.if_condition = Some("failure()".to_string());
+        steps.push(step);
+    }
+
+    // Build the single job
+    let job = Job {
+        name: Some(workflow_name.clone()),
+        runs_on: emitter.runner_as_runs_on(),
+        needs: Vec::new(),
+        if_condition: None,
+        strategy: None,
+        environment: ctx.environment.clone().map(Environment::Name),
+        env: IndexMap::new(),
+        concurrency: None,
+        continue_on_error: None,
+        timeout_minutes: None,
+        steps,
+    };
+
+    let mut jobs = IndexMap::new();
+    jobs.insert(sanitize_workflow_name(&workflow_name), job);
+
+    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
+
+    let workflow = Workflow {
+        name: workflow_name,
+        on: build_workflow_triggers(&ctx.trigger, &filename, &emitter),
+        concurrency: Some(Concurrency {
+            group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
+            cancel_in_progress: Some(true),
+        }),
+        permissions: Some(Permissions {
+            contents: Some(PermissionLevel::Read),
+            checks: Some(PermissionLevel::Write),
+            pull_requests: Some(PermissionLevel::Write),
+            ..Default::default()
+        }),
+        env: IndexMap::new(),
+        jobs,
+    };
 
     let yaml = workflow.to_yaml().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
@@ -1367,6 +1520,7 @@ fn sanitize_workflow_name(name: &str) -> String {
 
 /// Build GitHub Actions trigger condition from pipeline config.
 fn build_github_trigger_condition(
+    pipeline_name: &str,
     pipeline: &cuenv_core::ci::Pipeline,
     ci_config: &cuenv_core::ci::CI,
 ) -> cuenv_ci::ir::TriggerCondition {
@@ -1415,7 +1569,7 @@ fn build_github_trigger_condition(
     });
 
     let paths_ignore = ci_config
-        .github_config_for_pipeline(&pipeline.name)
+        .github_config_for_pipeline(pipeline_name)
         .paths_ignore
         .unwrap_or_default();
 

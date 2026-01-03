@@ -315,19 +315,19 @@ mod tests {
     #[test]
     fn test_live_pipeline_progress_percentage() {
         let mut progress = LivePipelineProgress::new("default", 10);
-        assert_eq!(progress.percentage(), 0.0);
+        assert!((progress.percentage() - 0.0).abs() < f32::EPSILON);
 
         progress.completed_tasks = 5;
-        assert_eq!(progress.percentage(), 50.0);
+        assert!((progress.percentage() - 50.0).abs() < f32::EPSILON);
 
         progress.completed_tasks = 10;
-        assert_eq!(progress.percentage(), 100.0);
+        assert!((progress.percentage() - 100.0).abs() < f32::EPSILON);
     }
 
     #[test]
     fn test_live_pipeline_progress_percentage_empty() {
         let progress = LivePipelineProgress::new("default", 0);
-        assert_eq!(progress.percentage(), 100.0);
+        assert!((progress.percentage() - 100.0).abs() < f32::EPSILON);
     }
 
     #[tokio::test]

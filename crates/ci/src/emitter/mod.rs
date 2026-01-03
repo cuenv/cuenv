@@ -4,6 +4,16 @@
 //! representation (IR). Implementations of this trait generate orchestrator-native
 //! configurations (e.g., Buildkite, GitLab CI, Tekton).
 //!
+//! ## Pipeline Modes
+//!
+//! Emitters support two pipeline generation modes:
+//!
+//! - **Thin mode**: Generates a single-job workflow that delegates orchestration to cuenv.
+//!   Bootstrap → `cuenv ci --pipeline <name>` → Finalizers
+//!
+//! - **Expanded mode**: Generates multi-job workflows with each task as a separate job,
+//!   with dependencies managed by the CI orchestrator.
+//!
 //! ## Emitter Registry
 //!
 //! The [`EmitterRegistry`] provides a central registry for all available emitters,
@@ -14,6 +24,7 @@ mod registry;
 pub use registry::{EmitterInfo, EmitterRegistry, EmitterRegistryBuilder};
 
 use crate::ir::IntermediateRepresentation;
+use cuenv_core::ci::PipelineMode;
 use thiserror::Error;
 
 /// Error types for emitter operations
@@ -47,6 +58,15 @@ pub type EmitterResult<T> = std::result::Result<T, EmitterError>;
 /// Implementations transform the IR into orchestrator-specific configurations.
 /// Each emitter is responsible for mapping IR concepts to the target format.
 ///
+/// ## Pipeline Modes
+///
+/// Emitters must implement both `emit_thin` and `emit_expanded` methods:
+///
+/// - `emit_thin`: Single-job workflow with cuenv orchestration
+/// - `emit_expanded`: Multi-job workflow with orchestrator dependencies
+///
+/// The default `emit` method dispatches based on `ir.pipeline.mode`.
+///
 /// # Example
 ///
 /// ```ignore
@@ -56,9 +76,14 @@ pub type EmitterResult<T> = std::result::Result<T, EmitterError>;
 /// struct MyEmitter;
 ///
 /// impl Emitter for MyEmitter {
-///     fn emit(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
-///         // Transform IR to target format
-///         Ok("# Generated CI config".to_string())
+///     fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+///         // Generate single-job workflow
+///         Ok("# Thin mode config".to_string())
+///     }
+///
+///     fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+///         // Generate multi-job workflow
+///         Ok("# Expanded mode config".to_string())
 ///     }
 ///
 ///     fn format_name(&self) -> &'static str {
@@ -71,17 +96,60 @@ pub type EmitterResult<T> = std::result::Result<T, EmitterError>;
 /// }
 /// ```
 pub trait Emitter: Send + Sync {
-    /// Emit a CI configuration from the intermediate representation
+    /// Emit a thin mode CI configuration.
+    ///
+    /// Thin mode generates a single-job workflow that:
+    /// 1. Runs bootstrap phase steps (e.g., install Nix)
+    /// 2. Runs setup phase steps (e.g., build cuenv)
+    /// 3. Executes `cuenv ci --pipeline <name>` for orchestration
+    /// 4. Runs success/failure phase steps with conditions
     ///
     /// # Arguments
     /// * `ir` - The compiled intermediate representation
     ///
     /// # Returns
-    /// The generated CI configuration as a string (typically YAML or JSON)
+    /// The generated CI configuration as a string
     ///
     /// # Errors
     /// Returns `EmitterError` if the IR cannot be transformed or serialized
-    fn emit(&self, ir: &IntermediateRepresentation) -> EmitterResult<String>;
+    fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String>;
+
+    /// Emit an expanded mode CI configuration.
+    ///
+    /// Expanded mode generates a multi-job workflow where:
+    /// - Each task becomes a separate job
+    /// - Task dependencies map to job dependencies (`needs:` in GitHub Actions)
+    /// - Phase tasks are included as steps within each job
+    ///
+    /// # Arguments
+    /// * `ir` - The compiled intermediate representation
+    ///
+    /// # Returns
+    /// The generated CI configuration as a string
+    ///
+    /// # Errors
+    /// Returns `EmitterError` if the IR cannot be transformed or serialized
+    fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String>;
+
+    /// Emit a CI configuration based on the mode in the IR.
+    ///
+    /// This is the primary entry point for emission. It dispatches to
+    /// `emit_thin` or `emit_expanded` based on `ir.pipeline.mode`.
+    ///
+    /// # Arguments
+    /// * `ir` - The compiled intermediate representation
+    ///
+    /// # Returns
+    /// The generated CI configuration as a string
+    ///
+    /// # Errors
+    /// Returns `EmitterError` if the IR cannot be transformed or serialized
+    fn emit(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+        match ir.pipeline.mode {
+            PipelineMode::Thin => self.emit_thin(ir),
+            PipelineMode::Expanded => self.emit_expanded(ir),
+        }
+    }
 
     /// Get the format identifier for this emitter
     ///
@@ -120,8 +188,12 @@ mod tests {
     struct TestEmitter;
 
     impl Emitter for TestEmitter {
-        fn emit(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
-            Ok(format!("# Pipeline: {}", ir.pipeline.name))
+        fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+            Ok(format!("# Thin Pipeline: {}", ir.pipeline.name))
+        }
+
+        fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+            Ok(format!("# Expanded Pipeline: {}", ir.pipeline.name))
         }
 
         fn format_name(&self) -> &'static str {
@@ -134,12 +206,13 @@ mod tests {
     }
 
     #[test]
-    fn test_emitter_trait() {
+    fn test_emitter_trait_expanded_mode() {
         let emitter = TestEmitter;
         let ir = IntermediateRepresentation {
             version: "1.5".to_string(),
             pipeline: PipelineMetadata {
                 name: "my-pipeline".to_string(),
+                mode: PipelineMode::Expanded,
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,
@@ -150,10 +223,34 @@ mod tests {
             tasks: vec![],
         };
 
+        // emit() dispatches to emit_expanded() for Expanded mode
         let output = emitter.emit(&ir).unwrap();
-        assert_eq!(output, "# Pipeline: my-pipeline");
+        assert_eq!(output, "# Expanded Pipeline: my-pipeline");
         assert_eq!(emitter.format_name(), "test");
         assert_eq!(emitter.file_extension(), "yml");
+    }
+
+    #[test]
+    fn test_emitter_trait_thin_mode() {
+        let emitter = TestEmitter;
+        let ir = IntermediateRepresentation {
+            version: "1.5".to_string(),
+            pipeline: PipelineMetadata {
+                name: "my-pipeline".to_string(),
+                mode: PipelineMode::Thin,
+                environment: None,
+                requires_onepassword: false,
+                project_name: None,
+                trigger: None,
+                pipeline_tasks: vec![],
+            },
+            runtimes: vec![],
+            tasks: vec![],
+        };
+
+        // emit() dispatches to emit_thin() for Thin mode
+        let output = emitter.emit(&ir).unwrap();
+        assert_eq!(output, "# Thin Pipeline: my-pipeline");
     }
 
     #[test]
@@ -163,6 +260,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: PipelineMetadata {
                 name: "test".to_string(),
+                mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,

@@ -5,11 +5,14 @@
 
 use super::args::{CiArgs, ExportFormat};
 use crate::providers::detect_ci_provider;
-use cuenv_ci::discovery::discover_projects;
+use cuenv_ci::discovery::evaluate_module_from_cwd;
 use cuenv_ci::emitter::Emitter;
 use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
+use cuenv_core::manifest::Project;
+use cuenv_core::ci::PipelineMode;
 use cuenv_core::Result;
 use std::io::Write;
+use std::path::PathBuf;
 
 /// Execute export mode - generate pipeline YAML.
 ///
@@ -38,12 +41,21 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
         "Export context"
     );
 
-    // Discover projects
-    let projects = discover_projects()?;
-    if projects.is_empty() {
+    // Evaluate module and discover projects
+    let module = evaluate_module_from_cwd()?;
+    let project_count = module.project_count();
+    if project_count == 0 {
         return Err(cuenv_core::Error::configuration(
             "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
         ));
+    }
+
+    // Collect projects with their configs
+    let mut projects: Vec<(PathBuf, Project)> = Vec::new();
+    for instance in module.projects() {
+        let config = Project::try_from(instance)?;
+        let project_path = module.root.join(&instance.path);
+        projects.push((project_path, config));
     }
 
     tracing::info!(count = projects.len(), "Found projects");
@@ -70,6 +82,7 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
         version: "1.5".to_string(),
         pipeline: PipelineMetadata {
             name: pipeline_name.to_string(),
+            mode: PipelineMode::default(),
             environment: collected.environment,
             requires_onepassword: false,
             project_name: None,
@@ -99,7 +112,7 @@ struct CollectedTasks {
 /// For export mode, we collect ALL tasks defined in the pipeline rather than
 /// filtering by affected files. The CI orchestrator handles trigger logic.
 fn collect_tasks_for_export(
-    projects: &[cuenv_ci::discovery::DiscoveredCIProject],
+    projects: &[(PathBuf, Project)],
     pipeline_name: &str,
 ) -> Result<CollectedTasks> {
     use cuenv_ci::compiler::{Compiler, CompilerOptions};
@@ -108,9 +121,7 @@ fn collect_tasks_for_export(
     let mut pipeline_environment: Option<String> = None;
     let mut compiled_runtimes = Vec::new();
 
-    for project in projects {
-        let config = &project.config;
-
+    for (project_path, config) in projects {
         let Some(ci) = &config.ci else {
             continue;
         };
@@ -130,14 +141,14 @@ fn collect_tasks_for_export(
 
         if pipeline_task_names.is_empty() {
             tracing::debug!(
-                project = %project.path.display(),
+                project = %project_path.display(),
                 "No tasks in pipeline"
             );
             continue;
         }
 
         tracing::info!(
-            project = %project.path.display(),
+            project = %project_path.display(),
             tasks = ?pipeline_task_names,
             "Exporting pipeline tasks"
         );
@@ -223,25 +234,22 @@ fn emit_circleci(_ir: &IntermediateRepresentation) -> Result<String> {
 /// Output YAML to stdout or file based on args.
 #[allow(clippy::print_stdout)]
 fn output_yaml(args: &CiArgs, yaml: &str) -> Result<()> {
-    match &args.output {
-        Some(path) => {
-            let mut file = std::fs::File::create(path).map_err(|e| cuenv_core::Error::Io {
+    if let Some(path) = &args.output {
+        let mut file = std::fs::File::create(path).map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(path.clone().into_boxed_path()),
+            operation: "create".to_string(),
+        })?;
+        file.write_all(yaml.as_bytes())
+            .map_err(|e| cuenv_core::Error::Io {
                 source: e,
                 path: Some(path.clone().into_boxed_path()),
-                operation: "create".to_string(),
+                operation: "write".to_string(),
             })?;
-            file.write_all(yaml.as_bytes())
-                .map_err(|e| cuenv_core::Error::Io {
-                    source: e,
-                    path: Some(path.clone().into_boxed_path()),
-                    operation: "write".to_string(),
-                })?;
-            tracing::info!(path = %path.display(), "Wrote pipeline YAML");
-            Ok(())
-        }
-        None => {
-            println!("{yaml}");
-            Ok(())
-        }
+        tracing::info!(path = %path.display(), "Wrote pipeline YAML");
+        Ok(())
+    } else {
+        println!("{yaml}");
+        Ok(())
     }
 }

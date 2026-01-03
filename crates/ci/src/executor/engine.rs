@@ -448,8 +448,8 @@ impl<R: ProgressReporter + 'static> ExecutionEngine<R> {
                     self.reporter.task_completed(&progress).await;
 
                     // Store in cache if successful
-                    if output.success {
-                        if let Err(e) = cache::store_result(
+                    if output.success
+                        && let Err(e) = cache::store_result(
                             &task,
                             &digest,
                             &cache_root_owned,
@@ -460,13 +460,13 @@ impl<R: ProgressReporter + 'static> ExecutionEngine<R> {
                             output.duration_ms,
                             output.exit_code,
                             policy_override,
-                        ) {
-                            tracing::warn!(
-                                task = %task_id,
-                                error = %e,
-                                "Failed to store task result in cache"
-                            );
-                        }
+                        )
+                    {
+                        tracing::warn!(
+                            task = %task_id,
+                            error = %e,
+                            "Failed to store task result in cache"
+                        );
                     }
 
                     let report = TaskReport {
@@ -715,53 +715,7 @@ impl<R: ProgressReporter + 'static> ExecutionEngine<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{CachePolicy, PipelineMetadata, Task as IRTask};
     use crate::report::progress::NoOpReporter;
-    use std::collections::BTreeMap;
-
-    fn make_task(id: &str, deps: &[&str]) -> IRTask {
-        IRTask {
-            id: id.to_string(),
-            runtime: None,
-            command: vec!["echo".to_string(), id.to_string()],
-            shell: false,
-            env: BTreeMap::new(),
-            secrets: BTreeMap::new(),
-            resources: None,
-            concurrency_group: None,
-            inputs: vec![],
-            outputs: vec![],
-            depends_on: deps.iter().map(|s| (*s).to_string()).collect(),
-            cache_policy: CachePolicy::Normal,
-            deployment: false,
-            manual_approval: false,
-            matrix: None,
-            artifact_downloads: vec![],
-            params: BTreeMap::new(),
-            phase: None,
-            label: None,
-            priority: None,
-            contributor: None,
-            condition: None,
-            provider_hints: None,
-        }
-    }
-
-    fn make_ir(tasks: Vec<IRTask>) -> IntermediateRepresentation {
-        IntermediateRepresentation {
-            version: "1.5".to_string(),
-            pipeline: PipelineMetadata {
-                name: "test".to_string(),
-                environment: None,
-                requires_onepassword: false,
-                project_name: None,
-                trigger: None,
-                pipeline_tasks: vec![],
-            },
-            runtimes: vec![],
-            tasks,
-        }
-    }
 
     #[test]
     fn test_engine_config_default() {

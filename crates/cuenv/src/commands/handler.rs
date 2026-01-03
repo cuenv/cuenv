@@ -563,6 +563,7 @@ impl CommandHandler for SyncHandler {
                 let module = executor.get_module(&target_path)?;
                 let is_root = module.root == target_path;
                 let is_project = module.projects().any(|instance| {
+                    // instance.path is the relative path to the project directory
                     module
                         .root
                         .join(&instance.path)

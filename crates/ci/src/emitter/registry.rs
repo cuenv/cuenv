@@ -181,14 +181,19 @@ impl EmitterRegistryBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::ci::PipelineMode;
 
     struct TestEmitter {
         name: &'static str,
     }
 
     impl Emitter for TestEmitter {
-        fn emit(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
-            Ok(format!("# {} - {}", self.name, ir.pipeline.name))
+        fn emit_thin(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+            Ok(format!("# {} thin - {}", self.name, ir.pipeline.name))
+        }
+
+        fn emit_expanded(&self, ir: &IntermediateRepresentation) -> EmitterResult<String> {
+            Ok(format!("# {} expanded - {}", self.name, ir.pipeline.name))
         }
 
         fn format_name(&self) -> &'static str {
@@ -249,10 +254,12 @@ mod tests {
         let mut registry = EmitterRegistry::new();
         registry.register(TestEmitter { name: "test" });
 
+        // Default mode is Thin, so emit() dispatches to emit_thin()
         let ir = IntermediateRepresentation {
             version: "1.5".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "my-pipeline".to_string(),
+                mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,
@@ -264,7 +271,7 @@ mod tests {
         };
 
         let output = registry.emit("test", &ir).unwrap();
-        assert_eq!(output, "# test - my-pipeline");
+        assert_eq!(output, "# test thin - my-pipeline");
     }
 
     #[test]
@@ -274,6 +281,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "test".to_string(),
+                mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,
