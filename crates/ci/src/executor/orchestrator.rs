@@ -40,6 +40,7 @@ use super::runner::{IRTaskRunner, TaskOutput};
 /// * `provider` - The CI provider to use for changed files detection and reporting
 /// * `dry_run` - If true, don't actually run tasks
 /// * `specific_pipeline` - If set, only run tasks from this pipeline
+/// * `environment` - Optional environment override for secrets resolution
 ///
 /// # Errors
 /// Returns error if IO errors occur or tasks fail
@@ -48,6 +49,7 @@ pub async fn run_ci(
     provider: Arc<dyn CIProvider>,
     dry_run: bool,
     specific_pipeline: Option<String>,
+    environment: Option<String>,
 ) -> Result<()> {
     let context = provider.context();
     cuenv_events::emit_ci_context!(&context.provider, &context.event, &context.ref_name);
@@ -111,6 +113,9 @@ pub async fn run_ci(
             )));
         };
 
+        let resolved_environment =
+            resolve_environment(environment.as_deref(), pipeline.environment.as_deref());
+
         // Extract task names from pipeline tasks (which can be simple strings or matrix tasks)
         let pipeline_task_names: Vec<String> = pipeline
             .tasks
@@ -148,6 +153,7 @@ pub async fn run_ci(
                 config,
                 &pipeline_name,
                 &tasks_to_run,
+                resolved_environment.as_deref(),
                 context,
                 &changed_files,
                 provider.as_ref(),
@@ -180,6 +186,7 @@ async fn execute_project_pipeline(
     config: &Project,
     pipeline_name: &str,
     tasks_to_run: &[String],
+    environment: Option<&str>,
     context: &crate::context::CIContext,
     changed_files: &[PathBuf],
     provider: &dyn CIProvider,
@@ -235,7 +242,8 @@ async fn execute_project_pipeline(
 
         // Execute the task with all dependencies (uses TaskGraph for proper ordering)
         let result =
-            execute_task_with_deps(config, task_name, project_path, cache_policy_override).await;
+            execute_task_with_deps(config, task_name, project_path, cache_policy_override, environment)
+                .await;
 
         let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
 
@@ -406,6 +414,25 @@ fn register_ci_secrets() {
     }
 }
 
+fn resolve_environment(
+    cli_environment: Option<&str>,
+    pipeline_environment: Option<&str>,
+) -> Option<String> {
+    if let Some(env) = cli_environment.filter(|name| !name.is_empty()) {
+        return Some(env.to_string());
+    }
+
+    if let Ok(env) = std::env::var("CUENV_ENVIRONMENT")
+        && !env.is_empty()
+    {
+        return Some(env);
+    }
+
+    pipeline_environment
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string())
+}
+
 /// Execute a task with all its dependencies in correct order.
 ///
 /// Uses TaskIndex to flatten nested tasks and TaskGraph to resolve dependencies,
@@ -415,6 +442,7 @@ async fn execute_task_with_deps(
     task_name: &str,
     project_root: &Path,
     cache_policy_override: Option<CachePolicy>,
+    environment: Option<&str>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
     // 1. Build TaskIndex (same flattening as CLI)
     let index = TaskIndex::build(&config.tasks)
@@ -451,7 +479,14 @@ async fn execute_task_with_deps(
     let mut final_output = None;
     for node in execution_order {
         let output =
-            compile_and_execute_ir(config, &node.name, project_root, cache_policy_override).await?;
+            compile_and_execute_ir(
+                config,
+                &node.name,
+                project_root,
+                cache_policy_override,
+                environment,
+            )
+            .await?;
 
         if !output.success {
             return Ok(output); // Stop on first failure
@@ -472,6 +507,7 @@ async fn compile_and_execute_ir(
     task_name: &str,
     project_root: &Path,
     cache_policy_override: Option<CachePolicy>,
+    environment: Option<&str>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
     let start = std::time::Instant::now();
 
@@ -491,12 +527,23 @@ async fn compile_and_execute_ir(
         )));
     }
 
-    // Resolve secrets from project environment (same as CLI)
-    // This handles op:// references and other secret providers
+    // Resolve secrets from project environment (same as CLI).
+    // Prefer an explicit environment name, then fall back to CUENV_ENVIRONMENT.
+    let env_name = environment
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("CUENV_ENVIRONMENT")
+                .ok()
+                .filter(|name| !name.is_empty())
+        });
     let project_env_vars = config
         .env
         .as_ref()
-        .map(|env| env.for_environment(""))
+        .map(|env| match env_name.as_deref() {
+            Some(name) => env.for_environment(name),
+            None => env.base.clone(),
+        })
         .unwrap_or_default();
     let (resolved_env, secrets) = cuenv_core::environment::Environment::resolve_for_task_with_secrets(
         task_name,
