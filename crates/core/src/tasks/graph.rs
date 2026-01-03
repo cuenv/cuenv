@@ -8,10 +8,160 @@
 
 use super::{ParallelGroup, Task, TaskDefinition, TaskGroup, Tasks};
 use crate::Result;
-use cuenv_task_graph::{GraphNode, TaskNodeData};
+use cuenv_task_graph::{GraphNode, TaskNodeData, TaskResolution, TaskResolver};
 use petgraph::graph::NodeIndex;
-use std::collections::HashSet;
 use tracing::debug;
+
+// ============================================================================
+// TaskResolver Implementation for Tasks
+// ============================================================================
+
+impl TaskResolver<Task> for Tasks {
+    fn resolve(&self, name: &str) -> Option<TaskResolution<Task>> {
+        // Parse the path and walk down to find the TaskDefinition
+        let definition = self.resolve_path(name)?;
+        Some(self.definition_to_resolution(name, definition))
+    }
+}
+
+impl Tasks {
+    /// Walk a dotted/bracketed path to find the TaskDefinition.
+    ///
+    /// This method first tries a direct lookup (for flat task names like `bun.setup`),
+    /// then falls back to walking the nested path structure.
+    ///
+    /// Examples:
+    /// - `"build"` → top-level lookup
+    /// - `"build.frontend"` → first tries `tasks["build.frontend"]`, then `tasks["build"].tasks["frontend"]`
+    /// - `"build[0]"` → first tries `tasks["build[0]"]`, then `tasks["build"][0]`
+    /// - `"build.frontend[0]"` → nested: parallel then sequential
+    fn resolve_path(&self, path: &str) -> Option<&TaskDefinition> {
+        // First: try direct lookup (handles flat task names like "bun.setup", "bun.hooks.beforeInstall[0]")
+        if let Some(task) = self.tasks.get(path) {
+            return Some(task);
+        }
+
+        // Second: try walking nested structure
+        let segments = parse_path_segments(path);
+        if segments.is_empty() {
+            return None;
+        }
+
+        // Get the root definition
+        let root_name = &segments[0];
+        let root_segment = match root_name {
+            PathSegment::Name(n) => n.as_str(),
+            PathSegment::Index(_) => return None, // Can't start with index
+        };
+
+        let mut current = self.tasks.get(root_segment)?;
+
+        // Walk remaining segments
+        for segment in &segments[1..] {
+            current = match (current, segment) {
+                // Parallel group child access (dot notation)
+                (TaskDefinition::Group(TaskGroup::Parallel(group)), PathSegment::Name(name)) => {
+                    group.tasks.get(name)?
+                }
+                // Sequential group child access (bracket notation)
+                (TaskDefinition::Group(TaskGroup::Sequential(tasks)), PathSegment::Index(idx)) => {
+                    tasks.get(*idx)?
+                }
+                // Invalid access pattern
+                _ => return None,
+            };
+        }
+
+        Some(current)
+    }
+
+    /// Convert a TaskDefinition to a TaskResolution.
+    fn definition_to_resolution(
+        &self,
+        name: &str,
+        definition: &TaskDefinition,
+    ) -> TaskResolution<Task> {
+        match definition {
+            TaskDefinition::Single(task) => TaskResolution::Single(task.as_ref().clone()),
+            TaskDefinition::Group(TaskGroup::Sequential(tasks)) => {
+                let children: Vec<String> =
+                    (0..tasks.len()).map(|i| format!("{}[{}]", name, i)).collect();
+                TaskResolution::Sequential { children }
+            }
+            TaskDefinition::Group(TaskGroup::Parallel(group)) => {
+                let children: Vec<String> = group
+                    .tasks
+                    .keys()
+                    .map(|k| format!("{}.{}", name, k))
+                    .collect();
+                TaskResolution::Parallel {
+                    children,
+                    depends_on: group.depends_on.clone(),
+                }
+            }
+        }
+    }
+}
+
+/// Segment of a task path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PathSegment {
+    /// Named segment (dot notation): `frontend` in `build.frontend`
+    Name(String),
+    /// Indexed segment (bracket notation): `0` in `build[0]`
+    Index(usize),
+}
+
+/// Parse a task path into segments.
+///
+/// Examples:
+/// - `"build"` → `[Name("build")]`
+/// - `"build.frontend"` → `[Name("build"), Name("frontend")]`
+/// - `"build[0]"` → `[Name("build"), Index(0)]`
+/// - `"build.frontend[0]"` → `[Name("build"), Name("frontend"), Index(0)]`
+fn parse_path_segments(path: &str) -> Vec<PathSegment> {
+    let mut segments = Vec::new();
+    let mut current_name = String::new();
+    let mut chars = path.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '.' => {
+                if !current_name.is_empty() {
+                    segments.push(PathSegment::Name(current_name.clone()));
+                    current_name.clear();
+                }
+            }
+            '[' => {
+                if !current_name.is_empty() {
+                    segments.push(PathSegment::Name(current_name.clone()));
+                    current_name.clear();
+                }
+                // Parse index
+                let mut index_str = String::new();
+                for c in chars.by_ref() {
+                    if c == ']' {
+                        break;
+                    }
+                    index_str.push(c);
+                }
+                if let Ok(idx) = index_str.parse::<usize>() {
+                    segments.push(PathSegment::Index(idx));
+                }
+            }
+            _ => {
+                current_name.push(c);
+            }
+        }
+    }
+
+    // Push final name if any
+    if !current_name.is_empty() {
+        segments.push(PathSegment::Name(current_name));
+    }
+
+    segments
+}
 
 // Implement the TaskNodeData trait for Task
 impl TaskNodeData for Task {
@@ -218,64 +368,19 @@ impl TaskGraph {
     }
 
     /// Build graph for a specific task and all its transitive dependencies.
+    ///
+    /// This uses the [`TaskResolver`] trait implementation for [`Tasks`] to handle
+    /// nested paths and group expansion in a unified way.
     pub fn build_for_task(&mut self, task_name: &str, all_tasks: &Tasks) -> Result<()> {
-        let mut to_process = vec![task_name.to_string()];
-        let mut processed = HashSet::new();
-
         debug!(
             "Building graph for '{}' with tasks {:?}",
             task_name,
             all_tasks.list_tasks()
         );
 
-        // First pass: Collect all tasks that need to be included
-        while let Some(current_name) = to_process.pop() {
-            if processed.contains(&current_name) {
-                continue;
-            }
-            processed.insert(current_name.clone());
-
-            if let Some(definition) = all_tasks.get(&current_name) {
-                match definition {
-                    TaskDefinition::Single(task) => {
-                        self.add_task(&current_name, task.as_ref().clone())?;
-                        // Add dependencies to processing queue
-                        for dep in &task.depends_on {
-                            if !processed.contains(dep) {
-                                to_process.push(dep.clone());
-                            }
-                        }
-                    }
-                    TaskDefinition::Group(_) => {
-                        // Handle groups with build_from_definition
-                        let added_nodes =
-                            self.build_from_definition(&current_name, definition, all_tasks)?;
-                        // Collect dependencies from newly added tasks
-                        for node_idx in added_nodes {
-                            if let Some(node) = self.inner.get_node_by_name(
-                                &self
-                                    .inner
-                                    .iter_nodes()
-                                    .find(|(idx, _)| *idx == node_idx)
-                                    .map(|(_, n)| n.name.clone())
-                                    .unwrap_or_default(),
-                            ) {
-                                for dep in node.task.depends_on() {
-                                    if !processed.contains(dep) {
-                                        to_process.push(dep.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                debug!("Task '{}' not found while building graph", current_name);
-            }
-        }
-
-        // Second pass: Add dependency edges
-        self.add_dependency_edges()
+        self.inner
+            .build_for_task_with_resolver(task_name, all_tasks)
+            .map_err(|e| crate::Error::configuration(e.to_string()))
     }
 }
 
@@ -1027,5 +1132,167 @@ mod tests {
             err.contains("nonexistent") || err.contains("not found"),
             "Error should mention the missing task name: {err}"
         );
+    }
+
+    // =========================================================================
+    // TaskResolver Tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_path_segments_simple_name() {
+        let segments = super::parse_path_segments("build");
+        assert_eq!(segments, vec![super::PathSegment::Name("build".into())]);
+    }
+
+    #[test]
+    fn test_parse_path_segments_dotted() {
+        let segments = super::parse_path_segments("build.frontend");
+        assert_eq!(
+            segments,
+            vec![
+                super::PathSegment::Name("build".into()),
+                super::PathSegment::Name("frontend".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_path_segments_indexed() {
+        let segments = super::parse_path_segments("build[0]");
+        assert_eq!(
+            segments,
+            vec![
+                super::PathSegment::Name("build".into()),
+                super::PathSegment::Index(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_path_segments_nested() {
+        let segments = super::parse_path_segments("build.frontend[0]");
+        assert_eq!(
+            segments,
+            vec![
+                super::PathSegment::Name("build".into()),
+                super::PathSegment::Name("frontend".into()),
+                super::PathSegment::Index(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_task_resolver_single_task() {
+        use cuenv_task_graph::TaskResolver;
+
+        let task = create_task("build", vec![], vec![]);
+        let mut tasks = Tasks::new();
+        tasks
+            .tasks
+            .insert("build".into(), TaskDefinition::Single(Box::new(task)));
+
+        let resolution = tasks.resolve("build");
+        assert!(resolution.is_some());
+        match resolution.unwrap() {
+            TaskResolution::Single(t) => assert_eq!(t.command, "echo build"),
+            _ => panic!("Expected Single resolution"),
+        }
+    }
+
+    #[test]
+    fn test_task_resolver_parallel_group() {
+        use cuenv_task_graph::TaskResolver;
+
+        let frontend = create_task("frontend", vec![], vec![]);
+        let backend = create_task("backend", vec![], vec![]);
+
+        let mut parallel_tasks = HashMap::new();
+        parallel_tasks.insert("frontend".into(), TaskDefinition::Single(Box::new(frontend)));
+        parallel_tasks.insert("backend".into(), TaskDefinition::Single(Box::new(backend)));
+
+        let group = ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec!["setup".into()],
+        };
+
+        let mut tasks = Tasks::new();
+        tasks
+            .tasks
+            .insert("build".into(), TaskDefinition::Group(TaskGroup::Parallel(group)));
+
+        let resolution = tasks.resolve("build");
+        assert!(resolution.is_some());
+        match resolution.unwrap() {
+            TaskResolution::Parallel { children, depends_on } => {
+                assert_eq!(children.len(), 2);
+                assert!(children.contains(&"build.frontend".to_string()));
+                assert!(children.contains(&"build.backend".to_string()));
+                assert_eq!(depends_on, vec!["setup"]);
+            }
+            _ => panic!("Expected Parallel resolution"),
+        }
+    }
+
+    #[test]
+    fn test_task_resolver_sequential_group() {
+        use cuenv_task_graph::TaskResolver;
+
+        let task1 = create_task("t1", vec![], vec![]);
+        let task2 = create_task("t2", vec![], vec![]);
+
+        let seq = vec![
+            TaskDefinition::Single(Box::new(task1)),
+            TaskDefinition::Single(Box::new(task2)),
+        ];
+
+        let mut tasks = Tasks::new();
+        tasks
+            .tasks
+            .insert("build".into(), TaskDefinition::Group(TaskGroup::Sequential(seq)));
+
+        let resolution = tasks.resolve("build");
+        assert!(resolution.is_some());
+        match resolution.unwrap() {
+            TaskResolution::Sequential { children } => {
+                assert_eq!(children, vec!["build[0]", "build[1]"]);
+            }
+            _ => panic!("Expected Sequential resolution"),
+        }
+    }
+
+    #[test]
+    fn test_task_resolver_nested_path() {
+        use cuenv_task_graph::TaskResolver;
+
+        let task = create_task("fe", vec![], vec![]);
+
+        let mut parallel_tasks = HashMap::new();
+        parallel_tasks.insert("frontend".into(), TaskDefinition::Single(Box::new(task)));
+
+        let group = ParallelGroup {
+            tasks: parallel_tasks,
+            depends_on: vec![],
+        };
+
+        let mut tasks = Tasks::new();
+        tasks
+            .tasks
+            .insert("build".into(), TaskDefinition::Group(TaskGroup::Parallel(group)));
+
+        // Resolve nested path
+        let resolution = tasks.resolve("build.frontend");
+        assert!(resolution.is_some());
+        match resolution.unwrap() {
+            TaskResolution::Single(t) => assert_eq!(t.command, "echo fe"),
+            _ => panic!("Expected Single resolution"),
+        }
+    }
+
+    #[test]
+    fn test_task_resolver_nonexistent() {
+        use cuenv_task_graph::TaskResolver;
+
+        let tasks = Tasks::new();
+        assert!(tasks.resolve("nonexistent").is_none());
     }
 }
