@@ -17,10 +17,10 @@ use crate::provider::CIProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
-use cuenv_core::Result;
-use cuenv_core::lockfile::Lockfile;
+use cuenv_core::lockfile::{Lockfile, LockedToolPlatform, LOCKFILE_NAME};
 use cuenv_core::manifest::Project;
 use cuenv_core::tools::{Platform, ResolvedTool, ToolOptions, ToolRegistry, ToolSource};
+use cuenv_core::Result;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -508,143 +508,49 @@ async fn execute_single_task_by_name(
     })
 }
 
-/// Get tool bin directories from the lockfile for PATH injection.
-///
-/// Returns a list of bin directories that should be prepended to PATH
-/// to make tools available for task execution.
-fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
-    cuenv_events::emit_stderr!("[ci] Getting tool bin directories...");
+// ============================================================================
+// Tool Activation Helpers
+//
+// These functions match the CLI's implementation in commands/tools.rs.
+// They are duplicated here because cuenv-core cannot depend on tool providers
+// (it would create a cyclic dependency). A future refactor could extract these
+// into a dedicated cuenv-tools-activation crate that both CLI and CI use.
+// ============================================================================
 
-    let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
-
-    // Find lockfile in project root or parent directories
-    let lockfile_path = project_root.join("cuenv.lock");
-    let lockfile = match Lockfile::load(&lockfile_path) {
-        Ok(Some(lf)) => lf,
-        Ok(None) => {
-            cuenv_events::emit_stderr!("[ci] No lockfile found for bin dirs");
-            return vec![];
-        }
-        Err(e) => {
-            cuenv_events::emit_stderr!(&format!("[ci] Failed to load lockfile for bin dirs: {e}"));
-            return vec![];
-        }
-    };
-
-    if lockfile.tools.is_empty() {
-        cuenv_events::emit_stderr!("[ci] No tools in lockfile for bin dirs");
-        return vec![];
+/// Find the lockfile starting from a directory.
+fn find_lockfile(start_dir: &Path) -> Option<PathBuf> {
+    let lockfile_path = start_dir.join(LOCKFILE_NAME);
+    if lockfile_path.exists() {
+        return Some(lockfile_path);
     }
 
-    let platform = Platform::current();
-    let platform_str = platform.to_string();
-    let cache_dir = ToolOptions::default().cache_dir();
-    cuenv_events::emit_stderr!(&format!("[ci] Cache dir: {}", cache_dir.display()));
-
-    // Check for Nix profile
-    if let Ok(profile_path) = cuenv_tools_nix::profile::profile_path_for_project(project_root) {
-        let bin = profile_path.join("bin");
-        if bin.exists() {
-            bin_dirs.insert(bin);
+    // Check parent directories
+    let mut current = start_dir.parent();
+    while let Some(dir) = current {
+        let lockfile_path = dir.join(LOCKFILE_NAME);
+        if lockfile_path.exists() {
+            return Some(lockfile_path);
         }
+        current = dir.parent();
     }
 
-    // Process non-Nix tools
-    for (name, tool) in &lockfile.tools {
-        let Some(locked) = tool.platforms.get(&platform_str) else {
-            continue;
-        };
-
-        // Skip Nix tools - they use profile
-        if locked.provider == "nix" {
-            continue;
-        }
-
-        // Handle rustup tools
-        if locked.provider == "rustup" {
-            if let Some(toolchain) = locked.source.get("toolchain").and_then(|v| v.as_str()) {
-                let rustup_home = std::env::var("RUSTUP_HOME").map_or_else(
-                    |_| {
-                        dirs::home_dir()
-                            .unwrap_or_else(|| PathBuf::from("."))
-                            .join(".rustup")
-                    },
-                    PathBuf::from,
-                );
-
-                let host_triple = format!(
-                    "{}-{}",
-                    match platform.arch {
-                        cuenv_core::tools::Arch::Arm64 => "aarch64",
-                        cuenv_core::tools::Arch::X86_64 => "x86_64",
-                    },
-                    match platform.os {
-                        cuenv_core::tools::Os::Darwin => "apple-darwin",
-                        cuenv_core::tools::Os::Linux => "unknown-linux-gnu",
-                    }
-                );
-                let toolchain_name = format!("{toolchain}-{host_triple}");
-                let bin = rustup_home.join("toolchains").join(toolchain_name).join("bin");
-                if bin.exists() {
-                    bin_dirs.insert(bin);
-                }
-            }
-            continue;
-        }
-
-        // GitHub and other cache-based tools
-        let tool_dir = cache_dir
-            .join(&locked.provider)
-            .join(name)
-            .join(&tool.version);
-
-        cuenv_events::emit_stderr!(&format!("[ci] Checking tool dir: {}", tool_dir.display()));
-
-        if tool_dir.exists() {
-            // Check if tool_dir itself contains the binary (flat structure)
-            if tool_dir.join(name).exists() || tool_dir.join(format!("{name}.exe")).exists() {
-                cuenv_events::emit_stderr!(&format!("[ci] Found bin at tool dir: {}", tool_dir.display()));
-                bin_dirs.insert(tool_dir.clone());
-            }
-            // Also check bin subdirectory
-            let bin = tool_dir.join("bin");
-            if bin.exists() {
-                cuenv_events::emit_stderr!(&format!("[ci] Found bin subdir: {}", bin.display()));
-                bin_dirs.insert(bin);
-            }
-        } else {
-            cuenv_events::emit_stderr!(&format!("[ci] Tool dir does not exist: {}", tool_dir.display()));
-        }
-    }
-
-    cuenv_events::emit_stderr!(&format!("[ci] Found {} bin directories", bin_dirs.len()));
-    for dir in &bin_dirs {
-        cuenv_events::emit_stderr!(&format!("[ci]   - {}", dir.display()));
-    }
-
-    bin_dirs.into_iter().collect()
+    None
 }
 
-/// Create a tool registry with available providers.
+/// Create a tool registry with all available providers.
 fn create_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
 
-    // Register Nix provider
     registry.register(cuenv_tools_nix::NixToolProvider::new());
-
-    // Register GitHub provider
     registry.register(cuenv_tools_github::GitHubToolProvider::new());
-
-    // Register Rustup provider
     registry.register(cuenv_tools_rustup::RustupToolProvider::new());
 
     registry
 }
 
-/// Convert a lockfile entry to a ToolSource.
-fn lockfile_entry_to_source(
-    locked: &cuenv_core::lockfile::LockedToolPlatform,
-) -> Option<ToolSource> {
+/// Convert a lockfile entry to a `ToolSource`.
+#[allow(dead_code)]
+fn lockfile_entry_to_source(locked: &LockedToolPlatform) -> Option<ToolSource> {
     match locked.provider.as_str() {
         "oci" => {
             let image = locked
@@ -723,7 +629,7 @@ fn lockfile_entry_to_source(
                 .get("profile")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            let components = locked
+            let components: Vec<String> = locked
                 .source
                 .get("components")
                 .and_then(|v| v.as_array())
@@ -733,7 +639,7 @@ fn lockfile_entry_to_source(
                         .collect()
                 })
                 .unwrap_or_default();
-            let targets = locked
+            let targets: Vec<String> = locked
                 .source
                 .get("targets")
                 .and_then(|v| v.as_array())
@@ -754,37 +660,126 @@ fn lockfile_entry_to_source(
     }
 }
 
-/// Ensure all tools from the lockfile are downloaded for the current platform.
-///
-/// This is called before task execution to make sure tools are available.
-async fn ensure_tools_downloaded(project_root: &Path) {
-    cuenv_events::emit_stderr!("[ci] Ensuring tools are downloaded from lockfile...");
+/// Get tool bin directories from the lockfile for PATH injection.
+fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
+    let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
 
-    let lockfile_path = project_root.join("cuenv.lock");
-    cuenv_events::emit_stderr!(&format!("[ci] Looking for lockfile at: {}", lockfile_path.display()));
+    let Some(lockfile_path) = find_lockfile(project_root) else {
+        return vec![];
+    };
+
+    let Ok(Some(lockfile)) = Lockfile::load(&lockfile_path) else {
+        return vec![];
+    };
+
+    if lockfile.tools.is_empty() {
+        return vec![];
+    }
+
+    let platform = Platform::current();
+    let platform_str = platform.to_string();
+    let cache_dir = ToolOptions::default().cache_dir();
+
+    // 1. Check for Nix profile
+    let lockfile_dir = lockfile_path.parent().unwrap_or(Path::new("."));
+    if let Ok(profile_path) = cuenv_tools_nix::profile::profile_path_for_project(lockfile_dir) {
+        let bin = profile_path.join("bin");
+        if bin.exists() {
+            bin_dirs.insert(bin);
+        }
+    }
+
+    // 2. Process non-Nix tools
+    for (name, tool) in &lockfile.tools {
+        let Some(locked) = tool.platforms.get(&platform_str) else {
+            continue;
+        };
+
+        // Skip Nix tools - they use profile
+        if locked.provider == "nix" {
+            continue;
+        }
+
+        // Handle rustup tools
+        if locked.provider == "rustup" {
+            if let Some(toolchain) = locked.source.get("toolchain").and_then(|v| v.as_str()) {
+                let rustup_home = std::env::var("RUSTUP_HOME").map_or_else(
+                    |_| {
+                        dirs::home_dir()
+                            .unwrap_or_else(|| PathBuf::from("."))
+                            .join(".rustup")
+                    },
+                    PathBuf::from,
+                );
+
+                let host_triple = format!(
+                    "{}-{}",
+                    match platform.arch {
+                        cuenv_core::tools::Arch::Arm64 => "aarch64",
+                        cuenv_core::tools::Arch::X86_64 => "x86_64",
+                    },
+                    match platform.os {
+                        cuenv_core::tools::Os::Darwin => "apple-darwin",
+                        cuenv_core::tools::Os::Linux => "unknown-linux-gnu",
+                    }
+                );
+                let toolchain_name = format!("{toolchain}-{host_triple}");
+                let bin = rustup_home.join("toolchains").join(toolchain_name).join("bin");
+                if bin.exists() {
+                    bin_dirs.insert(bin);
+                }
+            }
+            continue;
+        }
+
+        // GitHub and other cache-based tools
+        let tool_dir = cache_dir
+            .join(&locked.provider)
+            .join(name)
+            .join(&tool.version);
+
+        if tool_dir.exists() {
+            // Check if tool_dir itself contains the binary (flat structure)
+            if tool_dir.join(name).exists() || tool_dir.join(format!("{name}.exe")).exists() {
+                bin_dirs.insert(tool_dir.clone());
+            }
+            // Also check bin subdirectory
+            let bin = tool_dir.join("bin");
+            if bin.exists() {
+                bin_dirs.insert(bin);
+            }
+        }
+    }
+
+    bin_dirs.into_iter().collect()
+}
+
+/// Ensure all tools from the lockfile are downloaded for the current platform.
+async fn ensure_tools_downloaded(project_root: &Path) {
+    let Some(lockfile_path) = find_lockfile(project_root) else {
+        tracing::debug!("No lockfile found - skipping tool download");
+        return;
+    };
 
     let lockfile = match Lockfile::load(&lockfile_path) {
         Ok(Some(lf)) => lf,
         Ok(None) => {
-            cuenv_events::emit_stderr!("[ci] No lockfile found - skipping tool download");
+            tracing::debug!("Empty lockfile - skipping tool download");
             return;
         }
         Err(e) => {
-            cuenv_events::emit_stderr!(&format!("[ci] Failed to load lockfile: {e}"));
+            tracing::warn!("Failed to load lockfile: {e}");
             return;
         }
     };
 
     if lockfile.tools.is_empty() {
-        cuenv_events::emit_stderr!("[ci] No tools in lockfile - skipping download");
+        tracing::debug!("No tools in lockfile - skipping download");
         return;
     }
 
-    cuenv_events::emit_stderr!(&format!("[ci] Found {} tools in lockfile", lockfile.tools.len()));
-
     let platform = Platform::current();
     let platform_str = platform.to_string();
-    cuenv_events::emit_stderr!(&format!("[ci] Current platform: {platform_str}"));
     let options = ToolOptions::default();
     let registry = create_tool_registry();
 
@@ -809,23 +804,22 @@ async fn ensure_tools_downloaded(project_root: &Path) {
     }
 
     // Download tools that aren't cached
-    let mut downloaded = 0;
-
     for (name, tool) in &lockfile.tools {
         let Some(locked) = tool.platforms.get(&platform_str) else {
-            cuenv_events::emit_stderr!(&format!("[ci] Tool '{name}' not available for platform {platform_str}"));
             continue;
         };
 
-        cuenv_events::emit_stderr!(&format!("[ci] Checking tool '{}' v{} (provider: {})", name, tool.version, locked.provider));
-
         let Some(source) = lockfile_entry_to_source(locked) else {
-            cuenv_events::emit_stderr!(&format!("[ci] Unknown provider '{}' for tool '{}'", locked.provider, name));
+            tracing::debug!(
+                "Unknown provider '{}' for tool '{}' - skipping",
+                locked.provider,
+                name
+            );
             continue;
         };
 
         let Some(provider) = registry.find_for_source(&source) else {
-            cuenv_events::emit_stderr!(&format!("[ci] No provider found for tool '{name}'"));
+            tracing::debug!("No provider found for tool '{}' - skipping", name);
             continue;
         };
 
@@ -836,26 +830,24 @@ async fn ensure_tools_downloaded(project_root: &Path) {
             source,
         };
 
+        // Check if already cached
         if provider.is_cached(&resolved, &options) {
-            cuenv_events::emit_stderr!(&format!("[ci] Tool '{}' already cached", name));
             continue;
         }
 
-        cuenv_events::emit_stderr!(&format!("[ci] Downloading {} v{}...", name, tool.version));
+        // Fetch the tool
+        tracing::info!("Downloading {} v{}...", name, tool.version);
         match provider.fetch(&resolved, &options).await {
             Ok(fetched) => {
-                cuenv_events::emit_stderr!(&format!(
-                    "[ci] Downloaded {} -> {}",
+                tracing::info!(
+                    "Downloaded {} -> {}",
                     name,
                     fetched.binary_path.display()
-                ));
-                downloaded += 1;
+                );
             }
             Err(e) => {
-                cuenv_events::emit_stderr!(&format!("[ci] Failed to download '{}': {}", name, e));
+                tracing::warn!("Failed to download tool '{}': {}", name, e);
             }
         }
     }
-
-    cuenv_events::emit_stderr!(&format!("[ci] Tool download complete. Downloaded {} tools", downloaded));
 }
