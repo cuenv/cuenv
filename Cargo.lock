@@ -1803,6 +1803,7 @@ dependencies = [
  "cuenv-events",
  "cuenv-hooks",
  "cuenv-secrets",
+ "cuenv-task-graph",
  "cuenv-workspaces",
  "dirs 6.0.0",
  "eyre",
@@ -2018,6 +2019,16 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "cuenv-task-graph"
+version = "0.21.4"
+dependencies = [
+ "petgraph",
+ "tempfile",
+ "thiserror 2.0.17",
  "tracing",
 ]
 

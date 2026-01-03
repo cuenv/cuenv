@@ -33,6 +33,7 @@ cuenv-secrets = { workspace = true }
 cuenv-1password = { workspace = true }
 cuenv-hooks = { workspace = true }
 cuenv-cache = { workspace = true }
+cuenv-task-graph = { workspace = true }
 
 # Dependencies for task caching and graph
 dirs = { workspace = true }

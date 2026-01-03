@@ -1,46 +1,53 @@
-//! Task graph builder using petgraph
+//! Task graph builder using cuenv-task-graph.
 //!
 //! This module builds directed acyclic graphs (DAGs) from task definitions
 //! to handle dependencies and determine execution order.
+//!
+//! It wraps the generic `cuenv_task_graph` crate with cuenv-core specific
+//! types like `TaskDefinition`, `TaskGroup`, and `ParallelGroup`.
 
 use super::{ParallelGroup, Task, TaskDefinition, TaskGroup, Tasks};
 use crate::Result;
-use petgraph::algo::{is_cyclic_directed, toposort};
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::visit::IntoNodeReferences;
-use std::collections::{HashMap, HashSet};
+use cuenv_task_graph::{GraphNode, TaskNodeData};
+use petgraph::graph::NodeIndex;
+use std::collections::HashSet;
 use tracing::debug;
 
-/// A node in the task graph
-#[derive(Debug, Clone)]
-pub struct TaskNode {
-    /// Name of the task
-    pub name: String,
-    /// The task to execute
-    pub task: Task,
+// Implement the TaskNodeData trait for Task
+impl TaskNodeData for Task {
+    fn depends_on(&self) -> &[String] {
+        &self.depends_on
+    }
+
+    fn add_dependency(&mut self, dep: String) {
+        if !self.depends_on.contains(&dep) {
+            self.depends_on.push(dep);
+        }
+    }
 }
 
-/// Task graph for dependency resolution and execution ordering
+/// A node in the task graph containing a task name and the task itself.
+pub type TaskNode = GraphNode<Task>;
+
+/// Task graph for dependency resolution and execution ordering.
+///
+/// This wraps `cuenv_task_graph::TaskGraph` with cuenv-core specific
+/// functionality for building graphs from `TaskDefinition`, `TaskGroup`, etc.
 pub struct TaskGraph {
-    /// The directed graph of tasks
-    graph: DiGraph<TaskNode, ()>,
-    /// Map from task names to node indices
-    name_to_node: HashMap<String, NodeIndex>,
-    /// Map from group prefix to child task names (for dependency expansion)
-    group_children: HashMap<String, Vec<String>>,
+    /// The underlying generic task graph.
+    inner: cuenv_task_graph::TaskGraph<Task>,
 }
 
 impl TaskGraph {
-    /// Create a new empty task graph
+    /// Create a new empty task graph.
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            graph: DiGraph::new(),
-            name_to_node: HashMap::new(),
-            group_children: HashMap::new(),
+            inner: cuenv_task_graph::TaskGraph::new(),
         }
     }
 
-    /// Build a graph from a task definition
+    /// Build a graph from a task definition.
     pub fn build_from_definition(
         &mut self,
         name: &str,
@@ -56,7 +63,7 @@ impl TaskGraph {
         }
     }
 
-    /// Build a graph from a task group
+    /// Build a graph from a task group.
     fn build_from_group(
         &mut self,
         prefix: &str,
@@ -69,7 +76,7 @@ impl TaskGraph {
         }
     }
 
-    /// Build a sequential task group (tasks run one after another)
+    /// Build a sequential task group (tasks run one after another).
     fn build_sequential_group(
         &mut self,
         prefix: &str,
@@ -92,7 +99,7 @@ impl TaskGraph {
             if let Some(prev) = previous
                 && let Some(first) = task_nodes.first()
             {
-                self.graph.add_edge(prev, *first, ());
+                self.inner.add_edge(prev, *first);
             }
 
             if let Some(last) = task_nodes.last() {
@@ -103,14 +110,12 @@ impl TaskGraph {
         }
 
         // Register this group for dependency expansion
-        if !child_names.is_empty() {
-            self.group_children.insert(prefix.to_string(), child_names);
-        }
+        self.inner.register_group(prefix, child_names);
 
         Ok(nodes)
     }
 
-    /// Build a parallel task group (tasks can run concurrently)
+    /// Build a parallel task group (tasks can run concurrently).
     fn build_parallel_group(
         &mut self,
         prefix: &str,
@@ -133,10 +138,9 @@ impl TaskGraph {
             // Apply group-level dependencies to each subtask
             if !group.depends_on.is_empty() {
                 for node_idx in &task_nodes {
-                    let node = &mut self.graph[*node_idx];
-                    for dep in &group.depends_on {
-                        if !node.task.depends_on.contains(dep) {
-                            node.task.depends_on.push(dep.clone());
+                    if let Some(node) = self.inner.get_node_mut(*node_idx) {
+                        for dep in &group.depends_on {
+                            node.task.add_dependency(dep.clone());
                         }
                     }
                 }
@@ -146,186 +150,74 @@ impl TaskGraph {
         }
 
         // Register this group for dependency expansion
-        if !child_names.is_empty() {
-            self.group_children.insert(prefix.to_string(), child_names);
-        }
+        self.inner.register_group(prefix, child_names);
 
         Ok(nodes)
     }
 
-    /// Add a single task to the graph
+    /// Add a single task to the graph.
     pub fn add_task(&mut self, name: &str, task: Task) -> Result<NodeIndex> {
-        // Check if task already exists
-        if let Some(&node) = self.name_to_node.get(name) {
-            return Ok(node);
-        }
-
-        let node = TaskNode {
-            name: name.to_string(),
-            task,
-        };
-
-        let node_index = self.graph.add_node(node);
-        self.name_to_node.insert(name.to_string(), node_index);
-        debug!("Added task node '{}'", name);
-
-        Ok(node_index)
+        self.inner
+            .add_task(name, task)
+            .map_err(|e| crate::Error::configuration(e.to_string()))
     }
 
-    /// Expand a dependency name to leaf task names
-    ///
-    /// If the dependency is a direct task, returns it as-is.
-    /// If it's a group name, recursively expands to all leaf tasks in that group.
-    fn expand_dep_to_leaf_tasks(&self, dep_name: &str) -> Vec<String> {
-        if self.name_to_node.contains_key(dep_name) {
-            // It's a leaf task (exists directly in the graph)
-            vec![dep_name.to_string()]
-        } else if let Some(children) = self.group_children.get(dep_name) {
-            // It's a group - recursively expand children
-            children
-                .iter()
-                .flat_map(|child| self.expand_dep_to_leaf_tasks(child))
-                .collect()
-        } else {
-            // Not found - will be caught as missing dependency later
-            vec![dep_name.to_string()]
-        }
+    /// Add dependency edges after all tasks have been added.
+    /// This ensures proper cycle detection and missing dependency validation.
+    pub fn add_dependency_edges(&mut self) -> Result<()> {
+        self.inner
+            .add_dependency_edges()
+            .map_err(|e| crate::Error::configuration(e.to_string()))
     }
 
-    /// Add dependency edges after all tasks have been added
-    /// This ensures proper cycle detection and missing dependency validation
-    fn add_dependency_edges(&mut self) -> Result<()> {
-        let mut missing_deps = Vec::new();
-        let mut edges_to_add = Vec::new();
-
-        // Collect all dependency relationships
-        for (node_index, node) in self.graph.node_references() {
-            for dep_name in &node.task.depends_on {
-                // Expand group references to leaf tasks
-                let expanded_deps = self.expand_dep_to_leaf_tasks(dep_name);
-
-                for expanded_dep in expanded_deps {
-                    if let Some(&dep_node_index) = self.name_to_node.get(&expanded_dep) {
-                        // Record edge to add later
-                        edges_to_add.push((dep_node_index, node_index));
-                    } else {
-                        missing_deps.push((node.name.clone(), expanded_dep));
-                    }
-                }
-            }
-        }
-
-        // Report missing dependencies
-        if !missing_deps.is_empty() {
-            let missing_list = missing_deps
-                .iter()
-                .map(|(task, dep)| format!("Task '{}' depends on missing task '{}'", task, dep))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(crate::Error::configuration(format!(
-                "Missing dependencies: {}",
-                missing_list
-            )));
-        }
-
-        // Add all edges
-        for (from, to) in edges_to_add {
-            self.graph.add_edge(from, to, ());
-        }
-
-        Ok(())
-    }
-
-    /// Check if the graph has cycles
+    /// Check if the graph has cycles.
+    #[must_use]
     pub fn has_cycles(&self) -> bool {
-        is_cyclic_directed(&self.graph)
+        self.inner.has_cycles()
     }
 
-    /// Get topologically sorted list of tasks
+    /// Get topologically sorted list of tasks.
     pub fn topological_sort(&self) -> Result<Vec<TaskNode>> {
-        if self.has_cycles() {
-            return Err(crate::Error::configuration(
-                "Task dependency graph contains cycles".to_string(),
-            ));
-        }
-
-        match toposort(&self.graph, None) {
-            Ok(sorted_indices) => Ok(sorted_indices
-                .into_iter()
-                .map(|idx| self.graph[idx].clone())
-                .collect()),
-            Err(_) => Err(crate::Error::configuration(
-                "Failed to sort tasks topologically".to_string(),
-            )),
-        }
+        self.inner
+            .topological_sort()
+            .map_err(|e| crate::Error::configuration(e.to_string()))
     }
 
-    /// Get all tasks that can run in parallel (no dependencies between them)
+    /// Get all tasks that can run in parallel (no dependencies between them).
     pub fn get_parallel_groups(&self) -> Result<Vec<Vec<TaskNode>>> {
-        let sorted = self.topological_sort()?;
-
-        if sorted.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Group tasks by their dependency level
-        let mut groups: Vec<Vec<TaskNode>> = vec![];
-        let mut processed: HashMap<String, usize> = HashMap::new();
-
-        for task in sorted {
-            // Find the maximum level of all dependencies
-            let mut level = 0;
-            for dep in &task.task.depends_on {
-                if let Some(&dep_level) = processed.get(dep) {
-                    level = level.max(dep_level + 1);
-                }
-            }
-
-            // Add to appropriate group
-            if level >= groups.len() {
-                groups.resize(level + 1, vec![]);
-            }
-            groups[level].push(task.clone());
-            processed.insert(task.name.clone(), level);
-        }
-
-        Ok(groups)
+        self.inner
+            .get_parallel_groups()
+            .map_err(|e| crate::Error::configuration(e.to_string()))
     }
 
-    /// Get the number of tasks in the graph
+    /// Get the number of tasks in the graph.
+    #[must_use]
     pub fn task_count(&self) -> usize {
-        self.graph.node_count()
+        self.inner.task_count()
     }
 
-    /// Check if a task exists in the graph
+    /// Check if a task exists in the graph.
+    #[must_use]
     pub fn contains_task(&self, name: &str) -> bool {
-        self.name_to_node.contains_key(name)
+        self.inner.contains_task(name)
     }
 
-    /// Build a complete graph from tasks with proper dependency resolution
-    /// This performs a two-pass build: first adding all nodes, then all edges
+    /// Build a complete graph from tasks with proper dependency resolution.
+    /// This performs a two-pass build: first adding all nodes, then all edges.
     pub fn build_complete_graph(&mut self, tasks: &Tasks) -> Result<()> {
         // First pass: Add all tasks as nodes
         for (name, definition) in tasks.tasks.iter() {
-            match definition {
-                TaskDefinition::Single(task) => {
-                    self.add_task(name, task.as_ref().clone())?;
-                }
-                TaskDefinition::Group(_) => {
-                    // For groups, we'd need to expand them - this is more complex
-                    // and not needed for the current fix. Groups should be handled
-                    // by build_from_definition which already works correctly.
-                }
+            if let TaskDefinition::Single(task) = definition {
+                self.add_task(name, task.as_ref().clone())?;
             }
+            // Groups are handled by build_from_definition
         }
 
         // Second pass: Add all dependency edges
-        self.add_dependency_edges()?;
-
-        Ok(())
+        self.add_dependency_edges()
     }
 
-    /// Build graph for a specific task and all its transitive dependencies
+    /// Build graph for a specific task and all its transitive dependencies.
     pub fn build_for_task(&mut self, task_name: &str, all_tasks: &Tasks) -> Result<()> {
         let mut to_process = vec![task_name.to_string()];
         let mut processed = HashSet::new();
@@ -360,10 +252,18 @@ impl TaskGraph {
                             self.build_from_definition(&current_name, definition, all_tasks)?;
                         // Collect dependencies from newly added tasks
                         for node_idx in added_nodes {
-                            let node = &self.graph[node_idx];
-                            for dep in &node.task.depends_on {
-                                if !processed.contains(dep) {
-                                    to_process.push(dep.clone());
+                            if let Some(node) = self.inner.get_node_by_name(
+                                &self
+                                    .inner
+                                    .iter_nodes()
+                                    .find(|(idx, _)| *idx == node_idx)
+                                    .map(|(_, n)| n.name.clone())
+                                    .unwrap_or_default(),
+                            ) {
+                                for dep in node.task.depends_on() {
+                                    if !processed.contains(dep) {
+                                        to_process.push(dep.clone());
+                                    }
                                 }
                             }
                         }
@@ -375,9 +275,7 @@ impl TaskGraph {
         }
 
         // Second pass: Add dependency edges
-        self.add_dependency_edges()?;
-
-        Ok(())
+        self.add_dependency_edges()
     }
 }
 
@@ -395,6 +293,7 @@ mod graph_advanced_tests;
 mod tests {
     use super::*;
     use crate::test_utils::create_task;
+    use std::collections::HashMap;
 
     #[test]
     fn test_task_graph_new() {
@@ -430,7 +329,7 @@ mod tests {
         graph.add_task("task1", task1).unwrap();
         graph.add_task("task2", task2).unwrap();
         graph.add_task("task3", task3).unwrap();
-        graph.add_dependency_edges().unwrap(); // Add dependency edges after adding all tasks
+        graph.add_dependency_edges().unwrap();
 
         assert_eq!(graph.task_count(), 3);
         assert!(!graph.has_cycles());
@@ -462,7 +361,7 @@ mod tests {
         graph.add_task("task1", task1).unwrap();
         graph.add_task("task2", task2).unwrap();
         graph.add_task("task3", task3).unwrap();
-        graph.add_dependency_edges().unwrap(); // Add dependency edges after adding all tasks
+        graph.add_dependency_edges().unwrap();
 
         assert!(graph.has_cycles());
         assert!(graph.topological_sort().is_err());
@@ -488,7 +387,7 @@ mod tests {
         graph.add_task("task3", task3).unwrap();
         graph.add_task("task4", task4).unwrap();
         graph.add_task("task5", task5).unwrap();
-        graph.add_dependency_edges().unwrap(); // Add dependency edges after adding all tasks
+        graph.add_dependency_edges().unwrap();
 
         let groups = graph.get_parallel_groups().unwrap();
 
@@ -572,7 +471,7 @@ mod tests {
         graph.add_task("task_a", task_a).unwrap();
         graph.add_task("task_b", task_b).unwrap();
         graph.add_task("task_c", task_c).unwrap();
-        graph.add_dependency_edges().unwrap(); // Add dependency edges after adding all tasks
+        graph.add_dependency_edges().unwrap();
 
         // This should create a cycle
         assert!(graph.has_cycles());
@@ -588,7 +487,7 @@ mod tests {
         // Create self-referencing task
         let task = create_task("self_ref", vec!["self_ref"], vec![]);
         graph.add_task("self_ref", task).unwrap();
-        graph.add_dependency_edges().unwrap(); // Add dependency edges after adding all tasks
+        graph.add_dependency_edges().unwrap();
 
         assert!(graph.has_cycles());
         assert!(graph.get_parallel_groups().is_err());
@@ -613,7 +512,7 @@ mod tests {
         graph.add_task("b", task_b).unwrap();
         graph.add_task("c", task_c).unwrap();
         graph.add_task("d", task_d).unwrap();
-        graph.add_dependency_edges().unwrap(); // Add dependency edges after adding all tasks
+        graph.add_dependency_edges().unwrap();
 
         assert!(!graph.has_cycles());
         assert_eq!(graph.task_count(), 4);
@@ -679,7 +578,7 @@ mod tests {
         graph.add_task("b", task_b).unwrap();
         graph.add_task("c", task_c).unwrap();
         graph.add_task("d", task_d).unwrap();
-        graph.add_dependency_edges().unwrap(); // Add dependency edges after adding all tasks
+        graph.add_dependency_edges().unwrap();
 
         assert!(!graph.has_cycles());
         assert_eq!(graph.task_count(), 4);
