@@ -425,6 +425,84 @@ impl<T: TaskNodeData> TaskGraph<T> {
         // Third pass: Add dependency edges from task.depends_on
         self.add_dependency_edges()
     }
+
+    /// Compute which tasks from a pipeline are affected, using transitive dependency propagation.
+    ///
+    /// This method determines which tasks need to run based on:
+    /// 1. Direct effect: The predicate returns true for the task
+    /// 2. Transitive effect: A task depends on an affected task
+    ///
+    /// # Arguments
+    ///
+    /// * `pipeline_tasks` - The names of tasks in the pipeline to check
+    /// * `is_directly_affected` - Predicate that returns true if a task is directly affected
+    ///
+    /// # Returns
+    ///
+    /// A vector of task names that are affected, in pipeline order.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let affected = graph.compute_affected(
+    ///     &["build", "test", "deploy"],
+    ///     |task| task.is_affected_by(&changed_files, &project_root),
+    /// );
+    /// ```
+    pub fn compute_affected<F>(&self, pipeline_tasks: &[impl AsRef<str>], is_directly_affected: F) -> Vec<String>
+    where
+        F: Fn(&T) -> bool,
+    {
+        use std::collections::HashSet;
+
+        let mut affected = HashSet::new();
+
+        // 1. Find directly affected tasks
+        for task_name in pipeline_tasks {
+            let task_name = task_name.as_ref();
+            if let Some(node) = self.get_node_by_name(task_name)
+                && is_directly_affected(&node.task)
+            {
+                affected.insert(task_name.to_string());
+            }
+        }
+
+        // 2. Propagate through dependencies (tasks that depend on affected tasks become affected)
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for task_name in pipeline_tasks {
+                let task_name = task_name.as_ref();
+                if affected.contains(task_name) {
+                    continue;
+                }
+
+                if let Some(node) = self.get_node_by_name(task_name) {
+                    for dep in node.task.depends_on() {
+                        // Expand group dependencies to their leaf tasks
+                        let leaf_deps = self.expand_dep_to_leaf_tasks(dep);
+                        for leaf_dep in leaf_deps {
+                            if affected.contains(&leaf_dep) {
+                                affected.insert(task_name.to_string());
+                                changed = true;
+                                break;
+                            }
+                        }
+                        if changed {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Return in pipeline order
+        pipeline_tasks
+            .iter()
+            .map(|t| t.as_ref().to_string())
+            .filter(|t| affected.contains(t))
+            .collect()
+    }
 }
 
 impl<T: TaskNodeData> Default for TaskGraph<T> {
@@ -909,5 +987,74 @@ mod tests {
 
         // Sequential ordering within frontend must be preserved
         assert!(positions["build.frontend[0]"] < positions["build.frontend[1]"]);
+    }
+
+    // ==========================================================================
+    // compute_affected tests
+    // ==========================================================================
+
+    #[test]
+    fn test_compute_affected_direct() {
+        let mut graph = TaskGraph::new();
+        graph.add_task("build", TestTask::new(&[])).unwrap();
+        graph.add_task("test", TestTask::new(&["build"])).unwrap();
+        graph.add_task("deploy", TestTask::new(&["test"])).unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        // Only build is directly affected
+        let affected = graph.compute_affected(&["build", "test", "deploy"], |task| {
+            // Simulate: build has no deps (directly affected), others don't
+            task.depends_on.is_empty()
+        });
+
+        // build is directly affected, test and deploy are transitively affected
+        assert_eq!(affected, vec!["build", "test", "deploy"]);
+    }
+
+    #[test]
+    fn test_compute_affected_none() {
+        let mut graph = TaskGraph::new();
+        graph.add_task("build", TestTask::new(&[])).unwrap();
+        graph.add_task("test", TestTask::new(&["build"])).unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        // Nothing is directly affected
+        let affected = graph.compute_affected(&["build", "test"], |_task| false);
+
+        assert!(affected.is_empty());
+    }
+
+    #[test]
+    fn test_compute_affected_preserves_pipeline_order() {
+        let mut graph = TaskGraph::new();
+        graph.add_task("deploy", TestTask::new(&["test"])).unwrap();
+        graph.add_task("test", TestTask::new(&["build"])).unwrap();
+        graph.add_task("build", TestTask::new(&[])).unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        // All directly affected
+        let affected = graph.compute_affected(&["build", "test", "deploy"], |_| true);
+
+        // Should preserve pipeline order, not graph order
+        assert_eq!(affected, vec!["build", "test", "deploy"]);
+    }
+
+    #[test]
+    fn test_compute_affected_transitive_only() {
+        let mut graph = TaskGraph::new();
+        graph.add_task("build", TestTask::new(&[])).unwrap();
+        graph.add_task("test", TestTask::new(&["build"])).unwrap();
+        graph.add_task("deploy", TestTask::new(&["test"])).unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        // Only test is directly affected, but deploy depends on it
+        let affected = graph.compute_affected(&["build", "test", "deploy"], |task| {
+            // Only "test" has exactly one dependency
+            task.depends_on.len() == 1 && task.depends_on[0] == "build"
+        });
+
+        // test is directly affected, deploy is transitively affected
+        // build is not affected because nothing depends on what build does
+        assert_eq!(affected, vec!["test", "deploy"]);
     }
 }

@@ -521,6 +521,32 @@ impl Task {
     }
 }
 
+impl crate::AffectedBy for Task {
+    /// Returns true if this task is affected by the given file changes.
+    ///
+    /// # Behavior
+    ///
+    /// - Tasks with NO inputs are always considered affected (we can't determine what affects them)
+    /// - Tasks with inputs are affected if any input pattern matches changed files
+    fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
+        let inputs: Vec<_> = self.iter_path_inputs().collect();
+
+        // No inputs = always affected (we can't determine what affects it)
+        if inputs.is_empty() {
+            return true;
+        }
+
+        // Check if any input pattern matches any changed file
+        inputs
+            .iter()
+            .any(|pattern| crate::matches_pattern(changed_files, project_root, pattern))
+    }
+
+    fn input_patterns(&self) -> Vec<&str> {
+        self.iter_path_inputs().map(String::as_str).collect()
+    }
+}
+
 fn apply_prefix(prefix: Option<&Path>, value: &str) -> String {
     if let Some(prefix) = prefix {
         prefix.join(value).to_string_lossy().to_string()
@@ -643,6 +669,50 @@ impl TaskGroup {
     /// Check if the group is empty
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+impl crate::AffectedBy for TaskGroup {
+    /// A group is affected if ANY of its subtasks are affected.
+    fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
+        match self {
+            TaskGroup::Sequential(tasks) => tasks
+                .iter()
+                .any(|def| def.is_affected_by(changed_files, project_root)),
+            TaskGroup::Parallel(group) => group
+                .tasks
+                .values()
+                .any(|def| def.is_affected_by(changed_files, project_root)),
+        }
+    }
+
+    fn input_patterns(&self) -> Vec<&str> {
+        match self {
+            TaskGroup::Sequential(tasks) => {
+                tasks.iter().flat_map(|def| def.input_patterns()).collect()
+            }
+            TaskGroup::Parallel(group) => group
+                .tasks
+                .values()
+                .flat_map(|def| def.input_patterns())
+                .collect(),
+        }
+    }
+}
+
+impl crate::AffectedBy for TaskDefinition {
+    fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
+        match self {
+            TaskDefinition::Single(task) => task.is_affected_by(changed_files, project_root),
+            TaskDefinition::Group(group) => group.is_affected_by(changed_files, project_root),
+        }
+    }
+
+    fn input_patterns(&self) -> Vec<&str> {
+        match self {
+            TaskDefinition::Single(task) => task.input_patterns(),
+            TaskDefinition::Group(group) => group.input_patterns(),
+        }
     }
 }
 
@@ -1082,5 +1152,138 @@ mod tests {
         assert!(def.default.is_none());
         assert_eq!(def.param_type, ParamType::String);
         assert!(def.short.is_none());
+    }
+
+    // ==========================================================================
+    // AffectedBy trait tests
+    // ==========================================================================
+
+    mod affected_tests {
+        use super::*;
+        use crate::AffectedBy;
+        use std::path::PathBuf;
+
+        fn make_task(inputs: Vec<&str>) -> Task {
+            Task {
+                inputs: inputs
+                    .into_iter()
+                    .map(|s| Input::Path(s.to_string()))
+                    .collect(),
+                command: "echo test".to_string(),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn test_task_no_inputs_always_affected() {
+            let task = make_task(vec![]);
+            let changed_files: Vec<PathBuf> = vec![];
+            let root = Path::new(".");
+
+            // Task with no inputs should always be affected
+            assert!(task.is_affected_by(&changed_files, root));
+        }
+
+        #[test]
+        fn test_task_with_inputs_matching() {
+            let task = make_task(vec!["src/**"]);
+            let changed_files = vec![PathBuf::from("src/lib.rs")];
+            let root = Path::new(".");
+
+            assert!(task.is_affected_by(&changed_files, root));
+        }
+
+        #[test]
+        fn test_task_with_inputs_not_matching() {
+            let task = make_task(vec!["src/**"]);
+            let changed_files = vec![PathBuf::from("docs/readme.md")];
+            let root = Path::new(".");
+
+            assert!(!task.is_affected_by(&changed_files, root));
+        }
+
+        #[test]
+        fn test_task_with_project_root_path_normalization() {
+            let task = make_task(vec!["src/**"]);
+            // File is repo-relative, but matches project-relative pattern
+            let changed_files = vec![PathBuf::from("projects/website/src/app.rs")];
+            let root = Path::new("projects/website");
+
+            assert!(task.is_affected_by(&changed_files, root));
+        }
+
+        #[test]
+        fn test_task_definition_delegates_to_task() {
+            let task = make_task(vec!["src/**"]);
+            let def = TaskDefinition::Single(Box::new(task));
+            let changed_files = vec![PathBuf::from("src/lib.rs")];
+            let root = Path::new(".");
+
+            assert!(def.is_affected_by(&changed_files, root));
+        }
+
+        #[test]
+        fn test_parallel_group_any_affected() {
+            let lint_task = make_task(vec!["src/**"]);
+            let test_task = make_task(vec!["tests/**"]);
+
+            let mut parallel_tasks = HashMap::new();
+            parallel_tasks.insert(
+                "lint".to_string(),
+                TaskDefinition::Single(Box::new(lint_task)),
+            );
+            parallel_tasks.insert(
+                "test".to_string(),
+                TaskDefinition::Single(Box::new(test_task)),
+            );
+
+            let group = TaskGroup::Parallel(ParallelGroup {
+                tasks: parallel_tasks,
+                depends_on: vec![],
+            });
+
+            // Change in src/ should affect the group (because lint is affected)
+            let changed_files = vec![PathBuf::from("src/lib.rs")];
+            let root = Path::new(".");
+
+            assert!(group.is_affected_by(&changed_files, root));
+        }
+
+        #[test]
+        fn test_parallel_group_none_affected() {
+            let lint_task = make_task(vec!["src/**"]);
+            let test_task = make_task(vec!["tests/**"]);
+
+            let mut parallel_tasks = HashMap::new();
+            parallel_tasks.insert(
+                "lint".to_string(),
+                TaskDefinition::Single(Box::new(lint_task)),
+            );
+            parallel_tasks.insert(
+                "test".to_string(),
+                TaskDefinition::Single(Box::new(test_task)),
+            );
+
+            let group = TaskGroup::Parallel(ParallelGroup {
+                tasks: parallel_tasks,
+                depends_on: vec![],
+            });
+
+            // Change in docs/ should not affect the group
+            let changed_files = vec![PathBuf::from("docs/readme.md")];
+            let root = Path::new(".");
+
+            assert!(!group.is_affected_by(&changed_files, root));
+        }
+
+        #[test]
+        fn test_input_patterns_returns_patterns() {
+            let task = make_task(vec!["src/**", "Cargo.toml"]);
+            let patterns = task.input_patterns();
+
+            assert_eq!(patterns.len(), 2);
+            assert!(patterns.contains(&"src/**"));
+            assert!(patterns.contains(&"Cargo.toml"));
+        }
     }
 }
