@@ -117,7 +117,7 @@ impl Default for OutputConfig {
     fn default() -> Self {
         Self {
             format: "simple".to_string(),
-            capture_output: false,
+            capture_output: true,
             show_cache_path: false,
             materialize_outputs: None,
             help: false,
@@ -450,7 +450,7 @@ mod tests {
     fn test_output_config_default() {
         let config = OutputConfig::default();
         assert_eq!(config.format, "simple");
-        assert!(!config.capture_output);
+        assert!(config.capture_output);
         assert!(!config.show_cache_path);
         assert!(config.materialize_outputs.is_none());
         assert!(!config.help);
