@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Project Rules
 
 - Never allow clippy warnings, fix the root cause.
@@ -41,10 +39,6 @@ cuenv fmt --fix
 cuenv fmt
 ```
 
-### Using cuenv
-
-The project uses `cuenv` with a `#NixFlake` hook that automatically runs `nix print-dev-env` before any command. This ensures the correct toolchain versions are always used. You don't need to manually enter a nix shell.
-
 ## Architecture
 
 ### Crate Structure
@@ -76,6 +70,42 @@ The project uses `cuenv` with a `#NixFlake` hook that automatically runs `nix pr
 4. Task graph built with cuenv-task-graph (petgraph-based dependency resolution)
 5. Tasks executed with hermetic isolation and caching
 6. Events broadcast to UI renderers
+
+### Contributor Loop
+
+Contributors are CUE-defined task injectors that modify the task DAG before execution. Both CLI (`cuenv task`) and CI (`cuenv ci`) use the same `ContributorEngine`.
+
+**Data Flow:**
+
+1. CUE evaluation produces Projects with Tasks (initial DAG)
+2. `ContributorEngine` (in `cuenv-core`) applies contributors:
+   - Evaluates `when` conditions (`workspaceMember`, `taskCommand`, etc.)
+   - Injects contributor tasks with `cuenv:contributor:*` prefix
+   - Auto-associates user tasks with contributor setup tasks (by command)
+   - Loops until no changes (stable DAG)
+3. Final DAG passed to executor (CLI or CI)
+
+**Contributor Task Naming:** `cuenv:contributor:{contributor}.{task}`
+
+- Example: `cuenv:contributor:bun.workspace.install`
+
+**Activation Conditions:**
+
+- `workspaceMember: ["bun"]` - inject when project is bun workspace member
+- `taskCommand: ["bun", "bunx"]` - inject when tasks use these commands
+- `runtimeType: ["nix"]` - inject when project uses Nix runtime
+
+**Priority-Based Ordering:** (for CI stage assignment)
+
+- 0-9: Bootstrap stage (Nix install)
+- 10-49: Setup stage (cuenv, cachix, etc.)
+- 50+: Success stage (post-build tasks)
+
+**Key Files:**
+
+- `crates/core/src/contributors.rs` - ContributorEngine implementation
+- `contrib/contributors/*.cue` - CUE contributor definitions
+- `schema/ci.cue` - Contributor schema types
 
 ### Critical Patterns
 

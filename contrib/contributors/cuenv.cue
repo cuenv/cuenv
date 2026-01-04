@@ -11,7 +11,8 @@ import "github.com/cuenv/cuenv/schema"
 // - nix: Install via Nix flake
 // - homebrew: Install via Homebrew tap (no Nix required)
 //
-// Contributes to Setup phase with priority 10.
+// Injects tasks:
+// - cuenv:contributor:cuenv.setup: Sets up cuenv for the CI environment
 //
 // Usage:
 //
@@ -22,64 +23,43 @@ import "github.com/cuenv/cuenv/schema"
 	id: "cuenv"
 	when: always: true
 	tasks: [{
-		id:       "setup-cuenv"
-		phase:    "setup"
+		id:       "cuenv.setup"
 		label:    "Setup cuenv"
 		priority: 10
-		shell:    true
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		// Default: release mode (download pre-built binary)
-		// The actual command is templated at runtime based on config.ci.cuenv.source
-		// TODO: Add SHA256 checksum verification for downloaded binary
-		command: """
-			curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && \\
-			chmod +x /usr/local/bin/cuenv && \\
-			/usr/local/bin/cuenv sync -A
-			"""
+		command: "sh"
+		args: ["-c", "curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync -A"]
 	}]
 }
 
 // #CuenvRelease installs cuenv from GitHub Releases (default mode)
 // No Nix dependency required.
-// TODO: Add SHA256 checksum verification for downloaded binary
 #CuenvRelease: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["release"]
 	tasks: [{
-		id:       "setup-cuenv"
-		phase:    "setup"
+		id:       "cuenv.setup"
 		label:    "Setup cuenv (release)"
 		priority: 10
-		shell:    true
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		command: """
-			curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && \\
-			chmod +x /usr/local/bin/cuenv && \\
-			/usr/local/bin/cuenv sync -A
-			"""
+		command: "sh"
+		args: ["-c", "curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync -A"]
 	}]
 }
 
 // #CuenvGit builds cuenv from git checkout using Nix
-// Requires install-nix to have run first.
+// Requires nix.install to have run first.
 #CuenvGit: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["git"]
 	tasks: [{
-		id:        "setup-cuenv"
-		phase:     "setup"
+		id:        "cuenv.setup"
 		label:     "Build cuenv"
 		priority:  10
-		shell:     true
-		dependsOn: ["install-nix"]
+		dependsOn: ["nix.install"]
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		command: """
-			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \\
-			nix develop -c cargo build --release -p cuenv && \\
-			{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
-			  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
-			./target/release/cuenv sync -A
-			"""
+		command: "sh"
+		args: ["-c", ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix develop -c cargo build --release -p cuenv && { echo \"$(pwd)/target/release\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/target/release\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true; } && ./target/release/cuenv sync -A"]
 	}]
 }
 
@@ -90,15 +70,13 @@ import "github.com/cuenv/cuenv/schema"
 	when: cuenvSource: ["native"]
 	tasks: [
 		{
-			id:       "setup-rust"
-			phase:    "setup"
+			id:       "cuenv.setup.rust"
 			label:    "Setup Rust"
 			priority: 6
 			provider: github: uses: "dtolnay/rust-toolchain@stable"
 		},
 		{
-			id:       "setup-go"
-			phase:    "setup"
+			id:       "cuenv.setup.go"
 			label:    "Setup Go"
 			priority: 6
 			provider: github: {
@@ -107,19 +85,13 @@ import "github.com/cuenv/cuenv/schema"
 			}
 		},
 		{
-			id:        "setup-cuenv"
-			phase:     "setup"
+			id:        "cuenv.setup"
 			label:     "Build cuenv"
 			priority:  10
-			shell:     true
-			dependsOn: ["setup-rust", "setup-go"]
+			dependsOn: ["cuenv.setup.rust", "cuenv.setup.go"]
 			env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-			command: """
-				cargo build --release -p cuenv && \\
-				{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
-				  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
-				./target/release/cuenv sync -A
-				"""
+			command: "sh"
+			args: ["-c", "cargo build --release -p cuenv && { echo \"$(pwd)/target/release\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/target/release\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true; } && ./target/release/cuenv sync -A"]
 		},
 	]
 }
@@ -130,38 +102,27 @@ import "github.com/cuenv/cuenv/schema"
 	id: "cuenv"
 	when: cuenvSource: ["artifact"]
 	tasks: [{
-		id:       "setup-cuenv"
-		phase:    "setup"
+		id:       "cuenv.setup"
 		label:    "Setup cuenv (from artifact)"
 		priority: 10
-		shell:    true
-		command: """
-			chmod +x target/release/cuenv && \\
-			{ echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \\
-			  echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \\
-			./target/release/cuenv sync -A
-			"""
+		command:  "sh"
+		args: ["-c", "chmod +x target/release/cuenv && { echo \"$(pwd)/target/release\" >> \"$GITHUB_PATH\" 2>/dev/null || echo \"$(pwd)/target/release\" >> \"$BUILDKITE_ENV_FILE\" 2>/dev/null || true; } && ./target/release/cuenv sync -A"]
 	}]
 }
 
 // #CuenvNix installs cuenv via Nix flake
-// Requires install-nix to have run first.
+// Requires nix.install to have run first.
 #CuenvNix: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["nix"]
 	tasks: [{
-		id:        "setup-cuenv"
-		phase:     "setup"
+		id:        "cuenv.setup"
 		label:     "Setup cuenv (nix)"
 		priority:  10
-		shell:     true
-		dependsOn: ["install-nix"]
+		dependsOn: ["nix.install"]
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		command: """
-			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \\
-			nix profile install github:cuenv/cuenv#cuenv --accept-flake-config && \\
-			cuenv sync -A
-			"""
+		command: "sh"
+		args: ["-c", ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix profile install github:cuenv/cuenv#cuenv --accept-flake-config && cuenv sync -A"]
 	}]
 }
 
@@ -171,15 +132,18 @@ import "github.com/cuenv/cuenv/schema"
 	id: "cuenv"
 	when: cuenvSource: ["homebrew"]
 	tasks: [{
-		id:       "setup-cuenv"
-		phase:    "setup"
+		id:       "cuenv.setup"
 		label:    "Setup cuenv (homebrew)"
 		priority: 10
-		shell:    true
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		command: """
-			brew install cuenv/cuenv/cuenv && \\
-			cuenv sync -A
-			"""
+		command: "brew"
+		args: ["install", "cuenv/cuenv/cuenv"]
+	}, {
+		id:        "cuenv.sync"
+		label:     "Sync cuenv tools"
+		priority:  11
+		dependsOn: ["cuenv.setup"]
+		command:   "cuenv"
+		args: ["sync", "-A"]
 	}]
 }
