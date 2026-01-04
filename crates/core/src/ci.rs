@@ -213,19 +213,9 @@ pub struct Pipeline {
 // Contributors
 // =============================================================================
 
-/// Build phases that contributors can inject tasks into
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BuildPhase {
-    Bootstrap,
-    Setup,
-    Success,
-    Failure,
-}
-
-/// Execution condition for phase tasks
+/// Execution condition for contributor tasks
 ///
-/// Determines when a phase task runs based on the outcome of prior tasks.
+/// Determines when a task runs based on the outcome of prior tasks.
 /// Used by emitters to generate conditional execution logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -249,41 +239,45 @@ pub struct ActivationCondition {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub always: Option<bool>,
 
+    /// Workspace membership detection (active if project is member of these workspace types)
+    /// Values: "npm", "bun", "pnpm", "yarn", "cargo", "deno"
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_member: Vec<String>,
+
     /// Runtime type detection (active if project uses any of these runtime types)
+    /// Values: "nix", "devenv", "container", "dagger", "oci", "tools"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_type: Vec<String>,
 
     /// Cuenv source mode detection (for cuenv installation strategy)
+    /// Values: "git", "nix", "homebrew", "release", "native", "artifact"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cuenv_source: Vec<String>,
 
     /// Secrets provider detection (active if environment uses any of these providers)
+    /// Values: "onepassword", "aws", "vault", "azure", "gcp"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets_provider: Vec<String>,
 
     /// Provider configuration detection (active if these config paths are set)
+    /// Path format: "github.cachix", "github.trustedPublishing.cratesIo"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_config: Vec<String>,
 
-    /// Task command detection (active if any pipeline task uses these commands)
+    /// Task command detection (active if any task uses these commands)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_command: Vec<String>,
 
-    /// Task label detection (active if any pipeline task has these labels)
+    /// Task label detection (active if any task has these labels)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_labels: Vec<String>,
 
     /// Environment name matching (active only in these environments)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<String>,
-
-    /// Workspace type detection (active if project has these package managers)
-    /// Values: "npm", "bun", "pnpm", "yarn", "cargo", "deno"
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub workspace_type: Vec<String>,
 }
 
-/// Secret reference for phase tasks
+/// Secret reference for contributor tasks
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum SecretRef {
@@ -304,28 +298,44 @@ pub struct SecretRefConfig {
     pub cache_key: bool,
 }
 
-/// Provider-specific phase task configuration
+/// Provider-specific task configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct PhaseTaskProviderConfig {
+pub struct TaskProviderConfig {
     /// GitHub Action to use instead of shell command
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github: Option<GitHubActionConfig>,
 }
 
-/// A task contributed to a build phase (CUE-defined)
+/// Auto-association rules for contributors
+/// Defines how user tasks are automatically connected to contributor tasks
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoAssociate {
+    /// Commands that trigger auto-association (e.g., ["bun", "bunx"])
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command: Vec<String>,
+
+    /// Task to inject as dependency (e.g., "cuenv:contributor:bun.workspace.setup")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inject_dependency: Option<String>,
+}
+
+/// A task contributed to the DAG by a contributor (CUE-defined)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct PhaseTask {
-    /// Unique task identifier (e.g., "install-nix")
+pub struct ContributorTask {
+    /// Task identifier (e.g., "bun.workspace.install")
+    /// Will be prefixed with "cuenv:contributor:" when injected
     pub id: String,
-
-    /// Target phase (bootstrap, setup, success, failure)
-    pub phase: BuildPhase,
 
     /// Human-readable display name
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+
+    /// Human-readable description
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 
     /// Shell command to execute
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -351,24 +361,33 @@ pub struct PhaseTask {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub secrets: HashMap<String, SecretRef>,
 
-    /// Dependencies on other phase tasks
+    /// Input files/patterns for caching
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
+
+    /// Output files/patterns for caching
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<String>,
+
+    /// Whether task requires hermetic execution
+    #[serde(default)]
+    pub hermetic: bool,
+
+    /// Dependencies on other tasks
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
 
-    /// Ordering within phase (lower = earlier)
+    /// Ordering priority (lower = earlier)
     #[serde(default = "default_priority")]
     pub priority: i32,
 
     /// Execution condition (on_success, on_failure, always)
-    ///
-    /// Determines when the task runs based on prior task outcomes.
-    /// Emitters translate this to native constructs (e.g., `if: failure()` in GitHub Actions).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub condition: Option<TaskCondition>,
 
     /// Provider-specific overrides (e.g., GitHub Actions)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<PhaseTaskProviderConfig>,
+    pub provider: Option<TaskProviderConfig>,
 }
 
 const fn default_priority() -> i32 {
@@ -376,11 +395,11 @@ const fn default_priority() -> i32 {
 }
 
 /// Contributor definition (CUE-defined)
-/// Contributors inject tasks into build phases based on activation conditions
+/// Contributors inject tasks into the DAG based on activation conditions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Contributor {
-    /// Contributor identifier (e.g., "nix", "1password")
+    /// Contributor identifier (e.g., "bun.workspace", "nix", "1password")
     pub id: String,
 
     /// Activation condition (defaults to always active)
@@ -388,7 +407,11 @@ pub struct Contributor {
     pub when: Option<ActivationCondition>,
 
     /// Tasks to contribute when active
-    pub tasks: Vec<PhaseTask>,
+    pub tasks: Vec<ContributorTask>,
+
+    /// Auto-association rules for user tasks
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_associate: Option<AutoAssociate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -617,32 +640,71 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_task_with_command_and_args() {
+    fn test_contributor_task_with_command_and_args() {
         let json = r#"{
-            "id": "bun-install",
-            "phase": "setup",
-            "command": "cuenv",
-            "args": ["exec", "--", "bun", "install", "--frozen-lockfile"]
+            "id": "bun.workspace.install",
+            "command": "bun",
+            "args": ["install", "--frozen-lockfile"],
+            "inputs": ["package.json", "bun.lock"],
+            "outputs": ["node_modules"]
         }"#;
-        let task: PhaseTask = serde_json::from_str(json).unwrap();
-        assert_eq!(task.id, "bun-install");
-        assert_eq!(task.command, Some("cuenv".to_string()));
+        let task: ContributorTask = serde_json::from_str(json).unwrap();
+        assert_eq!(task.id, "bun.workspace.install");
+        assert_eq!(task.command, Some("bun".to_string()));
+        assert_eq!(task.args, vec!["install", "--frozen-lockfile"]);
+        assert_eq!(task.inputs, vec!["package.json", "bun.lock"]);
+        assert_eq!(task.outputs, vec!["node_modules"]);
+    }
+
+    #[test]
+    fn test_contributor_task_with_script() {
+        let json = r#"{
+            "id": "nix.install",
+            "command": "sh",
+            "args": ["-c", "curl -sSL https://install.determinate.systems/nix | sh"]
+        }"#;
+        let task: ContributorTask = serde_json::from_str(json).unwrap();
+        assert_eq!(task.id, "nix.install");
+        assert_eq!(task.command, Some("sh".to_string()));
         assert_eq!(
             task.args,
-            vec!["exec", "--", "bun", "install", "--frozen-lockfile"]
+            vec!["-c", "curl -sSL https://install.determinate.systems/nix | sh"]
         );
     }
 
     #[test]
-    fn test_phase_task_command_only() {
+    fn test_contributor_with_auto_associate() {
         let json = r#"{
-            "id": "simple-task",
-            "phase": "setup",
-            "command": "echo hello"
+            "id": "bun.workspace",
+            "when": {"workspaceMember": ["bun"]},
+            "tasks": [{
+                "id": "bun.workspace.install",
+                "command": "bun",
+                "args": ["install"]
+            }],
+            "autoAssociate": {
+                "command": ["bun", "bunx"],
+                "injectDependency": "cuenv:contributor:bun.workspace.setup"
+            }
         }"#;
-        let task: PhaseTask = serde_json::from_str(json).unwrap();
-        assert_eq!(task.id, "simple-task");
-        assert_eq!(task.command, Some("echo hello".to_string()));
-        assert!(task.args.is_empty());
+        let contributor: Contributor = serde_json::from_str(json).unwrap();
+        assert_eq!(contributor.id, "bun.workspace");
+
+        let when = contributor.when.unwrap();
+        assert_eq!(when.workspace_member, vec!["bun"]);
+
+        let auto = contributor.auto_associate.unwrap();
+        assert_eq!(auto.command, vec!["bun", "bunx"]);
+        assert_eq!(
+            auto.inject_dependency,
+            Some("cuenv:contributor:bun.workspace.setup".to_string())
+        );
+    }
+
+    #[test]
+    fn test_activation_condition_workspace_member() {
+        let json = r#"{"workspaceMember": ["npm", "bun"]}"#;
+        let cond: ActivationCondition = serde_json::from_str(json).unwrap();
+        assert_eq!(cond.workspace_member, vec!["npm", "bun"]);
     }
 }

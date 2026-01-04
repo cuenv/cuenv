@@ -21,8 +21,8 @@ use crate::ir::{
     Task as IrTask, TaskCondition, TriggerCondition, WorkflowDispatchInputDef,
 };
 use cuenv_core::ci::{
-    BuildPhase as CueBuildPhase, CI, Contributor, ManualTrigger, PhaseTask, Pipeline, PipelineTask,
-    SecretRef, TaskCondition as CueTaskCondition,
+    CI, Contributor, ContributorTask, ManualTrigger, Pipeline, PipelineTask, SecretRef,
+    TaskCondition as CueTaskCondition,
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
@@ -780,7 +780,7 @@ impl Compiler {
     /// Apply CUE-defined contributors to the IR
     ///
     /// This evaluates the `ci.contributors` array from CUE and converts
-    /// active contributors' tasks to IR phase tasks.
+    /// active contributors' tasks to IR contributor tasks.
     fn apply_cue_contributors(&self, ir: &mut IntermediateRepresentation) {
         let Some(ref ci_config) = self.project.ci else {
             return;
@@ -792,7 +792,7 @@ impl Compiler {
                 continue;
             }
 
-            // Already contributed check (idempotency) - check all phase tasks
+            // Already contributed check (idempotency) - check all contributor tasks
             let contributed_ids: HashSet<String> = ir
                 .tasks
                 .iter()
@@ -800,15 +800,17 @@ impl Compiler {
                 .map(|t| t.id.clone())
                 .collect();
 
-            // Add contributor's tasks to appropriate phases
-            for phase_task in &contributor.tasks {
+            // Add contributor's tasks
+            for contributor_task in &contributor.tasks {
+                // Prefix the task ID with contributor namespace
+                let full_task_id = format!("cuenv:contributor:{}", contributor_task.id);
+
                 // Skip if already contributed
-                if contributed_ids.contains(&phase_task.id) {
+                if contributed_ids.contains(&full_task_id) {
                     continue;
                 }
 
-                let stage = Self::cue_build_phase_to_ir(phase_task.phase);
-                let task = Self::phase_task_to_ir(phase_task, &contributor.id, stage);
+                let task = Self::contributor_task_to_ir(contributor_task, &contributor.id);
                 ir.tasks.push(task);
             }
         }
@@ -896,8 +898,8 @@ impl Compiler {
             }
         }
 
-        // Check workspace type (detect package managers using workspace discovery)
-        if !condition.workspace_type.is_empty() {
+        // Check workspace membership (detect package managers using workspace discovery)
+        if !condition.workspace_member.is_empty() {
             // Use module root for workspace detection (lockfiles are at repo root in monorepos)
             let module_root = self
                 .options
@@ -909,7 +911,7 @@ impl Compiler {
             let detected = self.detect_workspace_managers(&module_root);
 
             if !condition
-                .workspace_type
+                .workspace_member
                 .iter()
                 .any(|t| detected.contains(&t.to_lowercase()))
             {
@@ -1102,13 +1104,24 @@ impl Compiler {
         false
     }
 
-    /// Convert a CUE BuildPhase to IR BuildStage
-    fn cue_build_phase_to_ir(phase: CueBuildPhase) -> BuildStage {
-        match phase {
-            CueBuildPhase::Bootstrap => BuildStage::Bootstrap,
-            CueBuildPhase::Setup => BuildStage::Setup,
-            CueBuildPhase::Success => BuildStage::Success,
-            CueBuildPhase::Failure => BuildStage::Failure,
+    /// Derive the build stage from contributor task priority
+    ///
+    /// Priority ranges determine the stage:
+    /// - 0-9: Bootstrap (environment setup like Nix)
+    /// - 10-49: Setup (tool installation like cuenv, cachix)
+    /// - 50+: Success phase (post-build tasks)
+    ///
+    /// Tasks with on_failure condition are placed in the Failure stage.
+    fn derive_stage_from_priority(priority: i32, condition: Option<CueTaskCondition>) -> BuildStage {
+        // on_failure condition always means Failure stage
+        if matches!(condition, Some(CueTaskCondition::OnFailure)) {
+            return BuildStage::Failure;
+        }
+
+        match priority {
+            0..=9 => BuildStage::Bootstrap,
+            10..=49 => BuildStage::Setup,
+            _ => BuildStage::Success,
         }
     }
 
@@ -1121,24 +1134,25 @@ impl Compiler {
         }
     }
 
-    /// Convert a CUE PhaseTask to an IR Task
+    /// Convert a CUE ContributorTask to an IR Task
     ///
-    /// Creates an IR Task with phase metadata. Phase tasks are stored alongside
-    /// regular tasks in `ir.tasks` and distinguished by their `phase` field.
-    fn phase_task_to_ir(phase_task: &PhaseTask, contributor_id: &str, phase: BuildStage) -> IrTask {
+    /// Creates an IR Task with contributor metadata. Contributor tasks are stored
+    /// alongside regular tasks in `ir.tasks` and distinguished by their `phase` field.
+    /// The phase is derived from the task's priority.
+    fn contributor_task_to_ir(contributor_task: &ContributorTask, contributor_id: &str) -> IrTask {
         // Build command array
-        let (command, shell) = if let Some(ref cmd) = phase_task.command {
+        let (command, shell) = if let Some(ref cmd) = contributor_task.command {
             let mut cmd_vec = vec![cmd.clone()];
-            cmd_vec.extend(phase_task.args.clone());
-            (cmd_vec, phase_task.shell)
-        } else if let Some(ref script) = phase_task.script {
+            cmd_vec.extend(contributor_task.args.clone());
+            (cmd_vec, contributor_task.shell)
+        } else if let Some(ref script) = contributor_task.script {
             (vec![script.clone()], true)
         } else {
             (vec![], false)
         };
 
         // Convert secrets
-        let secrets: BTreeMap<String, SecretConfig> = phase_task
+        let secrets: BTreeMap<String, SecretConfig> = contributor_task
             .secrets
             .iter()
             .map(|(k, v)| {
@@ -1157,7 +1171,7 @@ impl Compiler {
             .collect();
 
         // Convert provider hints
-        let provider_hints = phase_task.provider.as_ref().and_then(|p| {
+        let provider_hints = contributor_task.provider.as_ref().and_then(|p| {
             p.github.as_ref().map(|gh| {
                 let mut github_action = serde_json::Map::new();
                 github_action.insert(
@@ -1186,14 +1200,30 @@ impl Compiler {
         });
 
         // Convert condition
-        let condition = phase_task.condition.map(Self::cue_task_condition_to_ir);
+        let condition = contributor_task.condition.map(Self::cue_task_condition_to_ir);
+
+        // Derive stage from priority
+        let stage = Self::derive_stage_from_priority(contributor_task.priority, contributor_task.condition);
+
+        // Prefix dependencies with contributor namespace
+        let depends_on: Vec<String> = contributor_task
+            .depends_on
+            .iter()
+            .map(|dep| {
+                if dep.starts_with("cuenv:contributor:") {
+                    dep.clone()
+                } else {
+                    format!("cuenv:contributor:{dep}")
+                }
+            })
+            .collect();
 
         IrTask {
-            id: phase_task.id.clone(),
+            id: format!("cuenv:contributor:{}", contributor_task.id),
             runtime: None,
             command,
             shell,
-            env: phase_task
+            env: contributor_task
                 .env
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
@@ -1201,19 +1231,19 @@ impl Compiler {
             secrets,
             resources: None,
             concurrency_group: None,
-            inputs: vec![],
+            inputs: contributor_task.inputs.clone(),
             outputs: vec![],
-            depends_on: phase_task.depends_on.clone(),
-            cache_policy: CachePolicy::Disabled, // Phase tasks don't use caching
+            depends_on,
+            cache_policy: CachePolicy::Disabled, // Contributor tasks don't use caching
             deployment: false,
             manual_approval: false,
             matrix: None,
             artifact_downloads: vec![],
             params: BTreeMap::new(),
-            // Phase task specific fields
-            phase: Some(phase),
-            label: phase_task.label.clone(),
-            priority: Some(phase_task.priority),
+            // Contributor task specific fields
+            phase: Some(stage),
+            label: contributor_task.label.clone(),
+            priority: Some(contributor_task.priority),
             contributor: Some(contributor_id.to_string()),
             condition,
             provider_hints,
@@ -1794,6 +1824,7 @@ mod tests {
             id: id.to_string(),
             when,
             tasks: vec![],
+            auto_associate: None,
         }
     }
 
@@ -1978,71 +2009,73 @@ mod tests {
     }
 
     // =========================================================================
-    // Phase Task Conversion Tests
+    // Contributor Task Conversion Tests
     // =========================================================================
 
     #[test]
-    fn test_phase_task_to_ir_command() {
-        use cuenv_core::ci::BuildPhase;
-
-        let phase_task = PhaseTask {
+    fn test_contributor_task_to_ir_command() {
+        let contributor_task = ContributorTask {
             id: "test-task".to_string(),
-            phase: BuildPhase::Setup,
             label: Some("Test Task".to_string()),
-            command: Some("echo hello".to_string()),
-            args: vec![],
+            description: None,
+            command: Some("echo".to_string()),
+            args: vec!["hello".to_string()],
             script: None,
             shell: false,
             env: HashMap::default(),
             secrets: HashMap::default(),
+            inputs: vec![],
+            outputs: vec![],
+            hermetic: false,
             depends_on: vec![],
             priority: 10,
             condition: None,
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Setup);
+        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
 
-        assert_eq!(ir_task.id, "test-task");
-        assert_eq!(ir_task.command, vec!["echo hello"]);
+        assert_eq!(ir_task.id, "cuenv:contributor:test-task");
+        assert_eq!(ir_task.command, vec!["echo", "hello"]);
         assert!(!ir_task.shell);
         assert_eq!(ir_task.priority, Some(10));
-        assert_eq!(ir_task.phase, Some(BuildStage::Setup));
+        assert_eq!(ir_task.phase, Some(BuildStage::Setup)); // priority 10 = Setup
     }
 
     #[test]
-    fn test_phase_task_to_ir_script() {
-        use cuenv_core::ci::BuildPhase;
-
-        let phase_task = PhaseTask {
+    fn test_contributor_task_to_ir_script() {
+        let contributor_task = ContributorTask {
             id: "script-task".to_string(),
-            phase: BuildPhase::Bootstrap,
             label: None,
+            description: None,
             command: None,
             args: vec![],
             script: Some("echo line1\necho line2".to_string()),
             shell: true,
             env: HashMap::default(),
             secrets: HashMap::default(),
+            inputs: vec![],
+            outputs: vec![],
+            hermetic: false,
             depends_on: vec!["other".to_string()],
             priority: 5,
             condition: None,
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Bootstrap);
+        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
 
-        assert_eq!(ir_task.id, "script-task");
+        assert_eq!(ir_task.id, "cuenv:contributor:script-task");
         assert_eq!(ir_task.command, vec!["echo line1\necho line2"]);
         assert!(ir_task.shell);
-        assert_eq!(ir_task.depends_on, vec!["other"]);
+        assert_eq!(ir_task.depends_on, vec!["cuenv:contributor:other"]);
         assert_eq!(ir_task.priority, Some(5));
-        assert_eq!(ir_task.phase, Some(BuildStage::Bootstrap));
+        assert_eq!(ir_task.phase, Some(BuildStage::Bootstrap)); // priority 5 = Bootstrap
     }
 
     #[test]
-    fn test_phase_task_to_ir_github_action() {
-        use cuenv_core::ci::{BuildPhase, GitHubActionConfig, PhaseTaskProviderConfig};
+    fn test_contributor_task_to_ir_github_action() {
+        use cuenv_core::ci::{GitHubActionConfig, TaskProviderConfig};
 
         let mut inputs = std::collections::HashMap::new();
         inputs.insert(
@@ -2050,20 +2083,23 @@ mod tests {
             serde_json::Value::String("accept-flake-config = true".to_string()),
         );
 
-        let phase_task = PhaseTask {
-            id: "nix-install".to_string(),
-            phase: BuildPhase::Bootstrap,
+        let contributor_task = ContributorTask {
+            id: "nix.install".to_string(),
             label: Some("Install Nix".to_string()),
+            description: None,
             command: None,
             args: vec![],
             script: None,
             shell: false,
             env: HashMap::default(),
             secrets: HashMap::default(),
+            inputs: vec![],
+            outputs: vec![],
+            hermetic: false,
             depends_on: vec![],
             priority: 0,
             condition: None,
-            provider: Some(PhaseTaskProviderConfig {
+            provider: Some(TaskProviderConfig {
                 github: Some(GitHubActionConfig {
                     uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
                     inputs,
@@ -2071,12 +2107,12 @@ mod tests {
             }),
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Bootstrap);
+        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "nix");
 
-        assert_eq!(ir_task.id, "nix-install");
+        assert_eq!(ir_task.id, "cuenv:contributor:nix.install");
         assert!(ir_task.command.is_empty()); // No command, uses action
         assert!(ir_task.provider_hints.is_some());
-        assert_eq!(ir_task.phase, Some(BuildStage::Bootstrap));
+        assert_eq!(ir_task.phase, Some(BuildStage::Bootstrap)); // priority 0 = Bootstrap
 
         // Verify the GitHub action is in provider_hints
         let hints = ir_task.provider_hints.as_ref().unwrap();
@@ -2088,8 +2124,8 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_task_to_ir_secrets() {
-        use cuenv_core::ci::{BuildPhase, SecretRefConfig};
+    fn test_contributor_task_to_ir_secrets() {
+        use cuenv_core::ci::SecretRefConfig;
 
         let mut secrets = std::collections::HashMap::new();
         secrets.insert(
@@ -2104,23 +2140,26 @@ mod tests {
             }),
         );
 
-        let phase_task = PhaseTask {
+        let contributor_task = ContributorTask {
             id: "secrets-task".to_string(),
-            phase: BuildPhase::Setup,
             label: None,
-            command: Some("echo test".to_string()),
-            args: vec![],
+            description: None,
+            command: Some("echo".to_string()),
+            args: vec!["test".to_string()],
             script: None,
             shell: false,
             env: HashMap::default(),
             secrets,
+            inputs: vec![],
+            outputs: vec![],
+            hermetic: false,
             depends_on: vec![],
             priority: 10,
             condition: None,
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Setup);
+        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
 
         assert_eq!(ir_task.secrets.len(), 2);
         assert_eq!(ir_task.phase, Some(BuildStage::Setup));
@@ -2137,30 +2176,31 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_task_to_ir_env_vars() {
-        use cuenv_core::ci::BuildPhase;
-
+    fn test_contributor_task_to_ir_env_vars() {
         let mut env = std::collections::HashMap::new();
         env.insert("VAR1".to_string(), "value1".to_string());
         env.insert("VAR2".to_string(), "value2".to_string());
 
-        let phase_task = PhaseTask {
+        let contributor_task = ContributorTask {
             id: "env-task".to_string(),
-            phase: BuildPhase::Setup,
             label: None,
+            description: None,
             command: Some("printenv".to_string()),
             args: vec![],
             script: None,
             shell: false,
             env,
             secrets: HashMap::default(),
+            inputs: vec![],
+            outputs: vec![],
+            hermetic: false,
             depends_on: vec![],
             priority: 10,
             condition: None,
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Setup);
+        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
 
         assert_eq!(ir_task.env.len(), 2);
         assert_eq!(ir_task.env.get("VAR1"), Some(&"value1".to_string()));
@@ -2169,40 +2209,93 @@ mod tests {
     }
 
     #[test]
-    fn test_phase_task_to_ir_command_with_args() {
-        use cuenv_core::ci::BuildPhase;
-
-        let phase_task = PhaseTask {
-            id: "bun-install".to_string(),
-            phase: BuildPhase::Setup,
+    fn test_contributor_task_to_ir_command_with_args() {
+        let contributor_task = ContributorTask {
+            id: "bun.workspace.install".to_string(),
             label: Some("Install Bun Dependencies".to_string()),
-            command: Some("cuenv".to_string()),
-            args: vec![
-                "exec".to_string(),
-                "--".to_string(),
-                "bun".to_string(),
-                "install".to_string(),
-                "--frozen-lockfile".to_string(),
-            ],
+            description: None,
+            command: Some("bun".to_string()),
+            args: vec!["install".to_string(), "--frozen-lockfile".to_string()],
             script: None,
             shell: false,
             env: HashMap::default(),
             secrets: HashMap::default(),
+            inputs: vec!["package.json".to_string(), "bun.lock".to_string()],
+            outputs: vec![],
+            hermetic: false,
             depends_on: vec![],
             priority: 10,
             condition: None,
             provider: None,
         };
 
-        let ir_task = Compiler::phase_task_to_ir(&phase_task, "github", BuildStage::Setup);
+        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "bun.workspace");
 
-        assert_eq!(ir_task.id, "bun-install");
-        assert_eq!(
-            ir_task.command,
-            vec!["cuenv", "exec", "--", "bun", "install", "--frozen-lockfile"]
-        );
+        assert_eq!(ir_task.id, "cuenv:contributor:bun.workspace.install");
+        assert_eq!(ir_task.command, vec!["bun", "install", "--frozen-lockfile"]);
         assert!(!ir_task.shell);
         assert_eq!(ir_task.phase, Some(BuildStage::Setup));
+        assert_eq!(ir_task.inputs, vec!["package.json", "bun.lock"]);
+    }
+
+    #[test]
+    fn test_derive_stage_from_priority_bootstrap() {
+        // Priority 0-9 = Bootstrap
+        assert_eq!(
+            Compiler::derive_stage_from_priority(0, None),
+            BuildStage::Bootstrap
+        );
+        assert_eq!(
+            Compiler::derive_stage_from_priority(5, None),
+            BuildStage::Bootstrap
+        );
+        assert_eq!(
+            Compiler::derive_stage_from_priority(9, None),
+            BuildStage::Bootstrap
+        );
+    }
+
+    #[test]
+    fn test_derive_stage_from_priority_setup() {
+        // Priority 10-49 = Setup
+        assert_eq!(
+            Compiler::derive_stage_from_priority(10, None),
+            BuildStage::Setup
+        );
+        assert_eq!(
+            Compiler::derive_stage_from_priority(25, None),
+            BuildStage::Setup
+        );
+        assert_eq!(
+            Compiler::derive_stage_from_priority(49, None),
+            BuildStage::Setup
+        );
+    }
+
+    #[test]
+    fn test_derive_stage_from_priority_success() {
+        // Priority 50+ = Success
+        assert_eq!(
+            Compiler::derive_stage_from_priority(50, None),
+            BuildStage::Success
+        );
+        assert_eq!(
+            Compiler::derive_stage_from_priority(100, None),
+            BuildStage::Success
+        );
+    }
+
+    #[test]
+    fn test_derive_stage_from_priority_failure_condition() {
+        // on_failure condition = Failure regardless of priority
+        assert_eq!(
+            Compiler::derive_stage_from_priority(0, Some(CueTaskCondition::OnFailure)),
+            BuildStage::Failure
+        );
+        assert_eq!(
+            Compiler::derive_stage_from_priority(50, Some(CueTaskCondition::OnFailure)),
+            BuildStage::Failure
+        );
     }
 
     // Tests for cue_task_condition_to_ir

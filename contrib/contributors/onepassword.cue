@@ -8,8 +8,8 @@ import "github.com/cuenv/cuenv/schema"
 // - Pipeline environment contains 1Password secret references
 //   (resolver="onepassword" or "op://" URIs)
 //
-// Contributes to Setup phase with priority 20.
-// Depends on setup-cuenv to have run first.
+// Injects tasks:
+// - cuenv:contributor:1password.setup: Sets up 1Password SDK for secret resolution
 //
 // Usage:
 //
@@ -18,17 +18,13 @@ import "github.com/cuenv/cuenv/schema"
 //	ci: contributors: [contributors.#OnePassword]
 #OnePassword: schema.#Contributor & {
 	id: "1password"
-	when: {
-		// Active if environment uses 1Password secrets
-		secretsProvider: ["onepassword"]
-	}
+	when: secretsProvider: ["onepassword"]
 	tasks: [{
-		id:        "setup-1password"
-		phase:     "setup"
+		id:        "1password.setup"
 		label:     "Setup 1Password"
 		priority:  20
 		shell:     false
-		dependsOn: ["setup-cuenv"]
+		dependsOn: ["cuenv.setup"]
 		command:   "cuenv secrets setup onepassword"
 		env: OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN}"
 	}]

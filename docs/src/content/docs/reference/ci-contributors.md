@@ -24,16 +24,17 @@ Project + Pipeline -> Compiler -> Fixed-point iteration -> IR
 
 The compiler applies contributors in a loop until no contributor reports modifications (stable state).
 
-## Build Phases
+## Task Priority and Ordering
 
-Contributors can inject tasks into four phases:
+Contributors use **priority** values to determine task ordering. Lower values run first:
 
-| Phase       | Purpose                                 | Example              |
-| ----------- | --------------------------------------- | -------------------- |
-| `Bootstrap` | Environment setup, runs first           | Install Nix          |
-| `Setup`     | Provider configuration, after bootstrap | Configure 1Password  |
-| `Success`   | Post-success actions                    | Notify on completion |
-| `Failure`   | Post-failure actions                    | Alert on failure     |
+| Priority Range | Stage       | Purpose                                 | Example              |
+| -------------- | ----------- | --------------------------------------- | -------------------- |
+| 0-9            | Bootstrap   | Environment setup, runs first           | Install Nix          |
+| 10-49          | Setup       | Provider configuration, after bootstrap | Configure 1Password  |
+| 50+            | Success     | Post-build actions                      | Notify on completion |
+
+Tasks with `condition: "on_failure"` are placed in the Failure stage regardless of priority.
 
 ## Built-in Contributors
 
@@ -335,23 +336,26 @@ when: {
 }
 ```
 
-## PhaseTask Schema
+## ContributorTask Schema
 
 ```cue
-#PhaseTask: {
-    // Unique task identifier (e.g., "install-nix")
+#ContributorTask: {
+    // Task identifier (will be prefixed with cuenv:contributor:)
     id: string
-
-    // Target phase: bootstrap, setup, success, or failure
-    phase: "bootstrap" | "setup" | "success" | "failure"
 
     // Human-readable display name
     label?: string
 
-    // Shell command to execute (mutually exclusive with script)
+    // Human-readable description
+    description?: string
+
+    // Shell command to execute
     command?: string
 
-    // Multi-line script (mutually exclusive with command)
+    // Command arguments
+    args?: [...string]
+
+    // Multi-line script (alternative to command)
     script?: string
 
     // Wrap command in shell (default: false)
@@ -363,11 +367,24 @@ when: {
     // Secret references
     secrets: {[string]: string | #SecretRefConfig}
 
-    // Dependencies on other phase tasks
+    // Input files/patterns for caching
+    inputs?: [...string]
+
+    // Output files/patterns for caching
+    outputs?: [...string]
+
+    // Whether task requires hermetic execution
+    hermetic: bool | *false
+
+    // Dependencies on other tasks
     dependsOn: [...string]
 
-    // Ordering within phase (lower = earlier, default: 10)
+    // Ordering priority (lower = earlier, default: 10)
+    // 0-9: Bootstrap, 10-49: Setup, 50+: Success
     priority: int | *10
+
+    // Execution condition (on_success, on_failure, always)
+    condition?: "on_success" | "on_failure" | "always"
 
     // Provider-specific overrides (e.g., GitHub Actions)
     provider?: {
@@ -397,12 +414,11 @@ import "github.com/cuenv/cuenv/schema"
 
     // Tasks to inject when active
     tasks: [{
-        id:       "setup-my-tool"
-        phase:    "setup"
+        id:       "my-tool.setup"
         label:    "Setup My Tool"
-        priority: 20
-        shell:    true
-        command:  "curl -sSL https://example.com/install.sh | sh"
+        priority: 20  // 10-49 = Setup stage
+        command:  "sh"
+        args:     ["-c", "curl -sSL https://example.com/install.sh | sh"]
 
         // Optional: use GitHub Action instead of shell command
         provider: github: {
@@ -426,12 +442,12 @@ ci: contributors: [
     id: "my-secret-setup"
     when: secretsProvider: ["onepassword"]
     tasks: [{
-        id:        "setup-my-secret"
-        phase:     "setup"
+        id:        "my-secret.setup"
         label:     "Configure Secrets"
-        priority:  25
-        dependsOn: ["setup-1password"]
-        command:   "my-secret-tool configure"
+        priority:  25  // 10-49 = Setup stage
+        dependsOn: ["onepassword.setup"]
+        command:   "my-secret-tool"
+        args:      ["configure"]
         env: MY_TOKEN: "${MY_TOKEN}"
         secrets: MY_TOKEN: "MY_TOKEN_SECRET"
     }]
