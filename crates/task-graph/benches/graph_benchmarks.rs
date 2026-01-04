@@ -2,6 +2,8 @@
 //!
 //! Run with: cargo bench -p cuenv-task-graph
 
+#![allow(clippy::unwrap_used)]
+
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use std::hint::black_box;
 use cuenv_task_graph::{TaskGraph, TaskNodeData};

@@ -126,7 +126,7 @@ tasks: {
         "Should execute the task"
     );
     assert!(
-        stdout.contains("Task 'greet' completed"),
+        stdout.contains("Task 'greet' succeeded"),
         "Should show completion message"
     );
 }
