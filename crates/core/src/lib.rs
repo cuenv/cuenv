@@ -39,6 +39,7 @@
 // https://github.com/rust-lang/rust/issues/147648
 #![allow(unused_assignments)]
 
+pub mod affected;
 pub mod base;
 pub mod ci;
 pub mod config;
@@ -54,6 +55,9 @@ pub mod shell;
 pub mod sync;
 pub mod tasks;
 pub mod tools;
+
+// Re-export affected detection types
+pub use affected::{AffectedBy, matches_pattern};
 
 // Re-export module types for convenience
 pub use module::{Instance, InstanceKind, ModuleEvaluation};
@@ -170,6 +174,33 @@ pub enum Error {
         help("This platform may not be supported by the tool provider")
     )]
     Platform { message: String },
+
+    #[error("Task '{task_name}' failed with exit code {exit_code}")]
+    #[diagnostic(code(cuenv::task::failed))]
+    TaskFailed {
+        task_name: String,
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+        #[help]
+        help: Option<String>,
+    },
+
+    #[error("Task graph error: {message}")]
+    #[diagnostic(code(cuenv::task::graph))]
+    TaskGraph {
+        message: String,
+        #[help]
+        help: Option<String>,
+    },
+
+    #[error("Secret resolution failed: {message}")]
+    #[diagnostic(code(cuenv::secret::resolution))]
+    SecretResolution {
+        message: String,
+        #[help]
+        help: Option<String>,
+    },
 }
 
 impl Error {
@@ -307,6 +338,71 @@ impl Error {
             message: msg.into(),
         }
     }
+
+    #[must_use]
+    pub fn task_failed(
+        task_name: impl Into<String>,
+        exit_code: i32,
+        stdout: impl Into<String>,
+        stderr: impl Into<String>,
+    ) -> Self {
+        Error::TaskFailed {
+            task_name: task_name.into(),
+            exit_code,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            help: None,
+        }
+    }
+
+    #[must_use]
+    pub fn task_failed_with_help(
+        task_name: impl Into<String>,
+        exit_code: i32,
+        stdout: impl Into<String>,
+        stderr: impl Into<String>,
+        help: impl Into<String>,
+    ) -> Self {
+        Error::TaskFailed {
+            task_name: task_name.into(),
+            exit_code,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            help: Some(help.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn task_graph(message: impl Into<String>) -> Self {
+        Error::TaskGraph {
+            message: message.into(),
+            help: None,
+        }
+    }
+
+    #[must_use]
+    pub fn task_graph_with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
+        Error::TaskGraph {
+            message: message.into(),
+            help: Some(help.into()),
+        }
+    }
+
+    #[must_use]
+    pub fn secret_resolution(message: impl Into<String>) -> Self {
+        Error::SecretResolution {
+            message: message.into(),
+            help: None,
+        }
+    }
+
+    #[must_use]
+    pub fn secret_resolution_with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
+        Error::SecretResolution {
+            message: message.into(),
+            help: Some(help.into()),
+        }
+    }
 }
 
 // Implement conversions for common error types
@@ -331,6 +427,32 @@ impl From<cuenv_hooks::Error> for Error {
         Error::Execution {
             message: source.to_string(),
             help: None,
+        }
+    }
+}
+
+impl From<cuenv_task_graph::Error> for Error {
+    fn from(err: cuenv_task_graph::Error) -> Self {
+        let help = match &err {
+            cuenv_task_graph::Error::CycleDetected { .. } => {
+                Some("Check for circular dependencies between tasks".into())
+            }
+            cuenv_task_graph::Error::MissingDependency { task, dependency } => Some(format!(
+                "Add task '{}' or remove it from {}'s dependsOn",
+                dependency, task
+            )),
+            cuenv_task_graph::Error::MissingDependencies { missing } => {
+                let suggestions: Vec<String> = missing
+                    .iter()
+                    .map(|(task, dep)| format!("  - Add '{}' or remove from {}'s dependsOn", dep, task))
+                    .collect();
+                Some(format!("Fix missing dependencies:\n{}", suggestions.join("\n")))
+            }
+            cuenv_task_graph::Error::TopologicalSortFailed { .. } => None,
+        };
+        Error::TaskGraph {
+            message: err.to_string(),
+            help,
         }
     }
 }
