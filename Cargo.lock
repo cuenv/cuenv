@@ -1560,6 +1560,7 @@ dependencies = [
  "cuenv-ignore",
  "cuenv-release",
  "cuenv-task-discovery",
+ "cuenv-task-graph",
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-tools-oci",
@@ -1969,6 +1970,7 @@ version = "0.23.7"
 dependencies = [
  "criterion",
  "petgraph",
+ "proptest",
  "tempfile",
  "thiserror 2.0.17",
  "tracing",
