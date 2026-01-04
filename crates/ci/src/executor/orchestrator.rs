@@ -106,8 +106,8 @@ pub async fn run_ci(
         }
     }
 
-    // Track if any project failed
-    let mut any_failed = false;
+    // Track failures with structured errors
+    let mut failures: Vec<(String, cuenv_core::Error)> = Vec::new();
 
     // Process each project
     for (project_path, config) in &projects {
@@ -181,25 +181,38 @@ pub async fn run_ci(
             )
             .await;
 
-            if let Err(e) = result {
-                tracing::error!(error = %e, "Pipeline execution error");
-                any_failed = true;
-            } else if result.is_ok_and(|status| status == PipelineStatus::Failed) {
-                any_failed = true;
+            match result {
+                Err(e) => {
+                    tracing::error!(error = %e, "Pipeline execution error");
+                    let project_name = project_path.display().to_string();
+                    failures.push((project_name, e));
+                }
+                Ok((status, task_errors)) => {
+                    if status == PipelineStatus::Failed {
+                        failures.extend(task_errors);
+                    }
+                }
             }
         }
     }
 
-    if any_failed {
-        return Err(cuenv_core::Error::configuration(
-            "One or more CI tasks failed",
-        ));
+    if !failures.is_empty() {
+        let details = failures
+            .iter()
+            .map(|(project, err)| format!("  [{project}]\n    {err}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        return Err(cuenv_core::Error::execution(format!(
+            "CI pipeline failed:\n\n{details}"
+        )));
     }
 
     Ok(())
 }
 
 /// Execute a project's pipeline and handle reporting
+///
+/// Returns the pipeline status and a list of task failures (project path, error).
 #[allow(clippy::too_many_arguments)] // Pipeline execution requires many context params
 #[allow(clippy::too_many_lines)] // Complex orchestration logic
 async fn execute_project_pipeline(
@@ -211,10 +224,12 @@ async fn execute_project_pipeline(
     context: &crate::context::CIContext,
     changed_files: &[PathBuf],
     provider: &dyn CIProvider,
-) -> Result<PipelineStatus> {
+) -> Result<(PipelineStatus, Vec<(String, cuenv_core::Error)>)> {
     let start_time = Utc::now();
     let mut tasks_reports = Vec::new();
     let mut pipeline_status = PipelineStatus::Success;
+    let mut task_errors: Vec<(String, cuenv_core::Error)> = Vec::new();
+    let project_display = project_path.display().to_string();
 
     // Determine cache policy override based on context
     let cache_policy_override = if is_fork_pr(context) {
@@ -257,7 +272,6 @@ async fn execute_project_pipeline(
             .map(|task| task.outputs.clone())
             .unwrap_or_default();
 
-        let project_display = project_path.display().to_string();
         cuenv_events::emit_ci_task_executing!(&project_display, task_name);
         let task_start = std::time::Instant::now();
 
@@ -289,6 +303,16 @@ async fn execute_project_pipeline(
                 } else {
                     cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
                     pipeline_status = PipelineStatus::Failed;
+                    // Capture task failure with structured error
+                    task_errors.push((
+                        project_display.clone(),
+                        cuenv_core::Error::task_failed(
+                            task_name,
+                            output.exit_code,
+                            &output.stdout,
+                            &output.stderr,
+                        ),
+                    ));
                     (TaskStatus::Failed, Some(output.exit_code), None)
                 }
             }
@@ -296,6 +320,8 @@ async fn execute_project_pipeline(
                 tracing::error!(error = %e, task = task_name, "Task execution error");
                 cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
                 pipeline_status = PipelineStatus::Failed;
+                // Capture execution error with structured error
+                task_errors.push((project_display.clone(), e.into()));
                 (TaskStatus::Failed, None, None)
             }
         };
@@ -342,7 +368,7 @@ async fn execute_project_pipeline(
     write_pipeline_report(&report, context, project_path);
     notify_provider(provider, &report, pipeline_name).await;
 
-    Ok(pipeline_status)
+    Ok((pipeline_status, task_errors))
 }
 
 /// Write pipeline report to disk

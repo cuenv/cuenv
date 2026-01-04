@@ -445,11 +445,12 @@ impl TaskExecutor {
                 .await?;
             for result in &task_results {
                 if !result.success {
-                    let message = format!(
-                        "Sequential task group '{prefix}' halted.\n\n{}",
-                        summarize_task_failure(result, TASK_FAILURE_SNIPPET_LINES)
-                    );
-                    return Err(Error::configuration(message));
+                    return Err(Error::task_failed(
+                        &result.name,
+                        result.exit_code.unwrap_or(-1),
+                        &result.stdout,
+                        &result.stderr,
+                    ));
                 }
             }
             results.extend(task_results);
@@ -484,11 +485,12 @@ impl TaskExecutor {
         let mut all_results = Vec::new();
         let mut merge_results = |results: Vec<TaskResult>| -> Result<()> {
             if let Some(failed) = results.iter().find(|r| !r.success) {
-                let message = format!(
-                    "Parallel task group '{prefix}' halted.\n\n{}",
-                    summarize_task_failure(failed, TASK_FAILURE_SNIPPET_LINES)
-                );
-                return Err(Error::configuration(message));
+                return Err(Error::task_failed(
+                    &failed.name,
+                    failed.exit_code.unwrap_or(-1),
+                    &failed.stdout,
+                    &failed.stderr,
+                ));
             }
             all_results.extend(results);
             Ok(())
@@ -511,7 +513,7 @@ impl TaskExecutor {
                     Ok(Ok(results)) => merge_results(results)?,
                     Ok(Err(e)) => return Err(e),
                     Err(e) => {
-                        return Err(Error::configuration(format!(
+                        return Err(Error::execution(format!(
                             "Task execution panicked: {}",
                             e
                         )));
@@ -524,7 +526,7 @@ impl TaskExecutor {
                 Ok(Ok(results)) => merge_results(results)?,
                 Ok(Err(e)) => return Err(e),
                 Err(e) => {
-                    return Err(Error::configuration(format!(
+                    return Err(Error::execution(format!(
                         "Task execution panicked: {}",
                         e
                     )));
@@ -567,14 +569,12 @@ impl TaskExecutor {
                         Ok(Ok(task_result)) => {
                             if !task_result.success {
                                 join_set.abort_all();
-                                let message = format!(
-                                    "Task graph execution halted.\n\n{}",
-                                    summarize_task_failure(
-                                        &task_result,
-                                        TASK_FAILURE_SNIPPET_LINES,
-                                    )
-                                );
-                                return Err(Error::configuration(message));
+                                return Err(Error::task_failed(
+                                    &task_result.name,
+                                    task_result.exit_code.unwrap_or(-1),
+                                    &task_result.stdout,
+                                    &task_result.stderr,
+                                ));
                             }
                             all_results.push(task_result);
                         }
@@ -584,7 +584,7 @@ impl TaskExecutor {
                         }
                         Err(e) => {
                             join_set.abort_all();
-                            return Err(Error::configuration(format!(
+                            return Err(Error::execution(format!(
                                 "Task execution panicked: {}",
                                 e
                             )));

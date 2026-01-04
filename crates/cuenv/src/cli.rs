@@ -147,6 +147,51 @@ impl From<cuenv_core::Error> for CliError {
                 }
             }
             cuenv_core::Error::Platform { message } => Self::eval(message),
+            // Task failure - extract message with output context
+            cuenv_core::Error::TaskFailed {
+                task_name,
+                exit_code,
+                stderr,
+                help,
+                ..
+            } => {
+                // Include last few lines of stderr for context
+                let stderr_snippet = if stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    let lines: Vec<&str> = stderr.lines().collect();
+                    let start = lines.len().saturating_sub(10);
+                    format!("\n\nstderr:\n{}", lines[start..].join("\n"))
+                };
+                let message = format!(
+                    "Task '{}' failed with exit code {}{}",
+                    task_name, exit_code, stderr_snippet
+                );
+                if let Some(h) = help {
+                    Self::eval_with_help(message, h)
+                } else {
+                    Self::eval_with_help(message, "Check the task output above for details")
+                }
+            }
+            // Task graph errors (cycles, missing deps)
+            cuenv_core::Error::TaskGraph { message, help } => {
+                if let Some(h) = help {
+                    Self::config_with_help(message, h)
+                } else {
+                    Self::config(message)
+                }
+            }
+            // Secret resolution errors
+            cuenv_core::Error::SecretResolution { message, help } => {
+                if let Some(h) = help {
+                    Self::eval_with_help(message, h)
+                } else {
+                    Self::eval_with_help(
+                        message,
+                        "Check your secret provider configuration (1Password, AWS, Vault, etc.)",
+                    )
+                }
+            }
             // I/O errors - include full context for debugging
             cuenv_core::Error::Io {
                 source,
