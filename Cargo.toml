@@ -17,7 +17,7 @@ members = [
     "crates/ignore",
     "crates/editorconfig",
     "crates/codeowners",
-    "crates/cubes",
+    "crates/codegen",
     # Platform-specific provider crates
     "crates/github",
     "crates/gitlab",
@@ -37,7 +37,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.23.7"
+version = "0.24.0"
 edition = "2024"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
@@ -49,33 +49,33 @@ keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
-cuenv-events = { path = "crates/events", version = "0.23.0" }
-cuenv-secrets = { path = "crates/secrets", version = "0.23.0" }
-cuenv-core = { path = "crates/core", version = "0.23.0" }
-cuenv-hooks = { path = "crates/hooks", version = "0.23.0" }
-cuenv-cache = { path = "crates/cache", version = "0.23.0" }
-cuenv-task-graph = { path = "crates/task-graph", version = "0.23.0" }
-cuenv-task-discovery = { path = "crates/task-discovery", version = "0.23.0" }
-cuenv-dagger = { path = "crates/dagger", version = "0.23.0" }
-cuenv-workspaces = { path = "crates/workspaces", version = "0.23.0" }
-cuenv-ci = { path = "crates/ci", version = "0.23.0" }
-cuenv-release = { path = "crates/release", version = "0.23.0" }
-cuenv-ignore = { path = "crates/ignore", version = "0.23.0" }
-cuenv-editorconfig = { path = "crates/editorconfig", version = "0.23.0" }
-cuenv-codeowners = { path = "crates/codeowners", version = "0.23.0" }
-cuenv-cubes = { path = "crates/cubes", version = "0.23.0" }
-cuengine = { path = "crates/cuengine", version = "0.23.0" }
+cuenv-events = { path = "crates/events", version = "0.24.0" }
+cuenv-secrets = { path = "crates/secrets", version = "0.24.0" }
+cuenv-core = { path = "crates/core", version = "0.24.0" }
+cuenv-hooks = { path = "crates/hooks", version = "0.24.0" }
+cuenv-cache = { path = "crates/cache", version = "0.24.0" }
+cuenv-task-graph = { path = "crates/task-graph", version = "0.24.0" }
+cuenv-task-discovery = { path = "crates/task-discovery", version = "0.24.0" }
+cuenv-dagger = { path = "crates/dagger", version = "0.24.0" }
+cuenv-workspaces = { path = "crates/workspaces", version = "0.24.0" }
+cuenv-ci = { path = "crates/ci", version = "0.24.0" }
+cuenv-release = { path = "crates/release", version = "0.24.0" }
+cuenv-ignore = { path = "crates/ignore", version = "0.24.0" }
+cuenv-editorconfig = { path = "crates/editorconfig", version = "0.24.0" }
+cuenv-codeowners = { path = "crates/codeowners", version = "0.24.0" }
+cuenv-codegen = { path = "crates/codegen", version = "0.24.0" }
+cuengine = { path = "crates/cuengine", version = "0.24.0" }
 # Platform-specific provider crates
-cuenv-github = { path = "crates/github", version = "0.23.0" }
-cuenv-gitlab = { path = "crates/gitlab", version = "0.23.0" }
-cuenv-bitbucket = { path = "crates/bitbucket", version = "0.23.0" }
-cuenv-buildkite = { path = "crates/buildkite", version = "0.23.0" }
-cuenv-homebrew = { path = "crates/homebrew", version = "0.23.0" }
+cuenv-github = { path = "crates/github", version = "0.24.0" }
+cuenv-gitlab = { path = "crates/gitlab", version = "0.24.0" }
+cuenv-bitbucket = { path = "crates/bitbucket", version = "0.24.0" }
+cuenv-buildkite = { path = "crates/buildkite", version = "0.24.0" }
+cuenv-homebrew = { path = "crates/homebrew", version = "0.24.0" }
 # Secret provider crates
-cuenv-aws = { path = "crates/aws", version = "0.23.0" }
-cuenv-gcp = { path = "crates/gcp", version = "0.23.0" }
-cuenv-vault = { path = "crates/vault", version = "0.23.0" }
-cuenv-1password = { path = "crates/1password", version = "0.23.0" }
+cuenv-aws = { path = "crates/aws", version = "0.24.0" }
+cuenv-gcp = { path = "crates/gcp", version = "0.24.0" }
+cuenv-vault = { path = "crates/vault", version = "0.24.0" }
+cuenv-1password = { path = "crates/1password", version = "0.24.0" }
 # Tool provider crates
 cuenv-tools-oci = { path = "crates/tools/oci", version = "0.1.0" }
 cuenv-tools-github = { path = "crates/tools/github", version = "0.1.0" }

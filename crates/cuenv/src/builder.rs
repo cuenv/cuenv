@@ -19,7 +19,7 @@
 
 use crate::Cuenv;
 use crate::provider::{RuntimeCapability, SecretCapability, SyncCapability};
-use crate::providers::{CiProvider, CubesProvider, RulesProvider};
+use crate::providers::{CiProvider, CodegenProvider, RulesProvider};
 use crate::registry::ProviderRegistry;
 
 /// Builder for configuring and creating a [`Cuenv`] instance.
@@ -74,19 +74,19 @@ impl CuenvBuilder {
         self
     }
 
-    /// Add all default providers (ci, cubes, rules).
+    /// Add all default providers (ci, codegen, rules).
     ///
     /// This is equivalent to calling:
     /// ```ignore
     /// builder
     ///     .with_sync_provider(CiProvider)
-    ///     .with_sync_provider(CubesProvider)
+    ///     .with_sync_provider(CodegenProvider)
     ///     .with_sync_provider(RulesProvider)
     /// ```
     #[must_use]
     pub fn with_defaults(self) -> Self {
         self.with_sync_provider(CiProvider::new())
-            .with_sync_provider(CubesProvider::new())
+            .with_sync_provider(CodegenProvider::new())
             .with_sync_provider(RulesProvider::new())
     }
 
@@ -141,7 +141,7 @@ mod tests {
     fn test_builder_with_multiple_sync_providers() {
         let builder = CuenvBuilder::new()
             .with_sync_provider(CiProvider::new())
-            .with_sync_provider(CubesProvider::new());
+            .with_sync_provider(CodegenProvider::new());
         let cuenv = builder.build();
         assert_eq!(cuenv.registry.sync_provider_count(), 2);
     }

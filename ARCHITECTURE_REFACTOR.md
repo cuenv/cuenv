@@ -361,67 +361,58 @@ The effort doesn't justify the benefit for ~618 LOC. This module can be extracte
 
 ---
 
-## Phase 8: cuenv-cubes → cuenv-codegen Rename - DEFERRED
+## Phase 8: cuenv-cubes → cuenv-codegen Rename - COMPLETE
 
 Rename cuenv-cubes crate to cuenv-codegen for clarity.
 
-**Decision: DEFERRED** - This rename is a breaking change that affects:
-1. CLI command: `cuenv sync cubes` → `cuenv sync codegen`
-2. CUE manifest field: `cube` → `codegen`
-3. CUE schema directory: `schema/cubes/` → `schema/codegen/`
-4. All user documentation and examples
-
-The rename should be coordinated with a major version bump or deprecation cycle.
-Consider adding an alias for backwards compatibility if implemented.
-
 ### Directory Rename
 
-- [ ] Rename `crates/cubes/` → `crates/codegen/`
-- [ ] Update `crates/codegen/Cargo.toml`: `name = "cuenv-codegen"`
+- [x] Rename `crates/cubes/` → `crates/codegen/`
+- [x] Update `crates/codegen/Cargo.toml`: `name = "cuenv-codegen"`
 
 ### Workspace Config
 
-- [ ] Update root `Cargo.toml`: workspace member path and dependency
-- [ ] Run `cargo update` to regenerate lock file
+- [x] Update root `Cargo.toml`: workspace member path and dependency
+- [x] Run `cargo update` to regenerate lock file
 
 ### Update Imports
 
-- [ ] `crates/cuenv/Cargo.toml`: dependency name
-- [ ] `crates/cuenv/src/providers/cubes.rs` → `codegen.rs`
-- [ ] `crates/cuenv/src/providers/mod.rs`: module and re-export
-- [ ] `crates/cuenv/src/builder.rs`: import and usage
-- [ ] `crates/cuenv/src/commands/sync/providers/cubes.rs` → `codegen.rs`
-- [ ] `crates/cuenv/src/commands/sync/functions.rs`: function names
+- [x] `crates/cuenv/Cargo.toml`: dependency name
+- [x] `crates/cuenv/src/providers/cubes.rs` → `codegen.rs`
+- [x] `crates/cuenv/src/providers/mod.rs`: module and re-export
+- [x] `crates/cuenv/src/builder.rs`: import and usage
+- [x] `crates/cuenv/src/commands/sync/providers/cubes.rs` → `codegen.rs`
+- [x] `crates/cuenv/src/commands/sync/functions.rs`: function names
 
 ### Update Manifest Types
 
-- [ ] `crates/core/src/manifest/mod.rs`: `cube` field → `codegen` field
-- [ ] Update `CubeConfig` → `CodegenConfig` if applicable
+- [x] `crates/core/src/manifest/mod.rs`: `cube` field → `codegen` field
+- [x] Update `CubeConfig` → `CodegenConfig` if applicable
 
 ### Update Schema
 
-- [ ] Rename `schema/cubes.cue` → `schema/codegen.cue`
-- [ ] Rename `schema/cubes/` directory → `schema/codegen/`
-- [ ] Update import paths in schema files
+- [x] Rename `schema/cubes.cue` → `schema/codegen.cue`
+- [x] Rename `schema/cubes/` directory → `schema/codegen/`
+- [x] Update import paths in schema files
 
 ### Update Examples
 
-- [ ] `examples/cube-hello/env.cue`: update imports and references
+- [x] `examples/cube-hello/env.cue`: update imports and references
 
 ### Update Documentation
 
-- [ ] `CLAUDE.md`: crate table
-- [ ] `readme.md`: command examples
-- [ ] `crates/cubes/README.md` → `crates/codegen/README.md`
-- [ ] `docs/src/content/docs/explanation/cuenv-cubes.md` → `cuenv-codegen.md`
-- [ ] `docs/src/content/docs/how-to/cubes.md` → `codegen.md`
-- [ ] Update docs index files
+- [x] `CLAUDE.md`: crate table
+- [x] `readme.md`: command examples
+- [x] `crates/cubes/README.md` → `crates/codegen/README.md`
+- [x] `docs/src/content/docs/explanation/cuenv-cubes.md` → `cuenv-codegen.md`
+- [x] `docs/src/content/docs/how-to/cubes.md` → `codegen.md`
+- [x] Update docs index files
 
 ### Validation
 
-- [ ] `cargo test -p cuenv-codegen`
-- [ ] `cargo test -p cuenv`
-- [ ] `cuenv task check`
+- [x] `cargo test -p cuenv-codegen`
+- [x] `cargo test -p cuenv`
+- [x] `cuenv task check`
 
 ---
 

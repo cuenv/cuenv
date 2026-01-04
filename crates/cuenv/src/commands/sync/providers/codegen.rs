@@ -1,6 +1,6 @@
-//! Cubes sync provider.
+//! Codegen sync provider.
 //!
-//! Syncs cube-generated files from CUE configuration.
+//! Syncs codegen-generated files from CUE configuration.
 
 use async_trait::async_trait;
 use clap::{Command, arg};
@@ -12,23 +12,23 @@ use crate::commands::CommandExecutor;
 use crate::commands::sync::functions;
 use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
 
-/// Sync provider for cubes.
-pub struct CubesSyncProvider;
+/// Sync provider for codegen.
+pub struct CodegenSyncProvider;
 
 #[async_trait]
-impl SyncProvider for CubesSyncProvider {
+impl SyncProvider for CodegenSyncProvider {
     fn name(&self) -> &'static str {
-        "cubes"
+        "codegen"
     }
 
     fn description(&self) -> &'static str {
-        "Sync files from CUE cube configurations"
+        "Sync files from CUE codegen configurations"
     }
 
     fn has_config(&self, _manifest: &Base) -> bool {
-        // Cubes are only in Projects, not Base
-        // We check if we can deserialize as Project with cube config
-        // For the trait, we accept Base but cubes won't be present
+        // Codegen configs are only in Projects, not Base
+        // We check if we can deserialize as Project with codegen config
+        // For the trait, we accept Base but codegen won't be present
         false // Will be checked differently for projects
     }
 
@@ -47,7 +47,7 @@ impl SyncProvider for CubesSyncProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
-        let output = functions::execute_sync_cubes(
+        let output = functions::execute_sync_codegen(
             path.to_str().unwrap_or("."),
             package,
             dry_run,
@@ -79,7 +79,7 @@ impl SyncProvider for CubesSyncProvider {
             let mut paths = Vec::new();
             for instance in module.projects() {
                 if let Ok(manifest) = instance.deserialize::<Project>()
-                    && manifest.cube.is_some()
+                    && manifest.codegen.is_some()
                 {
                     paths.push((
                         module.root.join(&instance.path),
@@ -94,9 +94,9 @@ impl SyncProvider for CubesSyncProvider {
         let mut outputs = Vec::new();
         let mut had_error = false;
 
-        // Iterate through projects with cube config
+        // Iterate through projects with codegen config
         for (full_path, display_path) in project_paths {
-            let result = functions::execute_sync_cubes(
+            let result = functions::execute_sync_codegen(
                 full_path.to_str().unwrap_or("."),
                 package,
                 dry_run,
@@ -124,7 +124,7 @@ impl SyncProvider for CubesSyncProvider {
         }
 
         if outputs.is_empty() {
-            Ok(SyncResult::success("No cube configurations found."))
+            Ok(SyncResult::success("No codegen configurations found."))
         } else {
             Ok(SyncResult {
                 output: outputs.join("\n\n"),

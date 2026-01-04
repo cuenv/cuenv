@@ -1,13 +1,13 @@
 ---
-title: cuenv-cubes (Codegen)
+title: cuenv-codegen
 description: Code generation and project scaffolding from CUE templates
 ---
 
-The `cuenv-cubes` crate provides a code generation system using CUE templates to generate multiple project files. It supports both managed (regenerated) and scaffolded (created once) file modes with language-specific formatting.
+The `cuenv-codegen` crate provides a code generation system using CUE templates to generate multiple project files. It supports both managed (regenerated) and scaffolded (created once) file modes with language-specific formatting.
 
 ## Overview
 
-Cubes enable you to:
+Codegen enables you to:
 
 - Generate project files from CUE configuration
 - Use language-specific schemas with formatting defaults
@@ -19,8 +19,8 @@ Cubes enable you to:
 
 ```text
 ┌────────────────────┐     ┌─────────────────┐     ┌──────────────────┐
-│  env.cue           │────►│      Cube       │────►│  Generated Files │
-│  (cube config)     │     │   (evaluator)   │     │  (src/*, etc.)   │
+│  env.cue           │────►│     Codegen     │────►│  Generated Files │
+│  (codegen config)  │     │   (evaluator)   │     │  (src/*, etc.)   │
 └────────────────────┘     └─────────────────┘     └──────────────────┘
                                    │
                                    ▼
@@ -32,7 +32,7 @@ Cubes enable you to:
 
 ### Key Components
 
-**Cube**
+**Codegen**
 CUE configuration containing file definitions and optional context data.
 
 **ProjectFile**
@@ -46,14 +46,14 @@ Handles file writing, status tracking, and sync operations.
 
 ## Schema Reference
 
-### #Cube
+### #Codegen
 
-The top-level cube configuration:
+The top-level codegen configuration:
 
 ```cue
-#Cube: {
-    files:    [string]: cubes.#ProjectFile  // Files to generate (path → definition)
-    context?: _                              // Optional context data for templating
+#Codegen: {
+    files:    [string]: gen.#ProjectFile  // Files to generate (path → definition)
+    context?: _                            // Optional context data for templating
 }
 ```
 
@@ -88,10 +88,10 @@ Base schema for all file definitions:
 
 ### File Modes
 
-| Mode       | Description                                      | gitignore Default |
-| ---------- | ------------------------------------------------ | ----------------- |
-| `managed`  | Always regenerated when `cuenv sync cubes` runs  | `true`            |
-| `scaffold` | Only created if file doesn't exist; user owns it | `false`           |
+| Mode       | Description                                        | gitignore Default |
+| ---------- | -------------------------------------------------- | ----------------- |
+| `managed`  | Always regenerated when `cuenv sync codegen` runs  | `true`            |
+| `scaffold` | Only created if file doesn't exist; user owns it   | `false`           |
 
 ### #FormatConfig
 
@@ -115,9 +115,9 @@ Use language-specific schemas for type-safe formatting defaults:
 ### TypeScript / JavaScript
 
 ```cue
-import "github.com/cuenv/cuenv/schema/cubes"
+import gen "github.com/cuenv/cuenv/schema/codegen"
 
-cubes.#TypeScriptFile & {
+gen.#TypeScriptFile & {
     content: """
         export const greeting = "Hello, world!";
         """
@@ -136,7 +136,7 @@ cubes.#TypeScriptFile & {
 ### Rust
 
 ```cue
-cubes.#RustFile & {
+gen.#RustFile & {
     content: """
         fn main() {
             println!("Hello, world!");
@@ -155,7 +155,7 @@ cubes.#RustFile & {
 ### Go
 
 ```cue
-cubes.#GoFile & {
+gen.#GoFile & {
     content: """
         package main
 
@@ -174,7 +174,7 @@ cubes.#GoFile & {
 ### Python
 
 ```cue
-cubes.#PythonFile & {
+gen.#PythonFile & {
     content: """
         def main():
             print("Hello, world!")
@@ -191,7 +191,7 @@ cubes.#PythonFile & {
 ### JSON / JSONC
 
 ```cue
-cubes.#JSONFile & {
+gen.#JSONFile & {
     content: """
         {"name": "my-project", "version": "1.0.0"}
         """
@@ -203,7 +203,7 @@ Use `#JSONCFile` for JSON with comments (e.g., `tsconfig.json`).
 ### YAML / TOML
 
 ```cue
-cubes.#YAMLFile & {
+gen.#YAMLFile & {
     content: """
         name: my-project
         version: 1.0.0
@@ -231,25 +231,25 @@ cubes.#YAMLFile & {
 
 ## Rust API Reference
 
-### Cube
+### Codegen
 
-Load and evaluate cube configuration:
+Load and evaluate codegen configuration:
 
 ```rust
-use cuenv_cubes::Cube;
+use cuenv_codegen::Codegen;
 
-let cube = Cube::load("my-project/env.cue")?;
+let codegen = Codegen::load("my-project/env.cue")?;
 ```
 
 ### Generator
 
-Generate files from cube configuration:
+Generate files from codegen configuration:
 
 ```rust
-use cuenv_cubes::{Generator, GenerateOptions};
+use cuenv_codegen::{Generator, GenerateOptions};
 use std::path::PathBuf;
 
-let generator = Generator::new(cube);
+let generator = Generator::new(codegen);
 
 let options = GenerateOptions {
     output_dir: PathBuf::from("./my-project"),
@@ -287,14 +287,14 @@ match status {
 
 ```cue
 import "github.com/cuenv/cuenv/schema"
-import "github.com/cuenv/cuenv/schema/cubes"
+import gen "github.com/cuenv/cuenv/schema/codegen"
 
 schema.#Project & {
     name: "my-service"
 
-    cube: {
+    codegen: {
         files: {
-            "package.json": cubes.#JSONFile & {
+            "package.json": gen.#JSONFile & {
                 mode: "managed"
                 content: """
                     {
@@ -305,7 +305,7 @@ schema.#Project & {
                     """
             }
 
-            "src/index.ts": cubes.#TypeScriptFile & {
+            "src/index.ts": gen.#TypeScriptFile & {
                 mode: "scaffold"
                 content: """
                     console.log("Hello, world!");
@@ -322,14 +322,14 @@ schema.#Project & {
 schema.#Project & {
     name: "my-service"
 
-    cube: {
+    codegen: {
         context: {
             serviceName: "users"
             port: 3000
         }
 
         files: {
-            "src/config.ts": cubes.#TypeScriptFile & {
+            "src/config.ts": gen.#TypeScriptFile & {
                 content: """
                     export const config = {
                       serviceName: "\(context.serviceName)",
@@ -347,22 +347,22 @@ schema.#Project & {
 Files with `gitignore: true` are automatically added to `.gitignore`:
 
 ```cue
-cube: {
+codegen: {
     files: {
         // Managed files default to gitignore: true
-        "dist/bundle.js": cubes.#JavaScriptFile & {
+        "dist/bundle.js": gen.#JavaScriptFile & {
             mode: "managed"  // gitignore: true by default
             content: "..."
         }
 
         // Scaffold files default to gitignore: false
-        "src/main.ts": cubes.#TypeScriptFile & {
+        "src/main.ts": gen.#TypeScriptFile & {
             mode: "scaffold"  // gitignore: false by default
             content: "..."
         }
 
         // Override defaults explicitly
-        "generated/types.ts": cubes.#TypeScriptFile & {
+        "generated/types.ts": gen.#TypeScriptFile & {
             mode: "managed"
             gitignore: false  // Commit this generated file
             content: "..."
@@ -377,22 +377,22 @@ The crate uses serde for serialization/deserialization.
 
 ```toml
 [dependencies]
-cuenv-cubes = "..."
+cuenv-codegen = "..."
 ```
 
 ## Testing
 
 ```bash
-# Run all cubes tests
-cargo test -p cuenv-cubes
+# Run all codegen tests
+cargo test -p cuenv-codegen
 
 # Run with features
-cargo test -p cuenv-cubes --features serde
+cargo test -p cuenv-codegen --features serde
 ```
 
 ## See Also
 
-- [How-to: Cubes](/how-to/cubes/) - Using cubes with cuenv
+- [How-to: Codegen](/how-to/codegen/) - Using codegen with cuenv
 - [cuenv-ignore](/explanation/cuenv-ignore/) - Generate ignore files
 - [cuenv-codeowners](/explanation/cuenv-codeowners/) - Generate CODEOWNERS files
 - [API Reference](/reference/rust-api/) - Complete API documentation

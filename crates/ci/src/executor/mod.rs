@@ -49,14 +49,10 @@ impl From<ExecutorError> for cuenv_core::Error {
             ExecutorError::Secret(e) => Self::secret_resolution(e.to_string()),
             ExecutorError::Runner(e) => Self::execution(e.to_string()),
             ExecutorError::TaskPanic(msg) => Self::execution(format!("Task panicked: {msg}")),
-            ExecutorError::PipelineNotFound { name, available } => {
-                Self::configuration(format!(
-                    "Pipeline '{name}' not found. Available: {available}"
-                ))
-            }
-            ExecutorError::NoCIConfig => {
-                Self::configuration("Project has no CI configuration")
-            }
+            ExecutorError::PipelineNotFound { name, available } => Self::configuration(format!(
+                "Pipeline '{name}' not found. Available: {available}"
+            )),
+            ExecutorError::NoCIConfig => Self::configuration("Project has no CI configuration"),
         }
     }
 }

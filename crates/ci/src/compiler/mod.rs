@@ -1112,7 +1112,10 @@ impl Compiler {
     /// - 50+: Success phase (post-build tasks)
     ///
     /// Tasks with on_failure condition are placed in the Failure stage.
-    fn derive_stage_from_priority(priority: i32, condition: Option<CueTaskCondition>) -> BuildStage {
+    fn derive_stage_from_priority(
+        priority: i32,
+        condition: Option<CueTaskCondition>,
+    ) -> BuildStage {
         // on_failure condition always means Failure stage
         if matches!(condition, Some(CueTaskCondition::OnFailure)) {
             return BuildStage::Failure;
@@ -1200,10 +1203,13 @@ impl Compiler {
         });
 
         // Convert condition
-        let condition = contributor_task.condition.map(Self::cue_task_condition_to_ir);
+        let condition = contributor_task
+            .condition
+            .map(Self::cue_task_condition_to_ir);
 
         // Derive stage from priority
-        let stage = Self::derive_stage_from_priority(contributor_task.priority, contributor_task.condition);
+        let stage =
+            Self::derive_stage_from_priority(contributor_task.priority, contributor_task.condition);
 
         // Prefix dependencies with contributor namespace
         let depends_on: Vec<String> = contributor_task

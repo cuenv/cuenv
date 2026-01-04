@@ -1115,11 +1115,8 @@ mod tests {
         graph.add_dependency_edges().unwrap();
 
         // Nothing is directly affected
-        let affected = graph.compute_affected(
-            &["build", "test"],
-            |_task| false,
-            None::<fn(&str) -> bool>,
-        );
+        let affected =
+            graph.compute_affected(&["build", "test"], |_task| false, None::<fn(&str) -> bool>);
 
         assert!(affected.is_empty());
     }
@@ -1204,11 +1201,8 @@ mod tests {
         graph.add_edge(build_idx, test_idx);
 
         // External resolver: nothing is affected
-        let affected = graph.compute_affected(
-            &["build", "test"],
-            |_task| false,
-            Some(|_dep: &str| false),
-        );
+        let affected =
+            graph.compute_affected(&["build", "test"], |_task| false, Some(|_dep: &str| false));
 
         assert!(affected.is_empty());
     }
@@ -1220,10 +1214,9 @@ mod tests {
     #[test]
     fn test_transitive_closure_empty() {
         let deps: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
-        let closure = compute_transitive_closure(
-            std::iter::empty::<&str>(),
-            |name| deps.get(name).map(|v| v.as_slice()),
-        );
+        let closure = compute_transitive_closure(std::iter::empty::<&str>(), |name| {
+            deps.get(name).map(|v| v.as_slice())
+        });
         assert!(closure.is_empty());
     }
 
@@ -1231,9 +1224,8 @@ mod tests {
     fn test_transitive_closure_single_node_no_deps() {
         let deps: std::collections::HashMap<&str, Vec<String>> =
             [("build", vec![])].into_iter().collect();
-        let closure = compute_transitive_closure(["build"], |name| {
-            deps.get(name).map(|v| v.as_slice())
-        });
+        let closure =
+            compute_transitive_closure(["build"], |name| deps.get(name).map(|v| v.as_slice()));
         assert_eq!(closure.len(), 1);
         assert!(closure.contains("build"));
     }
@@ -1249,9 +1241,8 @@ mod tests {
         .into_iter()
         .collect();
 
-        let closure = compute_transitive_closure(["deploy"], |name| {
-            deps.get(name).map(|v| v.as_slice())
-        });
+        let closure =
+            compute_transitive_closure(["deploy"], |name| deps.get(name).map(|v| v.as_slice()));
 
         assert_eq!(closure.len(), 3);
         assert!(closure.contains("deploy"));
@@ -1297,9 +1288,8 @@ mod tests {
         .into_iter()
         .collect();
 
-        let closure = compute_transitive_closure(["A", "C"], |name| {
-            deps.get(name).map(|v| v.as_slice())
-        });
+        let closure =
+            compute_transitive_closure(["A", "C"], |name| deps.get(name).map(|v| v.as_slice()));
 
         assert_eq!(closure.len(), 4);
         assert!(closure.contains("A"));

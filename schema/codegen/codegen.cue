@@ -1,4 +1,4 @@
-package cubes
+package codegen
 
 // ============================================================================
 // Project File Schemas - Language-specific file definitions

@@ -1,5 +1,5 @@
 use cuenv_core::manifest::Project;
-use cuenv_core::{matches_pattern, AffectedBy};
+use cuenv_core::{AffectedBy, matches_pattern};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -178,7 +178,6 @@ fn check_external_dependency(
 
     false
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -576,7 +575,11 @@ mod tests {
             &all_projects,
         );
 
-        assert_eq!(affected, vec!["deploy"], "Task with no inputs should always be affected");
+        assert_eq!(
+            affected,
+            vec!["deploy"],
+            "Task with no inputs should always be affected"
+        );
     }
 
     // ==========================================================================

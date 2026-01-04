@@ -1077,7 +1077,7 @@ mod tests {
             ci: None,
             tasks: HashMap::new(),
             name: "test".to_string(),
-            cube: None,
+            codegen: None,
             runtime: None,
             formatters: None,
         };
@@ -1109,7 +1109,7 @@ mod tests {
             ci: None,
             tasks: HashMap::new(),
             name: "test".to_string(),
-            cube: None,
+            codegen: None,
             runtime: None,
             formatters: None,
         };

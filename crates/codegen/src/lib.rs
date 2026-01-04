@@ -1,24 +1,24 @@
-//! # cuenv-cubes
+//! # cuenv-codegen
 //!
-//! CUE Cubes - code generation and project scaffolding from CUE templates.
+//! CUE-powered code generation and project scaffolding from CUE templates.
 //!
-//! This crate provides a code generation system based on CUE Cubes that:
+//! This crate provides a code generation system that:
 //! - Uses schema-wrapped code blocks (e.g., `schema.#TypeScript`, `schema.#JSON`)
 //! - Supports managed (always regenerated) and scaffold (generate once) file modes
-//! - Integrates with `cuenv sync cubes` command
+//! - Integrates with `cuenv sync codegen` command
 //!
-//! ## What is a CUE Cube?
+//! ## How it works
 //!
-//! A Cube is a CUE-based template that generates multiple project files.
-//! Define your files in CUE with type-safe schemas, then sync them with
-//! `cuenv sync cubes`.
+//! A Codegen configuration is a CUE-based template that defines multiple
+//! files to generate for a project. Define your files in CUE with type-safe
+//! schemas, then sync them with `cuenv sync codegen`.
 //!
 //! ## Example
 //!
 //! ```cue
 //! schema.#Project & {
 //!     name: "my-service"
-//!     cube: {
+//!     codegen: {
 //!         files: {
 //!             "package.json": schema.#JSON & {
 //!                 mode: "managed"
@@ -33,12 +33,12 @@
 #![warn(clippy::all)]
 #![warn(clippy::pedantic)]
 
+pub mod codegen;
 pub mod config;
-pub mod cube;
 pub mod formatter;
 pub mod generator;
 
-pub use cube::Cube;
+pub use codegen::Codegen;
 pub use generator::{GenerateOptions, Generator};
 
 use thiserror::Error;
@@ -46,9 +46,9 @@ use thiserror::Error;
 /// Errors that can occur during code generation
 #[derive(Error, Debug)]
 pub enum CodegenError {
-    /// Error loading or evaluating CUE Cube
-    #[error("Cube error: {0}")]
-    Cube(String),
+    /// Error loading or evaluating CUE codegen configuration
+    #[error("Codegen error: {0}")]
+    Codegen(String),
 
     /// Error during file generation
     #[error("Generation error: {0}")]
@@ -75,9 +75,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_codegen_error_cube_display() {
-        let error = CodegenError::Cube("test cube error".to_string());
-        assert_eq!(error.to_string(), "Cube error: test cube error");
+    fn test_codegen_error_codegen_display() {
+        let error = CodegenError::Codegen("test codegen error".to_string());
+        assert_eq!(error.to_string(), "Codegen error: test codegen error");
     }
 
     #[test]

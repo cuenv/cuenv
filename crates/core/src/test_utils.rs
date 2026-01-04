@@ -97,8 +97,7 @@ pub fn create_temp_project(cue_content: &str) -> TempDir {
         .prefix("cuenv_test_")
         .tempdir()
         .expect("Failed to create temp directory");
-    std::fs::write(dir.path().join("env.cue"), cue_content)
-        .expect("Failed to write env.cue");
+    std::fs::write(dir.path().join("env.cue"), cue_content).expect("Failed to write env.cue");
     dir
 }
 
@@ -182,10 +181,7 @@ pub fn tasks_have_same_names(
 ///
 /// Returns `None` if the task doesn't exist.
 #[must_use]
-pub fn get_task_deps(
-    tasks: &HashMap<String, TaskDefinition>,
-    name: &str,
-) -> Option<Vec<String>> {
+pub fn get_task_deps(tasks: &HashMap<String, TaskDefinition>, name: &str) -> Option<Vec<String>> {
     tasks.get(name).map(|def| match def {
         TaskDefinition::Single(task) => task.depends_on.clone(),
         TaskDefinition::Group(group) => match group {
@@ -277,18 +273,9 @@ mod tests {
     #[test]
     fn test_task_names() {
         let mut tasks = HashMap::new();
-        tasks.insert(
-            "b".to_string(),
-            TaskDefinition::Single(Box::default()),
-        );
-        tasks.insert(
-            "a".to_string(),
-            TaskDefinition::Single(Box::default()),
-        );
-        tasks.insert(
-            "c".to_string(),
-            TaskDefinition::Single(Box::default()),
-        );
+        tasks.insert("b".to_string(), TaskDefinition::Single(Box::default()));
+        tasks.insert("a".to_string(), TaskDefinition::Single(Box::default()));
+        tasks.insert("c".to_string(), TaskDefinition::Single(Box::default()));
 
         let names = task_names(&tasks);
         assert_eq!(names, vec!["a", "b", "c"]);

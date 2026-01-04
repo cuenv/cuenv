@@ -1,7 +1,7 @@
 //! Sync provider trait for extensible file synchronization.
 //!
 //! This module defines the `SyncProvider` trait that allows different types of
-//! file synchronization (ignore files, codeowners, cubes, CI workflows) to be
+//! file synchronization (ignore files, codeowners, codegen, CI workflows) to be
 //! registered and executed uniformly.
 
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ pub enum SyncMode {
 pub struct SyncOptions {
     /// The sync operation mode.
     pub mode: SyncMode,
-    /// Show diff for files that would change (cubes-specific).
+    /// Show diff for files that would change (codegen-specific).
     pub show_diff: bool,
     /// CI provider filter (github, buildkite).
     pub ci_provider: Option<String>,
@@ -70,7 +70,7 @@ impl SyncResult {
     }
 }
 
-/// Trait for sync providers (cubes, ignore, codeowners, ci).
+/// Trait for sync providers (codegen, ignore, codeowners, ci).
 ///
 /// Each provider implements this trait to handle synchronization of a specific
 /// type of generated file. Providers are registered with a `SyncRegistry` and
@@ -78,7 +78,7 @@ impl SyncResult {
 #[allow(dead_code)] // Methods may be unused internally but are part of the public API
 #[async_trait]
 pub trait SyncProvider: Send + Sync {
-    /// Name of the sync provider (e.g., "cubes", "ignore").
+    /// Name of the sync provider (e.g., "codegen", "ignore").
     ///
     /// This is used as the CLI subcommand name.
     fn name(&self) -> &'static str;

@@ -1,7 +1,7 @@
-//! CUE Cube loading and evaluation
+//! CUE Codegen loading and evaluation
 //!
-//! This module handles loading CUE Cubes and evaluating them to extract
-//! file definitions. A "Cube" is a CUE-based template that defines multiple
+//! This module handles loading CUE codegen configurations and evaluating them to extract
+//! file definitions. A Codegen configuration is a CUE-based template that defines multiple
 //! files to generate for a project.
 
 use crate::{CodegenError, Result};
@@ -55,7 +55,7 @@ impl Default for FormatConfig {
     }
 }
 
-/// A project file definition from the cube
+/// A project file definition from the codegen configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFileDefinition {
     /// Content of the file
@@ -73,9 +73,9 @@ pub struct ProjectFileDefinition {
     pub gitignore: bool,
 }
 
-/// A CUE Cube containing file definitions
+/// CUE codegen data containing file definitions
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CubeData {
+pub struct CodegenData {
     /// Map of file paths to their definitions
     pub files: HashMap<String, ProjectFileDefinition>,
     /// Optional context data
@@ -83,21 +83,20 @@ pub struct CubeData {
     pub context: serde_json::Value,
 }
 
-/// CUE Cube loader and evaluator
+/// CUE Codegen loader and evaluator
 ///
-/// A Cube is a CUE-based template that generates multiple project files.
-/// Think of it as a 3D blueprint - each face of the cube represents
-/// different aspects of your project (source code, config, tests, etc.)
+/// A Codegen configuration is a CUE-based template that generates multiple project files.
+/// It defines the structure and content of files to be generated for a project.
 #[derive(Debug)]
-pub struct Cube {
-    /// The cube data containing file definitions
-    pub data: CubeData,
+pub struct Codegen {
+    /// The codegen data containing file definitions
+    pub data: CodegenData,
     /// Path to the source CUE file
     pub source_path: PathBuf,
 }
 
-impl Cube {
-    /// Load a cube from a CUE file
+impl Codegen {
+    /// Load a codegen configuration from a CUE file
     ///
     /// # Errors
     ///
@@ -115,7 +114,7 @@ impl Cube {
         })
     }
 
-    /// Get the file definitions from this cube
+    /// Get the file definitions from this codegen configuration
     #[must_use]
     pub fn files(&self) -> &HashMap<String, ProjectFileDefinition> {
         &self.data.files
@@ -127,25 +126,25 @@ impl Cube {
         &self.data.context
     }
 
-    /// Get the source path of this cube
+    /// Get the source path of this codegen configuration
     #[must_use]
     pub fn source_path(&self) -> &Path {
         &self.source_path
     }
 
-    /// Evaluate a CUE file and extract the cube data
-    fn evaluate_cue(path: &Path) -> Result<CubeData> {
+    /// Evaluate a CUE file and extract the codegen data
+    fn evaluate_cue(path: &Path) -> Result<CodegenData> {
         // Verify the file exists
         if !path.exists() {
-            return Err(CodegenError::Cube(format!(
-                "Cube file not found: {}",
+            return Err(CodegenError::Codegen(format!(
+                "Codegen file not found: {}",
                 path.display()
             )));
         }
 
         // Determine the directory and package name from the path
         let dir_path = path.parent().ok_or_else(|| {
-            CodegenError::Cube("Invalid cube path: no parent directory".to_string())
+            CodegenError::Codegen("Invalid codegen path: no parent directory".to_string())
         })?;
 
         // Determine package name - try to infer from file content or use default
@@ -153,7 +152,7 @@ impl Cube {
 
         // Find the module root
         let module_root = Self::find_cue_module_root(dir_path).ok_or_else(|| {
-            CodegenError::Cube(format!(
+            CodegenError::Codegen(format!(
                 "No CUE module found (looking for cue.mod/) starting from: {}",
                 dir_path.display()
             ))
@@ -165,7 +164,7 @@ impl Cube {
             ..Default::default()
         };
         let raw_result = cuengine::evaluate_module(&module_root, &package_name, Some(&options))
-            .map_err(|e| CodegenError::Cube(format!("CUE evaluation failed: {e}")))?;
+            .map_err(|e| CodegenError::Codegen(format!("CUE evaluation failed: {e}")))?;
 
         let module = ModuleEvaluation::from_raw(
             module_root.clone(),
@@ -176,7 +175,7 @@ impl Cube {
         // Calculate relative path and get the instance
         let target_path = dir_path
             .canonicalize()
-            .map_err(|e| CodegenError::Cube(format!("Failed to canonicalize path: {e}")))?;
+            .map_err(|e| CodegenError::Codegen(format!("Failed to canonicalize path: {e}")))?;
         let relative_path = target_path.strip_prefix(&module_root).map_or_else(
             |_| PathBuf::from("."),
             |p| {
@@ -189,7 +188,7 @@ impl Cube {
         );
 
         let instance = module.get(&relative_path).ok_or_else(|| {
-            CodegenError::Cube(format!(
+            CodegenError::Codegen(format!(
                 "No CUE instance found at path: {} (relative: {})",
                 dir_path.display(),
                 relative_path.display()
@@ -198,7 +197,7 @@ impl Cube {
 
         instance
             .deserialize()
-            .map_err(|e| CodegenError::Cube(format!("Failed to deserialize cube data: {e}")))
+            .map_err(|e| CodegenError::Codegen(format!("Failed to deserialize codegen data: {e}")))
     }
 
     /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
@@ -217,23 +216,23 @@ impl Cube {
     /// Determine the CUE package name from a file
     ///
     /// Reads the first few lines of the file to find a `package` declaration.
-    /// Falls back to "cubes" if not found.
+    /// Falls back to "codegen" if not found.
     fn determine_package_name(path: &Path) -> Result<String> {
         let content = std::fs::read_to_string(path)
-            .map_err(|e| CodegenError::Cube(format!("Failed to read cube file: {e}")))?;
+            .map_err(|e| CodegenError::Codegen(format!("Failed to read codegen file: {e}")))?;
 
         // Look for package declaration in the first few lines
         for line in content.lines().take(10) {
             let trimmed = line.trim();
             if trimmed.starts_with("package ") {
                 // Extract package name
-                let package_name = trimmed.strip_prefix("package ").unwrap_or("cubes").trim();
+                let package_name = trimmed.strip_prefix("package ").unwrap_or("codegen").trim();
                 return Ok(package_name.to_string());
             }
         }
 
-        // Default to "cubes" if no package declaration found
-        Ok("cubes".to_string())
+        // Default to "codegen" if no package declaration found
+        Ok("codegen".to_string())
     }
 }
 
@@ -350,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cube_data_serde() {
+    fn test_codegen_data_serde() {
         let mut files = HashMap::new();
         files.insert(
             "test.rs".to_string(),
@@ -362,26 +361,26 @@ mod tests {
                 gitignore: false,
             },
         );
-        let data = CubeData {
+        let data = CodegenData {
             files,
             context: serde_json::json!({"key": "value"}),
         };
         let json = serde_json::to_string(&data).unwrap();
-        let deserialized: CubeData = serde_json::from_str(&json).unwrap();
+        let deserialized: CodegenData = serde_json::from_str(&json).unwrap();
         assert!(deserialized.files.contains_key("test.rs"));
         assert_eq!(deserialized.context["key"], "value");
     }
 
     #[test]
-    fn test_cube_data_default_context() {
+    fn test_codegen_data_default_context() {
         let json = r#"{"files":{}}"#;
-        let data: CubeData = serde_json::from_str(json).unwrap();
+        let data: CodegenData = serde_json::from_str(json).unwrap();
         assert!(data.files.is_empty());
         assert!(data.context.is_null());
     }
 
     #[test]
-    fn test_cube_accessors() {
+    fn test_codegen_accessors() {
         let mut files = HashMap::new();
         files.insert(
             "example.js".to_string(),
@@ -393,26 +392,26 @@ mod tests {
                 gitignore: false,
             },
         );
-        let cube = Cube {
-            data: CubeData {
+        let codegen = Codegen {
+            data: CodegenData {
                 files,
                 context: serde_json::json!({"project": "test"}),
             },
-            source_path: PathBuf::from("/path/to/cube.cue"),
+            source_path: PathBuf::from("/path/to/codegen.cue"),
         };
 
-        assert_eq!(cube.files().len(), 1);
-        assert!(cube.files().contains_key("example.js"));
-        assert_eq!(cube.context()["project"], "test");
-        assert_eq!(cube.source_path(), Path::new("/path/to/cube.cue"));
+        assert_eq!(codegen.files().len(), 1);
+        assert!(codegen.files().contains_key("example.js"));
+        assert_eq!(codegen.context()["project"], "test");
+        assert_eq!(codegen.source_path(), Path::new("/path/to/codegen.cue"));
     }
 
     #[test]
-    fn test_cube_load_nonexistent_file() {
-        let result = Cube::load("/nonexistent/path/cube.cue");
+    fn test_codegen_load_nonexistent_file() {
+        let result = Codegen::load("/nonexistent/path/codegen.cue");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Cube file not found"));
+        assert!(err.to_string().contains("Codegen file not found"));
     }
 
     #[test]
@@ -426,7 +425,7 @@ mod tests {
         writeln!(file).unwrap();
         writeln!(file, "data: 123").unwrap();
 
-        let name = Cube::determine_package_name(&file_path).unwrap();
+        let name = Codegen::determine_package_name(&file_path).unwrap();
         assert_eq!(name, "mypackage");
     }
 
@@ -439,16 +438,16 @@ mod tests {
         writeln!(file, "// no package declaration").unwrap();
         writeln!(file, "data: 123").unwrap();
 
-        let name = Cube::determine_package_name(&file_path).unwrap();
-        assert_eq!(name, "cubes");
+        let name = Codegen::determine_package_name(&file_path).unwrap();
+        assert_eq!(name, "codegen");
     }
 
     #[test]
     fn test_determine_package_name_file_not_found() {
-        let result = Cube::determine_package_name(Path::new("/nonexistent/file.cue"));
+        let result = Codegen::determine_package_name(Path::new("/nonexistent/file.cue"));
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Failed to read cube file"));
+        assert!(err.to_string().contains("Failed to read codegen file"));
     }
 
     #[test]
@@ -459,7 +458,7 @@ mod tests {
         let subdir = temp_dir.path().join("subdir");
         std::fs::create_dir(&subdir).unwrap();
 
-        let root = Cube::find_cue_module_root(&subdir);
+        let root = Codegen::find_cue_module_root(&subdir);
         assert!(root.is_some());
         assert_eq!(root.unwrap(), temp_dir.path().canonicalize().unwrap());
     }
@@ -467,20 +466,20 @@ mod tests {
     #[test]
     fn test_find_cue_module_root_not_found() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let root = Cube::find_cue_module_root(temp_dir.path());
+        let root = Codegen::find_cue_module_root(temp_dir.path());
         assert!(root.is_none());
     }
 
     #[test]
-    fn test_cube_load_no_cue_module() {
+    fn test_codegen_load_no_cue_module() {
         use std::io::Write;
         let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("cube.cue");
+        let file_path = temp_dir.path().join("codegen.cue");
         let mut file = std::fs::File::create(&file_path).unwrap();
         writeln!(file, "package test").unwrap();
         writeln!(file, "files: {{}}").unwrap();
 
-        let result = Cube::load(&file_path);
+        let result = Codegen::load(&file_path);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("No CUE module found"));

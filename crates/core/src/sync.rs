@@ -117,11 +117,11 @@ pub struct SyncContext<'a> {
 ///
 /// - `cuenv-ignore`: Generates .gitignore, .dockerignore, etc.
 /// - `cuenv-codeowners`: Generates CODEOWNERS files
-/// - `cuenv-cubes`: Generates files from CUE cube templates
+/// - `cuenv-codegen`: Generates files from CUE codegen templates
 /// - `cuenv-ci`: Generates CI workflow files
 #[async_trait]
 pub trait SyncProvider: Send + Sync {
-    /// Name of the sync provider (e.g., "ignore", "cubes").
+    /// Name of the sync provider (e.g., "ignore", "codegen").
     ///
     /// Used as the CLI subcommand name.
     fn name(&self) -> &'static str;

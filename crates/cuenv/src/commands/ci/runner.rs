@@ -77,11 +77,13 @@ fn resolve_path_filter(path: &str) -> Result<Option<String>> {
         operation: "canonicalize current directory".to_string(),
     })?;
 
-    let module_root_canon = module_root.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(module_root.clone().into_boxed_path()),
-        operation: "canonicalize module root".to_string(),
-    })?;
+    let module_root_canon = module_root
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(module_root.clone().into_boxed_path()),
+            operation: "canonicalize module root".to_string(),
+        })?;
 
     // If at the module root, "." means "all projects" (no filter)
     if cwd_canon == module_root_canon && path == "." {
@@ -114,19 +116,23 @@ fn resolve_path_filter(path: &str) -> Result<Option<String>> {
         )));
     }
 
-    let absolute_canon = absolute_path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(absolute_path.clone().into_boxed_path()),
-        operation: "canonicalize path".to_string(),
-    })?;
+    let absolute_canon = absolute_path
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(absolute_path.clone().into_boxed_path()),
+            operation: "canonicalize path".to_string(),
+        })?;
 
-    let relative = absolute_canon.strip_prefix(&module_root_canon).map_err(|_| {
-        cuenv_core::Error::configuration(format!(
-            "Path '{}' is not inside module root '{}'",
-            path,
-            module_root.display()
-        ))
-    })?;
+    let relative = absolute_canon
+        .strip_prefix(&module_root_canon)
+        .map_err(|_| {
+            cuenv_core::Error::configuration(format!(
+                "Path '{}' is not inside module root '{}'",
+                path,
+                module_root.display()
+            ))
+        })?;
 
     // Return the path relative to module root
     Ok(Some(relative.to_string_lossy().to_string()))

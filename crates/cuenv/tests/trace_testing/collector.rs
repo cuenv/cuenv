@@ -3,10 +3,10 @@
 //! Captures tracing spans for later verification in tests.
 
 use std::sync::{Arc, Mutex};
-use tracing::span::{Attributes, Id};
 use tracing::Subscriber;
-use tracing_subscriber::layer::Context;
+use tracing::span::{Attributes, Id};
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
 
 /// A captured span with its metadata
 #[derive(Debug, Clone)]
