@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 cuenv-core = { workspace = true }
 cuenv-secrets = { workspace = true }
+cuenv-task-graph = { workspace = true }
 cuenv-workspaces = { workspace = true }
 cuenv-tools-nix = { path = "../tools/nix" }
 cuenv-tools-github = { path = "../tools/github" }

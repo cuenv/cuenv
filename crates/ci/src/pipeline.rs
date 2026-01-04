@@ -5,6 +5,7 @@
 
 use crate::ir::Task;
 use cuenv_core::ci::{MatrixTask, PipelineTask};
+use cuenv_task_graph::compute_transitive_closure;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Filter IR tasks to only those needed by the pipeline.
@@ -46,49 +47,20 @@ pub fn filter_tasks(pipeline_tasks: &[String], ir_tasks: Vec<Task>) -> Vec<Task>
         })
         .collect();
 
-    // Resolve transitive dependencies
-    let deps: HashMap<&str, &[String]> = ir_tasks
+    // Resolve transitive dependencies using centralized graph algorithm
+    let deps: HashMap<&str, Vec<String>> = ir_tasks
         .iter()
-        .map(|t| (t.id.as_str(), t.depends_on.as_slice()))
+        .map(|t| (t.id.as_str(), t.depends_on.clone()))
         .collect();
 
-    let needed = resolve_transitive_deps(&expanded, &deps);
+    let needed = compute_transitive_closure(expanded.iter().map(String::as_str), |name| {
+        deps.get(name).map(|v| v.as_slice())
+    });
 
     ir_tasks
         .into_iter()
         .filter(|t| needed.contains(t.id.as_str()))
         .collect()
-}
-
-/// Recursively resolve all transitive dependencies for a set of task IDs.
-///
-/// Uses a frontier-based traversal to find all tasks that the initial set
-/// depends on, directly or transitively.
-///
-/// # Arguments
-/// * `initial` - The starting set of task IDs
-/// * `deps` - Map from task ID to its direct dependencies
-///
-/// # Returns
-/// Set containing all task IDs: initial + all transitive dependencies
-#[must_use]
-pub fn resolve_transitive_deps(
-    initial: &HashSet<String>,
-    deps: &HashMap<&str, &[String]>,
-) -> HashSet<String> {
-    let mut all: HashSet<String> = initial.clone();
-    let mut frontier: Vec<&str> = initial.iter().map(String::as_str).collect();
-
-    while let Some(task_id) = frontier.pop() {
-        if let Some(task_deps) = deps.get(task_id) {
-            for dep in *task_deps {
-                if all.insert(dep.clone()) {
-                    frontier.push(dep);
-                }
-            }
-        }
-    }
-    all
 }
 
 /// Expand pipeline tasks that reference task groups into individual tasks.
@@ -202,28 +174,23 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_transitive_deps_simple() {
-        let initial: HashSet<String> = ["c"].iter().map(|s| (*s).to_string()).collect();
+    fn test_transitive_closure_via_filter_tasks() {
+        // Test transitive dependency resolution through filter_tasks
+        // c -> b -> a (c depends on b, b depends on a)
+        let tasks = vec![
+            make_task("a", &[]),
+            make_task("b", &["a"]),
+            make_task("c", &["b"]),
+        ];
 
-        // We need owned Strings for the deps values
-        let a_deps: Vec<String> = vec![];
-        let b_deps: Vec<String> = vec!["a".to_string()];
-        let c_deps: Vec<String> = vec!["b".to_string()];
+        // Requesting just "c" should pull in b and a transitively
+        let result = filter_tasks(&["c".to_string()], tasks);
 
-        let deps: HashMap<&str, &[String]> = [
-            ("a", a_deps.as_slice()),
-            ("b", b_deps.as_slice()),
-            ("c", c_deps.as_slice()),
-        ]
-        .into_iter()
-        .collect();
-
-        let result = resolve_transitive_deps(&initial, &deps);
-
-        assert!(result.contains("a"));
-        assert!(result.contains("b"));
-        assert!(result.contains("c"));
-        assert_eq!(result.len(), 3);
+        let ids: HashSet<_> = result.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains("a"));
+        assert!(ids.contains("b"));
+        assert!(ids.contains("c"));
+        assert_eq!(ids.len(), 3);
     }
 
     #[test]

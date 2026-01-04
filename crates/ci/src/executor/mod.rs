@@ -45,19 +45,17 @@ pub enum ExecutorError {
 impl From<ExecutorError> for cuenv_core::Error {
     fn from(err: ExecutorError) -> Self {
         match err {
-            ExecutorError::Compilation(msg) => cuenv_core::Error::configuration(msg),
-            ExecutorError::Secret(e) => cuenv_core::Error::secret_resolution(e.to_string()),
-            ExecutorError::Runner(e) => cuenv_core::Error::execution(e.to_string()),
-            ExecutorError::TaskPanic(msg) => {
-                cuenv_core::Error::execution(format!("Task panicked: {msg}"))
-            }
+            ExecutorError::Compilation(msg) => Self::configuration(msg),
+            ExecutorError::Secret(e) => Self::secret_resolution(e.to_string()),
+            ExecutorError::Runner(e) => Self::execution(e.to_string()),
+            ExecutorError::TaskPanic(msg) => Self::execution(format!("Task panicked: {msg}")),
             ExecutorError::PipelineNotFound { name, available } => {
-                cuenv_core::Error::configuration(format!(
+                Self::configuration(format!(
                     "Pipeline '{name}' not found. Available: {available}"
                 ))
             }
             ExecutorError::NoCIConfig => {
-                cuenv_core::Error::configuration("Project has no CI configuration")
+                Self::configuration("Project has no CI configuration")
             }
         }
     }
