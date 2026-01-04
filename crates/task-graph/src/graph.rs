@@ -431,11 +431,13 @@ impl<T: TaskNodeData> TaskGraph<T> {
     /// This method determines which tasks need to run based on:
     /// 1. Direct effect: The predicate returns true for the task
     /// 2. Transitive effect: A task depends on an affected task
+    /// 3. External effect: An external dependency (e.g., `#project:task`) is affected
     ///
     /// # Arguments
     ///
     /// * `pipeline_tasks` - The names of tasks in the pipeline to check
     /// * `is_directly_affected` - Predicate that returns true if a task is directly affected
+    /// * `is_external_affected` - Optional predicate for external dependencies (starting with `#`)
     ///
     /// # Returns
     ///
@@ -444,14 +446,30 @@ impl<T: TaskNodeData> TaskGraph<T> {
     /// # Example
     ///
     /// ```ignore
+    /// // Without external dependency checking
     /// let affected = graph.compute_affected(
     ///     &["build", "test", "deploy"],
     ///     |task| task.is_affected_by(&changed_files, &project_root),
+    ///     None::<fn(&str) -> bool>,
+    /// );
+    ///
+    /// // With external dependency checking (for CI cross-project deps)
+    /// let affected = graph.compute_affected(
+    ///     &["build", "test", "deploy"],
+    ///     |task| task.is_affected_by(&changed_files, &project_root),
+    ///     Some(|dep: &str| check_external_dependency(dep, &all_projects, &changed_files)),
     /// );
     /// ```
-    pub fn compute_affected<F>(&self, pipeline_tasks: &[impl AsRef<str>], is_directly_affected: F) -> Vec<String>
+    #[allow(clippy::needless_pass_by_value)] // Option<E> is intentionally by-value for ergonomic API
+    pub fn compute_affected<F, E>(
+        &self,
+        pipeline_tasks: &[impl AsRef<str>],
+        is_directly_affected: F,
+        is_external_affected: Option<E>,
+    ) -> Vec<String>
     where
         F: Fn(&T) -> bool,
+        E: Fn(&str) -> bool,
     {
         use std::collections::HashSet;
 
@@ -479,6 +497,19 @@ impl<T: TaskNodeData> TaskGraph<T> {
 
                 if let Some(node) = self.get_node_by_name(task_name) {
                     for dep in node.task.depends_on() {
+                        // Check if this is an external dependency (starts with #)
+                        if dep.starts_with('#') {
+                            if is_external_affected
+                                .as_ref()
+                                .is_some_and(|resolver| resolver(dep))
+                            {
+                                affected.insert(task_name.to_string());
+                                changed = true;
+                                break;
+                            }
+                            continue;
+                        }
+
                         // Expand group dependencies to their leaf tasks
                         let leaf_deps = self.expand_dep_to_leaf_tasks(dep);
                         for leaf_dep in leaf_deps {
@@ -509,6 +540,67 @@ impl<T: TaskNodeData> Default for TaskGraph<T> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Compute the transitive closure of dependencies from an initial set.
+///
+/// Given a set of starting nodes and a function to retrieve dependencies,
+/// returns all nodes reachable by following dependency edges.
+///
+/// # Arguments
+///
+/// * `initial` - Starting set of node names
+/// * `get_deps` - Function that returns dependencies for a given node name
+///
+/// # Example
+///
+/// ```ignore
+/// use cuenv_task_graph::compute_transitive_closure;
+/// use std::collections::HashMap;
+///
+/// let deps: HashMap<&str, Vec<String>> = [
+///     ("build", vec![]),
+///     ("test", vec!["build".to_string()]),
+///     ("deploy", vec!["test".to_string()]),
+/// ].into_iter().collect();
+///
+/// let closure = compute_transitive_closure(
+///     ["deploy"],
+///     |name| deps.get(name).map(|v| v.as_slice()),
+/// );
+/// // closure contains: {"deploy", "test", "build"}
+/// ```
+#[must_use]
+pub fn compute_transitive_closure<'a>(
+    initial: impl IntoIterator<Item = &'a str>,
+    get_deps: impl Fn(&str) -> Option<&'a [String]>,
+) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+
+    let mut all = HashSet::new();
+    let mut frontier: Vec<&str> = Vec::new();
+
+    // Initialize with starting set
+    for name in initial {
+        if all.insert(name.to_string()) {
+            frontier.push(name);
+        }
+    }
+
+    // BFS through dependencies
+    while let Some(task_id) = frontier.pop() {
+        if let Some(deps) = get_deps(task_id) {
+            for dep in deps {
+                if all.insert(dep.clone()) {
+                    // Use string slice from the set we just inserted
+                    // This is safe because we're doing BFS and won't revisit
+                    frontier.push(dep.as_str());
+                }
+            }
+        }
+    }
+
+    all
 }
 
 #[cfg(test)]
@@ -1002,10 +1094,14 @@ mod tests {
         graph.add_dependency_edges().unwrap();
 
         // Only build is directly affected
-        let affected = graph.compute_affected(&["build", "test", "deploy"], |task| {
-            // Simulate: build has no deps (directly affected), others don't
-            task.depends_on.is_empty()
-        });
+        let affected = graph.compute_affected(
+            &["build", "test", "deploy"],
+            |task| {
+                // Simulate: build has no deps (directly affected), others don't
+                task.depends_on.is_empty()
+            },
+            None::<fn(&str) -> bool>,
+        );
 
         // build is directly affected, test and deploy are transitively affected
         assert_eq!(affected, vec!["build", "test", "deploy"]);
@@ -1019,7 +1115,11 @@ mod tests {
         graph.add_dependency_edges().unwrap();
 
         // Nothing is directly affected
-        let affected = graph.compute_affected(&["build", "test"], |_task| false);
+        let affected = graph.compute_affected(
+            &["build", "test"],
+            |_task| false,
+            None::<fn(&str) -> bool>,
+        );
 
         assert!(affected.is_empty());
     }
@@ -1033,7 +1133,11 @@ mod tests {
         graph.add_dependency_edges().unwrap();
 
         // All directly affected
-        let affected = graph.compute_affected(&["build", "test", "deploy"], |_| true);
+        let affected = graph.compute_affected(
+            &["build", "test", "deploy"],
+            |_| true,
+            None::<fn(&str) -> bool>,
+        );
 
         // Should preserve pipeline order, not graph order
         assert_eq!(affected, vec!["build", "test", "deploy"]);
@@ -1048,13 +1152,174 @@ mod tests {
         graph.add_dependency_edges().unwrap();
 
         // Only test is directly affected, but deploy depends on it
-        let affected = graph.compute_affected(&["build", "test", "deploy"], |task| {
-            // Only "test" has exactly one dependency
-            task.depends_on.len() == 1 && task.depends_on[0] == "build"
-        });
+        let affected = graph.compute_affected(
+            &["build", "test", "deploy"],
+            |task| {
+                // Only "test" has exactly one dependency
+                task.depends_on.len() == 1 && task.depends_on[0] == "build"
+            },
+            None::<fn(&str) -> bool>,
+        );
 
         // test is directly affected, deploy is transitively affected
         // build is not affected because nothing depends on what build does
         assert_eq!(affected, vec!["test", "deploy"]);
+    }
+
+    #[test]
+    fn test_compute_affected_with_external_resolver() {
+        let mut graph = TaskGraph::new();
+        // build depends on an external project task, test depends on build
+        graph
+            .add_task("build", TestTask::new(&["#external:lib"]))
+            .unwrap();
+        graph.add_task("test", TestTask::new(&["build"])).unwrap();
+        // Don't call add_dependency_edges() - external deps would fail validation
+        // We manually add the internal edge
+        let build_idx = *graph.name_to_node.get("build").unwrap();
+        let test_idx = *graph.name_to_node.get("test").unwrap();
+        graph.add_edge(build_idx, test_idx);
+
+        // External resolver: #external:lib is affected
+        let affected = graph.compute_affected(
+            &["build", "test"],
+            |_task| false, // Nothing directly affected
+            Some(|dep: &str| dep == "#external:lib"),
+        );
+
+        // build is affected via external dep, test is transitively affected
+        assert_eq!(affected, vec!["build", "test"]);
+    }
+
+    #[test]
+    fn test_compute_affected_external_not_affected() {
+        let mut graph = TaskGraph::new();
+        graph
+            .add_task("build", TestTask::new(&["#external:lib"]))
+            .unwrap();
+        graph.add_task("test", TestTask::new(&["build"])).unwrap();
+        // Don't call add_dependency_edges() - external deps would fail validation
+        let build_idx = *graph.name_to_node.get("build").unwrap();
+        let test_idx = *graph.name_to_node.get("test").unwrap();
+        graph.add_edge(build_idx, test_idx);
+
+        // External resolver: nothing is affected
+        let affected = graph.compute_affected(
+            &["build", "test"],
+            |_task| false,
+            Some(|_dep: &str| false),
+        );
+
+        assert!(affected.is_empty());
+    }
+
+    // ==========================================================================
+    // compute_transitive_closure tests
+    // ==========================================================================
+
+    #[test]
+    fn test_transitive_closure_empty() {
+        let deps: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
+        let closure = compute_transitive_closure(
+            std::iter::empty::<&str>(),
+            |name| deps.get(name).map(|v| v.as_slice()),
+        );
+        assert!(closure.is_empty());
+    }
+
+    #[test]
+    fn test_transitive_closure_single_node_no_deps() {
+        let deps: std::collections::HashMap<&str, Vec<String>> =
+            [("build", vec![])].into_iter().collect();
+        let closure = compute_transitive_closure(["build"], |name| {
+            deps.get(name).map(|v| v.as_slice())
+        });
+        assert_eq!(closure.len(), 1);
+        assert!(closure.contains("build"));
+    }
+
+    #[test]
+    fn test_transitive_closure_chain() {
+        // deploy -> test -> build
+        let deps: std::collections::HashMap<&str, Vec<String>> = [
+            ("build", vec![]),
+            ("test", vec!["build".to_string()]),
+            ("deploy", vec!["test".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+
+        let closure = compute_transitive_closure(["deploy"], |name| {
+            deps.get(name).map(|v| v.as_slice())
+        });
+
+        assert_eq!(closure.len(), 3);
+        assert!(closure.contains("deploy"));
+        assert!(closure.contains("test"));
+        assert!(closure.contains("build"));
+    }
+
+    #[test]
+    fn test_transitive_closure_diamond() {
+        //      A
+        //     / \
+        //    B   C
+        //     \ /
+        //      D
+        let deps: std::collections::HashMap<&str, Vec<String>> = [
+            ("D", vec![]),
+            ("B", vec!["D".to_string()]),
+            ("C", vec!["D".to_string()]),
+            ("A", vec!["B".to_string(), "C".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+
+        let closure =
+            compute_transitive_closure(["A"], |name| deps.get(name).map(|v| v.as_slice()));
+
+        assert_eq!(closure.len(), 4);
+        assert!(closure.contains("A"));
+        assert!(closure.contains("B"));
+        assert!(closure.contains("C"));
+        assert!(closure.contains("D"));
+    }
+
+    #[test]
+    fn test_transitive_closure_multiple_initial() {
+        // Two separate chains: A -> B, C -> D
+        let deps: std::collections::HashMap<&str, Vec<String>> = [
+            ("B", vec![]),
+            ("A", vec!["B".to_string()]),
+            ("D", vec![]),
+            ("C", vec!["D".to_string()]),
+        ]
+        .into_iter()
+        .collect();
+
+        let closure = compute_transitive_closure(["A", "C"], |name| {
+            deps.get(name).map(|v| v.as_slice())
+        });
+
+        assert_eq!(closure.len(), 4);
+        assert!(closure.contains("A"));
+        assert!(closure.contains("B"));
+        assert!(closure.contains("C"));
+        assert!(closure.contains("D"));
+    }
+
+    #[test]
+    fn test_transitive_closure_missing_dep() {
+        // A depends on nonexistent B - should just include A
+        let deps: std::collections::HashMap<&str, Vec<String>> =
+            [("A", vec!["B".to_string()])].into_iter().collect();
+
+        let closure =
+            compute_transitive_closure(["A"], |name| deps.get(name).map(|v| v.as_slice()));
+
+        // A is included, B is added to closure even though it has no entry (it's a valid node name)
+        assert_eq!(closure.len(), 2);
+        assert!(closure.contains("A"));
+        assert!(closure.contains("B"));
     }
 }
