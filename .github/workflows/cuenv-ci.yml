@@ -63,7 +63,7 @@ jobs:
       with:
         go-version: '1.24'
     - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+      run: cuenv exec -- echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv

@@ -44,7 +44,7 @@ jobs:
       with:
         go-version: '1.24'
     - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+      run: cuenv exec -- echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv
@@ -53,7 +53,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
-      run: cuenv secrets setup onepassword
+      run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: cargo.build (darwin-arm64)
@@ -95,7 +95,7 @@ jobs:
       with:
         go-version: '1.24'
     - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+      run: cuenv exec -- echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv
@@ -104,7 +104,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
-      run: cuenv secrets setup onepassword
+      run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: cargo.build (linux-x64)
@@ -149,7 +149,7 @@ jobs:
       with:
         go-version: '1.24'
     - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+      run: cuenv exec -- echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv
@@ -158,7 +158,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
-      run: cuenv secrets setup onepassword
+      run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Download cargo-build-darwin-arm64
@@ -207,7 +207,7 @@ jobs:
       with:
         go-version: '1.24'
     - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+      run: cuenv exec -- echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv
@@ -216,7 +216,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
-      run: cuenv secrets setup onepassword
+      run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Download cargo-build-darwin-arm64
@@ -263,7 +263,7 @@ jobs:
       with:
         go-version: '1.24'
     - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+      run: cuenv exec -- echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv
@@ -272,7 +272,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
-      run: cuenv secrets setup onepassword
+      run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Download docs-build-artifacts
@@ -310,7 +310,7 @@ jobs:
       with:
         go-version: '1.24'
     - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+      run: cuenv exec -- echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv
@@ -319,7 +319,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
-      run: cuenv secrets setup onepassword
+      run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: docs.build
