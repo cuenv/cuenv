@@ -7,7 +7,8 @@ import "github.com/cuenv/cuenv/schema"
 // Active when:
 // - Any pipeline task uses the `gh models` command
 //
-// Contributes to Setup phase with priority 25 (after cuenv, before task execution).
+// Injects tasks:
+// - cuenv:contributor:gh-models.setup: Installs gh-models extension
 //
 // This is a GitHub-specific contributor.
 //
@@ -18,13 +19,9 @@ import "github.com/cuenv/cuenv/schema"
 //	ci: contributors: [contributors.#GhModels]
 #GhModels: schema.#Contributor & {
 	id: "gh-models"
-	when: {
-		// Active if any pipeline task uses gh models command
-		taskCommand: ["gh", "models"]
-	}
+	when: taskCommand: ["gh", "models"]
 	tasks: [{
-		id:       "setup-gh-models"
-		phase:    "setup"
+		id:       "gh-models.setup"
 		label:    "Setup GitHub Models CLI"
 		priority: 25
 		shell:    false

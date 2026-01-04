@@ -91,7 +91,7 @@ package schema
 // Pipeline task reference - either a simple task name or a matrix task
 #PipelineTask: string | #MatrixTask
 
-// GitHub Action configuration for stage tasks
+// GitHub Action configuration for contributor tasks
 #GitHubActionConfig: close({
 	uses!: string        // Action reference (e.g., "Mozilla-Actions/sccache-action@v0.2")
 	with?: [string]: _   // Action inputs
@@ -101,14 +101,75 @@ package schema
 // Contributors
 // =============================================================================
 
-// Build phases for contributor-injected tasks
-#BuildPhase: "bootstrap" | "setup" | "success" | "failure"
+// Auto-association rules for contributors
+// Defines how user tasks are automatically connected to contributor tasks
+#AutoAssociate: close({
+	// Commands that trigger auto-association (e.g., ["bun", "bunx"])
+	command?: [...string]
+	// Task to inject as dependency (e.g., "cuenv:contributor:bun.workspace.setup")
+	injectDependency?: string
+})
 
-// Activation predicate for contributors
+// Secret reference for contributor tasks
+#SecretRef: close({
+	source!:   string            // CI secret name (e.g., "CACHIX_AUTH_TOKEN")
+	cacheKey?: bool | *false     // Include in cache key via salted HMAC
+})
+
+// Execution condition for contributor tasks
+#TaskCondition: "on_success" | "on_failure" | "always"
+
+// Provider-specific task configuration
+#TaskProviderConfig: close({
+	github?: #GitHubActionConfig
+})
+
+// Contributor task definition
+// Tasks injected into the DAG by contributors
+#ContributorTask: close({
+	// Task identifier (will be prefixed with cuenv:contributor:)
+	id!: string
+	// Shell command to execute
+	command?: string
+	// Command arguments
+	args?: [...string]
+	// Multi-line script (alternative to command)
+	script?: string
+	// Wrap command in shell
+	shell?: bool | *false
+	// Environment variables
+	env?: [string]: string
+	// Secret references (key=env var name)
+	secrets?: [string]: #SecretRef | string
+	// Input files/patterns for caching
+	inputs?: [...string]
+	// Output files/patterns for caching
+	outputs?: [...string]
+	// Whether task requires hermetic execution
+	hermetic?: bool | *false
+	// Dependencies on other tasks
+	dependsOn?: [...string]
+	// Human-readable description
+	description?: string
+	// Human-readable display name
+	label?: string
+	// Ordering priority (lower = earlier)
+	priority?: int | *10
+	// Execution condition (on_success, on_failure, always)
+	condition?: #TaskCondition
+	// Provider-specific overrides (e.g., GitHub Actions)
+	provider?: #TaskProviderConfig
+})
+
+// Contributor activation condition
 // All specified conditions must be true (AND logic)
 #ActivationCondition: close({
 	// Always active (no conditions)
 	always?: bool
+
+	// Workspace membership detection (active if project is member of these workspace types)
+	// Values: "npm", "bun", "pnpm", "yarn", "cargo", "deno"
+	workspaceMember?: [...string]
 
 	// Runtime type detection (active if project uses any of these runtime types)
 	// Values: "nix", "devenv", "container", "dagger", "oci", "tools"
@@ -126,64 +187,27 @@ package schema
 	// Path format: "github.cachix", "github.trustedPublishing.cratesIo"
 	providerConfig?: [...string]
 
-	// Task command detection (active if any pipeline task uses these commands)
-	// Format: ["gh", "models"] matches tasks with command=["gh", "models", ...]
+	// Task command detection (active if any task uses these commands)
 	taskCommand?: [...string]
 
-	// Task label detection (active if any pipeline task has these labels)
+	// Task label detection (active if any task has these labels)
 	taskLabels?: [...string]
 
 	// Environment name matching (active only in these environments)
 	environment?: [...string]
-
-	// Workspace type detection (active if project has these package managers)
-	// Values: "npm", "bun", "pnpm", "yarn", "cargo", "deno"
-	workspaceType?: [...string]
-})
-
-// Secret reference for phase tasks
-#SecretRef: close({
-	source!:   string            // CI secret name (e.g., "CACHIX_AUTH_TOKEN")
-	cacheKey?: bool | *false     // Include in cache key via salted HMAC
-})
-
-// Execution condition for phase tasks
-#TaskCondition: "on_success" | "on_failure" | "always"
-
-// A task contributed to a build phase
-#PhaseTask: close({
-	id!:       string              // Unique task identifier (e.g., "install-nix")
-	phase!:    #BuildPhase         // Target phase (bootstrap, setup, success, failure)
-	label?:    string              // Human-readable display name
-	command?:  string              // Shell command to execute
-	args?:     [...string]         // Command arguments
-	script?:   string              // Multi-line script (alternative to command)
-	shell?:    bool | *false       // Wrap command in shell
-	env?:      [string]: string    // Environment variables
-	secrets?:  [string]: #SecretRef | string  // Secret references (key=env var name)
-	dependsOn?: [...string]        // Dependencies on other phase tasks
-	priority?: int | *10           // Ordering within phase (lower = earlier)
-
-	// Execution condition (on_success, on_failure, always)
-	// Determines when the task runs based on prior task outcomes.
-	// Emitters translate this to native constructs (e.g., `if: failure()` in GitHub Actions).
-	condition?: #TaskCondition
-
-	// Provider-specific overrides (e.g., GitHub Actions)
-	provider?: #PhaseTaskProviderConfig
-})
-
-// Provider-specific phase task configuration
-#PhaseTaskProviderConfig: close({
-	github?: #GitHubActionConfig
 })
 
 // Contributor definition
-// Contributors inject tasks into build phases based on activation conditions
+// Contributors inject tasks into the DAG based on activation conditions
 #Contributor: close({
-	id!:    string                    // Contributor identifier (e.g., "nix", "1password")
-	when?:  #ActivationCondition      // Activation condition (defaults to always active)
-	tasks!: [...#PhaseTask]           // Tasks to contribute when active
+	// Contributor identifier (e.g., "bun.workspace", "nix", "1password")
+	id!: string
+	// Activation condition (defaults to always active)
+	when?: #ActivationCondition
+	// Tasks to contribute when active
+	tasks!: [...#ContributorTask]
+	// Auto-association rules for user tasks
+	autoAssociate?: #AutoAssociate
 })
 
 // Pipeline generation mode
@@ -211,6 +235,6 @@ package schema
 	pipelines?: [string]: #Pipeline
 	provider?: #ProviderConfig
 
-	// Contributors that inject tasks into build phases
+	// Contributors that inject tasks into the DAG
 	contributors?: [...#Contributor]
 })

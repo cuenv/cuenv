@@ -43,6 +43,7 @@ pub mod affected;
 pub mod base;
 pub mod ci;
 pub mod config;
+pub mod contributors;
 pub mod environment;
 pub mod lockfile;
 pub mod manifest;
