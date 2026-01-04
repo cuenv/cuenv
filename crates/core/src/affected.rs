@@ -215,8 +215,8 @@ mod tests {
 
     #[test]
     fn test_build_glob_set() {
-        let patterns = vec!["src/**/*.rs", "tests/*.rs"];
-        let set = build_glob_set(patterns.iter().map(|s| *s)).unwrap();
+        let patterns = ["src/**/*.rs", "tests/*.rs"];
+        let set = build_glob_set(patterns.iter().copied()).unwrap();
 
         assert!(set.is_match("src/lib.rs"));
         assert!(set.is_match("src/foo/bar.rs"));
@@ -226,8 +226,8 @@ mod tests {
 
     #[test]
     fn test_build_glob_set_invalid_patterns() {
-        let patterns = vec!["[invalid", "src/**"];
-        let set = build_glob_set(patterns.iter().map(|s| *s)).unwrap();
+        let patterns = ["[invalid", "src/**"];
+        let set = build_glob_set(patterns.iter().copied()).unwrap();
 
         // Invalid pattern is skipped, valid one still works
         assert!(set.is_match("src/lib.rs"));
@@ -235,8 +235,8 @@ mod tests {
 
     #[test]
     fn test_build_glob_set_empty() {
-        let patterns: Vec<&str> = vec![];
-        let set = build_glob_set(patterns.iter().map(|s| *s));
+        let patterns: [&str; 0] = [];
+        let set = build_glob_set(patterns.iter().copied());
         assert!(set.is_none());
     }
 }

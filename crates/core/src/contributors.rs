@@ -663,11 +663,7 @@ mod tests {
             ],
             auto_associate: Some(AutoAssociate {
                 command: vec!["test-cmd".to_string()],
-                inject_dependency: Some(format!(
-                    "{}{}",
-                    CONTRIBUTOR_TASK_PREFIX,
-                    format!("{id}.setup")
-                )),
+                inject_dependency: Some(format!("{CONTRIBUTOR_TASK_PREFIX}{id}.setup")),
             }),
         }
     }

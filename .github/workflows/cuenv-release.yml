@@ -28,10 +28,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -46,11 +42,7 @@ jobs:
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
-      run: |-
-        cargo build --release -p cuenv && \
-        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
-          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
-        ./target/release/cuenv sync -A
+      run: sh -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
@@ -63,8 +55,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: darwin-arm64
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -82,10 +72,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -100,11 +86,7 @@ jobs:
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
-      run: |-
-        cargo build --release -p cuenv && \
-        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
-          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
-        ./target/release/cuenv sync -A
+      run: sh -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
@@ -117,8 +99,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CUENV_ARCH: linux-x64
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -139,10 +119,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -157,11 +133,7 @@ jobs:
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
-      run: |-
-        cargo build --release -p cuenv && \
-        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
-          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
-        ./target/release/cuenv sync -A
+      run: sh -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
@@ -185,8 +157,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-github:
     name: publish.github
@@ -200,10 +170,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -218,11 +184,7 @@ jobs:
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
-      run: |-
-        cargo build --release -p cuenv && \
-        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
-          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
-        ./target/release/cuenv sync -A
+      run: sh -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
@@ -246,8 +208,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
     name: docs.deploy
@@ -259,10 +219,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -277,11 +233,7 @@ jobs:
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
-      run: |-
-        cargo build --release -p cuenv && \
-        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
-          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
-        ./target/release/cuenv sync -A
+      run: sh -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
@@ -298,8 +250,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
     name: docs.build
@@ -309,10 +259,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
-      with:
-        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
@@ -327,11 +273,7 @@ jobs:
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
-      run: |-
-        cargo build --release -p cuenv && \
-        { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || \
-          echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && \
-        ./target/release/cuenv sync -A
+      run: sh -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup 1Password
@@ -343,8 +285,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4

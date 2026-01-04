@@ -26,7 +26,6 @@ import "github.com/cuenv/cuenv/schema"
 	tasks: [
 		{
 			id:       "setup-sccache"
-			phase:    "setup"
 			label:    "Setup sccache"
 			priority: 5
 			script: """
@@ -41,7 +40,6 @@ import "github.com/cuenv/cuenv/schema"
 		},
 		{
 			id:        "export-sccache-env"
-			phase:     "setup"
 			label:     "Export sccache environment"
 			priority:  6
 			dependsOn: ["setup-sccache"]

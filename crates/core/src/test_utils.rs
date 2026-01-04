@@ -279,15 +279,15 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert(
             "b".to_string(),
-            TaskDefinition::Single(Box::new(Task::default())),
+            TaskDefinition::Single(Box::default()),
         );
         tasks.insert(
             "a".to_string(),
-            TaskDefinition::Single(Box::new(Task::default())),
+            TaskDefinition::Single(Box::default()),
         );
         tasks.insert(
             "c".to_string(),
-            TaskDefinition::Single(Box::new(Task::default())),
+            TaskDefinition::Single(Box::default()),
         );
 
         let names = task_names(&tasks);

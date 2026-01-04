@@ -1492,7 +1492,7 @@ mod tests {
             error_msg
         );
         assert!(
-            error_msg.contains("1"),
+            error_msg.contains('1'),
             "Error should mention timeout duration: {}",
             error_msg
         );
@@ -1639,11 +1639,11 @@ mod tests {
     #[tokio::test]
     async fn test_environment_capture_special_chars() {
         // Test multiline environment variable values
-        let multiline_script = r#"
+        let multiline_script = r"
 export MULTILINE_VAR='line1
 line2
 line3'
-"#;
+";
 
         let result = evaluate_shell_environment(multiline_script).await;
         assert!(result.is_ok(), "Should parse multiline env vars");
@@ -1663,11 +1663,11 @@ line3'
         }
 
         // Test Unicode characters
-        let unicode_script = r#"
+        let unicode_script = r"
 export UNICODE_VAR='Hello 世界 🌍 émoji'
 export CHINESE_VAR='中文测试'
 export JAPANESE_VAR='日本語テスト'
-"#;
+";
 
         let result = evaluate_shell_environment(unicode_script).await;
         assert!(result.is_ok(), "Should parse unicode env vars");
@@ -1706,10 +1706,10 @@ export EQUALS_VAR="key=value=another"
     #[tokio::test]
     async fn test_environment_capture_edge_cases() {
         // Test empty value
-        let empty_script = r#"
+        let empty_script = r"
 export EMPTY_VAR=''
 export SPACE_VAR='   '
-"#;
+";
 
         let result = evaluate_shell_environment(empty_script).await;
         assert!(result.is_ok(), "Should handle empty/whitespace values");
