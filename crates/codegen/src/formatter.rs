@@ -2,7 +2,7 @@
 //!
 //! This module provides formatting capabilities for various programming languages.
 
-use crate::cube::FormatConfig;
+use crate::codegen::FormatConfig;
 use crate::{CodegenError, Result};
 
 /// Language-specific code formatter

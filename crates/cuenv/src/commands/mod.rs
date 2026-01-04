@@ -27,7 +27,7 @@ pub mod owners;
 pub mod release;
 /// Secrets provider setup and management.
 pub mod secrets;
-/// Synchronization commands for cubes, CI, and other providers.
+/// Synchronization commands for codegen, CI, and other providers.
 pub mod sync;
 /// Task execution and orchestration commands.
 pub mod task;
@@ -324,7 +324,7 @@ pub enum Command {
         mode: sync::SyncMode,
         /// Scope (single path or entire workspace).
         scope: handler::SyncScope,
-        /// Show diff for cubes (cubes-specific).
+        /// Show diff for codegen (codegen-specific).
         show_diff: bool,
         /// CI provider filter.
         ci_provider: Option<String>,

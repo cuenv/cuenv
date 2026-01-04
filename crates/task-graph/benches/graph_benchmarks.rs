@@ -4,9 +4,9 @@
 
 #![allow(clippy::unwrap_used)]
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use std::hint::black_box;
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use cuenv_task_graph::{TaskGraph, TaskNodeData};
+use std::hint::black_box;
 
 /// Simple task type for benchmarking
 #[derive(Debug, Clone)]
@@ -104,14 +104,10 @@ fn benchmark_get_parallel_groups(c: &mut Criterion) {
     let mut group = c.benchmark_group("get_parallel_groups");
 
     for count in [50, 100, 200, 500] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(count),
-            &count,
-            |b, &count| {
-                let graph = generate_wide_graph(count);
-                b.iter(|| black_box(graph.get_parallel_groups().unwrap()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
+            let graph = generate_wide_graph(count);
+            b.iter(|| black_box(graph.get_parallel_groups().unwrap()));
+        });
     }
 
     group.finish();
@@ -152,14 +148,10 @@ fn benchmark_cycle_detection(c: &mut Criterion) {
     let mut group = c.benchmark_group("cycle_detection");
 
     for count in [100, 500, 1000] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(count),
-            &count,
-            |b, &count| {
-                let graph = generate_wide_graph(count);
-                b.iter(|| black_box(graph.has_cycles()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
+            let graph = generate_wide_graph(count);
+            b.iter(|| black_box(graph.has_cycles()));
+        });
     }
 
     group.finish();
@@ -169,16 +161,12 @@ fn benchmark_graph_construction(c: &mut Criterion) {
     let mut group = c.benchmark_group("graph_construction");
 
     for count in [100, 500, 1000] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(count),
-            &count,
-            |b, &count| {
-                b.iter(|| {
-                    let graph = generate_wide_graph(count);
-                    black_box(graph)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
+            b.iter(|| {
+                let graph = generate_wide_graph(count);
+                black_box(graph)
+            });
+        });
     }
 
     group.finish();

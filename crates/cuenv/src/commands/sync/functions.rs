@@ -1,7 +1,7 @@
 //! Sync function implementations.
 //!
 //! Supports generating:
-//! - Project files from CUE cube templates
+//! - Project files from CUE codegen templates
 //! - CI pipelines from CUE configuration
 //!
 //! Note: Ignore files and CODEOWNERS are now handled via .rules.cue files.
@@ -131,10 +131,10 @@ fn load_instance_at_path(
     Ok((instance.clone(), module_root))
 }
 
-/// Execute the sync cubes command for a single project.
+/// Execute the sync codegen command for a single project.
 ///
-/// Syncs cube-generated files for the project at the specified path.
-/// Use `execute_sync_cubes_workspace` for workspace-wide syncing.
+/// Syncs codegen-generated files for the project at the specified path.
+/// Use `execute_sync_codegen_workspace` for workspace-wide syncing.
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
@@ -142,8 +142,8 @@ fn load_instance_at_path(
 /// # Errors
 ///
 /// Returns an error if CUE evaluation fails or file operations fail.
-#[instrument(name = "sync_cubes", skip(executor))]
-pub async fn execute_sync_cubes(
+#[instrument(name = "sync_codegen", skip(executor))]
+pub async fn execute_sync_codegen(
     path: &str,
     package: &str,
     dry_run: bool,
@@ -151,14 +151,14 @@ pub async fn execute_sync_cubes(
     diff: bool,
     executor: Option<&CommandExecutor>,
 ) -> Result<String> {
-    tracing::info!("Starting sync cubes command");
+    tracing::info!("Starting sync codegen command");
 
     let dir_path = Path::new(path);
-    execute_sync_cubes_local(dir_path, package, dry_run, check, diff, executor)
+    execute_sync_codegen_local(dir_path, package, dry_run, check, diff, executor)
 }
 
-/// Sync cubes for the local project only
-fn execute_sync_cubes_local(
+/// Sync codegen for the local project only
+fn execute_sync_codegen_local(
     dir_path: &Path,
     package: &str,
     dry_run: bool,
@@ -176,11 +176,18 @@ fn execute_sync_cubes_local(
     // Use module-wide evaluation (cached if executor provided)
     let manifest: Project = load_project_config(dir_path, &effective_package, executor)?;
 
-    let Some(cube_config) = &manifest.cube else {
-        return Ok("No cube configuration found in this project.".to_string());
+    let Some(codegen_config) = &manifest.codegen else {
+        return Ok("No codegen configuration found in this project.".to_string());
     };
 
-    let sync_result = sync_cube_files(dir_path, &manifest.name, cube_config, dry_run, check, diff)?;
+    let sync_result = sync_codegen_files(
+        dir_path,
+        &manifest.name,
+        codegen_config,
+        dry_run,
+        check,
+        diff,
+    )?;
 
     // Run formatters only on files that were actually written
     let format_result = if let Some(ref formatters) = manifest.formatters {
@@ -189,8 +196,11 @@ fn execute_sync_cubes_local(
             String::new()
         } else if dry_run {
             // In dry-run mode, show what would be formatted based on all configured files
-            let file_paths: Vec<std::path::PathBuf> =
-                cube_config.files.keys().map(|p| dir_path.join(p)).collect();
+            let file_paths: Vec<std::path::PathBuf> = codegen_config
+                .files
+                .keys()
+                .map(|p| dir_path.join(p))
+                .collect();
             let file_refs: Vec<&Path> = file_paths.iter().map(|p| p.as_path()).collect();
             super::formatters::format_generated_files(
                 &file_refs, formatters, dir_path, dry_run, check,
@@ -218,7 +228,7 @@ fn execute_sync_cubes_local(
     }
 }
 
-/// Result of a cube sync operation
+/// Result of a codegen sync operation
 struct SyncResult {
     /// Human-readable output
     output: String,
@@ -226,11 +236,11 @@ struct SyncResult {
     written_files: Vec<PathBuf>,
 }
 
-/// Sync cube files for a single project
-fn sync_cube_files(
+/// Sync codegen files for a single project
+fn sync_codegen_files(
     project_root: &Path,
     project_name: &str,
-    cube_config: &cuenv_core::manifest::CubeConfig,
+    codegen_config: &cuenv_core::manifest::CodegenConfig,
     dry_run: bool,
     check: bool,
     diff: bool,
@@ -240,7 +250,7 @@ fn sync_cube_files(
     let mut output_lines = Vec::new();
     let mut written_files = Vec::new();
 
-    for (file_path, file_def) in &cube_config.files {
+    for (file_path, file_def) in &codegen_config.files {
         let output_path = project_root.join(file_path);
 
         match file_def.mode {
@@ -277,9 +287,9 @@ fn sync_cube_files(
 
     tracing::info!(
         project = project_name,
-        files = cube_config.files.len(),
+        files = codegen_config.files.len(),
         written = written_files.len(),
-        "Cube sync complete"
+        "Codegen sync complete"
     );
 
     Ok(SyncResult {
@@ -288,7 +298,7 @@ fn sync_cube_files(
     })
 }
 
-/// Sync a managed cube file (always overwritten to match expected content)
+/// Sync a managed codegen file (always overwritten to match expected content)
 ///
 /// Returns `true` if the file was actually written to disk.
 fn sync_managed_file(
@@ -322,13 +332,13 @@ fn sync_managed_file(
         }
         Ok(false)
     } else {
-        write_cube_file(output_path, file_path, content, "managed")?;
+        write_codegen_file(output_path, file_path, content, "managed")?;
         output_lines.push(format!("  Generated: {file_path}"));
         Ok(true)
     }
 }
 
-/// Sync a scaffold cube file (only created if it doesn't exist)
+/// Sync a scaffold codegen file (only created if it doesn't exist)
 ///
 /// Returns `true` if the file was actually written to disk.
 fn sync_scaffold_file(
@@ -354,19 +364,24 @@ fn sync_scaffold_file(
         output_lines.push(format!("  Would scaffold: {file_path}"));
         Ok(false)
     } else {
-        write_cube_file(output_path, file_path, content, "scaffold")?;
+        write_codegen_file(output_path, file_path, content, "scaffold")?;
         output_lines.push(format!("  Scaffolded: {file_path}"));
         Ok(true)
     }
 }
 
-/// Write a cube file to disk, creating parent directories as needed
-fn write_cube_file(output_path: &Path, file_path: &str, content: &str, mode: &str) -> Result<()> {
+/// Write a codegen file to disk, creating parent directories as needed
+fn write_codegen_file(
+    output_path: &Path,
+    file_path: &str,
+    content: &str,
+    mode: &str,
+) -> Result<()> {
     tracing::debug!(
         file_path = %file_path,
         output_path = %output_path.display(),
         content_len = content.len(),
-        "Writing {mode} cube file"
+        "Writing {mode} codegen file"
     );
     if let Some(parent) = output_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {

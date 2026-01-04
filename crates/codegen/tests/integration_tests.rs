@@ -1,4 +1,4 @@
-use cuenv_cubes::{Cube, GenerateOptions, Generator};
+use cuenv_codegen::{Codegen, GenerateOptions, Generator};
 use tempfile::TempDir;
 
 /// Create a test directory with proper prefix (non-hidden) for CUE loader compatibility.
@@ -14,8 +14,8 @@ fn create_test_dir() -> TempDir {
 }
 
 #[test]
-fn test_basic_cube_cue() {
-    // Create a simple cube in CUE format (use non-hidden prefix for CUE compatibility)
+fn test_basic_codegen_cue() {
+    // Create a simple codegen configuration in CUE format (use non-hidden prefix for CUE compatibility)
     let temp_dir = create_test_dir();
 
     // Create CUE module structure (required by evaluate_module)
@@ -23,13 +23,13 @@ fn test_basic_cube_cue() {
     std::fs::create_dir(&cue_mod_dir).unwrap();
     std::fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.local/cubes\"\nlanguage: version: \"v0.9.0\"\n",
+        "module: \"test.local/codegen\"\nlanguage: version: \"v0.9.0\"\n",
     )
     .unwrap();
 
-    let cube_path = temp_dir.path().join("cube.cue");
+    let codegen_path = temp_dir.path().join("codegen.cue");
 
-    let cube_cue = r#"package cubes
+    let codegen_cue = r#"package codegen
 
 files: {
     "test.json": {
@@ -47,11 +47,11 @@ files: {
 context: null
 "#;
 
-    std::fs::write(&cube_path, cube_cue).unwrap();
+    std::fs::write(&codegen_path, codegen_cue).unwrap();
 
     // Load and generate
-    let cube = Cube::load(&cube_path).unwrap();
-    let generator = Generator::new(cube);
+    let codegen = Codegen::load(&codegen_path).unwrap();
+    let generator = Generator::new(codegen);
 
     let output_dir = create_test_dir();
     let options = GenerateOptions {

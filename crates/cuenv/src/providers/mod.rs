@@ -3,7 +3,7 @@
 //! This module contains the default providers that ship with cuenv:
 //!
 //! - [`CiProvider`] - Syncs CI workflow files (GitHub Actions, Buildkite)
-//! - [`CubesProvider`] - Syncs cube-generated project files
+//! - [`CodegenProvider`] - Syncs codegen-generated project files
 //! - [`RulesProvider`] - Syncs rules configuration (.gitignore, .editorconfig, CODEOWNERS)
 //!
 //! All of these implement both [`Provider`](crate::Provider) and
@@ -15,11 +15,11 @@
 //! - [`detect_code_owners_provider`] - Detect the appropriate CODEOWNERS provider
 
 mod ci;
-mod cubes;
+mod codegen;
 mod detection;
 mod rules;
 
 pub use ci::CiProvider;
-pub use cubes::CubesProvider;
+pub use codegen::CodegenProvider;
 pub use detection::{detect_ci_provider, detect_code_owners_provider};
 pub use rules::RulesProvider;

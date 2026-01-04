@@ -298,7 +298,7 @@ fn default_cue_includes() -> Vec<String> {
 pub type Ignore = HashMap<String, IgnoreValue>;
 
 // ============================================================================
-// Cube Types (for code generation)
+// Codegen Types (for code generation)
 // ============================================================================
 
 /// File generation mode
@@ -340,7 +340,7 @@ fn default_indent() -> String {
     "space".to_string()
 }
 
-/// A file definition from the cube
+/// A file definition from the codegen configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectFile {
     /// Content of the file
@@ -361,9 +361,9 @@ pub struct ProjectFile {
     pub gitignore: bool,
 }
 
-/// A CUE Cube containing file definitions for code generation
+/// Codegen configuration containing file definitions for code generation
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct CubeConfig {
+pub struct CodegenConfig {
     /// Map of file paths to their definitions
     #[serde(default)]
     pub files: HashMap<String, ProjectFile>,
@@ -822,9 +822,9 @@ pub struct Project {
     #[serde(default)]
     pub tasks: HashMap<String, TaskDefinition>,
 
-    /// Cube configuration for code generation
+    /// Codegen configuration for code generation
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cube: Option<CubeConfig>,
+    pub codegen: Option<CodegenConfig>,
 
     /// Runtime configuration (project-level default for all tasks)
     #[serde(skip_serializing_if = "Option::is_none")]

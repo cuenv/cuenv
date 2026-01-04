@@ -10,7 +10,7 @@
 
 use cuengine::evaluate_cue_package_typed;
 use cuenv_core::contributors::{
-    builtin_workspace_contributors, ContributorContext, ContributorEngine, CONTRIBUTOR_TASK_PREFIX,
+    CONTRIBUTOR_TASK_PREFIX, ContributorContext, ContributorEngine, builtin_workspace_contributors,
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::TaskIndex;
@@ -29,8 +29,12 @@ fn get_contributor_tests_dir() -> PathBuf {
 
 /// Load a Project manifest from an example directory.
 fn load_manifest(example_path: &Path) -> Result<Project, String> {
-    evaluate_cue_package_typed::<Project>(example_path, "cuenv")
-        .map_err(|e| format!("Failed to load manifest from {}: {e}", example_path.display()))
+    evaluate_cue_package_typed::<Project>(example_path, "cuenv").map_err(|e| {
+        format!(
+            "Failed to load manifest from {}: {e}",
+            example_path.display()
+        )
+    })
 }
 
 /// Check if the FFI/module evaluation is available for these tests.
@@ -66,11 +70,7 @@ fn apply_contributors(manifest: &mut Project, project_root: &Path) -> TaskIndex 
 /// Get the canonical (dotted) form of a contributor task name
 fn canonical_contributor_task(suffix: &str) -> String {
     // CONTRIBUTOR_TASK_PREFIX uses colons, TaskIndex normalizes to dots
-    format!(
-        "{}{}",
-        CONTRIBUTOR_TASK_PREFIX.replace(':', "."),
-        suffix
-    )
+    format!("{}{}", CONTRIBUTOR_TASK_PREFIX.replace(':', "."), suffix)
 }
 
 // ============================================================================
@@ -256,11 +256,7 @@ fn test_idempotent_injection() {
         .apply(&mut project.tasks)
         .expect("Second apply failed");
     let second_index = TaskIndex::build(&project.tasks).expect("Second index build failed");
-    let second_tasks: Vec<_> = second_index
-        .list()
-        .iter()
-        .map(|t| t.name.clone())
-        .collect();
+    let second_tasks: Vec<_> = second_index.list().iter().map(|t| t.name.clone()).collect();
 
     // Task lists should be identical
     assert_eq!(

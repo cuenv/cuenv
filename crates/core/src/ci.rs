@@ -668,7 +668,10 @@ mod tests {
         assert_eq!(task.command, Some("sh".to_string()));
         assert_eq!(
             task.args,
-            vec!["-c", "curl -sSL https://install.determinate.systems/nix | sh"]
+            vec![
+                "-c",
+                "curl -sSL https://install.determinate.systems/nix | sh"
+            ]
         );
     }
 

@@ -101,7 +101,7 @@ impl Cuenv {
         CuenvBuilder::new()
     }
 
-    /// Create cuenv with default providers (ci, cubes, rules).
+    /// Create cuenv with default providers (ci, codegen, rules).
     #[must_use]
     pub fn with_defaults() -> Self {
         Self::builder().with_defaults().build()
@@ -116,7 +116,7 @@ impl Cuenv {
     /// ```ignore
     /// let cuenv = Cuenv::with_defaults();
     /// let sync_cmd = cuenv.build_sync_command();
-    /// // sync_cmd has subcommands: ci, cubes, rules
+    /// // sync_cmd has subcommands: ci, codegen, rules
     /// ```
     #[must_use]
     pub fn build_sync_command(&self) -> clap::Command {
@@ -237,7 +237,10 @@ mod tests {
         // Should have the expected subcommands from providers
         let subcommands: Vec<_> = sync_cmd.get_subcommands().map(|c| c.get_name()).collect();
         assert!(subcommands.contains(&"ci"), "Missing 'ci' subcommand");
-        assert!(subcommands.contains(&"cubes"), "Missing 'cubes' subcommand");
+        assert!(
+            subcommands.contains(&"codegen"),
+            "Missing 'codegen' subcommand"
+        );
         assert!(subcommands.contains(&"rules"), "Missing 'rules' subcommand");
     }
 

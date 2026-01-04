@@ -309,7 +309,7 @@ cuenv sync [OPTIONS] [SUBCOMMAND]
 
 - `ignore`: Generate ignore files only (.gitignore, .dockerignore, etc.)
 - `codeowners`: Sync CODEOWNERS file from CUE configuration
-- `cubes`: Sync files from CUE cube configurations
+- `codegen`: Sync files from CUE codegen configurations
 
 **Example:**
 
@@ -329,8 +329,8 @@ cuenv sync --check
 # Sync CODEOWNERS file
 cuenv sync codeowners
 
-# Sync cubes with diff output
-cuenv sync cubes --diff
+# Sync codegen with diff output
+cuenv sync codegen --diff
 
 # Sync from a specific directory
 cuenv sync --path ./project

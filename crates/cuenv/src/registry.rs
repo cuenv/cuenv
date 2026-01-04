@@ -187,7 +187,7 @@ impl Default for ProviderRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{CiProvider, CubesProvider, RulesProvider};
+    use crate::providers::{CiProvider, CodegenProvider, RulesProvider};
 
     #[test]
     fn test_empty_registry() {
@@ -228,7 +228,7 @@ mod tests {
     fn test_multiple_sync_providers() {
         let mut registry = ProviderRegistry::new();
         registry.register_sync(CiProvider::new());
-        registry.register_sync(CubesProvider::new());
+        registry.register_sync(CodegenProvider::new());
         registry.register_sync(RulesProvider::new());
 
         assert_eq!(registry.sync_provider_count(), 3);
@@ -236,7 +236,7 @@ mod tests {
 
         // Verify all can be retrieved by name
         assert!(registry.get_sync_provider("ci").is_some());
-        assert!(registry.get_sync_provider("cubes").is_some());
+        assert!(registry.get_sync_provider("codegen").is_some());
         assert!(registry.get_sync_provider("rules").is_some());
     }
 
@@ -244,19 +244,19 @@ mod tests {
     fn test_sync_provider_names_returns_all() {
         let mut registry = ProviderRegistry::new();
         registry.register_sync(CiProvider::new());
-        registry.register_sync(CubesProvider::new());
+        registry.register_sync(CodegenProvider::new());
 
         let names = registry.sync_provider_names();
         assert_eq!(names.len(), 2);
         assert!(names.contains(&"ci"));
-        assert!(names.contains(&"cubes"));
+        assert!(names.contains(&"codegen"));
     }
 
     #[test]
     fn test_sync_providers_iterator() {
         let mut registry = ProviderRegistry::new();
         registry.register_sync(CiProvider::new());
-        registry.register_sync(CubesProvider::new());
+        registry.register_sync(CodegenProvider::new());
 
         let providers: Vec<_> = registry.sync_providers().collect();
         assert_eq!(providers.len(), 2);
@@ -266,7 +266,7 @@ mod tests {
     fn test_capability_counts_are_independent() {
         let mut registry = ProviderRegistry::new();
         registry.register_sync(CiProvider::new());
-        registry.register_sync(CubesProvider::new());
+        registry.register_sync(CodegenProvider::new());
 
         // Only sync providers registered
         assert_eq!(registry.sync_provider_count(), 2);

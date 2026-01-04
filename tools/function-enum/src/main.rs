@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use syn::{visit::Visit, Visibility};
+use syn::{Visibility, visit::Visit};
 use walkdir::WalkDir;
 
 #[derive(Parser)]
@@ -69,7 +69,12 @@ struct FunctionVisitor {
 }
 
 impl FunctionVisitor {
-    fn new(crate_name: String, file_path: String, public_only: bool, include_methods: bool) -> Self {
+    fn new(
+        crate_name: String,
+        file_path: String,
+        public_only: bool,
+        include_methods: bool,
+    ) -> Self {
         Self {
             crate_name,
             file_path,
@@ -170,7 +175,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut all_functions = Vec::new();
     for (crate_name, crate_path) in &crates {
         eprintln!("Parsing {}...", crate_name);
-        let functions = parse_crate_sources(crate_name, crate_path, cli.public_only, cli.include_methods)?;
+        let functions =
+            parse_crate_sources(crate_name, crate_path, cli.public_only, cli.include_methods)?;
         eprintln!("  Found {} functions", functions.len());
         all_functions.extend(functions);
     }
@@ -198,7 +204,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn discover_workspace_crates(workspace_path: &Path) -> Result<Vec<(String, PathBuf)>, Box<dyn std::error::Error>> {
+fn discover_workspace_crates(
+    workspace_path: &Path,
+) -> Result<Vec<(String, PathBuf)>, Box<dyn std::error::Error>> {
     let cargo_toml_path = workspace_path.join("Cargo.toml");
     let content = fs::read_to_string(&cargo_toml_path)?;
     let value: toml::Value = toml::from_str(&content)?;
@@ -262,23 +270,21 @@ fn parse_crate_sources(
             .to_string();
 
         match fs::read_to_string(file_path) {
-            Ok(content) => {
-                match syn::parse_file(&content) {
-                    Ok(syntax) => {
-                        let mut visitor = FunctionVisitor::new(
-                            crate_name.to_string(),
-                            relative_path,
-                            public_only,
-                            include_methods,
-                        );
-                        visitor.visit_file(&syntax);
-                        all_functions.extend(visitor.functions);
-                    }
-                    Err(e) => {
-                        eprintln!("  Warning: Failed to parse {}: {}", file_path.display(), e);
-                    }
+            Ok(content) => match syn::parse_file(&content) {
+                Ok(syntax) => {
+                    let mut visitor = FunctionVisitor::new(
+                        crate_name.to_string(),
+                        relative_path,
+                        public_only,
+                        include_methods,
+                    );
+                    visitor.visit_file(&syntax);
+                    all_functions.extend(visitor.functions);
                 }
-            }
+                Err(e) => {
+                    eprintln!("  Warning: Failed to parse {}: {}", file_path.display(), e);
+                }
+            },
             Err(e) => {
                 eprintln!("  Warning: Failed to read {}: {}", file_path.display(), e);
             }

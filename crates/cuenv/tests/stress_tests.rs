@@ -141,11 +141,7 @@ fn test_deep_dependency_chain_20_levels() {
 
     // Each group should have exactly 1 task
     for (level, group) in groups.iter().enumerate() {
-        assert_eq!(
-            group.len(),
-            1,
-            "Level {level} should have exactly 1 task"
-        );
+        assert_eq!(group.len(), 1, "Level {level} should have exactly 1 task");
     }
 
     // Verify topological ordering
@@ -269,10 +265,7 @@ fn test_large_task_graph_1000_tasks() {
         1,
         "Last group should have only final task"
     );
-    assert_eq!(
-        last_group[0].name, "final",
-        "Last task should be final"
-    );
+    assert_eq!(last_group[0].name, "final", "Last task should be final");
 
     // Verify topological sort succeeds
     let sorted = graph
@@ -372,10 +365,7 @@ fn test_diamond_pattern_chain() {
             .add_task(&right_name, StressTask::new(&[&top_name]))
             .expect("Failed to add right");
         graph
-            .add_task(
-                &bottom_name,
-                StressTask::new(&[&left_name, &right_name]),
-            )
+            .add_task(&bottom_name, StressTask::new(&[&left_name, &right_name]))
             .expect("Failed to add bottom");
 
         prev_bottom = Some(bottom_name);

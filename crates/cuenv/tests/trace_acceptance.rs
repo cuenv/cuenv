@@ -99,7 +99,8 @@ fn run_dry_run(example: &str, task: &str) -> Result<DagExport, String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout).map_err(|e| format!("Failed to parse DAG JSON: {e}\nOutput: {stdout}"))
+    serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse DAG JSON: {e}\nOutput: {stdout}"))
 }
 
 // =============================================================================
@@ -122,7 +123,10 @@ fn test_task_basic_greetall_dag_structure() {
     assert!(!dag.tasks.is_empty(), "DAG should have tasks");
 
     // Verify we have parallel groups
-    assert!(!dag.parallel_groups.is_empty(), "DAG should have parallel groups");
+    assert!(
+        !dag.parallel_groups.is_empty(),
+        "DAG should have parallel groups"
+    );
 
     // Verify execution order is consistent with tasks
     for task in &dag.tasks {
@@ -181,7 +185,10 @@ fn test_interpolate_task_dag() {
 
     // Verify DAG structure
     assert!(!dag.tasks.is_empty(), "DAG should have tasks");
-    assert!(!dag.parallel_groups.is_empty(), "Should have parallel groups");
+    assert!(
+        !dag.parallel_groups.is_empty(),
+        "Should have parallel groups"
+    );
 
     // All tasks should be in execution order
     for task in &dag.tasks {
@@ -235,7 +242,10 @@ fn test_hook_example_verify_env_dag() {
     assert!(!dag.tasks.is_empty(), "DAG should have tasks");
 
     // Verify execution order is populated
-    assert!(!dag.execution_order.is_empty(), "Execution order should be populated");
+    assert!(
+        !dag.execution_order.is_empty(),
+        "Execution order should be populated"
+    );
 }
 
 // =============================================================================
@@ -306,10 +316,7 @@ fn test_dry_run_with_nonexistent_task_fails() {
 
     let result = run_dry_run("task-basic", "nonexistent_task_12345");
 
-    assert!(
-        result.is_err(),
-        "dry-run with nonexistent task should fail"
-    );
+    assert!(result.is_err(), "dry-run with nonexistent task should fail");
 }
 
 #[test]

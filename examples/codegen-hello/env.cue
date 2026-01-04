@@ -2,19 +2,19 @@ package examples
 
 import (
 	"github.com/cuenv/cuenv/schema"
-	"github.com/cuenv/cuenv/schema/cubes"
+	gen "github.com/cuenv/cuenv/schema/codegen"
 )
 
 schema.#Project & {
-	name: "cube-hello-example"
+	name: "codegen-hello-example"
 
-	cube: {
+	codegen: {
 		context: {
 			serviceName: "hello-world"
 		}
 
 		files: {
-			"package.json": cubes.#JSONFile & {
+			"package.json": gen.#JSONFile & {
 				mode: "managed"
 				content: """
 				{
@@ -23,7 +23,7 @@ schema.#Project & {
 				}
 				"""
 			}
-			"src/main.ts": cubes.#TypeScriptFile & {
+			"src/main.ts": gen.#TypeScriptFile & {
 				mode: "scaffold"
 				content: """
 				console.log("Hello, \(context.serviceName)!");

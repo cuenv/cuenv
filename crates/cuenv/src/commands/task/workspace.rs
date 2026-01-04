@@ -47,8 +47,7 @@ pub struct ProjectCtx {
 /// 3. Auto-associate user tasks by command
 pub fn apply_workspace_contributors(manifest: &mut Project, project_root: &Path) {
     // Create context with workspace detection
-    let context = ContributorContext::detect(project_root)
-        .with_task_commands(&manifest.tasks);
+    let context = ContributorContext::detect(project_root).with_task_commands(&manifest.tasks);
 
     // Get built-in workspace contributors
     let contributors = builtin_workspace_contributors();

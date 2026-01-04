@@ -78,7 +78,10 @@ mod pr_number_parsing {
         assert_eq!(parse_pr_number("refs/pull/abc/merge"), None);
 
         // Very large PR number (should still parse)
-        assert_eq!(parse_pr_number("refs/pull/999999999/merge"), Some(999_999_999));
+        assert_eq!(
+            parse_pr_number("refs/pull/999999999/merge"),
+            Some(999_999_999)
+        );
 
         // PR number zero (edge case)
         assert_eq!(parse_pr_number("refs/pull/0/merge"), Some(0));
@@ -121,28 +124,15 @@ mod repo_parsing {
 
         for (input, expected_owner, expected_repo) in test_cases {
             let (owner, repo) = parse_repo(input);
-            assert_eq!(
-                owner, expected_owner,
-                "Owner mismatch for '{input}'"
-            );
-            assert_eq!(
-                repo, expected_repo,
-                "Repo mismatch for '{input}'"
-            );
+            assert_eq!(owner, expected_owner, "Owner mismatch for '{input}'");
+            assert_eq!(repo, expected_repo, "Repo mismatch for '{input}'");
         }
     }
 
     /// Verify invalid formats return empty strings.
     #[test]
     fn returns_empty_for_invalid_formats() {
-        let test_cases = [
-            "",
-            "invalid",
-            "a/b/c",
-            "a/b/c/d",
-            "/repo",
-            "owner/",
-        ];
+        let test_cases = ["", "invalid", "a/b/c", "a/b/c/d", "/repo", "owner/"];
 
         for input in test_cases {
             let (owner, repo) = parse_repo(input);
@@ -230,9 +220,18 @@ mod ci_context {
         }
 
         // Verify environment is set correctly
-        assert_eq!(std::env::var("GITHUB_ACTIONS").ok(), Some("true".to_string()));
-        assert_eq!(std::env::var("GITHUB_REPOSITORY").ok(), Some("test-org/test-repo".to_string()));
-        assert_eq!(std::env::var("GITHUB_EVENT_NAME").ok(), Some("pull_request".to_string()));
+        assert_eq!(
+            std::env::var("GITHUB_ACTIONS").ok(),
+            Some("true".to_string())
+        );
+        assert_eq!(
+            std::env::var("GITHUB_REPOSITORY").ok(),
+            Some("test-org/test-repo".to_string())
+        );
+        assert_eq!(
+            std::env::var("GITHUB_EVENT_NAME").ok(),
+            Some("pull_request".to_string())
+        );
 
         // Clean up
         unsafe {
@@ -290,7 +289,10 @@ mod before_sha_handling {
         }
 
         let before = get_before_sha();
-        assert!(before.is_none(), "Empty GITHUB_BEFORE should be filtered out");
+        assert!(
+            before.is_none(),
+            "Empty GITHUB_BEFORE should be filtered out"
+        );
 
         // Clean up
         unsafe {
@@ -541,7 +543,10 @@ mod filename_sanitization {
     fn sanitizes_job_ids() {
         assert_eq!(sanitize_job_id("build.test"), "build-test");
         assert_eq!(sanitize_job_id("deploy prod"), "deploy-prod");
-        assert_eq!(sanitize_job_id("release.build.linux"), "release-build-linux");
+        assert_eq!(
+            sanitize_job_id("release.build.linux"),
+            "release-build-linux"
+        );
         assert_eq!(sanitize_job_id("my_task"), "my_task");
     }
 

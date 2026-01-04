@@ -1,26 +1,26 @@
 ---
-title: Cubes (Codegen)
+title: Codegen
 description: Code generation and project scaffolding from CUE templates with cuenv
 ---
 
-cuenv can generate and manage project files from CUE templates using Cubes. This enables you to define configuration files, scaffolding code, and generated assets in a type-safe, declarative way.
+cuenv can generate and manage project files from CUE templates using codegen. This enables you to define configuration files, scaffolding code, and generated assets in a type-safe, declarative way.
 
 ## Quick Start
 
-Add a `cube` field to your `env.cue`:
+Add a `codegen` field to your `env.cue`:
 
 ```cue
 package cuenv
 
 import "github.com/cuenv/cuenv/schema"
-import "github.com/cuenv/cuenv/schema/cubes"
+import gen "github.com/cuenv/cuenv/schema/codegen"
 
 schema.#Project & {
     name: "my-project"
 
-    cube: {
+    codegen: {
         files: {
-            "package.json": cubes.#JSONFile & {
+            "package.json": gen.#JSONFile & {
                 mode: "managed"
                 content: """
                     {
@@ -30,7 +30,7 @@ schema.#Project & {
                     """
             }
 
-            "src/index.ts": cubes.#TypeScriptFile & {
+            "src/index.ts": gen.#TypeScriptFile & {
                 mode: "scaffold"
                 content: """
                     console.log("Hello, world!");
@@ -47,33 +47,33 @@ Then run:
 cuenv sync
 ```
 
-This generates the files defined in your cube configuration.
+This generates the files defined in your codegen configuration.
 
 ## Commands
 
-### Generate all cube files
+### Generate all codegen files
 
 ```bash
 cuenv sync
 ```
 
-Runs all sync operations, including cube file generation.
+Runs all sync operations, including codegen file generation.
 
-### Generate only cube files
+### Generate only codegen files
 
 ```bash
-cuenv sync cubes
+cuenv sync codegen
 ```
 
-Runs only the cube file generation.
+Runs only the codegen file generation.
 
 ### Generate for a specific project
 
 ```bash
-cuenv sync cubes .
+cuenv sync codegen .
 ```
 
-Sync cube files for the current directory's project only.
+Sync codegen files for the current directory's project only.
 
 ### Preview changes (dry-run)
 
@@ -93,18 +93,18 @@ Verifies generated files match the configuration. Useful in CI pipelines.
 
 ## File Modes
 
-Cubes support two file modes that determine how files are generated:
+Codegen supports two file modes that determine how files are generated:
 
 ### Managed Mode
 
-Files in managed mode are **always regenerated** when you run `cuenv sync cubes`. Use this for:
+Files in managed mode are **always regenerated** when you run `cuenv sync codegen`. Use this for:
 
 - Configuration files (`package.json`, `tsconfig.json`, etc.)
 - CI/CD workflows (`.github/workflows/*.yml`)
 - Generated code that should always match the source of truth
 
 ```cue
-"package.json": cubes.#JSONFile & {
+"package.json": gen.#JSONFile & {
     mode: "managed"  // Always regenerated
     content: """
         {"name": "my-project"}
@@ -124,7 +124,7 @@ Files in scaffold mode are **only created if they don't exist**. Once created, y
 - Any code the developer will modify
 
 ```cue
-"src/main.ts": cubes.#TypeScriptFile & {
+"src/main.ts": gen.#TypeScriptFile & {
     mode: "scaffold"  // Only created if missing
     content: """
         console.log("Hello, world!");
@@ -154,14 +154,14 @@ Use language-specific schemas for type-safe formatting:
 | `#DockerfileFile`  | Dockerfiles           | 4 spaces       |
 | `#NixFile`         | `.nix` files          | 2 spaces       |
 
-Import schemas from `github.com/cuenv/cuenv/schema/cubes`.
+Import schemas from `github.com/cuenv/cuenv/schema/codegen`.
 
 ## Format Configuration
 
 Override default formatting options:
 
 ```cue
-"src/app.ts": cubes.#TypeScriptFile & {
+"src/app.ts": gen.#TypeScriptFile & {
     format: {
         indent:        "space"
         indentSize:    4         // Override default 2
@@ -178,27 +178,27 @@ Override default formatting options:
 
 ## gitignore Integration
 
-Cube files can automatically be added to `.gitignore`:
+Codegen files can automatically be added to `.gitignore`:
 
 ```cue
-cube: {
+codegen: {
     files: {
         // Managed files: gitignore defaults to true
-        "dist/output.js": cubes.#JavaScriptFile & {
+        "dist/output.js": gen.#JavaScriptFile & {
             mode: "managed"
             // gitignore: true (default for managed)
             content: "..."
         }
 
         // Scaffold files: gitignore defaults to false
-        "src/handler.ts": cubes.#TypeScriptFile & {
+        "src/handler.ts": gen.#TypeScriptFile & {
             mode: "scaffold"
             // gitignore: false (default for scaffold)
             content: "..."
         }
 
         // Override explicitly when needed
-        "generated/api-types.ts": cubes.#TypeScriptFile & {
+        "generated/api-types.ts": gen.#TypeScriptFile & {
             mode: "managed"
             gitignore: false  // Commit this generated file
             content: "..."
@@ -207,17 +207,17 @@ cube: {
 }
 ```
 
-When you run `cuenv sync`, files marked with `gitignore: true` are automatically added to your `.gitignore` under a "Cube-generated files" section.
+When you run `cuenv sync`, files marked with `gitignore: true` are automatically added to your `.gitignore` under a "Codegen-generated files" section.
 
 ## Using Context
 
-Pass configuration data to your cube templates:
+Pass configuration data to your codegen templates:
 
 ```cue
 schema.#Project & {
     name: "api-service"
 
-    cube: {
+    codegen: {
         context: {
             serviceName: "users"
             port:        3000
@@ -225,7 +225,7 @@ schema.#Project & {
         }
 
         files: {
-            "src/config.ts": cubes.#TypeScriptFile & {
+            "src/config.ts": gen.#TypeScriptFile & {
                 content: """
                     export const config = {
                       serviceName: "\(context.serviceName)",
@@ -259,14 +259,14 @@ In dry-run mode:
 
 ```cue
 import "github.com/cuenv/cuenv/schema"
-import "github.com/cuenv/cuenv/schema/cubes"
+import gen "github.com/cuenv/cuenv/schema/codegen"
 
 schema.#Project & {
     name: "my-ts-app"
 
-    cube: {
+    codegen: {
         files: {
-            "package.json": cubes.#JSONFile & {
+            "package.json": gen.#JSONFile & {
                 mode: "managed"
                 content: """
                     {
@@ -281,7 +281,7 @@ schema.#Project & {
                     """
             }
 
-            "tsconfig.json": cubes.#JSONCFile & {
+            "tsconfig.json": gen.#JSONCFile & {
                 mode: "managed"
                 content: """
                     {
@@ -296,7 +296,7 @@ schema.#Project & {
                     """
             }
 
-            "src/index.ts": cubes.#TypeScriptFile & {
+            "src/index.ts": gen.#TypeScriptFile & {
                 mode: "scaffold"
                 content: """
                     console.log("Hello, world!");
@@ -311,14 +311,14 @@ schema.#Project & {
 
 ```cue
 import "github.com/cuenv/cuenv/schema"
-import "github.com/cuenv/cuenv/schema/cubes"
+import gen "github.com/cuenv/cuenv/schema/codegen"
 
 schema.#Project & {
     name: "my-rust-app"
 
-    cube: {
+    codegen: {
         files: {
-            "Cargo.toml": cubes.#TOMLFile & {
+            "Cargo.toml": gen.#TOMLFile & {
                 mode: "managed"
                 content: """
                     [package]
@@ -330,7 +330,7 @@ schema.#Project & {
                     """
             }
 
-            "src/main.rs": cubes.#RustFile & {
+            "src/main.rs": gen.#RustFile & {
                 mode: "scaffold"
                 content: """
                     fn main() {
@@ -347,17 +347,17 @@ schema.#Project & {
 
 ```cue
 import "github.com/cuenv/cuenv/schema"
-import "github.com/cuenv/cuenv/schema/cubes"
+import gen "github.com/cuenv/cuenv/schema/codegen"
 
 let services = ["auth", "users", "billing"]
 
 schema.#Project & {
     name: "platform"
 
-    cube: {
+    codegen: {
         files: {
             for svc in services {
-                "services/\(svc)/package.json": cubes.#JSONFile & {
+                "services/\(svc)/package.json": gen.#JSONFile & {
                     mode: "managed"
                     content: """
                         {
@@ -367,7 +367,7 @@ schema.#Project & {
                         """
                 }
 
-                "services/\(svc)/src/index.ts": cubes.#TypeScriptFile & {
+                "services/\(svc)/src/index.ts": gen.#TypeScriptFile & {
                     mode: "scaffold"
                     content: """
                         // \(svc) service entry point
@@ -386,14 +386,14 @@ schema.#Project & {
 
 ```cue
 import "github.com/cuenv/cuenv/schema"
-import "github.com/cuenv/cuenv/schema/cubes"
+import gen "github.com/cuenv/cuenv/schema/codegen"
 
 schema.#Project & {
     name: "my-project"
 
-    cube: {
+    codegen: {
         files: {
-            ".github/workflows/ci.yml": cubes.#YAMLFile & {
+            ".github/workflows/ci.yml": gen.#YAMLFile & {
                 mode: "managed"
                 content: """
                     name: CI

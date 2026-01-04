@@ -1,13 +1,13 @@
 //! Sync provider implementations.
 
 mod ci;
-mod cubes;
+mod codegen;
 mod git_hooks;
 mod lock;
 mod rules;
 
 pub use ci::CiSyncProvider;
-pub use cubes::CubesSyncProvider;
+pub use codegen::CodegenSyncProvider;
 pub use git_hooks::GitHooksSyncProvider;
 pub use lock::LockSyncProvider;
 pub use rules::RulesSyncProvider;
@@ -18,7 +18,7 @@ use super::registry::SyncRegistry;
 #[must_use]
 pub fn default_registry() -> SyncRegistry {
     let mut registry = SyncRegistry::new();
-    registry.register(CubesSyncProvider);
+    registry.register(CodegenSyncProvider);
     registry.register(CiSyncProvider);
     registry.register(RulesSyncProvider);
     registry.register(LockSyncProvider);

@@ -145,8 +145,8 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
-            name: "cube-hello",
-            min_task_count: 0, // No tasks, only cube config for code generation
+            name: "codegen-hello",
+            min_task_count: 0, // No tasks, only codegen config for code generation
             has_hooks: false,
             has_env: false,
             expect_eval_failure: false,

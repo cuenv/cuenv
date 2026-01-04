@@ -1,5 +1,5 @@
 [package]
-name = "cuenv-cubes"
+name = "cuenv-codegen"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,7 +9,7 @@ homepage.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "CUE Cubes - code generation and project scaffolding from CUE templates"
+description = "CUE-based code generation and project scaffolding from CUE templates"
 
 [features]
 default = []
