@@ -26,6 +26,7 @@ import "github.com/cuenv/cuenv/schema"
 		{
 			id:          "bun.workspace.install"
 			label:       "Install Bun dependencies"
+			priority:    20
 			command:     "bun"
 			args:        ["install", "--frozen-lockfile"]
 			inputs:      ["package.json", "bun.lock"]
