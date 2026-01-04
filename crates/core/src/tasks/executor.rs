@@ -61,7 +61,7 @@ pub struct ExecutorConfig {
 impl Default for ExecutorConfig {
     fn default() -> Self {
         Self {
-            capture_output: false,
+            capture_output: true,
             max_parallel: 0,
             environment: Environment::new(),
             working_dir: None,
@@ -276,6 +276,15 @@ impl TaskExecutor {
         let env_vars = self.config.environment.merge_with_system_hermetic();
         for (k, v) in &env_vars {
             cmd.env(k, v);
+        }
+
+        // Force color output even when stdout is piped (for capture mode)
+        // These are widely supported: FORCE_COLOR by Node.js/chalk, CLICOLOR_FORCE by BSD/macOS
+        if !env_vars.contains_key("FORCE_COLOR") {
+            cmd.env("FORCE_COLOR", "1");
+        }
+        if !env_vars.contains_key("CLICOLOR_FORCE") {
+            cmd.env("CLICOLOR_FORCE", "1");
         }
 
         // Execute - always capture output for consistent behavior
@@ -853,7 +862,7 @@ mod tests {
     #[tokio::test]
     async fn test_executor_config_default() {
         let config = ExecutorConfig::default();
-        assert!(!config.capture_output);
+        assert!(config.capture_output);
         assert_eq!(config.max_parallel, 0);
         assert!(config.environment.is_empty());
     }

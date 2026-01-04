@@ -194,6 +194,15 @@ impl IRTaskRunner {
             cmd.env("HOME", home);
         }
 
+        // Force color output even when stdout is piped
+        // These are widely supported: FORCE_COLOR by Node.js/chalk, CLICOLOR_FORCE by BSD/macOS
+        if !env.contains_key("FORCE_COLOR") {
+            cmd.env("FORCE_COLOR", "1");
+        }
+        if !env.contains_key("CLICOLOR_FORCE") {
+            cmd.env("CLICOLOR_FORCE", "1");
+        }
+
         // Configure output - always pipe for streaming, or inherit if not capturing
         if self.capture_output {
             cmd.stdout(Stdio::piped());
