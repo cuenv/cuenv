@@ -1,0 +1,9 @@
+{
+  "name": "auto-associate-test",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "echo dev",
+    "test": "echo test"
+  },
+  "dependencies": {}
+}
