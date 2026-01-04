@@ -47,6 +47,10 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:
