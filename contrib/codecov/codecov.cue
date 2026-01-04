@@ -25,9 +25,8 @@ import "github.com/cuenv/cuenv/schema"
 		taskLabels: ["test", "coverage"]
 	}
 	tasks: [{
-		id:        "codecov-upload"
-		phase:     "success"
-		label:     "Upload coverage to Codecov"
+		id:       "codecov-upload"
+		label:    "Upload coverage to Codecov"
 		priority:  50
 		condition: "on_success"
 		shell:     false
@@ -66,9 +65,8 @@ import "github.com/cuenv/cuenv/schema"
 		taskLabels: ["test", "coverage"]
 	}
 	tasks: [{
-		id:        "codecov-upload"
-		phase:     "success"
-		label:     "Upload coverage to Codecov (OIDC)"
+		id:       "codecov-upload"
+		label:    "Upload coverage to Codecov (OIDC)"
 		priority:  50
 		condition: "on_success"
 		shell:     false

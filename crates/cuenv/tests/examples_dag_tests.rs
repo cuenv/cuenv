@@ -350,6 +350,9 @@ fn test_no_unexpected_example_directories() {
     let expectations = get_example_expectations();
     let expected_names: Vec<&str> = expectations.iter().map(|e| e.name).collect();
 
+    // Container directories that hold test fixtures, not standalone examples
+    let test_fixture_containers = ["contributor-tests"];
+
     let entries = fs::read_dir(&examples_dir).expect("Failed to read examples directory");
 
     for entry in entries {
@@ -361,6 +364,11 @@ fn test_no_unexpected_example_directories() {
 
             // Skip hidden directories
             if dir_name.starts_with('.') {
+                continue;
+            }
+
+            // Skip test fixture containers (they contain sub-examples, not standalone env.cue)
+            if test_fixture_containers.contains(&dir_name) {
                 continue;
             }
 
