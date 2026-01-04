@@ -618,7 +618,7 @@ mod tests {
             order: 100,
             propagate: false,
             command: command.to_string(),
-            args: args.iter().map(|arg| arg.to_string()).collect(),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
             dir: None,
             inputs: vec![],
             source: None,

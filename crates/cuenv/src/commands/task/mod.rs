@@ -1,6 +1,7 @@
 //! Task execution command implementation
 
 mod arguments;
+mod dag_export;
 mod discovery;
 pub mod list_builder;
 pub mod normalization;
@@ -53,6 +54,7 @@ use std::fmt::Write;
 use std::path::Path;
 
 use super::export::get_environment_with_hooks;
+use tracing::instrument;
 
 /// Execute a task using the new structured request API.
 ///
@@ -73,6 +75,7 @@ use super::export::get_environment_with_hooks;
 ///
 /// let output = execute(request).await?;
 /// ```
+#[instrument(name = "task_execute", skip(request), fields(path = %request.path, package = %request.package))]
 pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
     // Extract parameters from the request and delegate to the legacy implementation
     let (task_name, labels, task_args, interactive, all) = match &request.selection {
@@ -107,6 +110,7 @@ pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
         request.output.help,
         all,
         request.skip_dependencies,
+        request.dry_run,
         task_args,
         request.executor,
     )
@@ -135,6 +139,7 @@ async fn execute_task_legacy(
     help: bool,
     all: bool,
     skip_dependencies: bool,
+    dry_run: bool,
     task_args: &[String],
     executor: Option<&CommandExecutor>,
 ) -> Result<String> {
@@ -736,6 +741,14 @@ async fn execute_task_legacy(
         "Successfully built task graph with {} tasks",
         task_graph.task_count()
     );
+
+    // Handle dry-run mode: export DAG as JSON without executing
+    if dry_run {
+        let dag_export = dag_export::DagExport::from_task_graph(&task_graph)?;
+        return serde_json::to_string_pretty(&dag_export).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to serialize DAG: {e}"))
+        });
+    }
 
     // If TUI is requested and we have a task graph, launch the rich TUI
     if tui && task_graph.task_count() > 0 {
