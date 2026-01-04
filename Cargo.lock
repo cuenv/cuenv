@@ -1511,7 +1511,7 @@ dependencies = [
 
 [[package]]
 name = "cuengine"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "cc",
  "criterion",
@@ -1532,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -1596,7 +1596,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-1password"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-aws"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -1633,7 +1633,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-bitbucket"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "cuenv-codeowners",
  "cuenv-core",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-buildkite"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "cuenv-ci",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cache"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "chrono",
  "cuenv-events",
@@ -1679,7 +1679,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-ci"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1712,7 +1712,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-codeowners"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "schemars 1.1.0",
  "serde",
@@ -1721,7 +1721,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-core"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -1759,7 +1759,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cubes"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "clap",
  "cuengine",
@@ -1780,7 +1780,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-dagger"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-editorconfig"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "serde",
  "tempfile",
@@ -1801,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-events"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "chrono",
  "serde",
@@ -1814,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-gcp"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "cuenv-secrets",
@@ -1830,7 +1830,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-github"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1851,7 +1851,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-gitlab"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "cuenv-codeowners",
  "cuenv-core",
@@ -1861,7 +1861,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-homebrew"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1873,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-hooks"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -1894,7 +1894,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-ignore"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "gix",
  "serde",
@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-release"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "chrono",
  "cuenv-core",
@@ -1934,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-secrets"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "futures",
@@ -1953,7 +1953,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-task-discovery"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "cuenv-core",
  "ignore",
@@ -1964,7 +1964,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-task-graph"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "petgraph",
  "tempfile",
@@ -2026,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-vault"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "async-trait",
  "cuenv-secrets",
@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-workspaces"
-version = "0.23.6"
+version = "0.23.7"
 dependencies = [
  "cargo-lock",
  "cargo_toml",
