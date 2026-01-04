@@ -1,24 +1,24 @@
-# cuenv-cubes
+# cuenv-codegen
 
-CUE Cubes - code generation and project scaffolding from CUE templates.
+Code generation and project scaffolding from CUE templates.
 
 ## Overview
 
-`cuenv-cubes` provides a code generation system using CUE Cubes to generate project files. Features:
+`cuenv-codegen` provides a code generation system using CUE to generate project files. Features:
 
 - **Schema-wrapped code blocks** - Use `schema.#TypeScript`, `schema.#JSON`, etc. to define files
 - **Managed vs Scaffold modes** - Choose whether files are always regenerated or only created once
-- **Integrated with cuenv** - Use `cuenv sync cubes` to generate files
+- **Integrated with cuenv** - Use `cuenv sync codegen` to generate files
 
-## What is a CUE Cube?
+## What is CUE Codegen?
 
-A **Cube** is a CUE-based template that generates multiple project files. Define your cube in your project's `env.cue` file using `schema.#Cube`.
+**Codegen** is a CUE-based template that generates multiple project files. Define your codegen in your project's `env.cue` file using `schema.#Codegen`.
 
 ## Key Concepts
 
 ### File Modes
 
-- **Managed**: Files are always regenerated when you run `cuenv sync cubes`. Use for configuration files, CI/CD workflows, etc.
+- **Managed**: Files are always regenerated when you run `cuenv sync codegen`. Use for configuration files, CI/CD workflows, etc.
 - **Scaffold**: Files are only created if they don't exist. Once created, the user owns them. Use for application code, handlers, services, etc.
 
 ### Schema-Based Code
@@ -31,7 +31,7 @@ import "github.com/cuenv/cuenv/schema"
 schema.#Project & {
     name: "my-service"
 
-    cube: {
+    codegen: {
         files: {
             "src/main.ts": schema.#TypeScript & {
                 mode: "scaffold"
@@ -56,26 +56,26 @@ schema.#Project & {
 ### CLI
 
 ```bash
-# Sync cube files for current project
-cuenv sync cubes .
+# Sync codegen files for current project
+cuenv sync codegen .
 
-# Sync cube files for all projects in module
-cuenv sync cubes
+# Sync codegen files for all projects in module
+cuenv sync codegen
 
 # Dry run - show what would be generated
-cuenv sync cubes --dry-run
+cuenv sync codegen --dry-run
 
 # Check if files are in sync
-cuenv sync cubes --check
+cuenv sync codegen --check
 ```
 
 ### Programmatic (Rust)
 
 ```rust
-use cuenv_cubes::{Cube, Generator, GenerateOptions};
+use cuenv_codegen::{Codegen, Generator, GenerateOptions};
 
-let cube = Cube::load("my-project/env.cue")?;
-let generator = Generator::new(cube);
+let codegen = Codegen::load("my-project/env.cue")?;
+let generator = Generator::new(codegen);
 
 let options = GenerateOptions {
     output_dir: PathBuf::from("./my-project"),

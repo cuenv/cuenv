@@ -1,6 +1,6 @@
-//! Cubes sync provider.
+//! Codegen sync provider.
 //!
-//! Syncs cube-generated files from CUE configuration.
+//! Syncs codegen-generated files from CUE configuration.
 
 use std::any::Any;
 use std::path::Path;
@@ -15,45 +15,45 @@ use crate::commands::sync::functions;
 use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncResult};
 use crate::provider::{Provider, SyncCapability};
 
-/// Cubes sync provider.
+/// Codegen sync provider.
 ///
-/// Syncs cube-generated files from CUE configuration. Cubes are reusable
-/// templates that generate project files.
+/// Syncs codegen-generated files from CUE configuration. Codegen modules are
+/// reusable templates that generate project files.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use cuenv::Cuenv;
-/// use cuenv::providers::CubesProvider;
+/// use cuenv::providers::CodegenProvider;
 ///
 /// Cuenv::builder()
-///     .with_sync_provider(CubesProvider::new())
+///     .with_sync_provider(CodegenProvider::new())
 ///     .build()
 ///     .run()
 /// ```
-pub struct CubesProvider;
+pub struct CodegenProvider;
 
-impl CubesProvider {
-    /// Create a new cubes provider.
+impl CodegenProvider {
+    /// Create a new codegen provider.
     #[must_use]
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for CubesProvider {
+impl Default for CodegenProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Provider for CubesProvider {
+impl Provider for CodegenProvider {
     fn name(&self) -> &'static str {
-        "cubes"
+        "codegen"
     }
 
     fn description(&self) -> &'static str {
-        "Sync files from CUE cube configurations"
+        "Sync files from CUE codegen configurations"
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -66,7 +66,7 @@ impl Provider for CubesProvider {
 }
 
 #[async_trait]
-impl SyncCapability for CubesProvider {
+impl SyncCapability for CodegenProvider {
     fn build_sync_command(&self) -> Command {
         Command::new(self.name())
             .about(self.description())
@@ -100,7 +100,7 @@ impl SyncCapability for CubesProvider {
             ))
         })?;
 
-        let output = functions::execute_sync_cubes(
+        let output = functions::execute_sync_codegen(
             path_str,
             package,
             dry_run,
@@ -132,7 +132,7 @@ impl SyncCapability for CubesProvider {
             let mut paths = Vec::new();
             for instance in module.projects() {
                 if let Ok(manifest) = instance.deserialize::<Project>()
-                    && manifest.cube.is_some()
+                    && manifest.codegen.is_some()
                 {
                     paths.push((
                         module.root.join(&instance.path),
@@ -156,7 +156,7 @@ impl SyncCapability for CubesProvider {
                 continue;
             };
 
-            let result = functions::execute_sync_cubes(
+            let result = functions::execute_sync_codegen(
                 path_str,
                 package,
                 dry_run,
@@ -184,7 +184,7 @@ impl SyncCapability for CubesProvider {
         }
 
         if outputs.is_empty() {
-            Ok(SyncResult::success("No cube configurations found."))
+            Ok(SyncResult::success("No codegen configurations found."))
         } else {
             Ok(SyncResult {
                 output: outputs.join("\n\n"),
@@ -194,7 +194,7 @@ impl SyncCapability for CubesProvider {
     }
 
     fn has_config(&self, _manifest: &Base) -> bool {
-        // Cubes are only in Projects, not Base
+        // Codegen configs are only in Projects, not Base
         false
     }
 }
@@ -204,42 +204,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cubes_provider_name() {
-        let provider = CubesProvider::new();
-        assert_eq!(provider.name(), "cubes");
+    fn test_codegen_provider_name() {
+        let provider = CodegenProvider::new();
+        assert_eq!(provider.name(), "codegen");
     }
 
     #[test]
-    fn test_cubes_provider_description() {
-        let provider = CubesProvider::new();
+    fn test_codegen_provider_description() {
+        let provider = CodegenProvider::new();
         assert!(!provider.description().is_empty());
-        assert!(provider.description().contains("cube"));
+        assert!(provider.description().contains("codegen"));
     }
 
     #[test]
-    fn test_cubes_provider_as_any() {
-        let provider = CubesProvider::new();
+    fn test_codegen_provider_as_any() {
+        let provider = CodegenProvider::new();
         let any = provider.as_any();
-        assert!(any.is::<CubesProvider>());
+        assert!(any.is::<CodegenProvider>());
     }
 
     #[test]
-    fn test_cubes_provider_as_any_mut() {
-        let mut provider = CubesProvider::new();
+    fn test_codegen_provider_as_any_mut() {
+        let mut provider = CodegenProvider::new();
         let any = provider.as_any_mut();
-        assert!(any.is::<CubesProvider>());
+        assert!(any.is::<CodegenProvider>());
     }
 
     #[test]
-    fn test_cubes_provider_command() {
-        let provider = CubesProvider::new();
+    fn test_codegen_provider_command() {
+        let provider = CodegenProvider::new();
         let cmd = provider.build_sync_command();
-        assert_eq!(cmd.get_name(), "cubes");
+        assert_eq!(cmd.get_name(), "codegen");
     }
 
     #[test]
-    fn test_cubes_provider_command_has_args() {
-        let provider = CubesProvider::new();
+    fn test_codegen_provider_command_has_args() {
+        let provider = CodegenProvider::new();
         let cmd = provider.build_sync_command();
 
         let args: Vec<_> = cmd.get_arguments().map(|a| a.get_id().as_str()).collect();
@@ -252,16 +252,16 @@ mod tests {
     }
 
     #[test]
-    fn test_cubes_provider_default() {
-        let provider = CubesProvider;
-        assert_eq!(provider.name(), "cubes");
+    fn test_codegen_provider_default() {
+        let provider = CodegenProvider;
+        assert_eq!(provider.name(), "codegen");
     }
 
     #[test]
-    fn test_cubes_provider_has_config() {
-        let provider = CubesProvider::new();
+    fn test_codegen_provider_has_config() {
+        let provider = CodegenProvider::new();
         let base = Base::default();
-        // Cubes are only in Projects, not Base
+        // Codegen configs are only in Projects, not Base
         assert!(!provider.has_config(&base));
     }
 }

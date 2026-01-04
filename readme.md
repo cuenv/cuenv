@@ -317,22 +317,22 @@ Changesets integrate with conventional commits and automatically calculate seman
 
 ---
 
-### Code Generation (Cubes)
+### Code Generation
 
 Generate and sync files from CUE templates—configuration files, boilerplate, and more:
 
 ```bash
 # Sync all generated files
-cuenv sync cubes
+cuenv sync codegen
 
 # Check if files are in sync (useful in CI)
-cuenv sync cubes --check
+cuenv sync codegen --check
 
 # Preview changes
-cuenv sync cubes --diff --dry-run
+cuenv sync codegen --diff --dry-run
 ```
 
-Define cubes in your CUE configuration to generate TypeScript configs, Dockerfiles, or any templated content.
+Define codegen in your CUE configuration to generate TypeScript configs, Dockerfiles, or any templated content.
 
 ---
 
@@ -387,7 +387,7 @@ cuenv env status                           # Check hook execution status
 cuenv sync                                 # Sync all
 cuenv sync ignore                          # Generate .gitignore/.dockerignore
 cuenv sync codeowners                      # Sync CODEOWNERS file
-cuenv sync cubes                           # Sync code from CUE cubes
+cuenv sync codegen                         # Sync code from CUE codegen
 cuenv sync --check                         # Check if files are in sync
 ```
 
@@ -497,7 +497,7 @@ cuenv/
 │   ├── workspaces/     # Monorepo and package manager detection
 │   ├── ci/             # CI pipeline integration
 │   ├── release/        # Version management and publishing
-│   ├── cubes/          # CUE-based code generation
+│   ├── codegen/        # CUE-based code generation
 │   ├── ignore/         # Ignore file generation
 │   ├── codeowners/     # CODEOWNERS generation
 │   ├── github/         # GitHub provider

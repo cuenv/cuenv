@@ -5,7 +5,7 @@
 //! - Formatting generated code
 //! - Checking if files need updates
 
-use crate::cube::{Cube, FileMode};
+use crate::codegen::{Codegen, FileMode};
 use crate::formatter::Formatter;
 use crate::{CodegenError, Result};
 use std::path::{Path, PathBuf};
@@ -47,21 +47,21 @@ impl Default for GenerateOptions {
 /// File generator
 #[derive(Debug)]
 pub struct Generator {
-    cube: Cube,
+    codegen: Codegen,
     formatter: Formatter,
 }
 
 impl Generator {
-    /// Create a new generator from a cube
+    /// Create a new generator from a codegen configuration
     #[must_use]
-    pub fn new(cube: Cube) -> Self {
+    pub fn new(codegen: Codegen) -> Self {
         Self {
-            cube,
+            codegen,
             formatter: Formatter::new(),
         }
     }
 
-    /// Generate all files from the cube
+    /// Generate all files from the codegen configuration
     ///
     /// # Errors
     ///
@@ -69,7 +69,7 @@ impl Generator {
     pub fn generate(&self, options: &GenerateOptions) -> Result<Vec<GeneratedFile>> {
         let mut generated_files = Vec::new();
 
-        for (file_path, file_def) in self.cube.files() {
+        for (file_path, file_def) in self.codegen.files() {
             let output_path = options.output_dir.join(file_path);
 
             // Format the content
@@ -152,11 +152,11 @@ impl Generator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::{CubeData, FormatConfig, ProjectFileDefinition};
+    use crate::codegen::{CodegenData, FormatConfig, ProjectFileDefinition};
     use std::collections::HashMap;
     use tempfile::TempDir;
 
-    fn create_test_cube() -> Cube {
+    fn create_test_codegen() -> Codegen {
         let mut files = HashMap::new();
         files.insert(
             "test.json".to_string(),
@@ -169,18 +169,18 @@ mod tests {
             },
         );
 
-        let data = CubeData {
+        let data = CodegenData {
             files,
             context: serde_json::Value::Null,
         };
 
-        Cube {
+        Codegen {
             data,
             source_path: PathBuf::from("test.cue"),
         }
     }
 
-    fn create_scaffold_cube() -> Cube {
+    fn create_scaffold_codegen() -> Codegen {
         let mut files = HashMap::new();
         files.insert(
             "scaffold.txt".to_string(),
@@ -193,12 +193,12 @@ mod tests {
             },
         );
 
-        let data = CubeData {
+        let data = CodegenData {
             files,
             context: serde_json::Value::Null,
         };
 
-        Cube {
+        Codegen {
             data,
             source_path: PathBuf::from("scaffold.cue"),
         }
@@ -242,15 +242,15 @@ mod tests {
 
     #[test]
     fn test_generator_new() {
-        let cube = create_test_cube();
-        let generator = Generator::new(cube);
-        assert!(generator.cube.files().contains_key("test.json"));
+        let codegen = create_test_codegen();
+        let generator = Generator::new(codegen);
+        assert!(generator.codegen.files().contains_key("test.json"));
     }
 
     #[test]
     fn test_generate_managed_file() {
-        let cube = create_test_cube();
-        let generator = Generator::new(cube);
+        let codegen = create_test_codegen();
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
         let options = GenerateOptions {
@@ -272,8 +272,8 @@ mod tests {
 
     #[test]
     fn test_generate_scaffold_creates_new_file() {
-        let cube = create_scaffold_cube();
-        let generator = Generator::new(cube);
+        let codegen = create_scaffold_codegen();
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
         let options = GenerateOptions {
@@ -293,8 +293,8 @@ mod tests {
 
     #[test]
     fn test_generate_scaffold_skips_existing_file() {
-        let cube = create_scaffold_cube();
-        let generator = Generator::new(cube);
+        let codegen = create_scaffold_codegen();
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("scaffold.txt");
@@ -316,8 +316,8 @@ mod tests {
 
     #[test]
     fn test_generate_check_mode_missing_managed_file() {
-        let cube = create_test_cube();
-        let generator = Generator::new(cube);
+        let codegen = create_test_codegen();
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
         let options = GenerateOptions {
@@ -334,8 +334,8 @@ mod tests {
 
     #[test]
     fn test_generate_check_mode_file_would_be_modified() {
-        let cube = create_test_cube();
-        let generator = Generator::new(cube);
+        let codegen = create_test_codegen();
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
         let file_path = temp_dir.path().join("test.json");
@@ -355,8 +355,8 @@ mod tests {
 
     #[test]
     fn test_generate_check_mode_file_matches() {
-        let cube = create_test_cube();
-        let generator = Generator::new(cube);
+        let codegen = create_test_codegen();
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
 
@@ -380,8 +380,8 @@ mod tests {
 
     #[test]
     fn test_generate_check_mode_missing_scaffold_file() {
-        let cube = create_scaffold_cube();
-        let generator = Generator::new(cube);
+        let codegen = create_scaffold_codegen();
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
         let options = GenerateOptions {
@@ -410,14 +410,14 @@ mod tests {
             },
         );
 
-        let cube = Cube {
-            data: CubeData {
+        let codegen = Codegen {
+            data: CodegenData {
                 files,
                 context: serde_json::Value::Null,
             },
             source_path: PathBuf::from("test.cue"),
         };
-        let generator = Generator::new(cube);
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
         let options = GenerateOptions {
@@ -459,14 +459,14 @@ mod tests {
             },
         );
 
-        let cube = Cube {
-            data: CubeData {
+        let codegen = Codegen {
+            data: CodegenData {
                 files,
                 context: serde_json::Value::Null,
             },
             source_path: PathBuf::from("test.cue"),
         };
-        let generator = Generator::new(cube);
+        let generator = Generator::new(codegen);
 
         let temp_dir = TempDir::new().unwrap();
         let options = GenerateOptions {

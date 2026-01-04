@@ -52,7 +52,8 @@ pub fn assert_span_has_field(spans: &[CapturedSpan], name: &str, field: &str) {
 pub fn assert_span_count(spans: &[CapturedSpan], name: &str, expected: usize) {
     let count = spans.iter().filter(|s| s.name == name).count();
     assert_eq!(
-        count, expected,
+        count,
+        expected,
         "Expected {} '{}' spans, found {}. All spans: {:?}",
         expected,
         name,

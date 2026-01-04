@@ -54,54 +54,51 @@ fn dag_strategy(
 ) -> impl Strategy<Value = Vec<(String, Vec<String>)>> {
     (min_tasks..=max_tasks).prop_flat_map(|task_count| {
         // Generate unique task names
-        proptest::collection::vec(task_name_strategy(), task_count).prop_flat_map(
-            move |names| {
-                // Deduplicate names by appending index
-                let unique_names: Vec<String> = names
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, name)| format!("{name}_{i}"))
-                    .collect();
+        proptest::collection::vec(task_name_strategy(), task_count).prop_flat_map(move |names| {
+            // Deduplicate names by appending index
+            let unique_names: Vec<String> = names
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| format!("{name}_{i}"))
+                .collect();
 
-                // For each task, generate dependencies from earlier tasks only
-                let dep_strategies: Vec<_> = (0..task_count)
-                    .map(|i| {
-                        if i == 0 {
-                            // First task has no deps
-                            Just(vec![]).boxed()
-                        } else {
-                            // Can depend on any earlier task (0..i)
-                            let earlier_names: Vec<String> =
-                                unique_names[..i].to_vec();
-                            proptest::collection::vec(
-                                proptest::sample::select(earlier_names),
-                                0..=i.min(3), // Limit deps to avoid explosion
-                            )
-                            .prop_map(|deps| {
-                                // Deduplicate deps
-                                deps.into_iter()
-                                    .collect::<HashSet<_>>()
-                                    .into_iter()
-                                    .collect()
-                            })
-                            .boxed()
-                        }
-                    })
-                    .collect();
+            // For each task, generate dependencies from earlier tasks only
+            let dep_strategies: Vec<_> = (0..task_count)
+                .map(|i| {
+                    if i == 0 {
+                        // First task has no deps
+                        Just(vec![]).boxed()
+                    } else {
+                        // Can depend on any earlier task (0..i)
+                        let earlier_names: Vec<String> = unique_names[..i].to_vec();
+                        proptest::collection::vec(
+                            proptest::sample::select(earlier_names),
+                            0..=i.min(3), // Limit deps to avoid explosion
+                        )
+                        .prop_map(|deps| {
+                            // Deduplicate deps
+                            deps.into_iter()
+                                .collect::<HashSet<_>>()
+                                .into_iter()
+                                .collect()
+                        })
+                        .boxed()
+                    }
+                })
+                .collect();
 
-                let names_clone = unique_names.clone();
-                dep_strategies
-                    .into_iter()
-                    .collect::<Vec<_>>()
-                    .prop_map(move |all_deps| {
-                        names_clone
-                            .iter()
-                            .cloned()
-                            .zip(all_deps)
-                            .collect::<Vec<_>>()
-                    })
-            },
-        )
+            let names_clone = unique_names.clone();
+            dep_strategies
+                .into_iter()
+                .collect::<Vec<_>>()
+                .prop_map(move |all_deps| {
+                    names_clone
+                        .iter()
+                        .cloned()
+                        .zip(all_deps)
+                        .collect::<Vec<_>>()
+                })
+        })
     })
 }
 
@@ -109,37 +106,35 @@ fn dag_strategy(
 fn cyclic_graph_strategy() -> impl Strategy<Value = Vec<(String, Vec<String>)>> {
     // Generate a small base graph then add a cycle
     (3..=6_usize).prop_flat_map(|task_count| {
-        proptest::collection::vec(task_name_strategy(), task_count).prop_flat_map(
-            move |names| {
-                let unique_names: Vec<String> = names
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, name)| format!("{name}_{i}"))
-                    .collect();
+        proptest::collection::vec(task_name_strategy(), task_count).prop_flat_map(move |names| {
+            let unique_names: Vec<String> = names
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| format!("{name}_{i}"))
+                .collect();
 
-                // Create a cycle: task_0 depends on task_last, and task_last depends on task_0
-                // through intermediate tasks
-                let task_count = unique_names.len();
-                let names_clone = unique_names.clone();
+            // Create a cycle: task_0 depends on task_last, and task_last depends on task_0
+            // through intermediate tasks
+            let task_count = unique_names.len();
+            let names_clone = unique_names.clone();
 
-                Just((0..task_count).collect::<Vec<_>>()).prop_map(move |indices| {
-                    let mut tasks: Vec<(String, Vec<String>)> = Vec::new();
+            Just((0..task_count).collect::<Vec<_>>()).prop_map(move |indices| {
+                let mut tasks: Vec<(String, Vec<String>)> = Vec::new();
 
-                    for i in indices {
-                        let deps = if i == 0 {
-                            // First task depends on last (creates cycle)
-                            vec![names_clone[task_count - 1].clone()]
-                        } else {
-                            // Each task depends on the previous
-                            vec![names_clone[i - 1].clone()]
-                        };
-                        tasks.push((names_clone[i].clone(), deps));
-                    }
+                for i in indices {
+                    let deps = if i == 0 {
+                        // First task depends on last (creates cycle)
+                        vec![names_clone[task_count - 1].clone()]
+                    } else {
+                        // Each task depends on the previous
+                        vec![names_clone[i - 1].clone()]
+                    };
+                    tasks.push((names_clone[i].clone(), deps));
+                }
 
-                    tasks
-                })
-            },
-        )
+                tasks
+            })
+        })
     })
 }
 

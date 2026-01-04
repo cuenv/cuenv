@@ -16,7 +16,7 @@ package schema
 	ci?:      #CI
 	release?: #Release
 	tasks?: [string]: #Tasks
-	cube?:   #Cube
+	codegen?: #Codegen
 })
 
 // Reference a task from another env.cue project by its name property.

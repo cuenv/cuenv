@@ -57,7 +57,7 @@ cuenv fmt
 | **cuenv-ci**                      | CI pipeline integration                                       |
 | **cuenv-release**                 | Version management and publishing                             |
 | **cuenv-dagger**                  | Optional containerized task execution backend                 |
-| **cuenv-cubes**                   | CUE-based code generation                                     |
+| **cuenv-codegen**                 | CUE-based code generation                                     |
 | **cuenv-ignore**                  | .gitignore/.dockerignore generation                           |
 | **cuenv-codeowners**              | CODEOWNERS file generation                                    |
 | **cuenv-github/gitlab/bitbucket** | VCS provider integrations                                     |

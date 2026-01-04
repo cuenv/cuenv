@@ -24,7 +24,7 @@
 //! registry.sync_all(&path, "cuenv", &options, true, &executor).await?;
 //!
 //! // Sync specific provider
-//! registry.sync_provider("cubes", &path, "cuenv", &options, true, &executor).await?;
+//! registry.sync_provider("codegen", &path, "cuenv", &options, true, &executor).await?;
 //! ```
 
 pub mod formatters;
@@ -40,7 +40,7 @@ pub use formatters::{
 
 // Re-export for external use (e.g., tests)
 #[allow(unused_imports)]
-pub use functions::{execute_sync_ci, execute_sync_ci_workspace, execute_sync_cubes};
+pub use functions::{execute_sync_ci, execute_sync_ci_workspace, execute_sync_codegen};
 pub use provider::{SyncMode, SyncOptions};
 pub use providers::default_registry;
 

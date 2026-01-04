@@ -23,8 +23,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::tasks::{Input, Task, TaskDefinition, TaskGroup};
 use crate::Result;
+use crate::tasks::{Input, Task, TaskDefinition, TaskGroup};
 
 /// Prefix for all contributor-injected tasks
 pub const CONTRIBUTOR_TASK_PREFIX: &str = "cuenv:contributor:";
@@ -393,11 +393,7 @@ impl<'a> ContributorEngine<'a> {
     }
 
     /// Recursively apply auto-association to a task definition
-    fn auto_associate_definition(
-        def: &mut TaskDefinition,
-        commands: &[String],
-        inject_dep: &str,
-    ) {
+    fn auto_associate_definition(def: &mut TaskDefinition, commands: &[String], inject_dep: &str) {
         match def {
             TaskDefinition::Single(task) => {
                 // Check if task command matches any auto-associate command
@@ -733,7 +729,10 @@ mod tests {
         };
 
         let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
-        tasks.insert("dev".to_string(), TaskDefinition::Single(Box::new(user_task)));
+        tasks.insert(
+            "dev".to_string(),
+            TaskDefinition::Single(Box::new(user_task)),
+        );
 
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
@@ -742,9 +741,10 @@ mod tests {
         // User task should now depend on the contributor setup task
         let dev_task = tasks.get("dev").unwrap();
         if let TaskDefinition::Single(task) = dev_task {
-            assert!(task
-                .depends_on
-                .contains(&"cuenv:contributor:bun.workspace.setup".to_string()));
+            assert!(
+                task.depends_on
+                    .contains(&"cuenv:contributor:bun.workspace.setup".to_string())
+            );
         } else {
             panic!("Expected single task");
         }
@@ -899,7 +899,10 @@ mod tests {
         };
 
         let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
-        tasks.insert("dev".to_string(), TaskDefinition::Single(Box::new(user_task)));
+        tasks.insert(
+            "dev".to_string(),
+            TaskDefinition::Single(Box::new(user_task)),
+        );
 
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
@@ -936,7 +939,10 @@ mod tests {
         };
 
         let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
-        tasks.insert("other".to_string(), TaskDefinition::Single(Box::new(user_task)));
+        tasks.insert(
+            "other".to_string(),
+            TaskDefinition::Single(Box::new(user_task)),
+        );
 
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);

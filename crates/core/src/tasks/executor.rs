@@ -522,10 +522,7 @@ impl TaskExecutor {
                     Ok(Ok(results)) => merge_results(results)?,
                     Ok(Err(e)) => return Err(e),
                     Err(e) => {
-                        return Err(Error::execution(format!(
-                            "Task execution panicked: {}",
-                            e
-                        )));
+                        return Err(Error::execution(format!("Task execution panicked: {}", e)));
                     }
                 }
             }
@@ -535,10 +532,7 @@ impl TaskExecutor {
                 Ok(Ok(results)) => merge_results(results)?,
                 Ok(Err(e)) => return Err(e),
                 Err(e) => {
-                    return Err(Error::execution(format!(
-                        "Task execution panicked: {}",
-                        e
-                    )));
+                    return Err(Error::execution(format!("Task execution panicked: {}", e)));
                 }
             }
         }

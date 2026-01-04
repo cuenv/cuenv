@@ -524,7 +524,7 @@ pub struct SyncHandler {
     pub mode: sync::SyncMode,
     /// Scope (single path or entire workspace).
     pub scope: SyncScope,
-    /// Show diff for cubes (cubes-specific).
+    /// Show diff for codegen (codegen-specific).
     pub show_diff: bool,
     /// CI provider filter (github, buildkite).
     pub ci_provider: Option<String>,
@@ -619,7 +619,7 @@ impl CommandHandler for SyncHandler {
         }
 
         match &self.subcommand {
-            // Specific provider: cuenv sync cubes
+            // Specific provider: cuenv sync codegen
             Some(name) => {
                 let result = registry
                     .sync_provider(name, path, &self.package, &options, sync_all, executor)

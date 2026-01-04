@@ -283,11 +283,11 @@ formatters: {
 
 ## Post-Sync Formatting
 
-When using [cuenv cubes](/how-to/cubes/) for code generation, formatters also run automatically after `cuenv sync cubes`:
+When using [cuenv codegen](/how-to/codegen/) for code generation, formatters also run automatically after `cuenv sync codegen`:
 
 ```bash
 # Generates files AND formats them
-cuenv sync cubes
+cuenv sync codegen
 ```
 
 This ensures generated code matches your project's style without a separate step. The same formatter configuration applies to both `cuenv fmt` and post-sync formatting.

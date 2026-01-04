@@ -398,7 +398,10 @@ impl Error {
     }
 
     #[must_use]
-    pub fn secret_resolution_with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
+    pub fn secret_resolution_with_help(
+        message: impl Into<String>,
+        help: impl Into<String>,
+    ) -> Self {
         Error::SecretResolution {
             message: message.into(),
             help: Some(help.into()),
@@ -445,9 +448,14 @@ impl From<cuenv_task_graph::Error> for Error {
             cuenv_task_graph::Error::MissingDependencies { missing } => {
                 let suggestions: Vec<String> = missing
                     .iter()
-                    .map(|(task, dep)| format!("  - Add '{}' or remove from {}'s dependsOn", dep, task))
+                    .map(|(task, dep)| {
+                        format!("  - Add '{}' or remove from {}'s dependsOn", dep, task)
+                    })
                     .collect();
-                Some(format!("Fix missing dependencies:\n{}", suggestions.join("\n")))
+                Some(format!(
+                    "Fix missing dependencies:\n{}",
+                    suggestions.join("\n")
+                ))
             }
             cuenv_task_graph::Error::TopologicalSortFailed { .. } => None,
         };

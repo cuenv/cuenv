@@ -30,8 +30,7 @@ use std::path::{Path, PathBuf};
 /// `true` if any file matches the pattern
 pub fn matches_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) -> bool {
     // If pattern doesn't contain glob characters, treat it as a path prefix
-    let is_simple_path =
-        !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[');
+    let is_simple_path = !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[');
 
     for file in files {
         // Normalize the file path relative to project root
@@ -164,10 +163,7 @@ mod tests {
 
     #[test]
     fn test_matches_pattern_glob() {
-        let files = vec![
-            PathBuf::from("src/lib.rs"),
-            PathBuf::from("src/main.rs"),
-        ];
+        let files = vec![PathBuf::from("src/lib.rs"), PathBuf::from("src/main.rs")];
         let root = Path::new(".");
 
         assert!(matches_pattern(&files, root, "src/*.rs"));

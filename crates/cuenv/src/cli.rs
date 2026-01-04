@@ -804,9 +804,9 @@ pub enum SyncCommands {
         )]
         update: Option<Vec<String>>,
     },
-    /// Sync files from CUE cube configurations in projects.
-    #[command(about = "Sync files from CUE cube configurations in projects")]
-    Cubes {
+    /// Sync files from CUE codegen configurations in projects.
+    #[command(about = "Sync files from CUE codegen configurations in projects")]
+    Codegen {
         /// Path to directory containing CUE files.
         #[arg(
             long,
@@ -831,11 +831,11 @@ pub enum SyncCommands {
         /// Show diff for files that would change.
         #[arg(long, help = "Show diff for files that would change")]
         diff: bool,
-        /// Sync cubes for all projects in the workspace.
+        /// Sync codegen for all projects in the workspace.
         #[arg(
             long = "all",
             short = 'A',
-            help = "Sync cubes for all projects in the workspace"
+            help = "Sync codegen for all projects in the workspace"
         )]
         all: bool,
     },
@@ -1607,20 +1607,20 @@ impl Commands {
                             update_tools,
                         )
                     }
-                    Some(SyncCommands::Cubes {
+                    Some(SyncCommands::Codegen {
                         path: sub_path,
                         package: sub_package,
                         dry_run: sub_dry_run,
                         check: sub_check,
-                        diff: cubes_diff,
+                        diff: codegen_diff,
                         all: sub_all,
                     }) => (
-                        Some("cubes".to_string()),
+                        Some("codegen".to_string()),
                         sub_path,
                         sub_package,
                         to_mode(sub_dry_run, sub_check),
                         to_scope(sub_all || all),
-                        cubes_diff,
+                        codegen_diff,
                         None,
                         None, // update_tools only applies to lock
                     ),

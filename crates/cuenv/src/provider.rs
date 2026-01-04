@@ -89,7 +89,7 @@ pub trait Provider: Send + Sync + 'static {
 /// # Built-in Providers
 ///
 /// - `CiProvider` - Syncs CI workflow files (GitHub Actions, Buildkite)
-/// - `CubesProvider` - Syncs cube-generated project files
+/// - `CodegenProvider` - Syncs codegen-generated project files
 /// - `RulesProvider` - Syncs rules configuration (.gitignore, .editorconfig, CODEOWNERS)
 #[async_trait]
 pub trait SyncCapability: Provider {
