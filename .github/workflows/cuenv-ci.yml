@@ -61,7 +61,10 @@ jobs:
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv
-      run: sh -c cargo build --release -p cuenv && { echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true; } && ./target/release/cuenv sync -A
+      run: |-
+        cargo build --release -p cuenv
+        echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+        ./target/release/cuenv sync -A
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: 'Run pipeline: ci'
