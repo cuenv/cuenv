@@ -1967,6 +1967,7 @@ dependencies = [
 name = "cuenv-task-graph"
 version = "0.23.7"
 dependencies = [
+ "criterion",
  "petgraph",
  "tempfile",
  "thiserror 2.0.17",
