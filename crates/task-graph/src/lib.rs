@@ -42,7 +42,7 @@ mod traversal;
 mod validation;
 
 pub use error::{Error, Result};
-pub use graph::{GraphNode, TaskGraph};
+pub use graph::{GraphNode, TaskGraph, compute_transitive_closure};
 pub use resolver::{TaskResolution, TaskResolver};
 pub use traversal::{ParallelGroups, TopologicalOrder};
 pub use validation::ValidationResult;

@@ -1687,6 +1687,7 @@ dependencies = [
  "cuenv-core",
  "cuenv-events",
  "cuenv-secrets",
+ "cuenv-task-graph",
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-workspaces",
