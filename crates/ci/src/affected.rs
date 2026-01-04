@@ -1,5 +1,5 @@
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{TaskDefinition, TaskGroup};
+use cuenv_core::{matches_pattern, AffectedBy};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -85,58 +85,27 @@ pub fn matched_inputs_for_task(
         return Vec::new();
     };
     task.iter_path_inputs()
-        .filter(|input_glob| matches_any(changed_files, project_root, input_glob))
+        .filter(|input_glob| matches_pattern(changed_files, project_root, input_glob))
         .cloned()
         .collect()
 }
 
-/// Check if a task definition is directly affected by file changes.
-///
-/// Handles both single tasks and task groups (parallel/sequential).
-/// For groups, returns true if ANY subtask is affected.
-fn is_definition_affected(
-    def: &TaskDefinition,
-    changed_files: &[PathBuf],
-    project_root: &Path,
-) -> bool {
-    match def {
-        TaskDefinition::Single(task) => task
-            .iter_path_inputs()
-            .any(|input_glob| matches_any(changed_files, project_root, input_glob)),
-        TaskDefinition::Group(group) => is_group_affected(group, changed_files, project_root),
-    }
-}
-
-/// Check if a task group is directly affected by file changes.
-///
-/// A group is affected if ANY of its subtasks are affected.
-fn is_group_affected(group: &TaskGroup, changed_files: &[PathBuf], project_root: &Path) -> bool {
-    match group {
-        TaskGroup::Parallel(parallel) => parallel
-            .tasks
-            .values()
-            .any(|def| is_definition_affected(def, changed_files, project_root)),
-        TaskGroup::Sequential(tasks) => tasks
-            .iter()
-            .any(|def| is_definition_affected(def, changed_files, project_root)),
-    }
-}
-
 /// Check if a task is directly affected by file changes.
 ///
-/// A task is directly affected if any of its input patterns match any of the changed files.
-/// For task groups, returns true if any subtask in the group is affected.
+/// Uses the [`AffectedBy`] trait implementation from cuenv-core, which handles:
+/// - Single tasks: affected if any input pattern matches changed files
+/// - Task groups: affected if ANY subtask is affected
+/// - Tasks with no inputs: always considered affected (safe default)
 fn is_task_directly_affected(
     task_name: &str,
     config: &Project,
     changed_files: &[PathBuf],
     project_root: &Path,
 ) -> bool {
-    let Some(task_def) = config.tasks.get(task_name) else {
-        return false;
-    };
-
-    is_definition_affected(task_def, changed_files, project_root)
+    config
+        .tasks
+        .get(task_name)
+        .is_some_and(|def| def.is_affected_by(changed_files, project_root))
 }
 
 /// Check if an external dependency (cross-project task) is affected by file changes.
@@ -210,58 +179,6 @@ fn check_external_dependency(
     false
 }
 
-/// Check if any of the given files match a pattern.
-///
-/// Supports two matching modes:
-/// - **Simple paths**: Patterns without wildcards (`*`, `?`, `[`) are treated as path prefixes.
-///   For example, `"crates"` matches `"crates/foo/bar.rs"`.
-/// - **Glob patterns**: Patterns with wildcards use glob matching.
-///
-/// File paths are normalized relative to the project root before matching.
-fn matches_any(files: &[PathBuf], root: &Path, pattern: &str) -> bool {
-    // If pattern doesn't contain glob characters, treat it as a path prefix
-    // e.g., "crates" should match "crates/foo/bar.rs"
-    let is_simple_path = !pattern.contains('*') && !pattern.contains('?') && !pattern.contains('[');
-
-    for file in files {
-        // Get relative path for matching:
-        // - If root is "." or empty, use file as-is
-        // - If file is already relative (doesn't start with root), use it as-is
-        //   (git returns relative paths, project_root may be absolute)
-        // - Otherwise strip the root prefix
-        let relative_path = if root == Path::new(".") || root.as_os_str().is_empty() {
-            file.as_path()
-        } else if file.is_relative() {
-            // File is already relative (e.g., from git diff), use as-is
-            file.as_path()
-        } else {
-            match file.strip_prefix(root) {
-                Ok(p) => p,
-                Err(_) => continue,
-            }
-        };
-
-        if is_simple_path {
-            // Check if the pattern is a prefix of the file path.
-            // Note: starts_with includes exact matches, so no separate equality check needed.
-            let pattern_path = Path::new(pattern);
-            if relative_path.starts_with(pattern_path) {
-                return true;
-            }
-        } else {
-            // Use glob matching for patterns with wildcards
-            let Ok(glob) = glob::Pattern::new(pattern) else {
-                tracing::trace!(pattern, "Skipping invalid glob pattern");
-                continue;
-            };
-            if glob.matches_path(relative_path) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
 
 #[cfg(test)]
 mod tests {
@@ -293,104 +210,8 @@ mod tests {
         }
     }
 
-    // ==========================================================================
-    // matches_any tests
-    // ==========================================================================
-
-    #[test]
-    fn test_matches_any_simple_prefix_match() {
-        let files = vec![PathBuf::from("crates/foo/bar.rs")];
-        let root = Path::new(".");
-
-        assert!(matches_any(&files, root, "crates"));
-        assert!(matches_any(&files, root, "crates/foo"));
-        assert!(matches_any(&files, root, "crates/foo/bar.rs"));
-    }
-
-    #[test]
-    fn test_matches_any_no_match() {
-        let files = vec![PathBuf::from("src/lib.rs")];
-        let root = Path::new(".");
-
-        assert!(!matches_any(&files, root, "crates"));
-        assert!(!matches_any(&files, root, "tests"));
-    }
-
-    #[test]
-    fn test_matches_any_glob_pattern() {
-        let files = vec![
-            PathBuf::from("src/lib.rs"),
-            PathBuf::from("src/main.rs"),
-            PathBuf::from("tests/test.rs"),
-        ];
-        let root = Path::new(".");
-
-        assert!(matches_any(&files, root, "*.rs"));
-        assert!(matches_any(&files, root, "src/*.rs"));
-        assert!(!matches_any(&files, root, "*.txt"));
-    }
-
-    #[test]
-    fn test_matches_any_glob_with_question_mark() {
-        let files = vec![PathBuf::from("src/a.rs"), PathBuf::from("src/ab.rs")];
-        let root = Path::new(".");
-
-        assert!(matches_any(&files, root, "src/?.rs"));
-        assert!(!matches_any(&files, root, "src/???.rs"));
-    }
-
-    #[test]
-    fn test_matches_any_glob_with_brackets() {
-        let files = vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")];
-        let root = Path::new(".");
-
-        assert!(matches_any(&files, root, "src/[ab].rs"));
-        assert!(!matches_any(&files, root, "src/[cd].rs"));
-    }
-
-    #[test]
-    fn test_matches_any_with_absolute_paths() {
-        let files = vec![PathBuf::from("/project/src/lib.rs")];
-        let root = Path::new("/project");
-
-        assert!(matches_any(&files, root, "src"));
-        assert!(matches_any(&files, root, "src/lib.rs"));
-    }
-
-    #[test]
-    fn test_matches_any_relative_files_absolute_root() {
-        // Files from git diff are relative, but project_root may be absolute
-        let files = vec![PathBuf::from("src/lib.rs")];
-        let root = Path::new("/some/absolute/path");
-
-        // Should still match because file is relative
-        assert!(matches_any(&files, root, "src"));
-    }
-
-    #[test]
-    fn test_matches_any_empty_root() {
-        let files = vec![PathBuf::from("src/lib.rs")];
-        let root = Path::new("");
-
-        assert!(matches_any(&files, root, "src"));
-    }
-
-    #[test]
-    fn test_matches_any_empty_files() {
-        let files: Vec<PathBuf> = vec![];
-        let root = Path::new(".");
-
-        assert!(!matches_any(&files, root, "src"));
-    }
-
-    #[test]
-    fn test_matches_any_invalid_glob_pattern() {
-        let files = vec![PathBuf::from("src/lib.rs")];
-        let root = Path::new(".");
-
-        // Invalid glob pattern should be skipped (returns false)
-        assert!(!matches_any(&files, root, "[invalid"));
-    }
+    // NOTE: Pattern matching tests are now in cuenv-core/src/affected.rs
+    // Tests below focus on CI-specific logic.
 
     // ==========================================================================
     // matched_inputs_for_task tests
@@ -591,9 +412,10 @@ mod tests {
     #[test]
     fn test_compute_affected_tasks_external_dep_not_found() {
         // External dependency to non-existent project should be skipped
-        let task = make_task(vec![], vec!["#nonexistent:build"]);
+        // Task has inputs so it won't be auto-affected
+        let task = make_task(vec!["deploy/**"], vec!["#nonexistent:build"]);
         let project = make_project(vec![("deploy", task)]);
-        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let changed_files = vec![PathBuf::from("src/lib.rs")]; // Doesn't match deploy/**
         let root = Path::new(".");
         let pipeline_tasks = vec!["deploy".to_string()];
         let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
@@ -606,7 +428,9 @@ mod tests {
             &all_projects,
         );
 
-        // deploy shouldn't be affected because its dep project doesn't exist
+        // deploy shouldn't be affected because:
+        // 1. Its inputs don't match the changed files
+        // 2. Its external dep project doesn't exist
         assert!(affected.is_empty());
     }
 
@@ -647,9 +471,10 @@ mod tests {
     #[test]
     fn test_compute_affected_tasks_malformed_external_dep() {
         // Malformed external dependency (missing colon) should be skipped
-        let task = make_task(vec![], vec!["#badformat"]);
+        // Task has inputs so it won't be auto-affected
+        let task = make_task(vec!["deploy/**"], vec!["#badformat"]);
         let project = make_project(vec![("deploy", task)]);
-        let changed_files = vec![PathBuf::from("src/lib.rs")];
+        let changed_files = vec![PathBuf::from("src/lib.rs")]; // Doesn't match deploy/**
         let root = Path::new(".");
         let pipeline_tasks = vec!["deploy".to_string()];
         let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
@@ -662,7 +487,9 @@ mod tests {
             &all_projects,
         );
 
-        // Malformed external dep is skipped
+        // deploy shouldn't be affected because:
+        // 1. Its inputs don't match the changed files
+        // 2. Its malformed external dep is skipped
         assert!(affected.is_empty());
     }
 
@@ -715,18 +542,41 @@ mod tests {
     }
 
     #[test]
-    fn test_is_task_directly_affected_task_no_inputs() {
+    fn test_is_task_directly_affected_task_no_inputs_always_affected() {
+        // Tasks with no inputs should always be considered affected
+        // because we can't determine what affects them
         let task = make_task(vec![], vec![]);
         let project = make_project(vec![("build", task)]);
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
 
-        assert!(!is_task_directly_affected(
+        assert!(is_task_directly_affected(
             "build",
             &project,
             &changed_files,
             root
         ));
+    }
+
+    #[test]
+    fn test_task_with_no_inputs_always_affected_even_with_no_changes() {
+        // Even when no files changed, a task with no inputs should be affected
+        let task = make_task(vec![], vec![]);
+        let project = make_project(vec![("deploy", task)]);
+        let changed_files: Vec<PathBuf> = vec![]; // No changes
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["deploy".to_string()];
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert_eq!(affected, vec!["deploy"], "Task with no inputs should always be affected");
     }
 
     // ==========================================================================
@@ -980,7 +830,8 @@ mod tests {
     #[test]
     fn test_check_external_dependency_circular_prevention() {
         // Task A depends on itself (circular) - should not infinite loop
-        let circular_task = make_task(vec![], vec!["#proj:taskA"]);
+        // Task has inputs so it won't be auto-affected
+        let circular_task = make_task(vec!["taskA/**"], vec!["#proj:taskA"]);
         let mut project = Project::default();
         project.tasks.insert(
             "taskA".to_string(),
@@ -990,10 +841,11 @@ mod tests {
         let mut all_projects = HashMap::new();
         all_projects.insert("proj".to_string(), (PathBuf::from("/repo/proj"), project));
 
-        let changed_files: Vec<PathBuf> = vec![];
+        let changed_files: Vec<PathBuf> = vec![]; // No changes matching taskA/**
         let mut cache = HashMap::new();
 
         // Should return false without infinite loop
+        // (inputs don't match and circular dep doesn't cause issues)
         let result =
             check_external_dependency("#proj:taskA", &all_projects, &changed_files, &mut cache);
 
