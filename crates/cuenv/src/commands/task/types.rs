@@ -39,6 +39,9 @@ pub struct TaskExecutionRequest<'a> {
     /// Skip executing task dependencies (for CI orchestrators that handle deps externally)
     pub skip_dependencies: bool,
 
+    /// Dry run mode: export DAG as JSON without executing
+    pub dry_run: bool,
+
     /// Optional executor for cached module evaluation
     pub executor: Option<&'a CommandExecutor>,
 }
@@ -54,6 +57,7 @@ impl fmt::Debug for TaskExecutionRequest<'_> {
             .field("execution_mode", &self.execution_mode)
             .field("backend", &self.backend)
             .field("skip_dependencies", &self.skip_dependencies)
+            .field("dry_run", &self.dry_run)
             .field(
                 "executor",
                 &self.executor.as_ref().map(|_| "<CommandExecutor>"),
@@ -148,6 +152,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            dry_run: false,
             executor: None,
         }
     }
@@ -171,6 +176,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            dry_run: false,
             executor: None,
         }
     }
@@ -191,6 +197,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            dry_run: false,
             executor: None,
         }
     }
@@ -207,6 +214,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            dry_run: false,
             executor: None,
         }
     }
@@ -223,6 +231,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            dry_run: false,
             executor: None,
         }
     }
@@ -303,6 +312,13 @@ impl<'a> TaskExecutionRequest<'a> {
     #[must_use]
     pub const fn with_skip_dependencies(mut self) -> Self {
         self.skip_dependencies = true;
+        self
+    }
+
+    /// Enable dry run mode (export DAG as JSON without executing).
+    #[must_use]
+    pub const fn with_dry_run(mut self) -> Self {
+        self.dry_run = true;
         self
     }
 }

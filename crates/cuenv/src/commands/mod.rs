@@ -159,6 +159,8 @@ pub enum Command {
         all: bool,
         /// Whether to skip running task dependencies.
         skip_dependencies: bool,
+        /// Dry run mode: export DAG without executing.
+        dry_run: bool,
         /// Additional arguments to pass to the task.
         task_args: Vec<String>,
     },
@@ -622,6 +624,7 @@ impl CommandExecutor {
                 help,
                 all,
                 skip_dependencies,
+                dry_run,
                 task_args,
             } => {
                 self.run_command(handler::TaskHandler {
@@ -639,6 +642,7 @@ impl CommandExecutor {
                     help,
                     all,
                     skip_dependencies,
+                    dry_run,
                     task_args,
                 })
                 .await

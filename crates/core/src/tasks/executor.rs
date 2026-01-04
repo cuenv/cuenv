@@ -16,6 +16,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::task::JoinSet;
+use tracing::instrument;
 
 /// Task execution result
 #[derive(Debug, Clone)]
@@ -108,6 +109,7 @@ impl TaskExecutor {
     }
 
     /// Execute a single task
+    #[instrument(name = "execute_task", skip(self, task), fields(task_name = %name))]
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
         // Delegate execution to the configured backend.
         // The backend implementation handles the specific execution details.
@@ -532,6 +534,7 @@ impl TaskExecutor {
         Ok(all_results)
     }
 
+    #[instrument(name = "execute_graph", skip(self, graph), fields(task_count = graph.task_count()))]
     pub async fn execute_graph(&self, graph: &TaskGraph) -> Result<Vec<TaskResult>> {
         let parallel_groups = graph.get_parallel_groups()?;
         let mut all_results = Vec::new();
