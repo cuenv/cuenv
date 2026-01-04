@@ -112,10 +112,12 @@ mod tests {
         assert!(result.is_ok());
         let index = result.unwrap();
 
-        // Should have auto-injected contributor tasks with cuenv:contributor: prefix
+        // Should have auto-injected contributor tasks
+        // Note: TaskIndex normalizes colons to dots, so the canonical name uses dots
         let task_names: Vec<_> = index.list().iter().map(|t| t.name.as_str()).collect();
-        let install_task = format!("{}bun.workspace.install", CONTRIBUTOR_TASK_PREFIX);
-        let setup_task = format!("{}bun.workspace.setup", CONTRIBUTOR_TASK_PREFIX);
+        // CONTRIBUTOR_TASK_PREFIX uses colons, but TaskIndex normalizes to dots
+        let install_task = CONTRIBUTOR_TASK_PREFIX.replace(':', ".") + "bun.workspace.install";
+        let setup_task = CONTRIBUTOR_TASK_PREFIX.replace(':', ".") + "bun.workspace.setup";
         assert!(
             task_names.contains(&install_task.as_str()),
             "should contain auto-injected '{}' task, got: {:?}",
@@ -143,7 +145,8 @@ mod tests {
 
         // Should NOT have any injected tasks
         let task_names: Vec<_> = index.list().iter().map(|t| t.name.as_str()).collect();
-        let install_task = format!("{}bun.workspace.install", CONTRIBUTOR_TASK_PREFIX);
+        // TaskIndex normalizes colons to dots
+        let install_task = CONTRIBUTOR_TASK_PREFIX.replace(':', ".") + "bun.workspace.install";
         assert!(
             !task_names.contains(&install_task.as_str()),
             "no lockfile should mean no injected tasks"
@@ -170,9 +173,10 @@ mod tests {
         assert!(result.is_ok());
         let index = result.unwrap();
 
-        // The 'dev' task should now depend on cuenv:contributor:bun.workspace.setup
+        // The 'dev' task should now depend on the bun workspace setup task
+        // TaskIndex normalizes colons to dots in dependencies too
         let dev_task = index.resolve("dev").unwrap();
-        let expected_dep = format!("{}bun.workspace.setup", CONTRIBUTOR_TASK_PREFIX);
+        let expected_dep = CONTRIBUTOR_TASK_PREFIX.replace(':', ".") + "bun.workspace.setup";
         if let TaskDefinition::Single(task) = &dev_task.definition {
             assert!(
                 task.depends_on.contains(&expected_dep),
