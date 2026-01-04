@@ -1,6 +1,6 @@
 //! Unified task list building
 //!
-//! Provides a single entry point for building task lists with all synthetic
+//! Provides a single entry point for building task lists with all contributor
 //! tasks properly injected. This ensures consistency across completions,
 //! workspace listings, and task execution.
 
@@ -10,18 +10,20 @@ use cuenv_core::Result;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::TaskIndex;
 
-use super::workspace::inject_detected_workspace_tasks;
+use super::workspace::apply_workspace_contributors;
 
-/// Prepare a task index with all synthetic tasks injected.
+/// Prepare a task index with all contributor tasks injected.
 ///
 /// This is the single entry point for building task lists. It:
-/// 1. Auto-detects workspaces from lockfiles and injects setup tasks
-/// 2. Auto-associates tasks by command (e.g., `bun` tasks depend on `bun.setup`)
+/// 1. Auto-detects workspaces from lockfiles and injects contributor tasks
+/// 2. Auto-associates tasks by command (e.g., `bun` tasks depend on contributor setup)
 /// 3. Builds the TaskIndex
+///
+/// Contributor tasks are prefixed with `cuenv:contributor:` namespace.
 ///
 /// # Arguments
 ///
-/// * `manifest` - The project manifest (will be mutated to add synthetic tasks)
+/// * `manifest` - The project manifest (will be mutated to add contributor tasks)
 /// * `project_root` - Path to the project directory (for lockfile detection)
 ///
 /// # Errors
@@ -35,8 +37,8 @@ use super::workspace::inject_detected_workspace_tasks;
 /// let task_index = prepare_task_index(&mut manifest, project_root)?;
 /// ```
 pub fn prepare_task_index(manifest: &mut Project, project_root: &Path) -> Result<TaskIndex> {
-    // 1. Inject workspace setup tasks (auto-detected from lockfiles)
-    inject_detected_workspace_tasks(manifest, project_root);
+    // 1. Apply workspace contributors (auto-detected from lockfiles)
+    apply_workspace_contributors(manifest, project_root);
 
     // 2. Build TaskIndex
     TaskIndex::build(&manifest.tasks)
@@ -45,6 +47,7 @@ pub fn prepare_task_index(manifest: &mut Project, project_root: &Path) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::contributors::CONTRIBUTOR_TASK_PREFIX;
     use cuenv_core::tasks::{Task, TaskDefinition};
     use std::fs;
     use tempfile::TempDir;
@@ -109,16 +112,20 @@ mod tests {
         assert!(result.is_ok());
         let index = result.unwrap();
 
-        // Should have auto-injected bun.install and bun.setup tasks
+        // Should have auto-injected contributor tasks with cuenv:contributor: prefix
         let task_names: Vec<_> = index.list().iter().map(|t| t.name.as_str()).collect();
+        let install_task = format!("{}bun.workspace.install", CONTRIBUTOR_TASK_PREFIX);
+        let setup_task = format!("{}bun.workspace.setup", CONTRIBUTOR_TASK_PREFIX);
         assert!(
-            task_names.contains(&"bun.install"),
-            "should contain auto-injected 'bun.install' task, got: {:?}",
+            task_names.contains(&install_task.as_str()),
+            "should contain auto-injected '{}' task, got: {:?}",
+            install_task,
             task_names
         );
         assert!(
-            task_names.contains(&"bun.setup"),
-            "should contain auto-injected 'bun.setup' task, got: {:?}",
+            task_names.contains(&setup_task.as_str()),
+            "should contain auto-injected '{}' task, got: {:?}",
+            setup_task,
             task_names
         );
     }
@@ -136,44 +143,11 @@ mod tests {
 
         // Should NOT have any injected tasks
         let task_names: Vec<_> = index.list().iter().map(|t| t.name.as_str()).collect();
+        let install_task = format!("{}bun.workspace.install", CONTRIBUTOR_TASK_PREFIX);
         assert!(
-            !task_names.contains(&"bun.install"),
+            !task_names.contains(&install_task.as_str()),
             "no lockfile should mean no injected tasks"
         );
-    }
-
-    #[test]
-    fn test_prepare_task_index_explicit_task_not_overridden() {
-        let tmp = create_test_dir();
-        // Create bun.lock to trigger detection
-        fs::write(tmp.path().join("bun.lock"), "lockfile content").unwrap();
-
-        let mut manifest = Project::default();
-
-        // Add explicit bun.install task with custom command
-        manifest.tasks.insert(
-            "bun.install".to_string(),
-            TaskDefinition::Single(Box::new(Task {
-                command: "echo custom install".to_string(),
-                description: Some("Custom install".to_string()),
-                ..Default::default()
-            })),
-        );
-
-        let result = prepare_task_index(&mut manifest, tmp.path());
-        assert!(result.is_ok());
-        let index = result.unwrap();
-
-        // Find the bun.install task and verify it's the explicit one (not overridden)
-        let bun_install = index.resolve("bun.install").unwrap();
-        if let TaskDefinition::Single(task) = &bun_install.definition {
-            assert_eq!(
-                task.command, "echo custom install",
-                "explicit task should not be overridden by auto-detection"
-            );
-        } else {
-            panic!("expected single task");
-        }
     }
 
     #[test]
@@ -196,12 +170,14 @@ mod tests {
         assert!(result.is_ok());
         let index = result.unwrap();
 
-        // The 'dev' task should now depend on bun.setup
+        // The 'dev' task should now depend on cuenv:contributor:bun.workspace.setup
         let dev_task = index.resolve("dev").unwrap();
+        let expected_dep = format!("{}bun.workspace.setup", CONTRIBUTOR_TASK_PREFIX);
         if let TaskDefinition::Single(task) = &dev_task.definition {
             assert!(
-                task.depends_on.contains(&"bun.setup".to_string()),
-                "bun task should auto-depend on bun.setup, got: {:?}",
+                task.depends_on.contains(&expected_dep),
+                "bun task should auto-depend on {}, got: {:?}",
+                expected_dep,
                 task.depends_on
             );
         } else {
