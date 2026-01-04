@@ -1143,11 +1143,28 @@ impl Compiler {
     /// alongside regular tasks in `ir.tasks` and distinguished by their `phase` field.
     /// The phase is derived from the task's priority.
     fn contributor_task_to_ir(contributor_task: &ContributorTask, contributor_id: &str) -> IrTask {
-        // Build command array
+        // Build command array, wrapping with `cuenv exec` if needed for tool activation
         let (command, shell) = if let Some(ref cmd) = contributor_task.command {
             let mut cmd_vec = vec![cmd.clone()];
             cmd_vec.extend(contributor_task.args.clone());
-            (cmd_vec, contributor_task.shell)
+
+            // Wrap with cuenv exec if:
+            // 1. Not using a GitHub Action (provider.github) - actions handle their own setup
+            // 2. Command doesn't start with "cuenv" - avoid `cuenv exec -- cuenv ...`
+            let has_github_action = contributor_task
+                .provider
+                .as_ref()
+                .is_some_and(|p| p.github.is_some());
+
+            let needs_wrapping = !has_github_action && cmd != "cuenv";
+
+            if needs_wrapping {
+                let mut wrapped = vec!["cuenv".to_string(), "exec".to_string(), "--".to_string()];
+                wrapped.extend(cmd_vec);
+                (wrapped, contributor_task.shell)
+            } else {
+                (cmd_vec, contributor_task.shell)
+            }
         } else if let Some(ref script) = contributor_task.script {
             (vec![script.clone()], true)
         } else {
@@ -2042,7 +2059,11 @@ mod tests {
         let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
 
         assert_eq!(ir_task.id, "cuenv:contributor:test-task");
-        assert_eq!(ir_task.command, vec!["echo", "hello"]);
+        // Commands are wrapped with cuenv exec for tool activation
+        assert_eq!(
+            ir_task.command,
+            vec!["cuenv", "exec", "--", "echo", "hello"]
+        );
         assert!(!ir_task.shell);
         assert_eq!(ir_task.priority, Some(10));
         assert_eq!(ir_task.phase, Some(BuildStage::Setup)); // priority 10 = Setup
@@ -2238,7 +2259,11 @@ mod tests {
         let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "bun.workspace");
 
         assert_eq!(ir_task.id, "cuenv:contributor:bun.workspace.install");
-        assert_eq!(ir_task.command, vec!["bun", "install", "--frozen-lockfile"]);
+        // Commands are wrapped with cuenv exec for tool activation
+        assert_eq!(
+            ir_task.command,
+            vec!["cuenv", "exec", "--", "bun", "install", "--frozen-lockfile"]
+        );
         assert!(!ir_task.shell);
         assert_eq!(ir_task.phase, Some(BuildStage::Setup));
         assert_eq!(ir_task.inputs, vec!["package.json", "bun.lock"]);
