@@ -58,6 +58,17 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
         projects.push((project_path, config));
     }
 
+    // Filter projects by path if specified (and not the default ".")
+    let projects: Vec<(PathBuf, Project)> = if args.path == "." {
+        projects
+    } else {
+        let filter_path = module.root.join(&args.path);
+        projects
+            .into_iter()
+            .filter(|(path, _)| path.starts_with(&filter_path))
+            .collect()
+    };
+
     tracing::info!(count = projects.len(), "Found projects");
 
     let pipeline_name = args.pipeline_name();

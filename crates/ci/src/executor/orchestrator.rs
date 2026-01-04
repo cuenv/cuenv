@@ -41,6 +41,7 @@ use super::runner::{IRTaskRunner, TaskOutput};
 /// * `dry_run` - If true, don't actually run tasks
 /// * `specific_pipeline` - If set, only run tasks from this pipeline
 /// * `environment` - Optional environment override for secrets resolution
+/// * `path_filter` - If set, only process projects under this path (relative to module root)
 ///
 /// # Errors
 /// Returns error if IO errors occur or tasks fail
@@ -50,6 +51,7 @@ pub async fn run_ci(
     dry_run: bool,
     specific_pipeline: Option<String>,
     environment: Option<String>,
+    path_filter: Option<&str>,
 ) -> Result<()> {
     let context = provider.context();
     cuenv_events::emit_ci_context!(&context.provider, &context.event, &context.ref_name);
@@ -74,6 +76,25 @@ pub async fn run_ci(
         let config = Project::try_from(instance)?;
         let project_path = module.root.join(&instance.path);
         projects.push((project_path, config));
+    }
+
+    // Filter projects by path if specified (and not the default ".")
+    let projects: Vec<(PathBuf, Project)> = match path_filter {
+        Some(filter) if filter != "." => {
+            let filter_path = module.root.join(filter);
+            projects
+                .into_iter()
+                .filter(|(path, _)| path.starts_with(&filter_path))
+                .collect()
+        }
+        _ => projects,
+    };
+
+    if projects.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "No cuenv projects found under path '{}'",
+            path_filter.unwrap_or(".")
+        )));
     }
 
     // Build project map for cross-project dependency resolution
