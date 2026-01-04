@@ -101,12 +101,10 @@ impl CliRenderer {
                 stream, content, ..
             } => match stream {
                 Stream::Stdout => {
-                    print!("{content}");
-                    let _ = io::stdout().flush();
+                    println!("{content}");
                 }
                 Stream::Stderr => {
-                    eprint!("{content}");
-                    let _ = io::stderr().flush();
+                    eprintln!("{content}");
                 }
             },
             TaskEvent::Completed {
