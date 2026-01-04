@@ -44,6 +44,7 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
         args.dry_run,
         args.pipeline.clone(),
         args.environment.clone(),
+        Some(&args.path),
     )
     .await
 }
