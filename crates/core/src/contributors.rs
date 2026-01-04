@@ -847,4 +847,188 @@ mod tests {
         assert_eq!(dag.get("a"), Some(&vec![]));
         assert_eq!(dag.get("b"), Some(&vec!["a".to_string()]));
     }
+
+    #[test]
+    fn test_multiple_contributors_active_simultaneously() {
+        // Two contributors that both match (different workspace types)
+        let bun_contrib = create_test_contributor("bun.workspace", vec!["bun"]);
+        let npm_contrib = Contributor {
+            id: "npm.workspace".to_string(),
+            when: Some(ContributorActivation {
+                workspace_member: vec!["npm".to_string()],
+                ..Default::default()
+            }),
+            tasks: vec![ContributorTask {
+                id: "npm.workspace.install".to_string(),
+                command: Some("npm".to_string()),
+                args: vec!["install".to_string()],
+                ..Default::default()
+            }],
+            auto_associate: None,
+        };
+
+        // Context where both could theoretically match (we'll test bun only)
+        let ctx = ContributorContext {
+            workspace_member: Some("bun".to_string()),
+            ..Default::default()
+        };
+
+        let contributors = [bun_contrib.clone(), npm_contrib.clone()];
+        let engine = ContributorEngine::new(&contributors, ctx);
+        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+
+        engine.apply(&mut tasks).unwrap();
+
+        // Only bun tasks should be injected (npm doesn't match)
+        assert!(tasks.contains_key("cuenv:contributor:bun.workspace.install"));
+        assert!(tasks.contains_key("cuenv:contributor:bun.workspace.setup"));
+        assert!(!tasks.contains_key("cuenv:contributor:npm.workspace.install"));
+    }
+
+    #[test]
+    fn test_auto_association_no_duplicate_deps() {
+        let contrib = create_test_contributor("bun.workspace", vec!["bun"]);
+        let ctx = ContributorContext {
+            workspace_member: Some("bun".to_string()),
+            workspace_root: None,
+            task_commands: ["test-cmd".to_string()].into_iter().collect(),
+        };
+
+        // Create a user task that already has the dependency
+        let user_task = Task {
+            command: "test-cmd".to_string(),
+            args: vec!["run".to_string(), "dev".to_string()],
+            depends_on: vec!["cuenv:contributor:bun.workspace.setup".to_string()],
+            ..Default::default()
+        };
+
+        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+        tasks.insert("dev".to_string(), TaskDefinition::Single(Box::new(user_task)));
+
+        let contributors = [contrib];
+        let engine = ContributorEngine::new(&contributors, ctx);
+        engine.apply(&mut tasks).unwrap();
+
+        // Should not have duplicated the dependency
+        let dev_task = tasks.get("dev").unwrap();
+        if let TaskDefinition::Single(task) = dev_task {
+            let dep_count = task
+                .depends_on
+                .iter()
+                .filter(|d| *d == "cuenv:contributor:bun.workspace.setup")
+                .count();
+            assert_eq!(dep_count, 1, "Dependency should not be duplicated");
+        } else {
+            panic!("Expected single task");
+        }
+    }
+
+    #[test]
+    fn test_command_matching_is_exact() {
+        let contrib = create_test_contributor("bun.workspace", vec!["bun"]);
+        let ctx = ContributorContext {
+            workspace_member: Some("bun".to_string()),
+            workspace_root: None,
+            task_commands: ["test-cmd".to_string()].into_iter().collect(),
+        };
+
+        // Task with a command that is NOT an exact match
+        let user_task = Task {
+            command: "test-cmd-extra".to_string(), // Different command
+            args: vec!["run".to_string()],
+            ..Default::default()
+        };
+
+        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+        tasks.insert("other".to_string(), TaskDefinition::Single(Box::new(user_task)));
+
+        let contributors = [contrib];
+        let engine = ContributorEngine::new(&contributors, ctx);
+        engine.apply(&mut tasks).unwrap();
+
+        // Should NOT have auto-associated (command doesn't match exactly)
+        let other_task = tasks.get("other").unwrap();
+        if let TaskDefinition::Single(task) = other_task {
+            assert!(
+                !task
+                    .depends_on
+                    .contains(&"cuenv:contributor:bun.workspace.setup".to_string()),
+                "Non-matching command should not get auto-association"
+            );
+        } else {
+            panic!("Expected single task");
+        }
+    }
+
+    #[test]
+    fn test_contributor_with_empty_tasks() {
+        let contrib = Contributor {
+            id: "empty".to_string(),
+            when: Some(ContributorActivation {
+                always: Some(true),
+                ..Default::default()
+            }),
+            tasks: vec![], // No tasks
+            auto_associate: None,
+        };
+
+        let ctx = ContributorContext::default();
+        let contributors = [contrib];
+        let engine = ContributorEngine::new(&contributors, ctx);
+        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+
+        let injected = engine.apply(&mut tasks).unwrap();
+
+        // Should inject nothing
+        assert_eq!(injected, 0);
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn test_contributor_task_dependencies_prefixed() {
+        // Test that internal dependencies get the prefix too
+        let contrib = Contributor {
+            id: "test".to_string(),
+            when: Some(ContributorActivation {
+                always: Some(true),
+                ..Default::default()
+            }),
+            tasks: vec![
+                ContributorTask {
+                    id: "test.first".to_string(),
+                    command: Some("echo".to_string()),
+                    args: vec!["first".to_string()],
+                    ..Default::default()
+                },
+                ContributorTask {
+                    id: "test.second".to_string(),
+                    command: Some("echo".to_string()),
+                    args: vec!["second".to_string()],
+                    depends_on: vec!["test.first".to_string()], // Reference without prefix
+                    ..Default::default()
+                },
+            ],
+            auto_associate: None,
+        };
+
+        let ctx = ContributorContext::default();
+        let contributors = [contrib];
+        let engine = ContributorEngine::new(&contributors, ctx);
+        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+
+        engine.apply(&mut tasks).unwrap();
+
+        // Check that the second task's dependency got prefixed
+        let second_task = tasks.get("cuenv:contributor:test.second").unwrap();
+        if let TaskDefinition::Single(task) = second_task {
+            assert!(
+                task.depends_on
+                    .contains(&"cuenv:contributor:test.first".to_string()),
+                "Internal dependency should be prefixed, got: {:?}",
+                task.depends_on
+            );
+        } else {
+            panic!("Expected single task");
+        }
+    }
 }

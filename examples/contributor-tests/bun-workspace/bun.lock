@@ -1,0 +1,9 @@
+# bun lockfile - minimal for testing
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "bun-workspace-test"
+    }
+  }
+}
