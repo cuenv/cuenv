@@ -23,6 +23,7 @@ use cuenv_events::emit_stderr;
 use cuenv_hooks::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status};
 
 use super::export::{extract_static_env_vars, get_environment_with_hooks};
+use tracing::instrument;
 
 /// Represents the type of manifest found at a path.
 enum ManifestKind {
@@ -46,6 +47,7 @@ enum ManifestKind {
 ///
 /// Returns an error if CUE evaluation fails or command execution fails.
 #[allow(clippy::too_many_lines)]
+#[instrument(name = "exec_run", skip(executor), fields(path = %path, command = %command))]
 pub async fn execute_exec(
     path: &str,
     package: &str,

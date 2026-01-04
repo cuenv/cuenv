@@ -472,6 +472,14 @@ pub enum Commands {
             default_value_t = false
         )]
         skip_dependencies: bool,
+        /// Dry run mode: export task DAG as JSON without executing.
+        #[arg(
+            long = "dry-run",
+            short = 'n',
+            help = "Export task dependency graph as JSON without executing tasks",
+            default_value_t = false
+        )]
+        dry_run: bool,
         /// Arguments to pass to the task (positional and --named values).
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,
@@ -1344,6 +1352,7 @@ impl Commands {
                 help,
                 all,
                 skip_dependencies,
+                dry_run,
                 task_args,
             } => Command::Task {
                 path,
@@ -1361,6 +1370,7 @@ impl Commands {
                 help,
                 all,
                 skip_dependencies,
+                dry_run,
                 task_args,
             },
             Self::Exec {
@@ -2279,6 +2289,7 @@ mod tests {
             help: false,
             all: false,
             skip_dependencies: false,
+            dry_run: false,
             task_args: vec![],
         };
         assert_eq!(task_cmd.package(), "mypackage");

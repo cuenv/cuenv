@@ -407,6 +407,8 @@ pub struct TaskHandler {
     pub all: bool,
     /// Whether to skip task dependencies.
     pub skip_dependencies: bool,
+    /// Dry run mode: export DAG without executing.
+    pub dry_run: bool,
     /// Additional arguments to pass to the task.
     pub task_args: Vec<String>,
 }
@@ -468,6 +470,9 @@ impl CommandHandler for TaskHandler {
         }
         if self.skip_dependencies {
             request = request.with_skip_dependencies();
+        }
+        if self.dry_run {
+            request = request.with_dry_run();
         }
 
         let request = request.with_executor(executor);
