@@ -26,6 +26,7 @@ import "github.com/cuenv/cuenv/schema"
 		{
 			id:          "npm.workspace.install"
 			label:       "Install npm dependencies"
+			priority:    20
 			command:     "npm"
 			args:        ["ci"]
 			inputs:      ["package.json", "package-lock.json"]
