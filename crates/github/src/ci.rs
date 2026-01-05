@@ -128,6 +128,28 @@ impl GitHubCIProvider {
                 cuenv_core::Error::configuration(format!("Failed to create GitHub client: {e}"))
             })
     }
+
+    /// Get changed files for a PR using the GitHub API.
+    ///
+    /// This is faster and more reliable than git diff for PRs, as it doesn't
+    /// require fetching git history. Works with shallow clones.
+    async fn get_pr_files_from_api(&self, pr_number: u64) -> Result<Vec<PathBuf>> {
+        debug!("Fetching PR files from GitHub API for PR #{pr_number}");
+        let octocrab = self.octocrab()?;
+
+        let page = octocrab
+            .pulls(&self.owner, &self.repo)
+            .list_files(pr_number)
+            .await
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to get PR files from API: {e}"))
+            })?;
+
+        let files: Vec<PathBuf> = page.items.iter().map(|f| PathBuf::from(&f.filename)).collect();
+
+        info!("Got {} changed files from GitHub API", files.len());
+        Ok(files)
+    }
 }
 
 #[async_trait]
@@ -163,10 +185,21 @@ impl CIProvider for GitHubCIProvider {
     }
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
+        // Strategy 1: Pull Request - use GitHub API (fastest, no git history needed)
+        if let Some(pr_number) = self.pr_number {
+            debug!("PR #{pr_number} detected, using GitHub API for changed files");
+            match self.get_pr_files_from_api(pr_number).await {
+                Ok(files) => return Ok(files),
+                Err(e) => {
+                    warn!("Failed to get PR files from API: {e}. Falling back to git diff.");
+                }
+            }
+        }
+
         let is_shallow = Self::is_shallow_clone();
         debug!("Shallow clone detected: {is_shallow}");
 
-        // Strategy 1: Pull Request - use base_ref
+        // Strategy 2: Pull Request - use git diff with base_ref (fallback if API fails)
         if let Some(base) = &self.context.base_ref
             && !base.is_empty()
         {
@@ -181,7 +214,7 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
-        // Strategy 2: Push event with valid GITHUB_BEFORE
+        // Strategy 3: Push event with valid GITHUB_BEFORE
         if let Some(before_sha) = Self::get_before_sha() {
             debug!("Push event detected, GITHUB_BEFORE: {before_sha}");
 
@@ -194,13 +227,13 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
-        // Strategy 3: Try comparing against parent commit
+        // Strategy 4: Try comparing against parent commit
         if let Some(files) = Self::try_git_diff("HEAD^..HEAD") {
             debug!("Using HEAD^ comparison");
             return Ok(files);
         }
 
-        // Strategy 4: Fall back to all tracked files
+        // Strategy 5: Fall back to all tracked files
         warn!(
             "Could not determine changed files (shallow clone: {is_shallow}). \
              Running all tasks. For better performance, consider: \
