@@ -42,10 +42,6 @@ ignore = [
     # rustls-pemfile unmaintained - transitive dep from yup-oauth2
     # Functionality moved to rustls-pki-types, waiting for upstream update
     "RUSTSEC-2025-0134",
-    # idna unmaintained - transitive dep, waiting for ecosystem update
-    "RUSTSEC-2024-0384",
-    # instant unmaintained - transitive dep, functionality in std::time
-    "RUSTSEC-2025-0012",
     # proc-macro-error unmaintained - transitive dep from clap/derive_more
     "RUSTSEC-2025-0057",
     # derivative unmaintained - transitive dep
