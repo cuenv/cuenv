@@ -1151,12 +1151,20 @@ impl Compiler {
             // Wrap with cuenv exec if:
             // 1. Not using a GitHub Action (provider.github) - actions handle their own setup
             // 2. Command doesn't start with "cuenv" - avoid `cuenv exec -- cuenv ...`
+            // 3. Task runs after cuenv is set up (not bootstrap phase, not cuenv contributor)
             let has_github_action = contributor_task
                 .provider
                 .as_ref()
                 .is_some_and(|p| p.github.is_some());
 
-            let needs_wrapping = !has_github_action && cmd != "cuenv";
+            // Don't wrap if task runs before cuenv is set up:
+            // - cuenv contributor tasks ARE setting up cuenv itself
+            // - Bootstrap phase (priority < 10) runs before cuenv.setup (priority 10)
+            let is_cuenv_contributor = contributor_id == "cuenv";
+            let is_bootstrap = contributor_task.priority < 10;
+            let runs_before_cuenv = is_cuenv_contributor || is_bootstrap;
+
+            let needs_wrapping = !has_github_action && cmd != "cuenv" && !runs_before_cuenv;
 
             if needs_wrapping {
                 let mut wrapped = vec!["cuenv".to_string(), "exec".to_string(), "--".to_string()];
@@ -2267,6 +2275,70 @@ mod tests {
         assert!(!ir_task.shell);
         assert_eq!(ir_task.phase, Some(BuildStage::Setup));
         assert_eq!(ir_task.inputs, vec!["package.json", "bun.lock"]);
+    }
+
+    #[test]
+    fn test_contributor_task_to_ir_cuenv_contributor_not_wrapped() {
+        // Tasks from the cuenv contributor should NOT be wrapped with cuenv exec
+        // because they are setting up cuenv itself
+        let contributor_task = ContributorTask {
+            id: "cuenv.setup".to_string(),
+            label: Some("Setup cuenv".to_string()),
+            description: None,
+            command: Some("brew".to_string()),
+            args: vec!["install".to_string(), "cuenv/cuenv/cuenv".to_string()],
+            script: None,
+            shell: false,
+            env: HashMap::default(),
+            secrets: HashMap::default(),
+            inputs: vec![],
+            outputs: vec![],
+            hermetic: false,
+            depends_on: vec![],
+            priority: 10,
+            condition: None,
+            provider: None,
+        };
+
+        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "cuenv");
+
+        assert_eq!(ir_task.id, "cuenv:contributor:cuenv.setup");
+        // Should NOT be wrapped - cuenv contributor tasks set up cuenv itself
+        assert_eq!(
+            ir_task.command,
+            vec!["brew", "install", "cuenv/cuenv/cuenv"]
+        );
+    }
+
+    #[test]
+    fn test_contributor_task_to_ir_bootstrap_not_wrapped() {
+        // Bootstrap phase tasks (priority < 10) should NOT be wrapped with cuenv exec
+        // because they run before cuenv is built
+        let contributor_task = ContributorTask {
+            id: "setup.rust".to_string(),
+            label: Some("Setup Rust".to_string()),
+            description: None,
+            command: Some("rustup".to_string()),
+            args: vec!["default".to_string(), "stable".to_string()],
+            script: None,
+            shell: false,
+            env: HashMap::default(),
+            secrets: HashMap::default(),
+            inputs: vec![],
+            outputs: vec![],
+            hermetic: false,
+            depends_on: vec![],
+            priority: 6, // Bootstrap phase
+            condition: None,
+            provider: None,
+        };
+
+        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "rust");
+
+        assert_eq!(ir_task.id, "cuenv:contributor:setup.rust");
+        // Should NOT be wrapped - bootstrap tasks run before cuenv.setup
+        assert_eq!(ir_task.command, vec!["rustup", "default", "stable"]);
+        assert_eq!(ir_task.phase, Some(BuildStage::Bootstrap));
     }
 
     #[test]
