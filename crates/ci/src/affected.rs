@@ -1,4 +1,5 @@
 use cuenv_core::manifest::Project;
+use cuenv_core::tasks::TaskIndex;
 use cuenv_core::{AffectedBy, matches_pattern};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,6 +25,15 @@ pub fn compute_affected_tasks(
 
     // 2. Transitive dependencies
     // We need to check dependencies recursively including cross-project ones
+    // Build task index once for resolving nested task names
+    let Ok(index) = TaskIndex::build(&config.tasks) else {
+        return pipeline_tasks
+            .iter()
+            .filter(|t| affected.contains(*t))
+            .cloned()
+            .collect();
+    };
+
     let mut changed = true;
     while changed {
         changed = false;
@@ -32,8 +42,8 @@ pub fn compute_affected_tasks(
                 continue;
             }
 
-            if let Some(task_def) = config.tasks.get(task_name)
-                && let Some(task) = task_def.as_single()
+            if let Ok(entry) = index.resolve(task_name)
+                && let Some(task) = entry.definition.as_single()
                 && !task.depends_on.is_empty()
             {
                 for dep in &task.depends_on {
@@ -78,12 +88,19 @@ pub fn matched_inputs_for_task(
     changed_files: &[PathBuf],
     project_root: &Path,
 ) -> Vec<String> {
-    let Some(task_def) = config.tasks.get(task_name) else {
+    // Build task index to resolve nested names like "deploy.preview"
+    let Ok(index) = TaskIndex::build(&config.tasks) else {
         return Vec::new();
     };
-    let Some(task) = task_def.as_single() else {
+
+    let Ok(entry) = index.resolve(task_name) else {
         return Vec::new();
     };
+
+    let Some(task) = entry.definition.as_single() else {
+        return Vec::new();
+    };
+
     task.iter_path_inputs()
         .filter(|input_glob| matches_pattern(changed_files, project_root, input_glob))
         .cloned()
@@ -96,16 +113,24 @@ pub fn matched_inputs_for_task(
 /// - Single tasks: affected if any input pattern matches changed files
 /// - Task groups: affected if ANY subtask is affected
 /// - Tasks with no inputs: always considered affected (safe default)
+///
+/// This function uses `TaskIndex` to resolve nested task names like "deploy.preview"
+/// which are stored in CUE as hierarchical structures (e.g., `deploy: preview: {...}`).
 fn is_task_directly_affected(
     task_name: &str,
     config: &Project,
     changed_files: &[PathBuf],
     project_root: &Path,
 ) -> bool {
-    config
-        .tasks
-        .get(task_name)
-        .is_some_and(|def| def.is_affected_by(changed_files, project_root))
+    // Build task index to resolve nested names like "deploy.preview"
+    let Ok(index) = TaskIndex::build(&config.tasks) else {
+        return false;
+    };
+
+    index
+        .resolve(task_name)
+        .ok()
+        .is_some_and(|entry| entry.definition.is_affected_by(changed_files, project_root))
 }
 
 /// Check if an external dependency (cross-project task) is affected by file changes.
@@ -153,8 +178,12 @@ fn check_external_dependency(
     }
 
     // Check transitive dependencies of the external task
-    if let Some(task_def) = project_config.tasks.get(task_name)
-        && let Some(task) = task_def.as_single()
+    // Use TaskIndex to resolve nested task names
+    let Ok(index) = TaskIndex::build(&project_config.tasks) else {
+        return false;
+    };
+    if let Ok(entry) = index.resolve(task_name)
+        && let Some(task) = entry.definition.as_single()
     {
         for sub_dep in &task.depends_on {
             if sub_dep.starts_with('#') {
