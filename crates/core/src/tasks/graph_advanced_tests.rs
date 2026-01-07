@@ -892,7 +892,8 @@ fn test_dag_with_many_parallel_projects() {
 
     let integration = Task {
         command: "echo integration".to_string(),
-        depends_on: integration_deps,
+        // resolved_deps is used by TaskNodeData for graph building
+        resolved_deps: integration_deps,
         ..Default::default()
     };
     graph.add_task("integration", integration).unwrap();

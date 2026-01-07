@@ -100,6 +100,88 @@ pub struct TaskOutput {
     pub map: Option<Vec<Mapping>>,
 }
 
+/// Task dependency - can be either a string, explicit reference, or embedded task (for CUE refs)
+///
+/// Order matters for serde untagged deserialization - try structured formats first
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum TaskDependency {
+    /// Explicit reference: {task: "build"} or {project: "foo", task: "build"}
+    Ref(TaskDependencyRef),
+    /// Embedded task from CUE reference (tasks.build) - resolved by _name field
+    Embedded(Box<Task>),
+    /// Simple string format: "build" or "docs.build" (legacy, for backwards compatibility)
+    Simple(String),
+}
+
+impl TaskDependency {
+    /// Create a same-project task dependency reference
+    pub fn same_project(task: impl Into<String>) -> Self {
+        TaskDependency::Ref(TaskDependencyRef {
+            task: task.into(),
+            project: None,
+        })
+    }
+
+    /// Create a cross-project task dependency reference
+    pub fn cross_project(project: impl Into<String>, task: impl Into<String>) -> Self {
+        TaskDependency::Ref(TaskDependencyRef {
+            task: task.into(),
+            project: Some(project.into()),
+        })
+    }
+
+    /// Get the canonical task name for this dependency.
+    /// For Ref: returns the task field directly.
+    /// For Embedded: returns the _name field (required for embedded tasks).
+    /// For Simple: returns the string directly.
+    pub fn task_name(&self) -> Option<&str> {
+        match self {
+            TaskDependency::Ref(r) => Some(&r.task),
+            TaskDependency::Embedded(t) => t.name.as_deref(),
+            TaskDependency::Simple(s) => Some(s.as_str()),
+        }
+    }
+
+    /// Get the project name for cross-project dependencies.
+    /// Returns None for same-project dependencies.
+    pub fn project(&self) -> Option<&str> {
+        match self {
+            TaskDependency::Ref(r) => r.project.as_deref(),
+            TaskDependency::Embedded(_) => None, // Embedded tasks are always same-project
+            TaskDependency::Simple(_) => None,   // Simple strings are always same-project
+        }
+    }
+
+    /// Returns true if this is a cross-project dependency
+    pub fn is_cross_project(&self) -> bool {
+        self.project().is_some()
+    }
+}
+
+impl From<&str> for TaskDependency {
+    fn from(task: &str) -> Self {
+        TaskDependency::same_project(task)
+    }
+}
+
+impl From<String> for TaskDependency {
+    fn from(task: String) -> Self {
+        TaskDependency::same_project(task)
+    }
+}
+
+/// Explicit task dependency reference
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaskDependencyRef {
+    /// Task name - always absolute from project root (not relative to namespace)
+    pub task: String,
+    /// Project name for cross-project references (optional)
+    /// When omitted, references a task in the same project
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
 /// Source location metadata from CUE evaluation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct SourceLocation {
@@ -129,6 +211,11 @@ impl SourceLocation {
 /// between a Task and a TaskGroup during deserialization.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Task {
+    /// Internal name field - auto-populated by CUE's `[Name=string]: #Task & {_name: Name}` pattern.
+    /// Used to identify embedded tasks when using CUE references in dependsOn.
+    #[serde(default, rename = "_name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+
     /// Shell configuration for command execution (optional)
     #[serde(default)]
     pub shell: Option<Shell>,
@@ -165,9 +252,12 @@ pub struct Task {
     #[serde(default = "default_hermetic")]
     pub hermetic: bool,
 
-    /// Task dependencies (names of tasks that must run first)
+    /// Task dependencies - specify tasks that must complete before this task runs.
+    /// Accepts either:
+    /// - Explicit refs: {task: "build"} or {project: "other", task: "build"}
+    /// - CUE references: tasks.build (provides LSP autocomplete, embeds _name)
     #[serde(default, rename = "dependsOn")]
-    pub depends_on: Vec<String>,
+    pub depends_on: Vec<TaskDependency>,
 
     /// Input files/resources
     #[serde(default)]
@@ -210,6 +300,12 @@ pub struct Task {
     /// Defaults to the directory of the source file if not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
+
+    /// Resolved dependency names for graph building.
+    /// Populated during task canonicalization from depends_on.
+    /// This field is used by TaskNodeData trait for dependency resolution.
+    #[serde(skip)]
+    pub resolved_deps: Vec<String>,
 }
 
 // Custom deserialization for Task to ensure either command or script is present.
@@ -222,6 +318,8 @@ impl<'de> serde::Deserialize<'de> for Task {
         // Helper struct that mirrors Task but with all optional fields
         #[derive(serde::Deserialize)]
         struct TaskHelper {
+            #[serde(default, rename = "_name")]
+            name: Option<String>,
             #[serde(default)]
             shell: Option<Shell>,
             #[serde(default)]
@@ -239,7 +337,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default = "default_hermetic")]
             hermetic: bool,
             #[serde(default, rename = "dependsOn")]
-            depends_on: Vec<String>,
+            depends_on: Vec<TaskDependency>,
             #[serde(default)]
             inputs: Vec<Input>,
             #[serde(default)]
@@ -274,6 +372,7 @@ impl<'de> serde::Deserialize<'de> for Task {
         }
 
         Ok(Task {
+            name: helper.name,
             shell: helper.shell,
             command: helper.command.unwrap_or_default(),
             script: helper.script,
@@ -292,6 +391,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             project_root: helper.project_root,
             source: helper.source,
             directory: helper.directory,
+            resolved_deps: Vec::new(),
         })
     }
 }
@@ -439,6 +539,7 @@ impl ResolvedArgs {
 impl Default for Task {
     fn default() -> Self {
         Self {
+            name: None,
             shell: None,
             command: String::new(),
             script: None,
@@ -457,6 +558,7 @@ impl Default for Task {
             project_root: None,
             source: None,
             directory: None,
+            resolved_deps: vec![],
         }
     }
 }
@@ -563,8 +665,9 @@ pub struct ParallelGroup {
     pub tasks: HashMap<String, TaskDefinition>,
 
     /// Optional group-level dependencies applied to all subtasks
+    /// Accepts same formats as Task.dependsOn: explicit refs or CUE references
     #[serde(default, rename = "dependsOn")]
-    pub depends_on: Vec<String>,
+    pub depends_on: Vec<TaskDependency>,
 }
 
 /// Represents a group of tasks with execution mode

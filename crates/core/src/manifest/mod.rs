@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::environment::Env;
 use crate::module::Instance;
 use crate::secrets::Secret;
-use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
+use crate::tasks::{Input, Mapping, ProjectReference, TaskDependency, TaskGroup};
 use crate::tasks::{Task, TaskDefinition};
 use cuenv_hooks::{Hook, Hooks};
 
@@ -986,8 +986,20 @@ impl Project {
 
         // Add unique implicit dependencies
         for dep in implicit_deps {
-            if !task.depends_on.contains(&dep) {
-                task.depends_on.push(dep);
+            // Check if dependency already exists in resolved_deps
+            if !task.resolved_deps.contains(&dep) {
+                // Cross-project deps start with "#project:task" format
+                // Parse and create proper TaskDependency
+                if let Some(stripped) = dep.strip_prefix('#') {
+                    let parts: Vec<&str> = stripped.split(':').collect();
+                    if parts.len() >= 2 {
+                        task.depends_on
+                            .push(TaskDependency::cross_project(parts[0], parts[1]));
+                    }
+                } else {
+                    task.depends_on.push(TaskDependency::same_project(&dep));
+                }
+                task.resolved_deps.push(dep);
             }
         }
     }
@@ -1039,9 +1051,9 @@ mod tests {
             _ => panic!("Expected ProjectReference"),
         }
 
-        // Check implicit dependency
-        assert_eq!(task.depends_on.len(), 1);
-        assert_eq!(task.depends_on[0], "#myproj:build");
+        // Check implicit dependency was added to resolved_deps
+        assert_eq!(task.resolved_deps.len(), 1);
+        assert_eq!(task.resolved_deps[0], "#myproj:build");
     }
 
     // ============================================================================
@@ -1311,9 +1323,9 @@ mod tests {
         assert_eq!(task.inputs.len(), 3);
 
         // Should have 2 implicit dependencies
-        assert_eq!(task.depends_on.len(), 2);
-        assert!(task.depends_on.contains(&"#projA:build".to_string()));
-        assert!(task.depends_on.contains(&"#projB:compile".to_string()));
+        assert_eq!(task.resolved_deps.len(), 2);
+        assert!(task.resolved_deps.contains(&"#projA:build".to_string()));
+        assert!(task.resolved_deps.contains(&"#projB:compile".to_string()));
     }
 
     #[test]
@@ -1346,13 +1358,13 @@ mod tests {
             TaskDefinition::Group(TaskGroup::Sequential(tasks)) => {
                 match &tasks[0] {
                     TaskDefinition::Single(task) => {
-                        assert!(task.depends_on.contains(&"#projA:build".to_string()));
+                        assert!(task.resolved_deps.contains(&"#projA:build".to_string()));
                     }
                     _ => panic!("Expected single task"),
                 }
                 match &tasks[1] {
                     TaskDefinition::Single(task) => {
-                        assert!(task.depends_on.contains(&"#projB:compile".to_string()));
+                        assert!(task.resolved_deps.contains(&"#projB:compile".to_string()));
                     }
                     _ => panic!("Expected single task"),
                 }
@@ -1395,13 +1407,13 @@ mod tests {
             TaskDefinition::Group(TaskGroup::Parallel(group)) => {
                 match group.tasks.get("a").unwrap() {
                     TaskDefinition::Single(task) => {
-                        assert!(task.depends_on.contains(&"#projA:build".to_string()));
+                        assert!(task.resolved_deps.contains(&"#projA:build".to_string()));
                     }
                     _ => panic!("Expected single task"),
                 }
                 match group.tasks.get("b").unwrap() {
                     TaskDefinition::Single(task) => {
-                        assert!(task.depends_on.contains(&"#projB:build".to_string()));
+                        assert!(task.resolved_deps.contains(&"#projB:build".to_string()));
                     }
                     _ => panic!("Expected single task"),
                 }
@@ -1414,7 +1426,8 @@ mod tests {
     fn test_no_duplicate_implicit_dependencies() {
         // Task already has the dependency explicitly
         let task = Task {
-            depends_on: vec!["#myproj:build".to_string()],
+            depends_on: vec![TaskDependency::cross_project("myproj", "build")],
+            resolved_deps: vec!["#myproj:build".to_string()],
             inputs: vec![Input::Path("#myproj:build:dist/app.js".to_string())],
             ..Default::default()
         };
@@ -1430,8 +1443,8 @@ mod tests {
         let task = task_def.as_single().unwrap();
 
         // Should not duplicate the dependency
-        assert_eq!(task.depends_on.len(), 1);
-        assert_eq!(task.depends_on[0], "#myproj:build");
+        assert_eq!(task.resolved_deps.len(), 1);
+        assert_eq!(task.resolved_deps[0], "#myproj:build");
     }
 
     // ============================================================================

@@ -518,9 +518,14 @@ impl Compiler {
                 for input in task.iter_path_inputs() {
                     paths.insert(input.clone());
                 }
-                // Recurse into dependencies
+                // Recurse into dependencies (same-project only)
                 for dep in &task.depends_on {
-                    self.collect_task_inputs(dep, paths);
+                    if let Some(dep_task) = dep.task_name() {
+                        // Skip cross-project deps for input collection
+                        if dep.project().is_none() {
+                            self.collect_task_inputs(dep_task, paths);
+                        }
+                    }
                 }
             }
             TaskDefinition::Group(group) => {
@@ -723,7 +728,7 @@ impl Compiler {
             concurrency_group: None,
             inputs,
             outputs,
-            depends_on: task.depends_on.clone(),
+            depends_on: task.resolved_deps.clone(),
             cache_policy,
             deployment,
             manual_approval: false, // Would come from task metadata
@@ -1315,6 +1320,8 @@ mod tests {
 
     #[test]
     fn test_compile_task_with_dependencies() {
+        use cuenv_core::tasks::TaskDependency;
+
         let mut project = Project::new("test-project");
 
         project.tasks.insert(
@@ -1322,7 +1329,8 @@ mod tests {
             TaskDefinition::Single(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["test".to_string()],
-                depends_on: vec!["build".to_string()],
+                depends_on: vec![TaskDependency::same_project("build")],
+                resolved_deps: vec!["build".to_string()],
                 ..Default::default()
             })),
         );

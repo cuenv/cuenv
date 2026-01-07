@@ -568,7 +568,12 @@ async fn execute_task_legacy(
         let synthetic = Task {
             script: Some("true".to_string()),
             hermetic: false,
-            depends_on: matching_tasks,
+            // Convert task names to TaskDependency
+            depends_on: matching_tasks
+                .iter()
+                .map(cuenv_core::tasks::TaskDependency::same_project)
+                .collect(),
+            resolved_deps: matching_tasks.clone(),
             project_root: Some(project_root.clone()),
             description: Some(format!(
                 "Run all tasks matching labels: {}",
@@ -844,23 +849,23 @@ async fn execute_with_rich_tui(
         .topological_sort()
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to sort task graph: {e}")))?;
 
-    // Calculate levels based on dependencies
+    // Calculate levels based on dependencies (use resolved_deps for the task names)
     let mut levels: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for node in &sorted_tasks {
         let max_dep_level = node
             .task
-            .depends_on
+            .resolved_deps
             .iter()
             .filter_map(|dep| levels.get(dep).copied())
             .max()
             .unwrap_or(0);
-        let increment = usize::from(!node.task.depends_on.is_empty());
+        let increment = usize::from(!node.task.resolved_deps.is_empty());
         levels.insert(node.name.clone(), max_dep_level.saturating_add(increment));
     }
 
     for node in sorted_tasks {
         let task_name = node.name.clone();
-        let dependencies: Vec<String> = node.task.depends_on.clone();
+        let dependencies: Vec<String> = node.task.resolved_deps.clone();
         let level = levels.get(&task_name).copied().unwrap_or(0);
 
         task_infos.push(TaskInfo::new(task_name, dependencies, level));
@@ -1044,6 +1049,8 @@ env: {
 
     #[test]
     fn test_resolve_task_ref_merges_dependencies() {
+        use cuenv_core::tasks::TaskDependency;
+
         let tmp = TempDir::new().expect("write to string");
         fs::write(tmp.path().join("env.cue"), "package test").expect("write to string");
 
@@ -1054,7 +1061,10 @@ env: {
 
         let referenced_task = Task {
             command: "echo".into(),
-            depends_on: vec!["dep-a".into(), "dep-b".into()],
+            depends_on: vec![
+                TaskDependency::same_project("dep-a"),
+                TaskDependency::same_project("dep-b"),
+            ],
             ..Default::default()
         };
         manifest.tasks.insert(
@@ -1069,7 +1079,7 @@ env: {
 
         let placeholder_task = Task {
             task_ref: Some("#proj:run".into()),
-            depends_on: vec!["placeholder".into()],
+            depends_on: vec![TaskDependency::same_project("placeholder")],
             ..Default::default()
         };
         let mut task_def = TaskDefinition::Single(Box::new(placeholder_task));
@@ -1082,8 +1092,9 @@ env: {
         };
 
         assert_eq!(resolved.command, "echo");
+        // resolved_deps contains canonicalized dependency strings
         assert_eq!(
-            resolved.depends_on,
+            resolved.resolved_deps,
             vec![
                 "dep-a".to_string(),
                 "dep-b".to_string(),

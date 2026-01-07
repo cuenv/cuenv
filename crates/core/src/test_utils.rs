@@ -3,7 +3,9 @@
 //! This module provides common helper functions for creating test fixtures
 //! across different test modules.
 
-use crate::tasks::{Input, Mapping, ProjectReference, Task, TaskDefinition};
+use crate::tasks::{
+    Input, Mapping, ProjectReference, Task, TaskDefinition, TaskDependency, TaskDependencyRef,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -17,11 +19,29 @@ pub enum PackageManager {
     Yarn,
 }
 
+/// Helper to create task dependencies from string slices
+fn make_deps(deps: Vec<&str>) -> Vec<TaskDependency> {
+    deps.into_iter()
+        .map(|d| {
+            TaskDependency::Ref(TaskDependencyRef {
+                task: d.to_string(),
+                project: None,
+            })
+        })
+        .collect()
+}
+
+/// Helper to create resolved_deps from string slices
+fn make_resolved_deps(deps: Vec<&str>) -> Vec<String> {
+    deps.into_iter().map(String::from).collect()
+}
+
 /// Create a test task with dependencies and optional labels
 pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
     Task {
         command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(String::from).collect(),
+        depends_on: make_deps(deps.clone()),
+        resolved_deps: make_resolved_deps(deps),
         description: Some(format!("Test task {}", name)),
         labels: labels.into_iter().map(String::from).collect(),
         ..Default::default()
@@ -31,7 +51,8 @@ pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
 /// Create a task that references another project's task (TaskRef placeholder)
 pub fn create_task_ref(ref_str: &str, deps: Vec<&str>) -> Task {
     let mut task = Task::from_task_ref(ref_str);
-    task.depends_on = deps.into_iter().map(String::from).collect();
+    task.depends_on = make_deps(deps.clone());
+    task.resolved_deps = make_resolved_deps(deps);
     task
 }
 
@@ -45,7 +66,8 @@ pub fn create_task_with_project_ref(
 ) -> Task {
     Task {
         command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(String::from).collect(),
+        depends_on: make_deps(deps.clone()),
+        resolved_deps: make_resolved_deps(deps),
         description: Some(format!("Test task {}", name)),
         inputs: vec![Input::Project(ProjectReference {
             project: project.to_string(),
@@ -177,33 +199,40 @@ pub fn tasks_have_same_names(
     task_names(a) == task_names(b)
 }
 
-/// Get the dependencies of a task by name
+/// Get the dependencies of a task by name (as task names)
 ///
 /// Returns `None` if the task doesn't exist.
 #[must_use]
 pub fn get_task_deps(tasks: &HashMap<String, TaskDefinition>, name: &str) -> Option<Vec<String>> {
     tasks.get(name).map(|def| match def {
-        TaskDefinition::Single(task) => task.depends_on.clone(),
+        TaskDefinition::Single(task) => deps_to_names(&task.depends_on),
         TaskDefinition::Group(group) => match group {
             crate::tasks::TaskGroup::Sequential(_) => vec![],
-            crate::tasks::TaskGroup::Parallel(pg) => pg.depends_on.clone(),
+            crate::tasks::TaskGroup::Parallel(pg) => deps_to_names(&pg.depends_on),
         },
     })
 }
 
+/// Convert TaskDependency list to task name strings
+fn deps_to_names(deps: &[TaskDependency]) -> Vec<String> {
+    deps.iter()
+        .filter_map(|d| d.task_name().map(String::from))
+        .collect()
+}
+
 /// Build a simple dependency graph from tasks
 ///
-/// Returns a map of task name -> dependencies.
+/// Returns a map of task name -> dependencies (as task names).
 #[must_use]
 pub fn build_dep_graph(tasks: &HashMap<String, TaskDefinition>) -> HashMap<String, Vec<String>> {
     tasks
         .iter()
         .map(|(name, def)| {
             let deps = match def {
-                TaskDefinition::Single(task) => task.depends_on.clone(),
+                TaskDefinition::Single(task) => deps_to_names(&task.depends_on),
                 TaskDefinition::Group(group) => match group {
                     crate::tasks::TaskGroup::Sequential(_) => vec![],
-                    crate::tasks::TaskGroup::Parallel(pg) => pg.depends_on.clone(),
+                    crate::tasks::TaskGroup::Parallel(pg) => deps_to_names(&pg.depends_on),
                 },
             };
             (name.clone(), deps)
@@ -283,11 +312,14 @@ mod tests {
 
     #[test]
     fn test_get_task_deps() {
+        use crate::tasks::TaskDependency;
+
         let mut tasks = HashMap::new();
         tasks.insert(
             "build".to_string(),
             TaskDefinition::Single(Box::new(Task {
-                depends_on: vec!["setup".to_string()],
+                depends_on: vec![TaskDependency::same_project("setup")],
+                resolved_deps: vec!["setup".to_string()],
                 ..Default::default()
             })),
         );

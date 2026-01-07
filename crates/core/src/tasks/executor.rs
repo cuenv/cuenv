@@ -1095,7 +1095,8 @@ mod tests {
             TaskDefinition::Single(Box::new(Task {
                 command: "sh".into(),
                 args: vec!["-c".into(), "cat marker.txt".into()],
-                depends_on: vec!["dep".into()],
+                depends_on: vec![crate::tasks::TaskDependency::same_project("dep")],
+                resolved_deps: vec!["dep".to_string()],
                 ..Default::default()
             })),
         );

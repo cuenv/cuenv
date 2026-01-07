@@ -35,10 +35,24 @@ pub fn resolve_task_refs_in_definition(
             };
             let parsed_ref = TaskRef { ref_: task_ref_str };
 
-            let placeholder_deps = std::mem::take(&mut task.depends_on)
-                .into_iter()
-                .map(|d| normalize_dep(&d, manifest_project_id, project_id_by_name))
-                .collect::<Vec<_>>();
+            // Normalize placeholder deps to FQDN strings for merging
+            let placeholder_deps: Vec<String> = task
+                .depends_on
+                .iter()
+                .filter_map(|d| {
+                    d.task_name().map(|task_name| {
+                        if let Some(project) = d.project() {
+                            let proj_id = project_id_by_name
+                                .get(project)
+                                .cloned()
+                                .unwrap_or_else(|| project.to_string());
+                            format!("task:{}:{}", proj_id, task_name)
+                        } else {
+                            normalize_dep(task_name, manifest_project_id, project_id_by_name)
+                        }
+                    })
+                })
+                .collect();
 
             match discovery.resolve_ref(&parsed_ref) {
                 Ok(matched) => {
@@ -51,23 +65,28 @@ pub fn resolve_task_refs_in_definition(
                     // Canonicalize the referenced task's dependencies relative to the
                     // referenced task name (NOT the placeholder task name), so later indexing
                     // doesn't reinterpret them under the hook task namespace.
-                    let deps = std::mem::take(&mut resolved.depends_on);
-                    resolved.depends_on = deps
-                        .into_iter()
-                        .map(|d| canonicalize_dep_for_task_name(&d, &matched.task_name))
+                    // Work with resolved_deps for the normalized strings
+                    resolved.resolved_deps = resolved
+                        .depends_on
+                        .iter()
+                        .filter_map(|d| {
+                            d.task_name().map(|task_name| {
+                                canonicalize_dep_for_task_name(task_name, &matched.task_name)
+                            })
+                        })
                         .collect();
 
+                    // Merge placeholder deps into resolved_deps
                     for dep in placeholder_deps {
-                        if !resolved.depends_on.contains(&dep) {
-                            resolved.depends_on.push(dep);
+                        if !resolved.resolved_deps.contains(&dep) {
+                            resolved.resolved_deps.push(dep);
                         }
                     }
                     **task = resolved;
                 }
                 Err(e) => {
                     tracing::warn!("Failed to resolve TaskRef {}: {}", parsed_ref.ref_, e);
-                    // Restore placeholder deps so later normalization still has them.
-                    task.depends_on = placeholder_deps;
+                    // Keep original task unchanged on error
                 }
             }
         }

@@ -179,10 +179,10 @@ mod tests {
         let expected_dep = CONTRIBUTOR_TASK_PREFIX.replace(':', ".") + "bun.workspace.setup";
         if let TaskDefinition::Single(task) = &dev_task.definition {
             assert!(
-                task.depends_on.contains(&expected_dep),
+                task.resolved_deps.contains(&expected_dep),
                 "bun task should auto-depend on {}, got: {:?}",
                 expected_dep,
-                task.depends_on
+                task.resolved_deps
             );
         } else {
             panic!("expected single task");

@@ -9,8 +9,26 @@ package schema
 //   - #TaskGroup: Complex workflows involving multiple tasks and dependencies.
 #Tasks: #Command | #Script | #TaskGroup
 
+// Task dependency - can be:
+// - #TaskDependencyRef: Explicit reference like {task: "build"} or {project: "foo", task: "build"}
+// - #Task: Embedded task via CUE reference (tasks.build) - resolved by _name field
+#TaskDependency: #TaskDependencyRef | #Task
+
+// Explicit task dependency reference
+#TaskDependencyRef: {
+	// Project name for cross-project references (optional)
+	// When omitted, references a task in the same project
+	project?: string
+	// Task name - always absolute from project root (not relative to namespace)
+	task!: string
+}
+
 // Common fields shared between command-based and script-based tasks
 #Task: {
+	// Internal name field - auto-populated by the tasks: [Name=string] pattern
+	// Used to identify embedded tasks when using CUE references in dependsOn
+	_name?: string
+
 	shell?: #Shell
 	args?: [...string]
 	env?: [string]: #EnvironmentVariable
@@ -21,7 +39,11 @@ package schema
 	// for install commands that need to write to the real filesystem.
 	hermetic?: bool | *true
 
-	dependsOn?: [...string]
+	// Task dependencies - specify tasks that must complete before this task runs.
+	// Accepts either:
+	// - Explicit refs: {task: "build"} or {project: "other", task: "build"}
+	// - CUE references: tasks.build (provides LSP autocomplete, embeds _name)
+	dependsOn?: [...#TaskDependency]
 
 	// Labels for task discovery via #TaskMatcher
 	// Example: labels: ["projen", "codegen"]
@@ -140,7 +162,8 @@ package schema
 // - Object of named tasks: Parallel execution with optional group-level dependencies
 #TaskGroup: [...#Tasks] | {
 	// Optional group-level dependencies applied to all tasks in the group
-	dependsOn?: [...string]
+	// Accepts same formats as #Task.dependsOn: explicit refs or CUE references
+	dependsOn?: [...#TaskDependency]
 	// Allow hidden fields (prefixed with _) for internal definitions like _inputs
 	[=~"^_"]: _
 	// Named tasks (any key except 'dependsOn' and hidden fields)

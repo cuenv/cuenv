@@ -95,9 +95,15 @@ impl Tasks {
                     .keys()
                     .map(|k| format!("{}.{}", name, k))
                     .collect();
+                // Convert Vec<TaskDependency> to Vec<String> by extracting task names
+                let depends_on: Vec<String> = group
+                    .depends_on
+                    .iter()
+                    .filter_map(|dep| dep.task_name().map(String::from))
+                    .collect();
                 TaskResolution::Parallel {
                     children,
-                    depends_on: group.depends_on.clone(),
+                    depends_on,
                 }
             }
         }
@@ -167,12 +173,12 @@ fn parse_path_segments(path: &str) -> Vec<PathSegment> {
 // Implement the TaskNodeData trait for Task
 impl TaskNodeData for Task {
     fn depends_on(&self) -> &[String] {
-        &self.depends_on
+        &self.resolved_deps
     }
 
     fn add_dependency(&mut self, dep: String) {
-        if !self.depends_on.contains(&dep) {
-            self.depends_on.push(dep);
+        if !self.resolved_deps.contains(&dep) {
+            self.resolved_deps.push(dep);
         }
     }
 }
@@ -291,7 +297,10 @@ impl TaskGraph {
                 for node_idx in &task_nodes {
                     if let Some(node) = self.inner.get_node_mut(*node_idx) {
                         for dep in &group.depends_on {
-                            node.task.add_dependency(dep.clone());
+                            // Extract task name from TaskDependency
+                            if let Some(task_name) = dep.task_name() {
+                                node.task.add_dependency(task_name.to_string());
+                            }
                         }
                     }
                 }

@@ -159,10 +159,26 @@ pub fn normalize_definition_deps(
     match def {
         TaskDefinition::Single(task) => {
             let scope_id = scope_project_id_for_task(task, project_id_by_root, default_project_id);
-            let deps = std::mem::take(&mut task.depends_on);
-            task.depends_on = deps
-                .into_iter()
-                .map(|d| normalize_dep(&d, &scope_id, project_id_by_name))
+            // Normalize dependencies and store in resolved_deps
+            // Original depends_on is preserved for reference
+            task.resolved_deps = task
+                .depends_on
+                .iter()
+                .filter_map(|d| {
+                    d.task_name().map(|task_name| {
+                        if let Some(project) = d.project() {
+                            // Cross-project: use the project from dependency
+                            let proj_id = project_id_by_name
+                                .get(project)
+                                .cloned()
+                                .unwrap_or_else(|| project.to_string());
+                            task_fqdn(&proj_id, task_name)
+                        } else {
+                            // Same-project: use scope's project ID
+                            normalize_dep(task_name, &scope_id, project_id_by_name)
+                        }
+                    })
+                })
                 .collect();
         }
         TaskDefinition::Group(group) => match group {
@@ -177,12 +193,9 @@ pub fn normalize_definition_deps(
                 }
             }
             cuenv_core::tasks::TaskGroup::Parallel(parallel) => {
-                // Normalize group-level depends_on too
-                let group_deps = std::mem::take(&mut parallel.depends_on);
-                parallel.depends_on = group_deps
-                    .into_iter()
-                    .map(|d| normalize_dep(&d, default_project_id, project_id_by_name))
-                    .collect();
+                // Normalize group-level depends_on - convert to string for later use
+                // Note: ParallelGroup doesn't have resolved_deps, so we extract task names
+                // and the parent task will handle the dependency edges
                 for t in parallel.tasks.values_mut() {
                     normalize_definition_deps(
                         t,

@@ -48,7 +48,7 @@ impl DagExport {
             .iter()
             .map(|node| TaskNode {
                 name: node.name.clone(),
-                dependencies: node.task.depends_on.clone(),
+                dependencies: node.task.resolved_deps.clone(),
                 command: Some(node.task.command.clone()),
                 description: node.task.description.clone(),
             })
@@ -86,13 +86,13 @@ fn build_parallel_groups(sorted_nodes: &[CoreTaskNode]) -> Vec<Vec<String>> {
         // A task's level is one more than the maximum level of its dependencies
         let max_dep_level = node
             .task
-            .depends_on
+            .resolved_deps
             .iter()
             .filter_map(|dep| levels.get(dep).copied())
             .max()
             .unwrap_or(0);
 
-        let level = if node.task.depends_on.is_empty() {
+        let level = if node.task.resolved_deps.is_empty() {
             0
         } else {
             max_dep_level + 1

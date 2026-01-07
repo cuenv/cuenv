@@ -47,26 +47,32 @@ pub fn compute_affected_tasks(
                 && !task.depends_on.is_empty()
             {
                 for dep in &task.depends_on {
-                    // Internal dependency
-                    if !dep.starts_with('#') {
-                        if affected.contains(dep) {
+                    // Extract task name from dependency
+                    let Some(dep_task) = dep.task_name() else {
+                        continue;
+                    };
+
+                    // Check if it's a cross-project dependency
+                    if let Some(project) = dep.project() {
+                        // External dependency - format as #project:task for check
+                        let external_ref = format!("#{}:{}", project, dep_task);
+                        if check_external_dependency(
+                            &external_ref,
+                            all_projects,
+                            changed_files,
+                            &mut visited_external_cache,
+                        ) {
                             affected.insert(task_name.clone());
                             changed = true;
                             break;
                         }
-                        continue;
-                    }
-
-                    // External dependency (#project:task)
-                    if check_external_dependency(
-                        dep,
-                        all_projects,
-                        changed_files,
-                        &mut visited_external_cache,
-                    ) {
-                        affected.insert(task_name.clone());
-                        changed = true;
-                        break;
+                    } else {
+                        // Internal dependency
+                        if affected.contains(dep_task) {
+                            affected.insert(task_name.clone());
+                            changed = true;
+                            break;
+                        }
                     }
                 }
             }
@@ -186,9 +192,15 @@ fn check_external_dependency(
         && let Some(task) = entry.definition.as_single()
     {
         for sub_dep in &task.depends_on {
-            if sub_dep.starts_with('#') {
+            // Extract task name from dependency
+            let Some(sub_dep_task) = sub_dep.task_name() else {
+                continue;
+            };
+
+            if let Some(sub_project) = sub_dep.project() {
                 // External ref
-                if check_external_dependency(sub_dep, all_projects, changed_files, cache) {
+                let external_ref = format!("#{}:{}", sub_project, sub_dep_task);
+                if check_external_dependency(&external_ref, all_projects, changed_files, cache) {
                     cache.insert(dep.to_string(), true);
                     return true;
                 }
@@ -196,7 +208,7 @@ fn check_external_dependency(
                 // Internal ref within that project
                 // We need to resolve internal deps of the external project recursively.
                 // Construct implicit external ref: #project:sub_dep
-                let implicit_ref = format!("#{project_name}:{sub_dep}");
+                let implicit_ref = format!("#{project_name}:{sub_dep_task}");
                 if check_external_dependency(&implicit_ref, all_projects, changed_files, cache) {
                     cache.insert(dep.to_string(), true);
                     return true;
@@ -227,12 +239,18 @@ mod tests {
 
     /// Helper to create a minimal Task with inputs and depends_on
     fn make_task(inputs: Vec<&str>, depends_on: Vec<&str>) -> Task {
+        use cuenv_core::tasks::TaskDependency;
+        let dep_strings: Vec<String> = depends_on.iter().map(|s| s.to_string()).collect();
         Task {
             inputs: inputs
                 .into_iter()
                 .map(|s| Input::Path(s.to_string()))
                 .collect(),
-            depends_on: depends_on.into_iter().map(String::from).collect(),
+            depends_on: depends_on
+                .into_iter()
+                .map(TaskDependency::same_project)
+                .collect(),
+            resolved_deps: dep_strings,
             command: "echo test".to_string(),
             ..Default::default()
         }

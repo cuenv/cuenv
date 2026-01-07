@@ -339,7 +339,21 @@ impl<'a> ContributorEngine<'a> {
                     .depends_on
                     .iter()
                     .map(|dep| {
-                        // Prefix dependencies if they don't already have it
+                        // Convert string deps to TaskDependency with contributor prefix
+                        let task_name =
+                            if dep.starts_with(CONTRIBUTOR_TASK_PREFIX) || dep.starts_with('#') {
+                                dep.clone()
+                            } else {
+                                format!("{}{}", CONTRIBUTOR_TASK_PREFIX, dep)
+                            };
+                        crate::tasks::TaskDependency::same_project(task_name)
+                    })
+                    .collect(),
+                resolved_deps: contrib_task
+                    .depends_on
+                    .iter()
+                    .map(|dep| {
+                        // Build resolved_deps with contributor prefix
                         if dep.starts_with(CONTRIBUTOR_TASK_PREFIX) || dep.starts_with('#') {
                             dep.clone()
                         } else {
@@ -400,9 +414,12 @@ impl<'a> ContributorEngine<'a> {
                 let base_cmd = task.command.split_whitespace().next().unwrap_or("");
 
                 if commands.iter().any(|c| c == base_cmd) {
-                    // Add dependency if not already present
-                    if !task.depends_on.contains(&inject_dep.to_string()) {
-                        task.depends_on.push(inject_dep.to_string());
+                    // Check if dependency already exists in resolved_deps
+                    if !task.resolved_deps.contains(&inject_dep.to_string()) {
+                        // Add to both depends_on and resolved_deps
+                        task.depends_on
+                            .push(crate::tasks::TaskDependency::same_project(inject_dep));
+                        task.resolved_deps.push(inject_dep.to_string());
                         tracing::trace!(
                             command = %task.command,
                             dependency = %inject_dep,
@@ -614,10 +631,14 @@ pub fn build_expected_dag(
 /// Collect dependencies from a task definition
 fn collect_deps_from_definition(def: &TaskDefinition) -> Vec<String> {
     match def {
-        TaskDefinition::Single(task) => task.depends_on.clone(),
+        TaskDefinition::Single(task) => task.resolved_deps.clone(),
         TaskDefinition::Group(group) => match group {
             TaskGroup::Sequential(_) => vec![], // Sequential has implicit ordering
-            TaskGroup::Parallel(pg) => pg.depends_on.clone(),
+            TaskGroup::Parallel(pg) => pg
+                .depends_on
+                .iter()
+                .filter_map(|dep| dep.task_name().map(String::from))
+                .collect(),
         },
     }
 }
@@ -625,6 +646,7 @@ fn collect_deps_from_definition(def: &TaskDefinition) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::TaskDependency;
 
     fn create_test_contributor(id: &str, workspace_member: Vec<&str>) -> Contributor {
         Contributor {
@@ -742,8 +764,10 @@ mod tests {
         let dev_task = tasks.get("dev").unwrap();
         if let TaskDefinition::Single(task) = dev_task {
             assert!(
-                task.depends_on
-                    .contains(&"cuenv:contributor:bun.workspace.setup".to_string())
+                task.resolved_deps
+                    .contains(&"cuenv:contributor:bun.workspace.setup".to_string()),
+                "expected resolved_deps to contain contributor setup task, got: {:?}",
+                task.resolved_deps
             );
         } else {
             panic!("Expected single task");
@@ -831,7 +855,8 @@ mod tests {
         let task_b = Task {
             command: "echo".to_string(),
             args: vec!["b".to_string()],
-            depends_on: vec!["a".to_string()],
+            depends_on: vec![TaskDependency::same_project("a")],
+            resolved_deps: vec!["a".to_string()],
             ..Default::default()
         };
 
@@ -894,7 +919,10 @@ mod tests {
         let user_task = Task {
             command: "test-cmd".to_string(),
             args: vec!["run".to_string(), "dev".to_string()],
-            depends_on: vec!["cuenv:contributor:bun.workspace.setup".to_string()],
+            depends_on: vec![TaskDependency::same_project(
+                "cuenv:contributor:bun.workspace.setup",
+            )],
+            resolved_deps: vec!["cuenv:contributor:bun.workspace.setup".to_string()],
             ..Default::default()
         };
 
@@ -912,7 +940,7 @@ mod tests {
         let dev_task = tasks.get("dev").unwrap();
         if let TaskDefinition::Single(task) = dev_task {
             let dep_count = task
-                .depends_on
+                .resolved_deps
                 .iter()
                 .filter(|d| *d == "cuenv:contributor:bun.workspace.setup")
                 .count();
@@ -953,7 +981,7 @@ mod tests {
         if let TaskDefinition::Single(task) = other_task {
             assert!(
                 !task
-                    .depends_on
+                    .resolved_deps
                     .contains(&"cuenv:contributor:bun.workspace.setup".to_string()),
                 "Non-matching command should not get auto-association"
             );
@@ -1024,10 +1052,10 @@ mod tests {
         let second_task = tasks.get("cuenv:contributor:test.second").unwrap();
         if let TaskDefinition::Single(task) = second_task {
             assert!(
-                task.depends_on
+                task.resolved_deps
                     .contains(&"cuenv:contributor:test.first".to_string()),
                 "Internal dependency should be prefixed, got: {:?}",
-                task.depends_on
+                task.resolved_deps
             );
         } else {
             panic!("Expected single task");
