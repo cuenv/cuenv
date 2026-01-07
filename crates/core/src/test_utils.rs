@@ -3,9 +3,7 @@
 //! This module provides common helper functions for creating test fixtures
 //! across different test modules.
 
-use crate::tasks::{
-    Input, Mapping, ProjectReference, Task, TaskDefinition, TaskDependency, TaskDependencyRef,
-};
+use crate::tasks::{Input, Mapping, ProjectReference, Task, TaskDefinition, TaskDependency};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -22,12 +20,7 @@ pub enum PackageManager {
 /// Helper to create task dependencies from string slices
 fn make_deps(deps: Vec<&str>) -> Vec<TaskDependency> {
     deps.into_iter()
-        .map(|d| {
-            TaskDependency::Ref(TaskDependencyRef {
-                task: d.to_string(),
-                project: None,
-            })
-        })
+        .map(|d| TaskDependency::same_project(d))
         .collect()
 }
 

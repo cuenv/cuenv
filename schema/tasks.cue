@@ -9,19 +9,14 @@ package schema
 //   - #TaskGroup: Complex workflows involving multiple tasks and dependencies.
 #Tasks: #Command | #Script | #TaskGroup
 
-// Task dependency - can be:
-// - #TaskDependencyRef: Explicit reference like {task: "build"} or {project: "foo", task: "build"}
-// - #Task: Embedded task via CUE reference (tasks.build) - resolved by _name field
-#TaskDependency: #TaskDependencyRef | #Task
-
-// Explicit task dependency reference
-#TaskDependencyRef: {
-	// Project name for cross-project references (optional)
-	// When omitted, references a task in the same project
-	project?: string
-	// Task name - always absolute from project root (not relative to namespace)
-	task!: string
-}
+// Task dependency - must be a CUE reference to another task.
+// CUE references provide LSP autocomplete and compile-time validation.
+//
+// Same-project: dependsOn: [tasks.build]
+// Cross-project: import "../other/env.cue" then dependsOn: [other.tasks.build]
+//
+// Accepts #Command or #Script (not #TaskGroup - can't depend on groups directly)
+#TaskDependency: #Command | #Script
 
 // Common fields shared between command-based and script-based tasks
 #Task: {
@@ -39,10 +34,9 @@ package schema
 	// for install commands that need to write to the real filesystem.
 	hermetic?: bool | *true
 
-	// Task dependencies - specify tasks that must complete before this task runs.
-	// Accepts either:
-	// - Explicit refs: {task: "build"} or {project: "other", task: "build"}
-	// - CUE references: tasks.build (provides LSP autocomplete, embeds _name)
+	// Task dependencies - CUE references to tasks that must complete before this task runs.
+	// Same-project: dependsOn: [tasks.build]
+	// Cross-project: import "pkg" then dependsOn: [pkg.tasks.build]
 	dependsOn?: [...#TaskDependency]
 
 	// Labels for task discovery via #TaskMatcher
@@ -162,12 +156,12 @@ package schema
 // - Object of named tasks: Parallel execution with optional group-level dependencies
 #TaskGroup: [...#Tasks] | {
 	// Optional group-level dependencies applied to all tasks in the group
-	// Accepts same formats as #Task.dependsOn: explicit refs or CUE references
+	// Uses CUE references: dependsOn: [tasks.build]
 	dependsOn?: [...#TaskDependency]
 	// Allow hidden fields (prefixed with _) for internal definitions like _inputs
 	[=~"^_"]: _
-	// Named tasks (any key except 'dependsOn' and hidden fields)
-	[!~"^(dependsOn|_.*)$"]: #Tasks
+	// Named tasks with auto-populated _name field for CUE ref dependency resolution
+	[Name=!~"^(dependsOn|_.*)$"]: #Tasks & {_name: Name}
 }
 
 // Dagger-specific task configuration for containerized execution

@@ -166,17 +166,19 @@ pub fn normalize_definition_deps(
                 .iter()
                 .filter_map(|d| {
                     d.task_name().map(|task_name| {
-                        if let Some(project) = d.project() {
-                            // Cross-project: use the project from dependency
-                            let proj_id = project_id_by_name
-                                .get(project)
-                                .cloned()
-                                .unwrap_or_else(|| project.to_string());
-                            task_fqdn(&proj_id, task_name)
-                        } else {
-                            // Same-project: use scope's project ID
-                            normalize_dep(task_name, &scope_id, project_id_by_name)
+                        // Check if cross-project via source_directory
+                        if let Some(source_dir) = d.source_directory() {
+                            if !source_dir.is_empty() {
+                                // Cross-project: use source directory as project identifier
+                                let proj_id = project_id_by_name
+                                    .get(source_dir)
+                                    .cloned()
+                                    .unwrap_or_else(|| source_dir.to_string());
+                                return task_fqdn(&proj_id, task_name);
+                            }
                         }
+                        // Same-project: use scope's project ID
+                        normalize_dep(task_name, &scope_id, project_id_by_name)
                     })
                 })
                 .collect();

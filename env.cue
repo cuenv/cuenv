@@ -333,7 +333,7 @@ schema.#Project & {
 			deploy: {
 				command: "bash"
 				args: ["-c", "cd docs && npx wrangler deploy"]
-				dependsOn: [{task: "docs.build"}]
+				dependsOn: [tasks.docs.build]
 				inputs: [{task: "docs.build"}]
 			}
 		}

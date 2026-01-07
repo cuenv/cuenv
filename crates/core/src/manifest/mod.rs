@@ -1512,6 +1512,7 @@ mod tests {
     #[test]
     fn test_project_deserialization_with_script_tasks() {
         // This test mimics the structure of cuenv's actual env.cue
+        // Note: dependsOn now uses embedded tasks (CUE refs) with _name field
         let json = r#"{
             "name": "cuenv",
             "hooks": {
@@ -1560,7 +1561,7 @@ mod tests {
                     "deploy": {
                         "command": "bash",
                         "args": ["-c", "wrangler deploy"],
-                        "dependsOn": ["docs.build"],
+                        "dependsOn": [{"_name": "docs.build", "command": "bash", "args": ["-c", "bun install"]}],
                         "inputs": [{"task": "docs.build"}]
                     }
                 }

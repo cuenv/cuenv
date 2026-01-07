@@ -317,12 +317,13 @@ fn canonicalize_task(task: &Task, path: &TaskPath) -> Result<Task> {
     };
 
     for dep in &task.depends_on {
-        let canonical = canonicalize_dep(dep, parent_namespace.as_deref())?;
-        // Extract the task name for resolved_deps (used by TaskNodeData)
-        if let Some(task_name) = canonical.task_name() {
-            resolved_deps.push(task_name.to_string());
-        }
-        canonical_deps.push(canonical);
+        // Canonicalize returns the task name directly as a string
+        let canonical_name = canonicalize_dep(dep, parent_namespace.as_deref())?;
+        resolved_deps.push(canonical_name.clone());
+        // Keep original dep but update the name for graph building
+        let mut canonical_dep = dep.clone();
+        canonical_dep.0.name = Some(canonical_name);
+        canonical_deps.push(canonical_dep);
     }
 
     clone.depends_on = canonical_deps;
@@ -340,60 +341,19 @@ fn canonicalize_task(task: &Task, path: &TaskPath) -> Result<Task> {
 /// and `"install"` resolves to `"bun.install"`.
 fn canonicalize_dep(
     dep: &super::TaskDependency,
-    parent_namespace: Option<&str>,
-) -> Result<super::TaskDependency> {
-    use super::{TaskDependency, TaskDependencyRef};
+    _parent_namespace: Option<&str>,
+) -> Result<String> {
+    // TaskDependency is now always an embedded task from CUE reference.
+    // The _name field contains the absolute task name set at definition site.
+    let task_name = dep.task_name().ok_or_else(|| {
+        crate::Error::configuration(
+            "Task dependency is missing _name field. \
+             Dependencies must use CUE references (e.g., dependsOn: [tasks.build]).",
+        )
+    })?;
 
-    match dep {
-        TaskDependency::Ref(r) => {
-            // Explicit refs with task field are already absolute from project root
-            // Just normalize separators (: to .)
-            let canonical_task = TaskPath::parse(&r.task)?.canonical();
-            Ok(TaskDependency::Ref(TaskDependencyRef {
-                task: canonical_task,
-                project: r.project.clone(),
-            }))
-        }
-        TaskDependency::Embedded(task) => {
-            // For embedded tasks (CUE references), use the _name field
-            // The _name is already absolute (set at definition site)
-            let task_name = task.name.as_ref().ok_or_else(|| {
-                crate::Error::configuration(
-                    "Embedded task dependency is missing _name field. \
-                     This usually means the CUE file is not using the \
-                     tasks: [Name=string]: #Task & {_name: Name} pattern.",
-                )
-            })?;
-            let canonical_task = TaskPath::parse(task_name)?.canonical();
-            Ok(TaskDependency::Ref(TaskDependencyRef {
-                task: canonical_task,
-                project: None, // Embedded tasks are always same-project
-            }))
-        }
-        TaskDependency::Simple(s) => {
-            // Simple string dependency - resolve relative to parent namespace
-            // if it's a simple name (no dots or colons)
-            let is_simple_name = !s.contains('.') && !s.contains(':');
-            let resolved_name = if is_simple_name {
-                if let Some(namespace) = parent_namespace {
-                    // Resolve relative: "install" in namespace "bun" -> "bun.install"
-                    format!("{namespace}.{s}")
-                } else {
-                    // No parent namespace, use as-is
-                    s.clone()
-                }
-            } else {
-                // Already qualified (contains . or :), use as-is
-                s.clone()
-            };
-
-            let canonical_task = TaskPath::parse(&resolved_name)?.canonical();
-            Ok(TaskDependency::Ref(TaskDependencyRef {
-                task: canonical_task,
-                project: None, // Simple strings are always same-project
-            }))
-        }
-    }
+    // Normalize separators (: to .) and validate
+    TaskPath::parse(task_name).map(|p| p.canonical())
 }
 
 /// Check if two task names are similar (for typo suggestions)
@@ -879,7 +839,7 @@ mod tests {
     /// reference the same "base" task node rather than creating duplicates.
     #[test]
     fn test_embedded_cue_reference_resolves_to_single_node() {
-        // TaskDependency, TaskDependencyRef, Task available via super::*
+        // TaskDependency, Task available via super::*
 
         // Create "base" task
         let base_task = Task {
@@ -893,11 +853,11 @@ mod tests {
         let leaf_a = Task {
             name: Some("leafA".to_string()),
             command: "echo A".to_string(),
-            depends_on: vec![TaskDependency::Embedded(Box::new(Task {
+            depends_on: vec![TaskDependency::new(Task {
                 name: Some("base".to_string()), // _name from CUE
                 command: "echo base".to_string(),
                 ..Default::default()
-            }))],
+            })],
             ..Default::default()
         };
 
@@ -905,11 +865,11 @@ mod tests {
         let leaf_b = Task {
             name: Some("leafB".to_string()),
             command: "echo B".to_string(),
-            depends_on: vec![TaskDependency::Embedded(Box::new(Task {
+            depends_on: vec![TaskDependency::new(Task {
                 name: Some("base".to_string()), // Same _name
                 command: "echo base".to_string(),
                 ..Default::default()
-            }))],
+            })],
             ..Default::default()
         };
 
@@ -947,15 +907,9 @@ mod tests {
         assert_eq!(leaf_a_task.resolved_deps[0], "base");
         assert_eq!(leaf_b_task.resolved_deps[0], "base");
 
-        // Verify the depends_on was converted from Embedded to Ref
-        assert!(matches!(
-            &leaf_a_task.depends_on[0],
-            TaskDependency::Ref(r) if r.task == "base" && r.project.is_none()
-        ));
-        assert!(matches!(
-            &leaf_b_task.depends_on[0],
-            TaskDependency::Ref(r) if r.task == "base" && r.project.is_none()
-        ));
+        // Verify the depends_on contains the task with _name = "base"
+        assert_eq!(leaf_a_task.depends_on[0].task_name(), Some("base"));
+        assert_eq!(leaf_b_task.depends_on[0].task_name(), Some("base"));
     }
 
     /// Test that embedded tasks without _name field produce an error.
@@ -968,11 +922,11 @@ mod tests {
         let leaf = Task {
             name: Some("leaf".to_string()),
             command: "echo leaf".to_string(),
-            depends_on: vec![TaskDependency::Embedded(Box::new(Task {
+            depends_on: vec![TaskDependency::new(Task {
                 name: None, // Missing _name!
                 command: "echo base".to_string(),
                 ..Default::default()
-            }))],
+            })],
             ..Default::default()
         };
 

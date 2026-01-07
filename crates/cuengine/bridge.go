@@ -374,15 +374,29 @@ func unquoteSelector(s string) string {
 	return s
 }
 
+// isAllowedHiddenField checks if a hidden field should be exported.
+// Only _name and _source are needed for task dependency resolution.
+// Other hidden fields like _baseInputs, _inputs are internal CUE helpers.
+func isAllowedHiddenField(name string) bool {
+	return name == "_name" || name == "_source"
+}
+
 // buildValueClean recursively builds a clean value without metadata
+// Includes hidden fields (_name, _source) which are needed for task dependency resolution
 func buildValueClean(v cue.Value) interface{} {
 	switch v.Kind() {
 	case cue.StructKind:
 		result := make(map[string]interface{})
-		iter, _ := v.Fields(cue.Definitions(false))
+		// Include hidden fields (cue.Hidden(true)) for _name auto-populated by CUE patterns
+		// Exclude definitions (#Foo) which are schema types, not data
+		iter, _ := v.Fields(cue.Definitions(false), cue.Hidden(true))
 		for iter.Next() {
 			sel := iter.Selector()
 			fieldName := unquoteSelector(sel.String())
+			// Filter hidden fields - only include _name and _source
+			if strings.HasPrefix(fieldName, "_") && !isAllowedHiddenField(fieldName) {
+				continue
+			}
 			result[fieldName] = buildValueClean(iter.Value())
 		}
 		return result
@@ -415,10 +429,15 @@ func buildValueWithMeta(v cue.Value, path string, positions map[string]ValueMeta
 	switch v.Kind() {
 	case cue.StructKind:
 		result := make(map[string]interface{})
-		iter, _ := v.Fields(cue.Definitions(false))
+		// Include hidden fields for _name (auto-populated by CUE patterns)
+		iter, _ := v.Fields(cue.Definitions(false), cue.Hidden(true))
 		for iter.Next() {
 			sel := iter.Selector()
 			fieldName := unquoteSelector(sel.String())
+			// Filter hidden fields - only include _name and _source
+			if strings.HasPrefix(fieldName, "_") && !isAllowedHiddenField(fieldName) {
+				continue
+			}
 			childPath := fieldName
 			if path != "" {
 				childPath = path + "." + fieldName
@@ -457,12 +476,13 @@ func buildValueWithMeta(v cue.Value, path string, positions map[string]ValueMeta
 }
 
 // buildJSON builds a JSON representation of a CUE value.
-// This excludes hidden fields (_foo) and definitions (#Foo) which are
-// internal CUE constructs not meant for export.
+// Includes hidden fields (_name, _source) needed for task dependency resolution.
+// Excludes definitions (#Foo) which are CUE schema types.
 func buildJSON(v cue.Value, moduleRoot string, taskPositions map[string]TaskSourcePos) ([]byte, error) {
 	result := make(map[string]interface{})
 
-	iter, err := v.Fields(cue.Definitions(false))
+	// Include hidden fields for _name (auto-populated by CUE patterns)
+	iter, err := v.Fields(cue.Definitions(false), cue.Hidden(true))
 	if err != nil {
 		return nil, err
 	}
@@ -470,9 +490,13 @@ func buildJSON(v cue.Value, moduleRoot string, taskPositions map[string]TaskSour
 	for iter.Next() {
 		sel := iter.Selector()
 		fieldName := unquoteSelector(sel.String())
+		// Filter hidden fields - only include _name and _source
+		if strings.HasPrefix(fieldName, "_") && !isAllowedHiddenField(fieldName) {
+			continue
+		}
 		fieldValue := iter.Value()
 
-		// Build value recursively, excluding definitions at every level
+		// Build value recursively, including hidden fields at every level
 		val := buildValueClean(fieldValue)
 
 		// For tasks field, enrich with source position metadata from AST

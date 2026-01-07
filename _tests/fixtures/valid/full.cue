@@ -52,7 +52,7 @@ schema.#Project & {
 			description: "Run tests"
 			command: "cargo"
 			args: ["test"]
-			dependsOn: [{task: "build"}]
+			dependsOn: [tasks.build]
 		}
 	}
 }

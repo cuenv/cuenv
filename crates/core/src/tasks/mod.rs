@@ -100,86 +100,84 @@ pub struct TaskOutput {
     pub map: Option<Vec<Mapping>>,
 }
 
-/// Task dependency - can be either a string, explicit reference, or embedded task (for CUE refs)
+/// Task dependency - always an embedded task from CUE reference.
 ///
-/// Order matters for serde untagged deserialization - try structured formats first
+/// In CUE, dependencies are expressed via references: `tasks.build` or imported tasks.
+/// The embedded task carries metadata (`_name`, `_source`) for resolution.
+///
+/// Cross-project dependencies are detected by comparing the `_source.file` directory
+/// against the current project's directory.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum TaskDependency {
-    /// Explicit reference: {task: "build"} or {project: "foo", task: "build"}
-    Ref(TaskDependencyRef),
-    /// Embedded task from CUE reference (tasks.build) - resolved by _name field
-    Embedded(Box<Task>),
-    /// Simple string format: "build" or "docs.build" (legacy, for backwards compatibility)
-    Simple(String),
-}
+#[serde(transparent)]
+pub struct TaskDependency(pub Box<Task>);
 
 impl TaskDependency {
-    /// Create a same-project task dependency reference
-    pub fn same_project(task: impl Into<String>) -> Self {
-        TaskDependency::Ref(TaskDependencyRef {
-            task: task.into(),
-            project: None,
-        })
+    /// Create a new task dependency from an embedded task
+    pub fn new(task: Task) -> Self {
+        Self(Box::new(task))
     }
 
-    /// Create a cross-project task dependency reference
+    /// Create a same-project task dependency (for programmatic/internal use).
+    ///
+    /// This creates a minimal task with just the name set.
+    /// For CUE-evaluated dependencies, the full task metadata is embedded automatically.
+    pub fn same_project(name: impl Into<String>) -> Self {
+        Self(Box::new(Task {
+            name: Some(name.into()),
+            ..Task::default()
+        }))
+    }
+
+    /// Create a cross-project task dependency (for programmatic/internal use).
+    ///
+    /// This is used by hook refs (`#project:task` format) and contributor injection.
+    /// The project name is stored in a synthetic `_source.file` path for detection.
     pub fn cross_project(project: impl Into<String>, task: impl Into<String>) -> Self {
-        TaskDependency::Ref(TaskDependencyRef {
-            task: task.into(),
-            project: Some(project.into()),
-        })
+        let project_str = project.into();
+        Self(Box::new(Task {
+            name: Some(task.into()),
+            source: Some(SourceLocation {
+                // Store project path in source file for cross_project_path() detection
+                file: format!("{}/env.cue", project_str),
+                line: 0,
+                column: 0,
+            }),
+            ..Task::default()
+        }))
     }
 
-    /// Get the canonical task name for this dependency.
-    /// For Ref: returns the task field directly.
-    /// For Embedded: returns the _name field (required for embedded tasks).
-    /// For Simple: returns the string directly.
+    /// Get the task name from the `_name` field
     pub fn task_name(&self) -> Option<&str> {
-        match self {
-            TaskDependency::Ref(r) => Some(&r.task),
-            TaskDependency::Embedded(t) => t.name.as_deref(),
-            TaskDependency::Simple(s) => Some(s.as_str()),
-        }
+        self.0.name.as_deref()
     }
 
-    /// Get the project name for cross-project dependencies.
-    /// Returns None for same-project dependencies.
-    pub fn project(&self) -> Option<&str> {
-        match self {
-            TaskDependency::Ref(r) => r.project.as_deref(),
-            TaskDependency::Embedded(_) => None, // Embedded tasks are always same-project
-            TaskDependency::Simple(_) => None,   // Simple strings are always same-project
-        }
+    /// Get the source location of the dependency definition
+    pub fn source(&self) -> Option<&SourceLocation> {
+        self.0.source.as_ref()
     }
 
-    /// Returns true if this is a cross-project dependency
-    pub fn is_cross_project(&self) -> bool {
-        self.project().is_some()
+    /// Get the source directory (for cross-project detection)
+    pub fn source_directory(&self) -> Option<&str> {
+        self.0.source.as_ref().and_then(|s| s.directory())
     }
-}
 
-impl From<&str> for TaskDependency {
-    fn from(task: &str) -> Self {
-        TaskDependency::same_project(task)
+    /// Check if this is a cross-project dependency.
+    /// Returns true if the source directory differs from the current project directory.
+    pub fn is_cross_project(&self, current_dir: &str) -> bool {
+        self.source_directory()
+            .is_some_and(|dir| dir != current_dir)
     }
-}
 
-impl From<String> for TaskDependency {
-    fn from(task: String) -> Self {
-        TaskDependency::same_project(task)
+    /// Get the cross-project path if this is a cross-project dependency.
+    /// Returns the source directory if it differs from the current project directory.
+    pub fn cross_project_path(&self, current_dir: &str) -> Option<&str> {
+        self.source_directory().filter(|dir| *dir != current_dir)
     }
-}
 
-/// Explicit task dependency reference
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TaskDependencyRef {
-    /// Task name - always absolute from project root (not relative to namespace)
-    pub task: String,
-    /// Project name for cross-project references (optional)
-    /// When omitted, references a task in the same project
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
+    /// Get the embedded task
+    pub fn task(&self) -> &Task {
+        &self.0
+    }
 }
 
 /// Source location metadata from CUE evaluation
@@ -918,6 +916,7 @@ mod tests {
     #[test]
     fn test_complex_nested_tasks_like_cuenv() {
         // Test a more complex structure mimicking cuenv's actual env.cue tasks
+        // Note: dependsOn now uses embedded tasks (CUE refs) with _name field
         let json = r#"{
             "pwd": { "command": "pwd" },
             "check": {
@@ -952,7 +951,7 @@ mod tests {
                 "deploy": {
                     "command": "bash",
                     "args": ["-c", "wrangler deploy"],
-                    "dependsOn": ["docs.build"],
+                    "dependsOn": [{"_name": "docs.build", "command": "bash", "args": ["-c", "bun install"]}],
                     "inputs": [{"task": "docs.build"}]
                 }
             }

@@ -6,7 +6,7 @@
 //! It wraps the generic `cuenv_task_graph` crate with cuenv-core specific
 //! types like `TaskDefinition`, `TaskGroup`, and `ParallelGroup`.
 
-use super::{ParallelGroup, Task, TaskDefinition, TaskGroup, Tasks};
+use super::{ParallelGroup, Task, TaskDefinition, TaskDependency, TaskGroup, Tasks};
 use crate::Result;
 use cuenv_task_graph::{GraphNode, TaskNodeData, TaskResolution, TaskResolver};
 use petgraph::graph::NodeIndex;
@@ -1234,7 +1234,7 @@ mod tests {
 
         let group = ParallelGroup {
             tasks: parallel_tasks,
-            depends_on: vec!["setup".into()],
+            depends_on: vec![TaskDependency::same_project("setup")],
         };
 
         let mut tasks = Tasks::new();

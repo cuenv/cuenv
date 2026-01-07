@@ -46,33 +46,43 @@ pub fn compute_affected_tasks(
                 && let Some(task) = entry.definition.as_single()
                 && !task.depends_on.is_empty()
             {
+                // Get the current project's source directory for cross-project comparison
+                let current_source_dir = entry
+                    .source_file
+                    .as_ref()
+                    .and_then(|f| std::path::Path::new(f).parent())
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("");
+
                 for dep in &task.depends_on {
                     // Extract task name from dependency
                     let Some(dep_task) = dep.task_name() else {
                         continue;
                     };
 
-                    // Check if it's a cross-project dependency
-                    if let Some(project) = dep.project() {
-                        // External dependency - format as #project:task for check
-                        let external_ref = format!("#{}:{}", project, dep_task);
-                        if check_external_dependency(
-                            &external_ref,
-                            all_projects,
-                            changed_files,
-                            &mut visited_external_cache,
-                        ) {
-                            affected.insert(task_name.clone());
-                            changed = true;
-                            break;
+                    // Check if it's a cross-project dependency by comparing source directories
+                    if let Some(dep_source_dir) = dep.source_directory() {
+                        if dep_source_dir != current_source_dir && !dep_source_dir.is_empty() {
+                            // External dependency - use source directory as project identifier
+                            let external_ref = format!("#{}:{}", dep_source_dir, dep_task);
+                            if check_external_dependency(
+                                &external_ref,
+                                all_projects,
+                                changed_files,
+                                &mut visited_external_cache,
+                            ) {
+                                affected.insert(task_name.clone());
+                                changed = true;
+                                break;
+                            }
+                            continue;
                         }
-                    } else {
-                        // Internal dependency
-                        if affected.contains(dep_task) {
-                            affected.insert(task_name.clone());
-                            changed = true;
-                            break;
-                        }
+                    }
+                    // Internal dependency
+                    if affected.contains(dep_task) {
+                        affected.insert(task_name.clone());
+                        changed = true;
+                        break;
                     }
                 }
             }
@@ -191,28 +201,39 @@ fn check_external_dependency(
     if let Ok(entry) = index.resolve(task_name)
         && let Some(task) = entry.definition.as_single()
     {
+        // Get the current external project's source directory
+        let current_source_dir = entry
+            .source_file
+            .as_ref()
+            .and_then(|f| std::path::Path::new(f).parent())
+            .and_then(|p| p.to_str())
+            .unwrap_or("");
+
         for sub_dep in &task.depends_on {
             // Extract task name from dependency
             let Some(sub_dep_task) = sub_dep.task_name() else {
                 continue;
             };
 
-            if let Some(sub_project) = sub_dep.project() {
-                // External ref
-                let external_ref = format!("#{}:{}", sub_project, sub_dep_task);
-                if check_external_dependency(&external_ref, all_projects, changed_files, cache) {
-                    cache.insert(dep.to_string(), true);
-                    return true;
+            // Check if sub_dep is cross-project relative to the external project we're checking
+            if let Some(sub_source_dir) = sub_dep.source_directory() {
+                if sub_source_dir != current_source_dir && !sub_source_dir.is_empty() {
+                    // Cross-project ref from the external project
+                    let external_ref = format!("#{}:{}", sub_source_dir, sub_dep_task);
+                    if check_external_dependency(&external_ref, all_projects, changed_files, cache) {
+                        cache.insert(dep.to_string(), true);
+                        return true;
+                    }
+                    continue;
                 }
-            } else {
-                // Internal ref within that project
-                // We need to resolve internal deps of the external project recursively.
-                // Construct implicit external ref: #project:sub_dep
-                let implicit_ref = format!("#{project_name}:{sub_dep_task}");
-                if check_external_dependency(&implicit_ref, all_projects, changed_files, cache) {
-                    cache.insert(dep.to_string(), true);
-                    return true;
-                }
+            }
+            // Internal ref within that project
+            // We need to resolve internal deps of the external project recursively.
+            // Construct implicit external ref: #project:sub_dep
+            let implicit_ref = format!("#{project_name}:{sub_dep_task}");
+            if check_external_dependency(&implicit_ref, all_projects, changed_files, cache) {
+                cache.insert(dep.to_string(), true);
+                return true;
             }
         }
     }

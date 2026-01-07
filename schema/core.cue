@@ -15,7 +15,8 @@ package schema
 	hooks?:   #Hooks
 	ci?:      #CI
 	release?: #Release
-	tasks?: [string]: #Tasks
+	// Tasks with auto-populated _name field for CUE ref dependency resolution
+	tasks?: [Name=string]: #Tasks & {_name: Name}
 	codegen?: #Codegen
 })
 

@@ -522,7 +522,11 @@ impl Compiler {
                 for dep in &task.depends_on {
                     if let Some(dep_task) = dep.task_name() {
                         // Skip cross-project deps for input collection
-                        if dep.project().is_none() {
+                        // Cross-project deps have a non-empty source_directory set
+                        let is_cross_project = dep
+                            .source_directory()
+                            .is_some_and(|d| !d.is_empty());
+                        if !is_cross_project {
                             self.collect_task_inputs(dep_task, paths);
                         }
                     }

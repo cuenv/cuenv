@@ -351,7 +351,7 @@ tasks: {
         test: {
             command: "echo"
             args: ["bun test"]
-            dependsOn: ["install"]
+            dependsOn: [tasks.bun.install]
         }
     }
 }
@@ -584,19 +584,19 @@ tasks: {
     build: {
         command: "echo"
         args: ["Building after init"]
-        dependsOn: ["init"]
+        dependsOn: [tasks.init]
     }
 
     test: {
         command: "echo"
         args: ["Testing after build"]
-        dependsOn: ["build"]
+        dependsOn: [tasks.build]
     }
 
     deploy: {
         command: "echo"
         args: ["Deploying after test"]
-        dependsOn: ["test"]
+        dependsOn: [tasks.test]
     }
 }"#;
 

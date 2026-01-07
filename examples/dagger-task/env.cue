@@ -51,7 +51,7 @@ tasks: {
 		command:     "sh"
 		args: ["-c", "echo 'Tools available:' && which curl && which jq && echo '{\"test\": 123}' | jq ."]
 		description: "Use tools installed in stage1"
-		dependsOn: ["stage1.setup"]
+		dependsOn: [tasks["stage1.setup"]]
 		dagger: {
 			from: "stage1.setup" // Continue from previous container state
 		}
@@ -144,7 +144,7 @@ tasks: {
 		command:     "sh"
 		args: ["-c", "python -c 'import flask; import gunicorn; print(\"All imports OK\")'"]
 		description: "Verify dependencies are installed"
-		dependsOn: ["build.deps"]
+		dependsOn: [tasks["build.deps"]]
 		inputs: [{task: "build.deps"}]
 		dagger: {
 			from: "build.deps" // Continue from deps container
@@ -156,7 +156,7 @@ tasks: {
 		command:     "sh"
 		args: ["-c", "cat /workspace/requirements.txt && echo '---' && python --version"]
 		description: "Show final build artifacts"
-		dependsOn: ["build.test"]
+		dependsOn: [tasks["build.test"]]
 		inputs: [{task: "build.deps"}]
 		dagger: {
 			from: "build.test" // Continue from test container
