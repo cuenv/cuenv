@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use cuenv_core::manifest::TaskRef;
-use cuenv_core::tasks::TaskDefinition;
+use cuenv_core::tasks::TaskNode;
 use cuenv_task_discovery::TaskDiscovery;
 
 use super::normalization::{canonicalize_dep_for_task_name, normalize_dep};
@@ -22,23 +22,28 @@ use super::normalization::{canonicalize_dep_for_task_name, normalize_dep};
 /// The resolved task's dependencies are canonicalized relative to the
 /// referenced task's name (not the placeholder name) to ensure correct
 /// dependency resolution during indexing.
-pub fn resolve_task_refs_in_definition(
-    def: &mut TaskDefinition,
+pub fn resolve_task_refs_in_node(
+    node: &mut TaskNode,
     discovery: &TaskDiscovery,
     manifest_project_id: &str,
     project_id_by_name: &HashMap<String, String>,
 ) {
-    match def {
-        TaskDefinition::Single(task) => {
+    match node {
+        TaskNode::Task(task) => {
             let Some(task_ref_str) = task.task_ref.clone() else {
                 return;
             };
             let parsed_ref = TaskRef { ref_: task_ref_str };
 
-            let placeholder_deps = std::mem::take(&mut task.depends_on)
-                .into_iter()
-                .map(|d| normalize_dep(&d, manifest_project_id, project_id_by_name))
-                .collect::<Vec<_>>();
+            let placeholder_deps: Vec<cuenv_core::tasks::TaskDependency> =
+                std::mem::take(&mut task.depends_on)
+                    .into_iter()
+                    .map(|d| {
+                        let normalized =
+                            normalize_dep(d.task_name(), manifest_project_id, project_id_by_name);
+                        cuenv_core::tasks::TaskDependency::from_name(normalized)
+                    })
+                    .collect();
 
             match discovery.resolve_ref(&parsed_ref) {
                 Ok(matched) => {
@@ -54,11 +59,19 @@ pub fn resolve_task_refs_in_definition(
                     let deps = std::mem::take(&mut resolved.depends_on);
                     resolved.depends_on = deps
                         .into_iter()
-                        .map(|d| canonicalize_dep_for_task_name(&d, &matched.task_name))
+                        .map(|d| {
+                            let canonical =
+                                canonicalize_dep_for_task_name(d.task_name(), &matched.task_name);
+                            cuenv_core::tasks::TaskDependency::from_name(canonical)
+                        })
                         .collect();
 
                     for dep in placeholder_deps {
-                        if !resolved.depends_on.contains(&dep) {
+                        if !resolved
+                            .depends_on
+                            .iter()
+                            .any(|d| d.task_name() == dep.task_name())
+                        {
                             resolved.depends_on.push(dep);
                         }
                     }
@@ -71,34 +84,22 @@ pub fn resolve_task_refs_in_definition(
                 }
             }
         }
-        TaskDefinition::Group(group) => match group {
-            cuenv_core::tasks::TaskGroup::Sequential(tasks) => {
-                for t in tasks {
-                    resolve_task_refs_in_definition(
-                        t,
-                        discovery,
-                        manifest_project_id,
-                        project_id_by_name,
-                    );
-                }
+        TaskNode::Group(group) => {
+            for t in group.parallel.values_mut() {
+                resolve_task_refs_in_node(t, discovery, manifest_project_id, project_id_by_name);
             }
-            cuenv_core::tasks::TaskGroup::Parallel(parallel) => {
-                for t in parallel.tasks.values_mut() {
-                    resolve_task_refs_in_definition(
-                        t,
-                        discovery,
-                        manifest_project_id,
-                        project_id_by_name,
-                    );
-                }
+        }
+        TaskNode::List(list) => {
+            for t in &mut list.steps {
+                resolve_task_refs_in_node(t, discovery, manifest_project_id, project_id_by_name);
             }
-        },
+        }
     }
 }
 
 /// Resolve all `TaskRefs` in a project manifest.
 ///
-/// Iterates through all task definitions in the manifest and resolves
+/// Iterates through all task nodes in the manifest and resolves
 /// any `TaskRef` placeholders.
 pub fn resolve_task_refs_in_manifest(
     manifest: &mut cuenv_core::manifest::Project,
@@ -106,7 +107,7 @@ pub fn resolve_task_refs_in_manifest(
     manifest_project_id: &str,
     project_id_by_name: &HashMap<String, String>,
 ) {
-    for def in manifest.tasks.values_mut() {
-        resolve_task_refs_in_definition(def, discovery, manifest_project_id, project_id_by_name);
+    for node in manifest.tasks.values_mut() {
+        resolve_task_refs_in_node(node, discovery, manifest_project_id, project_id_by_name);
     }
 }

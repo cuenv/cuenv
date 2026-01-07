@@ -3,7 +3,7 @@
 //! This module provides common helper functions for creating test fixtures
 //! across different test modules.
 
-use crate::tasks::{Input, Mapping, ProjectReference, Task, TaskDefinition};
+use crate::tasks::{Input, Mapping, ProjectReference, Task, TaskDependency, TaskNode};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -21,7 +21,7 @@ pub enum PackageManager {
 pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
     Task {
         command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(String::from).collect(),
+        depends_on: deps.into_iter().map(TaskDependency::from_name).collect(),
         description: Some(format!("Test task {}", name)),
         labels: labels.into_iter().map(String::from).collect(),
         ..Default::default()
@@ -31,7 +31,7 @@ pub fn create_task(name: &str, deps: Vec<&str>, labels: Vec<&str>) -> Task {
 /// Create a task that references another project's task (TaskRef placeholder)
 pub fn create_task_ref(ref_str: &str, deps: Vec<&str>) -> Task {
     let mut task = Task::from_task_ref(ref_str);
-    task.depends_on = deps.into_iter().map(String::from).collect();
+    task.depends_on = deps.into_iter().map(TaskDependency::from_name).collect();
     task
 }
 
@@ -45,7 +45,7 @@ pub fn create_task_with_project_ref(
 ) -> Task {
     Task {
         command: format!("echo {}", name),
-        depends_on: deps.into_iter().map(String::from).collect(),
+        depends_on: deps.into_iter().map(TaskDependency::from_name).collect(),
         description: Some(format!("Test task {}", name)),
         inputs: vec![Input::Project(ProjectReference {
             project: project.to_string(),
@@ -162,7 +162,7 @@ pub fn create_mock_workspace(manager: PackageManager) -> TempDir {
 ///
 /// Useful for assertions about which tasks exist.
 #[must_use]
-pub fn task_names(tasks: &HashMap<String, TaskDefinition>) -> Vec<String> {
+pub fn task_names(tasks: &HashMap<String, TaskNode>) -> Vec<String> {
     let mut names: Vec<_> = tasks.keys().cloned().collect();
     names.sort();
     names
@@ -170,10 +170,7 @@ pub fn task_names(tasks: &HashMap<String, TaskDefinition>) -> Vec<String> {
 
 /// Check if two task maps have the same task names (ignoring definitions)
 #[must_use]
-pub fn tasks_have_same_names(
-    a: &HashMap<String, TaskDefinition>,
-    b: &HashMap<String, TaskDefinition>,
-) -> bool {
+pub fn tasks_have_same_names(a: &HashMap<String, TaskNode>, b: &HashMap<String, TaskNode>) -> bool {
     task_names(a) == task_names(b)
 }
 
@@ -181,13 +178,23 @@ pub fn tasks_have_same_names(
 ///
 /// Returns `None` if the task doesn't exist.
 #[must_use]
-pub fn get_task_deps(tasks: &HashMap<String, TaskDefinition>, name: &str) -> Option<Vec<String>> {
-    tasks.get(name).map(|def| match def {
-        TaskDefinition::Single(task) => task.depends_on.clone(),
-        TaskDefinition::Group(group) => match group {
-            crate::tasks::TaskGroup::Sequential(_) => vec![],
-            crate::tasks::TaskGroup::Parallel(pg) => pg.depends_on.clone(),
-        },
+pub fn get_task_deps(tasks: &HashMap<String, TaskNode>, name: &str) -> Option<Vec<String>> {
+    tasks.get(name).map(|node| match node {
+        TaskNode::Task(task) => task
+            .depends_on
+            .iter()
+            .map(|d| d.task_name().to_string())
+            .collect(),
+        TaskNode::Group(group) => group
+            .depends_on
+            .iter()
+            .map(|d| d.task_name().to_string())
+            .collect(),
+        TaskNode::List(list) => list
+            .depends_on
+            .iter()
+            .map(|d| d.task_name().to_string())
+            .collect(),
     })
 }
 
@@ -195,16 +202,26 @@ pub fn get_task_deps(tasks: &HashMap<String, TaskDefinition>, name: &str) -> Opt
 ///
 /// Returns a map of task name -> dependencies.
 #[must_use]
-pub fn build_dep_graph(tasks: &HashMap<String, TaskDefinition>) -> HashMap<String, Vec<String>> {
+pub fn build_dep_graph(tasks: &HashMap<String, TaskNode>) -> HashMap<String, Vec<String>> {
     tasks
         .iter()
-        .map(|(name, def)| {
-            let deps = match def {
-                TaskDefinition::Single(task) => task.depends_on.clone(),
-                TaskDefinition::Group(group) => match group {
-                    crate::tasks::TaskGroup::Sequential(_) => vec![],
-                    crate::tasks::TaskGroup::Parallel(pg) => pg.depends_on.clone(),
-                },
+        .map(|(name, node)| {
+            let deps = match node {
+                TaskNode::Task(task) => task
+                    .depends_on
+                    .iter()
+                    .map(|d| d.task_name().to_string())
+                    .collect(),
+                TaskNode::Group(group) => group
+                    .depends_on
+                    .iter()
+                    .map(|d| d.task_name().to_string())
+                    .collect(),
+                TaskNode::List(list) => list
+                    .depends_on
+                    .iter()
+                    .map(|d| d.task_name().to_string())
+                    .collect(),
             };
             (name.clone(), deps)
         })
@@ -273,9 +290,9 @@ mod tests {
     #[test]
     fn test_task_names() {
         let mut tasks = HashMap::new();
-        tasks.insert("b".to_string(), TaskDefinition::Single(Box::default()));
-        tasks.insert("a".to_string(), TaskDefinition::Single(Box::default()));
-        tasks.insert("c".to_string(), TaskDefinition::Single(Box::default()));
+        tasks.insert("b".to_string(), TaskNode::Task(Box::default()));
+        tasks.insert("a".to_string(), TaskNode::Task(Box::default()));
+        tasks.insert("c".to_string(), TaskNode::Task(Box::default()));
 
         let names = task_names(&tasks);
         assert_eq!(names, vec!["a", "b", "c"]);
@@ -286,8 +303,8 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
-                depends_on: vec!["setup".to_string()],
+            TaskNode::Task(Box::new(Task {
+                depends_on: vec![TaskDependency::from_name("setup")],
                 ..Default::default()
             })),
         );

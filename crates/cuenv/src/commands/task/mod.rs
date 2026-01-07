@@ -29,7 +29,7 @@ use cuenv_core::environment::Environment;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
-    BackendFactory, ExecutorConfig, Task, TaskDefinition, TaskExecutor, TaskGraph, Tasks,
+    BackendFactory, ExecutorConfig, Task, TaskExecutor, TaskGraph, TaskNode, Tasks,
 };
 use cuenv_task_discovery::{EvalFn, TaskDiscovery};
 
@@ -239,25 +239,11 @@ async fn execute_task_legacy(
         let tasks = task_index.list();
         let selectable: Vec<SelectableTask> = tasks
             .iter()
-            .filter(|t| {
-                // Only show executable tasks, not groups
-                matches!(
-                    t.definition,
-                    TaskDefinition::Single(_) | TaskDefinition::Group(_)
-                )
-            })
             .map(|t| {
-                let description = match &t.definition {
-                    TaskDefinition::Single(task) => task.description.clone(),
-                    TaskDefinition::Group(g) => match g {
-                        cuenv_core::tasks::TaskGroup::Sequential(sub) => {
-                            sub.first().and_then(|t| match t {
-                                TaskDefinition::Single(st) => st.description.clone(),
-                                TaskDefinition::Group(_) => None,
-                            })
-                        }
-                        cuenv_core::tasks::TaskGroup::Parallel(_) => None,
-                    },
+                let description = match &t.node {
+                    TaskNode::Task(task) => task.description.clone(),
+                    TaskNode::Group(g) => g.description.clone(),
+                    TaskNode::List(l) => l.description.clone(),
                 };
                 SelectableTask {
                     name: t.name.clone(),
@@ -418,7 +404,7 @@ async fn execute_task_legacy(
     }
 
     let display_task_name: String;
-    let task_def: TaskDefinition;
+    let task_node: TaskNode;
     let all_tasks: Tasks;
     let task_graph_root_name: String;
 
@@ -475,17 +461,17 @@ async fn execute_task_legacy(
             requested_task,
             local_tasks.get(requested_task).is_some()
         );
-        let original_task_def = local_tasks.get(&canonical_task_name).ok_or_else(|| {
+        let original_task_node = local_tasks.get(&canonical_task_name).ok_or_else(|| {
             cuenv_core::Error::configuration(format!("Task '{canonical_task_name}' not found"))
         })?;
         display_task_name = canonical_task_name;
 
-        tracing::debug!("Found task definition: {:?}", original_task_def);
+        tracing::debug!("Found task node: {:?}", original_task_node);
 
         // Process task arguments if provided
-        let (selected_task_def, tasks) = if task_args.is_empty() {
-            (original_task_def.clone(), local_tasks.clone())
-        } else if let TaskDefinition::Single(task) = original_task_def {
+        let (selected_task_node, tasks) = if task_args.is_empty() {
+            (original_task_node.clone(), local_tasks.clone())
+        } else if let TaskNode::Task(task) = original_task_node {
             // Parse and validate arguments against task params
             let resolved_args = resolve_task_args(task.params.as_ref(), task_args)?;
             tracing::debug!("Resolved task args: {:?}", resolved_args);
@@ -493,24 +479,24 @@ async fn execute_task_legacy(
             // Apply argument interpolation to task
             let modified_task = apply_args_to_task(task, &resolved_args);
 
-            // Create a new task definition with the modified task
-            let modified_def = TaskDefinition::Single(Box::new(modified_task));
+            // Create a new task node with the modified task
+            let modified_node = TaskNode::Task(Box::new(modified_task));
 
             // Create a new Tasks collection with the modified task
             let mut modified_tasks = local_tasks.clone();
             modified_tasks
                 .tasks
-                .insert(display_task_name.clone(), modified_def.clone());
+                .insert(display_task_name.clone(), modified_node.clone());
 
-            (modified_def, modified_tasks)
+            (modified_node, modified_tasks)
         } else {
-            // For groups, we don't support arguments
+            // For groups and lists, we don't support arguments
             return Err(cuenv_core::Error::configuration(
-                "Task arguments are not supported for task groups".to_string(),
+                "Task arguments are not supported for task groups or lists".to_string(),
             ));
         };
 
-        task_def = selected_task_def;
+        task_node = selected_task_node;
 
         // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
         // This enables cross-project dependency graphs and proper cycle detection.
@@ -523,10 +509,10 @@ async fn execute_task_legacy(
             // (We avoid patching otherwise, because the global registry has normalized
             // dependsOn entries to FQDNs.)
             if !task_args.is_empty()
-                && let TaskDefinition::Single(ref t) = task_def
+                && let TaskNode::Task(ref t) = task_node
             {
                 let fqdn = task_fqdn(&current_project_id, &display_task_name);
-                if let Some(TaskDefinition::Single(existing)) = global.tasks.get_mut(&fqdn) {
+                if let Some(TaskNode::Task(existing)) = global.tasks.get_mut(&fqdn) {
                     existing.command.clone_from(&t.command);
                     existing.args.clone_from(&t.args);
                 }
@@ -568,7 +554,10 @@ async fn execute_task_legacy(
         let synthetic = Task {
             script: Some("true".to_string()),
             hermetic: false,
-            depends_on: matching_tasks,
+            depends_on: matching_tasks
+                .into_iter()
+                .map(cuenv_core::tasks::TaskDependency::from_name)
+                .collect(),
             project_root: Some(project_root.clone()),
             description: Some(format!(
                 "Run all tasks matching labels: {}",
@@ -579,11 +568,11 @@ async fn execute_task_legacy(
 
         tasks_in_scope.tasks.insert(
             display_task_name.clone(),
-            TaskDefinition::Single(Box::new(synthetic)),
+            TaskNode::Task(Box::new(synthetic)),
         );
 
         // Safety: We just inserted the synthetic task above, so it will always exist.
-        task_def = tasks_in_scope
+        task_node = tasks_in_scope
             .get(&display_task_name)
             .cloned()
             .ok_or_else(|| {
@@ -725,7 +714,7 @@ async fn execute_task_legacy(
         // When skipping dependencies, just add the target task without its dependency tree.
         // This is used by CI orchestrators (like GitHub Actions) that handle dependencies externally.
         tracing::debug!("Skipping dependencies - adding only the target task");
-        if let Some(TaskDefinition::Single(task)) = all_tasks.get(&task_graph_root_name) {
+        if let Some(TaskNode::Task(task)) = all_tasks.get(&task_graph_root_name) {
             task_graph.add_task(&task_graph_root_name, (**task).clone())?;
         }
     } else {
@@ -773,7 +762,7 @@ async fn execute_task_legacy(
             path,
             &tui_executor,
             display_task_name.as_str(),
-            &task_def,
+            &task_node,
             &task_graph,
             &all_tasks,
             manifest.env.as_ref(),
@@ -786,7 +775,7 @@ async fn execute_task_legacy(
     let results = execute_task_with_strategy(
         &executor,
         display_task_name.as_str(),
-        &task_def,
+        &task_node,
         &task_graph,
         &all_tasks,
     )
@@ -814,7 +803,7 @@ async fn execute_with_rich_tui(
     _project_dir: &str,
     executor: &TaskExecutor,
     task_name: &str,
-    _task_def: &TaskDefinition,
+    _task_node: &TaskNode,
     task_graph: &TaskGraph,
     _all_tasks: &Tasks,
     _env_base: Option<&cuenv_core::environment::Env>,
@@ -851,7 +840,7 @@ async fn execute_with_rich_tui(
             .task
             .depends_on
             .iter()
-            .filter_map(|dep| levels.get(dep).copied())
+            .filter_map(|dep| levels.get(dep.task_name()).copied())
             .max()
             .unwrap_or(0);
         let increment = usize::from(!node.task.depends_on.is_empty());
@@ -860,7 +849,12 @@ async fn execute_with_rich_tui(
 
     for node in sorted_tasks {
         let task_name = node.name.clone();
-        let dependencies: Vec<String> = node.task.depends_on.clone();
+        let dependencies: Vec<String> = node
+            .task
+            .depends_on
+            .iter()
+            .map(|d| d.task_name().to_string())
+            .collect();
         let level = levels.get(&task_name).copied().unwrap_or(0);
 
         task_infos.push(TaskInfo::new(task_name, dependencies, level));
@@ -936,29 +930,25 @@ async fn execute_with_rich_tui(
 async fn execute_task_with_strategy(
     executor: &TaskExecutor,
     task_name: &str,
-    task_def: &TaskDefinition,
+    task_node: &TaskNode,
     task_graph: &TaskGraph,
     all_tasks: &Tasks,
 ) -> Result<Vec<cuenv_core::tasks::TaskResult>> {
-    match task_def {
-        TaskDefinition::Group(_) => {
-            // For groups (sequential/parallel), use the original group execution
-            executor
-                .execute_definition(task_name, task_def, all_tasks)
-                .await
+    match task_node {
+        TaskNode::Group(_) | TaskNode::List(_) => {
+            // For groups (parallel) and lists (sequential), use the original execution
+            executor.execute_node(task_name, task_node, all_tasks).await
         }
-        TaskDefinition::Single(_) => {
+        TaskNode::Task(_) => {
             // IMPORTANT:
-            // The TaskDefinition passed here may be sourced from the *local* manifest
+            // The TaskNode passed here may be sourced from the *local* manifest
             // (pre-global-normalization / pre-injection). In global mode, additional
             // dependencies can be injected (e.g., workspace setup chains, TaskRef
-            // expansion) that won't be reflected in `t.depends_on`.
+            // expansion) that won't be reflected in the task's `depends_on`.
             //
             // The task graph is built from `all_tasks` and is the authoritative view.
             if task_graph.task_count() <= 1 {
-                executor
-                    .execute_definition(task_name, task_def, all_tasks)
-                    .await
+                executor.execute_node(task_name, task_node, all_tasks).await
             } else {
                 executor.execute_graph(task_graph).await
             }
@@ -1016,7 +1006,8 @@ fn format_task_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use resolution::resolve_task_refs_in_definition;
+    use cuenv_core::tasks::{TaskDependency, TaskNode};
+    use resolution::resolve_task_refs_in_node;
 
     use std::collections::HashMap;
     use std::fs;
@@ -1054,12 +1045,15 @@ env: {
 
         let referenced_task = Task {
             command: "echo".into(),
-            depends_on: vec!["dep-a".into(), "dep-b".into()],
+            depends_on: vec![
+                TaskDependency::from_name("dep-a"),
+                TaskDependency::from_name("dep-b"),
+            ],
             ..Default::default()
         };
         manifest.tasks.insert(
             "run".into(),
-            TaskDefinition::Single(Box::new(referenced_task.clone())),
+            TaskNode::Task(Box::new(referenced_task.clone())),
         );
 
         let manifest_for_eval = manifest.clone();
@@ -1069,27 +1063,21 @@ env: {
 
         let placeholder_task = Task {
             task_ref: Some("#proj:run".into()),
-            depends_on: vec!["placeholder".into()],
+            depends_on: vec![TaskDependency::from_name("placeholder")],
             ..Default::default()
         };
-        let mut task_def = TaskDefinition::Single(Box::new(placeholder_task));
+        let mut task_node = TaskNode::Task(Box::new(placeholder_task));
 
         let project_id_by_name: HashMap<String, String> = HashMap::new();
-        resolve_task_refs_in_definition(&mut task_def, &discovery, "proj", &project_id_by_name);
+        resolve_task_refs_in_node(&mut task_node, &discovery, "proj", &project_id_by_name);
 
-        let TaskDefinition::Single(resolved) = task_def else {
+        let TaskNode::Task(resolved) = task_node else {
             panic!("expected single task");
         };
 
         assert_eq!(resolved.command, "echo");
-        assert_eq!(
-            resolved.depends_on,
-            vec![
-                "dep-a".to_string(),
-                "dep-b".to_string(),
-                "task:proj:placeholder".to_string()
-            ]
-        );
+        let dep_names: Vec<&str> = resolved.depends_on.iter().map(|d| d.task_name()).collect();
+        assert_eq!(dep_names, vec!["dep-a", "dep-b", "task:proj:placeholder"]);
         assert_eq!(
             resolved.project_root,
             Some(fs::canonicalize(tmp.path()).unwrap())
@@ -1143,21 +1131,21 @@ env: {
         let t_build = IndexedTask {
             name: "build".into(),
             original_name: "build".into(),
-            definition: TaskDefinition::Single(Box::new(make_task(Some("Build the project")))),
+            node: TaskNode::Task(Box::new(make_task(Some("Build the project")))),
             is_group: false,
             source_file: None, // Root env.cue
         };
         let t_fmt_check = IndexedTask {
             name: "fmt.check".into(),
             original_name: "fmt.check".into(),
-            definition: TaskDefinition::Single(Box::new(make_task(Some("Check formatting")))),
+            node: TaskNode::Task(Box::new(make_task(Some("Check formatting")))),
             is_group: false,
             source_file: None,
         };
         let t_fmt_fix = IndexedTask {
             name: "fmt.fix".into(),
             original_name: "fmt.fix".into(),
-            definition: TaskDefinition::Single(Box::new(make_task(Some("Fix formatting")))),
+            node: TaskNode::Task(Box::new(make_task(Some("Fix formatting")))),
             is_group: false,
             source_file: None,
         };

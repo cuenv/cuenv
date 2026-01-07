@@ -2,7 +2,7 @@
 //!
 //! Exports the task dependency graph in JSON format for analysis and assertions.
 
-use cuenv_core::tasks::{TaskGraph, TaskNode as CoreTaskNode};
+use cuenv_core::tasks::{TaskGraph, TaskGraphNode};
 use serde::Serialize;
 
 /// Represents an exported task dependency graph.
@@ -48,7 +48,12 @@ impl DagExport {
             .iter()
             .map(|node| TaskNode {
                 name: node.name.clone(),
-                dependencies: node.task.depends_on.clone(),
+                dependencies: node
+                    .task
+                    .depends_on
+                    .iter()
+                    .map(|d| d.task_name().to_string())
+                    .collect(),
                 command: Some(node.task.command.clone()),
                 description: node.task.description.clone(),
             })
@@ -72,7 +77,7 @@ impl DagExport {
 ///
 /// Tasks in the same group have all their dependencies satisfied by previous groups
 /// and can therefore be executed in parallel.
-fn build_parallel_groups(sorted_nodes: &[CoreTaskNode]) -> Vec<Vec<String>> {
+fn build_parallel_groups(sorted_nodes: &[TaskGraphNode]) -> Vec<Vec<String>> {
     use std::collections::HashMap;
 
     if sorted_nodes.is_empty() {
@@ -88,7 +93,7 @@ fn build_parallel_groups(sorted_nodes: &[CoreTaskNode]) -> Vec<Vec<String>> {
             .task
             .depends_on
             .iter()
-            .filter_map(|dep| levels.get(dep).copied())
+            .filter_map(|dep| levels.get(dep.task_name()).copied())
             .max()
             .unwrap_or(0);
 

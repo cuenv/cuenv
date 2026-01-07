@@ -1,4 +1,4 @@
-use super::{ParallelGroup, Task, TaskDefinition, TaskGroup, Tasks};
+use super::{Task, TaskGroup, TaskList, TaskNode, Tasks};
 use crate::{Error, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -73,7 +73,7 @@ pub struct IndexedTask {
     pub name: String,
     /// Original name from CUE (may have _ prefix)
     pub original_name: String,
-    pub definition: TaskDefinition,
+    pub node: TaskNode,
     pub is_group: bool,
     /// Source file where this task was defined (relative to cue.mod root)
     pub source_file: Option<String>,
@@ -107,10 +107,10 @@ impl TaskIndex {
     /// - Stripping `_` prefix from task names (CUE hidden fields for local-only tasks)
     /// - Extracting source file from task metadata
     /// - Canonicalizing nested task paths
-    pub fn build(tasks: &HashMap<String, TaskDefinition>) -> Result<Self> {
+    pub fn build(tasks: &HashMap<String, TaskNode>) -> Result<Self> {
         let mut entries = BTreeMap::new();
 
-        for (name, definition) in tasks {
+        for (name, node) in tasks {
             // Strip _ prefix for display/execution name
             let (display_name, original_name) = if let Some(stripped) = name.strip_prefix('_') {
                 (stripped.to_string(), name.clone())
@@ -118,17 +118,11 @@ impl TaskIndex {
                 (name.clone(), name.clone())
             };
 
-            // Extract source file from task definition
-            let source_file = extract_source_file(definition);
+            // Extract source file from task node
+            let source_file = extract_source_file(node);
 
             let path = TaskPath::parse(&display_name)?;
-            let _ = canonicalize_definition(
-                definition,
-                &path,
-                &mut entries,
-                original_name,
-                source_file,
-            )?;
+            let _ = canonicalize_node(node, &path, &mut entries, original_name, source_file)?;
         }
 
         Ok(Self { entries })
@@ -178,38 +172,37 @@ impl TaskIndex {
         let tasks = self
             .entries
             .iter()
-            .map(|(name, entry)| (name.clone(), entry.definition.clone()))
+            .map(|(name, entry)| (name.clone(), entry.node.clone()))
             .collect();
 
         Tasks { tasks }
     }
 }
 
-/// Extract source file from a task definition
-fn extract_source_file(definition: &TaskDefinition) -> Option<String> {
-    match definition {
-        TaskDefinition::Single(task) => task.source.as_ref().map(|s| s.file.clone()),
-        TaskDefinition::Group(group) => {
+/// Extract source file from a task node
+fn extract_source_file(node: &TaskNode) -> Option<String> {
+    match node {
+        TaskNode::Task(task) => task.source.as_ref().map(|s| s.file.clone()),
+        TaskNode::Group(group) => {
             // For groups, use source from first child task
-            match group {
-                TaskGroup::Sequential(tasks) => tasks.first().and_then(extract_source_file),
-                TaskGroup::Parallel(parallel) => {
-                    parallel.tasks.values().next().and_then(extract_source_file)
-                }
-            }
+            group.parallel.values().next().and_then(extract_source_file)
+        }
+        TaskNode::List(list) => {
+            // For lists, use source from first step
+            list.steps.first().and_then(extract_source_file)
         }
     }
 }
 
-fn canonicalize_definition(
-    definition: &TaskDefinition,
+fn canonicalize_node(
+    node: &TaskNode,
     path: &TaskPath,
     entries: &mut BTreeMap<String, IndexedTask>,
     original_name: String,
     source_file: Option<String>,
-) -> Result<TaskDefinition> {
-    match definition {
-        TaskDefinition::Single(task) => {
+) -> Result<TaskNode> {
+    match node {
+        TaskNode::Task(task) => {
             let canon_task = canonicalize_task(task.as_ref(), path)?;
             let name = path.canonical();
             entries.insert(
@@ -217,83 +210,83 @@ fn canonicalize_definition(
                 IndexedTask {
                     name,
                     original_name,
-                    definition: TaskDefinition::Single(Box::new(canon_task.clone())),
+                    node: TaskNode::Task(Box::new(canon_task.clone())),
                     is_group: false,
                     source_file,
                 },
             );
-            Ok(TaskDefinition::Single(Box::new(canon_task)))
+            Ok(TaskNode::Task(Box::new(canon_task)))
         }
-        TaskDefinition::Group(group) => match group {
-            TaskGroup::Parallel(parallel) => {
-                let mut canon_children = HashMap::new();
-                for (child_name, child_def) in &parallel.tasks {
-                    let child_path = path.join(child_name)?;
-                    // For children, extract their own source file and use display name
-                    let child_source = extract_source_file(child_def);
-                    let child_original = child_name.clone();
-                    let canon_child = canonicalize_definition(
-                        child_def,
-                        &child_path,
-                        entries,
-                        child_original,
-                        child_source,
-                    )?;
-                    canon_children.insert(child_name.clone(), canon_child);
-                }
-
-                let name = path.canonical();
-                let definition = TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
-                    tasks: canon_children,
-                    depends_on: parallel.depends_on.clone(),
-                }));
-                entries.insert(
-                    name.clone(),
-                    IndexedTask {
-                        name,
-                        original_name,
-                        definition: definition.clone(),
-                        is_group: true,
-                        source_file,
-                    },
-                );
-
-                Ok(definition)
+        TaskNode::Group(group) => {
+            let mut canon_children = HashMap::new();
+            for (child_name, child_node) in &group.parallel {
+                let child_path = path.join(child_name)?;
+                // For children, extract their own source file and use display name
+                let child_source = extract_source_file(child_node);
+                let child_original = child_name.clone();
+                let canon_child = canonicalize_node(
+                    child_node,
+                    &child_path,
+                    entries,
+                    child_original,
+                    child_source,
+                )?;
+                canon_children.insert(child_name.clone(), canon_child);
             }
-            TaskGroup::Sequential(children) => {
-                // Preserve sequential children order; dependencies inside them remain as-is
-                let mut canon_children = Vec::with_capacity(children.len());
-                for child in children {
-                    // We still recurse so nested parallel groups are indexed, but we do not
-                    // rewrite names with numeric indices to avoid changing existing graph semantics.
-                    // For sequential children, extract their source file
-                    let child_source = extract_source_file(child);
-                    let canon_child = canonicalize_definition(
-                        child,
-                        path,
-                        entries,
-                        original_name.clone(),
-                        child_source,
-                    )?;
-                    canon_children.push(canon_child);
-                }
 
-                let name = path.canonical();
-                let definition = TaskDefinition::Group(TaskGroup::Sequential(canon_children));
-                entries.insert(
-                    name.clone(),
-                    IndexedTask {
-                        name,
-                        original_name,
-                        definition: definition.clone(),
-                        is_group: true,
-                        source_file,
-                    },
-                );
+            let name = path.canonical();
+            let node = TaskNode::Group(TaskGroup {
+                parallel: canon_children,
+                depends_on: group.depends_on.clone(),
+                max_concurrency: group.max_concurrency,
+                description: group.description.clone(),
+            });
+            entries.insert(
+                name.clone(),
+                IndexedTask {
+                    name,
+                    original_name,
+                    node: node.clone(),
+                    is_group: true,
+                    source_file,
+                },
+            );
 
-                Ok(definition)
+            Ok(node)
+        }
+        TaskNode::List(list) => {
+            // Preserve sequential children order; dependencies inside them remain as-is
+            let mut canon_children = Vec::with_capacity(list.steps.len());
+            for child in &list.steps {
+                // We still recurse so nested parallel groups are indexed, but we do not
+                // rewrite names with numeric indices to avoid changing existing graph semantics.
+                // For sequential children, extract their source file
+                let child_source = extract_source_file(child);
+                let canon_child =
+                    canonicalize_node(child, path, entries, original_name.clone(), child_source)?;
+                canon_children.push(canon_child);
             }
-        },
+
+            let name = path.canonical();
+            let node = TaskNode::List(TaskList {
+                steps: canon_children,
+                depends_on: list.depends_on.clone(),
+                stop_on_first_error: list.stop_on_first_error,
+                description: list.description.clone(),
+            });
+            entries.insert(
+                name.clone(),
+                IndexedTask {
+                    name,
+                    original_name,
+                    node: node.clone(),
+                    is_group: true,
+                    source_file,
+                },
+            );
+
+            Ok(node)
+        }
     }
 }
 
@@ -308,7 +301,8 @@ fn canonicalize_task(task: &Task, path: &TaskPath) -> Result<Task> {
     let mut clone = task.clone();
     let mut canonical_deps = Vec::new();
     for dep in &task.depends_on {
-        canonical_deps.push(canonicalize_dep(dep, path)?);
+        let canonical_name = canonicalize_dep(dep.task_name(), path)?;
+        canonical_deps.push(super::TaskDependency::from_name(canonical_name));
     }
     clone.depends_on = canonical_deps;
     Ok(clone)
@@ -495,7 +489,7 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo build".to_string(),
                 ..Default::default()
             })),
@@ -514,7 +508,7 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert(
             "_private".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "echo private".to_string(),
                 ..Default::default()
             })),
@@ -533,14 +527,14 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert(
             "test.unit".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo test".to_string(),
                 ..Default::default()
             })),
         );
         tasks.insert(
             "test.integration".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo test --test integration".to_string(),
                 ..Default::default()
             })),
@@ -572,7 +566,7 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo build".to_string(),
                 ..Default::default()
             })),
@@ -594,21 +588,21 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert(
             "zebra".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "echo z".to_string(),
                 ..Default::default()
             })),
         );
         tasks.insert(
             "apple".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "echo a".to_string(),
                 ..Default::default()
             })),
         );
         tasks.insert(
             "mango".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "echo m".to_string(),
                 ..Default::default()
             })),
@@ -628,7 +622,7 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo build".to_string(),
                 ..Default::default()
             })),
@@ -702,7 +696,7 @@ mod tests {
         let task = IndexedTask {
             name: "build".to_string(),
             original_name: "build".to_string(),
-            definition: TaskDefinition::Single(Box::default()),
+            node: TaskNode::Task(Box::default()),
             is_group: false,
             source_file: Some("env.cue".to_string()),
         };
@@ -717,7 +711,7 @@ mod tests {
         let task = IndexedTask {
             name: "build".to_string(),
             original_name: "_build".to_string(),
-            definition: TaskDefinition::Single(Box::default()),
+            node: TaskNode::Task(Box::default()),
             is_group: false,
             source_file: None,
         };

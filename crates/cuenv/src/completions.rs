@@ -62,6 +62,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         module_root.clone(),
         raw_result.instances,
         raw_result.projects,
+        None,
     );
 
     // Calculate relative path from module root to target
@@ -102,9 +103,10 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         .list()
         .iter()
         .map(|indexed| {
-            let description = match &indexed.definition {
-                cuenv_core::tasks::TaskDefinition::Single(task) => task.description.clone(),
-                cuenv_core::tasks::TaskDefinition::Group(_) => None,
+            let description = match &indexed.node {
+                cuenv_core::tasks::TaskNode::Task(task) => task.description.clone(),
+                cuenv_core::tasks::TaskNode::Group(g) => g.description.clone(),
+                cuenv_core::tasks::TaskNode::List(l) => l.description.clone(),
             };
             (indexed.name.clone(), description)
         })
@@ -153,6 +155,7 @@ fn get_task_params(
         module_root.clone(),
         raw_result.instances,
         raw_result.projects,
+        None,
     );
 
     // Calculate relative path
@@ -178,7 +181,7 @@ fn get_task_params(
         .ok()?;
     let task_entry = task_index.resolve(task_name).ok()?;
 
-    let cuenv_core::tasks::TaskDefinition::Single(task) = &task_entry.definition else {
+    let cuenv_core::tasks::TaskNode::Task(task) = &task_entry.node else {
         return None;
     };
 

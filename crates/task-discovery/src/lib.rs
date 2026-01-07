@@ -210,7 +210,7 @@ impl TaskDiscovery {
 
         // We only support single tasks, not task groups, for TaskRef
         let task = task_def
-            .as_single()
+            .as_task()
             .ok_or_else(|| DiscoveryError::TaskIsGroup(project_name.clone(), task_name.clone()))?
             .clone();
 
@@ -242,7 +242,7 @@ impl TaskDiscovery {
 
             // Check each addressable single task in the project
             for entry in index.list() {
-                let Some(task) = entry.definition.as_single() else {
+                let Some(task) = entry.node.as_task() else {
                     continue;
                 };
 
@@ -393,7 +393,7 @@ pub enum DiscoveryError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::tasks::{ParallelGroup, TaskDefinition, TaskGroup};
+    use cuenv_core::tasks::{TaskGroup, TaskNode};
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -490,22 +490,18 @@ mod tests {
         };
 
         let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert(
-            "generate".into(),
-            TaskDefinition::Single(Box::new(make_task())),
-        );
-        parallel_tasks.insert(
-            "types".into(),
-            TaskDefinition::Single(Box::new(make_task())),
-        );
+        parallel_tasks.insert("generate".into(), TaskNode::Task(Box::new(make_task())));
+        parallel_tasks.insert("types".into(), TaskNode::Task(Box::new(make_task())));
 
         let mut manifest = Project::new("test");
         manifest.tasks.insert(
             "projen".into(),
-            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
-                tasks: parallel_tasks,
+            TaskNode::Group(TaskGroup {
+                parallel: parallel_tasks,
                 depends_on: Vec::new(),
-            })),
+                description: None,
+                max_concurrency: None,
+            }),
         );
 
         discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
@@ -635,10 +631,12 @@ mod tests {
         let mut manifest = Project::new("my-project");
         manifest.tasks.insert(
             "group-task".into(),
-            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
-                tasks: HashMap::new(),
+            TaskNode::Group(TaskGroup {
+                parallel: HashMap::new(),
                 depends_on: Vec::new(),
-            })),
+                description: None,
+                max_concurrency: None,
+            }),
         );
         discovery.add_project(PathBuf::from("/tmp/proj"), manifest);
 
@@ -660,7 +658,7 @@ mod tests {
         let mut manifest = Project::new("my-project");
         manifest.tasks.insert(
             "build".into(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".into(),
                 args: vec!["build".into()],
                 ..Default::default()
@@ -688,14 +686,14 @@ mod tests {
         let mut manifest = Project::new("test");
         manifest.tasks.insert(
             "build".into(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".into(),
                 ..Default::default()
             })),
         );
         manifest.tasks.insert(
             "test".into(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "npm".into(),
                 ..Default::default()
             })),
@@ -721,7 +719,7 @@ mod tests {
         let mut manifest = Project::new("test");
         manifest.tasks.insert(
             "task1".into(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "echo".into(),
                 labels: vec!["ci".into(), "test".into()],
                 ..Default::default()
@@ -729,7 +727,7 @@ mod tests {
         );
         manifest.tasks.insert(
             "task2".into(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "echo".into(),
                 labels: vec!["ci".into()],
                 ..Default::default()

@@ -1,6 +1,13 @@
 //! Task execution and management module
 //!
 //! This module provides the core types for task execution, matching the CUE schema.
+//!
+//! # Task API v2
+//!
+//! Users annotate tasks with their type to unlock specific semantics:
+//! - [`Task`]: Single command or script
+//! - [`TaskGroup`]: Parallel execution (all children run concurrently)
+//! - [`TaskList`]: Sequential execution (steps run in order)
 
 pub mod backend;
 pub mod executor;
@@ -25,7 +32,110 @@ fn default_hermetic() -> bool {
     true
 }
 
-/// Shell configuration for task execution
+// =============================================================================
+// Script Shell Configuration
+// =============================================================================
+
+/// Shell interpreter for script-based tasks
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptShell {
+    #[default]
+    Bash,
+    Sh,
+    Zsh,
+    Fish,
+    Powershell,
+    Pwsh,
+    Python,
+    Node,
+    Ruby,
+    Perl,
+}
+
+impl ScriptShell {
+    /// Get the command and flag for this shell
+    #[must_use]
+    pub fn command_and_flag(&self) -> (&'static str, &'static str) {
+        match self {
+            ScriptShell::Bash => ("bash", "-c"),
+            ScriptShell::Sh => ("sh", "-c"),
+            ScriptShell::Zsh => ("zsh", "-c"),
+            ScriptShell::Fish => ("fish", "-c"),
+            ScriptShell::Powershell => ("powershell", "-Command"),
+            ScriptShell::Pwsh => ("pwsh", "-Command"),
+            ScriptShell::Python => ("python", "-c"),
+            ScriptShell::Node => ("node", "-e"),
+            ScriptShell::Ruby => ("ruby", "-e"),
+            ScriptShell::Perl => ("perl", "-e"),
+        }
+    }
+
+    /// Returns true if this shell supports POSIX-style options (errexit, pipefail, etc.)
+    #[must_use]
+    pub fn supports_shell_options(&self) -> bool {
+        matches!(self, ScriptShell::Bash | ScriptShell::Sh | ScriptShell::Zsh)
+    }
+}
+
+/// Shell options for bash-like shells
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShellOptions {
+    /// -e: exit on error (default: true)
+    #[serde(default = "default_true")]
+    pub errexit: bool,
+    /// -u: error on undefined vars (default: true)
+    #[serde(default = "default_true")]
+    pub nounset: bool,
+    /// -o pipefail: fail on pipe errors (default: true)
+    #[serde(default = "default_true")]
+    pub pipefail: bool,
+    /// -x: debug/trace mode (default: false)
+    #[serde(default)]
+    pub xtrace: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ShellOptions {
+    fn default() -> Self {
+        Self {
+            errexit: true,
+            nounset: true,
+            pipefail: true,
+            xtrace: false,
+        }
+    }
+}
+
+impl ShellOptions {
+    /// Generate the shell options prefix for a script
+    #[must_use]
+    pub fn to_set_commands(&self) -> String {
+        let mut opts = Vec::new();
+        if self.errexit {
+            opts.push("-e");
+        }
+        if self.nounset {
+            opts.push("-u");
+        }
+        if self.pipefail {
+            opts.push("-o pipefail");
+        }
+        if self.xtrace {
+            opts.push("-x");
+        }
+        if opts.is_empty() {
+            String::new()
+        } else {
+            format!("set {}\n", opts.join(" "))
+        }
+    }
+}
+
+/// Shell configuration for task execution (legacy, for backwards compatibility)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Shell {
     /// Shell executable name (e.g., "bash", "fish", "zsh")
@@ -121,16 +231,113 @@ impl SourceLocation {
     }
 }
 
+/// A task dependency - an embedded task reference with _name field
+/// When tasks reference other tasks directly in CUE (e.g., `dependsOn: [build]`),
+/// the Go bridge injects the `_name` field to identify the dependency.
+///
+/// Supports deserialization from:
+/// - A string: `"taskName"` -> `TaskDependency { name: "taskName" }`
+/// - An object with `_name`: `{ "_name": "taskName", ... }` -> `TaskDependency { name: "taskName" }`
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TaskDependency {
+    /// The task name (injected by Go bridge based on task path)
+    /// e.g., "build", "test.unit", "deploy.staging"
+    #[serde(rename = "_name")]
+    pub name: String,
+
+    // Other fields are captured but not used - we only need the name
+    #[serde(flatten)]
+    _rest: serde_json::Value,
+}
+
+impl<'de> serde::Deserialize<'de> for TaskDependency {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct TaskDependencyVisitor;
+
+        impl<'de> Visitor<'de> for TaskDependencyVisitor {
+            type Value = TaskDependency;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string or an object with _name field")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(TaskDependency::from_name(value))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(TaskDependency::from_name(value))
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                // Deserialize as a JSON object and extract _name
+                let value: serde_json::Value =
+                    serde::Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))?;
+
+                let name = value
+                    .get("_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| de::Error::missing_field("_name"))?
+                    .to_string();
+
+                Ok(TaskDependency { name, _rest: value })
+            }
+        }
+
+        deserializer.deserialize_any(TaskDependencyVisitor)
+    }
+}
+
+impl TaskDependency {
+    /// Create a new TaskDependency from a task name
+    #[must_use]
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            _rest: serde_json::Value::Null,
+        }
+    }
+
+    /// Get the task name
+    #[must_use]
+    pub fn task_name(&self) -> &str {
+        &self.name
+    }
+
+    /// Check if this dependency matches a given task name
+    pub fn matches(&self, name: &str) -> bool {
+        self.name == name
+    }
+}
+
+// =============================================================================
+// Single Executable Task
+// =============================================================================
+
 /// A single executable task
 ///
 /// Note: Custom deserialization is used to ensure that a Task can only be
 /// deserialized when it has a `command` or `script` field. This is necessary
-/// because TaskDefinition uses untagged enum, and we need to distinguish
-/// between a Task and a TaskGroup during deserialization.
+/// because TaskNode uses untagged enum, and we need to distinguish
+/// between Task, TaskGroup, and TaskList during deserialization.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Task {
-    /// Shell configuration for command execution (optional)
-    #[serde(default)]
+    /// Shell configuration for command execution (legacy, for backwards compatibility)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<Shell>,
 
     /// Command to execute. Required unless 'script' is provided.
@@ -139,9 +346,26 @@ pub struct Task {
 
     /// Inline script to execute (alternative to command).
     /// When script is provided, shell defaults to bash if not specified.
-    /// Supports multiline strings and shebang lines for polyglot scripts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
+
+    /// Shell interpreter for script-based tasks (e.g., bash, python, node)
+    /// Only used when `script` is provided.
+    #[serde(
+        default,
+        rename = "scriptShell",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub script_shell: Option<ScriptShell>,
+
+    /// Shell options for bash-like shells (errexit, nounset, pipefail, xtrace)
+    /// Only used when `script` is provided with a POSIX-compatible shell.
+    #[serde(
+        default,
+        rename = "shellOptions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub shell_options: Option<ShellOptions>,
 
     /// Arguments for the command
     #[serde(default)]
@@ -165,9 +389,11 @@ pub struct Task {
     #[serde(default = "default_hermetic")]
     pub hermetic: bool,
 
-    /// Task dependencies (names of tasks that must run first)
+    /// Task dependencies - embedded task references with _name field
+    /// In CUE, users write `dependsOn: [build, test]` with direct references.
+    /// The Go bridge injects _name into each embedded task for identification.
     #[serde(default, rename = "dependsOn")]
-    pub depends_on: Vec<String>,
+    pub depends_on: Vec<TaskDependency>,
 
     /// Input files/resources
     #[serde(default)]
@@ -190,6 +416,18 @@ pub struct Task {
     #[serde(default)]
     pub labels: Vec<String>,
 
+    /// Execution timeout (e.g., "30m", "1h")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+
+    /// Retry configuration for failed tasks
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry: Option<RetryConfig>,
+
+    /// Continue execution even if this task fails (default: false)
+    #[serde(default, rename = "continueOnError")]
+    pub continue_on_error: bool,
+
     /// If set, this task is a reference to another project's task
     /// that should be resolved at runtime using TaskDiscovery.
     /// Format: "#project-name:task-name"
@@ -208,12 +446,27 @@ pub struct Task {
 
     /// Working directory override (relative to cue.mod root).
     /// Defaults to the directory of the source file if not set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, rename = "dir", skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
 }
 
+/// Retry configuration for failed tasks
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetryConfig {
+    /// Number of retry attempts (default: 3)
+    #[serde(default = "default_retry_attempts")]
+    pub attempts: u32,
+    /// Delay between retries (e.g., "5s")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay: Option<String>,
+}
+
+fn default_retry_attempts() -> u32 {
+    3
+}
+
 // Custom deserialization for Task to ensure either command or script is present.
-// This is necessary for untagged enum deserialization in TaskDefinition to work correctly.
+// This is necessary for untagged enum deserialization in TaskNode to work correctly.
 impl<'de> serde::Deserialize<'de> for Task {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -228,6 +481,10 @@ impl<'de> serde::Deserialize<'de> for Task {
             command: Option<String>,
             #[serde(default)]
             script: Option<String>,
+            #[serde(default, rename = "scriptShell")]
+            script_shell: Option<ScriptShell>,
+            #[serde(default, rename = "shellOptions")]
+            shell_options: Option<ShellOptions>,
             #[serde(default)]
             args: Vec<String>,
             #[serde(default)]
@@ -239,7 +496,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default = "default_hermetic")]
             hermetic: bool,
             #[serde(default, rename = "dependsOn")]
-            depends_on: Vec<String>,
+            depends_on: Vec<TaskDependency>,
             #[serde(default)]
             inputs: Vec<Input>,
             #[serde(default)]
@@ -251,12 +508,18 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default)]
             labels: Vec<String>,
             #[serde(default)]
+            timeout: Option<String>,
+            #[serde(default)]
+            retry: Option<RetryConfig>,
+            #[serde(default, rename = "continueOnError")]
+            continue_on_error: bool,
+            #[serde(default)]
             task_ref: Option<String>,
             #[serde(default)]
             project_root: Option<std::path::PathBuf>,
             #[serde(default, rename = "_source")]
             source: Option<SourceLocation>,
-            #[serde(default)]
+            #[serde(default, rename = "dir")]
             directory: Option<String>,
         }
 
@@ -277,6 +540,8 @@ impl<'de> serde::Deserialize<'de> for Task {
             shell: helper.shell,
             command: helper.command.unwrap_or_default(),
             script: helper.script,
+            script_shell: helper.script_shell,
+            shell_options: helper.shell_options,
             args: helper.args,
             env: helper.env,
             dagger: helper.dagger,
@@ -288,6 +553,9 @@ impl<'de> serde::Deserialize<'de> for Task {
             description: helper.description,
             params: helper.params,
             labels: helper.labels,
+            timeout: helper.timeout,
+            retry: helper.retry,
+            continue_on_error: helper.continue_on_error,
             task_ref: helper.task_ref,
             project_root: helper.project_root,
             source: helper.source,
@@ -442,6 +710,8 @@ impl Default for Task {
             shell: None,
             command: String::new(),
             script: None,
+            script_shell: None,
+            shell_options: None,
             args: vec![],
             env: HashMap::new(),
             dagger: None,
@@ -453,6 +723,9 @@ impl Default for Task {
             description: None,
             params: None,
             labels: vec![],
+            timeout: None,
+            retry: None,
+            continue_on_error: false,
             task_ref: None,
             project_root: None,
             source: None,
@@ -475,6 +748,11 @@ impl Task {
     /// Returns true if this task is a TaskRef placeholder that needs resolution.
     pub fn is_task_ref(&self) -> bool {
         self.task_ref.is_some()
+    }
+
+    /// Returns an iterator over dependency task names.
+    pub fn dependency_names(&self) -> impl Iterator<Item = &str> {
+        self.depends_on.iter().map(|d| d.task_name())
     }
 
     /// Returns the description, or a default if not set.
@@ -555,38 +833,96 @@ fn apply_prefix(prefix: Option<&Path>, value: &str) -> String {
     }
 }
 
-/// A parallel task group with optional shared dependencies
+// =============================================================================
+// Parallel Execution (Task Group)
+// =============================================================================
+
+/// A parallel task group - all children run concurrently
+///
+/// Discriminated by the required `parallel` field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaskGroup {
+    /// Named children - all run concurrently
+    pub parallel: HashMap<String, TaskNode>,
+
+    /// Dependencies on other tasks
+    #[serde(default, rename = "dependsOn")]
+    pub depends_on: Vec<TaskDependency>,
+
+    /// Limit concurrent executions (0 = unlimited)
+    #[serde(default, rename = "maxConcurrency")]
+    pub max_concurrency: Option<u32>,
+
+    /// Human-readable description
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+// =============================================================================
+// Sequential Execution (Task List)
+// =============================================================================
+
+/// A sequential task list - steps run in order
+///
+/// Discriminated by the required `steps` field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TaskList {
+    /// Ordered steps - run in sequence
+    pub steps: Vec<TaskNode>,
+
+    /// Dependencies on other tasks
+    #[serde(default, rename = "dependsOn")]
+    pub depends_on: Vec<TaskDependency>,
+
+    /// Stop on first error (default: true)
+    #[serde(default = "default_true", rename = "stopOnFirstError")]
+    pub stop_on_first_error: bool,
+
+    /// Human-readable description
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+// =============================================================================
+// Task Node (Union Type)
+// =============================================================================
+
+/// Union of all task types - explicit typing required in CUE
+///
+/// This is the recursive type that represents any task node in the tree.
+/// Discriminated by:
+/// - [`Task`]: Has `command` or `script` field
+/// - [`TaskGroup`]: Has `parallel` field
+/// - [`TaskList`]: Has `steps` field
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum TaskNode {
+    /// A single executable task
+    Task(Box<Task>),
+    /// A parallel task group
+    Group(TaskGroup),
+    /// A sequential task list
+    List(TaskList),
+}
+
+// =============================================================================
+// Legacy Type Aliases (for backwards compatibility)
+// =============================================================================
+
+/// Legacy alias for TaskNode
+#[deprecated(since = "0.26.0", note = "Use TaskNode instead")]
+pub type TaskDefinition = TaskNode;
+
+/// Legacy parallel group structure (for backwards compatibility during migration)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ParallelGroup {
     /// Named tasks that can run concurrently
     #[serde(flatten)]
-    pub tasks: HashMap<String, TaskDefinition>,
+    pub tasks: HashMap<String, TaskNode>,
 
     /// Optional group-level dependencies applied to all subtasks
     #[serde(default, rename = "dependsOn")]
-    pub depends_on: Vec<String>,
-}
-
-/// Represents a group of tasks with execution mode
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum TaskGroup {
-    /// Sequential execution: array of tasks executed in order
-    Sequential(Vec<TaskDefinition>),
-
-    /// Parallel execution: named tasks that can run concurrently
-    Parallel(ParallelGroup),
-}
-
-/// A task definition can be either a single task or a group of tasks
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum TaskDefinition {
-    /// A single task
-    Single(Box<Task>),
-
-    /// A group of tasks
-    Group(TaskGroup),
+    pub depends_on: Vec<TaskDependency>,
 }
 
 /// Root tasks structure from CUE
@@ -594,7 +930,7 @@ pub enum TaskDefinition {
 pub struct Tasks {
     /// Map of task names to their definitions
     #[serde(flatten)]
-    pub tasks: HashMap<String, TaskDefinition>,
+    pub tasks: HashMap<String, TaskNode>,
 }
 
 impl Tasks {
@@ -603,8 +939,8 @@ impl Tasks {
         Self::default()
     }
 
-    /// Get a task definition by name
-    pub fn get(&self, name: &str) -> Option<&TaskDefinition> {
+    /// Get a task node by name
+    pub fn get(&self, name: &str) -> Option<&TaskNode> {
         self.tasks.get(name)
     }
 
@@ -619,21 +955,26 @@ impl Tasks {
     }
 }
 
-impl TaskDefinition {
+impl TaskNode {
     /// Check if this is a single task
-    pub fn is_single(&self) -> bool {
-        matches!(self, TaskDefinition::Single(_))
+    pub fn is_task(&self) -> bool {
+        matches!(self, TaskNode::Task(_))
     }
 
-    /// Check if this is a task group
+    /// Check if this is a task group (parallel)
     pub fn is_group(&self) -> bool {
-        matches!(self, TaskDefinition::Group(_))
+        matches!(self, TaskNode::Group(_))
+    }
+
+    /// Check if this is a task list (sequential)
+    pub fn is_list(&self) -> bool {
+        matches!(self, TaskNode::List(_))
     }
 
     /// Get as single task if it is one
-    pub fn as_single(&self) -> Option<&Task> {
+    pub fn as_task(&self) -> Option<&Task> {
         match self {
-            TaskDefinition::Single(task) => Some(task.as_ref()),
+            TaskNode::Task(task) => Some(task.as_ref()),
             _ => None,
         }
     }
@@ -641,77 +982,119 @@ impl TaskDefinition {
     /// Get as task group if it is one
     pub fn as_group(&self) -> Option<&TaskGroup> {
         match self {
-            TaskDefinition::Group(group) => Some(group),
+            TaskNode::Group(group) => Some(group),
             _ => None,
         }
+    }
+
+    /// Get as task list if it is one
+    pub fn as_list(&self) -> Option<&TaskList> {
+        match self {
+            TaskNode::List(list) => Some(list),
+            _ => None,
+        }
+    }
+
+    /// Get dependencies for this node
+    pub fn depends_on(&self) -> &[TaskDependency] {
+        match self {
+            TaskNode::Task(task) => &task.depends_on,
+            TaskNode::Group(group) => &group.depends_on,
+            TaskNode::List(list) => &list.depends_on,
+        }
+    }
+
+    /// Get description for this node
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            TaskNode::Task(task) => task.description.as_deref(),
+            TaskNode::Group(group) => group.description.as_deref(),
+            TaskNode::List(list) => list.description.as_deref(),
+        }
+    }
+
+    // Legacy compatibility methods
+    #[deprecated(since = "0.26.0", note = "Use is_task() instead")]
+    pub fn is_single(&self) -> bool {
+        self.is_task()
+    }
+
+    #[deprecated(since = "0.26.0", note = "Use as_task() instead")]
+    pub fn as_single(&self) -> Option<&Task> {
+        self.as_task()
     }
 }
 
 impl TaskGroup {
-    /// Check if this group is sequential
-    pub fn is_sequential(&self) -> bool {
-        matches!(self, TaskGroup::Sequential(_))
-    }
-
-    /// Check if this group is parallel
-    pub fn is_parallel(&self) -> bool {
-        matches!(self, TaskGroup::Parallel(_))
-    }
-
     /// Get the number of tasks in this group
     pub fn len(&self) -> usize {
-        match self {
-            TaskGroup::Sequential(tasks) => tasks.len(),
-            TaskGroup::Parallel(group) => group.tasks.len(),
-        }
+        self.parallel.len()
     }
 
     /// Check if the group is empty
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.parallel.is_empty()
+    }
+}
+
+impl TaskList {
+    /// Get the number of steps in this list
+    pub fn len(&self) -> usize {
+        self.steps.len()
+    }
+
+    /// Check if the list is empty
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
     }
 }
 
 impl crate::AffectedBy for TaskGroup {
     /// A group is affected if ANY of its subtasks are affected.
     fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
-        match self {
-            TaskGroup::Sequential(tasks) => tasks
-                .iter()
-                .any(|def| def.is_affected_by(changed_files, project_root)),
-            TaskGroup::Parallel(group) => group
-                .tasks
-                .values()
-                .any(|def| def.is_affected_by(changed_files, project_root)),
-        }
+        self.parallel
+            .values()
+            .any(|node| node.is_affected_by(changed_files, project_root))
     }
 
     fn input_patterns(&self) -> Vec<&str> {
-        match self {
-            TaskGroup::Sequential(tasks) => {
-                tasks.iter().flat_map(|def| def.input_patterns()).collect()
-            }
-            TaskGroup::Parallel(group) => group
-                .tasks
-                .values()
-                .flat_map(|def| def.input_patterns())
-                .collect(),
-        }
+        self.parallel
+            .values()
+            .flat_map(|node| node.input_patterns())
+            .collect()
     }
 }
 
-impl crate::AffectedBy for TaskDefinition {
+impl crate::AffectedBy for TaskList {
+    /// A list is affected if ANY of its steps are affected.
+    fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
+        self.steps
+            .iter()
+            .any(|node| node.is_affected_by(changed_files, project_root))
+    }
+
+    fn input_patterns(&self) -> Vec<&str> {
+        self.steps
+            .iter()
+            .flat_map(|node| node.input_patterns())
+            .collect()
+    }
+}
+
+impl crate::AffectedBy for TaskNode {
     fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
         match self {
-            TaskDefinition::Single(task) => task.is_affected_by(changed_files, project_root),
-            TaskDefinition::Group(group) => group.is_affected_by(changed_files, project_root),
+            TaskNode::Task(task) => task.is_affected_by(changed_files, project_root),
+            TaskNode::Group(group) => group.is_affected_by(changed_files, project_root),
+            TaskNode::List(list) => list.is_affected_by(changed_files, project_root),
         }
     }
 
     fn input_patterns(&self) -> Vec<&str> {
         match self {
-            TaskDefinition::Single(task) => task.input_patterns(),
-            TaskDefinition::Group(group) => group.input_patterns(),
+            TaskNode::Task(task) => task.input_patterns(),
+            TaskNode::Group(group) => group.input_patterns(),
+            TaskNode::List(list) => list.input_patterns(),
         }
     }
 }
@@ -762,37 +1145,21 @@ mod tests {
     }
 
     #[test]
-    fn test_task_definition_script_variant() {
-        // Test that TaskDefinition::Single correctly deserializes script-only tasks
+    fn test_task_node_script_variant() {
+        // Test that TaskNode::Task correctly deserializes script-only tasks
         let json = r#"{
             "script": "echo hello"
         }"#;
 
-        let def: TaskDefinition = serde_json::from_str(json).unwrap();
-        assert!(def.is_single());
+        let node: TaskNode = serde_json::from_str(json).unwrap();
+        assert!(node.is_task());
     }
 
     #[test]
     fn test_task_group_with_script_task() {
         // Test parallel task group containing a script task (mimics cross.linux)
         let json = r#"{
-            "linux": {
-                "script": "echo building",
-                "inputs": ["src/main.rs"]
-            }
-        }"#;
-
-        let group: TaskGroup = serde_json::from_str(json).unwrap();
-        assert!(group.is_parallel());
-    }
-
-    #[test]
-    fn test_full_tasks_map_with_script() {
-        // Test deserializing a full tasks map like in Project.tasks
-        // This mimics the structure: tasks: { cross: { linux: { script: ... } } }
-        let json = r#"{
-            "pwd": { "command": "pwd" },
-            "cross": {
+            "parallel": {
                 "linux": {
                     "script": "echo building",
                     "inputs": ["src/main.rs"]
@@ -800,15 +1167,35 @@ mod tests {
             }
         }"#;
 
-        let tasks: HashMap<String, TaskDefinition> = serde_json::from_str(json).unwrap();
+        let group: TaskGroup = serde_json::from_str(json).unwrap();
+        assert_eq!(group.len(), 1);
+    }
+
+    #[test]
+    fn test_full_tasks_map_with_script() {
+        // Test deserializing a full tasks map like in Project.tasks
+        // This mimics the new structure: tasks: { cross: { parallel: { linux: { script: ... } } } }
+        let json = r#"{
+            "pwd": { "command": "pwd" },
+            "cross": {
+                "parallel": {
+                    "linux": {
+                        "script": "echo building",
+                        "inputs": ["src/main.rs"]
+                    }
+                }
+            }
+        }"#;
+
+        let tasks: HashMap<String, TaskNode> = serde_json::from_str(json).unwrap();
         assert_eq!(tasks.len(), 2);
         assert!(tasks.contains_key("pwd"));
         assert!(tasks.contains_key("cross"));
 
-        // pwd should be Single
-        assert!(tasks.get("pwd").unwrap().is_single());
+        // pwd should be Task
+        assert!(tasks.get("pwd").unwrap().is_task());
 
-        // cross should be Group (Parallel)
+        // cross should be Group
         assert!(tasks.get("cross").unwrap().is_group());
     }
 
@@ -823,44 +1210,50 @@ mod tests {
                 "inputs": ["flake.nix"]
             },
             "fmt": {
-                "fix": {
-                    "command": "treefmt",
-                    "inputs": [".config"]
-                },
-                "check": {
-                    "command": "treefmt",
-                    "args": ["--fail-on-change"],
-                    "inputs": [".config"]
+                "parallel": {
+                    "fix": {
+                        "command": "treefmt",
+                        "inputs": [".config"]
+                    },
+                    "check": {
+                        "command": "treefmt",
+                        "args": ["--fail-on-change"],
+                        "inputs": [".config"]
+                    }
                 }
             },
             "cross": {
-                "linux": {
-                    "script": "echo building",
-                    "inputs": ["Cargo.toml"]
+                "parallel": {
+                    "linux": {
+                        "script": "echo building",
+                        "inputs": ["Cargo.toml"]
+                    }
                 }
             },
             "docs": {
-                "build": {
-                    "command": "bash",
-                    "args": ["-c", "bun install"],
-                    "inputs": ["docs"],
-                    "outputs": ["docs/dist"]
-                },
-                "deploy": {
-                    "command": "bash",
-                    "args": ["-c", "wrangler deploy"],
-                    "dependsOn": ["docs.build"],
-                    "inputs": [{"task": "docs.build"}]
+                "parallel": {
+                    "build": {
+                        "command": "bash",
+                        "args": ["-c", "bun install"],
+                        "inputs": ["docs"],
+                        "outputs": ["docs/dist"]
+                    },
+                    "deploy": {
+                        "command": "bash",
+                        "args": ["-c", "wrangler deploy"],
+                        "dependsOn": ["docs.build"],
+                        "inputs": [{"task": "docs.build"}]
+                    }
                 }
             }
         }"#;
 
-        let result: Result<HashMap<String, TaskDefinition>, _> = serde_json::from_str(json);
+        let result: Result<HashMap<String, TaskNode>, _> = serde_json::from_str(json);
         match result {
             Ok(tasks) => {
                 assert_eq!(tasks.len(), 5);
-                assert!(tasks.get("pwd").unwrap().is_single());
-                assert!(tasks.get("check").unwrap().is_single());
+                assert!(tasks.get("pwd").unwrap().is_task());
+                assert!(tasks.get("check").unwrap().is_task());
                 assert!(tasks.get("fmt").unwrap().is_group());
                 assert!(tasks.get("cross").unwrap().is_group());
                 assert!(tasks.get("docs").unwrap().is_group());
@@ -872,7 +1265,7 @@ mod tests {
     }
 
     #[test]
-    fn test_task_group_sequential() {
+    fn test_task_list_sequential() {
         let task1 = Task {
             command: "echo".to_string(),
             args: vec!["first".to_string()],
@@ -887,14 +1280,18 @@ mod tests {
             ..Default::default()
         };
 
-        let group = TaskGroup::Sequential(vec![
-            TaskDefinition::Single(Box::new(task1)),
-            TaskDefinition::Single(Box::new(task2)),
-        ]);
+        let list = TaskList {
+            steps: vec![
+                TaskNode::Task(Box::new(task1)),
+                TaskNode::Task(Box::new(task2)),
+            ],
+            depends_on: vec![],
+            stop_on_first_error: true,
+            description: None,
+        };
 
-        assert!(group.is_sequential());
-        assert!(!group.is_parallel());
-        assert_eq!(group.len(), 2);
+        assert_eq!(list.len(), 2);
+        assert!(!list.is_empty());
     }
 
     #[test]
@@ -914,17 +1311,18 @@ mod tests {
         };
 
         let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("task1".to_string(), TaskDefinition::Single(Box::new(task1)));
-        parallel_tasks.insert("task2".to_string(), TaskDefinition::Single(Box::new(task2)));
+        parallel_tasks.insert("task1".to_string(), TaskNode::Task(Box::new(task1)));
+        parallel_tasks.insert("task2".to_string(), TaskNode::Task(Box::new(task2)));
 
-        let group = TaskGroup::Parallel(ParallelGroup {
-            tasks: parallel_tasks,
+        let group = TaskGroup {
+            parallel: parallel_tasks,
             depends_on: vec![],
-        });
+            max_concurrency: None,
+            description: None,
+        };
 
-        assert!(!group.is_sequential());
-        assert!(group.is_parallel());
         assert_eq!(group.len(), 2);
+        assert!(!group.is_empty());
     }
 
     #[test]
@@ -941,35 +1339,96 @@ mod tests {
 
         tasks
             .tasks
-            .insert("greet".to_string(), TaskDefinition::Single(Box::new(task)));
+            .insert("greet".to_string(), TaskNode::Task(Box::new(task)));
 
         assert!(tasks.contains("greet"));
         assert!(!tasks.contains("nonexistent"));
         assert_eq!(tasks.list_tasks(), vec!["greet"]);
 
         let retrieved = tasks.get("greet").unwrap();
-        assert!(retrieved.is_single());
+        assert!(retrieved.is_task());
     }
 
     #[test]
-    fn test_task_definition_helpers() {
+    fn test_task_node_helpers() {
         let task = Task {
             command: "test".to_string(),
             description: Some("Test task".to_string()),
             ..Default::default()
         };
 
-        let single = TaskDefinition::Single(Box::new(task.clone()));
-        assert!(single.is_single());
-        assert!(!single.is_group());
-        assert_eq!(single.as_single().unwrap().command, "test");
-        assert!(single.as_group().is_none());
+        let task_node = TaskNode::Task(Box::new(task.clone()));
+        assert!(task_node.is_task());
+        assert!(!task_node.is_group());
+        assert!(!task_node.is_list());
+        assert_eq!(task_node.as_task().unwrap().command, "test");
+        assert!(task_node.as_group().is_none());
+        assert!(task_node.as_list().is_none());
 
-        let group = TaskDefinition::Group(TaskGroup::Sequential(vec![]));
-        assert!(!group.is_single());
+        let group = TaskNode::Group(TaskGroup {
+            parallel: HashMap::new(),
+            depends_on: vec![],
+            max_concurrency: None,
+            description: None,
+        });
+        assert!(!group.is_task());
         assert!(group.is_group());
-        assert!(group.as_single().is_none());
+        assert!(!group.is_list());
+        assert!(group.as_task().is_none());
         assert!(group.as_group().is_some());
+
+        let list = TaskNode::List(TaskList {
+            steps: vec![],
+            depends_on: vec![],
+            stop_on_first_error: true,
+            description: None,
+        });
+        assert!(!list.is_task());
+        assert!(!list.is_group());
+        assert!(list.is_list());
+        assert!(list.as_list().is_some());
+    }
+
+    #[test]
+    fn test_script_shell_command_and_flag() {
+        assert_eq!(ScriptShell::Bash.command_and_flag(), ("bash", "-c"));
+        assert_eq!(ScriptShell::Python.command_and_flag(), ("python", "-c"));
+        assert_eq!(ScriptShell::Node.command_and_flag(), ("node", "-e"));
+        assert_eq!(
+            ScriptShell::Powershell.command_and_flag(),
+            ("powershell", "-Command")
+        );
+    }
+
+    #[test]
+    fn test_shell_options_default() {
+        let opts = ShellOptions::default();
+        assert!(opts.errexit);
+        assert!(opts.nounset);
+        assert!(opts.pipefail);
+        assert!(!opts.xtrace);
+    }
+
+    #[test]
+    fn test_shell_options_to_set_commands() {
+        let opts = ShellOptions::default();
+        assert_eq!(opts.to_set_commands(), "set -e -u -o pipefail\n");
+
+        let debug_opts = ShellOptions {
+            errexit: true,
+            nounset: false,
+            pipefail: true,
+            xtrace: true,
+        };
+        assert_eq!(debug_opts.to_set_commands(), "set -e -o pipefail -x\n");
+
+        let no_opts = ShellOptions {
+            errexit: false,
+            nounset: false,
+            pipefail: false,
+            xtrace: false,
+        };
+        assert_eq!(no_opts.to_set_commands(), "");
     }
 
     #[test]
@@ -1213,34 +1672,30 @@ mod tests {
         }
 
         #[test]
-        fn test_task_definition_delegates_to_task() {
+        fn test_task_node_delegates_to_task() {
             let task = make_task(vec!["src/**"]);
-            let def = TaskDefinition::Single(Box::new(task));
+            let node = TaskNode::Task(Box::new(task));
             let changed_files = vec![PathBuf::from("src/lib.rs")];
             let root = Path::new(".");
 
-            assert!(def.is_affected_by(&changed_files, root));
+            assert!(node.is_affected_by(&changed_files, root));
         }
 
         #[test]
-        fn test_parallel_group_any_affected() {
+        fn test_task_group_any_affected() {
             let lint_task = make_task(vec!["src/**"]);
             let test_task = make_task(vec!["tests/**"]);
 
             let mut parallel_tasks = HashMap::new();
-            parallel_tasks.insert(
-                "lint".to_string(),
-                TaskDefinition::Single(Box::new(lint_task)),
-            );
-            parallel_tasks.insert(
-                "test".to_string(),
-                TaskDefinition::Single(Box::new(test_task)),
-            );
+            parallel_tasks.insert("lint".to_string(), TaskNode::Task(Box::new(lint_task)));
+            parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
-            let group = TaskGroup::Parallel(ParallelGroup {
-                tasks: parallel_tasks,
+            let group = TaskGroup {
+                parallel: parallel_tasks,
                 depends_on: vec![],
-            });
+                max_concurrency: None,
+                description: None,
+            };
 
             // Change in src/ should affect the group (because lint is affected)
             let changed_files = vec![PathBuf::from("src/lib.rs")];
@@ -1250,30 +1705,48 @@ mod tests {
         }
 
         #[test]
-        fn test_parallel_group_none_affected() {
+        fn test_task_group_none_affected() {
             let lint_task = make_task(vec!["src/**"]);
             let test_task = make_task(vec!["tests/**"]);
 
             let mut parallel_tasks = HashMap::new();
-            parallel_tasks.insert(
-                "lint".to_string(),
-                TaskDefinition::Single(Box::new(lint_task)),
-            );
-            parallel_tasks.insert(
-                "test".to_string(),
-                TaskDefinition::Single(Box::new(test_task)),
-            );
+            parallel_tasks.insert("lint".to_string(), TaskNode::Task(Box::new(lint_task)));
+            parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
-            let group = TaskGroup::Parallel(ParallelGroup {
-                tasks: parallel_tasks,
+            let group = TaskGroup {
+                parallel: parallel_tasks,
                 depends_on: vec![],
-            });
+                max_concurrency: None,
+                description: None,
+            };
 
             // Change in docs/ should not affect the group
             let changed_files = vec![PathBuf::from("docs/readme.md")];
             let root = Path::new(".");
 
             assert!(!group.is_affected_by(&changed_files, root));
+        }
+
+        #[test]
+        fn test_task_list_any_affected() {
+            let build_task = make_task(vec!["src/**"]);
+            let deploy_task = make_task(vec!["deploy/**"]);
+
+            let list = TaskList {
+                steps: vec![
+                    TaskNode::Task(Box::new(build_task)),
+                    TaskNode::Task(Box::new(deploy_task)),
+                ],
+                depends_on: vec![],
+                stop_on_first_error: true,
+                description: None,
+            };
+
+            // Change in src/ should affect the list (because build is affected)
+            let changed_files = vec![PathBuf::from("src/lib.rs")];
+            let root = Path::new(".");
+
+            assert!(list.is_affected_by(&changed_files, root));
         }
 
         #[test]

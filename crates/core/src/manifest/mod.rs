@@ -10,8 +10,8 @@ use crate::config::Config;
 use crate::environment::Env;
 use crate::module::Instance;
 use crate::secrets::Secret;
-use crate::tasks::{Input, Mapping, ProjectReference, TaskGroup};
-use crate::tasks::{Task, TaskDefinition};
+use crate::tasks::Task;
+use crate::tasks::{Input, Mapping, ProjectReference, TaskNode};
 use cuenv_hooks::{Hook, Hooks};
 
 /// A hook step to run as part of task dependencies.
@@ -820,7 +820,7 @@ pub struct Project {
 
     /// Tasks configuration
     #[serde(default)]
-    pub tasks: HashMap<String, TaskDefinition>,
+    pub tasks: HashMap<String, TaskNode>,
 
     /// Codegen configuration for code generation
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -910,26 +910,24 @@ impl Project {
     /// Converts them to explicit ProjectReference inputs.
     /// Also adds implicit dependsOn entries for all project references.
     pub fn expand_cross_project_references(&mut self) {
-        for (_, task_def) in self.tasks.iter_mut() {
-            Self::expand_task_definition(task_def);
+        for (_, task_node) in self.tasks.iter_mut() {
+            Self::expand_task_node(task_node);
         }
     }
 
-    fn expand_task_definition(task_def: &mut TaskDefinition) {
-        match task_def {
-            TaskDefinition::Single(task) => Self::expand_task(task),
-            TaskDefinition::Group(group) => match group {
-                TaskGroup::Sequential(tasks) => {
-                    for sub_task in tasks {
-                        Self::expand_task_definition(sub_task);
-                    }
+    fn expand_task_node(node: &mut TaskNode) {
+        match node {
+            TaskNode::Task(task) => Self::expand_task(task),
+            TaskNode::Group(group) => {
+                for sub_node in group.parallel.values_mut() {
+                    Self::expand_task_node(sub_node);
                 }
-                TaskGroup::Parallel(group) => {
-                    for sub_task in group.tasks.values_mut() {
-                        Self::expand_task_definition(sub_task);
-                    }
+            }
+            TaskNode::List(list) => {
+                for sub_node in &mut list.steps {
+                    Self::expand_task_node(sub_node);
                 }
-            },
+            }
         }
     }
 
@@ -986,8 +984,9 @@ impl Project {
 
         // Add unique implicit dependencies
         for dep in implicit_deps {
-            if !task.depends_on.contains(&dep) {
-                task.depends_on.push(dep);
+            if !task.depends_on.iter().any(|d| d.task_name() == dep) {
+                task.depends_on
+                    .push(crate::tasks::TaskDependency::from_name(dep));
             }
         }
     }
@@ -1006,7 +1005,7 @@ impl TryFrom<&Instance> for Project {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::ParallelGroup;
+    use crate::tasks::{TaskDependency, TaskGroup, TaskList, TaskNode};
     use crate::test_utils::create_test_hook;
 
     #[test]
@@ -1019,12 +1018,12 @@ mod tests {
         let mut cuenv = Project::new("test");
         cuenv
             .tasks
-            .insert("deploy".into(), TaskDefinition::Single(Box::new(task)));
+            .insert("deploy".into(), TaskNode::Task(Box::new(task)));
 
         cuenv.expand_cross_project_references();
 
         let task_def = cuenv.tasks.get("deploy").unwrap();
-        let task = task_def.as_single().unwrap();
+        let task = task_def.as_task().unwrap();
 
         // Check inputs expansion
         assert_eq!(task.inputs.len(), 1);
@@ -1041,7 +1040,7 @@ mod tests {
 
         // Check implicit dependency
         assert_eq!(task.depends_on.len(), 1);
-        assert_eq!(task.depends_on[0], "#myproj:build");
+        assert_eq!(task.depends_on[0].task_name(), "#myproj:build");
     }
 
     // ============================================================================
@@ -1300,20 +1299,28 @@ mod tests {
         let mut cuenv = Project::new("test");
         cuenv
             .tasks
-            .insert("bundle".into(), TaskDefinition::Single(Box::new(task)));
+            .insert("bundle".into(), TaskNode::Task(Box::new(task)));
 
         cuenv.expand_cross_project_references();
 
         let task_def = cuenv.tasks.get("bundle").unwrap();
-        let task = task_def.as_single().unwrap();
+        let task = task_def.as_task().unwrap();
 
         // Should have 3 inputs (2 project refs + 1 local)
         assert_eq!(task.inputs.len(), 3);
 
         // Should have 2 implicit dependencies
         assert_eq!(task.depends_on.len(), 2);
-        assert!(task.depends_on.contains(&"#projA:build".to_string()));
-        assert!(task.depends_on.contains(&"#projB:compile".to_string()));
+        assert!(
+            task.depends_on
+                .iter()
+                .any(|d| d.task_name() == "#projA:build")
+        );
+        assert!(
+            task.depends_on
+                .iter()
+                .any(|d| d.task_name() == "#projB:compile")
+        );
     }
 
     #[test]
@@ -1333,31 +1340,44 @@ mod tests {
         let mut cuenv = Project::new("test");
         cuenv.tasks.insert(
             "pipeline".into(),
-            TaskDefinition::Group(TaskGroup::Sequential(vec![
-                TaskDefinition::Single(Box::new(task1)),
-                TaskDefinition::Single(Box::new(task2)),
-            ])),
+            TaskNode::List(TaskList {
+                steps: vec![
+                    TaskNode::Task(Box::new(task1)),
+                    TaskNode::Task(Box::new(task2)),
+                ],
+                depends_on: vec![],
+                stop_on_first_error: true,
+                description: None,
+            }),
         );
 
         cuenv.expand_cross_project_references();
 
         // Verify expansion happened in both tasks
         match cuenv.tasks.get("pipeline").unwrap() {
-            TaskDefinition::Group(TaskGroup::Sequential(tasks)) => {
-                match &tasks[0] {
-                    TaskDefinition::Single(task) => {
-                        assert!(task.depends_on.contains(&"#projA:build".to_string()));
+            TaskNode::List(list) => {
+                match &list.steps[0] {
+                    TaskNode::Task(task) => {
+                        assert!(
+                            task.depends_on
+                                .iter()
+                                .any(|d| d.task_name() == "#projA:build")
+                        );
                     }
                     _ => panic!("Expected single task"),
                 }
-                match &tasks[1] {
-                    TaskDefinition::Single(task) => {
-                        assert!(task.depends_on.contains(&"#projB:compile".to_string()));
+                match &list.steps[1] {
+                    TaskNode::Task(task) => {
+                        assert!(
+                            task.depends_on
+                                .iter()
+                                .any(|d| d.task_name() == "#projB:compile")
+                        );
                     }
                     _ => panic!("Expected single task"),
                 }
             }
-            _ => panic!("Expected sequential group"),
+            _ => panic!("Expected task list"),
         }
     }
 
@@ -1376,32 +1396,42 @@ mod tests {
         };
 
         let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("a".to_string(), TaskDefinition::Single(Box::new(task1)));
-        parallel_tasks.insert("b".to_string(), TaskDefinition::Single(Box::new(task2)));
+        parallel_tasks.insert("a".to_string(), TaskNode::Task(Box::new(task1)));
+        parallel_tasks.insert("b".to_string(), TaskNode::Task(Box::new(task2)));
 
         let mut cuenv = Project::new("test");
         cuenv.tasks.insert(
             "parallel".into(),
-            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
-                tasks: parallel_tasks,
+            TaskNode::Group(TaskGroup {
+                parallel: parallel_tasks,
                 depends_on: vec![],
-            })),
+                description: None,
+                max_concurrency: None,
+            }),
         );
 
         cuenv.expand_cross_project_references();
 
         // Verify expansion happened in both parallel tasks
         match cuenv.tasks.get("parallel").unwrap() {
-            TaskDefinition::Group(TaskGroup::Parallel(group)) => {
-                match group.tasks.get("a").unwrap() {
-                    TaskDefinition::Single(task) => {
-                        assert!(task.depends_on.contains(&"#projA:build".to_string()));
+            TaskNode::Group(group) => {
+                match group.parallel.get("a").unwrap() {
+                    TaskNode::Task(task) => {
+                        assert!(
+                            task.depends_on
+                                .iter()
+                                .any(|d| d.task_name() == "#projA:build")
+                        );
                     }
                     _ => panic!("Expected single task"),
                 }
-                match group.tasks.get("b").unwrap() {
-                    TaskDefinition::Single(task) => {
-                        assert!(task.depends_on.contains(&"#projB:build".to_string()));
+                match group.parallel.get("b").unwrap() {
+                    TaskNode::Task(task) => {
+                        assert!(
+                            task.depends_on
+                                .iter()
+                                .any(|d| d.task_name() == "#projB:build")
+                        );
                     }
                     _ => panic!("Expected single task"),
                 }
@@ -1414,7 +1444,7 @@ mod tests {
     fn test_no_duplicate_implicit_dependencies() {
         // Task already has the dependency explicitly
         let task = Task {
-            depends_on: vec!["#myproj:build".to_string()],
+            depends_on: vec![TaskDependency::from_name("#myproj:build")],
             inputs: vec![Input::Path("#myproj:build:dist/app.js".to_string())],
             ..Default::default()
         };
@@ -1422,16 +1452,16 @@ mod tests {
         let mut cuenv = Project::new("test");
         cuenv
             .tasks
-            .insert("deploy".into(), TaskDefinition::Single(Box::new(task)));
+            .insert("deploy".into(), TaskNode::Task(Box::new(task)));
 
         cuenv.expand_cross_project_references();
 
         let task_def = cuenv.tasks.get("deploy").unwrap();
-        let task = task_def.as_single().unwrap();
+        let task = task_def.as_task().unwrap();
 
         // Should not duplicate the dependency
         assert_eq!(task.depends_on.len(), 1);
-        assert_eq!(task.depends_on[0], "#myproj:build");
+        assert_eq!(task.depends_on[0].task_name(), "#myproj:build");
     }
 
     // ============================================================================
@@ -1498,7 +1528,7 @@ mod tests {
 
     #[test]
     fn test_project_deserialization_with_script_tasks() {
-        // This test mimics the structure of cuenv's actual env.cue
+        // This test uses the new explicit API with parallel groups
         let json = r#"{
             "name": "cuenv",
             "hooks": {
@@ -1521,34 +1551,40 @@ mod tests {
                     "inputs": ["flake.nix"]
                 },
                 "fmt": {
-                    "fix": {
-                        "command": "treefmt",
-                        "inputs": [".config"]
-                    },
-                    "check": {
-                        "command": "treefmt",
-                        "args": ["--fail-on-change"],
-                        "inputs": [".config"]
+                    "parallel": {
+                        "fix": {
+                            "command": "treefmt",
+                            "inputs": [".config"]
+                        },
+                        "check": {
+                            "command": "treefmt",
+                            "args": ["--fail-on-change"],
+                            "inputs": [".config"]
+                        }
                     }
                 },
                 "cross": {
-                    "linux": {
-                        "script": "echo building for linux",
-                        "inputs": ["Cargo.toml"]
+                    "parallel": {
+                        "linux": {
+                            "script": "echo building for linux",
+                            "inputs": ["Cargo.toml"]
+                        }
                     }
                 },
                 "docs": {
-                    "build": {
-                        "command": "bash",
-                        "args": ["-c", "bun install"],
-                        "inputs": ["docs"],
-                        "outputs": ["docs/dist"]
-                    },
-                    "deploy": {
-                        "command": "bash",
-                        "args": ["-c", "wrangler deploy"],
-                        "dependsOn": ["docs.build"],
-                        "inputs": [{"task": "docs.build"}]
+                    "parallel": {
+                        "build": {
+                            "command": "bash",
+                            "args": ["-c", "bun install"],
+                            "inputs": ["docs"],
+                            "outputs": ["docs/dist"]
+                        },
+                        "deploy": {
+                            "command": "bash",
+                            "args": ["-c", "wrangler deploy"],
+                            "dependsOn": ["docs.build"],
+                            "inputs": [{"task": "docs.build"}]
+                        }
                     }
                 }
             }
@@ -1561,12 +1597,43 @@ mod tests {
                 assert_eq!(project.tasks.len(), 5);
                 assert!(project.tasks.contains_key("pwd"));
                 assert!(project.tasks.contains_key("cross"));
-                // Verify cross.linux is a script task
+                // Verify cross is a group with parallel subtasks
                 let cross = project.tasks.get("cross").unwrap();
                 assert!(cross.is_group());
             }
             Err(e) => {
                 panic!("Failed to deserialize Project with script tasks: {}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_deserialize_actual_cuenv_project() {
+        // Read actual CUE output from /tmp/project.json (created by cue eval)
+        let json = match std::fs::read_to_string("/tmp/project.json") {
+            Ok(content) => content,
+            Err(_) => return, // Skip if file doesn't exist
+        };
+        let result: Result<Project, _> = serde_json::from_str(&json);
+        match result {
+            Ok(project) => {
+                eprintln!("Project name: {}", project.name);
+                eprintln!("Tasks: {:?}", project.tasks.keys().collect::<Vec<_>>());
+            }
+            Err(e) => {
+                eprintln!("Failed: {}", e);
+                eprintln!("Line: {}, Col: {}", e.line(), e.column());
+                // Read the JSON around the error line
+                let lines: Vec<&str> = json.lines().collect();
+                let line_num = e.line();
+                let start = if line_num > 3 { line_num - 3 } else { 1 };
+                let end = std::cmp::min(line_num + 3, lines.len());
+                for i in start..=end {
+                    if i <= lines.len() {
+                        eprintln!("{}: {}", i, lines[i - 1]);
+                    }
+                }
+                panic!("Deserialization failed");
             }
         }
     }

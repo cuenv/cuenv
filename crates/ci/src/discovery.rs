@@ -59,15 +59,30 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
 
     let options = ModuleEvalOptions {
         recursive: true,
+        with_references: true,
         ..Default::default()
     };
     let raw_result = cuengine::evaluate_module(&module_root, "cuenv", Some(&options))
         .map_err(|e| cuenv_core::Error::configuration(format!("CUE evaluation failed: {e}")))?;
 
+    // Convert meta to reference map for dependsOn resolution
+    let references = if raw_result.meta.is_empty() {
+        None
+    } else {
+        Some(
+            raw_result
+                .meta
+                .into_iter()
+                .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
+                .collect(),
+        )
+    };
+
     Ok(ModuleEvaluation::from_raw(
         module_root,
         raw_result.instances,
         raw_result.projects,
+        references,
     ))
 }
 

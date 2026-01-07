@@ -43,13 +43,14 @@ pub fn compute_affected_tasks(
             }
 
             if let Ok(entry) = index.resolve(task_name)
-                && let Some(task) = entry.definition.as_single()
+                && let Some(task) = entry.node.as_task()
                 && !task.depends_on.is_empty()
             {
                 for dep in &task.depends_on {
+                    let dep_name = dep.task_name();
                     // Internal dependency
-                    if !dep.starts_with('#') {
-                        if affected.contains(dep) {
+                    if !dep_name.starts_with('#') {
+                        if affected.contains(dep_name) {
                             affected.insert(task_name.clone());
                             changed = true;
                             break;
@@ -57,9 +58,10 @@ pub fn compute_affected_tasks(
                         continue;
                     }
 
-                    // External dependency (#project:task)
+                    // External dependency (#project:task) - no longer supported
+                    // Keeping check for safety but this path shouldn't be hit
                     if check_external_dependency(
-                        dep,
+                        dep_name,
                         all_projects,
                         changed_files,
                         &mut visited_external_cache,
@@ -97,7 +99,7 @@ pub fn matched_inputs_for_task(
         return Vec::new();
     };
 
-    let Some(task) = entry.definition.as_single() else {
+    let Some(task) = entry.node.as_task() else {
         return Vec::new();
     };
 
@@ -130,7 +132,7 @@ fn is_task_directly_affected(
     index
         .resolve(task_name)
         .ok()
-        .is_some_and(|entry| entry.definition.is_affected_by(changed_files, project_root))
+        .is_some_and(|entry| entry.node.is_affected_by(changed_files, project_root))
 }
 
 /// Check if an external dependency (cross-project task) is affected by file changes.
@@ -183,12 +185,13 @@ fn check_external_dependency(
         return false;
     };
     if let Ok(entry) = index.resolve(task_name)
-        && let Some(task) = entry.definition.as_single()
+        && let Some(task) = entry.node.as_task()
     {
         for sub_dep in &task.depends_on {
-            if sub_dep.starts_with('#') {
-                // External ref
-                if check_external_dependency(sub_dep, all_projects, changed_files, cache) {
+            let sub_dep_name = sub_dep.task_name();
+            if sub_dep_name.starts_with('#') {
+                // External ref - no longer supported but keeping check for safety
+                if check_external_dependency(sub_dep_name, all_projects, changed_files, cache) {
                     cache.insert(dep.to_string(), true);
                     return true;
                 }
@@ -196,7 +199,7 @@ fn check_external_dependency(
                 // Internal ref within that project
                 // We need to resolve internal deps of the external project recursively.
                 // Construct implicit external ref: #project:sub_dep
-                let implicit_ref = format!("#{project_name}:{sub_dep}");
+                let implicit_ref = format!("#{project_name}:{sub_dep_name}");
                 if check_external_dependency(&implicit_ref, all_projects, changed_files, cache) {
                     cache.insert(dep.to_string(), true);
                     return true;
@@ -212,7 +215,7 @@ fn check_external_dependency(
 mod tests {
     use super::*;
     use cuenv_core::manifest::Project;
-    use cuenv_core::tasks::{Input, ParallelGroup, Task, TaskDefinition, TaskGroup};
+    use cuenv_core::tasks::{Input, Task, TaskDependency, TaskGroup, TaskList, TaskNode};
 
     /// Helper to create a minimal Project with tasks
     fn make_project(tasks: Vec<(&str, Task)>) -> Project {
@@ -220,7 +223,7 @@ mod tests {
         for (name, task) in tasks {
             project
                 .tasks
-                .insert(name.to_string(), TaskDefinition::Single(Box::new(task)));
+                .insert(name.to_string(), TaskNode::Task(Box::new(task)));
         }
         project
     }
@@ -232,7 +235,10 @@ mod tests {
                 .into_iter()
                 .map(|s| Input::Path(s.to_string()))
                 .collect(),
-            depends_on: depends_on.into_iter().map(String::from).collect(),
+            depends_on: depends_on
+                .into_iter()
+                .map(TaskDependency::from_name)
+                .collect(),
             command: "echo test".to_string(),
             ..Default::default()
         }
@@ -469,7 +475,7 @@ mod tests {
         let mut external_project = Project::default();
         external_project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(external_build)),
+            TaskNode::Task(Box::new(external_build)),
         );
 
         let deploy_task = make_task(vec![], vec!["#external:build"]);
@@ -623,24 +629,20 @@ mod tests {
         let test_task = make_task(vec!["tests/**"], vec![]);
 
         let mut parallel_tasks = std::collections::HashMap::new();
-        parallel_tasks.insert(
-            "lint".to_string(),
-            TaskDefinition::Single(Box::new(lint_task)),
-        );
-        parallel_tasks.insert(
-            "test".to_string(),
-            TaskDefinition::Single(Box::new(test_task)),
-        );
+        parallel_tasks.insert("lint".to_string(), TaskNode::Task(Box::new(lint_task)));
+        parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
-        let group = TaskGroup::Parallel(ParallelGroup {
-            tasks: parallel_tasks,
+        let group = TaskGroup {
+            parallel: parallel_tasks,
             depends_on: vec![],
-        });
+            description: None,
+            max_concurrency: None,
+        };
 
         let mut project = Project::default();
         project
             .tasks
-            .insert("check".to_string(), TaskDefinition::Group(group));
+            .insert("check".to_string(), TaskNode::Group(group));
 
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
@@ -661,24 +663,20 @@ mod tests {
         let test_task = make_task(vec!["tests/**"], vec![]);
 
         let mut parallel_tasks = std::collections::HashMap::new();
-        parallel_tasks.insert(
-            "lint".to_string(),
-            TaskDefinition::Single(Box::new(lint_task)),
-        );
-        parallel_tasks.insert(
-            "test".to_string(),
-            TaskDefinition::Single(Box::new(test_task)),
-        );
+        parallel_tasks.insert("lint".to_string(), TaskNode::Task(Box::new(lint_task)));
+        parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
-        let group = TaskGroup::Parallel(ParallelGroup {
-            tasks: parallel_tasks,
+        let group = TaskGroup {
+            parallel: parallel_tasks,
             depends_on: vec![],
-        });
+            description: None,
+            max_concurrency: None,
+        };
 
         let mut project = Project::default();
         project
             .tasks
-            .insert("check".to_string(), TaskDefinition::Group(group));
+            .insert("check".to_string(), TaskNode::Group(group));
 
         let changed_files = vec![PathBuf::from("docs/readme.md")];
         let root = Path::new(".");
@@ -697,15 +695,20 @@ mod tests {
         let lint_task = make_task(vec!["src/**"], vec![]);
         let test_task = make_task(vec!["tests/**"], vec![]);
 
-        let group = TaskGroup::Sequential(vec![
-            TaskDefinition::Single(Box::new(lint_task)),
-            TaskDefinition::Single(Box::new(test_task)),
-        ]);
+        let list = TaskList {
+            steps: vec![
+                TaskNode::Task(Box::new(lint_task)),
+                TaskNode::Task(Box::new(test_task)),
+            ],
+            depends_on: vec![],
+            stop_on_first_error: true,
+            description: None,
+        };
 
         let mut project = Project::default();
         project
             .tasks
-            .insert("check".to_string(), TaskDefinition::Group(group));
+            .insert("check".to_string(), TaskNode::List(list));
 
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
@@ -725,24 +728,20 @@ mod tests {
         let test_task = make_task(vec!["tests/**"], vec![]);
 
         let mut parallel_tasks = std::collections::HashMap::new();
-        parallel_tasks.insert(
-            "lint".to_string(),
-            TaskDefinition::Single(Box::new(lint_task)),
-        );
-        parallel_tasks.insert(
-            "test".to_string(),
-            TaskDefinition::Single(Box::new(test_task)),
-        );
+        parallel_tasks.insert("lint".to_string(), TaskNode::Task(Box::new(lint_task)));
+        parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
-        let group = TaskGroup::Parallel(ParallelGroup {
-            tasks: parallel_tasks,
+        let group = TaskGroup {
+            parallel: parallel_tasks,
             depends_on: vec![],
-        });
+            description: None,
+            max_concurrency: None,
+        };
 
         let mut project = Project::default();
         project
             .tasks
-            .insert("check".to_string(), TaskDefinition::Group(group));
+            .insert("check".to_string(), TaskNode::Group(group));
 
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
@@ -809,7 +808,7 @@ mod tests {
         let mut external_project = Project::default();
         external_project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(external_build)),
+            TaskNode::Task(Box::new(external_build)),
         );
 
         let mut all_projects = HashMap::new();
@@ -837,12 +836,11 @@ mod tests {
         let mut external_project = Project::default();
         external_project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(external_build)),
+            TaskNode::Task(Box::new(external_build)),
         );
-        external_project.tasks.insert(
-            "test".to_string(),
-            TaskDefinition::Single(Box::new(external_test)),
-        );
+        external_project
+            .tasks
+            .insert("test".to_string(), TaskNode::Task(Box::new(external_test)));
 
         let mut all_projects = HashMap::new();
         all_projects.insert(
@@ -865,10 +863,9 @@ mod tests {
         // Task has inputs so it won't be auto-affected
         let circular_task = make_task(vec!["taskA/**"], vec!["#proj:taskA"]);
         let mut project = Project::default();
-        project.tasks.insert(
-            "taskA".to_string(),
-            TaskDefinition::Single(Box::new(circular_task)),
-        );
+        project
+            .tasks
+            .insert("taskA".to_string(), TaskNode::Task(Box::new(circular_task)));
 
         let mut all_projects = HashMap::new();
         all_projects.insert("proj".to_string(), (PathBuf::from("/repo/proj"), project));
