@@ -72,26 +72,30 @@ Every task runs with:
 - **Same secret + environment benefits** as `exec`
 
 ```cue
+import "github.com/cuenv/cuenv/schema"
+
 tasks: {
     // Parallel: unit, integration, and lint run at the same time
-    test: {
-        unit:        { command: "npm", args: ["run", "test:unit"] }
-        integration: { command: "npm", args: ["run", "test:e2e"] }
-        lint:        { command: "npm", args: ["run", "lint"] }
+    test: schema.#TaskGroup & {
+        type: "group"
+        unit:        schema.#Task & { command: "npm", args: ["run", "test:unit"] }
+        integration: schema.#Task & { command: "npm", args: ["run", "test:e2e"] }
+        lint:        schema.#Task & { command: "npm", args: ["run", "lint"] }
     }
 
     // Sequential: each step waits for the previous
-    deploy: [
-        { command: "docker", args: ["build", "-t", "myapp", "."] }
-        { command: "docker", args: ["push", "myapp"] }
-        { command: "kubectl", args: ["apply", "-f", "k8s/"] }
+    deploy: schema.#TaskSequence & [
+        schema.#Task & { command: "docker", args: ["build", "-t", "myapp", "."] }
+        schema.#Task & { command: "docker", args: ["push", "myapp"] }
+        schema.#Task & { command: "kubectl", args: ["apply", "-f", "k8s/"] }
     ]
 
     // Dependencies: build won't start until test completes
-    build: {
+    // Note: dependsOn uses CUE references, not strings
+    build: schema.#Task & {
         command:   "npm"
         args:      ["run", "build"]
-        dependsOn: ["test"]
+        dependsOn: [test]  // CUE reference for compile-time validation
         inputs:    ["src/**/*", "package.json"]
         outputs:   ["dist/**/*"]
     }
@@ -125,9 +129,9 @@ env: {
 }
 
 tasks: {
-    dev:   { command: "npm", args: ["run", "dev"] }
-    build: { command: "npm", args: ["run", "build"] }
-    test:  { command: "npm", args: ["test"] }
+    dev:   schema.#Task & { command: "npm", args: ["run", "dev"] }
+    build: schema.#Task & { command: "npm", args: ["run", "build"] }
+    test:  schema.#Task & { command: "npm", args: ["test"] }
 }
 EOF
 
@@ -204,27 +208,30 @@ If someone sets `NODE_ENV: "prod"` instead of `"production"`, cuenv tells them i
 Object keys run in parallel. Arrays run sequentially. Dependencies are respected automatically:
 
 ```cue
+import "github.com/cuenv/cuenv/schema"
+
 tasks: {
-    // These three run at the same time
-    lint: {
-        check:  { command: "eslint",   args: ["src/"] }
-        types:  { command: "tsc",      args: ["--noEmit"] }
-        format: { command: "prettier", args: ["--check", "."] }
+    // These three run at the same time (parallel group)
+    lint: schema.#TaskGroup & {
+        type: "group"
+        check:  schema.#Task & { command: "eslint",   args: ["src/"] }
+        types:  schema.#Task & { command: "tsc",      args: ["--noEmit"] }
+        format: schema.#Task & { command: "prettier", args: ["--check", "."] }
     }
 
-    // These run one after another
-    deploy: [
-        { command: "npm",     args: ["run", "build"] }
-        { command: "docker",  args: ["build", "-t", "app", "."] }
-        { command: "docker",  args: ["push", "app"] }
-        { command: "kubectl", args: ["rollout", "restart", "deployment/app"] }
+    // These run one after another (sequential)
+    deploy: schema.#TaskSequence & [
+        schema.#Task & { command: "npm",     args: ["run", "build"] }
+        schema.#Task & { command: "docker",  args: ["build", "-t", "app", "."] }
+        schema.#Task & { command: "docker",  args: ["push", "app"] }
+        schema.#Task & { command: "kubectl", args: ["rollout", "restart", "deployment/app"] }
     ]
 
-    // This waits for lint to complete first
-    build: {
+    // This waits for lint to complete first (CUE reference)
+    build: schema.#Task & {
         command:   "npm"
         args:      ["run", "build"]
-        dependsOn: ["lint"]
+        dependsOn: [lint]  // CUE reference, not string
     }
 }
 ```

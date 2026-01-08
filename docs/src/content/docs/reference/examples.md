@@ -45,7 +45,7 @@ cuenv exec -- bun server.js
 
 ## Basic Tasks
 
-Define tasks to automate common workflows:
+Define tasks to automate common workflows using explicit type annotations:
 
 ```cue
 package cuenv
@@ -62,19 +62,19 @@ env: {
 
 tasks: {
     // Simple command with arguments
-    greet: {
+    greet: schema.#Task & {
         command: "echo"
         args: ["Hello", env.NAME, "!"]
     }
 
     // Task that uses environment variables
-    show_env: {
+    show_env: schema.#Task & {
         command: "printenv"
         args: ["NAME"]
     }
 
     // Shell-specific task
-    shell_example: {
+    shell_example: schema.#Task & {
         shell: schema.#Bash
         command: "echo"
         args: ["Running in Bash"]
@@ -94,7 +94,7 @@ cuenv task greet
 
 ## Sequential Tasks
 
-Run tasks in a specific order using arrays:
+Run tasks in a specific order using `#TaskSequence`:
 
 ```cue
 package cuenv
@@ -110,17 +110,17 @@ env: {
 }
 
 tasks: {
-    // Array of tasks runs sequentially
-    deploy: [
-        {
+    // Sequential execution - steps run in order
+    deploy: schema.#TaskSequence & [
+        schema.#Task & {
             command: "echo"
             args: ["Step 1: Building \(env.PROJECT)..."]
         },
-        {
+        schema.#Task & {
             command: "echo"
             args: ["Step 2: Running tests..."]
         },
-        {
+        schema.#Task & {
             command: "echo"
             args: ["Step 3: Deploying..."]
         },
@@ -128,9 +128,9 @@ tasks: {
 }
 ```
 
-## Nested Task Groups
+## Parallel Task Groups
 
-Organize related tasks into groups:
+Organize related tasks into parallel groups using `#TaskGroup`:
 
 ```cue
 package cuenv
@@ -142,29 +142,32 @@ schema.#Project & {
 }
 
 tasks: {
-    // Nested tasks - run with cuenv task database.migrate
-    database: {
-        migrate: {
+    // Parallel execution - all children run concurrently
+    // Run with: cuenv task database.migrate
+    database: schema.#TaskGroup & {
+        type: "group"
+        migrate: schema.#Task & {
             command: "migrate"
             args: ["up"]
         }
-        seed: {
+        seed: schema.#Task & {
             command: "seed"
             args: ["--env", "development"]
         }
-        reset: {
+        reset: schema.#Task & {
             command: "migrate"
             args: ["reset"]
         }
     }
 
-    // Another group
-    test: {
-        unit: {
+    // Another parallel group
+    test: schema.#TaskGroup & {
+        type: "group"
+        unit: schema.#Task & {
             command: "cargo"
             args: ["test", "--lib"]
         }
-        integration: {
+        integration: schema.#Task & {
             command: "cargo"
             args: ["test", "--test", "integration"]
         }
@@ -250,65 +253,67 @@ env: {
 
 tasks: {
     // Development tasks
-    dev: {
+    dev: schema.#Task & {
         command: "bun"
         args: ["run", "dev"]
     }
 
-    build: {
+    build: schema.#Task & {
         command: "bun"
         args: ["run", "build"]
     }
 
-    // Testing
-    test: {
-        unit: {
+    // Testing - parallel execution
+    test: schema.#TaskGroup & {
+        type: "group"
+        unit: schema.#Task & {
             command: "bun"
             args: ["run", "test:unit"]
         }
-        e2e: {
+        e2e: schema.#Task & {
             command: "bun"
             args: ["run", "test:e2e"]
         }
-        coverage: {
+        coverage: schema.#Task & {
             command: "bun"
             args: ["run", "test:coverage"]
         }
     }
 
     // Linting and formatting
-    lint: {
+    lint: schema.#Task & {
         command: "bun"
         args: ["run", "lint"]
     }
 
-    format: {
+    format: schema.#Task & {
         command: "bun"
         args: ["run", "format"]
     }
 
-    // Database operations
-    db: {
-        migrate: {
+    // Database operations - parallel group
+    db: schema.#TaskGroup & {
+        type: "group"
+        migrate: schema.#Task & {
             command: "bunx"
             args: ["prisma", "migrate", "dev"]
         }
-        seed: {
+        seed: schema.#Task & {
             command: "bunx"
             args: ["prisma", "db", "seed"]
         }
-        studio: {
+        studio: schema.#Task & {
             command: "bunx"
             args: ["prisma", "studio"]
         }
     }
 
-    // CI pipeline
-    ci: [
-        {command: "bun", args: ["install", "--frozen-lockfile"]},
-        {command: "bun", args: ["run", "lint"]},
-        {command: "bun", args: ["run", "test"]},
-        {command: "bun", args: ["run", "build"]},
+    // CI pipeline - sequential execution
+    ci: schema.#TaskSequence & [
+        schema.#Task & {command: "bun", args: ["install", "--frozen-lockfile"]},
+        schema.#Task & {command: "bun", args: ["run", "lint"]},
+        schema.#Task & {command: "bun", args: ["run", "test"]},
+        schema.#Task & {command: "bun", args: ["run", "build"]},
     ]
 }
 ```
@@ -334,51 +339,53 @@ env: {
 
 tasks: {
     // Build tasks
-    build: {
+    build: schema.#Task & {
         command: "cargo"
         args: ["build"]
     }
 
-    release: {
+    release: schema.#Task & {
         command: "cargo"
         args: ["build", "--release"]
     }
 
     // Testing
-    test: {
+    test: schema.#Task & {
         command: "cargo"
         args: ["test"]
     }
 
     // Code quality
-    lint: {
+    lint: schema.#Task & {
         command: "cargo"
         args: ["clippy", "--", "-D", "warnings"]
     }
 
-    format: {
-        check: {
+    // Format tasks - parallel group
+    format: schema.#TaskGroup & {
+        type: "group"
+        check: schema.#Task & {
             command: "cargo"
             args: ["fmt", "--check"]
         }
-        fix: {
+        fix: schema.#Task & {
             command: "cargo"
             args: ["fmt"]
         }
     }
 
     // Documentation
-    doc: {
+    doc: schema.#Task & {
         command: "cargo"
         args: ["doc", "--open"]
     }
 
-    // CI pipeline
-    ci: [
-        {command: "cargo", args: ["fmt", "--check"]},
-        {command: "cargo", args: ["clippy", "--", "-D", "warnings"]},
-        {command: "cargo", args: ["test"]},
-        {command: "cargo", args: ["build", "--release"]},
+    // CI pipeline - sequential execution
+    ci: schema.#TaskSequence & [
+        schema.#Task & {command: "cargo", args: ["fmt", "--check"]},
+        schema.#Task & {command: "cargo", args: ["clippy", "--", "-D", "warnings"]},
+        schema.#Task & {command: "cargo", args: ["test"]},
+        schema.#Task & {command: "cargo", args: ["build", "--release"]},
     ]
 }
 ```
@@ -428,19 +435,19 @@ env: {
 
 tasks: {
     // Can access DB_PASSWORD
-    migrate: {
+    migrate: schema.#Task & {
         command: "migrate"
         args: ["up"]
     }
 
     // Can access DEPLOY_TOKEN
-    deploy: {
+    deploy: schema.#Task & {
         command: "kubectl"
         args: ["apply", "-f", "k8s/"]
     }
 
     // Cannot access restricted variables
-    build: {
+    build: schema.#Task & {
         command: "bun"
         args: ["run", "build"]
     }
@@ -470,27 +477,30 @@ env: {
 }
 
 tasks: {
-    // Run all services
-    dev: {
-        all: [
-            {command: "cuenv", args: ["task", "dev", "-p", "services/api"]},
-            {command: "cuenv", args: ["task", "dev", "-p", "services/web"]},
+    // Run all services - sequential
+    dev: schema.#TaskGroup & {
+        type: "group"
+        all: schema.#TaskSequence & [
+            schema.#Task & {command: "cuenv", args: ["task", "dev", "-p", "services/api"]},
+            schema.#Task & {command: "cuenv", args: ["task", "dev", "-p", "services/web"]},
         ]
     }
 
-    // Build all
-    build: {
-        all: [
-            {command: "cuenv", args: ["task", "build", "-p", "services/api"]},
-            {command: "cuenv", args: ["task", "build", "-p", "services/web"]},
+    // Build all - sequential
+    build: schema.#TaskGroup & {
+        type: "group"
+        all: schema.#TaskSequence & [
+            schema.#Task & {command: "cuenv", args: ["task", "build", "-p", "services/api"]},
+            schema.#Task & {command: "cuenv", args: ["task", "build", "-p", "services/web"]},
         ]
     }
 
-    // Test all
-    test: {
-        all: [
-            {command: "cuenv", args: ["task", "test", "-p", "services/api"]},
-            {command: "cuenv", args: ["task", "test", "-p", "services/web"]},
+    // Test all - sequential
+    test: schema.#TaskGroup & {
+        type: "group"
+        all: schema.#TaskSequence & [
+            schema.#Task & {command: "cuenv", args: ["task", "test", "-p", "services/api"]},
+            schema.#Task & {command: "cuenv", args: ["task", "test", "-p", "services/web"]},
         ]
     }
 }
@@ -516,15 +526,15 @@ env: {
 }
 
 tasks: {
-    dev: {
+    dev: schema.#Task & {
         command: "cargo"
         args: ["run"]
     }
-    build: {
+    build: schema.#Task & {
         command: "cargo"
         args: ["build", "--release"]
     }
-    test: {
+    test: schema.#Task & {
         command: "cargo"
         args: ["test"]
     }
@@ -570,11 +580,11 @@ env: {
 }
 
 tasks: {
-    ci: [
-        {command: "cargo", args: ["fmt", "--check"]},
-        {command: "cargo", args: ["clippy", "--", "-D", "warnings"]},
-        {command: "cargo", args: ["test", "--workspace"]},
-        {command: "cargo", args: ["build", "--release"]},
+    ci: schema.#TaskSequence & [
+        schema.#Task & {command: "cargo", args: ["fmt", "--check"]},
+        schema.#Task & {command: "cargo", args: ["clippy", "--", "-D", "warnings"]},
+        schema.#Task & {command: "cargo", args: ["test", "--workspace"]},
+        schema.#Task & {command: "cargo", args: ["build", "--release"]},
     ]
 }
 ```
@@ -605,7 +615,7 @@ runtime: schema.#ToolsRuntime & {
 }
 
 tasks: {
-    process: {
+    process: schema.#Task & {
         command: "jq"
         args: [".data", "input.json"]
     }
@@ -730,19 +740,19 @@ env: {
 }
 
 tasks: {
-    build: {
+    build: schema.#Task & {
         command: "cargo"
         args: ["build"]
     }
-    test: {
+    test: schema.#Task & {
         command: "cargo-nextest"
         args: ["run"]
     }
-    lint: {
+    lint: schema.#Task & {
         command: "cargo"
         args: ["clippy", "--", "-D", "warnings"]
     }
-    coverage: {
+    coverage: schema.#Task & {
         command: "cargo-llvm-cov"
         args: ["--html"]
     }
