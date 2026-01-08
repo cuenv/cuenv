@@ -25,7 +25,7 @@ use cuenv_core::ci::{
     TaskCondition as CueTaskCondition,
 };
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{Task, TaskGroup, TaskList, TaskNode};
+use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
 use digest::DigestBuilder;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -524,12 +524,12 @@ impl Compiler {
                 }
             }
             TaskNode::Group(group) => {
-                for child_node in group.parallel.values() {
+                for child_node in group.children.values() {
                     self.collect_inputs_from_node(child_node, paths);
                 }
             }
-            TaskNode::List(list) => {
-                for child_node in &list.steps {
+            TaskNode::Sequence(steps) => {
+                for child_node in steps {
                     self.collect_inputs_from_node(child_node, paths);
                 }
             }
@@ -548,7 +548,7 @@ impl Compiler {
                     return Some(node);
                 }
                 Some(TaskNode::Group(group)) => {
-                    current_tasks = &group.parallel;
+                    current_tasks = &group.children;
                 }
                 _ => return None,
             }
@@ -595,8 +595,8 @@ impl Compiler {
             TaskNode::Group(group) => {
                 self.compile_task_group(name, group, ir)?;
             }
-            TaskNode::List(list) => {
-                self.compile_task_list(name, list, ir)?;
+            TaskNode::Sequence(steps) => {
+                self.compile_task_sequence(name, steps, ir)?;
             }
         }
         Ok(())
@@ -610,24 +610,24 @@ impl Compiler {
         ir: &mut IntermediateRepresentation,
     ) -> Result<(), CompilerError> {
         // Sort keys for deterministic output
-        let mut sorted_keys: Vec<_> = group.parallel.keys().collect();
+        let mut sorted_keys: Vec<_> = group.children.keys().collect();
         sorted_keys.sort();
         for name in sorted_keys {
-            let child_node = &group.parallel[name];
+            let child_node = &group.children[name];
             let task_name = format!("{prefix}.{name}");
             self.compile_task_node(&task_name, child_node, ir)?;
         }
         Ok(())
     }
 
-    /// Compile a task list (sequential execution)
-    fn compile_task_list(
+    /// Compile a task sequence (sequential execution)
+    fn compile_task_sequence(
         &self,
         prefix: &str,
-        list: &TaskList,
+        steps: &[TaskNode],
         ir: &mut IntermediateRepresentation,
     ) -> Result<(), CompilerError> {
-        for (idx, child_node) in list.steps.iter().enumerate() {
+        for (idx, child_node) in steps.iter().enumerate() {
             let task_name = format!("{prefix}.{idx}");
             self.compile_task_node(&task_name, child_node, ir)?;
         }
@@ -2464,7 +2464,8 @@ mod tests {
         project.tasks.insert(
             "check".to_string(),
             TaskNode::Group(TaskGroup {
-                parallel: group_tasks,
+                type_: "group".to_string(),
+                children: group_tasks,
                 depends_on: vec![],
                 description: None,
                 max_concurrency: None,

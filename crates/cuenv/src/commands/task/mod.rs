@@ -243,7 +243,7 @@ async fn execute_task_legacy(
                 let description = match &t.node {
                     TaskNode::Task(task) => task.description.clone(),
                     TaskNode::Group(g) => g.description.clone(),
-                    TaskNode::List(l) => l.description.clone(),
+                    TaskNode::Sequence(_) => None,
                 };
                 SelectableTask {
                     name: t.name.clone(),
@@ -935,7 +935,7 @@ async fn execute_task_with_strategy(
     all_tasks: &Tasks,
 ) -> Result<Vec<cuenv_core::tasks::TaskResult>> {
     match task_node {
-        TaskNode::Group(_) | TaskNode::List(_) => {
+        TaskNode::Group(_) | TaskNode::Sequence(_) => {
             // For groups (parallel) and lists (sequential), use the original execution
             executor.execute_node(task_name, task_node, all_tasks).await
         }

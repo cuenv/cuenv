@@ -190,11 +190,7 @@ pub fn get_task_deps(tasks: &HashMap<String, TaskNode>, name: &str) -> Option<Ve
             .iter()
             .map(|d| d.task_name().to_string())
             .collect(),
-        TaskNode::List(list) => list
-            .depends_on
-            .iter()
-            .map(|d| d.task_name().to_string())
-            .collect(),
+        TaskNode::Sequence(_) => Vec::new(), // Sequences don't have top-level deps
     })
 }
 
@@ -217,11 +213,7 @@ pub fn build_dep_graph(tasks: &HashMap<String, TaskNode>) -> HashMap<String, Vec
                     .iter()
                     .map(|d| d.task_name().to_string())
                     .collect(),
-                TaskNode::List(list) => list
-                    .depends_on
-                    .iter()
-                    .map(|d| d.task_name().to_string())
-                    .collect(),
+                TaskNode::Sequence(_) => Vec::new(), // Sequences don't have top-level deps
             };
             (name.clone(), deps)
         })

@@ -85,12 +85,12 @@ pub fn resolve_task_refs_in_node(
             }
         }
         TaskNode::Group(group) => {
-            for t in group.parallel.values_mut() {
+            for t in group.children.values_mut() {
                 resolve_task_refs_in_node(t, discovery, manifest_project_id, project_id_by_name);
             }
         }
-        TaskNode::List(list) => {
-            for t in &mut list.steps {
+        TaskNode::Sequence(steps) => {
+            for t in steps {
                 resolve_task_refs_in_node(t, discovery, manifest_project_id, project_id_by_name);
             }
         }

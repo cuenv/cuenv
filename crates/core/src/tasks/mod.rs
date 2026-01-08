@@ -1121,12 +1121,12 @@ mod tests {
     #[test]
     fn test_task_group_with_script_task() {
         // Test parallel task group containing a script task (mimics cross.linux)
+        // TaskGroup uses type: "group" discriminator with flattened children
         let json = r#"{
-            "parallel": {
-                "linux": {
-                    "script": "echo building",
-                    "inputs": ["src/main.rs"]
-                }
+            "type": "group",
+            "linux": {
+                "script": "echo building",
+                "inputs": ["src/main.rs"]
             }
         }"#;
 
@@ -1137,15 +1137,14 @@ mod tests {
     #[test]
     fn test_full_tasks_map_with_script() {
         // Test deserializing a full tasks map like in Project.tasks
-        // This mimics the new structure: tasks: { cross: { parallel: { linux: { script: ... } } } }
+        // TaskGroup uses type: "group" with flattened children
         let json = r#"{
             "pwd": { "command": "pwd" },
             "cross": {
-                "parallel": {
-                    "linux": {
-                        "script": "echo building",
-                        "inputs": ["src/main.rs"]
-                    }
+                "type": "group",
+                "linux": {
+                    "script": "echo building",
+                    "inputs": ["src/main.rs"]
                 }
             }
         }"#;
@@ -1165,6 +1164,7 @@ mod tests {
     #[test]
     fn test_complex_nested_tasks_like_cuenv() {
         // Test a more complex structure mimicking cuenv's actual env.cue tasks
+        // TaskGroup uses type: "group" with flattened children
         let json = r#"{
             "pwd": { "command": "pwd" },
             "check": {
@@ -1173,40 +1173,37 @@ mod tests {
                 "inputs": ["flake.nix"]
             },
             "fmt": {
-                "parallel": {
-                    "fix": {
-                        "command": "treefmt",
-                        "inputs": [".config"]
-                    },
-                    "check": {
-                        "command": "treefmt",
-                        "args": ["--fail-on-change"],
-                        "inputs": [".config"]
-                    }
+                "type": "group",
+                "fix": {
+                    "command": "treefmt",
+                    "inputs": [".config"]
+                },
+                "check": {
+                    "command": "treefmt",
+                    "args": ["--fail-on-change"],
+                    "inputs": [".config"]
                 }
             },
             "cross": {
-                "parallel": {
-                    "linux": {
-                        "script": "echo building",
-                        "inputs": ["Cargo.toml"]
-                    }
+                "type": "group",
+                "linux": {
+                    "script": "echo building",
+                    "inputs": ["Cargo.toml"]
                 }
             },
             "docs": {
-                "parallel": {
-                    "build": {
-                        "command": "bash",
-                        "args": ["-c", "bun install"],
-                        "inputs": ["docs"],
-                        "outputs": ["docs/dist"]
-                    },
-                    "deploy": {
-                        "command": "bash",
-                        "args": ["-c", "wrangler deploy"],
-                        "dependsOn": ["docs.build"],
-                        "inputs": [{"task": "docs.build"}]
-                    }
+                "type": "group",
+                "build": {
+                    "command": "bash",
+                    "args": ["-c", "bun install"],
+                    "inputs": ["docs"],
+                    "outputs": ["docs/dist"]
+                },
+                "deploy": {
+                    "command": "bash",
+                    "args": ["-c", "wrangler deploy"],
+                    "dependsOn": ["docs.build"],
+                    "inputs": [{"task": "docs.build"}]
                 }
             }
         }"#;
@@ -1243,18 +1240,13 @@ mod tests {
             ..Default::default()
         };
 
-        let list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(task1)),
-                TaskNode::Task(Box::new(task2)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let sequence: Vec<TaskNode> = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+        ];
 
-        assert_eq!(list.len(), 2);
-        assert!(!list.is_empty());
+        assert_eq!(sequence.len(), 2);
+        assert!(!sequence.is_empty());
     }
 
     #[test]
@@ -1278,7 +1270,8 @@ mod tests {
         parallel_tasks.insert("task2".to_string(), TaskNode::Task(Box::new(task2)));
 
         let group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             max_concurrency: None,
             description: None,
@@ -1323,33 +1316,29 @@ mod tests {
         let task_node = TaskNode::Task(Box::new(task.clone()));
         assert!(task_node.is_task());
         assert!(!task_node.is_group());
-        assert!(!task_node.is_list());
+        assert!(!task_node.is_sequence());
         assert_eq!(task_node.as_task().unwrap().command, "test");
         assert!(task_node.as_group().is_none());
-        assert!(task_node.as_list().is_none());
+        assert!(task_node.as_sequence().is_none());
 
         let group = TaskNode::Group(TaskGroup {
-            parallel: HashMap::new(),
+            type_: "group".to_string(),
+            children: HashMap::new(),
             depends_on: vec![],
             max_concurrency: None,
             description: None,
         });
         assert!(!group.is_task());
         assert!(group.is_group());
-        assert!(!group.is_list());
+        assert!(!group.is_sequence());
         assert!(group.as_task().is_none());
         assert!(group.as_group().is_some());
 
-        let list = TaskNode::List(TaskList {
-            steps: vec![],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        });
-        assert!(!list.is_task());
-        assert!(!list.is_group());
-        assert!(list.is_list());
-        assert!(list.as_list().is_some());
+        let sequence = TaskNode::Sequence(vec![]);
+        assert!(!sequence.is_task());
+        assert!(!sequence.is_group());
+        assert!(sequence.is_sequence());
+        assert!(sequence.as_sequence().is_some());
     }
 
     #[test]
@@ -1654,7 +1643,8 @@ mod tests {
             parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
             let group = TaskGroup {
-                parallel: parallel_tasks,
+                type_: "group".to_string(),
+                children: parallel_tasks,
                 depends_on: vec![],
                 max_concurrency: None,
                 description: None,
@@ -1677,7 +1667,8 @@ mod tests {
             parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
             let group = TaskGroup {
-                parallel: parallel_tasks,
+                type_: "group".to_string(),
+                children: parallel_tasks,
                 depends_on: vec![],
                 max_concurrency: None,
                 description: None,
@@ -1691,25 +1682,20 @@ mod tests {
         }
 
         #[test]
-        fn test_task_list_any_affected() {
+        fn test_task_sequence_any_affected() {
             let build_task = make_task(vec!["src/**"]);
             let deploy_task = make_task(vec!["deploy/**"]);
 
-            let list = TaskList {
-                steps: vec![
-                    TaskNode::Task(Box::new(build_task)),
-                    TaskNode::Task(Box::new(deploy_task)),
-                ],
-                depends_on: vec![],
-                stop_on_first_error: true,
-                description: None,
-            };
+            let sequence = TaskNode::Sequence(vec![
+                TaskNode::Task(Box::new(build_task)),
+                TaskNode::Task(Box::new(deploy_task)),
+            ]);
 
-            // Change in src/ should affect the list (because build is affected)
+            // Change in src/ should affect the sequence (because build is affected)
             let changed_files = vec![PathBuf::from("src/lib.rs")];
             let root = Path::new(".");
 
-            assert!(list.is_affected_by(&changed_files, root));
+            assert!(sequence.is_affected_by(&changed_files, root));
         }
 
         #[test]

@@ -92,12 +92,12 @@ fn collect_commands_from_node(node: &TaskNode, commands: &mut HashSet<String>) {
             }
         }
         TaskNode::Group(group) => {
-            for sub in group.parallel.values() {
+            for sub in group.children.values() {
                 collect_commands_from_node(sub, commands);
             }
         }
-        TaskNode::List(list) => {
-            for sub in &list.steps {
+        TaskNode::Sequence(steps) => {
+            for sub in steps {
                 collect_commands_from_node(sub, commands);
             }
         }
@@ -412,12 +412,12 @@ impl<'a> ContributorEngine<'a> {
                 }
             }
             TaskNode::Group(group) => {
-                for sub in group.parallel.values_mut() {
+                for sub in group.children.values_mut() {
                     Self::auto_associate_node(sub, commands, inject_dep);
                 }
             }
-            TaskNode::List(list) => {
-                for sub in &mut list.steps {
+            TaskNode::Sequence(steps) => {
+                for sub in steps {
                     Self::auto_associate_node(sub, commands, inject_dep);
                 }
             }
@@ -620,11 +620,7 @@ fn collect_deps_from_node(node: &TaskNode) -> Vec<String> {
             .iter()
             .map(|d| d.task_name().to_string())
             .collect(),
-        TaskNode::List(list) => list
-            .depends_on
-            .iter()
-            .map(|d| d.task_name().to_string())
-            .collect(),
+        TaskNode::Sequence(_) => Vec::new(), // Sequences don't have top-level deps
     }
 }
 

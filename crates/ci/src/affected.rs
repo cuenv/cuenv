@@ -215,7 +215,7 @@ fn check_external_dependency(
 mod tests {
     use super::*;
     use cuenv_core::manifest::Project;
-    use cuenv_core::tasks::{Input, Task, TaskDependency, TaskGroup, TaskList, TaskNode};
+    use cuenv_core::tasks::{Input, Task, TaskDependency, TaskGroup, TaskNode};
 
     /// Helper to create a minimal Project with tasks
     fn make_project(tasks: Vec<(&str, Task)>) -> Project {
@@ -633,7 +633,8 @@ mod tests {
         parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
         let group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             description: None,
             max_concurrency: None,
@@ -667,7 +668,8 @@ mod tests {
         parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
         let group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             description: None,
             max_concurrency: None,
@@ -695,20 +697,13 @@ mod tests {
         let lint_task = make_task(vec!["src/**"], vec![]);
         let test_task = make_task(vec!["tests/**"], vec![]);
 
-        let list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(lint_task)),
-                TaskNode::Task(Box::new(test_task)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let seq = TaskNode::Sequence(vec![
+            TaskNode::Task(Box::new(lint_task)),
+            TaskNode::Task(Box::new(test_task)),
+        ]);
 
         let mut project = Project::default();
-        project
-            .tasks
-            .insert("check".to_string(), TaskNode::List(list));
+        project.tasks.insert("check".to_string(), seq);
 
         let changed_files = vec![PathBuf::from("src/lib.rs")];
         let root = Path::new(".");
@@ -732,7 +727,8 @@ mod tests {
         parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
         let group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             description: None,
             max_concurrency: None,

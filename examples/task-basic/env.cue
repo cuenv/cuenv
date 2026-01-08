@@ -35,11 +35,13 @@ tasks: {
 		},
 	]
 
-	// Nested Tasks
-	greetIndividual: {jack: {
-		command: "echo"
-		args: ["Hello Jack"]
-	}
+	// Nested Tasks (Task Group)
+	greetIndividual: {
+		type: "group"
+		jack: {
+			command: "echo"
+			args: ["Hello Jack"]
+		}
 		tealc: {
 			command: "echo"
 			args: ["Hello Teal'c"]

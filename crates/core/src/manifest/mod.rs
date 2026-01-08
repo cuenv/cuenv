@@ -919,12 +919,12 @@ impl Project {
         match node {
             TaskNode::Task(task) => Self::expand_task(task),
             TaskNode::Group(group) => {
-                for sub_node in group.parallel.values_mut() {
+                for sub_node in group.children.values_mut() {
                     Self::expand_task_node(sub_node);
                 }
             }
-            TaskNode::List(list) => {
-                for sub_node in &mut list.steps {
+            TaskNode::Sequence(steps) => {
+                for sub_node in steps {
                     Self::expand_task_node(sub_node);
                 }
             }
@@ -1005,7 +1005,7 @@ impl TryFrom<&Instance> for Project {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::{TaskDependency, TaskGroup, TaskList, TaskNode};
+    use crate::tasks::{TaskDependency, TaskGroup, TaskNode};
     use crate::test_utils::create_test_hook;
 
     #[test]
@@ -1340,23 +1340,18 @@ mod tests {
         let mut cuenv = Project::new("test");
         cuenv.tasks.insert(
             "pipeline".into(),
-            TaskNode::List(TaskList {
-                steps: vec![
-                    TaskNode::Task(Box::new(task1)),
-                    TaskNode::Task(Box::new(task2)),
-                ],
-                depends_on: vec![],
-                stop_on_first_error: true,
-                description: None,
-            }),
+            TaskNode::Sequence(vec![
+                TaskNode::Task(Box::new(task1)),
+                TaskNode::Task(Box::new(task2)),
+            ]),
         );
 
         cuenv.expand_cross_project_references();
 
         // Verify expansion happened in both tasks
         match cuenv.tasks.get("pipeline").unwrap() {
-            TaskNode::List(list) => {
-                match &list.steps[0] {
+            TaskNode::Sequence(steps) => {
+                match &steps[0] {
                     TaskNode::Task(task) => {
                         assert!(
                             task.depends_on
@@ -1366,7 +1361,7 @@ mod tests {
                     }
                     _ => panic!("Expected single task"),
                 }
-                match &list.steps[1] {
+                match &steps[1] {
                     TaskNode::Task(task) => {
                         assert!(
                             task.depends_on
@@ -1403,7 +1398,8 @@ mod tests {
         cuenv.tasks.insert(
             "parallel".into(),
             TaskNode::Group(TaskGroup {
-                parallel: parallel_tasks,
+                type_: "group".to_string(),
+                children: parallel_tasks,
                 depends_on: vec![],
                 description: None,
                 max_concurrency: None,
@@ -1415,7 +1411,7 @@ mod tests {
         // Verify expansion happened in both parallel tasks
         match cuenv.tasks.get("parallel").unwrap() {
             TaskNode::Group(group) => {
-                match group.parallel.get("a").unwrap() {
+                match group.children.get("a").unwrap() {
                     TaskNode::Task(task) => {
                         assert!(
                             task.depends_on
@@ -1425,7 +1421,7 @@ mod tests {
                     }
                     _ => panic!("Expected single task"),
                 }
-                match group.parallel.get("b").unwrap() {
+                match group.children.get("b").unwrap() {
                     TaskNode::Task(task) => {
                         assert!(
                             task.depends_on
@@ -1528,7 +1524,7 @@ mod tests {
 
     #[test]
     fn test_project_deserialization_with_script_tasks() {
-        // This test uses the new explicit API with parallel groups
+        // This test uses the new explicit API with type: "group" and flattened children
         let json = r#"{
             "name": "cuenv",
             "hooks": {
@@ -1551,40 +1547,37 @@ mod tests {
                     "inputs": ["flake.nix"]
                 },
                 "fmt": {
-                    "parallel": {
-                        "fix": {
-                            "command": "treefmt",
-                            "inputs": [".config"]
-                        },
-                        "check": {
-                            "command": "treefmt",
-                            "args": ["--fail-on-change"],
-                            "inputs": [".config"]
-                        }
+                    "type": "group",
+                    "fix": {
+                        "command": "treefmt",
+                        "inputs": [".config"]
+                    },
+                    "check": {
+                        "command": "treefmt",
+                        "args": ["--fail-on-change"],
+                        "inputs": [".config"]
                     }
                 },
                 "cross": {
-                    "parallel": {
-                        "linux": {
-                            "script": "echo building for linux",
-                            "inputs": ["Cargo.toml"]
-                        }
+                    "type": "group",
+                    "linux": {
+                        "script": "echo building for linux",
+                        "inputs": ["Cargo.toml"]
                     }
                 },
                 "docs": {
-                    "parallel": {
-                        "build": {
-                            "command": "bash",
-                            "args": ["-c", "bun install"],
-                            "inputs": ["docs"],
-                            "outputs": ["docs/dist"]
-                        },
-                        "deploy": {
-                            "command": "bash",
-                            "args": ["-c", "wrangler deploy"],
-                            "dependsOn": ["docs.build"],
-                            "inputs": [{"task": "docs.build"}]
-                        }
+                    "type": "group",
+                    "build": {
+                        "command": "bash",
+                        "args": ["-c", "bun install"],
+                        "inputs": ["docs"],
+                        "outputs": ["docs/dist"]
+                    },
+                    "deploy": {
+                        "command": "bash",
+                        "args": ["-c", "wrangler deploy"],
+                        "dependsOn": ["docs.build"],
+                        "inputs": [{"task": "docs.build"}]
                     }
                 }
             }

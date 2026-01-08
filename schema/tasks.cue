@@ -46,6 +46,9 @@ package schema
 // =============================================================================
 
 #Task: {
+	// Disallow 'type' field to prevent matching #TaskGroup pattern
+	type?: _|_
+
 	// Task name - auto-injected by Go bridge based on task path
 	_name?: string
 

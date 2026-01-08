@@ -106,7 +106,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
             let description = match &indexed.node {
                 cuenv_core::tasks::TaskNode::Task(task) => task.description.clone(),
                 cuenv_core::tasks::TaskNode::Group(g) => g.description.clone(),
-                cuenv_core::tasks::TaskNode::List(l) => l.description.clone(),
+                cuenv_core::tasks::TaskNode::Sequence(_) => None,
             };
             (indexed.name.clone(), description)
         })
