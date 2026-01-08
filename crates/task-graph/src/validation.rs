@@ -69,8 +69,8 @@ mod tests {
     }
 
     impl TaskNodeData for TestTask {
-        fn depends_on(&self) -> &[String] {
-            &self.depends_on
+        fn dependency_names(&self) -> impl Iterator<Item = &str> {
+            self.depends_on.iter().map(String::as_str)
         }
     }
 

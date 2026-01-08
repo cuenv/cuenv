@@ -18,7 +18,7 @@ runtime: schema.#ToolsRuntime & {
 }
 
 ci: {
-	contributors: [c.#Cuenv, c.#Bun]
+	contributors: [c.#Cuenv, c.#BunWorkspace]
 	pipelines: {
 		default: {
 			tasks: ["version"]
@@ -30,7 +30,7 @@ ci: {
 env: {}
 
 tasks: {
-	version: {
+	version: schema.#Task & {
 		command: "bun"
 		args: ["--version"]
 	}

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use cuenv_core::manifest::Project;
 use cuenv_core::manifest::TaskRef;
-use cuenv_core::tasks::{Task, TaskDefinition};
+use cuenv_core::tasks::{Task, TaskNode};
 
 /// Normalize a raw task name by replacing colons with dots.
 ///
@@ -78,29 +78,27 @@ pub fn compute_project_id(manifest: &Project, project_root: &Path, module_root: 
     format!("path.{rel}")
 }
 
-/// Set default `project_root` on all tasks in a definition tree.
+/// Set default `project_root` on all tasks in a node tree.
 ///
-/// Recursively walks the task definition and sets `project_root` on any
+/// Recursively walks the task node and sets `project_root` on any
 /// task that doesn't already have one.
-pub fn set_default_project_root(def: &mut TaskDefinition, project_root: &PathBuf) {
-    match def {
-        TaskDefinition::Single(task) => {
+pub fn set_default_project_root(node: &mut TaskNode, project_root: &PathBuf) {
+    match node {
+        TaskNode::Task(task) => {
             if task.project_root.is_none() {
                 task.project_root = Some(project_root.clone());
             }
         }
-        TaskDefinition::Group(group) => match group {
-            cuenv_core::tasks::TaskGroup::Sequential(tasks) => {
-                for t in tasks {
-                    set_default_project_root(t, project_root);
-                }
+        TaskNode::Group(group) => {
+            for t in group.children.values_mut() {
+                set_default_project_root(t, project_root);
             }
-            cuenv_core::tasks::TaskGroup::Parallel(parallel) => {
-                for t in parallel.tasks.values_mut() {
-                    set_default_project_root(t, project_root);
-                }
+        }
+        TaskNode::Sequence(steps) => {
+            for t in steps {
+                set_default_project_root(t, project_root);
             }
-        },
+        }
     }
 }
 
@@ -133,12 +131,12 @@ pub fn normalize_dep(
     task_fqdn(default_project_id, dep)
 }
 
-/// Normalize all dependencies in a task definition tree to FQDN format.
+/// Normalize all dependencies in a task node tree to FQDN format.
 ///
-/// Recursively walks the definition and converts all `depends_on` entries
+/// Recursively walks the node and converts all `depends_on` entries
 /// to fully-qualified task references.
-pub fn normalize_definition_deps(
-    def: &mut TaskDefinition,
+pub fn normalize_node_deps(
+    node: &mut TaskNode,
     project_id_by_root: &HashMap<PathBuf, String>,
     project_id_by_name: &HashMap<String, String>,
     default_project_id: &str,
@@ -156,43 +154,49 @@ pub fn normalize_definition_deps(
         fallback.to_string()
     }
 
-    match def {
-        TaskDefinition::Single(task) => {
+    match node {
+        TaskNode::Task(task) => {
             let scope_id = scope_project_id_for_task(task, project_id_by_root, default_project_id);
             let deps = std::mem::take(&mut task.depends_on);
             task.depends_on = deps
                 .into_iter()
-                .map(|d| normalize_dep(&d, &scope_id, project_id_by_name))
+                .map(|d| {
+                    let normalized = normalize_dep(d.task_name(), &scope_id, project_id_by_name);
+                    cuenv_core::tasks::TaskDependency::from_name(normalized)
+                })
                 .collect();
         }
-        TaskDefinition::Group(group) => match group {
-            cuenv_core::tasks::TaskGroup::Sequential(tasks) => {
-                for t in tasks {
-                    normalize_definition_deps(
-                        t,
-                        project_id_by_root,
-                        project_id_by_name,
-                        default_project_id,
-                    );
-                }
+        TaskNode::Group(group) => {
+            // Normalize group-level depends_on too
+            let group_deps = std::mem::take(&mut group.depends_on);
+            group.depends_on = group_deps
+                .into_iter()
+                .map(|d| {
+                    let normalized =
+                        normalize_dep(d.task_name(), default_project_id, project_id_by_name);
+                    cuenv_core::tasks::TaskDependency::from_name(normalized)
+                })
+                .collect();
+            for t in group.children.values_mut() {
+                normalize_node_deps(
+                    t,
+                    project_id_by_root,
+                    project_id_by_name,
+                    default_project_id,
+                );
             }
-            cuenv_core::tasks::TaskGroup::Parallel(parallel) => {
-                // Normalize group-level depends_on too
-                let group_deps = std::mem::take(&mut parallel.depends_on);
-                parallel.depends_on = group_deps
-                    .into_iter()
-                    .map(|d| normalize_dep(&d, default_project_id, project_id_by_name))
-                    .collect();
-                for t in parallel.tasks.values_mut() {
-                    normalize_definition_deps(
-                        t,
-                        project_id_by_root,
-                        project_id_by_name,
-                        default_project_id,
-                    );
-                }
+        }
+        TaskNode::Sequence(steps) => {
+            // Sequences don't have top-level deps, just recurse into steps
+            for t in steps {
+                normalize_node_deps(
+                    t,
+                    project_id_by_root,
+                    project_id_by_name,
+                    default_project_id,
+                );
             }
-        },
+        }
     }
 }
 

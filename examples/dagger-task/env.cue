@@ -17,13 +17,13 @@ config: {
 }
 
 tasks: {
-	"hello": {
+	hello: schema.#Task & {
 		command:     "hostname"
 		description: "Basic hello world in an Alpine container, using global backend."
 	}
 
 	// Run Python script in Python container
-	"python-info": {
+	pythonInfo: schema.#Task & {
 		command:     "python"
 		args: ["-c", "import sys; print(f'Running Python {sys.version} in Dagger')"]
 		description: "Show Python version in a Python container"
@@ -37,7 +37,7 @@ tasks: {
 	// ==========================================================================
 
 	// Stage 1: Install packages into the container
-	"stage1.setup": {
+	stage1Setup: schema.#Task & {
 		command:     "sh"
 		args: ["-c", "apk add --no-cache curl jq && echo 'Setup complete!'"]
 		description: "Install curl and jq into Alpine container"
@@ -47,13 +47,13 @@ tasks: {
 	}
 
 	// Stage 2: Continue from stage1's container (has curl and jq installed)
-	"stage2.use-tools": {
+	stage2UseTools: schema.#Task & {
 		command:     "sh"
 		args: ["-c", "echo 'Tools available:' && which curl && which jq && echo '{\"test\": 123}' | jq ."]
 		description: "Use tools installed in stage1"
-		dependsOn: ["stage1.setup"]
+		dependsOn: [stage1Setup]
 		dagger: {
-			from: "stage1.setup" // Continue from previous container state
+			from: "stage1Setup" // Continue from previous container state
 		}
 	}
 
@@ -62,7 +62,7 @@ tasks: {
 	// ==========================================================================
 
 	// Example with cache volumes for package managers
-	"cached-install": {
+	cachedInstall: schema.#Task & {
 		command:     "sh"
 		args: ["-c", "pip install requests && python -c 'import requests; print(requests.__version__)'"]
 		description: "Install Python package with pip cache"
@@ -80,7 +80,7 @@ tasks: {
 
 	// Example: Mount a secret as environment variable
 	// Uses exec resolver to get secret from a command
-	"secret-env-example": {
+	secretEnvExample: schema.#Task & {
 		command:     "sh"
 		args: ["-c", "echo 'API Token length:' && echo -n $API_TOKEN | wc -c"]
 		description: "Demonstrate secret as environment variable"
@@ -101,7 +101,7 @@ tasks: {
 	}
 
 	// Example: Mount a secret as a file
-	"secret-file-example": {
+	secretFileExample: schema.#Task & {
 		command:     "sh"
 		args: ["-c", "echo 'Secret file contents:' && cat /run/secrets/config.json | head -c 50"]
 		description: "Demonstrate secret as mounted file"
@@ -126,7 +126,7 @@ tasks: {
 	// ==========================================================================
 
 	// Stage 1: Install dependencies with caching
-	"build.deps": {
+	buildDeps: schema.#Task & {
 		command:     "sh"
 		args: ["-c", "pip install flask gunicorn && pip freeze > /workspace/requirements.txt"]
 		description: "Install Python dependencies with pip cache"
@@ -140,26 +140,26 @@ tasks: {
 	}
 
 	// Stage 2: Continue and run tests
-	"build.test": {
+	buildTest: schema.#Task & {
 		command:     "sh"
 		args: ["-c", "python -c 'import flask; import gunicorn; print(\"All imports OK\")'"]
 		description: "Verify dependencies are installed"
-		dependsOn: ["build.deps"]
-		inputs: [{task: "build.deps"}]
+		dependsOn: [buildDeps]
+		inputs: [{task: "buildDeps"}]
 		dagger: {
-			from: "build.deps" // Continue from deps container
+			from: "buildDeps" // Continue from deps container
 		}
 	}
 
 	// Stage 3: Final verification
-	"build.verify": {
+	buildVerify: schema.#Task & {
 		command:     "sh"
 		args: ["-c", "cat /workspace/requirements.txt && echo '---' && python --version"]
 		description: "Show final build artifacts"
-		dependsOn: ["build.test"]
-		inputs: [{task: "build.deps"}]
+		dependsOn: [buildTest]
+		inputs: [{task: "buildDeps"}]
 		dagger: {
-			from: "build.test" // Continue from test container
+			from: "buildTest" // Continue from test container
 		}
 	}
 }

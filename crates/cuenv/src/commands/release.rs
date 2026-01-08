@@ -1649,12 +1649,30 @@ version.workspace = true
         init_git_repo(&path);
         create_git_commit(&path, "fix: initial fix");
 
-        // Create a tag
-        std::process::Command::new("git")
-            .args(["tag", "v0.1.0"])
+        // Create a tag (use -m to create annotated tag, works with all git configs)
+        let out = std::process::Command::new("git")
+            .args(["tag", "-m", "Release v0.1.0", "v0.1.0"])
             .current_dir(&path)
             .output()
             .unwrap();
+        assert!(
+            out.status.success(),
+            "git tag failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // Verify tag was created
+        let out = std::process::Command::new("git")
+            .args(["tag", "-l", "v0.1.0"])
+            .current_dir(&path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "v0.1.0",
+            "git tag verification failed: stdout={}, stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         // Create a second commit (after tag) - this should be picked up
         // The file must be in a package directory for per-package analysis to detect it

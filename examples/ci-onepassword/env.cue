@@ -16,7 +16,7 @@ env: {
 }
 
 tasks: {
-	deploy: {
+	deploy: schema.#Task & {
 		command: "echo"
 		args: ["Deploying with secrets from 1Password"]
 		inputs: ["env.cue"]

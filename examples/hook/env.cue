@@ -19,12 +19,12 @@ hooks: onEnter: notify: { command: "echo", args: ["Environment configured"] }
 
 // Task definitions for the environment
 tasks: {
-	verify_env: {
+	verify_env: schema.#Task & {
 		command: "sh"
 		args: ["-c", "echo CUENV_TEST=$CUENV_TEST API_ENDPOINT=$API_ENDPOINT"]
 	}
-	
-	show_env: {
+
+	show_env: schema.#Task & {
 		command: "sh"
 		args: ["-c", "env | grep CUENV"]
 	}

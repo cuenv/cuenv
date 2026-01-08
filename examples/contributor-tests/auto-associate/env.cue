@@ -1,4 +1,4 @@
-package cuenv
+package examples
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -8,16 +8,16 @@ name: "auto-associate-test"
 
 // This task uses "bun" command and should auto-depend on bun.workspace.setup
 tasks: {
-	dev: {
+	dev: schema.#Task & {
 		command: "bun"
 		args: ["run", "dev"]
 	}
-	test: {
+	test: schema.#Task & {
 		command: "bun"
 		args: ["test"]
 	}
 	// This task does NOT use bun, should not get auto-association
-	lint: {
+	lint: schema.#Task & {
 		command: "echo"
 		args: ["lint"]
 	}

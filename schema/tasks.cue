@@ -1,193 +1,203 @@
 package schema
 
-// #Tasks can represent either a single task or a group of tasks.
-// Use a single #Task when you have an isolated command to run.
-// Use a #TaskGroup when you need to define multiple tasks that should be executed
-// either sequentially (as an array) or in parallel with dependencies (as an object).
-// Choose the structure based on your workflow requirements:
-//   - Single #Task: Simple, standalone execution.
-//   - #TaskGroup: Complex workflows involving multiple tasks and dependencies.
-#Tasks: #Command | #Script | #TaskGroup
+// =============================================================================
+// Task API v2 - Explicit Types
+// =============================================================================
+//
+// Users annotate tasks with their type to unlock specific semantics:
+//   - #Task: Single command or script
+//   - #TaskGroup: Parallel execution (all children run concurrently)
+//   - #TaskSequence: Sequential execution (steps run in order)
+//
+// Example:
+//   tasks: {
+//       build: #Task & { command: "cargo build" }
+//       check: #TaskGroup & {
+//           type: "group"
+//           lint: #Task & { command: "cargo clippy" }
+//           test: #Task & { command: "cargo test" }
+//       }
+//       deploy: #TaskSequence & [
+//           #Task & { command: "build" },
+//           #Task & { command: "push" },
+//       ]
+//   }
 
-// Common fields shared between command-based and script-based tasks
-#Task: {
-	shell?: #Shell
-	args?: [...string]
-	env?: [string]: #EnvironmentVariable
+// Union of all task types - explicit typing required
+#TaskNode: #Task | #TaskGroup | #TaskSequence
 
-	// When true (default), task runs in an isolated hermetic directory with only
-	// declared inputs available. When false, task runs directly in the workspace
-	// root (if workspaces specified) or project root. Non-hermetic tasks are useful
-	// for install commands that need to write to the real filesystem.
-	hermetic?: bool | *true
+// =============================================================================
+// Script Shell Configuration
+// =============================================================================
 
-	dependsOn?: [...string]
+// Interpreter for script-based tasks
+#ScriptShell: "bash" | "sh" | "zsh" | "fish" | "powershell" | "pwsh" | "python" | "node" | "ruby" | "perl"
 
-	// Labels for task discovery via #TaskMatcher
-	// Example: labels: ["projen", "codegen"]
-	labels?: [...string]
-	// Inputs accepted:
-	// - File paths relative to the env.cue root, e.g. "src/index.ts"
-	// - Directories (recursively included), e.g. "src" or "src/lib"
-	// - Glob patterns (first-class), e.g. "src/**/*.ts", "assets/**/*.{png,jpg}"
-	// - Project references that pull outputs from another task in the repo
-	// All inputs are resolved relative to the project root and are the ONLY files
-	// made available inside the hermetic working directory when executing the task.
-	inputs?: [...#Input]
-	// Outputs accepted (same syntax as inputs): files, directories, and globs relative
-	// to the project root. Only declared outputs are indexed and persisted to the
-	// cache for later materialization. Writes to undeclared paths are allowed but
-	// will be warned about and are not indexed.
-	outputs?: [...string]
-
-	description?: string
-
-	// Runtime override for this task (inherits from project if not set)
-	// See #Runtime in runtime.cue for available options: nix, devenv, container, dagger
-	runtime?: #Runtime
-
-	// DEPRECATED: Use runtime: dagger: { ... } instead
-	// Dagger-specific configuration for running this task in a container
-	dagger?: #DaggerConfig
-
-	// Task parameter definitions for CLI arguments
-	// Allows tasks to accept positional and named arguments:
-	//   cuenv task import.youtube VIDEO_ID --quality 1080p
-	params?: #TaskParams
+// Shell options (for bash-like shells)
+#ShellOptions: {
+	errexit?:  bool | *true  // -e: exit on error
+	nounset?:  bool | *true  // -u: error on undefined vars
+	pipefail?: bool | *true  // -o pipefail: fail on pipe errors
+	xtrace?:   bool | *false // -x: debug/trace mode
 }
 
-// #Command is a task that executes a command
-#Command: close({
-	#Task
-	command: string
-})
+// =============================================================================
+// Single Executable Task
+// =============================================================================
 
-// #Script is a task that executes an inline script
-#Script: close({
-	#Task
-	script: string
-})
+#Task: {
+	// Disallow 'type' field to prevent matching #TaskGroup pattern
+	type?: _|_
 
-// Task parameter definitions
+	// Task name - auto-injected by Go bridge based on task path
+	_name?: string
+
+	// Command-based execution
+	command?: string
+	args?: [...string]
+
+	// Script-based execution (mutually exclusive with command)
+	script?:       string
+	scriptShell?:  #ScriptShell | *"bash"
+	shellOptions?: #ShellOptions
+
+	// Environment variables
+	env?: [string]: #EnvironmentVariable
+
+	// Working directory override
+	dir?: string
+
+	// When true (default), task runs in an isolated hermetic directory with only
+	// declared inputs available. When false, task runs directly in the workspace.
+	hermetic?: bool | *true
+
+	// Dependencies - reference other tasks directly for compile-time validation
+	dependsOn?: [...#TaskNode]
+
+	// Labels for task discovery via #TaskMatcher
+	labels?: [...string]
+
+	// Input files/patterns for caching and hermetic execution
+	inputs?: [...#Input]
+
+	// Output files/patterns for caching
+	outputs?: [...string]
+
+	// Human-readable description
+	description?: string
+
+	// Runtime override for this task
+	runtime?: #Runtime
+
+	// Task parameter definitions for CLI arguments
+	params?: #TaskParams
+
+	// Execution policies
+	timeout?: string // e.g. "30m"
+	retry?: {
+		attempts: int | *3
+		delay?:   string // e.g. "5s"
+	}
+	continueOnError?: bool | *false
+
+	// DEPRECATED: Use runtime: dagger: { ... } instead
+	dagger?: #DaggerConfig
+}
+
+// =============================================================================
+// Parallel Execution (Task Group)
+// =============================================================================
+
+#TaskGroup: {
+	// Type discriminator - must be "group"
+	type: "group"
+
+	// Dependencies on other tasks
+	dependsOn?: [...#TaskNode]
+
+	// Limit concurrent executions (0 = unlimited)
+	maxConcurrency?: int
+
+	// Human-readable description
+	description?: string
+
+	// Named children - all run concurrently (as direct fields)
+	{[!~"^(type|dependsOn|maxConcurrency|description)$"]: #TaskNode}
+}
+
+// =============================================================================
+// Sequential Execution (Task Sequence)
+// =============================================================================
+
+// A sequence is simply an ordered list of task nodes - run in order
+#TaskSequence: [...#TaskNode]
+
+// =============================================================================
+// Task Parameters
+// =============================================================================
+
 #TaskParams: {
 	// Positional arguments (order matters, consumed left-to-right)
-	// Referenced in args as {{0}}, {{1}}, etc.
 	positional?: [...#Param]
 	// Named arguments are declared as direct fields (--flag style)
-	// Referenced in args as {{name}} where name matches the field name
-	// Example: thumbnailUrl: { description: "URL", required: false }
 	[!~"^positional$"]: #Param
 }
 
-// Parameter definition for task arguments
 #Param: {
-	// Human-readable description shown in --help
 	description?: string
-	// Whether the argument must be provided (default: false)
-	required?: bool | *false
-	// Default value if not provided
-	default?: string
-	// Type hint for validation (default: "string")
-	type?: "string" | "bool" | "int" | *"string"
-	// Short flag (single character, e.g., "t" for -t)
-	short?: =~"^[a-zA-Z]$"
+	required?:    bool | *false
+	default?:     string
+	type?:        "string" | "bool" | "int" | *"string"
+	short?:       =~"^[a-zA-Z]$"
 }
+
+// =============================================================================
+// Task Inputs
+// =============================================================================
 
 // Accepted task inputs:
 // - string: File path, directory, or glob pattern
 // - #ProjectReference: Cross-project task outputs
 // - #TaskOutput: Same-project task outputs
-// Note: #TaskOutput is preferred when only 'task' field is present
 #Input: string | #ProjectReference | *#TaskOutput
 
 // Reference to another project's task within the same Git root
 #ProjectReference: close({
-	// Path to external project root. May be absolute-from-repo-root (prefix "/")
-	// or relative to the env.cue declaring this dependency.
 	project!: string
-	// Name of the external task in that project
-	task!: string
-	// Explicit selection and mapping of outputs to this task's hermetic workspace
+	task!:    string
 	map!: [...#Mapping]
 })
 
 #Mapping: close({
-	// Path of a declared output (file or directory) from the external task,
-	// relative to the external project's root. Directories map recursively.
 	from!: string
-	// Destination path inside the dependent task's hermetic workspace where the
-	// selected file/dir will be materialized. Must be unique per mapping.
-	to!: string
+	to!:   string
 })
-
-// Notes:
-// - 'from' values must be among the external task's declared outputs
-// - Directories in 'from' map recursively
-// - Each 'to' destination must be unique; collisions are disallowed
-// - External tasks run with their own environment; no env injection from dependents
 
 // Reference to another task's outputs within the same project
 #TaskOutput: close({
-	// Name of the task whose cached outputs to consume (e.g. "docs.build")
 	task!: string
-	// Optional explicit mapping of outputs. If omitted, all outputs are
-	// materialized at their original paths in the hermetic workspace.
 	map?: [...#Mapping]
 })
 
-// TaskGroup uses structure to determine execution mode:
-// - Array of tasks: Sequential execution (order preserved)
-// - Object of named tasks: Parallel execution with optional group-level dependencies
-#TaskGroup: [...#Tasks] | {
-	// Optional group-level dependencies applied to all tasks in the group
-	dependsOn?: [...string]
-	// Allow hidden fields (prefixed with _) for internal definitions like _inputs
-	[=~"^_"]: _
-	// Named tasks (any key except 'dependsOn' and hidden fields)
-	[!~"^(dependsOn|_.*)$"]: #Tasks
-}
+// =============================================================================
+// Dagger Configuration (Containerized Execution)
+// =============================================================================
 
-// Dagger-specific task configuration for containerized execution
 #DaggerConfig: {
-	// Base container image (e.g., "node:20-alpine", "rust:1.75-slim")
-	// Required unless 'from' is specified
 	image?: string
-
-	// Use container from a previous task as base instead of an image.
-	// The referenced task must have run and produced a container.
-	// Example: from: "deps" continues from the "deps" task's container
-	from?: string
-
-	// Secrets to mount or expose as environment variables.
-	// Secrets are resolved using cuenv's secret resolvers (exec, 1Password, etc.)
-	// and securely passed to Dagger without exposing plaintext in logs.
+	from?:  string
 	secrets?: [...#DaggerSecret]
-
-	// Cache volumes to mount for persistent build caching.
-	// Cache volumes persist across task runs and speed up builds.
 	cache?: [...#DaggerCacheMount]
 }
 
-// Secret configuration for Dagger containers
 #DaggerSecret: {
-	// Name identifier for the secret in Dagger
-	name: string
-
-	// Mount secret as a file at this path (e.g., "/root/.npmrc")
-	path?: string
-
-	// Expose secret as an environment variable with this name
-	envVar?: string
-
-	// Secret resolver - uses existing cuenv secret types (#Secret, #OnePasswordRef, etc.)
+	name:     string
+	path?:    string
+	envVar?:  string
 	resolver: #Secret
 }
 
-// Cache volume mount configuration
 #DaggerCacheMount: {
-	// Path inside the container to mount the cache (e.g., "/root/.npm", "/root/.cargo/registry")
 	path: string
-
-	// Unique name for the cache volume. Volumes with the same name share data.
 	name: string
 }

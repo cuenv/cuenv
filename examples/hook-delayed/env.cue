@@ -38,13 +38,13 @@ hooks: {
 
 // Task definitions for the environment
 tasks: {
-	status: {
+	status: schema.#Task & {
 		description: "Check service status"
 		command:     "sh"
 		args: ["-c", "echo Database: $DATABASE_URL, Redis: $REDIS_URL, Port: $SERVICE_PORT"]
 	}
 
-	verify_all: {
+	verify_all: schema.#Task & {
 		description: "Verify all environment variables"
 		command:     "sh"
 		args: ["-c", "env | grep -E 'NODE_ENV|DATABASE_URL|REDIS_URL|SERVICE_PORT|WORKERS'"]

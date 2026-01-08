@@ -117,6 +117,7 @@ fn load_instance_at_path(
         module_root.clone(),
         raw_result.instances,
         raw_result.projects,
+        None,
     );
 
     let relative_path = relative_path_from_root(&module_root, &target_path);

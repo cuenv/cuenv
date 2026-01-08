@@ -15,15 +15,8 @@ package schema
 	hooks?:   #Hooks
 	ci?:      #CI
 	release?: #Release
-	tasks?: [string]: #Tasks
+	tasks?: [string]: #TaskNode
 	codegen?: #Codegen
-})
-
-// Reference a task from another env.cue project by its name property.
-#TaskRef: close({
-	// Format: "#project-name:task-name" where project-name is the `name` field in env.cue
-	// Example: "#projen-generator:bun.install"
-	ref!: =~"^#[a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+$"
 })
 
 // Match tasks across projects by metadata for discovery-based execution.

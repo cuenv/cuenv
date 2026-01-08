@@ -302,6 +302,7 @@ env: {}
 
 tasks: {
     nested: {
+        type: "group"
         subtask1: {
             command: "echo"
             args: ["Subtask 1"]
@@ -344,6 +345,7 @@ env: {}
 
 tasks: {
     bun: {
+        type: "group"
         install: {
             command: "echo"
             args: ["bun install"]
@@ -701,6 +703,7 @@ tasks: {
     ]
 
     parallel_tasks: {
+        type: "group"
         par1: {
             command: "echo"
             args: [env.PREFIX, "par1"]

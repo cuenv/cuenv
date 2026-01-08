@@ -19,8 +19,8 @@ superseded_by: []
 ## Decision
 
 1. **Dual Execution Paths**
-   - Tasks with no dependencies MUST execute directly via `TaskExecutor::execute_definition`.
-   - Tasks with dependencies or group definitions MUST construct a `TaskGraph` and execute via `TaskExecutor::execute_graph`, respecting topological ordering.
+   - Tasks with no dependencies (`TaskNode::Task`) MUST execute directly via `TaskExecutor::execute_node`.
+   - Tasks with dependencies, groups (`TaskNode::Group`), or sequences (`TaskNode::Sequence`) MUST construct a `TaskGraph` and execute via `TaskExecutor::execute_graph`, respecting topological ordering.
 
 2. **Listing Behaviour**
    - Invoking `cuenv task` without arguments MUST list available tasks in deterministic order.

@@ -19,7 +19,7 @@ ci: pipelines: {
 }
 
 tasks: {
-	build: {
+	build: schema.#Task & {
 		command: "echo"
 		args: ["Building with cuenv installed via Homebrew"]
 		inputs: ["env.cue"]

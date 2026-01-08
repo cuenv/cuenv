@@ -20,12 +20,14 @@ struct PropTask {
 }
 
 impl TaskNodeData for PropTask {
-    fn depends_on(&self) -> &[String] {
-        &self.deps
+    fn dependency_names(&self) -> impl Iterator<Item = &str> {
+        self.deps.iter().map(String::as_str)
     }
 
     fn add_dependency(&mut self, dep: String) {
-        self.deps.push(dep);
+        if !self.deps.contains(&dep) {
+            self.deps.push(dep);
+        }
     }
 }
 

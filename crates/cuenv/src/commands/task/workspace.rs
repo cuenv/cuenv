@@ -19,14 +19,14 @@ use cuenv_core::contributors::{
     ContributorContext, ContributorEngine, builtin_workspace_contributors,
 };
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{TaskDefinition, TaskIndex, Tasks};
+use cuenv_core::tasks::{TaskIndex, TaskNode, Tasks};
 use cuenv_task_discovery::{EvalFn, TaskDiscovery};
 
 use crate::commands::CommandExecutor;
 
 use super::discovery::evaluate_manifest;
 use super::normalization::{
-    compute_project_id, normalize_definition_deps, set_default_project_root, task_fqdn,
+    compute_project_id, normalize_node_deps, set_default_project_root, task_fqdn,
 };
 use super::resolution::resolve_task_refs_in_manifest;
 
@@ -199,20 +199,20 @@ pub fn build_global_tasks(
     }
 
     // Build global tasks keyed by FQDN
-    let mut global: HashMap<String, TaskDefinition> = HashMap::new();
+    let mut global: HashMap<String, TaskNode> = HashMap::new();
     for p in &projects {
         let idx = TaskIndex::build(&p.manifest.tasks)?;
         for entry in idx.list() {
-            let mut def = entry.definition.clone();
-            set_default_project_root(&mut def, &p.root);
-            normalize_definition_deps(&mut def, &id_by_root, &project_id_by_name, &p.id);
+            let mut node = entry.node.clone();
+            set_default_project_root(&mut node, &p.root);
+            normalize_node_deps(&mut node, &id_by_root, &project_id_by_name, &p.id);
             let fqdn = task_fqdn(&p.id, &entry.name);
             if global.contains_key(&fqdn) {
                 return Err(cuenv_core::Error::configuration(format!(
                     "Duplicate task FQDN detected: '{fqdn}'",
                 )));
             }
-            global.insert(fqdn, def);
+            global.insert(fqdn, node);
         }
     }
 
