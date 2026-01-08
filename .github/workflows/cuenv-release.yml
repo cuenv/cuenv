@@ -121,8 +121,8 @@ jobs:
         path: result/bin/*
         if-no-files-found: ignore
         include-hidden-files: true
-  publish-cue:
-    name: publish.cue
+  publish-parallel-cue:
+    name: publish.parallel.cue
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
     - cargo-build-darwin-arm64
@@ -171,16 +171,16 @@ jobs:
       with:
         name: cargo-build-linux-x64
         path: dist/linux-x64
-    - name: publish.cue
-      run: cuenv task publish.cue -e production --skip-dependencies
+    - name: publish.parallel.cue
+      run: cuenv task publish.parallel.cue -e production --skip-dependencies
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-  publish-github:
-    name: publish.github
+  publish-parallel-github:
+    name: publish.parallel.github
     runs-on: blacksmith-8vcpu-ubuntu-2404
     needs:
     - cargo-build-darwin-arm64
@@ -229,8 +229,8 @@ jobs:
       with:
         name: cargo-build-linux-x64
         path: dist/linux-x64
-    - name: publish.github
-      run: cuenv task publish.github -e production --skip-dependencies
+    - name: publish.parallel.github
+      run: cuenv task publish.parallel.github -e production --skip-dependencies
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
