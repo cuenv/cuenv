@@ -26,7 +26,7 @@ ci: {
 }
 
 tasks: {
-	build: {
+	build: schema.#Task & {
 		command: "echo"
 		args: ["Building with Nix and Cachix caching"]
 		inputs: ["env.cue"]

@@ -10,13 +10,13 @@ name: "ci-gh-models"
 // This triggers the GhModelsContributor to inject extension setup
 ci: pipelines: {
 	eval: {
-		tasks: ["eval.prompts"]
+		tasks: ["evalPrompts"]
 		when: branch: "main"
 	}
 }
 
 tasks: {
-	"eval.prompts": {
+	evalPrompts: schema.#Task & {
 		command: "gh"
 		args: ["models", "eval", "prompts/test.yml"]
 		inputs: ["prompts/**/*.yml"]

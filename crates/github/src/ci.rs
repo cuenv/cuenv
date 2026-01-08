@@ -145,7 +145,11 @@ impl GitHubCIProvider {
                 cuenv_core::Error::configuration(format!("Failed to get PR files from API: {e}"))
             })?;
 
-        let files: Vec<PathBuf> = page.items.iter().map(|f| PathBuf::from(&f.filename)).collect();
+        let files: Vec<PathBuf> = page
+            .items
+            .iter()
+            .map(|f| PathBuf::from(&f.filename))
+            .collect();
 
         info!("Got {} changed files from GitHub API", files.len());
         Ok(files)

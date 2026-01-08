@@ -7,26 +7,47 @@ cuenv provides a powerful task runner that leverages CUE for defining tasks, the
 
 ## Defining Tasks
 
-Tasks are defined in the `tasks` block of your configuration.
+Tasks are defined in the `tasks` block of your configuration using explicit type annotations.
+
+### Task Types
+
+cuenv supports three task types:
+
+- **`#Task`** - Single executable command or script
+- **`#TaskGroup`** - Parallel execution (all children run concurrently)
+- **`#TaskSequence`** - Sequential execution (steps run in order)
 
 ```cue
 package cuenv
 
+import "github.com/cuenv/cuenv/schema"
+
 tasks: {
     // A simple command task
-    hello: {
+    hello: schema.#Task & {
         command: "echo"
         args: ["Hello, World!"]
     }
 
-    // A task with dependencies and specific inputs
-    build: {
+    // Tasks with explicit types for dependencies
+    lint: schema.#Task & {
+        command: "cargo"
+        args: ["clippy"]
+    }
+
+    test: schema.#Task & {
+        command: "cargo"
+        args: ["test"]
+    }
+
+    // A task with dependencies (uses CUE references, not strings!)
+    build: schema.#Task & {
         description: "Build the application"
         command: "cargo"
         args: ["build", "--release"]
 
-        // Dependencies to run before this task
-        dependsOn: ["lint", "test"]
+        // Dependencies use CUE references for compile-time validation
+        dependsOn: [lint, test]
 
         // Inputs to track for caching (files/globs)
         inputs: [
@@ -39,17 +60,26 @@ tasks: {
         outputs: ["target/release/myapp"]
     }
 
-    lint: {
-        command: "cargo"
-        args: ["clippy"]
+    // Parallel execution - all children run concurrently
+    checks: schema.#TaskGroup & {
+        type: "group"  // Required discriminator
+        format: schema.#Task & { command: "cargo", args: ["fmt", "--check"] }
+        clippy: schema.#Task & { command: "cargo", args: ["clippy"] }
+        audit:  schema.#Task & { command: "cargo", args: ["audit"] }
     }
 
-    test: {
-        command: "cargo"
-        args: ["test"]
-    }
+    // Sequential execution - steps run in order
+    deploy: schema.#TaskSequence & [
+        schema.#Task & { command: "build" },
+        schema.#Task & { command: "docker", args: ["push"] },
+        schema.#Task & { command: "kubectl", args: ["apply"] },
+    ]
 }
 ```
+
+:::tip[CUE Reference Dependencies]
+Notice that `dependsOn: [lint, test]` uses **CUE references** (no quotes), not strings. This provides compile-time validation - if you reference a task that doesn't exist, CUE will report an error before execution.
+:::
 
 ## Running Tasks
 
@@ -110,8 +140,10 @@ Tasks can accept arguments from the command line using the `params` field. This 
 ### Defining Parameters
 
 ```cue
+import "github.com/cuenv/cuenv/schema"
+
 tasks: {
-    "import.video": {
+    "import.video": schema.#Task & {
         description: "Import a video from YouTube"
         command: "yt-dlp"
         args: [
@@ -184,8 +216,10 @@ Use `{{placeholder}}` syntax in `command` and `args`:
 - `{{name}}` - Named arguments by their key
 
 ```cue
+import "github.com/cuenv/cuenv/schema"
+
 tasks: {
-    greet: {
+    greet: schema.#Task & {
         command: "echo"
         args: ["Hello, {{0}}! Your favorite color is {{color}}."]
         params: {
@@ -206,8 +240,10 @@ cuenv task greet Alice --color green
 Tasks inherit the environment variables defined in your `env` block. You can also define task-specific environment variables:
 
 ```cue
+import "github.com/cuenv/cuenv/schema"
+
 tasks: {
-    test: {
+    test: schema.#Task & {
         command: "bun"
         args: ["test"]
         env: {

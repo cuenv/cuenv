@@ -111,7 +111,7 @@ hooks: {
 }
 
 tasks: {
-    dev: {
+    dev: schema.#Task & {
         command: "pnpm"
         args: ["run", "dev"]
     }
@@ -190,12 +190,13 @@ hooks: {
 
 tasks: {
     // These commands come from Nix
-    dev:    {command: "pnpm", args: ["run", "dev"]}
-    build:  {command: "pnpm", args: ["run", "build"]}
+    dev:   schema.#Task & {command: "pnpm", args: ["run", "dev"]}
+    build: schema.#Task & {command: "pnpm", args: ["run", "build"]}
 
-    db: {
-        migrate: {command: "psql", args: ["-f", "migrations/up.sql"]}
-        reset:   {command: "psql", args: ["-f", "migrations/reset.sql"]}
+    db: schema.#TaskGroup & {
+        type: "group"
+        migrate: schema.#Task & {command: "psql", args: ["-f", "migrations/up.sql"]}
+        reset:   schema.#Task & {command: "psql", args: ["-f", "migrations/reset.sql"]}
     }
 }
 ```
@@ -255,7 +256,7 @@ env: {
 }
 
 tasks: {
-    dev: {command: "bun", args: ["run", "dev"]}
+    dev: schema.#Task & {command: "bun", args: ["run", "dev"]}
 }
 ```
 

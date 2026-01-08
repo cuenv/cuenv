@@ -25,7 +25,7 @@ use cuenv_core::ci::{
     TaskCondition as CueTaskCondition,
 };
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{Task, TaskDefinition, TaskGroup};
+use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
 use digest::DigestBuilder;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -367,13 +367,13 @@ impl Compiler {
     ) -> Result<IntermediateRepresentation, CompilerError> {
         let mut ir = IntermediateRepresentation::new(&self.project.name);
 
-        // Find the task definition
-        let Some(task_def) = self.find_task_definition(task_name) else {
+        // Find the task node
+        let Some(task_node) = self.find_task_node(task_name) else {
             return Err(CompilerError::TaskNotFound(task_name.to_string()));
         };
 
-        // Compile just this task definition
-        self.compile_task_definition(task_name, task_def, &mut ir)?;
+        // Compile just this task node
+        self.compile_task_node(task_name, task_node, &mut ir)?;
 
         Ok(ir)
     }
@@ -505,59 +505,50 @@ impl Compiler {
 
     /// Recursively collect task inputs including dependencies
     fn collect_task_inputs(&self, task_name: &str, paths: &mut HashSet<String>) {
-        if let Some(def) = self.find_task_definition(task_name) {
-            self.collect_inputs_from_definition(def, paths);
+        if let Some(node) = self.find_task_node(task_name) {
+            self.collect_inputs_from_node(node, paths);
         }
     }
 
-    /// Collect inputs from a task definition (handles both single tasks and groups)
-    fn collect_inputs_from_definition(&self, def: &TaskDefinition, paths: &mut HashSet<String>) {
-        match def {
-            TaskDefinition::Single(task) => {
+    /// Collect inputs from a task node (handles tasks, groups, and lists)
+    fn collect_inputs_from_node(&self, node: &TaskNode, paths: &mut HashSet<String>) {
+        match node {
+            TaskNode::Task(task) => {
                 // Add direct inputs
                 for input in task.iter_path_inputs() {
                     paths.insert(input.clone());
                 }
                 // Recurse into dependencies
                 for dep in &task.depends_on {
-                    self.collect_task_inputs(dep, paths);
+                    self.collect_task_inputs(dep.task_name(), paths);
                 }
             }
-            TaskDefinition::Group(group) => {
-                self.collect_inputs_from_group(group, paths);
-            }
-        }
-    }
-
-    /// Collect inputs from all tasks in a group
-    fn collect_inputs_from_group(&self, group: &TaskGroup, paths: &mut HashSet<String>) {
-        match group {
-            TaskGroup::Parallel(parallel) => {
-                for def in parallel.tasks.values() {
-                    self.collect_inputs_from_definition(def, paths);
+            TaskNode::Group(group) => {
+                for child_node in group.children.values() {
+                    self.collect_inputs_from_node(child_node, paths);
                 }
             }
-            TaskGroup::Sequential(seq) => {
-                for def in seq {
-                    self.collect_inputs_from_definition(def, paths);
+            TaskNode::Sequence(steps) => {
+                for child_node in steps {
+                    self.collect_inputs_from_node(child_node, paths);
                 }
             }
         }
     }
 
-    /// Find a task definition by name (handles dotted paths for nested tasks)
-    /// Returns the TaskDefinition which can be either a single task or a group
-    fn find_task_definition(&self, name: &str) -> Option<&TaskDefinition> {
+    /// Find a task node by name (handles dotted paths for nested tasks)
+    /// Returns the TaskNode which can be a Task, Group, or List
+    fn find_task_node(&self, name: &str) -> Option<&TaskNode> {
         let parts: Vec<&str> = name.split('.').collect();
         let mut current_tasks = &self.project.tasks;
 
         for (i, part) in parts.iter().enumerate() {
             match current_tasks.get(*part) {
-                Some(def) if i == parts.len() - 1 => {
-                    return Some(def);
+                Some(node) if i == parts.len() - 1 => {
+                    return Some(node);
                 }
-                Some(TaskDefinition::Group(TaskGroup::Parallel(parallel))) => {
-                    current_tasks = &parallel.tasks;
+                Some(TaskNode::Group(group)) => {
+                    current_tasks = &group.children;
                 }
                 _ => return None,
             }
@@ -567,71 +558,78 @@ impl Compiler {
 
     /// Find a leaf task by name (handles dotted paths for nested tasks)
     fn find_task(&self, name: &str) -> Option<&Task> {
-        match self.find_task_definition(name) {
-            Some(TaskDefinition::Single(task)) => Some(task),
+        match self.find_task_node(name) {
+            Some(TaskNode::Task(task)) => Some(task),
             _ => None,
         }
     }
 
-    /// Compile task definitions into IR tasks
+    /// Compile task nodes into IR tasks
     fn compile_tasks(
         &self,
-        tasks: &HashMap<String, TaskDefinition>,
+        tasks: &HashMap<String, TaskNode>,
         ir: &mut IntermediateRepresentation,
     ) -> Result<(), CompilerError> {
         // Sort keys for deterministic output
         let mut sorted_keys: Vec<_> = tasks.keys().collect();
         sorted_keys.sort();
         for name in sorted_keys {
-            let task_def = &tasks[name];
-            self.compile_task_definition(name, task_def, ir)?;
+            let task_node = &tasks[name];
+            self.compile_task_node(name, task_node, ir)?;
         }
         Ok(())
     }
 
-    /// Compile a single task definition (handles groups and single tasks)
-    fn compile_task_definition(
+    /// Compile a task node (handles tasks, groups, and lists)
+    fn compile_task_node(
         &self,
         name: &str,
-        task_def: &TaskDefinition,
+        node: &TaskNode,
         ir: &mut IntermediateRepresentation,
     ) -> Result<(), CompilerError> {
-        match task_def {
-            TaskDefinition::Single(task) => {
+        match node {
+            TaskNode::Task(task) => {
                 let ir_task = self.compile_single_task(name, task)?;
                 ir.tasks.push(ir_task);
             }
-            TaskDefinition::Group(group) => {
+            TaskNode::Group(group) => {
                 self.compile_task_group(name, group, ir)?;
+            }
+            TaskNode::Sequence(steps) => {
+                self.compile_task_sequence(name, steps, ir)?;
             }
         }
         Ok(())
     }
 
-    /// Compile a task group (sequential or parallel)
+    /// Compile a task group (parallel execution)
     fn compile_task_group(
         &self,
         prefix: &str,
         group: &TaskGroup,
         ir: &mut IntermediateRepresentation,
     ) -> Result<(), CompilerError> {
-        match group {
-            TaskGroup::Sequential(tasks) => {
-                for (idx, task_def) in tasks.iter().enumerate() {
-                    let task_name = format!("{prefix}.{idx}");
-                    self.compile_task_definition(&task_name, task_def, ir)?;
-                }
-            }
-            TaskGroup::Parallel(parallel) => {
-                // Sort keys for deterministic output
-                let mut sorted_keys: Vec<_> = parallel.tasks.keys().collect();
-                sorted_keys.sort();
-                for name in sorted_keys {
-                    let task_def = &parallel.tasks[name];
-                    let task_name = format!("{prefix}.{name}");
-                    self.compile_task_definition(&task_name, task_def, ir)?;
-                }
-            }
+        // Sort keys for deterministic output
+        let mut sorted_keys: Vec<_> = group.children.keys().collect();
+        sorted_keys.sort();
+        for name in sorted_keys {
+            let child_node = &group.children[name];
+            let task_name = format!("{prefix}.{name}");
+            self.compile_task_node(&task_name, child_node, ir)?;
+        }
+        Ok(())
+    }
+
+    /// Compile a task sequence (sequential execution)
+    fn compile_task_sequence(
+        &self,
+        prefix: &str,
+        steps: &[TaskNode],
+        ir: &mut IntermediateRepresentation,
+    ) -> Result<(), CompilerError> {
+        for (idx, child_node) in steps.iter().enumerate() {
+            let task_name = format!("{prefix}.{idx}");
+            self.compile_task_node(&task_name, child_node, ir)?;
         }
         Ok(())
     }
@@ -723,7 +721,11 @@ impl Compiler {
             concurrency_group: None,
             inputs,
             outputs,
-            depends_on: task.depends_on.clone(),
+            depends_on: task
+                .depends_on
+                .iter()
+                .map(|d| d.task_name().to_string())
+                .collect(),
             cache_policy,
             deployment,
             manual_approval: false, // Would come from task metadata
@@ -1286,14 +1288,14 @@ impl Compiler {
 mod tests {
     use super::*;
     use cuenv_core::ci::PipelineMode;
-    use cuenv_core::tasks::Task;
+    use cuenv_core::tasks::{Task, TaskDependency, TaskNode};
 
     #[test]
     fn test_compile_simple_task() {
         let mut project = Project::new("test-project");
         project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["build".to_string()],
                 inputs: vec![cuenv_core::tasks::Input::Path("src/**/*.rs".to_string())],
@@ -1319,17 +1321,17 @@ mod tests {
 
         project.tasks.insert(
             "test".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["test".to_string()],
-                depends_on: vec!["build".to_string()],
+                depends_on: vec![TaskDependency::from_name("build")],
                 ..Default::default()
             })),
         );
 
         project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["build".to_string()],
                 ..Default::default()
@@ -1351,7 +1353,7 @@ mod tests {
 
         project.tasks.insert(
             "deploy".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "kubectl".to_string(),
                 args: vec!["apply".to_string()],
                 labels: vec!["deployment".to_string()],
@@ -1373,7 +1375,7 @@ mod tests {
 
         project.tasks.insert(
             "script-task".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 script: Some("echo 'Running script'\nls -la".to_string()),
                 ..Default::default()
             })),
@@ -1596,7 +1598,7 @@ mod tests {
         let mut project = Project::new("test-project");
         project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["build".to_string()],
                 inputs: vec![
@@ -1675,7 +1677,7 @@ mod tests {
         // Task with NO inputs
         project.tasks.insert(
             "deploy".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "kubectl".to_string(),
                 args: vec!["apply".to_string()],
                 ..Default::default()
@@ -1734,7 +1736,7 @@ mod tests {
         let mut project = Project::new("test-project");
         project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["build".to_string()],
                 inputs: vec![cuenv_core::tasks::Input::Path("src/**".to_string())],
@@ -1792,7 +1794,7 @@ mod tests {
         // Task with NO inputs
         project.tasks.insert(
             "deploy".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "kubectl".to_string(),
                 args: vec!["apply".to_string()],
                 ..Default::default()
@@ -2425,7 +2427,7 @@ mod tests {
     // =========================================================================
 
     use cuenv_core::ci::{PipelineCondition, PipelineTask, StringOrVec};
-    use cuenv_core::tasks::{Input, ParallelGroup};
+    use cuenv_core::tasks::Input;
 
     #[test]
     fn test_derive_paths_from_task_group() {
@@ -2435,7 +2437,7 @@ mod tests {
         let mut group_tasks = HashMap::new();
         group_tasks.insert(
             "lint".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["clippy".to_string()],
                 inputs: vec![
@@ -2447,7 +2449,7 @@ mod tests {
         );
         group_tasks.insert(
             "test".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["test".to_string()],
                 inputs: vec![
@@ -2461,10 +2463,13 @@ mod tests {
 
         project.tasks.insert(
             "check".to_string(),
-            TaskDefinition::Group(TaskGroup::Parallel(ParallelGroup {
-                tasks: group_tasks,
+            TaskNode::Group(TaskGroup {
+                type_: "group".to_string(),
+                children: group_tasks,
                 depends_on: vec![],
-            })),
+                description: None,
+                max_concurrency: None,
+            }),
         );
 
         let pipeline = Pipeline {
@@ -2533,7 +2538,7 @@ mod tests {
 
         project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["build".to_string()],
                 inputs: vec![Input::Path("src/**".to_string())],
@@ -2601,7 +2606,7 @@ mod tests {
 
         project.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "cargo".to_string(),
                 args: vec!["build".to_string()],
                 inputs: vec![Input::Path("src/**".to_string())],

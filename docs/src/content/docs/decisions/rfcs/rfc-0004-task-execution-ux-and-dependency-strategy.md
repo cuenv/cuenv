@@ -44,8 +44,8 @@ We need a durable reference that captures intents, trade-offs, and consequences.
    - Support aliases (e.g. `cuenv t`) and ensure help text references them.
 
 2. **Execution Semantics**
-   - For `TaskDefinition::Single` without dependencies, execute directly and stream output if `capture_output` is enabled.
-   - For singles with dependencies or groups, construct a `TaskGraph` via [TaskGraph::build_for_task](crates/cuenv-cli/src/commands/task.rs:92) and execute using `execute_graph`, preserving topological order.
+   - For `TaskNode::Task` without dependencies, execute directly and stream output if `capture_output` is enabled.
+   - For tasks with dependencies, groups (`TaskNode::Group`), or sequences (`TaskNode::Sequence`), construct a `TaskGraph` via [TaskGraph::build_for_task](crates/cuenv-cli/src/commands/task.rs:92) and execute using `execute_graph`, preserving topological order.
 
 3. **Environment Handling**
    - Build a task-specific environment using `Environment::build_for_task`, injecting base variables while respecting secret redaction.

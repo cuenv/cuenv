@@ -189,6 +189,8 @@ unsafe fn cue_bridge_version() -> *mut c_char {
 pub struct ModuleEvalOptions {
     /// Extract source positions into separate `meta` map
     pub with_meta: bool,
+    /// Extract reference paths for values that are CUE references (e.g., `dependsOn: [build]`)
+    pub with_references: bool,
     /// true: cue eval ./... (recursive), false: cue eval . (current directory)
     pub recursive: bool,
     /// Filter to specific package name, None = all packages
@@ -203,11 +205,17 @@ pub struct ModuleEvalOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldMeta {
     /// Directory containing the file (relative to module root)
+    #[serde(default)]
     pub directory: String,
     /// Filename where the field is defined
+    #[serde(default)]
     pub filename: String,
     /// Line number in the file
+    #[serde(default)]
     pub line: usize,
+    /// If this value is a CUE reference, the path it refers to (e.g., "tasks.build")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 /// Result of evaluating an entire CUE module
@@ -234,13 +242,14 @@ pub struct ModuleResult {
 /// * `package_name` - Name of the CUE package to evaluate (legacy parameter, prefer using `options.package_name`)
 /// * `options` - Evaluation options:
 ///   - `with_meta`: Extract source positions into separate `meta` map
+///   - `with_references`: Extract CUE reference paths (e.g., for `dependsOn: [build]`, records that `dependsOn[0]` refers to `tasks.build`)
 ///   - `recursive`: Evaluate entire module tree (./...) or just current directory (.)
 ///   - `package_name`: Filter to specific package (takes precedence over legacy parameter)
 ///
 /// # Returns
 /// A `ModuleResult` containing:
 /// - `instances`: Map of relative paths to their evaluated JSON values
-/// - `meta`: Map of "path/field" to source locations (only when `with_meta: true`)
+/// - `meta`: Map of "path/field" to source locations and reference paths (when `with_meta` or `with_references` is true)
 ///
 /// # Errors
 /// Returns an error if:
@@ -501,6 +510,7 @@ pub fn get_bridge_version() -> Result<String> {
 pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<String> {
     let options = ModuleEvalOptions {
         with_meta: false,
+        with_references: false,
         recursive: false,
         package_name: None,
         target_dir: None, // Use module root

@@ -39,8 +39,8 @@ env: {
 }
 
 tasks: {
-  hello: { command: "echo", args: ["Hello from cuenv"] }
-  dev:   { command: "bun",  args: ["run", "dev"] }
+  hello: schema.#Task & { command: "echo", args: ["Hello from cuenv"] }
+  dev:   schema.#Task & { command: "bun",  args: ["run", "dev"] }
 }
 ```
 

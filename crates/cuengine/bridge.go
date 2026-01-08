@@ -111,6 +111,7 @@ type ValueMeta struct {
 	Directory string `json:"directory"`
 	Filename  string `json:"filename"`
 	Line      int    `json:"line"`
+	Reference string `json:"reference,omitempty"` // If this value is a reference, the path it refers to
 }
 
 // MetaValue wraps a concrete value with its source metadata
@@ -180,17 +181,18 @@ func extractTaskPositionsFromStruct(st *ast.StructLit, prefix, filename, moduleR
 			Column: pos.Column(),
 		}
 
-		// Check for nested tasks (parallel groups have a "tasks" field)
+		// Check for nested tasks - TaskGroup has "parallel" field, TaskList has "steps" field
 		if nestedSt, ok := taskField.Value.(*ast.StructLit); ok {
 			for _, nestedElem := range nestedSt.Elts {
 				if nestedField, ok := nestedElem.(*ast.Field); ok {
 					nestedLabel, _, _ := ast.LabelName(nestedField.Label)
-					if nestedLabel == "tasks" {
-						// This is a parallel group, recurse into its tasks
+					if nestedLabel == "parallel" {
+						// This is a TaskGroup, recurse into its parallel tasks
 						if nestedTasksSt, ok := nestedField.Value.(*ast.StructLit); ok {
 							extractTaskPositionsFromStruct(nestedTasksSt, fullName, filename, moduleRoot, positions)
 						}
 					}
+					// Note: TaskList "steps" are arrays, positions extracted differently
 				}
 			}
 		}
@@ -356,6 +358,189 @@ func extractFieldMetaRecursive(field *ast.Field, fieldPath, filename, directory,
 	}
 }
 
+// extractReferencesFromAST walks the AST to find reference identifiers.
+// This is necessary because CUE resolves references during evaluation,
+// so we need to look at the source AST to find reference information.
+// Returns a map of field path -> reference identifier name
+func extractReferencesFromAST(inst *build.Instance, instancePath string) map[string]string {
+	refs := make(map[string]string)
+
+	for _, f := range inst.Files {
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.Field:
+				label, _, _ := ast.LabelName(d.Label)
+				extractReferencesFromField(d, label, instancePath, refs)
+			case *ast.EmbedDecl:
+				// Handle embedded declarations like `schema.#Project & {...}`
+				// These appear at the top level without a field name
+				extractReferencesFromExpr(d.Expr, "", instancePath, refs)
+			}
+		}
+	}
+
+	return refs
+}
+
+// extractReferencesFromField recursively extracts reference identifiers from AST fields
+func extractReferencesFromField(field *ast.Field, fieldPath, instancePath string, refs map[string]string) {
+	// Recurse into the field value (handles all expression types)
+	extractReferencesFromExpr(field.Value, fieldPath, instancePath, refs)
+}
+
+// extractReferencesFromExpr extracts reference identifiers from an AST expression
+func extractReferencesFromExpr(expr ast.Expr, fieldPath, instancePath string, refs map[string]string) {
+	if expr == nil {
+		return
+	}
+
+	switch e := expr.(type) {
+	case *ast.ListLit:
+		// Check list elements for references
+		for i, elem := range e.Elts {
+			indexPath := fmt.Sprintf("%s[%d]", fieldPath, i)
+
+			// Direct identifier reference (e.g., `dependsOn: [build]`)
+			// Only record if it looks like a task reference (not a built-in type)
+			if ident, ok := elem.(*ast.Ident); ok {
+				// Skip CUE built-in types and reserved identifiers
+				if !isBuiltinType(ident.Name) {
+					metaKey := makeMetaKey(instancePath, indexPath)
+					refs[metaKey] = ident.Name
+				}
+			}
+
+			// Selector expression (e.g., `dependsOn: [tasks.build]`)
+			if sel, ok := elem.(*ast.SelectorExpr); ok {
+				refPath := selectorToPath(sel)
+				if refPath != "" {
+					metaKey := makeMetaKey(instancePath, indexPath)
+					refs[metaKey] = refPath
+				}
+			}
+
+			// Recurse into nested expressions
+			extractReferencesFromExpr(elem, indexPath, instancePath, refs)
+		}
+
+	case *ast.StructLit:
+		// Recurse into struct fields
+		for _, elem := range e.Elts {
+			if childField, ok := elem.(*ast.Field); ok {
+				childLabel, _, _ := ast.LabelName(childField.Label)
+				var childPath string
+				if fieldPath != "" {
+					childPath = fieldPath + "." + childLabel
+				} else {
+					childPath = childLabel
+				}
+				extractReferencesFromField(childField, childPath, instancePath, refs)
+			}
+		}
+
+	case *ast.BinaryExpr:
+		// Handle binary expressions like `#Task & {...}`
+		// Recurse into both operands
+		extractReferencesFromExpr(e.X, fieldPath, instancePath, refs)
+		extractReferencesFromExpr(e.Y, fieldPath, instancePath, refs)
+
+	case *ast.UnaryExpr:
+		// Handle unary expressions
+		extractReferencesFromExpr(e.X, fieldPath, instancePath, refs)
+
+	case *ast.ParenExpr:
+		// Handle parenthesized expressions
+		extractReferencesFromExpr(e.X, fieldPath, instancePath, refs)
+
+	case *ast.CallExpr:
+		// Handle call expressions - recurse into arguments
+		for i, arg := range e.Args {
+			argPath := fmt.Sprintf("%s.arg%d", fieldPath, i)
+			extractReferencesFromExpr(arg, argPath, instancePath, refs)
+		}
+
+	case *ast.Ident:
+		// Direct identifier reference at field level
+		// Only record if it looks like a reference (not a built-in type)
+		if !isBuiltinType(e.Name) {
+			metaKey := makeMetaKey(instancePath, fieldPath)
+			refs[metaKey] = e.Name
+		}
+
+	case *ast.SelectorExpr:
+		// Selector expression at field level
+		refPath := selectorToPath(e)
+		if refPath != "" {
+			metaKey := makeMetaKey(instancePath, fieldPath)
+			refs[metaKey] = refPath
+		}
+
+	case *ast.IndexExpr:
+		// Handle index expressions
+		extractReferencesFromExpr(e.X, fieldPath, instancePath, refs)
+		extractReferencesFromExpr(e.Index, fieldPath, instancePath, refs)
+
+	case *ast.SliceExpr:
+		// Handle slice expressions
+		extractReferencesFromExpr(e.X, fieldPath, instancePath, refs)
+		extractReferencesFromExpr(e.Low, fieldPath, instancePath, refs)
+		extractReferencesFromExpr(e.High, fieldPath, instancePath, refs)
+	}
+}
+
+// isBuiltinType returns true if the identifier is a CUE built-in type
+func isBuiltinType(name string) bool {
+	builtins := map[string]bool{
+		"string": true, "bytes": true, "bool": true,
+		"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+		"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+		"float": true, "float32": true, "float64": true,
+		"number": true, "null": true, "_": true, "_|_": true,
+		"true": true, "false": true,
+	}
+	return builtins[name]
+}
+
+// selectorToPath converts a selector expression to a dotted path string
+func selectorToPath(sel *ast.SelectorExpr) string {
+	var parts []string
+
+	// Get the final selector (Sel is ast.Label, use LabelName to extract)
+	if sel.Sel != nil {
+		name, _, _ := ast.LabelName(sel.Sel)
+		if name != "" {
+			parts = append(parts, name)
+		}
+	}
+
+	// Walk up the selector chain
+	current := sel.X
+	for current != nil {
+		switch x := current.(type) {
+		case *ast.Ident:
+			parts = append(parts, x.Name)
+			current = nil
+		case *ast.SelectorExpr:
+			if x.Sel != nil {
+				name, _, _ := ast.LabelName(x.Sel)
+				if name != "" {
+					parts = append(parts, name)
+				}
+			}
+			current = x.X
+		default:
+			current = nil
+		}
+	}
+
+	// Reverse to get correct order
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
+	}
+
+	return strings.Join(parts, ".")
+}
+
 // buildJSONClean builds a JSON representation without any _meta injection.
 // This returns clean JSON that can be correlated with the separate meta map.
 func buildJSONClean(v cue.Value) ([]byte, error) {
@@ -486,48 +671,51 @@ func buildJSON(v cue.Value, moduleRoot string, taskPositions map[string]TaskSour
 	return json.Marshal(result)
 }
 
-// enrichTasksWithSource adds _source metadata to each task in the tasks map using AST positions
+// enrichTasksWithSource adds _source and _name metadata to each task in the tasks map
 func enrichTasksWithSource(decoded interface{}, prefix string, positions map[string]TaskSourcePos) interface{} {
 	tasksMap, ok := decoded.(map[string]interface{})
 	if !ok {
 		return decoded
 	}
 
+	// Inject _name and _source into all tasks
 	for taskName, taskDef := range tasksMap {
 		fullName := taskName
 		if prefix != "" {
 			fullName = prefix + "." + taskName
 		}
-		enrichTaskWithSource(taskDef, fullName, positions)
+		enrichTaskWithSourceAndName(taskDef, fullName, positions)
 	}
+
 	return tasksMap
 }
 
-// enrichTaskWithSource adds _source metadata to a single task definition using AST positions
-// Only adds to leaf tasks (those with command/script), not to group definitions
-func enrichTaskWithSource(taskDef interface{}, fullName string, positions map[string]TaskSourcePos) {
+// enrichTaskWithSourceAndName adds _source and _name metadata to a single task definition
+func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions map[string]TaskSourcePos) {
 	taskObj, ok := taskDef.(map[string]interface{})
 	if !ok {
 		return
 	}
 
-	// Check if this is a task group (has "tasks" field) - if so, only recurse, don't add _source
-	if nested, ok := taskObj["tasks"].(map[string]interface{}); ok {
-		// This is a parallel group - recurse into children
+	// Check if this is a TaskGroup (has "parallel" field) - recurse into children
+	if nested, ok := taskObj["parallel"].(map[string]interface{}); ok {
 		for childName, childDef := range nested {
 			childFullName := fullName + "." + childName
-			enrichTaskWithSource(childDef, childFullName, positions)
+			enrichTaskWithSourceAndName(childDef, childFullName, positions)
 		}
 		return
 	}
 
-	// Check if this is a sequential group (is an array)
-	if _, isArray := taskDef.([]interface{}); isArray {
-		// Sequential groups are arrays, skip adding _source
+	// Check if this is a TaskList (has "steps" field) - recurse into steps
+	if steps, ok := taskObj["steps"].([]interface{}); ok {
+		for i, stepDef := range steps {
+			stepFullName := fmt.Sprintf("%s[%d]", fullName, i)
+			enrichTaskWithSourceAndName(stepDef, stepFullName, positions)
+		}
 		return
 	}
 
-	// This is a leaf task (has command or script) - add _source metadata
+	// This is a leaf task (has command or script) - add _source and _name metadata
 	_, hasCommand := taskObj["command"]
 	_, hasScript := taskObj["script"]
 	_, hasTaskRef := taskObj["task_ref"]
@@ -536,6 +724,9 @@ func enrichTaskWithSource(taskDef interface{}, fullName string, positions map[st
 		// Not a valid leaf task, skip
 		return
 	}
+
+	// Inject _name with the full task path
+	taskObj["_name"] = fullName
 
 	// Look up position from AST-extracted map
 	if pos, ok := positions[fullName]; ok {
@@ -546,6 +737,8 @@ func enrichTaskWithSource(taskDef interface{}, fullName string, positions map[st
 		}
 	}
 }
+
+
 
 // ModuleInstance represents a single evaluated CUE instance within a module
 type ModuleInstance struct {
@@ -562,10 +755,11 @@ type ModuleResult struct {
 
 // ModuleEvalOptions controls how module evaluation behaves
 type ModuleEvalOptions struct {
-	WithMeta    bool    `json:"withMeta"`    // Extract source positions into separate Meta map
-	Recursive   bool    `json:"recursive"`   // true: cue eval ./..., false: cue eval .
-	PackageName *string `json:"packageName"` // Filter to specific package, nil = all packages
-	TargetDir   *string `json:"targetDir"`   // Directory to evaluate (for non-recursive), nil = module root
+	WithMeta       bool    `json:"withMeta"`       // Extract source positions into separate Meta map
+	WithReferences bool    `json:"withReferences"` // Extract reference paths (requires WithMeta)
+	Recursive      bool    `json:"recursive"`      // true: cue eval ./..., false: cue eval .
+	PackageName    *string `json:"packageName"`    // Filter to specific package, nil = all packages
+	TargetDir      *string `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
 }
 
 // instanceResult holds the result of evaluating a single CUE instance (used for parallel evaluation)
@@ -574,6 +768,7 @@ type instanceResult struct {
 	jsonBytes []byte
 	isProject bool
 	meta      map[string]ValueMeta
+	refs      map[string]string // Reference paths extracted from cue.Value
 	err       error
 }
 
@@ -761,6 +956,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// Capture variables for goroutines
 	moduleRoot := goModuleRoot
 	withMeta := options.WithMeta
+	withReferences := options.WithReferences
 
 	for _, built := range builtInstances {
 		wg.Add(1)
@@ -782,11 +978,18 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 				meta = extractFieldMetaSeparate(b.inst, moduleRoot, b.relPath)
 			}
 
+			// Extract reference paths from AST if requested - thread-safe (read-only)
+			var refs map[string]string
+			if withReferences {
+				refs = extractReferencesFromAST(b.inst, b.relPath)
+			}
+
 			results <- instanceResult{
 				relPath:   b.relPath,
 				jsonBytes: jsonBytes,
 				isProject: b.isProject,
 				meta:      meta,
+				refs:      refs,
 			}
 		}(built)
 	}
@@ -810,6 +1013,16 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		for k, v := range r.meta {
 			allMeta[k] = v
 		}
+		// Merge reference paths into meta entries
+		for k, refPath := range r.refs {
+			if existing, ok := allMeta[k]; ok {
+				existing.Reference = refPath
+				allMeta[k] = existing
+			} else {
+				// Create a meta entry with just the reference if no source position exists
+				allMeta[k] = ValueMeta{Reference: refPath}
+			}
+		}
 	}
 
 	if len(instances) == 0 {
@@ -825,7 +1038,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		Instances: instances,
 		Projects:  projects,
 	}
-	if options.WithMeta && len(allMeta) > 0 {
+	if (options.WithMeta || options.WithReferences) && len(allMeta) > 0 {
 		moduleResult.Meta = allMeta
 	}
 

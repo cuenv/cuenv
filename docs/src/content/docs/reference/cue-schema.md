@@ -142,93 +142,153 @@ env: {
 
 ## Tasks
 
-### #Tasks
+### Task API v2 Overview
 
-A task can be a single command, a list (sequential), or a group (parallel/nested).
+Tasks use **explicit type annotations** for clear semantics and compile-time validation:
+
+- `#Task` - Single executable command or script
+- `#TaskGroup` - Parallel execution (all children run concurrently)
+- `#TaskSequence` - Sequential execution (steps run in order)
 
 ```cue
+import "github.com/cuenv/cuenv/schema"
+
 tasks: {
-    // Single task
-    build: {
+    // Single task with explicit type
+    build: schema.#Task & {
         command: "cargo"
-        args: ["build"]
+        args: ["build", "--release"]
     }
 
-    // Sequential list
-    deploy: [
-        {command: "build"},
-        {command: "push"},
+    // Parallel execution - all children run concurrently
+    checks: schema.#TaskGroup & {
+        type: "group"
+        lint: schema.#Task & { command: "cargo", args: ["clippy"] }
+        test: schema.#Task & { command: "cargo", args: ["test"] }
+        fmt:  schema.#Task & { command: "cargo", args: ["fmt", "--check"] }
+    }
+
+    // Sequential execution - steps run in order
+    deploy: schema.#TaskSequence & [
+        schema.#Task & { command: "build" },
+        schema.#Task & { command: "push" },
+        schema.#Task & { command: "notify" },
     ]
 
-    // Nested group
-    test: {
-        unit: {command: "cargo", args: ["test", "--lib"]}
-        e2e: {command: "cargo", args: ["test", "--test", "e2e"]}
+    // Dependencies use CUE references (not strings)
+    release: schema.#Task & {
+        command: "release"
+        dependsOn: [build, checks]  // References, not strings!
     }
 }
 ```
 
+### #TaskNode
+
+Union of all task types - this is what gets validated:
+
+```cue
+#TaskNode: #Task | #TaskGroup | #TaskSequence
+```
+
 ### #Task
 
-A single task definition.
+A single executable task (command or script-based).
 
 ```cue
 tasks: {
-    build: {
-        // Required
+    build: schema.#Task & {
         command: "cargo"
-
-        // Optional
         args: ["build", "--release"]
-        shell: schema.#Bash
-        env: {
-            RUST_LOG: "debug"
-        }
-        dependsOn: ["lint", "test"]
+        env: { RUST_LOG: "debug" }
+        dependsOn: [lint, test]  // CUE references
         inputs: ["src/**/*.rs", "Cargo.toml"]
         outputs: ["target/release/myapp"]
         description: "Build the application"
-        workspaces: ["packages/core"]
+    }
+
+    // Script-based task
+    setup: schema.#Task & {
+        script: """
+            echo "Setting up..."
+            npm install
+            npm run build
+            """
+        scriptShell: "bash"
+        shellOptions: {
+            errexit: true
+            pipefail: true
+        }
     }
 }
 ```
 
 **Fields:**
 
-| Field            | Type                               | Required | Description                      |
-| ---------------- | ---------------------------------- | -------- | -------------------------------- |
-| `command`        | `string`                           | Yes      | Command to execute               |
-| `args`           | `[...string]`                      | No       | Command arguments                |
-| `shell`          | `#Shell`                           | No       | Shell to use for execution       |
-| `env`            | `{[string]: #EnvironmentVariable}` | No       | Task-specific environment        |
-| `dependsOn`      | `[...string]`                      | No       | Task dependencies                |
-| `inputs`         | `[...string]`                      | No       | Input file patterns for caching  |
-| `outputs`        | `[...string]`                      | No       | Output file patterns for caching |
-| `description`    | `string`                           | No       | Human-readable description       |
-| `workspaces`     | `[...string]`                      | No       | Workspaces to enable             |
-| `externalInputs` | `[...#ExternalInput]`              | No       | Cross-project dependencies       |
+| Field            | Type                               | Required | Description                              |
+| ---------------- | ---------------------------------- | -------- | ---------------------------------------- |
+| `command`        | `string`                           | No*      | Command to execute                       |
+| `args`           | `[...string]`                      | No       | Command arguments                        |
+| `script`         | `string`                           | No*      | Multi-line script (alternative to cmd)   |
+| `scriptShell`    | `#ScriptShell`                     | No       | Shell for script execution (default: bash) |
+| `shellOptions`   | `#ShellOptions`                    | No       | Shell options (errexit, pipefail, etc.)  |
+| `env`            | `{[string]: #EnvironmentVariable}` | No       | Task-specific environment                |
+| `dependsOn`      | `[...#TaskNode]`                   | No       | Task dependencies (CUE references)       |
+| `inputs`         | `[...#Input]`                      | No       | Input file patterns for caching          |
+| `outputs`        | `[...string]`                      | No       | Output file patterns for caching         |
+| `description`    | `string`                           | No       | Human-readable description               |
+| `hermetic`       | `bool`                             | No       | Isolated execution (default: true)       |
+| `timeout`        | `string`                           | No       | Execution timeout (e.g., "30m")          |
+| `continueOnError`| `bool`                             | No       | Continue on failure (default: false)     |
+
+*Either `command` or `script` should be provided.
+
+**Script Shells:** `bash`, `sh`, `zsh`, `fish`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
 
 ### #TaskGroup
 
-Task groups determine execution mode by structure:
+Parallel execution - all child tasks run concurrently.
 
 ```cue
-// Array = Sequential execution
-sequential: [
-    {command: "step1"},
-    {command: "step2"},
-    {command: "step3"},
-]
+tasks: {
+    checks: schema.#TaskGroup & {
+        type: "group"  // Required discriminator
+        maxConcurrency: 4  // Optional: limit parallel tasks
+        description: "Run all checks in parallel"
 
-// Object = Parallel/nested execution
-parallel: {
-    task1: {command: "cmd1"}
-    task2: {command: "cmd2"}
-    nested: {
-        subtask: {command: "cmd3"}
+        // Named children - all run concurrently
+        lint: schema.#Task & { command: "cargo", args: ["clippy"] }
+        test: schema.#Task & { command: "cargo", args: ["test"] }
+        audit: schema.#Task & { command: "cargo", args: ["audit"] }
     }
 }
 ```
+
+**Fields:**
+
+| Field            | Type             | Required | Description                        |
+| ---------------- | ---------------- | -------- | ---------------------------------- |
+| `type`           | `"group"`        | Yes      | Type discriminator                 |
+| `dependsOn`      | `[...#TaskNode]` | No       | Dependencies (CUE references)      |
+| `maxConcurrency` | `int`            | No       | Limit concurrent tasks (0 = unlimited) |
+| `description`    | `string`         | No       | Human-readable description         |
+| `{children}`     | `#TaskNode`      | No       | Named child tasks (any other field)|
+
+### #TaskSequence
+
+Sequential execution - tasks run in order, one after another.
+
+```cue
+tasks: {
+    deploy: schema.#TaskSequence & [
+        schema.#Task & { command: "build", description: "Build artifacts" },
+        schema.#Task & { command: "test", description: "Run tests" },
+        schema.#Task & { command: "push", description: "Push to registry" },
+    ]
+}
+```
+
+A sequence is simply an array of `#TaskNode` - the tasks execute in array order.
 
 ### #ExternalInput
 

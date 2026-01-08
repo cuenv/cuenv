@@ -13,7 +13,7 @@ ci: pipelines: {
 }
 
 tasks: {
-    test: {
+    test: schema.#Task & {
         command: "echo"
         args: ["Running test task"]
         inputs: ["env.cue"]

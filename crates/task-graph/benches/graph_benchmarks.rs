@@ -15,8 +15,8 @@ struct BenchTask {
 }
 
 impl TaskNodeData for BenchTask {
-    fn depends_on(&self) -> &[String] {
-        &self.deps
+    fn dependency_names(&self) -> impl Iterator<Item = &str> {
+        self.deps.iter().map(String::as_str)
     }
 }
 

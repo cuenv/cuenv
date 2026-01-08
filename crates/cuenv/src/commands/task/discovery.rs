@@ -9,7 +9,7 @@ use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{TaskDefinition, Tasks};
+use cuenv_core::tasks::{TaskNode, Tasks};
 
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::{CommandExecutor, convert_engine_error, relative_path_from_root};
@@ -38,8 +38,8 @@ pub fn find_tasks_with_labels(tasks: &Tasks, labels: &[String]) -> Vec<String> {
     let mut matching: Vec<String> = tasks
         .tasks
         .iter()
-        .filter_map(|(name, definition)| match definition {
-            TaskDefinition::Single(task)
+        .filter_map(|(name, node)| match node {
+            TaskNode::Task(task)
                 if required_labels
                     .iter()
                     .all(|label| task.labels.contains(label)) =>
@@ -132,6 +132,7 @@ pub fn evaluate_manifest(
         module_root.clone(),
         raw_result.instances,
         raw_result.projects,
+        None,
     );
 
     let rel_path = relative_path_from_root(&module_root, &target_path);

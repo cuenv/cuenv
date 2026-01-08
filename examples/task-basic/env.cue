@@ -11,44 +11,46 @@ env: {
 }
 
 tasks: {
-	// Simple Task
-	interpolate: {
+	// Simple Task with explicit #Task type
+	interpolate: schema.#Task & {
 		command: "echo"
 		args: ["Hello ", env.NAME, "!"]
 	}
 
-	propagate: {
+	propagate: schema.#Task & {
 		command: "printenv"
 		// Good test-case to ensure env above is available at execution.
 		args: ["NAME"]
 	}
 
-	// Task List
-	greetAll: [
-		{
+	// Task Sequence - steps run in order
+	greetAll: schema.#TaskSequence & [
+		schema.#Task & {
 			command: "echo"
 			args: ["Hello 1 ", env.NAME, "!"]
 		},
-		{
+		schema.#Task & {
 			command: "echo"
 			args: ["Hello 2 ", env.NAME, "!"]
 		},
 	]
 
-	// Nested Tasks
-	greetIndividual: {jack: {
-		command: "echo"
-		args: ["Hello Jack"]
-	}
-		tealc: {
+	// Task Group - children run in parallel
+	greetIndividual: schema.#TaskGroup & {
+		type: "group"
+		jack: schema.#Task & {
+			command: "echo"
+			args: ["Hello Jack"]
+		}
+		tealc: schema.#Task & {
 			command: "echo"
 			args: ["Hello Teal'c"]
 		}
 	}
 
-	// Shell Task
-	shellExample: {
-		shell: schema.#Bash
+	// Shell Task with explicit scriptShell
+	shellExample: schema.#Task & {
+		scriptShell: "bash"
 		command: "echo"
 		args: ["Hello from Bash"]
 	}

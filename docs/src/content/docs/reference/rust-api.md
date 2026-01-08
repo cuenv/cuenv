@@ -138,73 +138,103 @@ let manifest: Cuenv = evaluator.evaluate()?;
 
 ### Task Types
 
-#### Task
+cuenv uses a **Task API v2** with explicit task types for clear semantics.
 
-Represents a single executable command pulled from CUE.
+#### TaskNode
+
+The main task type enum with three variants:
 
 ```rust
-use cuenv_core::tasks::Task;
-use serde_json::json;
-use std::collections::HashMap;
+use cuenv_core::tasks::{TaskNode, Task, TaskGroup, TaskDependency};
 
-let mut env = HashMap::new();
-env.insert("RUST_LOG".into(), json!("info"));
-
-let build = Task {
-    command: "cargo".into(),
+// TaskNode::Task - single executable command
+let build = TaskNode::Task(Task {
+    command: Some("cargo".into()),
     args: vec!["build".into(), "--release".into()],
-    shell: None,
-    env,
-    depends_on: vec!["lint".into(), "test".into()],
-    inputs: vec!["src".into(), "Cargo.toml".into()],
-    outputs: vec!["target/release/app".into()],
-    external_inputs: None,
-    workspaces: vec![],
     description: Some("Build release binaries".into()),
-};
+    depends_on: vec![
+        TaskDependency::from_name("lint"),
+        TaskDependency::from_name("test"),
+    ],
+    inputs: vec!["src/**/*.rs".into(), "Cargo.toml".into()],
+    outputs: vec!["target/release/app".into()],
+    ..Default::default()
+});
+
+// TaskNode::Group - parallel execution
+let checks = TaskNode::Group(TaskGroup {
+    type_: "group".into(),
+    children: [
+        ("lint".into(), TaskNode::Task(Task { command: Some("cargo".into()), args: vec!["clippy".into()], ..Default::default() })),
+        ("test".into(), TaskNode::Task(Task { command: Some("cargo".into()), args: vec!["test".into()], ..Default::default() })),
+    ].into_iter().collect(),
+    ..Default::default()
+});
+
+// TaskNode::Sequence - sequential execution
+let deploy = TaskNode::Sequence(vec![
+    TaskNode::Task(Task { command: Some("build".into()), ..Default::default() }),
+    TaskNode::Task(Task { command: Some("push".into()), ..Default::default() }),
+]);
 ```
+
+**TaskNode variants:**
+
+| Variant                  | Description                                      |
+| ------------------------ | ------------------------------------------------ |
+| `TaskNode::Task(Task)`   | Single executable command or script              |
+| `TaskNode::Group(TaskGroup)` | Parallel execution - all children run concurrently |
+| `TaskNode::Sequence(Vec<TaskNode>)` | Sequential execution - runs in order |
+
+#### Task
+
+Represents a single executable command.
 
 **Fields:**
 
 | Field             | Type                                 | Description                                         |
 | ----------------- | ------------------------------------ | --------------------------------------------------- |
-| `command`         | `String`                             | Executable to run                                   |
-| `args`            | `Vec<String>`                        | Arguments for the command                           |
-| `shell`           | `Option<Shell>`                      | Override shell invocation (defaults to direct exec) |
+| `command`         | `Option<String>`                     | Command to execute                                  |
+| `args`            | `Vec<String>`                        | Command arguments                                   |
+| `script`          | `Option<String>`                     | Multi-line script (alternative to command)          |
+| `script_shell`    | `Option<ScriptShell>`                | Shell for script execution (default: bash)          |
+| `shell_options`   | `Option<ShellOptions>`               | Shell options (errexit, pipefail, etc.)             |
 | `env`             | `HashMap<String, serde_json::Value>` | Task-specific environment additions                 |
-| `depends_on`      | `Vec<String>`                        | Other tasks that must finish first                  |
+| `depends_on`      | `Vec<TaskDependency>`                | Task dependencies (resolved from CUE references)    |
 | `inputs`          | `Vec<Input>`                         | Files/globs or task output references               |
 | `outputs`         | `Vec<String>`                        | Declared outputs that become cacheable artifacts    |
-| `external_inputs` | `Option<Vec<ExternalInput>>`         | Consume outputs from another project in the repo    |
-| `workspaces`      | `Vec<String>`                        | Workspace names to enable (see schema)              |
 | `description`     | `Option<String>`                     | Human-friendly summary                              |
+| `hermetic`        | `Option<bool>`                       | Isolated execution (default: true)                  |
+| `timeout`         | `Option<String>`                     | Execution timeout (e.g., "30m")                     |
+| `continue_on_error` | `Option<bool>`                     | Continue on failure (default: false)                |
 
-#### TaskDefinition & TaskGroup
+#### TaskDependency
 
-```rust
-use cuenv_core::tasks::{TaskDefinition, TaskGroup};
-
-let test_task = build.clone(); // assume another Task definition exists
-
-let group = TaskDefinition::Group(TaskGroup::Sequential(vec![
-    TaskDefinition::Single(Box::new(build.clone())),
-    TaskDefinition::Single(Box::new(test_task)),
-]));
-```
-
-- `TaskDefinition::Single(Task)` represents one command.
-- `TaskDefinition::Group(TaskGroup)` represents sequential (`Vec<TaskDefinition>`) or parallel (`HashMap<String, TaskDefinition>`) sub-tasks.
-
-#### Tasks
-
-`Tasks` is the top-level map of task names to their definitions (flattened when parsed from CUE).
+Task dependencies are resolved from CUE references, providing compile-time validation:
 
 ```rust
-use cuenv_core::tasks::{TaskDefinition, Tasks};
+use cuenv_core::tasks::TaskDependency;
 
-let mut tasks = Tasks::new();
-tasks.tasks.insert("build".into(), TaskDefinition::Single(Box::new(build)));
+// Create a dependency by name
+let dep = TaskDependency::from_name("build");
+
+// Get the task name
+let name: &str = dep.task_name();
 ```
+
+#### TaskGroup
+
+Parallel execution group - all child tasks run concurrently.
+
+**Fields:**
+
+| Field            | Type                           | Description                              |
+| ---------------- | ------------------------------ | ---------------------------------------- |
+| `type_`          | `String`                       | Type discriminator (always "group")      |
+| `children`       | `HashMap<String, TaskNode>`    | Named child tasks (run in parallel)      |
+| `depends_on`     | `Vec<TaskDependency>`          | Dependencies on other tasks              |
+| `max_concurrency`| `Option<i32>`                  | Limit concurrent executions (0 = unlimited) |
+| `description`    | `Option<String>`               | Human-readable description               |
 
 ### Environment
 

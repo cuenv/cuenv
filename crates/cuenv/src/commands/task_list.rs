@@ -5,7 +5,7 @@
 //! while `TaskListFormatter` implementations handle different output formats.
 
 use cuenv_cache::tasks as task_cache;
-use cuenv_core::tasks::{IndexedTask, TaskDefinition, TaskGroup};
+use cuenv_core::tasks::{IndexedTask, TaskNode as CoreTaskNode};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
@@ -235,19 +235,14 @@ fn build_tree_nodes(
             if is_last {
                 node.is_task = true;
                 node.full_name = Some(task.name.clone());
-                node.dep_count = get_dep_count(&task.definition);
+                node.dep_count = get_dep_count(&task.node);
                 node.is_cached = cached_tasks.contains(&task.name);
 
-                // Extract description from definition
-                node.description = match &task.definition {
-                    TaskDefinition::Single(t) => t.description.clone(),
-                    TaskDefinition::Group(g) => match g {
-                        TaskGroup::Sequential(sub) => sub.first().and_then(|t| match t {
-                            TaskDefinition::Single(st) => st.description.clone(),
-                            TaskDefinition::Group(_) => None,
-                        }),
-                        TaskGroup::Parallel(_) => None,
-                    },
+                // Extract description from node
+                node.description = match &task.node {
+                    CoreTaskNode::Task(t) => t.description.clone(),
+                    CoreTaskNode::Group(g) => g.description.clone(),
+                    CoreTaskNode::Sequence(_) => None,
                 };
 
                 stats.total_tasks += 1;
@@ -264,17 +259,18 @@ fn build_tree_nodes(
     (nodes, stats)
 }
 
-/// Get dependency count from a task definition
-fn get_dep_count(def: &TaskDefinition) -> usize {
-    match def {
-        TaskDefinition::Single(t) => t.depends_on.len(),
-        TaskDefinition::Group(g) => match g {
-            TaskGroup::Sequential(tasks) => tasks.first().map_or(0, get_dep_count),
-            TaskGroup::Parallel(parallel) => {
-                // Get first task from parallel group
-                parallel.tasks.values().next().map_or(0, get_dep_count)
-            }
-        },
+/// Get dependency count from a task node
+fn get_dep_count(node: &CoreTaskNode) -> usize {
+    match node {
+        CoreTaskNode::Task(t) => t.depends_on.len(),
+        CoreTaskNode::Group(g) => {
+            // Get first task from parallel group
+            g.children.values().next().map_or(0, get_dep_count)
+        }
+        CoreTaskNode::Sequence(steps) => {
+            // Get first task from sequence
+            steps.first().map_or(0, get_dep_count)
+        }
     }
 }
 

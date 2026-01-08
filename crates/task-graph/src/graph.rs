@@ -125,7 +125,7 @@ impl<T: TaskNodeData> TaskGraph<T> {
 
         // Collect all dependency relationships
         for (node_index, node) in self.graph.node_references() {
-            for dep_name in node.task.depends_on() {
+            for dep_name in node.task.dependency_names() {
                 // Expand group references to leaf tasks
                 let expanded_deps = self.expand_dep_to_leaf_tasks(dep_name);
 
@@ -214,7 +214,7 @@ impl<T: TaskNodeData> TaskGraph<T> {
         for task in sorted {
             // Find the maximum level of all dependencies
             let mut level = 0;
-            for dep in task.task.depends_on() {
+            for dep in task.task.dependency_names() {
                 if let Some(&dep_level) = processed.get(dep) {
                     level = level.max(dep_level + 1);
                 }
@@ -285,7 +285,7 @@ impl<T: TaskNodeData> TaskGraph<T> {
 
             if let Some(task) = get_task(&current_name) {
                 // Collect dependencies before adding the task
-                let deps: Vec<String> = task.depends_on().to_vec();
+                let deps: Vec<String> = task.dependency_names().map(String::from).collect();
 
                 self.add_task(&current_name, task)?;
 
@@ -365,9 +365,9 @@ impl<T: TaskNodeData> TaskGraph<T> {
                     self.add_task(&current_name, task.clone())?;
 
                     // Add dependencies to processing queue
-                    for dep in task.depends_on() {
+                    for dep in task.dependency_names() {
                         if !processed.contains(dep) {
-                            to_process.push(dep.clone());
+                            to_process.push(dep.to_string());
                         }
                     }
                 }
@@ -496,8 +496,9 @@ impl<T: TaskNodeData> TaskGraph<T> {
                 }
 
                 if let Some(node) = self.get_node_by_name(task_name) {
-                    for dep in node.task.depends_on() {
+                    for dep in node.task.dependency_names() {
                         // Check if this is an external dependency (starts with #)
+                        // Note: Cross-project refs are no longer supported, but keeping check for safety
                         if dep.starts_with('#') {
                             if is_external_affected
                                 .as_ref()
@@ -622,12 +623,14 @@ mod tests {
     }
 
     impl TaskNodeData for TestTask {
-        fn depends_on(&self) -> &[String] {
-            &self.depends_on
+        fn dependency_names(&self) -> impl Iterator<Item = &str> {
+            self.depends_on.iter().map(String::as_str)
         }
 
         fn add_dependency(&mut self, dep: String) {
-            self.depends_on.push(dep);
+            if !self.depends_on.contains(&dep) {
+                self.depends_on.push(dep);
+            }
         }
     }
 
@@ -846,6 +849,52 @@ mod tests {
 
         assert!(graph.has_cycles());
         assert!(graph.get_parallel_groups().is_err());
+    }
+
+    /// Test that shared dependencies appear only once in the DAG.
+    ///
+    /// When task A and task B both depend on task C, task C should only
+    /// appear once in the task graph (deduplication).
+    #[test]
+    fn test_shared_dependency_deduplication() {
+        let mut graph = TaskGraph::new();
+
+        // Create pattern where both A and B depend on C:
+        //     C
+        //    / \
+        //   A   B
+        let task_c = TestTask::new(&[]);
+        let task_a = TestTask::new(&["c"]);
+        let task_b = TestTask::new(&["c"]);
+
+        graph.add_task("c", task_c).unwrap();
+        graph.add_task("a", task_a).unwrap();
+        graph.add_task("b", task_b).unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        // Verify task C appears exactly once in the graph
+        assert_eq!(graph.task_count(), 3, "Should have exactly 3 tasks");
+
+        // Count occurrences of task C in the topological sort
+        let sorted = graph.topological_sort().unwrap();
+        let c_count = sorted.iter().filter(|node| node.name == "c").count();
+        assert_eq!(c_count, 1, "Task C should appear exactly once in the DAG");
+
+        // Verify execution order: C comes before both A and B
+        let positions: std::collections::HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.name.clone(), i))
+            .collect();
+        assert!(positions["c"] < positions["a"], "C should execute before A");
+        assert!(positions["c"] < positions["b"], "C should execute before B");
+
+        // Verify parallel groups: C in level 0, A and B in level 1
+        let groups = graph.get_parallel_groups().unwrap();
+        assert_eq!(groups.len(), 2, "Should have 2 execution levels");
+        assert_eq!(groups[0].len(), 1, "Level 0 should have 1 task (C)");
+        assert_eq!(groups[0][0].name, "c");
+        assert_eq!(groups[1].len(), 2, "Level 1 should have 2 tasks (A and B)");
     }
 
     #[test]

@@ -104,6 +104,7 @@ pub fn execute_info(
         module_root.clone(),
         raw_result.instances,
         raw_result.projects,
+        None,
     );
 
     // Collect project information

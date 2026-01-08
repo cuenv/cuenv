@@ -5,7 +5,7 @@
 //! - Host execution; isolation/caching is delegated to other backends
 
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
-use super::{ParallelGroup, Task, TaskDefinition, TaskGraph, TaskGroup, Tasks};
+use super::{Task, TaskGraph, TaskGroup, TaskNode, Tasks};
 use crate::config::BackendConfig;
 use crate::environment::Environment;
 use crate::{Error, Result};
@@ -408,51 +408,50 @@ impl TaskExecutor {
         }
     }
 
-    /// Execute a task definition (single task or group)
+    /// Execute a task node (single task, group, or list)
+    #[async_recursion]
+    pub async fn execute_node(
+        &self,
+        name: &str,
+        node: &TaskNode,
+        all_tasks: &Tasks,
+    ) -> Result<Vec<TaskResult>> {
+        match node {
+            TaskNode::Task(task) => {
+                let result = self.execute_task(name, task.as_ref()).await?;
+                Ok(vec![result])
+            }
+            TaskNode::Group(group) => self.execute_parallel(name, group, all_tasks).await,
+            TaskNode::Sequence(seq) => self.execute_sequential(name, seq, all_tasks).await,
+        }
+    }
+
+    /// Execute a task definition (legacy alias for execute_node)
     #[async_recursion]
     pub async fn execute_definition(
         &self,
         name: &str,
-        definition: &TaskDefinition,
+        node: &TaskNode,
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
-        match definition {
-            TaskDefinition::Single(task) => {
-                let result = self.execute_task(name, task.as_ref()).await?;
-                Ok(vec![result])
-            }
-            TaskDefinition::Group(group) => self.execute_group(name, group, all_tasks).await,
-        }
-    }
-
-    async fn execute_group(
-        &self,
-        prefix: &str,
-        group: &TaskGroup,
-        all_tasks: &Tasks,
-    ) -> Result<Vec<TaskResult>> {
-        match group {
-            TaskGroup::Sequential(tasks) => self.execute_sequential(prefix, tasks, all_tasks).await,
-            TaskGroup::Parallel(group) => self.execute_parallel(prefix, group, all_tasks).await,
-        }
+        self.execute_node(name, node, all_tasks).await
     }
 
     async fn execute_sequential(
         &self,
         prefix: &str,
-        tasks: &[TaskDefinition],
+        sequence: &[TaskNode],
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         if !self.config.capture_output {
-            cuenv_events::emit_task_group_started!(prefix, true, tasks.len());
+            cuenv_events::emit_task_group_started!(prefix, true, sequence.len());
         }
         let mut results = Vec::new();
-        for (i, task_def) in tasks.iter().enumerate() {
+        for (i, step) in sequence.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
-            let task_results = self
-                .execute_definition(&task_name, task_def, all_tasks)
-                .await?;
+            let task_results = self.execute_node(&task_name, step, all_tasks).await?;
             for result in &task_results {
+                // Sequences always stop on first error (no configuration option)
                 if !result.success {
                     return Err(Error::task_failed(
                         &result.name,
@@ -470,24 +469,22 @@ impl TaskExecutor {
     async fn execute_parallel(
         &self,
         prefix: &str,
-        group: &ParallelGroup,
+        group: &TaskGroup,
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         // Check for "default" task to override parallel execution
-        if let Some(default_task) = group.tasks.get("default") {
+        if let Some(default_task) = group.children.get("default") {
             if !self.config.capture_output {
                 cuenv_events::emit_task_group_started!(prefix, true, 1_usize);
             }
             // Execute only the default task, using the group prefix directly
             // since "default" is implicit when invoking the group name
             let task_name = format!("{}.default", prefix);
-            return self
-                .execute_definition(&task_name, default_task, all_tasks)
-                .await;
+            return self.execute_node(&task_name, default_task, all_tasks).await;
         }
 
         if !self.config.capture_output {
-            cuenv_events::emit_task_group_started!(prefix, false, group.tasks.len());
+            cuenv_events::emit_task_group_started!(prefix, false, group.children.len());
         }
         let mut join_set = JoinSet::new();
         let all_tasks = Arc::new(all_tasks.clone());
@@ -504,14 +501,14 @@ impl TaskExecutor {
             all_results.extend(results);
             Ok(())
         };
-        for (name, task_def) in &group.tasks {
+        for (name, child_node) in &group.children {
             let task_name = format!("{}.{}", prefix, name);
-            let task_def = task_def.clone();
+            let child_node = child_node.clone();
             let all_tasks = Arc::clone(&all_tasks);
             let executor = self.clone_with_config();
             join_set.spawn(async move {
                 executor
-                    .execute_definition(&task_name, &task_def, &all_tasks)
+                    .execute_node(&task_name, &child_node, &all_tasks)
                     .await
             });
             if self.config.max_parallel > 0
@@ -851,6 +848,7 @@ pub async fn execute_command_with_redaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::TaskDependency;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -952,13 +950,14 @@ mod tests {
             description: Some("Second task".to_string()),
             ..Default::default()
         };
-        let group = TaskGroup::Sequential(vec![
-            TaskDefinition::Single(Box::new(task1)),
-            TaskDefinition::Single(Box::new(task2)),
-        ]);
+        let sequence = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+        ];
         let all_tasks = Tasks::new();
+        let node = TaskNode::Sequence(sequence);
         let results = executor
-            .execute_group("seq", &group, &all_tasks)
+            .execute_node("seq", &node, &all_tasks)
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1084,7 +1083,7 @@ mod tests {
         let mut tasks = Tasks::new();
         tasks.tasks.insert(
             "dep".into(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "sh".into(),
                 args: vec!["-c".into(), "sleep 0.2 && echo ok > marker.txt".into()],
                 ..Default::default()
@@ -1092,10 +1091,10 @@ mod tests {
         );
         tasks.tasks.insert(
             "consumer".into(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "sh".into(),
                 args: vec!["-c".into(), "cat marker.txt".into()],
-                depends_on: vec!["dep".into()],
+                depends_on: vec![TaskDependency::from_name("dep")],
                 ..Default::default()
             })),
         );

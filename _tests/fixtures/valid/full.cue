@@ -40,7 +40,7 @@ schema.#Project & {
 	}
 	
 	tasks: {
-		build: {
+		build: schema.#Task & {
 			description: "Build the project"
 			command: "cargo"
 			args: ["build", "--release"]
@@ -48,11 +48,11 @@ schema.#Project & {
 				RUST_LOG: "info"
 			}
 		}
-		test: {
+		test: schema.#Task & {
 			description: "Run tests"
 			command: "cargo"
 			args: ["test"]
-			dependsOn: ["build"]
+			dependsOn: [build]
 		}
 	}
 }
