@@ -34,6 +34,6 @@ Feature: Error handling behaviors
 
   Scenario: Empty project is handled gracefully
     Given a project with no tasks or environment
-    When I run "cuenv task --list"
+    When I run "cuenv task"
     Then the exit code should be 0
 

@@ -1014,7 +1014,7 @@ async fn given_project_with_tasks(world: &mut TestWorld, step: &cucumber::gherki
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/task-test\"\n",
+        "module: \"test.example/task-test\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
@@ -1080,7 +1080,7 @@ tasks: {{
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/parallel-test\"\n",
+        "module: \"test.example/parallel-test\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
@@ -1148,7 +1148,7 @@ tasks: {{
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/group-test\"\n",
+        "module: \"test.example/group-test\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
@@ -1338,7 +1338,7 @@ async fn given_project_with_env_vars(world: &mut TestWorld, step: &cucumber::ghe
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/env-test\"\n",
+        "module: \"test.example/env-test\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
@@ -1387,7 +1387,7 @@ name: "empty-env-test"
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/empty-env\"\n",
+        "module: \"test.example/empty-env\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
@@ -1453,7 +1453,7 @@ environments: {{
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/env-inherit\"\n",
+        "module: \"test.example/env-inherit\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
@@ -1576,7 +1576,7 @@ env: {
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/invalid-cue\"\n",
+        "module: \"test.example/invalid-cue\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
@@ -1622,7 +1622,7 @@ name: "empty-project"
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/empty-project\"\n",
+        "module: \"test.example/empty-project\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
