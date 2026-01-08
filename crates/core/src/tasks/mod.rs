@@ -1243,18 +1243,13 @@ mod tests {
             ..Default::default()
         };
 
-        let list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(task1)),
-                TaskNode::Task(Box::new(task2)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let sequence = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+        ];
 
-        assert_eq!(list.len(), 2);
-        assert!(!list.is_empty());
+        assert_eq!(sequence.len(), 2);
+        assert!(!sequence.is_empty());
     }
 
     #[test]
@@ -1273,12 +1268,13 @@ mod tests {
             ..Default::default()
         };
 
-        let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("task1".to_string(), TaskNode::Task(Box::new(task1)));
-        parallel_tasks.insert("task2".to_string(), TaskNode::Task(Box::new(task2)));
+        let mut children = HashMap::new();
+        children.insert("task1".to_string(), TaskNode::Task(Box::new(task1)));
+        children.insert("task2".to_string(), TaskNode::Task(Box::new(task2)));
 
         let group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children,
             depends_on: vec![],
             max_concurrency: None,
             description: None,
@@ -1323,33 +1319,29 @@ mod tests {
         let task_node = TaskNode::Task(Box::new(task.clone()));
         assert!(task_node.is_task());
         assert!(!task_node.is_group());
-        assert!(!task_node.is_list());
+        assert!(!task_node.is_sequence());
         assert_eq!(task_node.as_task().unwrap().command, "test");
         assert!(task_node.as_group().is_none());
-        assert!(task_node.as_list().is_none());
+        assert!(task_node.as_sequence().is_none());
 
         let group = TaskNode::Group(TaskGroup {
-            parallel: HashMap::new(),
+            type_: "group".to_string(),
+            children: HashMap::new(),
             depends_on: vec![],
             max_concurrency: None,
             description: None,
         });
         assert!(!group.is_task());
         assert!(group.is_group());
-        assert!(!group.is_list());
+        assert!(!group.is_sequence());
         assert!(group.as_task().is_none());
         assert!(group.as_group().is_some());
 
-        let list = TaskNode::List(TaskList {
-            steps: vec![],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        });
-        assert!(!list.is_task());
-        assert!(!list.is_group());
-        assert!(list.is_list());
-        assert!(list.as_list().is_some());
+        let sequence = TaskNode::Sequence(vec![]);
+        assert!(!sequence.is_task());
+        assert!(!sequence.is_group());
+        assert!(sequence.is_sequence());
+        assert!(sequence.as_sequence().is_some());
     }
 
     #[test]
@@ -1654,7 +1646,8 @@ mod tests {
             parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
             let group = TaskGroup {
-                parallel: parallel_tasks,
+                type_: "group".to_string(),
+                children: parallel_tasks,
                 depends_on: vec![],
                 max_concurrency: None,
                 description: None,
@@ -1677,7 +1670,8 @@ mod tests {
             parallel_tasks.insert("test".to_string(), TaskNode::Task(Box::new(test_task)));
 
             let group = TaskGroup {
-                parallel: parallel_tasks,
+                type_: "group".to_string(),
+                children: parallel_tasks,
                 depends_on: vec![],
                 max_concurrency: None,
                 description: None,
@@ -1691,25 +1685,21 @@ mod tests {
         }
 
         #[test]
-        fn test_task_list_any_affected() {
+        fn test_task_sequence_any_affected() {
             let build_task = make_task(vec!["src/**"]);
             let deploy_task = make_task(vec!["deploy/**"]);
 
-            let list = TaskList {
-                steps: vec![
-                    TaskNode::Task(Box::new(build_task)),
-                    TaskNode::Task(Box::new(deploy_task)),
-                ],
-                depends_on: vec![],
-                stop_on_first_error: true,
-                description: None,
-            };
+            let sequence = vec![
+                TaskNode::Task(Box::new(build_task)),
+                TaskNode::Task(Box::new(deploy_task)),
+            ];
 
-            // Change in src/ should affect the list (because build is affected)
+            // Change in src/ should affect the sequence (because build is affected)
             let changed_files = vec![PathBuf::from("src/lib.rs")];
             let root = Path::new(".");
 
-            assert!(list.is_affected_by(&changed_files, root));
+            let sequence_node = TaskNode::Sequence(sequence);
+            assert!(sequence_node.is_affected_by(&changed_files, root));
         }
 
         #[test]

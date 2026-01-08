@@ -497,7 +497,8 @@ mod tests {
         manifest.tasks.insert(
             "projen".into(),
             TaskNode::Group(TaskGroup {
-                parallel: parallel_tasks,
+                type_: "group".to_string(),
+                children: parallel_tasks,
                 depends_on: Vec::new(),
                 description: None,
                 max_concurrency: None,
@@ -632,7 +633,8 @@ mod tests {
         manifest.tasks.insert(
             "group-task".into(),
             TaskNode::Group(TaskGroup {
-                parallel: HashMap::new(),
+                type_: "group".to_string(),
+                children: HashMap::new(),
                 depends_on: Vec::new(),
                 description: None,
                 max_concurrency: None,

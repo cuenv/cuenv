@@ -2464,7 +2464,8 @@ mod tests {
         project.tasks.insert(
             "check".to_string(),
             TaskNode::Group(TaskGroup {
-                parallel: group_tasks,
+                type_: "group".to_string(),
+                children: group_tasks,
                 depends_on: vec![],
                 description: None,
                 max_concurrency: None,

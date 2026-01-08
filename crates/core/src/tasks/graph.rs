@@ -32,7 +32,7 @@ impl Tasks {
     ///
     /// Examples:
     /// - `"build"` → top-level lookup
-    /// - `"build.frontend"` → first tries `tasks["build.frontend"]`, then `tasks["build"].parallel["frontend"]`
+    /// - `"build.frontend"` → first tries `tasks["build.frontend"]`, then `tasks["build"].children["frontend"]`
     /// - `"build[0]"` → first tries `tasks["build[0]"]`, then `tasks["build"].steps[0]`
     /// - `"build.frontend[0]"` → nested: parallel then sequential
     fn resolve_path(&self, path: &str) -> Option<&TaskNode> {
@@ -504,17 +504,12 @@ mod tests {
         let task1 = create_task("t1", vec![], vec![]);
         let task2 = create_task("t2", vec![], vec![]);
 
-        let list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(task1)),
-                TaskNode::Task(Box::new(task2)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let sequence = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+        ];
 
-        let node = TaskNode::List(list);
+        let node = TaskNode::Sequence(sequence);
         let nodes = graph.build_from_node("seq", &node, &tasks).unwrap();
         assert_eq!(nodes.len(), 2);
 
@@ -538,7 +533,8 @@ mod tests {
         parallel_tasks.insert("second".to_string(), TaskNode::Task(Box::new(task2)));
 
         let group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             description: None,
             max_concurrency: None,
@@ -706,7 +702,8 @@ mod tests {
         );
 
         let build_group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             description: None,
             max_concurrency: None,
@@ -747,18 +744,13 @@ mod tests {
         let task1 = create_task("s1", vec![], vec![]);
         let task2 = create_task("s2", vec![], vec![]);
 
-        let setup_list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(task1)),
-                TaskNode::Task(Box::new(task2)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let setup_sequence = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+        ];
 
-        // Build the list first
-        let setup_node = TaskNode::List(setup_list);
+        // Build the sequence first
+        let setup_node = TaskNode::Sequence(setup_sequence);
         graph.build_from_node("setup", &setup_node, &tasks).unwrap();
 
         // Add a task that depends on the group name "setup"
@@ -797,27 +789,23 @@ mod tests {
 
         let frontend_t1 = create_task("fe1", vec![], vec![]);
         let frontend_t2 = create_task("fe2", vec![], vec![]);
-        let frontend_list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(frontend_t1)),
-                TaskNode::Task(Box::new(frontend_t2)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let frontend_sequence = vec![
+            TaskNode::Task(Box::new(frontend_t1)),
+            TaskNode::Task(Box::new(frontend_t2)),
+        ];
 
         let backend_task = create_task("be", vec![], vec![]);
 
-        let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("frontend".to_string(), TaskNode::List(frontend_list));
-        parallel_tasks.insert(
+        let mut children = HashMap::new();
+        children.insert("frontend".to_string(), TaskNode::Sequence(frontend_sequence));
+        children.insert(
             "backend".to_string(),
             TaskNode::Task(Box::new(backend_task)),
         );
 
         let build_group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children,
             depends_on: vec![],
             description: None,
             max_concurrency: None,
@@ -872,7 +860,8 @@ mod tests {
         );
 
         let build_group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             description: None,
             max_concurrency: None,
@@ -919,17 +908,12 @@ mod tests {
         let task1 = create_task("s1", vec!["test"], vec![]);
         let task2 = create_task("s2", vec![], vec![]);
 
-        let setup_list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(task1)),
-                TaskNode::Task(Box::new(task2)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let setup_sequence = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+        ];
 
-        let setup_node = TaskNode::List(setup_list);
+        let setup_node = TaskNode::Sequence(setup_sequence);
         graph.build_from_node("setup", &setup_node, &tasks).unwrap();
 
         graph.add_dependency_edges().unwrap();
@@ -1001,7 +985,8 @@ mod tests {
         parallel_tasks.insert("task3".to_string(), TaskNode::Task(Box::new(task3)));
 
         let parallel = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             description: None,
             max_concurrency: None,
@@ -1034,18 +1019,13 @@ mod tests {
         let task2 = create_task("second", vec![], vec![]);
         let task3 = create_task("third", vec![], vec![]);
 
-        let sequential = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(task1)),
-                TaskNode::Task(Box::new(task2)),
-                TaskNode::Task(Box::new(task3)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let sequential = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+            TaskNode::Task(Box::new(task3)),
+        ];
 
-        let seq_node = TaskNode::List(sequential);
+        let seq_node = TaskNode::Sequence(sequential);
         graph.build_from_node("seq", &seq_node, &tasks).unwrap();
 
         // Topological sort should maintain strict order
@@ -1228,7 +1208,8 @@ mod tests {
         parallel_tasks.insert("backend".into(), TaskNode::Task(Box::new(backend)));
 
         let group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![TaskDependency::from_name("setup")],
             description: None,
             max_concurrency: None,
@@ -1260,18 +1241,13 @@ mod tests {
         let task1 = create_task("t1", vec![], vec![]);
         let task2 = create_task("t2", vec![], vec![]);
 
-        let list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(task1)),
-                TaskNode::Task(Box::new(task2)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let sequence = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+        ];
 
         let mut tasks = Tasks::new();
-        tasks.tasks.insert("build".into(), TaskNode::List(list));
+        tasks.tasks.insert("build".into(), TaskNode::Sequence(sequence));
 
         let resolution = tasks.resolve("build");
         assert!(resolution.is_some());
@@ -1293,7 +1269,8 @@ mod tests {
         parallel_tasks.insert("frontend".into(), TaskNode::Task(Box::new(task)));
 
         let group = TaskGroup {
-            parallel: parallel_tasks,
+            type_: "group".to_string(),
+            children: parallel_tasks,
             depends_on: vec![],
             description: None,
             max_concurrency: None,

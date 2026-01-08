@@ -1340,23 +1340,18 @@ mod tests {
         let mut cuenv = Project::new("test");
         cuenv.tasks.insert(
             "pipeline".into(),
-            TaskNode::List(TaskList {
-                steps: vec![
-                    TaskNode::Task(Box::new(task1)),
-                    TaskNode::Task(Box::new(task2)),
-                ],
-                depends_on: vec![],
-                stop_on_first_error: true,
-                description: None,
-            }),
+            TaskNode::Sequence(vec![
+                TaskNode::Task(Box::new(task1)),
+                TaskNode::Task(Box::new(task2)),
+            ]),
         );
 
         cuenv.expand_cross_project_references();
 
         // Verify expansion happened in both tasks
         match cuenv.tasks.get("pipeline").unwrap() {
-            TaskNode::List(list) => {
-                match &list.steps[0] {
+            TaskNode::Sequence(sequence) => {
+                match &sequence[0] {
                     TaskNode::Task(task) => {
                         assert!(
                             task.depends_on
@@ -1366,7 +1361,7 @@ mod tests {
                     }
                     _ => panic!("Expected single task"),
                 }
-                match &list.steps[1] {
+                match &sequence[1] {
                     TaskNode::Task(task) => {
                         assert!(
                             task.depends_on
@@ -1377,7 +1372,7 @@ mod tests {
                     _ => panic!("Expected single task"),
                 }
             }
-            _ => panic!("Expected task list"),
+            _ => panic!("Expected task sequence"),
         }
     }
 
@@ -1395,15 +1390,16 @@ mod tests {
             ..Default::default()
         };
 
-        let mut parallel_tasks = HashMap::new();
-        parallel_tasks.insert("a".to_string(), TaskNode::Task(Box::new(task1)));
-        parallel_tasks.insert("b".to_string(), TaskNode::Task(Box::new(task2)));
+        let mut children = HashMap::new();
+        children.insert("a".to_string(), TaskNode::Task(Box::new(task1)));
+        children.insert("b".to_string(), TaskNode::Task(Box::new(task2)));
 
         let mut cuenv = Project::new("test");
         cuenv.tasks.insert(
             "parallel".into(),
             TaskNode::Group(TaskGroup {
-                parallel: parallel_tasks,
+                type_: "group".to_string(),
+                children,
                 depends_on: vec![],
                 description: None,
                 max_concurrency: None,
@@ -1415,7 +1411,7 @@ mod tests {
         // Verify expansion happened in both parallel tasks
         match cuenv.tasks.get("parallel").unwrap() {
             TaskNode::Group(group) => {
-                match group.parallel.get("a").unwrap() {
+                match group.children.get("a").unwrap() {
                     TaskNode::Task(task) => {
                         assert!(
                             task.depends_on
@@ -1425,7 +1421,7 @@ mod tests {
                     }
                     _ => panic!("Expected single task"),
                 }
-                match group.parallel.get("b").unwrap() {
+                match group.children.get("b").unwrap() {
                     TaskNode::Task(task) => {
                         assert!(
                             task.depends_on
