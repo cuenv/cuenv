@@ -67,6 +67,7 @@ fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor
         module_root.clone(),
         raw_result.instances,
         raw_result.projects,
+        None,
     );
 
     // Get the instance at the target path

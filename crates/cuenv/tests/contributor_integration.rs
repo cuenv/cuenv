@@ -162,9 +162,11 @@ fn test_auto_association_adds_depends_on_for_bun_command() {
     let dev_task = index.resolve("dev").expect("dev task should exist");
     let expected_dep = canonical_contributor_task("bun.workspace.setup");
 
-    if let cuenv_core::tasks::TaskDefinition::Single(task) = &dev_task.definition {
+    if let cuenv_core::tasks::TaskNode::Task(task) = &dev_task.node {
         assert!(
-            task.depends_on.contains(&expected_dep),
+            task.depends_on
+                .iter()
+                .any(|d| d.task_name() == expected_dep),
             "dev task should auto-depend on {}, got: {:?}",
             expected_dep,
             task.depends_on
@@ -188,9 +190,9 @@ fn test_auto_association_does_not_affect_non_bun_tasks() {
     let lint_task = index.resolve("lint").expect("lint task should exist");
     let bun_setup = canonical_contributor_task("bun.workspace.setup");
 
-    if let cuenv_core::tasks::TaskDefinition::Single(task) = &lint_task.definition {
+    if let cuenv_core::tasks::TaskNode::Task(task) = &lint_task.node {
         assert!(
-            !task.depends_on.contains(&bun_setup),
+            !task.depends_on.iter().any(|d| d.task_name() == bun_setup),
             "lint task should NOT auto-depend on bun setup (it doesn't use bun), got: {:?}",
             task.depends_on
         );

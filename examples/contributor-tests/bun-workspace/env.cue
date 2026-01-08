@@ -1,4 +1,4 @@
-package cuenv
+package examples
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -7,7 +7,7 @@ schema.#Project
 name: "bun-workspace-test"
 
 tasks: {
-	build: {
+	build: schema.#Task & {
 		command: "echo"
 		args: ["build"]
 	}

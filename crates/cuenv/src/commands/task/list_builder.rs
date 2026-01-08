@@ -48,7 +48,7 @@ pub fn prepare_task_index(manifest: &mut Project, project_root: &Path) -> Result
 mod tests {
     use super::*;
     use cuenv_core::contributors::CONTRIBUTOR_TASK_PREFIX;
-    use cuenv_core::tasks::{Task, TaskDefinition};
+    use cuenv_core::tasks::{Task, TaskNode};
     use std::fs;
     use tempfile::TempDir;
 
@@ -76,7 +76,7 @@ mod tests {
         let mut manifest = Project::default();
         manifest.tasks.insert(
             "build".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "echo build".to_string(),
                 description: Some("Build the project".to_string()),
                 ..Default::default()
@@ -84,7 +84,7 @@ mod tests {
         );
         manifest.tasks.insert(
             "test".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "echo test".to_string(),
                 ..Default::default()
             })),
@@ -162,7 +162,7 @@ mod tests {
         let mut manifest = Project::default();
         manifest.tasks.insert(
             "dev".to_string(),
-            TaskDefinition::Single(Box::new(Task {
+            TaskNode::Task(Box::new(Task {
                 command: "bun".to_string(),
                 args: vec!["run".to_string(), "dev".to_string()],
                 ..Default::default()
@@ -177,9 +177,11 @@ mod tests {
         // TaskIndex normalizes colons to dots in dependencies too
         let dev_task = index.resolve("dev").unwrap();
         let expected_dep = CONTRIBUTOR_TASK_PREFIX.replace(':', ".") + "bun.workspace.setup";
-        if let TaskDefinition::Single(task) = &dev_task.definition {
+        if let TaskNode::Task(task) = &dev_task.node {
             assert!(
-                task.depends_on.contains(&expected_dep),
+                task.depends_on
+                    .iter()
+                    .any(|d| d.task_name() == expected_dep),
                 "bun task should auto-depend on {}, got: {:?}",
                 expected_dep,
                 task.depends_on

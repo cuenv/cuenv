@@ -417,18 +417,32 @@ impl CommandExecutor {
                 ))
             })?;
 
-            // Evaluate the entire module recursively
+            // Evaluate the entire module recursively with reference extraction
             let options = ModuleEvalOptions {
                 recursive: true,
+                with_references: true,
                 ..Default::default()
             };
             let raw = cuengine::evaluate_module(&module_root, &self.package, Some(&options))
                 .map_err(convert_engine_error)?;
 
+            // Convert meta to reference map for dependsOn resolution
+            let references = if raw.meta.is_empty() {
+                None
+            } else {
+                Some(
+                    raw.meta
+                        .into_iter()
+                        .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
+                        .collect(),
+                )
+            };
+
             *guard = Some(ModuleEvaluation::from_raw(
                 module_root,
                 raw.instances,
                 raw.projects,
+                references,
             ));
         }
 

@@ -18,7 +18,7 @@ ci: {
 }
 
 tasks: {
-	test: {
+	test: schema.#Task & {
 		command: "echo"
 		args: ["Running tests with coverage"]
 		labels: ["test"]

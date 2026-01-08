@@ -52,10 +52,10 @@ pub use validation::ValidationResult;
 /// Implement this trait for your task type to enable it to be stored
 /// in a [`TaskGraph`] and participate in dependency resolution.
 pub trait TaskNodeData: Clone {
-    /// Returns the names of tasks this task depends on.
-    fn depends_on(&self) -> &[String];
+    /// Returns an iterator over the names of tasks this task depends on.
+    fn dependency_names(&self) -> impl Iterator<Item = &str>;
 
-    /// Adds a dependency to this task.
+    /// Adds a dependency to this task by name.
     ///
     /// Default implementation panics. Override this method if mutation is needed
     /// (e.g., for applying group-level dependencies to subtasks).
@@ -66,5 +66,10 @@ pub trait TaskNodeData: Clone {
     #[allow(clippy::unimplemented)]
     fn add_dependency(&mut self, _dep: String) {
         unreachable!("add_dependency not supported for this task type - override in impl")
+    }
+
+    /// Returns true if this task has a dependency on the given task name.
+    fn has_dependency(&self, name: &str) -> bool {
+        self.dependency_names().any(|n| n == name)
     }
 }

@@ -10,6 +10,83 @@ use std::path::{Path, PathBuf};
 
 use crate::Error;
 
+/// Reference metadata extracted from CUE evaluation.
+/// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference names (e.g., "build").
+pub type ReferenceMap = HashMap<String, String>;
+
+/// Enrich dependsOn arrays in a JSON value with _name fields using reference metadata.
+///
+/// Walks the JSON structure recursively, finding `dependsOn` arrays and injecting
+/// `_name` fields based on the CUE reference metadata extracted during evaluation.
+fn enrich_depends_on(
+    value: &mut serde_json::Value,
+    instance_path: &str,
+    references: &ReferenceMap,
+) {
+    enrich_depends_on_recursive(value, instance_path, "", references);
+}
+
+/// Recursively walk JSON and enrich dependsOn arrays
+fn enrich_depends_on_recursive(
+    value: &mut serde_json::Value,
+    instance_path: &str,
+    field_path: &str,
+    references: &ReferenceMap,
+) {
+    match value {
+        serde_json::Value::Object(obj) => {
+            // Check if this object has a dependsOn array
+            if let Some(serde_json::Value::Array(deps)) = obj.get_mut("dependsOn") {
+                let depends_on_path = if field_path.is_empty() {
+                    "dependsOn".to_string()
+                } else {
+                    format!("{}.dependsOn", field_path)
+                };
+
+                // Enrich each dependency with _name from reference metadata
+                for (i, dep) in deps.iter_mut().enumerate() {
+                    if let serde_json::Value::Object(dep_obj) = dep {
+                        // Skip if _name already set
+                        if dep_obj.contains_key("_name") {
+                            continue;
+                        }
+
+                        // Look up the reference in metadata
+                        let meta_key = format!("{}/{}[{}]", instance_path, depends_on_path, i);
+                        if let Some(reference) = references.get(&meta_key) {
+                            // The reference is the task name (e.g., "build" or "docs.build")
+                            dep_obj.insert(
+                                "_name".to_string(),
+                                serde_json::Value::String(reference.clone()),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Recurse into all object fields
+            for (key, child) in obj.iter_mut() {
+                if key == "dependsOn" {
+                    continue; // Already handled above
+                }
+                let child_path = if field_path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", field_path, key)
+                };
+                enrich_depends_on_recursive(child, instance_path, &child_path, references);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for (i, child) in arr.iter_mut().enumerate() {
+                let child_path = format!("{}[{}]", field_path, i);
+                enrich_depends_on_recursive(child, instance_path, &child_path, references);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Result of evaluating an entire CUE module
 ///
 /// Contains all evaluated instances (directories with env.cue files)
@@ -30,10 +107,12 @@ impl ModuleEvaluation {
     /// * `root` - Path to the CUE module root
     /// * `raw_instances` - Map of relative paths to evaluated JSON values
     /// * `project_paths` - Paths verified to conform to `schema.#Project` via CUE unification
+    /// * `references` - Optional reference map for dependsOn resolution (extracted from CUE metadata)
     pub fn from_raw(
         root: PathBuf,
         raw_instances: HashMap<String, serde_json::Value>,
         project_paths: Vec<String>,
+        references: Option<ReferenceMap>,
     ) -> Self {
         // Convert project paths to a set for O(1) lookup
         let project_set: std::collections::HashSet<&str> =
@@ -41,7 +120,7 @@ impl ModuleEvaluation {
 
         let instances = raw_instances
             .into_iter()
-            .map(|(path, value)| {
+            .map(|(path, mut value)| {
                 let path_buf = PathBuf::from(&path);
                 // Use CUE's schema verification instead of heuristic name check
                 let kind = if project_set.contains(path.as_str()) {
@@ -49,6 +128,12 @@ impl ModuleEvaluation {
                 } else {
                     InstanceKind::Base
                 };
+
+                // Enrich dependsOn arrays with _name using reference metadata
+                if let Some(ref refs) = references {
+                    enrich_depends_on(&mut value, &path, refs);
+                }
+
                 let instance = Instance {
                     path: path_buf.clone(),
                     kind,
@@ -262,7 +347,7 @@ mod tests {
         // Specify which paths are projects (simulating CUE schema verification)
         let project_paths = vec!["projects/api".to_string(), "projects/web".to_string()];
 
-        ModuleEvaluation::from_raw(PathBuf::from("/test/repo"), raw, project_paths)
+        ModuleEvaluation::from_raw(PathBuf::from("/test/repo"), raw, project_paths, None)
     }
 
     #[test]
@@ -372,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_module_evaluation_empty() {
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![]);
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
 
         assert_eq!(module.base_count(), 0);
         assert_eq!(module.project_count(), 0);
@@ -384,7 +469,7 @@ mod tests {
         let mut raw = HashMap::new();
         raw.insert(".".to_string(), json!({"key": "value"}));
 
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, vec![]);
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, vec![], None);
 
         assert_eq!(module.base_count(), 1);
         assert_eq!(module.project_count(), 0);
@@ -393,7 +478,7 @@ mod tests {
 
     #[test]
     fn test_module_evaluation_get_nonexistent() {
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![]);
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
 
         assert!(module.get(Path::new("nonexistent")).is_none());
     }
@@ -411,7 +496,7 @@ mod tests {
             "proj3".to_string(),
         ];
 
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, project_paths);
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, project_paths, None);
 
         assert_eq!(module.project_count(), 3);
         assert_eq!(module.base_count(), 0);
@@ -419,7 +504,7 @@ mod tests {
 
     #[test]
     fn test_module_evaluation_ancestors_deep_path() {
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![]);
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
 
         let ancestors = module.ancestors(Path::new("a/b/c/d"));
         assert_eq!(ancestors.len(), 4);
@@ -431,7 +516,7 @@ mod tests {
 
     #[test]
     fn test_module_evaluation_is_inherited_no_child() {
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![]);
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
 
         // Non-existent child should return false
         assert!(!module.is_inherited(Path::new("nonexistent"), "field"));
@@ -442,7 +527,7 @@ mod tests {
         let mut raw = HashMap::new();
         raw.insert("child".to_string(), json!({"other": "value"}));
 
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, vec![]);
+        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), raw, vec![], None);
 
         // Child exists but doesn't have the field
         assert!(!module.is_inherited(Path::new("child"), "missing_field"));

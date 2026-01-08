@@ -24,7 +24,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
-use crate::tasks::{Input, Task, TaskDefinition, TaskGroup};
+use crate::tasks::{Input, Task, TaskDependency, TaskNode};
 
 /// Prefix for all contributor-injected tasks
 pub const CONTRIBUTOR_TASK_PREFIX: &str = "cuenv:contributor:";
@@ -59,9 +59,9 @@ impl ContributorContext {
     }
 
     /// Add task commands from a project's tasks
-    pub fn with_task_commands(mut self, tasks: &HashMap<String, TaskDefinition>) -> Self {
-        for def in tasks.values() {
-            collect_commands_from_definition(def, &mut self.task_commands);
+    pub fn with_task_commands(mut self, tasks: &HashMap<String, TaskNode>) -> Self {
+        for node in tasks.values() {
+            collect_commands_from_node(node, &mut self.task_commands);
         }
         self
     }
@@ -80,10 +80,10 @@ fn workspace_name_for_manager(manager: cuenv_workspaces::PackageManager) -> &'st
     }
 }
 
-/// Collect all commands from a task definition recursively
-fn collect_commands_from_definition(def: &TaskDefinition, commands: &mut HashSet<String>) {
-    match def {
-        TaskDefinition::Single(task) => {
+/// Collect all commands from a task node recursively
+fn collect_commands_from_node(node: &TaskNode, commands: &mut HashSet<String>) {
+    match node {
+        TaskNode::Task(task) => {
             if !task.command.is_empty() {
                 // Extract the base command (first word)
                 if let Some(cmd) = task.command.split_whitespace().next() {
@@ -91,18 +91,16 @@ fn collect_commands_from_definition(def: &TaskDefinition, commands: &mut HashSet
                 }
             }
         }
-        TaskDefinition::Group(group) => match group {
-            TaskGroup::Sequential(tasks) => {
-                for sub in tasks {
-                    collect_commands_from_definition(sub, commands);
-                }
+        TaskNode::Group(group) => {
+            for sub in group.children.values() {
+                collect_commands_from_node(sub, commands);
             }
-            TaskGroup::Parallel(pg) => {
-                for sub in pg.tasks.values() {
-                    collect_commands_from_definition(sub, commands);
-                }
+        }
+        TaskNode::Sequence(steps) => {
+            for sub in steps {
+                collect_commands_from_node(sub, commands);
             }
-        },
+        }
     }
 }
 
@@ -222,7 +220,7 @@ impl<'a> ContributorEngine<'a> {
     ///
     /// Loops until no contributor makes changes (stable DAG).
     /// Returns the number of tasks injected.
-    pub fn apply(&self, tasks: &mut HashMap<String, TaskDefinition>) -> Result<usize> {
+    pub fn apply(&self, tasks: &mut HashMap<String, TaskNode>) -> Result<usize> {
         let mut total_injected = 0;
         let max_iterations = 10; // Safety limit to prevent infinite loops
 
@@ -306,7 +304,7 @@ impl<'a> ContributorEngine<'a> {
     fn inject_tasks(
         &self,
         contributor: &Contributor,
-        tasks: &mut HashMap<String, TaskDefinition>,
+        tasks: &mut HashMap<String, TaskNode>,
     ) -> usize {
         let mut injected = 0;
 
@@ -323,7 +321,7 @@ impl<'a> ContributorEngine<'a> {
                 continue;
             }
 
-            // Convert ContributorTask to TaskDefinition
+            // Convert ContributorTask to TaskNode
             let task = Task {
                 command: contrib_task.command.clone().unwrap_or_default(),
                 args: contrib_task.args.clone(),
@@ -340,18 +338,20 @@ impl<'a> ContributorEngine<'a> {
                     .iter()
                     .map(|dep| {
                         // Prefix dependencies if they don't already have it
-                        if dep.starts_with(CONTRIBUTOR_TASK_PREFIX) || dep.starts_with('#') {
-                            dep.clone()
-                        } else {
-                            format!("{}{}", CONTRIBUTOR_TASK_PREFIX, dep)
-                        }
+                        let name =
+                            if dep.starts_with(CONTRIBUTOR_TASK_PREFIX) || dep.starts_with('#') {
+                                dep.clone()
+                            } else {
+                                format!("{}{}", CONTRIBUTOR_TASK_PREFIX, dep)
+                            };
+                        TaskDependency::from_name(name)
                     })
                     .collect(),
                 description: contrib_task.description.clone(),
                 ..Default::default()
             };
 
-            tasks.insert(task_id.clone(), TaskDefinition::Single(Box::new(task)));
+            tasks.insert(task_id.clone(), TaskNode::Task(Box::new(task)));
             injected += 1;
 
             tracing::trace!(task = %task_id, "Injected contributor task");
@@ -364,7 +364,7 @@ impl<'a> ContributorEngine<'a> {
     fn apply_auto_association(
         &self,
         auto_assoc: &AutoAssociate,
-        tasks: &mut HashMap<String, TaskDefinition>,
+        tasks: &mut HashMap<String, TaskNode>,
     ) {
         let Some(inject_dep) = &auto_assoc.inject_dependency else {
             return;
@@ -384,25 +384,25 @@ impl<'a> ContributorEngine<'a> {
                 continue;
             }
 
-            let Some(def) = tasks.get_mut(&task_name) else {
+            let Some(node) = tasks.get_mut(&task_name) else {
                 continue;
             };
 
-            Self::auto_associate_definition(def, &auto_assoc.command, inject_dep);
+            Self::auto_associate_node(node, &auto_assoc.command, inject_dep);
         }
     }
 
-    /// Recursively apply auto-association to a task definition
-    fn auto_associate_definition(def: &mut TaskDefinition, commands: &[String], inject_dep: &str) {
-        match def {
-            TaskDefinition::Single(task) => {
+    /// Recursively apply auto-association to a task node
+    fn auto_associate_node(node: &mut TaskNode, commands: &[String], inject_dep: &str) {
+        match node {
+            TaskNode::Task(task) => {
                 // Check if task command matches any auto-associate command
                 let base_cmd = task.command.split_whitespace().next().unwrap_or("");
 
                 if commands.iter().any(|c| c == base_cmd) {
                     // Add dependency if not already present
-                    if !task.depends_on.contains(&inject_dep.to_string()) {
-                        task.depends_on.push(inject_dep.to_string());
+                    if !task.depends_on.iter().any(|d| d.task_name() == inject_dep) {
+                        task.depends_on.push(TaskDependency::from_name(inject_dep));
                         tracing::trace!(
                             command = %task.command,
                             dependency = %inject_dep,
@@ -411,18 +411,16 @@ impl<'a> ContributorEngine<'a> {
                     }
                 }
             }
-            TaskDefinition::Group(group) => match group {
-                TaskGroup::Sequential(tasks) => {
-                    for sub in tasks {
-                        Self::auto_associate_definition(sub, commands, inject_dep);
-                    }
+            TaskNode::Group(group) => {
+                for sub in group.children.values_mut() {
+                    Self::auto_associate_node(sub, commands, inject_dep);
                 }
-                TaskGroup::Parallel(pg) => {
-                    for sub in pg.tasks.values_mut() {
-                        Self::auto_associate_definition(sub, commands, inject_dep);
-                    }
+            }
+            TaskNode::Sequence(steps) => {
+                for sub in steps {
+                    Self::auto_associate_node(sub, commands, inject_dep);
                 }
-            },
+            }
         }
     }
 }
@@ -598,27 +596,31 @@ pub fn builtin_workspace_contributors() -> Vec<Contributor> {
 
 /// Build a map of expected task dependencies for DAG verification
 #[must_use]
-pub fn build_expected_dag(
-    tasks: &HashMap<String, TaskDefinition>,
-) -> BTreeMap<String, Vec<String>> {
+pub fn build_expected_dag(tasks: &HashMap<String, TaskNode>) -> BTreeMap<String, Vec<String>> {
     let mut dag = BTreeMap::new();
 
-    for (name, def) in tasks {
-        let deps = collect_deps_from_definition(def);
+    for (name, node) in tasks {
+        let deps = collect_deps_from_node(node);
         dag.insert(name.clone(), deps);
     }
 
     dag
 }
 
-/// Collect dependencies from a task definition
-fn collect_deps_from_definition(def: &TaskDefinition) -> Vec<String> {
-    match def {
-        TaskDefinition::Single(task) => task.depends_on.clone(),
-        TaskDefinition::Group(group) => match group {
-            TaskGroup::Sequential(_) => vec![], // Sequential has implicit ordering
-            TaskGroup::Parallel(pg) => pg.depends_on.clone(),
-        },
+/// Collect dependencies from a task node as string names
+fn collect_deps_from_node(node: &TaskNode) -> Vec<String> {
+    match node {
+        TaskNode::Task(task) => task
+            .depends_on
+            .iter()
+            .map(|d| d.task_name().to_string())
+            .collect(),
+        TaskNode::Group(group) => group
+            .depends_on
+            .iter()
+            .map(|d| d.task_name().to_string())
+            .collect(),
+        TaskNode::Sequence(_) => Vec::new(), // Sequences don't have top-level deps
     }
 }
 
@@ -703,7 +705,7 @@ mod tests {
 
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
 
         let injected = engine.apply(&mut tasks).unwrap();
 
@@ -728,11 +730,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
-        tasks.insert(
-            "dev".to_string(),
-            TaskDefinition::Single(Box::new(user_task)),
-        );
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
+        tasks.insert("dev".to_string(), TaskNode::Task(Box::new(user_task)));
 
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
@@ -740,10 +739,11 @@ mod tests {
 
         // User task should now depend on the contributor setup task
         let dev_task = tasks.get("dev").unwrap();
-        if let TaskDefinition::Single(task) = dev_task {
+        if let TaskNode::Task(task) = dev_task {
             assert!(
                 task.depends_on
-                    .contains(&"cuenv:contributor:bun.workspace.setup".to_string())
+                    .iter()
+                    .any(|d| d.task_name() == "cuenv:contributor:bun.workspace.setup")
             );
         } else {
             panic!("Expected single task");
@@ -760,7 +760,7 @@ mod tests {
 
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
 
         // First application
         let first_injected = engine.apply(&mut tasks).unwrap();
@@ -820,7 +820,7 @@ mod tests {
 
     #[test]
     fn test_build_expected_dag() {
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
 
         let task_a = Task {
             command: "echo".to_string(),
@@ -831,12 +831,12 @@ mod tests {
         let task_b = Task {
             command: "echo".to_string(),
             args: vec!["b".to_string()],
-            depends_on: vec!["a".to_string()],
+            depends_on: vec![TaskDependency::from_name("a")],
             ..Default::default()
         };
 
-        tasks.insert("a".to_string(), TaskDefinition::Single(Box::new(task_a)));
-        tasks.insert("b".to_string(), TaskDefinition::Single(Box::new(task_b)));
+        tasks.insert("a".to_string(), TaskNode::Task(Box::new(task_a)));
+        tasks.insert("b".to_string(), TaskNode::Task(Box::new(task_b)));
 
         let dag = build_expected_dag(&tasks);
 
@@ -871,7 +871,7 @@ mod tests {
 
         let contributors = [bun_contrib.clone(), npm_contrib.clone()];
         let engine = ContributorEngine::new(&contributors, ctx);
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
 
         engine.apply(&mut tasks).unwrap();
 
@@ -894,15 +894,14 @@ mod tests {
         let user_task = Task {
             command: "test-cmd".to_string(),
             args: vec!["run".to_string(), "dev".to_string()],
-            depends_on: vec!["cuenv:contributor:bun.workspace.setup".to_string()],
+            depends_on: vec![TaskDependency::from_name(
+                "cuenv:contributor:bun.workspace.setup",
+            )],
             ..Default::default()
         };
 
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
-        tasks.insert(
-            "dev".to_string(),
-            TaskDefinition::Single(Box::new(user_task)),
-        );
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
+        tasks.insert("dev".to_string(), TaskNode::Task(Box::new(user_task)));
 
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
@@ -910,11 +909,11 @@ mod tests {
 
         // Should not have duplicated the dependency
         let dev_task = tasks.get("dev").unwrap();
-        if let TaskDefinition::Single(task) = dev_task {
+        if let TaskNode::Task(task) = dev_task {
             let dep_count = task
                 .depends_on
                 .iter()
-                .filter(|d| *d == "cuenv:contributor:bun.workspace.setup")
+                .filter(|d| d.task_name() == "cuenv:contributor:bun.workspace.setup")
                 .count();
             assert_eq!(dep_count, 1, "Dependency should not be duplicated");
         } else {
@@ -938,11 +937,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
-        tasks.insert(
-            "other".to_string(),
-            TaskDefinition::Single(Box::new(user_task)),
-        );
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
+        tasks.insert("other".to_string(), TaskNode::Task(Box::new(user_task)));
 
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
@@ -950,11 +946,12 @@ mod tests {
 
         // Should NOT have auto-associated (command doesn't match exactly)
         let other_task = tasks.get("other").unwrap();
-        if let TaskDefinition::Single(task) = other_task {
+        if let TaskNode::Task(task) = other_task {
             assert!(
                 !task
                     .depends_on
-                    .contains(&"cuenv:contributor:bun.workspace.setup".to_string()),
+                    .iter()
+                    .any(|d| d.task_name() == "cuenv:contributor:bun.workspace.setup"),
                 "Non-matching command should not get auto-association"
             );
         } else {
@@ -977,7 +974,7 @@ mod tests {
         let ctx = ContributorContext::default();
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
 
         let injected = engine.apply(&mut tasks).unwrap();
 
@@ -1016,16 +1013,17 @@ mod tests {
         let ctx = ContributorContext::default();
         let contributors = [contrib];
         let engine = ContributorEngine::new(&contributors, ctx);
-        let mut tasks: HashMap<String, TaskDefinition> = HashMap::new();
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
 
         engine.apply(&mut tasks).unwrap();
 
         // Check that the second task's dependency got prefixed
         let second_task = tasks.get("cuenv:contributor:test.second").unwrap();
-        if let TaskDefinition::Single(task) = second_task {
+        if let TaskNode::Task(task) = second_task {
             assert!(
                 task.depends_on
-                    .contains(&"cuenv:contributor:test.first".to_string()),
+                    .iter()
+                    .any(|d| d.task_name() == "cuenv:contributor:test.first"),
                 "Internal dependency should be prefixed, got: {:?}",
                 task.depends_on
             );

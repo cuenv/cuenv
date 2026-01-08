@@ -1,4 +1,4 @@
-package cuenv
+package examples
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -8,11 +8,11 @@ name: "no-contributors-test"
 
 // No lockfiles in this directory = no workspace contributors should be injected
 tasks: {
-	build: {
+	build: schema.#Task & {
 		command: "echo"
 		args: ["build"]
 	}
-	test: {
+	test: schema.#Task & {
 		command: "echo"
 		args: ["test"]
 	}

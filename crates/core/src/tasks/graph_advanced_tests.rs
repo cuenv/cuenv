@@ -8,6 +8,7 @@
 //! - Task discovery and matcher integration
 
 use super::*;
+use crate::tasks::{TaskDependency, TaskNode};
 use crate::test_utils::{create_task, create_task_ref, create_task_with_project_ref};
 
 // ============================================================================
@@ -774,13 +775,13 @@ fn test_build_for_task_includes_cross_project_deps() {
     // External project task
     tasks.tasks.insert(
         "external::build".to_string(),
-        TaskDefinition::Single(Box::new(create_task("external::build", vec![], vec![]))),
+        TaskNode::Task(Box::new(create_task("external::build", vec![], vec![]))),
     );
 
     // Local task depending on external
     tasks.tasks.insert(
         "deploy".to_string(),
-        TaskDefinition::Single(Box::new(create_task(
+        TaskNode::Task(Box::new(create_task(
             "deploy",
             vec!["external::build"],
             vec![],
@@ -803,12 +804,12 @@ fn test_build_for_task_with_hook_chain() {
 
     tasks.tasks.insert(
         "bun.hooks.beforeInstall[0]".to_string(),
-        TaskDefinition::Single(Box::new(create_task("hook", vec![], vec![]))),
+        TaskNode::Task(Box::new(create_task("hook", vec![], vec![]))),
     );
 
     tasks.tasks.insert(
         "bun.install".to_string(),
-        TaskDefinition::Single(Box::new(create_task(
+        TaskNode::Task(Box::new(create_task(
             "install",
             vec!["bun.hooks.beforeInstall[0]"],
             vec![],
@@ -817,12 +818,12 @@ fn test_build_for_task_with_hook_chain() {
 
     tasks.tasks.insert(
         "bun.setup".to_string(),
-        TaskDefinition::Single(Box::new(create_task("setup", vec!["bun.install"], vec![]))),
+        TaskNode::Task(Box::new(create_task("setup", vec!["bun.install"], vec![]))),
     );
 
     tasks.tasks.insert(
         "dev".to_string(),
-        TaskDefinition::Single(Box::new(create_task("dev", vec!["bun.setup"], vec!["bun"]))),
+        TaskNode::Task(Box::new(create_task("dev", vec!["bun.setup"], vec!["bun"]))),
     );
 
     let mut graph = TaskGraph::new();
@@ -886,8 +887,8 @@ fn test_dag_with_many_parallel_projects() {
     }
 
     // Integration task depends on all projects
-    let integration_deps: Vec<String> = (0..num_projects)
-        .map(|i| format!("project{}::build", i))
+    let integration_deps: Vec<TaskDependency> = (0..num_projects)
+        .map(|i| TaskDependency::from_name(format!("project{}::build", i)))
         .collect();
 
     let integration = Task {

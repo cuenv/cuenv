@@ -268,7 +268,7 @@ async fn execute_project_pipeline(
         let outputs = config
             .tasks
             .get(task_name)
-            .and_then(|def| def.as_single())
+            .and_then(|def| def.as_task())
             .map(|task| task.outputs.clone())
             .unwrap_or_default();
 

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
 
-use cuenv_core::tasks::{TaskDefinition, WorkspaceTask};
+use cuenv_core::tasks::{TaskNode, WorkspaceTask};
 use cuenv_task_discovery::TaskDiscovery;
 
 use super::list_builder::prepare_task_index;
@@ -39,8 +39,8 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
     let mut output = String::new();
     writeln!(output, "Task: {}", task.name).expect("write to string");
 
-    match &task.definition {
-        TaskDefinition::Single(t) => {
+    match &task.node {
+        TaskNode::Task(t) => {
             if let Some(desc) = &t.description {
                 writeln!(output, "Description: {desc}").expect("write to string");
             }
@@ -105,16 +105,11 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
                 }
             }
         }
-        TaskDefinition::Group(g) => {
-            writeln!(output, "Type: Task Group").expect("write to string");
-            match g {
-                cuenv_core::tasks::TaskGroup::Sequential(_) => {
-                    writeln!(output, "Mode: Sequential").expect("write to string");
-                }
-                cuenv_core::tasks::TaskGroup::Parallel(_) => {
-                    writeln!(output, "Mode: Parallel").expect("write to string");
-                }
-            }
+        TaskNode::Group(_) => {
+            writeln!(output, "Type: Task Group (Parallel)").expect("write to string");
+        }
+        TaskNode::Sequence(_) => {
+            writeln!(output, "Type: Task Sequence (Sequential)").expect("write to string");
         }
     }
     output
@@ -148,8 +143,8 @@ pub fn collect_workspace_tasks(
 
         if let Ok(index) = task_index {
             for entry in index.list() {
-                // Get description from task definition (only available for single tasks)
-                let description = entry.definition.as_single().and_then(|t| {
+                // Get description from task node (only available for single tasks)
+                let description = entry.node.as_task().and_then(|t| {
                     let desc = t.description();
                     if desc.is_empty() {
                         None
@@ -331,18 +326,11 @@ fn render_source_tasks(tasks: &[&cuenv_core::tasks::IndexedTask], output: &mut S
 
             if is_last {
                 node.is_task = true;
-                // Extract description from definition
-                let desc = match &task.definition {
-                    TaskDefinition::Single(t) => t.description.clone(),
-                    TaskDefinition::Group(g) => match g {
-                        cuenv_core::tasks::TaskGroup::Sequential(sub) => {
-                            sub.first().and_then(|t| match t {
-                                TaskDefinition::Single(st) => st.description.clone(),
-                                TaskDefinition::Group(_) => None,
-                            })
-                        }
-                        cuenv_core::tasks::TaskGroup::Parallel(_) => None,
-                    },
+                // Extract description from node
+                let desc = match &task.node {
+                    TaskNode::Task(t) => t.description.clone(),
+                    TaskNode::Group(g) => g.description.clone(),
+                    TaskNode::Sequence(_) => None,
                 };
                 node.description = desc;
             }
