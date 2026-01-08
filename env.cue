@@ -2,6 +2,7 @@ package cuenv
 
 import (
 	"list"
+
 	"github.com/cuenv/cuenv/schema"
 	xBun "github.com/cuenv/cuenv/contrib/bun"
 	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
@@ -13,15 +14,29 @@ import (
 // Command template for cargo tasks
 #cargo: schema.#Task & {command: "cargo"}
 
+// Shared input patterns for Rust tasks
+let _baseInputs = [
+	"Cargo.toml",
+	"Cargo.lock",
+	"crates/**",
+]
+
 schema.#Project & {
 	name: "cuenv"
 
+	// ============================================================================
+	// Runtime Configuration
+	// ============================================================================
+
 	runtime: schema.#ToolsRuntime & {
 		platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
+
 		flakes: {
 			nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
 		}
+
 		tools: {
+			// --- General CLI Tools ---
 			jq: xTools.#Jq & {version: "1.7.1"}
 			yq: xTools.#Yq & {version: "4.44.6"}
 			treefmt: xTools.#Treefmt & {version: "2.4.0"}
@@ -36,7 +51,7 @@ schema.#Project & {
 				}
 			}
 
-			// Rust toolchain via rustup
+			// --- Rust Toolchain ---
 			rust: xRust.#Rust & {
 				version: "1.92.0"
 				source: profile: "default"
@@ -50,7 +65,7 @@ schema.#Project & {
 			}
 			"rust-analyzer": xRust.#RustAnalyzer & {version: "2025-12-22"}
 
-			// Cargo extensions
+			// --- Cargo Extensions ---
 			"cargo-nextest": xRust.#CargoNextest & {version: "0.9.116"}
 			"cargo-deny": xRust.#CargoDeny & {version: "0.18.9"}
 			"cargo-llvm-cov": xRust.#CargoLlvmCov & {version: "0.6.21"}
@@ -58,7 +73,7 @@ schema.#Project & {
 			"cargo-zigbuild": xRust.#CargoZigbuild & {version: "0.20.1"}
 			sccache: xRust.#SccacheTool & {version: "0.12.0"}
 
-			// Build tools (version tied to nixpkgs flake)
+			// --- Build Tools (Nix) ---
 			zig: xRust.#Zig & {version: "nixos-unstable"}
 
 			"nixpkgs-fmt": schema.#Tool & {
@@ -71,13 +86,25 @@ schema.#Project & {
 		}
 	}
 
+	// ============================================================================
+	// Hooks & Formatters
+	// ============================================================================
+
 	hooks: onEnter: tools: schema.#ToolsActivate
 
 	formatters: rust: {edition: "2024"}
 
+	// ============================================================================
+	// Configuration
+	// ============================================================================
+
 	// Build cuenv from source using native Rust/Go toolchains
 	// Uses native setup instead of nix to avoid sccache env var issues
 	config: ci: cuenv: {source: "native", version: "self"}
+
+	// ============================================================================
+	// Environment Variables
+	// ============================================================================
 
 	env: {
 		CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
@@ -91,6 +118,10 @@ schema.#Project & {
 		}
 	}
 
+	// ============================================================================
+	// CI Configuration
+	// ============================================================================
+
 	ci: {
 		contributors: [
 			xContributors.#Nix,
@@ -102,17 +133,14 @@ schema.#Project & {
 
 		provider: github: {
 			runner: "blacksmith-8vcpu-ubuntu-2404"
-			runners: {
-				arch: {
-					"linux-x64":    "namespace-profile-cuenv-linux-x86"
-					"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
-					"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
-				}
+
+			runners: arch: {
+				"linux-x64":    "namespace-profile-cuenv-linux-x86"
+				"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
+				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 			}
 
-			cachix: {
-				name: "cuenv"
-			}
+			cachix: name: "cuenv"
 
 			pathsIgnore: [
 				"docs/**",
@@ -134,31 +162,27 @@ schema.#Project & {
 					branch:      "main"
 					pullRequest: true
 				}
-				provider: github: permissions: {
-					"id-token": "write"
-				}
+				provider: github: permissions: "id-token": "write"
 				tasks: ["ci.sync-check"]
 			}
+
 			ci: {
 				when: {
 					branch:      "main"
 					pullRequest: true
 				}
-				provider: github: permissions: {
-					"id-token": "write"
-				}
+				provider: github: permissions: "id-token": "write"
 				tasks: ["check"]
 			}
+
 			release: {
 				environment: "production"
 				when: {
 					release: ["published"]
-					manual: {
-						tag_name: {
-							description: "Tag to release (e.g., v0.16.0)"
-							required:    true
-							type:        "string"
-						}
+					manual: tag_name: {
+						description: "Tag to release (e.g., v0.16.0)"
+						required:    true
+						type:        "string"
 					}
 				}
 				provider: github: permissions: {
@@ -168,16 +192,14 @@ schema.#Project & {
 				tasks: [
 					{
 						task: "cargo.build"
-						matrix: {
-							arch: ["linux-x64", "darwin-arm64"]
-						}
+						matrix: arch: ["linux-x64", "darwin-arm64"]
 					},
 					{
 						task: "publish"
 						artifacts: [{
 							from:   "cargo.build"
 							to:     "dist"
-							filter: "" // All variants (default)
+							filter: ""
 						}]
 						params: {
 							tag:   "${{ github.ref_name }}"
@@ -190,30 +212,38 @@ schema.#Project & {
 		}
 	}
 
-	// Shared input patterns
-	let _baseInputs = [
-		"Cargo.toml",
-		"Cargo.lock",
-		"crates/**",
-	]
+	// ============================================================================
+	// Tasks
+	// ============================================================================
 
 	tasks: {
+		// --- CI Check (runs lint, tests, security) ---
+		check: schema.#Task & {
+			command: "echo"
+			args: ["All checks passed"]
+			dependsOn: [lint, tests, security]
+		}
+
+		// --- Linting ---
 		lint: #cargo & {
 			args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 			inputs: _baseInputs
 		}
 
-		// Test tasks
+		// --- Testing ---
 		tests: {
 			type: "group"
+
 			unit: #cargo & {
 				args: ["nextest", "run", "--workspace", "--all-features"]
 				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 			}
+
 			doc: #cargo & {
 				args: ["test", "--doc", "--workspace"]
 				inputs: _baseInputs
 			}
+
 			bdd: #cargo & {
 				args: ["test", "--test", "bdd"]
 				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "schema/**", "cue.mod/**"]])
@@ -221,9 +251,82 @@ schema.#Project & {
 			}
 		}
 
-		// Cross-compilation
+		// --- Security & Quality ---
+		security: {
+			type: "group"
+
+			deny: #cargo & {
+				args: ["deny", "check", "bans", "licenses", "advisories"]
+				inputs: list.Concat([_baseInputs, ["deny.toml"]])
+			}
+		}
+
+		sbom: #cargo & {
+			args: ["cyclonedx", "--override-filename", "sbom.json"]
+			inputs: _baseInputs
+			outputs: ["sbom.json"]
+		}
+
+		coverage: #cargo & {
+			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
+			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
+			outputs: ["lcov.info"]
+			labels: ["coverage"]
+		}
+
+		// --- Benchmarks ---
+		bench: #cargo & {
+			args: ["bench", "--workspace", "--no-fail-fast"]
+			inputs: _baseInputs
+		}
+
+		// --- Documentation ---
+		docs: {
+			type: "group"
+
+			build: schema.#Task & {
+				command: "bash"
+				args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build && cp public/.assetsignore dist/"]
+				inputs: [
+					"package.json",
+					"bun.lock",
+					"docs/**",
+				]
+				outputs: ["docs/dist"]
+			}
+
+			deploy: schema.#Task & {
+				command: "bash"
+				args: ["-c", "cd docs && npx wrangler deploy"]
+				dependsOn: [build]
+				inputs: [{task: "docs.build"}]
+			}
+		}
+
+		// --- Build & Release ---
+		cargo: {
+			type: "group"
+
+			build: #cargo & {
+				args: ["build", "--release", "-p", "cuenv"]
+				inputs: _baseInputs
+				outputs: ["target/release/cuenv"]
+			}
+
+			quick: #cargo & {
+				args: ["build", "--workspace", "--all-features", "--profile", "quick"]
+				inputs: _baseInputs
+			}
+
+			install: #cargo & {
+				args: ["install", "--path", "./crates/cuenv"]
+				inputs: _baseInputs
+			}
+		}
+
 		cross: {
 			type: "group"
+
 			linux: schema.#Task & {
 				script: """
 					#!/bin/bash
@@ -251,101 +354,10 @@ schema.#Project & {
 			}
 		}
 
-		// Security audit
-		security: {
-			type: "group"
-			deny: #cargo & {
-				args: ["deny", "check", "bans", "licenses", "advisories"]
-				inputs: list.Concat([_baseInputs, ["deny.toml"]])
-			}
-		}
-
-		// SBOM generation
-		sbom: #cargo & {
-			args: ["cyclonedx", "--override-filename", "sbom.json"]
-			inputs: _baseInputs
-			outputs: ["sbom.json"]
-		}
-
-		// Code coverage
-		coverage: #cargo & {
-			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
-			outputs: ["lcov.info"]
-			labels: ["coverage"]
-		}
-
-		// Benchmarks
-		bench: #cargo & {
-			args: ["bench", "--workspace", "--no-fail-fast"]
-			inputs: _baseInputs
-		}
-
-		// Documentation
-		docs: {
-			type: "group"
-			build: schema.#Task & {
-				command: "bash"
-				args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build && cp public/.assetsignore dist/"]
-				inputs: [
-					"package.json",
-					"bun.lock",
-					"docs/**",
-				]
-				outputs: ["docs/dist"]
-			}
-			deploy: schema.#Task & {
-				command: "bash"
-				args: ["-c", "cd docs && npx wrangler deploy"]
-				dependsOn: [build]
-				inputs: [{task: "docs.build"}]
-			}
-		}
-
-		// Evaluation tasks
-		eval: {
-			type: "group"
-			let _inputs = ["llms.txt", "schema/**", "prompts/**"]
-			"task-gen": schema.#Task & {
-				command: "gh"
-				args: ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
-				inputs: _inputs
-			}
-			"env-gen": schema.#Task & {
-				command: "gh"
-				args: ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
-				inputs: _inputs
-			}
-			qa: schema.#Task & {
-				command: "gh"
-				args: ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
-				inputs: _inputs
-			}
-		}
-
-		// Cargo release build
-		cargo: {
-			type: "group"
-			build: #cargo & {
-				args: ["build", "--release", "-p", "cuenv"]
-				inputs: _baseInputs
-				outputs: ["target/release/cuenv"]
-			}
-
-			quick: #cargo & {
-				args: ["build", "--workspace", "--all-features", "--profile", "quick"]
-				inputs: _baseInputs
-			}
-
-			install: #cargo & {
-				args: ["install", "--path", "./crates/cuenv"]
-				inputs: _baseInputs
-			}
-		}
-
-		// Publishing
+		// --- Publishing ---
 		publish: {
 			type: "group"
+
 			github: schema.#Task & {
 				command: "bash"
 				args: ["-c", """
@@ -357,6 +369,7 @@ schema.#Project & {
 					gh release upload $TAG dist/cuenv-*
 					"""]
 			}
+
 			cue: schema.#Task & {
 				command: "bash"
 				args: ["-c", """
@@ -368,6 +381,31 @@ schema.#Project & {
 					cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish v$TAG
 					"""]
 				inputs: ["cue.mod/**", "schema/**"]
+			}
+		}
+
+		// --- Experimental (LLM Evaluation) ---
+		eval: {
+			type: "group"
+
+			let _inputs = ["llms.txt", "schema/**", "prompts/**"]
+
+			"task-gen": schema.#Task & {
+				command: "gh"
+				args: ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
+				inputs: _inputs
+			}
+
+			"env-gen": schema.#Task & {
+				command: "gh"
+				args: ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
+				inputs: _inputs
+			}
+
+			qa: schema.#Task & {
+				command: "gh"
+				args: ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
+				inputs: _inputs
 			}
 		}
 	}
