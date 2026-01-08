@@ -1039,15 +1039,14 @@ name: "parallel-task-test"
 
 tasks: {{
     check: {{
-        parallel: {{
-            {task1}: {{
-                command: "echo"
-                args: ["{task1} executed"]
-            }}
-            {task2}: {{
-                command: "echo"
-                args: ["{task2} executed"]
-            }}
+        type: "group"
+        {task1}: {{
+            command: "echo"
+            args: ["{task1} executed"]
+        }}
+        {task2}: {{
+            command: "echo"
+            args: ["{task2} executed"]
         }}
     }}
 }}
@@ -1107,15 +1106,14 @@ name: "group-task-test"
 
 tasks: {{
     {group}: {{
-        parallel: {{
-            {task1}: {{
-                command: "echo"
-                args: ["{task1} executed"]
-            }}
-            {task2}: {{
-                command: "echo"
-                args: ["{task2} executed"]
-            }}
+        type: "group"
+        {task1}: {{
+            command: "echo"
+            args: ["{task1} executed"]
+        }}
+        {task2}: {{
+            command: "echo"
+            args: ["{task2} executed"]
         }}
     }}
 }}
