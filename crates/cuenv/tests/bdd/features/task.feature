@@ -56,6 +56,6 @@ Feature: Task execution behaviors
       | name  | command | depends_on |
       | build | echo    | []         |
       | test  | echo    | [build]    |
-    When I run "cuenv task --list"
+    When I run "cuenv task"
     Then the output should contain "build"
     And the output should contain "test"

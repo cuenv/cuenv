@@ -24,7 +24,7 @@ Feature: Environment command behaviors
     Given a project with environment variables:
       | name    | value |
       | MY_VAR  | hello |
-    When I run "cuenv env print --output-format json"
+    When I run "cuenv env print --output json"
     Then the output should contain "MY_VAR"
     And the output should be valid JSON
     And the exit code should be 0
@@ -32,7 +32,7 @@ Feature: Environment command behaviors
   Scenario: Environment variables are inherited from base
     Given a project with base environment "MY_BASE=base_value"
     And a derived environment "dev" with "DEV_VAR=dev_value"
-    When I run "cuenv env print --environment dev"
+    When I run "cuenv env print --env dev"
     Then the output should contain "MY_BASE"
     And the output should contain "DEV_VAR"
     And the exit code should be 0
