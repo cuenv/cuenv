@@ -181,19 +181,23 @@ func extractTaskPositionsFromStruct(st *ast.StructLit, prefix, filename, moduleR
 			Column: pos.Column(),
 		}
 
-		// Check for nested tasks - TaskGroup has "parallel" field, TaskList has "steps" field
+		// Check if this is a TaskGroup (has "type": "group") - recurse into children
 		if nestedSt, ok := taskField.Value.(*ast.StructLit); ok {
+			isTaskGroup := false
 			for _, nestedElem := range nestedSt.Elts {
 				if nestedField, ok := nestedElem.(*ast.Field); ok {
 					nestedLabel, _, _ := ast.LabelName(nestedField.Label)
-					if nestedLabel == "parallel" {
-						// This is a TaskGroup, recurse into its parallel tasks
-						if nestedTasksSt, ok := nestedField.Value.(*ast.StructLit); ok {
-							extractTaskPositionsFromStruct(nestedTasksSt, fullName, filename, moduleRoot, positions)
+					if nestedLabel == "type" {
+						if lit, ok := nestedField.Value.(*ast.BasicLit); ok && lit.Value == `"group"` {
+							isTaskGroup = true
+							break
 						}
 					}
-					// Note: TaskList "steps" are arrays, positions extracted differently
 				}
+			}
+			if isTaskGroup {
+				// Recurse into flattened child tasks
+				extractTaskPositionsFromStruct(nestedSt, fullName, filename, moduleRoot, positions)
 			}
 		}
 	}
@@ -697,20 +701,16 @@ func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions
 		return
 	}
 
-	// Check if this is a TaskGroup (has "parallel" field) - recurse into children
-	if nested, ok := taskObj["parallel"].(map[string]interface{}); ok {
-		for childName, childDef := range nested {
+	// Check if this is a TaskGroup (has "type": "group") - recurse into children
+	if typeVal, ok := taskObj["type"].(string); ok && typeVal == "group" {
+		for childName, childDef := range taskObj {
+			// Skip non-child fields (metadata fields of TaskGroup)
+			if childName == "type" || childName == "dependsOn" ||
+				childName == "maxConcurrency" || childName == "description" {
+				continue
+			}
 			childFullName := fullName + "." + childName
 			enrichTaskWithSourceAndName(childDef, childFullName, positions)
-		}
-		return
-	}
-
-	// Check if this is a TaskList (has "steps" field) - recurse into steps
-	if steps, ok := taskObj["steps"].([]interface{}); ok {
-		for i, stepDef := range steps {
-			stepFullName := fmt.Sprintf("%s[%d]", fullName, i)
-			enrichTaskWithSourceAndName(stepDef, stepFullName, positions)
 		}
 		return
 	}
