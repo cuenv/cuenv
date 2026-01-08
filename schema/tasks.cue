@@ -7,21 +7,24 @@ package schema
 // Users annotate tasks with their type to unlock specific semantics:
 //   - #Task: Single command or script
 //   - #TaskGroup: Parallel execution (all children run concurrently)
-//   - #TaskList: Sequential execution (steps run in order)
+//   - #TaskSequence: Sequential execution (steps run in order)
 //
 // Example:
 //   tasks: {
 //       build: #Task & { command: "cargo build" }
 //       check: #TaskGroup & {
-//           parallel: {
-//               lint: #Task & { command: "cargo clippy" }
-//               test: #Task & { command: "cargo test" }
-//           }
+//           type: "group"
+//           lint: #Task & { command: "cargo clippy" }
+//           test: #Task & { command: "cargo test" }
 //       }
+//       deploy: #TaskSequence & [
+//           #Task & { command: "build" },
+//           #Task & { command: "push" },
+//       ]
 //   }
 
 // Union of all task types - explicit typing required
-#TaskNode: #Task | #TaskGroup | #TaskList
+#TaskNode: #Task | #TaskGroup | #TaskSequence
 
 // =============================================================================
 // Script Shell Configuration
@@ -103,8 +106,8 @@ package schema
 // =============================================================================
 
 #TaskGroup: {
-	// Named children - all run concurrently
-	parallel!: {[string]: #TaskNode}
+	// Type discriminator - must be "group"
+	type: "group"
 
 	// Dependencies on other tasks
 	dependsOn?: [...#TaskNode]
@@ -114,25 +117,17 @@ package schema
 
 	// Human-readable description
 	description?: string
+
+	// Named children - all run concurrently (as direct fields)
+	{[!~"^(type|dependsOn|maxConcurrency|description)$"]: #TaskNode}
 }
 
 // =============================================================================
-// Sequential Execution (Task List)
+// Sequential Execution (Task Sequence)
 // =============================================================================
 
-#TaskList: {
-	// Ordered steps - run in sequence
-	steps!: [...#TaskNode]
-
-	// Dependencies on other tasks
-	dependsOn?: [...#TaskNode]
-
-	// Stop on first error (default: true)
-	stopOnFirstError?: bool | *true
-
-	// Human-readable description
-	description?: string
-}
+// A sequence is simply an ordered list of task nodes - run in order
+#TaskSequence: [...#TaskNode]
 
 // =============================================================================
 // Task Parameters

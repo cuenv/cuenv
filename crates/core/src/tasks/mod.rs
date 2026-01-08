@@ -839,11 +839,12 @@ fn apply_prefix(prefix: Option<&Path>, value: &str) -> String {
 
 /// A parallel task group - all children run concurrently
 ///
-/// Discriminated by the required `parallel` field.
+/// Discriminated by the required `type: "group"` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskGroup {
-    /// Named children - all run concurrently
-    pub parallel: HashMap<String, TaskNode>,
+    /// Type discriminator - always "group"
+    #[serde(rename = "type")]
+    pub type_: String,
 
     /// Dependencies on other tasks
     #[serde(default, rename = "dependsOn")]
@@ -856,32 +857,18 @@ pub struct TaskGroup {
     /// Human-readable description
     #[serde(default)]
     pub description: Option<String>,
+
+    /// Named children - all run concurrently (flattened from remaining fields)
+    #[serde(flatten)]
+    pub children: HashMap<String, TaskNode>,
 }
 
 // =============================================================================
-// Sequential Execution (Task List)
+// Sequential Execution (Task Sequence)
 // =============================================================================
 
-/// A sequential task list - steps run in order
-///
-/// Discriminated by the required `steps` field.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TaskList {
-    /// Ordered steps - run in sequence
-    pub steps: Vec<TaskNode>,
-
-    /// Dependencies on other tasks
-    #[serde(default, rename = "dependsOn")]
-    pub depends_on: Vec<TaskDependency>,
-
-    /// Stop on first error (default: true)
-    #[serde(default = "default_true", rename = "stopOnFirstError")]
-    pub stop_on_first_error: bool,
-
-    /// Human-readable description
-    #[serde(default)]
-    pub description: Option<String>,
-}
+// TaskSequence is simply Vec<TaskNode> - no wrapper struct needed.
+// The sequence is discriminated by being a JSON array.
 
 // =============================================================================
 // Task Node (Union Type)
@@ -892,8 +879,8 @@ pub struct TaskList {
 /// This is the recursive type that represents any task node in the tree.
 /// Discriminated by:
 /// - [`Task`]: Has `command` or `script` field
-/// - [`TaskGroup`]: Has `parallel` field
-/// - [`TaskList`]: Has `steps` field
+/// - [`TaskGroup`]: Has `type: "group"` field
+/// - Sequence: Is a JSON array `[...]`
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum TaskNode {
@@ -901,8 +888,8 @@ pub enum TaskNode {
     Task(Box<Task>),
     /// A parallel task group
     Group(TaskGroup),
-    /// A sequential task list
-    List(TaskList),
+    /// A sequential list of tasks (just an array)
+    Sequence(Vec<TaskNode>),
 }
 
 // =============================================================================
@@ -913,17 +900,9 @@ pub enum TaskNode {
 #[deprecated(since = "0.26.0", note = "Use TaskNode instead")]
 pub type TaskDefinition = TaskNode;
 
-/// Legacy parallel group structure (for backwards compatibility during migration)
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ParallelGroup {
-    /// Named tasks that can run concurrently
-    #[serde(flatten)]
-    pub tasks: HashMap<String, TaskNode>,
-
-    /// Optional group-level dependencies applied to all subtasks
-    #[serde(default, rename = "dependsOn")]
-    pub depends_on: Vec<TaskDependency>,
-}
+/// Legacy alias for TaskList (now just Vec<TaskNode>)
+#[deprecated(since = "0.26.0", note = "Use Vec<TaskNode> directly")]
+pub type TaskList = Vec<TaskNode>;
 
 /// Root tasks structure from CUE
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -966,9 +945,9 @@ impl TaskNode {
         matches!(self, TaskNode::Group(_))
     }
 
-    /// Check if this is a task list (sequential)
-    pub fn is_list(&self) -> bool {
-        matches!(self, TaskNode::List(_))
+    /// Check if this is a sequence (sequential)
+    pub fn is_sequence(&self) -> bool {
+        matches!(self, TaskNode::Sequence(_))
     }
 
     /// Get as single task if it is one
@@ -987,10 +966,10 @@ impl TaskNode {
         }
     }
 
-    /// Get as task list if it is one
-    pub fn as_list(&self) -> Option<&TaskList> {
+    /// Get as sequence if it is one
+    pub fn as_sequence(&self) -> Option<&Vec<TaskNode>> {
         match self {
-            TaskNode::List(list) => Some(list),
+            TaskNode::Sequence(seq) => Some(seq),
             _ => None,
         }
     }
@@ -1000,7 +979,7 @@ impl TaskNode {
         match self {
             TaskNode::Task(task) => &task.depends_on,
             TaskNode::Group(group) => &group.depends_on,
-            TaskNode::List(list) => &list.depends_on,
+            TaskNode::Sequence(_) => &[], // Sequences don't have top-level deps
         }
     }
 
@@ -1009,7 +988,7 @@ impl TaskNode {
         match self {
             TaskNode::Task(task) => task.description.as_deref(),
             TaskNode::Group(group) => group.description.as_deref(),
-            TaskNode::List(list) => list.description.as_deref(),
+            TaskNode::Sequence(_) => None, // Sequences don't have descriptions
         }
     }
 
@@ -1023,59 +1002,41 @@ impl TaskNode {
     pub fn as_single(&self) -> Option<&Task> {
         self.as_task()
     }
+
+    #[deprecated(since = "0.26.0", note = "Use is_sequence() instead")]
+    pub fn is_list(&self) -> bool {
+        self.is_sequence()
+    }
+
+    #[deprecated(since = "0.26.0", note = "Use as_sequence() instead")]
+    pub fn as_list(&self) -> Option<&Vec<TaskNode>> {
+        self.as_sequence()
+    }
 }
 
 impl TaskGroup {
     /// Get the number of tasks in this group
     pub fn len(&self) -> usize {
-        self.parallel.len()
+        self.children.len()
     }
 
     /// Check if the group is empty
     pub fn is_empty(&self) -> bool {
-        self.parallel.is_empty()
-    }
-}
-
-impl TaskList {
-    /// Get the number of steps in this list
-    pub fn len(&self) -> usize {
-        self.steps.len()
-    }
-
-    /// Check if the list is empty
-    pub fn is_empty(&self) -> bool {
-        self.steps.is_empty()
+        self.children.is_empty()
     }
 }
 
 impl crate::AffectedBy for TaskGroup {
     /// A group is affected if ANY of its subtasks are affected.
     fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
-        self.parallel
+        self.children
             .values()
             .any(|node| node.is_affected_by(changed_files, project_root))
     }
 
     fn input_patterns(&self) -> Vec<&str> {
-        self.parallel
+        self.children
             .values()
-            .flat_map(|node| node.input_patterns())
-            .collect()
-    }
-}
-
-impl crate::AffectedBy for TaskList {
-    /// A list is affected if ANY of its steps are affected.
-    fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
-        self.steps
-            .iter()
-            .any(|node| node.is_affected_by(changed_files, project_root))
-    }
-
-    fn input_patterns(&self) -> Vec<&str> {
-        self.steps
-            .iter()
             .flat_map(|node| node.input_patterns())
             .collect()
     }
@@ -1086,7 +1047,9 @@ impl crate::AffectedBy for TaskNode {
         match self {
             TaskNode::Task(task) => task.is_affected_by(changed_files, project_root),
             TaskNode::Group(group) => group.is_affected_by(changed_files, project_root),
-            TaskNode::List(list) => list.is_affected_by(changed_files, project_root),
+            TaskNode::Sequence(seq) => seq
+                .iter()
+                .any(|node| node.is_affected_by(changed_files, project_root)),
         }
     }
 
@@ -1094,7 +1057,7 @@ impl crate::AffectedBy for TaskNode {
         match self {
             TaskNode::Task(task) => task.input_patterns(),
             TaskNode::Group(group) => group.input_patterns(),
-            TaskNode::List(list) => list.input_patterns(),
+            TaskNode::Sequence(seq) => seq.iter().flat_map(|node| node.input_patterns()).collect(),
         }
     }
 }

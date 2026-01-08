@@ -5,7 +5,7 @@
 //! - Host execution; isolation/caching is delegated to other backends
 
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
-use super::{Task, TaskGraph, TaskGroup, TaskList, TaskNode, Tasks};
+use super::{Task, TaskGraph, TaskGroup, TaskNode, Tasks};
 use crate::config::BackendConfig;
 use crate::environment::Environment;
 use crate::{Error, Result};
@@ -422,7 +422,7 @@ impl TaskExecutor {
                 Ok(vec![result])
             }
             TaskNode::Group(group) => self.execute_parallel(name, group, all_tasks).await,
-            TaskNode::List(list) => self.execute_sequential(name, list, all_tasks).await,
+            TaskNode::Sequence(seq) => self.execute_sequential(name, seq, all_tasks).await,
         }
     }
 
@@ -440,18 +440,19 @@ impl TaskExecutor {
     async fn execute_sequential(
         &self,
         prefix: &str,
-        list: &TaskList,
+        sequence: &[TaskNode],
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         if !self.config.capture_output {
-            cuenv_events::emit_task_group_started!(prefix, true, list.steps.len());
+            cuenv_events::emit_task_group_started!(prefix, true, sequence.len());
         }
         let mut results = Vec::new();
-        for (i, step) in list.steps.iter().enumerate() {
+        for (i, step) in sequence.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
             let task_results = self.execute_node(&task_name, step, all_tasks).await?;
             for result in &task_results {
-                if !result.success && list.stop_on_first_error {
+                // Sequences always stop on first error (no configuration option)
+                if !result.success {
                     return Err(Error::task_failed(
                         &result.name,
                         result.exit_code.unwrap_or(-1),
@@ -472,7 +473,7 @@ impl TaskExecutor {
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
         // Check for "default" task to override parallel execution
-        if let Some(default_task) = group.parallel.get("default") {
+        if let Some(default_task) = group.children.get("default") {
             if !self.config.capture_output {
                 cuenv_events::emit_task_group_started!(prefix, true, 1_usize);
             }
@@ -483,7 +484,7 @@ impl TaskExecutor {
         }
 
         if !self.config.capture_output {
-            cuenv_events::emit_task_group_started!(prefix, false, group.parallel.len());
+            cuenv_events::emit_task_group_started!(prefix, false, group.children.len());
         }
         let mut join_set = JoinSet::new();
         let all_tasks = Arc::new(all_tasks.clone());
@@ -500,7 +501,7 @@ impl TaskExecutor {
             all_results.extend(results);
             Ok(())
         };
-        for (name, child_node) in &group.parallel {
+        for (name, child_node) in &group.children {
             let task_name = format!("{}.{}", prefix, name);
             let child_node = child_node.clone();
             let all_tasks = Arc::clone(&all_tasks);
@@ -949,17 +950,12 @@ mod tests {
             description: Some("Second task".to_string()),
             ..Default::default()
         };
-        let list = TaskList {
-            steps: vec![
-                TaskNode::Task(Box::new(task1)),
-                TaskNode::Task(Box::new(task2)),
-            ],
-            depends_on: vec![],
-            stop_on_first_error: true,
-            description: None,
-        };
+        let sequence = vec![
+            TaskNode::Task(Box::new(task1)),
+            TaskNode::Task(Box::new(task2)),
+        ];
         let all_tasks = Tasks::new();
-        let node = TaskNode::List(list);
+        let node = TaskNode::Sequence(sequence);
         let results = executor
             .execute_node("seq", &node, &all_tasks)
             .await

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo:*)",
+      "Bash(cue export:*)",
+      "Bash(for dir in crates crates/ci crates/codegen crates/core crates/cuengine crates/cuenv crates/github crates/task-discovery crates/task-graph schema)",
+      "Bash(do)",
+      "Bash(if [ -f \"$dir/CLAUDE.md\" ])",
+      "Bash(then)",
+      "Bash(fi)"
+    ]
+  }
+}
