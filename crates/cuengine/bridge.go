@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"unsafe"
@@ -673,41 +672,26 @@ func buildJSON(v cue.Value, moduleRoot string, taskPositions map[string]TaskSour
 }
 
 // enrichTasksWithSource adds _source and _name metadata to each task in the tasks map
-// First pass: inject _name and _source, build signature map
-// Second pass: enrich dependsOn arrays using signature map
 func enrichTasksWithSource(decoded interface{}, prefix string, positions map[string]TaskSourcePos) interface{} {
 	tasksMap, ok := decoded.(map[string]interface{})
 	if !ok {
 		return decoded
 	}
 
-	// Build task signatures map: signature -> task name
-	taskSignatures := make(map[string]string)
-
-	// First pass: inject _name and _source into all tasks, build signatures
+	// Inject _name and _source into all tasks
 	for taskName, taskDef := range tasksMap {
 		fullName := taskName
 		if prefix != "" {
 			fullName = prefix + "." + taskName
 		}
-		enrichTaskWithSourceAndName(taskDef, fullName, positions, taskSignatures)
-	}
-
-	// Second pass: enrich dependsOn arrays using collected signatures
-	for taskName, taskDef := range tasksMap {
-		fullName := taskName
-		if prefix != "" {
-			fullName = prefix + "." + taskName
-		}
-		enrichTaskDependsOn(taskDef, fullName, taskSignatures)
+		enrichTaskWithSourceAndName(taskDef, fullName, positions)
 	}
 
 	return tasksMap
 }
 
 // enrichTaskWithSourceAndName adds _source and _name metadata to a single task definition
-// Also builds the task signatures map for later dependsOn resolution
-func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions map[string]TaskSourcePos, taskSignatures map[string]string) {
+func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions map[string]TaskSourcePos) {
 	taskObj, ok := taskDef.(map[string]interface{})
 	if !ok {
 		return
@@ -717,7 +701,7 @@ func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions
 	if nested, ok := taskObj["parallel"].(map[string]interface{}); ok {
 		for childName, childDef := range nested {
 			childFullName := fullName + "." + childName
-			enrichTaskWithSourceAndName(childDef, childFullName, positions, taskSignatures)
+			enrichTaskWithSourceAndName(childDef, childFullName, positions)
 		}
 		return
 	}
@@ -726,7 +710,7 @@ func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions
 	if steps, ok := taskObj["steps"].([]interface{}); ok {
 		for i, stepDef := range steps {
 			stepFullName := fmt.Sprintf("%s[%d]", fullName, i)
-			enrichTaskWithSourceAndName(stepDef, stepFullName, positions, taskSignatures)
+			enrichTaskWithSourceAndName(stepDef, stepFullName, positions)
 		}
 		return
 	}
@@ -744,10 +728,6 @@ func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions
 	// Inject _name with the full task path
 	taskObj["_name"] = fullName
 
-	// Build signature and register it
-	sig := computeTaskSignature(taskObj)
-	taskSignatures[sig] = fullName
-
 	// Look up position from AST-extracted map
 	if pos, ok := positions[fullName]; ok {
 		taskObj["_source"] = map[string]interface{}{
@@ -758,86 +738,7 @@ func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions
 	}
 }
 
-// enrichTaskDependsOn walks a task and enriches embedded tasks in its dependsOn array
-func enrichTaskDependsOn(taskDef interface{}, fullName string, taskSignatures map[string]string) {
-	taskObj, ok := taskDef.(map[string]interface{})
-	if !ok {
-		return
-	}
 
-	// Recurse into TaskGroup (parallel field)
-	if nested, ok := taskObj["parallel"].(map[string]interface{}); ok {
-		for childName, childDef := range nested {
-			childFullName := fullName + "." + childName
-			enrichTaskDependsOn(childDef, childFullName, taskSignatures)
-		}
-		return
-	}
-
-	// Recurse into TaskList (steps field)
-	if steps, ok := taskObj["steps"].([]interface{}); ok {
-		for i, stepDef := range steps {
-			stepFullName := fmt.Sprintf("%s[%d]", fullName, i)
-			enrichTaskDependsOn(stepDef, stepFullName, taskSignatures)
-		}
-		return
-	}
-
-	// Enrich dependsOn array
-	if dependsOn, ok := taskObj["dependsOn"].([]interface{}); ok {
-		enrichDependsOnTasks(dependsOn, taskSignatures)
-	}
-}
-
-// enrichDependsOnTasks enriches embedded task references in a dependsOn array
-// Uses the pre-built task signatures map to identify embedded tasks by their content
-func enrichDependsOnTasks(dependsOn []interface{}, taskSignatures map[string]string) {
-	for _, dep := range dependsOn {
-		depObj, ok := dep.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		// Skip if _name already set
-		if _, hasName := depObj["_name"]; hasName {
-			continue
-		}
-
-		// Compute signature of this embedded task and look up its name
-		sig := computeTaskSignature(depObj)
-		if name, found := taskSignatures[sig]; found {
-			depObj["_name"] = name
-		}
-	}
-}
-
-// computeTaskSignature creates a content-based signature for a task definition
-// Used to match embedded task references to their original definitions
-func computeTaskSignature(task map[string]interface{}) string {
-	// Create a signature from key task fields (excluding injected metadata)
-	var parts []string
-
-	if cmd, ok := task["command"].(string); ok {
-		parts = append(parts, "cmd:"+cmd)
-	}
-	if script, ok := task["script"].(string); ok {
-		parts = append(parts, "script:"+script)
-	}
-	if args, ok := task["args"].([]interface{}); ok {
-		for i, arg := range args {
-			if s, ok := arg.(string); ok {
-				parts = append(parts, fmt.Sprintf("arg%d:%s", i, s))
-			}
-		}
-	}
-	if desc, ok := task["description"].(string); ok {
-		parts = append(parts, "desc:"+desc)
-	}
-
-	// Sort for consistency
-	sort.Strings(parts)
-	return strings.Join(parts, "|")
-}
 
 // ModuleInstance represents a single evaluated CUE instance within a module
 type ModuleInstance struct {

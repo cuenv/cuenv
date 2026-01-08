@@ -133,6 +133,7 @@ impl Codegen {
     }
 
     /// Evaluate a CUE file and extract the codegen data
+    #[allow(clippy::too_many_lines)]
     fn evaluate_cue(path: &Path) -> Result<CodegenData> {
         // Verify the file exists
         if !path.exists() {
