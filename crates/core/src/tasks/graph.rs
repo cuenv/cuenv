@@ -6,7 +6,7 @@
 //! It wraps the generic `cuenv_task_graph` crate with cuenv-core specific
 //! types like `TaskNode`, `TaskGroup`, and `TaskList`.
 
-use super::{Task, TaskDependency, TaskGroup, TaskList, TaskNode, Tasks};
+use super::{Task, TaskDependency, TaskGroup, TaskNode, Tasks};
 use crate::Result;
 use cuenv_task_graph::{GraphNode, TaskNodeData, TaskResolution, TaskResolver};
 use petgraph::graph::NodeIndex;
@@ -60,9 +60,9 @@ impl Tasks {
         for segment in &segments[1..] {
             current = match (current, segment) {
                 // Parallel group child access (dot notation)
-                (TaskNode::Group(group), PathSegment::Name(name)) => group.parallel.get(name)?,
+                (TaskNode::Group(group), PathSegment::Name(name)) => group.children.get(name)?,
                 // Sequential list child access (bracket notation)
-                (TaskNode::List(list), PathSegment::Index(idx)) => list.steps.get(*idx)?,
+                (TaskNode::Sequence(sequence), PathSegment::Index(idx)) => sequence.get(*idx)?,
                 // Invalid access pattern
                 _ => return None,
             };
@@ -75,15 +75,15 @@ impl Tasks {
     fn node_to_resolution(&self, name: &str, node: &TaskNode) -> TaskResolution<Task> {
         match node {
             TaskNode::Task(task) => TaskResolution::Single(task.as_ref().clone()),
-            TaskNode::List(list) => {
-                let children: Vec<String> = (0..list.steps.len())
+            TaskNode::Sequence(sequence) => {
+                let children: Vec<String> = (0..sequence.len())
                     .map(|i| format!("{}[{}]", name, i))
                     .collect();
                 TaskResolution::Sequential { children }
             }
             TaskNode::Group(group) => {
                 let children: Vec<String> = group
-                    .parallel
+                    .children
                     .keys()
                     .map(|k| format!("{}.{}", name, k))
                     .collect();
@@ -207,7 +207,7 @@ impl TaskGraph {
                 Ok(vec![idx])
             }
             TaskNode::Group(group) => self.build_parallel_group(name, group, all_tasks),
-            TaskNode::List(list) => self.build_sequential_list(name, list, all_tasks),
+            TaskNode::Sequence(sequence) => self.build_sequential_list(name, sequence, all_tasks),
         }
     }
 
@@ -215,18 +215,18 @@ impl TaskGraph {
     fn build_sequential_list(
         &mut self,
         prefix: &str,
-        list: &TaskList,
+        sequence: &Vec<TaskNode>,
         all_tasks: &Tasks,
     ) -> Result<Vec<NodeIndex>> {
         let mut nodes = Vec::new();
         let mut previous: Option<NodeIndex> = None;
 
         // Track child names for group dependency expansion
-        let child_names: Vec<String> = (0..list.steps.len())
+        let child_names: Vec<String> = (0..sequence.len())
             .map(|i| format!("{}[{}]", prefix, i))
             .collect();
 
-        for (i, step) in list.steps.iter().enumerate() {
+        for (i, step) in sequence.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
             let task_nodes = self.build_from_node(&task_name, step, all_tasks)?;
 
@@ -261,12 +261,12 @@ impl TaskGraph {
 
         // Track child names for group dependency expansion
         let child_names: Vec<String> = group
-            .parallel
+            .children
             .keys()
             .map(|name| format!("{}.{}", prefix, name))
             .collect();
 
-        for (name, child_node) in &group.parallel {
+        for (name, child_node) in &group.children {
             let task_name = format!("{}.{}", prefix, name);
             let task_nodes = self.build_from_node(&task_name, child_node, all_tasks)?;
 

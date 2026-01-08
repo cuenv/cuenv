@@ -1,4 +1,4 @@
-use super::{Task, TaskGroup, TaskList, TaskNode, Tasks};
+use super::{Task, TaskGroup, TaskNode, Tasks};
 use crate::{Error, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -185,11 +185,11 @@ fn extract_source_file(node: &TaskNode) -> Option<String> {
         TaskNode::Task(task) => task.source.as_ref().map(|s| s.file.clone()),
         TaskNode::Group(group) => {
             // For groups, use source from first child task
-            group.parallel.values().next().and_then(extract_source_file)
+            group.children.values().next().and_then(extract_source_file)
         }
-        TaskNode::List(list) => {
-            // For lists, use source from first step
-            list.steps.first().and_then(extract_source_file)
+        TaskNode::Sequence(sequence) => {
+            // For sequences, use source from first step
+            sequence.first().and_then(extract_source_file)
         }
     }
 }
@@ -219,11 +219,11 @@ fn canonicalize_node(
         }
         TaskNode::Group(group) => {
             let mut canon_children = HashMap::new();
-            for (child_name, child_node) in &group.parallel {
+            for (child_name, child_node) in &group.children {
                 let child_path = path.join(child_name)?;
                 // For children, extract their own source file and use display name
                 let child_source = extract_source_file(child_node);
-                let child_original = child_name.clone();
+                let child_original = child_name.to_string();
                 let canon_child = canonicalize_node(
                     child_node,
                     &child_path,
@@ -236,7 +236,8 @@ fn canonicalize_node(
 
             let name = path.canonical();
             let node = TaskNode::Group(TaskGroup {
-                parallel: canon_children,
+                type_: group.type_.clone(),
+                children: canon_children,
                 depends_on: group.depends_on.clone(),
                 max_concurrency: group.max_concurrency,
                 description: group.description.clone(),
@@ -254,10 +255,10 @@ fn canonicalize_node(
 
             Ok(node)
         }
-        TaskNode::List(list) => {
+        TaskNode::Sequence(sequence) => {
             // Preserve sequential children order; dependencies inside them remain as-is
-            let mut canon_children = Vec::with_capacity(list.steps.len());
-            for child in &list.steps {
+            let mut canon_children = Vec::with_capacity(sequence.len());
+            for child in sequence {
                 // We still recurse so nested parallel groups are indexed, but we do not
                 // rewrite names with numeric indices to avoid changing existing graph semantics.
                 // For sequential children, extract their source file
@@ -268,12 +269,7 @@ fn canonicalize_node(
             }
 
             let name = path.canonical();
-            let node = TaskNode::List(TaskList {
-                steps: canon_children,
-                depends_on: list.depends_on.clone(),
-                stop_on_first_error: list.stop_on_first_error,
-                description: list.description.clone(),
-            });
+            let node = TaskNode::Sequence(canon_children);
             entries.insert(
                 name.clone(),
                 IndexedTask {

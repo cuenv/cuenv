@@ -242,7 +242,7 @@ fn build_tree_nodes(
                 node.description = match &task.node {
                     CoreTaskNode::Task(t) => t.description.clone(),
                     CoreTaskNode::Group(g) => g.description.clone(),
-                    CoreTaskNode::List(l) => l.description.clone(),
+                    CoreTaskNode::Sequence(_) => None,
                 };
 
                 stats.total_tasks += 1;
@@ -265,11 +265,11 @@ fn get_dep_count(node: &CoreTaskNode) -> usize {
         CoreTaskNode::Task(t) => t.depends_on.len(),
         CoreTaskNode::Group(g) => {
             // Get first task from parallel group
-            g.parallel.values().next().map_or(0, get_dep_count)
+            g.children.values().next().map_or(0, get_dep_count)
         }
-        CoreTaskNode::List(l) => {
-            // Get first task from list
-            l.steps.first().map_or(0, get_dep_count)
+        CoreTaskNode::Sequence(sequence) => {
+            // Get first task from sequence
+            sequence.first().map_or(0, get_dep_count)
         }
     }
 }

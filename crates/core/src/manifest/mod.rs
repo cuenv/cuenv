@@ -919,12 +919,12 @@ impl Project {
         match node {
             TaskNode::Task(task) => Self::expand_task(task),
             TaskNode::Group(group) => {
-                for sub_node in group.parallel.values_mut() {
+                for sub_node in group.children.values_mut() {
                     Self::expand_task_node(sub_node);
                 }
             }
-            TaskNode::List(list) => {
-                for sub_node in &mut list.steps {
+            TaskNode::Sequence(sequence) => {
+                for sub_node in sequence {
                     Self::expand_task_node(sub_node);
                 }
             }

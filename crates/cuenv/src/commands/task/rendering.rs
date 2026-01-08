@@ -108,8 +108,8 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
         TaskNode::Group(_) => {
             writeln!(output, "Type: Task Group (Parallel)").expect("write to string");
         }
-        TaskNode::List(_) => {
-            writeln!(output, "Type: Task List (Sequential)").expect("write to string");
+        TaskNode::Sequence(_) => {
+            writeln!(output, "Type: Task Sequence (Sequential)").expect("write to string");
         }
     }
     output
@@ -330,7 +330,7 @@ fn render_source_tasks(tasks: &[&cuenv_core::tasks::IndexedTask], output: &mut S
                 let desc = match &task.node {
                     TaskNode::Task(t) => t.description.clone(),
                     TaskNode::Group(g) => g.description.clone(),
-                    TaskNode::List(l) => l.description.clone(),
+                    TaskNode::Sequence(_) => None,
                 };
                 node.description = desc;
             }

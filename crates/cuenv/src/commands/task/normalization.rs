@@ -90,12 +90,12 @@ pub fn set_default_project_root(node: &mut TaskNode, project_root: &PathBuf) {
             }
         }
         TaskNode::Group(group) => {
-            for t in group.parallel.values_mut() {
+            for t in group.children.values_mut() {
                 set_default_project_root(t, project_root);
             }
         }
-        TaskNode::List(list) => {
-            for t in &mut list.steps {
+        TaskNode::Sequence(sequence) => {
+            for t in sequence {
                 set_default_project_root(t, project_root);
             }
         }
@@ -177,7 +177,7 @@ pub fn normalize_node_deps(
                     cuenv_core::tasks::TaskDependency::from_name(normalized)
                 })
                 .collect();
-            for t in group.parallel.values_mut() {
+            for t in group.children.values_mut() {
                 normalize_node_deps(
                     t,
                     project_id_by_root,
@@ -186,18 +186,9 @@ pub fn normalize_node_deps(
                 );
             }
         }
-        TaskNode::List(list) => {
-            // Normalize list-level depends_on too
-            let list_deps = std::mem::take(&mut list.depends_on);
-            list.depends_on = list_deps
-                .into_iter()
-                .map(|d| {
-                    let normalized =
-                        normalize_dep(d.task_name(), default_project_id, project_id_by_name);
-                    cuenv_core::tasks::TaskDependency::from_name(normalized)
-                })
-                .collect();
-            for t in &mut list.steps {
+        TaskNode::Sequence(sequence) => {
+            // Sequences don't have their own depends_on, just iterate children
+            for t in sequence {
                 normalize_node_deps(
                     t,
                     project_id_by_root,
