@@ -10,13 +10,8 @@ import (
 	xTools "github.com/cuenv/cuenv/contrib/tools"
 )
 
-// Task type aliases for brevity
-#T: schema.#Task
-#G: schema.#TaskGroup
-#L: schema.#TaskList
-
 // Command template for cargo tasks
-#cargo: #T & {command: "cargo"}
+#cargo: schema.#Task & {command: "cargo"}
 
 schema.#Project & {
 	name: "cuenv"
@@ -203,221 +198,176 @@ schema.#Project & {
 	]
 
 	tasks: {
-		// CI tasks
-		ci: #G & {
-			parallel: {
-				"sync-check": #T & {
-					command:     "cuenv"
-					args:        ["sync", "ci", "--check"]
-					description: "Verify CI workflows are in sync with CUE configuration"
-					inputs:      ["env.cue", "schema/**", "cue.mod/**", "contrib/**"]
-				}
-			}
-		}
-
-		// Check tasks (run in parallel)
-		check: #G & {
-			parallel: {
-				lint: #cargo & {
-					args:   ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
-					inputs: _baseInputs
-				}
-				test: #cargo & {
-					args:   ["nextest", "run", "--workspace", "--all-features"]
-					inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
-					labels: ["test"]
-				}
-				security: #cargo & {
-					args:   ["deny", "check", "bans", "licenses", "advisories"]
-					inputs: list.Concat([_baseInputs, ["deny.toml"]])
-				}
-			}
-		}
-
-		// Standalone lint task
 		lint: #cargo & {
-			args:   ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+			args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 			inputs: _baseInputs
 		}
 
 		// Test tasks
-		tests: #G & {
-			parallel: {
-				unit: #cargo & {
-					args:   ["nextest", "run", "--workspace", "--all-features"]
-					inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
-				}
-				doc: #cargo & {
-					args:   ["test", "--doc", "--workspace"]
-					inputs: _baseInputs
-				}
-				bdd: #cargo & {
-					args:    ["test", "--test", "bdd"]
-					inputs:  list.Concat([_baseInputs, ["_tests/**", "features/**", "schema/**", "cue.mod/**"]])
-					outputs: [".test"]
-				}
+		tests: {
+			type: "group"
+			unit: #cargo & {
+				args: ["nextest", "run", "--workspace", "--all-features"]
+				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
+			}
+			doc: #cargo & {
+				args: ["test", "--doc", "--workspace"]
+				inputs: _baseInputs
+			}
+			bdd: #cargo & {
+				args: ["test", "--test", "bdd"]
+				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "schema/**", "cue.mod/**"]])
+				outputs: [".test"]
 			}
 		}
 
-		// Build tasks
-		build: #cargo & {
-			args:   ["build", "--workspace", "--all-features"]
-			inputs: _baseInputs
-		}
-
-		// Fast development build
-		quick: #cargo & {
-			args:   ["build", "--workspace", "--all-features", "--profile", "quick"]
-			inputs: _baseInputs
-		}
-
 		// Cross-compilation
-		cross: #G & {
-			parallel: {
-				linux: #T & {
-					script: """
-						#!/bin/bash
-						set -euo pipefail
-						TARGET="x86_64-unknown-linux-gnu"
+		cross: {
+			type: "group"
+			linux: schema.#Task & {
+				script: """
+					#!/bin/bash
+					set -euo pipefail
+					TARGET="x86_64-unknown-linux-gnu"
 
-						echo "Building Go bridge for Linux..."
-						cd crates/cuengine
-						mkdir -p ../../target/release
-						export CGO_ENABLED=1 GOOS=linux GOARCH=amd64
-						export CC="zig cc -target x86_64-linux-gnu"
-						export CXX="zig c++ -target x86_64-linux-gnu"
-						export AR="zig ar"
-						go build -buildmode=c-archive -o ../../target/release/libcue_bridge.a bridge.go
-						cp libcue_bridge.h ../../target/release/
-						cd ../..
+					echo "Building Go bridge for Linux..."
+					cd crates/cuengine
+					mkdir -p ../../target/release
+					export CGO_ENABLED=1 GOOS=linux GOARCH=amd64
+					export CC="zig cc -target x86_64-linux-gnu"
+					export CXX="zig c++ -target x86_64-linux-gnu"
+					export AR="zig ar"
+					go build -buildmode=c-archive -o ../../target/release/libcue_bridge.a bridge.go
+					cp libcue_bridge.h ../../target/release/
+					cd ../..
 
-						echo "Building cuenv for Linux..."
-						cargo zigbuild --release --target $TARGET -p cuenv
+					echo "Building cuenv for Linux..."
+					cargo zigbuild --release --target $TARGET -p cuenv
 
-						echo "Binary at: target/$TARGET/release/cuenv"
-						file target/$TARGET/release/cuenv
-						"""
-					inputs: _baseInputs
-				}
+					echo "Binary at: target/$TARGET/release/cuenv"
+					file target/$TARGET/release/cuenv
+					"""
+				inputs: _baseInputs
 			}
 		}
 
 		// Security audit
-		security: #G & {
-			parallel: {
-				deny: #cargo & {
-					args:   ["deny", "check", "bans", "licenses", "advisories"]
-					inputs: list.Concat([_baseInputs, ["deny.toml"]])
-				}
+		security: {
+			type: "group"
+			deny: #cargo & {
+				args: ["deny", "check", "bans", "licenses", "advisories"]
+				inputs: list.Concat([_baseInputs, ["deny.toml"]])
 			}
 		}
 
 		// SBOM generation
 		sbom: #cargo & {
-			args:    ["cyclonedx", "--override-filename", "sbom.json"]
-			inputs:  _baseInputs
+			args: ["cyclonedx", "--override-filename", "sbom.json"]
+			inputs: _baseInputs
 			outputs: ["sbom.json"]
 		}
 
 		// Code coverage
 		coverage: #cargo & {
-			args:    ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-			inputs:  list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
+			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
+			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**"]])
 			outputs: ["lcov.info"]
-			labels:  ["coverage"]
+			labels: ["coverage"]
 		}
 
 		// Benchmarks
 		bench: #cargo & {
-			args:   ["bench", "--workspace", "--no-fail-fast"]
+			args: ["bench", "--workspace", "--no-fail-fast"]
 			inputs: _baseInputs
 		}
 
 		// Documentation
-		docs: #G & {
-			parallel: {
-				build: #T & {
-					command: "bash"
-					args:    ["-c", "bun install --frozen-lockfile && cd docs && bun run build && cp public/.assetsignore dist/"]
-					inputs: [
-						"package.json",
-						"bun.lock",
-						"docs/**",
-					]
-					outputs: ["docs/dist"]
-				}
-				deploy: #T & {
-					command:   "bash"
-					args:      ["-c", "cd docs && npx wrangler deploy"]
-					dependsOn: [build]
-					inputs:    [{task: "docs.build"}]
-				}
+		docs: {
+			type: "group"
+			build: schema.#Task & {
+				command: "bash"
+				args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build && cp public/.assetsignore dist/"]
+				inputs: [
+					"package.json",
+					"bun.lock",
+					"docs/**",
+				]
+				outputs: ["docs/dist"]
+			}
+			deploy: schema.#Task & {
+				command: "bash"
+				args: ["-c", "cd docs && npx wrangler deploy"]
+				dependsOn: [build]
+				inputs: [{task: "docs.build"}]
 			}
 		}
 
 		// Evaluation tasks
-		eval: #G & {
+		eval: {
+			type: "group"
 			let _inputs = ["llms.txt", "schema/**", "prompts/**"]
-			parallel: {
-				"task-gen": #T & {
-					command: "gh"
-					args:    ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
-					inputs:  _inputs
-				}
-				"env-gen": #T & {
-					command: "gh"
-					args:    ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
-					inputs:  _inputs
-				}
-				qa: #T & {
-					command: "gh"
-					args:    ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
-					inputs:  _inputs
-				}
+			"task-gen": schema.#Task & {
+				command: "gh"
+				args: ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
+				inputs: _inputs
+			}
+			"env-gen": schema.#Task & {
+				command: "gh"
+				args: ["models", "eval", "prompts/cuenv-env-generation.prompt.yml"]
+				inputs: _inputs
+			}
+			qa: schema.#Task & {
+				command: "gh"
+				args: ["models", "eval", "prompts/cuenv-question-answering.prompt.yml"]
+				inputs: _inputs
 			}
 		}
 
 		// Cargo release build
-		cargo: #G & {
-			parallel: {
-				build: #cargo & {
-					args:    ["build", "--release", "-p", "cuenv"]
-					inputs:  _baseInputs
-					outputs: ["target/release/cuenv"]
-				}
-				install: #cargo & {
-					args:   ["install", "--path", "./crates/cuenv"]
-					inputs: _baseInputs
-				}
+		cargo: {
+			type: "group"
+			build: #cargo & {
+				args: ["build", "--release", "-p", "cuenv"]
+				inputs: _baseInputs
+				outputs: ["target/release/cuenv"]
+			}
+
+			quick: #cargo & {
+				args: ["build", "--workspace", "--all-features", "--profile", "quick"]
+				inputs: _baseInputs
+			}
+
+			install: #cargo & {
+				args: ["install", "--path", "./crates/cuenv"]
+				inputs: _baseInputs
 			}
 		}
 
 		// Publishing
-		publish: #G & {
-			parallel: {
-				github: #T & {
-					command: "bash"
-					args: ["-c", """
-						for dir in dist/*/; do
-							platform=$(basename "$dir")
-							mv "$dir/cuenv" "dist/cuenv-$platform"
-						done
-						rm -rf dist/*/
-						gh release upload $TAG dist/cuenv-*
-						"""]
-				}
-				cue: #T & {
-					command: "bash"
-					args: ["-c", """
-						TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-						if [ -z "$TAG" ]; then
-							echo "Error: No git tag found"
-							exit 1
-						fi
-						cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish v$TAG
-						"""]
-					inputs: ["cue.mod/**", "schema/**"]
-				}
+		publish: {
+			type: "group"
+			github: schema.#Task & {
+				command: "bash"
+				args: ["-c", """
+					for dir in dist/*/; do
+						platform=$(basename "$dir")
+						mv "$dir/cuenv" "dist/cuenv-$platform"
+					done
+					rm -rf dist/*/
+					gh release upload $TAG dist/cuenv-*
+					"""]
+			}
+			cue: schema.#Task & {
+				command: "bash"
+				args: ["-c", """
+					TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+					if [ -z "$TAG" ]; then
+						echo "Error: No git tag found"
+						exit 1
+					fi
+					cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish v$TAG
+					"""]
+				inputs: ["cue.mod/**", "schema/**"]
 			}
 		}
 	}

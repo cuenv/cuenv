@@ -7,7 +7,8 @@
       "Bash(do)",
       "Bash(if [ -f \"$dir/CLAUDE.md\" ])",
       "Bash(then)",
-      "Bash(fi)"
+      "Bash(fi)",
+      "Bash(cue vet:*)"
     ]
   }
 }

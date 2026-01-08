@@ -7,8 +7,8 @@ on:
     branches:
     - main
     paths:
+    - '**'
     - .github/workflows/cuenv-sync-check.yml
-    - contrib/**
     - cue.mod/**
     - env.cue
     - schema/**
@@ -16,8 +16,8 @@ on:
     branches:
     - main
     paths:
+    - '**'
     - .github/workflows/cuenv-sync-check.yml
-    - contrib/**
     - cue.mod/**
     - env.cue
     - schema/**
