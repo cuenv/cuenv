@@ -101,11 +101,25 @@ Contributors are CUE-defined task injectors that modify the task DAG before exec
 - 10-49: Setup stage (cuenv, cachix, etc.)
 - 50+: Success stage (post-build tasks)
 
+**CI Providers:**
+
+CI workflow generation requires explicit provider configuration. No workflows are emitted without `ci.providers`:
+
+```cue
+ci: {
+    providers: ["github"]  // Required: explicit opt-in
+    pipelines: { ... }
+}
+```
+
+Per-pipeline `providers` completely overrides global (no merge).
+
 **Key Files:**
 
 - `crates/core/src/contributors.rs` - ContributorEngine implementation
+- `crates/core/src/ci.rs` - CI configuration and provider resolution
 - `contrib/contributors/*.cue` - CUE contributor definitions
-- `schema/ci.cue` - Contributor schema types
+- `schema/ci.cue` - CI and contributor schema types
 
 ### Critical Patterns
 

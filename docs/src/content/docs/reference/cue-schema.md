@@ -793,10 +793,142 @@ hooks: {
 For `cuenv exec` and `cuenv task`, tools are activated automatically without requiring this hook. Use `#ToolsActivate` for interactive shell integration.
 :::
 
+## CI Configuration
+
+cuenv can generate CI workflow manifests for multiple providers. CI configuration requires **explicit opt-in** - no workflows are generated unless providers are specified.
+
+### #CIProvider
+
+Supported CI provider names for workflow generation.
+
+```cue
+#CIProvider: "github" | "buildkite" | "gitlab"
+```
+
+### #CI
+
+Root CI configuration for the project.
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+ci: {
+    // CI providers to emit workflows for (explicit opt-in required)
+    // If not specified, no workflows are generated
+    providers: ["github"]
+
+    // Provider-specific configuration
+    provider: github: {
+        runner: "ubuntu-latest"
+        cachix: name: "my-cache"
+    }
+
+    // Pipeline definitions
+    pipelines: {
+        ci: {
+            when: { pullRequest: true }
+            tasks: ["check"]
+        }
+    }
+
+    // Contributors that inject tasks into the DAG
+    contributors: [...]
+}
+```
+
+**Fields:**
+
+| Field          | Type                        | Required | Description                                      |
+| -------------- | --------------------------- | -------- | ------------------------------------------------ |
+| `providers`    | `[...#CIProvider]`          | No       | CI providers to emit workflows for               |
+| `pipelines`    | `{[string]: #Pipeline}`     | No       | Named pipeline definitions                       |
+| `provider`     | `#ProviderConfig`           | No       | Provider-specific configuration                  |
+| `contributors` | `[...#Contributor]`         | No       | Contributors that inject tasks into the DAG      |
+
+:::note[Explicit Opt-In]
+If `providers` is not specified, **no CI workflows are emitted**. You must explicitly configure which providers to generate manifests for.
+:::
+
+### #Pipeline
+
+Individual pipeline configuration.
+
+```cue
+pipelines: {
+    release: {
+        // Override global providers for this pipeline
+        providers: ["buildkite"]
+
+        environment: "production"
+        when: { release: ["published"] }
+        tasks: ["build", "publish"]
+    }
+}
+```
+
+**Fields:**
+
+| Field         | Type                 | Required | Description                                       |
+| ------------- | -------------------- | -------- | ------------------------------------------------- |
+| `providers`   | `[...#CIProvider]`   | No       | Override global providers (completely replaces)   |
+| `mode`        | `#PipelineMode`      | No       | Generation mode: "thin" (default) or "expanded"   |
+| `environment` | `string`             | No       | Environment for secret resolution                 |
+| `when`        | `#PipelineCondition` | No       | Trigger conditions                                |
+| `tasks`       | `[...#PipelineTask]` | No       | Tasks to run                                      |
+| `provider`    | `#ProviderConfig`    | No       | Provider-specific overrides                       |
+
+**Provider Override Behavior:** Per-pipeline `providers` **completely replaces** the global `ci.providers` - there is no merging.
+
+### #PipelineCondition
+
+Trigger conditions for pipeline execution.
+
+```cue
+when: {
+    pullRequest: true                    // Run on PRs
+    branch: "main"                       // Run on specific branch
+    tag: "v*"                            // Run on tags matching pattern
+    defaultBranch: true                  // Run on default branch
+    scheduled: "0 0 * * *"               // Cron schedule
+    manual: true                         // Allow manual dispatch
+    release: ["published"]               // Run on release events
+}
+```
+
+### Example: Multi-Provider Configuration
+
+```cue
+ci: {
+    // Global default: emit GitHub Actions workflows
+    providers: ["github"]
+
+    provider: github: {
+        runner: "ubuntu-latest"
+    }
+
+    pipelines: {
+        // Uses global providers (GitHub Actions)
+        ci: {
+            when: { pullRequest: true, branch: "main" }
+            tasks: ["check"]
+        }
+
+        // Override: emit Buildkite pipeline for release
+        release: {
+            providers: ["buildkite"]
+            environment: "production"
+            when: { release: ["published"] }
+            tasks: ["build", "publish"]
+        }
+    }
+}
+```
+
 ## See Also
 
 - [Configuration Guide](/how-to/configure-a-project/) - Usage patterns
 - [Tools Guide](/how-to/tools/) - Tools configuration and usage
 - [Tools Architecture](/explanation/tools/) - How the tools system works internally
+- [CI Contributors Reference](/reference/ci-contributors/) - Contributor system documentation
 - [API Reference](/reference/rust-api/) - Rust API documentation
 - [Examples](/reference/examples/) - Complete examples
