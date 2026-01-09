@@ -123,6 +123,9 @@ schema.#Project & {
 	// ============================================================================
 
 	ci: {
+		// Emit workflows for GitHub Actions only
+		providers: ["github"]
+
 		contributors: [
 			xContributors.#Nix,
 			xContributors.#CuenvNative,
