@@ -575,7 +575,11 @@ impl Compiler {
     /// # Arguments
     /// * `dep_name` - The dependency name (may be simple like "build" or qualified like "docs.build")
     /// * `current_task_id` - The ID of the task that has this dependency (e.g., "docs.deploy")
-    fn expand_dependency_to_leaf_tasks(&self, dep_name: &str, current_task_id: &str) -> Vec<String> {
+    fn expand_dependency_to_leaf_tasks(
+        &self,
+        dep_name: &str,
+        current_task_id: &str,
+    ) -> Vec<String> {
         // First, try direct lookup
         if let Some(node) = self.find_task_node(dep_name) {
             let mut result = Vec::new();
@@ -609,7 +613,11 @@ impl Compiler {
             }
             TaskNode::Group(group) => {
                 for (child_name, child_node) in &group.children {
-                    Self::collect_leaf_task_names(&format!("{prefix}.{child_name}"), child_node, result);
+                    Self::collect_leaf_task_names(
+                        &format!("{prefix}.{child_name}"),
+                        child_node,
+                        result,
+                    );
                 }
             }
             TaskNode::Sequence(steps) => {
@@ -1666,8 +1674,6 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            mode: PipelineMode::default(),
-            environment: None,
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1678,8 +1684,7 @@ mod tests {
                 manual: None,
                 release: None,
             }),
-            derive_paths: None,
-            provider: None,
+            ..Default::default()
         };
 
         // Add CI config with a pipeline
@@ -1741,8 +1746,6 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            mode: PipelineMode::default(),
-            environment: None,
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1753,8 +1756,7 @@ mod tests {
                 manual: None,
                 release: None,
             }),
-            derive_paths: None,
-            provider: None,
+            ..Default::default()
         };
 
         project.ci = Some(CI {
@@ -1801,8 +1803,6 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            mode: PipelineMode::default(),
-            environment: None,
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1813,8 +1813,7 @@ mod tests {
                 manual: None,
                 release: None,
             }),
-            derive_paths: None,
-            provider: None,
+            ..Default::default()
         };
 
         project.ci = Some(CI {
@@ -1858,8 +1857,6 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            mode: PipelineMode::default(),
-            environment: None,
             tasks: vec![PipelineTask::Simple("deploy".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -1870,8 +1867,7 @@ mod tests {
                 manual: None,
                 release: None,
             }),
-            derive_paths: None,
-            provider: None,
+            ..Default::default()
         };
 
         project.ci = Some(CI {
@@ -2048,8 +2044,7 @@ mod tests {
         project.config = Some(cuenv_core::config::Config::default());
         project.ci = Some(CI {
             pipelines: BTreeMap::new(),
-            provider: None,
-            contributors: vec![],
+            ..Default::default()
         });
         // Set cuenv source to "git"
         if let Some(ref mut config) = project.config {
@@ -2529,8 +2524,6 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            mode: PipelineMode::default(),
-            environment: None,
             tasks: vec![PipelineTask::Simple("check".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -2541,8 +2534,7 @@ mod tests {
                 manual: None,
                 release: None,
             }),
-            derive_paths: None,
-            provider: None,
+            ..Default::default()
         };
 
         project.ci = Some(CI {
@@ -2603,8 +2595,6 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            mode: PipelineMode::default(),
-            environment: None,
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -2615,8 +2605,7 @@ mod tests {
                 manual: None,
                 release: None,
             }),
-            derive_paths: None,
-            provider: None,
+            ..Default::default()
         };
 
         project.ci = Some(CI {
@@ -2671,8 +2660,6 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            mode: PipelineMode::default(),
-            environment: None,
             tasks: vec![PipelineTask::Simple("build".to_string())],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
@@ -2683,8 +2670,7 @@ mod tests {
                 manual: None,
                 release: None,
             }),
-            derive_paths: None,
-            provider: None,
+            ..Default::default()
         };
 
         project.ci = Some(CI {

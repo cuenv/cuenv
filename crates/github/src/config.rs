@@ -114,7 +114,7 @@ impl GitHubConfigExt for CI {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::ci::{Pipeline, PipelineMode, PipelineTask};
+    use cuenv_core::ci::{Pipeline, PipelineTask};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -132,16 +132,11 @@ mod tests {
                 }))
                 .unwrap(),
             ),
-            contributors: vec![],
             pipelines: BTreeMap::from([
                 (
                     "ci".to_string(),
                     Pipeline {
-                        mode: PipelineMode::default(),
-                        environment: None,
-                        when: None,
                         tasks: vec![PipelineTask::Simple("test".to_string())],
-                        derive_paths: None,
                         provider: Some(
                             serde_json::from_value(json!({
                                 "github": {
@@ -150,20 +145,18 @@ mod tests {
                             }))
                             .unwrap(),
                         ),
+                        ..Default::default()
                     },
                 ),
                 (
                     "release".to_string(),
                     Pipeline {
-                        mode: PipelineMode::default(),
-                        environment: None,
-                        when: None,
                         tasks: vec![PipelineTask::Simple("deploy".to_string())],
-                        derive_paths: None,
-                        provider: None,
+                        ..Default::default()
                     },
                 ),
             ]),
+            ..Default::default()
         };
 
         // Pipeline with override
@@ -251,8 +244,7 @@ mod tests {
                 }))
                 .unwrap(),
             ),
-            contributors: vec![],
-            pipelines: BTreeMap::new(),
+            ..Default::default()
         };
 
         // Returns global config when pipeline doesn't exist
@@ -265,11 +257,7 @@ mod tests {
 
     #[test]
     fn test_github_config_no_global_config() {
-        let ci = CI {
-            provider: None,
-            contributors: vec![],
-            pipelines: BTreeMap::new(),
-        };
+        let ci = CI::default();
 
         let config = ci.github_config_for_pipeline("any");
         // Returns default config when no global config
