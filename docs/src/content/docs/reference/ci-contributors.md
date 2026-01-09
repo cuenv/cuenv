@@ -7,6 +7,31 @@ This page documents the contributor system used by cuenv to inject setup tasks i
 
 ## Overview
 
+### CI Providers Configuration
+
+Before contributors can inject tasks, you must configure which CI providers to generate workflows for. **This is required** - no workflows are emitted without explicit provider configuration.
+
+```cue
+ci: {
+    // Required: specify which CI providers to emit workflows for
+    providers: ["github"]
+
+    // Optional: per-pipeline provider override (completely replaces global)
+    pipelines: {
+        release: {
+            providers: ["buildkite"]  // This pipeline uses Buildkite instead
+            // ...
+        }
+    }
+}
+```
+
+**Supported providers:** `"github"`, `"buildkite"`, `"gitlab"`
+
+See [Configuration Schema - CI Configuration](/reference/cue-schema/#ci-configuration) for full schema documentation.
+
+### Contributor System
+
 The cuenv CI compiler uses a **contributor system** to inject platform-specific setup tasks into workflows. Each contributor:
 
 1. **Self-detects** whether it should be active based on IR and project state
