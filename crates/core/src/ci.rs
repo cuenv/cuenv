@@ -190,12 +190,16 @@ pub enum PipelineMode {
     Expanded,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
     /// Generation mode for this pipeline (default: thin)
     #[serde(default)]
     pub mode: PipelineMode,
+    /// CI providers to emit workflows for (overrides global ci.providers for this pipeline).
+    /// If specified, completely replaces the global providers list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
     /// Environment for secret resolution (e.g., "production")
     pub environment: Option<String>,
     pub when: Option<PipelineCondition>,
@@ -416,6 +420,11 @@ pub struct Contributor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CI {
+    /// CI providers to emit workflows for (e.g., `["github", "buildkite"]`).
+    /// If not specified, no workflows are emitted (explicit configuration required).
+    /// Per-pipeline providers can override this global setting.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
     #[serde(default)]
     pub pipelines: BTreeMap<String, Pipeline>,
     /// Global provider configuration defaults
@@ -423,6 +432,21 @@ pub struct CI {
     /// Contributors that inject tasks into build phases
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contributors: Vec<Contributor>,
+}
+
+impl CI {
+    /// Get effective providers for a pipeline.
+    ///
+    /// Per-pipeline providers completely override global providers.
+    /// Returns an empty slice if no providers are configured (emit nothing).
+    #[must_use]
+    pub fn providers_for_pipeline(&self, pipeline_name: &str) -> &[String] {
+        self.pipelines
+            .get(pipeline_name)
+            .filter(|p| !p.providers.is_empty())
+            .map(|p| p.providers.as_slice())
+            .unwrap_or(&self.providers)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -709,5 +733,63 @@ mod tests {
         let json = r#"{"workspaceMember": ["npm", "bun"]}"#;
         let cond: ActivationCondition = serde_json::from_str(json).unwrap();
         assert_eq!(cond.workspace_member, vec!["npm", "bun"]);
+    }
+
+    #[test]
+    fn test_providers_for_pipeline_global() {
+        let ci = CI {
+            providers: vec!["github".to_string()],
+            pipelines: BTreeMap::from([(
+                "ci".to_string(),
+                Pipeline {
+                    providers: vec![],
+                    mode: PipelineMode::default(),
+                    environment: None,
+                    when: None,
+                    tasks: vec![],
+                    derive_paths: None,
+                    provider: None,
+                },
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(ci.providers_for_pipeline("ci"), &["github"]);
+    }
+
+    #[test]
+    fn test_providers_for_pipeline_override() {
+        let ci = CI {
+            providers: vec!["github".to_string()],
+            pipelines: BTreeMap::from([(
+                "release".to_string(),
+                Pipeline {
+                    providers: vec!["buildkite".to_string()],
+                    mode: PipelineMode::default(),
+                    environment: None,
+                    when: None,
+                    tasks: vec![],
+                    derive_paths: None,
+                    provider: None,
+                },
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(ci.providers_for_pipeline("release"), &["buildkite"]);
+    }
+
+    #[test]
+    fn test_providers_for_pipeline_empty() {
+        let ci = CI::default();
+        assert!(ci.providers_for_pipeline("any").is_empty());
+    }
+
+    #[test]
+    fn test_providers_for_pipeline_nonexistent() {
+        let ci = CI {
+            providers: vec!["github".to_string()],
+            ..Default::default()
+        };
+        // Non-existent pipeline falls back to global
+        assert_eq!(ci.providers_for_pipeline("nonexistent"), &["github"]);
     }
 }

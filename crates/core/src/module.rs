@@ -457,7 +457,8 @@ mod tests {
 
     #[test]
     fn test_module_evaluation_empty() {
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
+        let module =
+            ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
 
         assert_eq!(module.base_count(), 0);
         assert_eq!(module.project_count(), 0);
@@ -478,7 +479,8 @@ mod tests {
 
     #[test]
     fn test_module_evaluation_get_nonexistent() {
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
+        let module =
+            ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
 
         assert!(module.get(Path::new("nonexistent")).is_none());
     }
@@ -504,7 +506,8 @@ mod tests {
 
     #[test]
     fn test_module_evaluation_ancestors_deep_path() {
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
+        let module =
+            ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
 
         let ancestors = module.ancestors(Path::new("a/b/c/d"));
         assert_eq!(ancestors.len(), 4);
@@ -516,7 +519,8 @@ mod tests {
 
     #[test]
     fn test_module_evaluation_is_inherited_no_child() {
-        let module = ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
+        let module =
+            ModuleEvaluation::from_raw(PathBuf::from("/test"), HashMap::new(), vec![], None);
 
         // Non-existent child should return false
         assert!(!module.is_inherited(Path::new("nonexistent"), "field"));

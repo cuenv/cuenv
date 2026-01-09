@@ -217,9 +217,17 @@ package schema
 //   Structure: All tasks expanded inline with proper dependencies
 #PipelineMode: "thin" | "expanded"
 
+// CI provider names for workflow generation
+// Used to specify which CI providers should emit workflow manifests
+#CIProvider: "github" | "buildkite" | "gitlab"
+
 #Pipeline: close({
 	// Generation mode for this pipeline (default: "thin")
 	mode?: #PipelineMode | *"thin"
+
+	// CI providers to emit workflows for (overrides global ci.providers for this pipeline)
+	// If specified, completely replaces the global providers list for this pipeline
+	providers?: [...#CIProvider]
 
 	environment?: string // environment for secret resolution (e.g., "production")
 	when?:        #PipelineCondition
@@ -232,8 +240,13 @@ package schema
 })
 
 #CI: close({
+	// CI providers to emit workflows for (e.g., ["github", "buildkite"])
+	// If not specified, no workflows are emitted (explicit configuration required)
+	// Per-pipeline providers can override this global setting
+	providers?: [...#CIProvider]
+
 	pipelines?: [string]: #Pipeline
-	provider?: #ProviderConfig
+	provider?:  #ProviderConfig
 
 	// Contributors that inject tasks into the DAG
 	contributors?: [...#Contributor]

@@ -92,7 +92,7 @@ language: version: "v0.9.0"
     )
     .expect("Failed to write module.cue");
 
-    // Create env.cue with ignore patterns (simplified, no imports)
+    // Create minimal env.cue (ignore patterns are now in .rules.cue files)
     fs::write(
         temp_path.join("env.cue"),
         r#"package cuenv
@@ -101,11 +101,6 @@ name: "sync-test"
 
 env: {
     TEST_VAR: "test_value"
-}
-
-ignore: {
-    git:    ["node_modules/", ".env", "*.log", "target/"]
-    docker: ["node_modules/", ".git/", "target/", "*.md"]
 }
 "#,
     )
@@ -510,12 +505,11 @@ fn test_sync_command_dry_run() {
                 println!("stderr: {stderr}");
             }
             assert!(success, "Command should succeed");
-            // Should show what would be created/updated
+            // Sync command should report status for each provider
+            // With no configuration, providers report "No ... found" messages
             assert!(
-                stdout.contains("Would create")
-                    || stdout.contains("Would update")
-                    || stdout.contains(".gitignore"),
-                "Dry run should show what would be generated"
+                stdout.contains("[codegen]") || stdout.contains("[ci]") || stdout.contains("[rules]"),
+                "Dry run should show provider status sections"
             );
         }
         Err(e) => panic!("Failed to run cuenv sync --dry-run: {e}"),
@@ -523,7 +517,7 @@ fn test_sync_command_dry_run() {
 }
 
 #[test]
-fn test_sync_command_dry_run_shows_pattern_count() {
+fn test_sync_command_dry_run_reports_provider_status() {
     let (_temp_dir, test_path) = create_git_test_env();
     let result = run_cuenv_command(&[
         "sync",
@@ -537,10 +531,13 @@ fn test_sync_command_dry_run_shows_pattern_count() {
     match result {
         Ok((stdout, _stderr, success)) => {
             assert!(success, "Command should succeed");
-            // Should show pattern count in output
+            // Each provider reports its status (even when nothing to sync)
+            // CI provider reports when no providers are configured
             assert!(
-                stdout.contains("patterns") || stdout.contains("Would create"),
-                "Dry run should show pattern count"
+                stdout.contains("No CI providers configured")
+                    || stdout.contains("No codegen configuration")
+                    || stdout.contains("No .rules.cue"),
+                "Dry run should report provider status"
             );
         }
         Err(e) => panic!("Failed to run cuenv sync --dry-run: {e}"),

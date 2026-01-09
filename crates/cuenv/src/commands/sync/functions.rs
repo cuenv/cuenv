@@ -463,6 +463,33 @@ fn detect_package_name(project_path: &Path) -> Result<String> {
 // CI Workflow Sync
 // ============================================================================
 
+/// Known CI providers supported by cuenv sync.
+const KNOWN_PROVIDERS: &[&str] = &["github", "buildkite", "gitlab"];
+
+/// Validate provider names against known providers.
+///
+/// Returns a tuple of (valid_providers, warnings).
+/// Unknown providers generate warnings but don't prevent sync from proceeding
+/// with the valid ones.
+fn validate_providers(providers: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut valid = Vec::new();
+    let mut warnings = Vec::new();
+
+    for p in providers {
+        if KNOWN_PROVIDERS.contains(&p.as_str()) {
+            valid.push(p.clone());
+        } else {
+            warnings.push(format!(
+                "Unknown CI provider '{}'. Known providers: {}",
+                p,
+                KNOWN_PROVIDERS.join(", ")
+            ));
+        }
+    }
+
+    (valid, warnings)
+}
+
 /// Execute the sync ci command for a single project.
 ///
 /// Syncs CI workflow files (GitHub Actions, Buildkite) based on CUE configuration.
@@ -515,21 +542,52 @@ pub async fn execute_sync_ci(
         )));
     }
 
-    // Determine which providers to sync
-    let providers = match provider {
-        Some(p) => vec![p.to_string()],
-        None => vec!["github".to_string(), "buildkite".to_string()],
+    // Determine which providers to sync (CLI flag takes precedence)
+    let providers: Vec<String> = if let Some(p) = provider {
+        vec![p.to_string()]
+    } else {
+        // Use configured providers from CUE
+        let ci_config = target_projects.first().and_then(|p| p.config.ci.as_ref());
+
+        match ci_config {
+            Some(ci) if !ci.providers.is_empty() => ci.providers.clone(),
+            _ => {
+                // No providers configured = emit nothing (explicit configuration required)
+                return Ok(
+                    "No CI providers configured. Add 'providers: [\"github\"]' to your ci config."
+                        .to_string(),
+                );
+            }
+        }
     };
+
+    // Validate providers
+    let (valid_providers, warnings) = validate_providers(&providers);
+    for warning in &warnings {
+        tracing::warn!("{}", warning);
+    }
+
+    if valid_providers.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "No valid CI providers specified. Known providers: {}",
+            KNOWN_PROVIDERS.join(", ")
+        )));
+    }
 
     let mut outputs = Vec::new();
     let mut errors: Vec<(String, cuenv_core::Error)> = Vec::new();
 
-    for prov in &providers {
+    for prov in &valid_providers {
         let result = match prov.as_str() {
             "github" => execute_sync_github(&repo_root, dry_run, check, &target_projects).await,
             "buildkite" => execute_sync_buildkite(&repo_root, dry_run, check),
+            "gitlab" => {
+                tracing::debug!("GitLab CI sync not yet implemented");
+                continue;
+            }
             _ => Err(cuenv_core::Error::configuration(format!(
-                "Unsupported CI provider: {prov}. Supported: github, buildkite"
+                "Unsupported CI provider: {prov}. Supported: {}",
+                KNOWN_PROVIDERS.join(", ")
             ))),
         };
 

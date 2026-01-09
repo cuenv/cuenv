@@ -104,9 +104,12 @@ owners: {{
   }}
 }}
 
-ci: pipelines: {{
-  "{pipeline}": {{
-    tasks: ["{task}"]
+ci: {{
+  providers: ["github"]
+  pipelines: {{
+    "{pipeline}": {{
+      tasks: ["{task}"]
+    }}
   }}
 }}
 
