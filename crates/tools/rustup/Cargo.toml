@@ -14,7 +14,7 @@ categories.workspace = true
 workspace = true
 
 [dependencies]
-cuenv-core = { path = "../../core" }
+cuenv-core = { workspace = true }
 async-trait = "0.1"
 dirs = { workspace = true }
 serde = { workspace = true }
