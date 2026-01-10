@@ -1656,7 +1656,7 @@ mod tests {
 
     #[test]
     fn test_derive_trigger_paths_with_project_path() {
-        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
+        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec, TaskRef};
         use std::collections::BTreeMap;
 
         let mut project = Project::new("test-project");
@@ -1674,7 +1674,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            tasks: vec![PipelineTask::Simple("build".to_string())],
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("build"))],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
                 pull_request: None,
@@ -1731,7 +1731,7 @@ mod tests {
 
     #[test]
     fn test_derive_trigger_paths_fallback_to_project_dir() {
-        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
+        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec, TaskRef};
         use std::collections::BTreeMap;
 
         let mut project = Project::new("test-project");
@@ -1746,7 +1746,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            tasks: vec![PipelineTask::Simple("deploy".to_string())],
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("deploy"))],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
                 pull_request: None,
@@ -1788,7 +1788,7 @@ mod tests {
 
     #[test]
     fn test_derive_trigger_paths_root_project() {
-        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
+        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec, TaskRef};
         use std::collections::BTreeMap;
 
         let mut project = Project::new("test-project");
@@ -1803,7 +1803,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            tasks: vec![PipelineTask::Simple("build".to_string())],
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("build"))],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
                 pull_request: None,
@@ -1842,7 +1842,7 @@ mod tests {
 
     #[test]
     fn test_derive_trigger_paths_root_project_no_inputs_fallback() {
-        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec};
+        use cuenv_core::ci::{CI, Pipeline, PipelineCondition, PipelineTask, StringOrVec, TaskRef};
         use std::collections::BTreeMap;
 
         let mut project = Project::new("test-project");
@@ -1857,7 +1857,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            tasks: vec![PipelineTask::Simple("deploy".to_string())],
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("deploy"))],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
                 pull_request: None,
@@ -2477,7 +2477,7 @@ mod tests {
     // Path Derivation Tests
     // =========================================================================
 
-    use cuenv_core::ci::{PipelineCondition, PipelineTask, StringOrVec};
+    use cuenv_core::ci::{PipelineCondition, PipelineTask, StringOrVec, TaskRef};
     use cuenv_core::tasks::Input;
 
     #[test]
@@ -2524,7 +2524,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            tasks: vec![PipelineTask::Simple("check".to_string())],
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("check"))],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
                 pull_request: None,
@@ -2595,7 +2595,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            tasks: vec![PipelineTask::Simple("build".to_string())],
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("build"))],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
                 pull_request: None,
@@ -2660,7 +2660,7 @@ mod tests {
         );
 
         let pipeline = Pipeline {
-            tasks: vec![PipelineTask::Simple("build".to_string())],
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("build"))],
             when: Some(PipelineCondition {
                 branch: Some(StringOrVec::String("main".to_string())),
                 pull_request: None,

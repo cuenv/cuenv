@@ -14,20 +14,21 @@ use crate::Error;
 /// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference names (e.g., "build").
 pub type ReferenceMap = HashMap<String, String>;
 
-/// Enrich dependsOn arrays in a JSON value with _name fields using reference metadata.
+/// Enrich task references in a JSON value with _name fields using reference metadata.
 ///
-/// Walks the JSON structure recursively, finding `dependsOn` arrays and injecting
+/// Walks the JSON structure recursively, finding task references and injecting
 /// `_name` fields based on the CUE reference metadata extracted during evaluation.
-fn enrich_depends_on(
-    value: &mut serde_json::Value,
-    instance_path: &str,
-    references: &ReferenceMap,
-) {
-    enrich_depends_on_recursive(value, instance_path, "", references);
+///
+/// Handles:
+/// - `dependsOn` arrays (task dependencies)
+/// - `task` fields (pipeline MatrixTask references)
+/// - Pipeline task arrays (`ci.pipelines.*.tasks`)
+fn enrich_task_refs(value: &mut serde_json::Value, instance_path: &str, references: &ReferenceMap) {
+    enrich_task_refs_recursive(value, instance_path, "", references);
 }
 
-/// Recursively walk JSON and enrich dependsOn arrays
-fn enrich_depends_on_recursive(
+/// Recursively walk JSON and enrich task references
+fn enrich_task_refs_recursive(
     value: &mut serde_json::Value,
     instance_path: &str,
     field_path: &str,
@@ -35,7 +36,7 @@ fn enrich_depends_on_recursive(
 ) {
     match value {
         serde_json::Value::Object(obj) => {
-            // Check if this object has a dependsOn array
+            // Handle dependsOn arrays (task dependencies)
             if let Some(serde_json::Value::Array(deps)) = obj.get_mut("dependsOn") {
                 let depends_on_path = if field_path.is_empty() {
                     "dependsOn".to_string()
@@ -43,30 +44,31 @@ fn enrich_depends_on_recursive(
                     format!("{}.dependsOn", field_path)
                 };
 
-                // Enrich each dependency with _name from reference metadata
-                for (i, dep) in deps.iter_mut().enumerate() {
-                    if let serde_json::Value::Object(dep_obj) = dep {
-                        // Skip if _name already set
-                        if dep_obj.contains_key("_name") {
-                            continue;
-                        }
+                enrich_task_ref_array(deps, instance_path, &depends_on_path, references);
+            }
 
-                        // Look up the reference in metadata
-                        let meta_key = format!("{}/{}[{}]", instance_path, depends_on_path, i);
-                        if let Some(reference) = references.get(&meta_key) {
-                            // The reference is the task name (e.g., "build" or "docs.build")
-                            dep_obj.insert(
-                                "_name".to_string(),
-                                serde_json::Value::String(reference.clone()),
-                            );
-                        }
+            // Handle "task" field (pipeline MatrixTask references)
+            if let Some(serde_json::Value::Object(task_obj)) = obj.get_mut("task") {
+                // Skip if _name already set
+                if !task_obj.contains_key("_name") {
+                    let task_path = if field_path.is_empty() {
+                        "task".to_string()
+                    } else {
+                        format!("{}.task", field_path)
+                    };
+                    let meta_key = format!("{}/{}", instance_path, task_path);
+                    if let Some(reference) = references.get(&meta_key) {
+                        task_obj.insert(
+                            "_name".to_string(),
+                            serde_json::Value::String(reference.clone()),
+                        );
                     }
                 }
             }
 
             // Recurse into all object fields
             for (key, child) in obj.iter_mut() {
-                if key == "dependsOn" {
+                if key == "dependsOn" || key == "task" {
                     continue; // Already handled above
                 }
                 let child_path = if field_path.is_empty() {
@@ -74,16 +76,51 @@ fn enrich_depends_on_recursive(
                 } else {
                     format!("{}.{}", field_path, key)
                 };
-                enrich_depends_on_recursive(child, instance_path, &child_path, references);
+                enrich_task_refs_recursive(child, instance_path, &child_path, references);
             }
         }
         serde_json::Value::Array(arr) => {
+            // Check if this is a pipeline tasks array (ci.pipelines.*.tasks)
+            // by seeing if any element is a task ref object
+            let is_pipeline_tasks =
+                field_path.contains("pipelines.") && field_path.ends_with(".tasks");
+
+            if is_pipeline_tasks {
+                enrich_task_ref_array(arr, instance_path, field_path, references);
+            }
+
             for (i, child) in arr.iter_mut().enumerate() {
                 let child_path = format!("{}[{}]", field_path, i);
-                enrich_depends_on_recursive(child, instance_path, &child_path, references);
+                enrich_task_refs_recursive(child, instance_path, &child_path, references);
             }
         }
         _ => {}
+    }
+}
+
+/// Enrich task reference objects in an array with _name from reference metadata
+fn enrich_task_ref_array(
+    arr: &mut [serde_json::Value],
+    instance_path: &str,
+    array_path: &str,
+    references: &ReferenceMap,
+) {
+    for (i, element) in arr.iter_mut().enumerate() {
+        if let serde_json::Value::Object(obj) = element {
+            // Skip if _name already set
+            if obj.contains_key("_name") {
+                continue;
+            }
+
+            // Look up the reference in metadata
+            let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
+            if let Some(reference) = references.get(&meta_key) {
+                obj.insert(
+                    "_name".to_string(),
+                    serde_json::Value::String(reference.clone()),
+                );
+            }
+        }
     }
 }
 
@@ -131,7 +168,7 @@ impl ModuleEvaluation {
 
                 // Enrich dependsOn arrays with _name using reference metadata
                 if let Some(ref refs) = references {
-                    enrich_depends_on(&mut value, &path, refs);
+                    enrich_task_refs(&mut value, &path, refs);
                 }
 
                 let instance = Instance {

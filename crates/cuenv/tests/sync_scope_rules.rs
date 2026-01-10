@@ -85,74 +85,47 @@ fn create_repo() -> TempDir {
     temp_dir
 }
 
-fn project_env_cue(name: &str, pipeline: &str, task: &str, owner: &str) -> String {
+fn project_env_cue(name: &str, pipeline: &str, task: &str, _owner: &str) -> String {
     format!(
         r#"package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Project
+schema.#Project & {{
+  // Alias to avoid scoping conflict with pipeline's tasks field
+  let _t = tasks
 
-name: "{name}"
+  name: "{name}"
 
-owners: {{
-  rules: {{
-    project: {{
-      pattern: "*"
-      owners: ["{owner}"]
+  ci: {{
+    providers: ["github"]
+    pipelines: {{
+      "{pipeline}": {{
+        tasks: [_t.{task}]
+      }}
     }}
   }}
-}}
 
-ci: {{
-  providers: ["github"]
-  pipelines: {{
-    "{pipeline}": {{
-      tasks: ["{task}"]
+  tasks: {{
+    {task}: {{
+      command: "echo"
+      args: ["{task}"]
+      inputs: ["env.cue"]
     }}
-  }}
-}}
-
-tasks: {{
-  {task}: {{
-    command: "echo"
-    args: ["{task}"]
-    inputs: ["env.cue"]
   }}
 }}
 "#
     )
 }
 
-fn base_env_cue(owner: &str, include_ignore: bool) -> String {
-    let ignore_block = if include_ignore {
-        r#"
-ignore: {
-  git: ["target/"]
-}
-"#
-    } else {
-        ""
-    };
-
-    format!(
-        r#"package cuenv
+fn base_env_cue(_owner: &str, _include_ignore: bool) -> String {
+    r#"package cuenv
 
 import "github.com/cuenv/cuenv/schema"
 
 schema.#Base
-
-owners: {{
-  rules: {{
-    default: {{
-      pattern: "*"
-      owners: ["{owner}"]
-    }}
-  }}
-}}
-{ignore_block}
 "#
-    )
+    .to_string()
 }
 
 fn run_cuenv(current_dir: &Path, args: &[&str]) -> (String, String, bool) {

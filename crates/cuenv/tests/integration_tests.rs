@@ -508,7 +508,9 @@ fn test_sync_command_dry_run() {
             // Sync command should report status for each provider
             // With no configuration, providers report "No ... found" messages
             assert!(
-                stdout.contains("[codegen]") || stdout.contains("[ci]") || stdout.contains("[rules]"),
+                stdout.contains("[codegen]")
+                    || stdout.contains("[ci]")
+                    || stdout.contains("[rules]"),
                 "Dry run should show provider status sections"
             );
         }
