@@ -202,7 +202,7 @@ fn canonicalize_node(
     entries: &mut BTreeMap<String, IndexedTask>,
     original_name: String,
     source_file: Option<String>,
-    all_tasks: &HashMap<String, TaskNode>,
+    _all_tasks: &HashMap<String, TaskNode>,
 ) -> Result<TaskNode> {
     match node {
         TaskNode::Task(task) => {
@@ -247,7 +247,7 @@ fn canonicalize_node(
                     entries,
                     child_original,
                     child_source,
-                    all_tasks,
+                    _all_tasks,
                 )?;
                 canon_children.insert(child_name.clone(), canon_child);
             }
@@ -287,7 +287,7 @@ fn canonicalize_node(
                     entries,
                     original_name.clone(),
                     child_source,
-                    all_tasks,
+                    _all_tasks,
                 )?;
                 canon_children.push(canon_child);
             }

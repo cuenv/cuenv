@@ -11,8 +11,16 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 
 /// Reference metadata extracted from CUE evaluation.
-/// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference names (e.g., "build").
+/// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference paths (e.g., "tasks.build").
 pub type ReferenceMap = HashMap<String, String>;
+
+/// Strip the "tasks." prefix from a reference path to get the canonical task name.
+///
+/// The CUE bridge exports raw reference paths (e.g., "tasks.build", "tasks.ci.deploy").
+/// This function strips the "tasks." prefix to get the task name used for enrichment.
+fn strip_tasks_prefix(path: &str) -> &str {
+    path.strip_prefix("tasks.").unwrap_or(path)
+}
 
 /// Enrich task references in a JSON value with _name fields using reference metadata.
 ///
@@ -58,9 +66,11 @@ fn enrich_task_refs_recursive(
                     };
                     let meta_key = format!("{}/{}", instance_path, task_path);
                     if let Some(reference) = references.get(&meta_key) {
+                        // Strip "tasks." prefix from the raw CUE reference path
+                        let task_name = strip_tasks_prefix(reference);
                         task_obj.insert(
                             "_name".to_string(),
-                            serde_json::Value::String(reference.clone()),
+                            serde_json::Value::String(task_name.to_string()),
                         );
                     }
                 }
@@ -115,9 +125,11 @@ fn enrich_task_ref_array(
             // Look up the reference in metadata
             let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
             if let Some(reference) = references.get(&meta_key) {
+                // Strip "tasks." prefix from the raw CUE reference path
+                let task_name = strip_tasks_prefix(reference);
                 obj.insert(
                     "_name".to_string(),
-                    serde_json::Value::String(reference.clone()),
+                    serde_json::Value::String(task_name.to_string()),
                 );
             }
         }

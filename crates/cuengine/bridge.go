@@ -545,20 +545,25 @@ func selectorToPath(sel *ast.SelectorExpr) string {
 	return strings.Join(parts, ".")
 }
 
-// stripTasksPrefix removes the "tasks." prefix from a reference path to get the canonical task name.
-func stripTasksPrefix(path string) string {
-	return strings.TrimPrefix(path, "tasks.")
-}
-
 // extractReferencesFromValue walks evaluated values to find reference paths.
-// Unlike AST extraction, this gives us the canonical resolved path by using
-// CUE's ReferencePath() API which resolves through let bindings and aliases.
+// Uses CUE's ReferencePath() API which resolves through let bindings and aliases.
+// This is schema-agnostic - it extracts reference paths for ALL values that have them.
 func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, refs map[string]string) {
 	// Skip invalid or error values
 	if v.Err() != nil {
 		return
 	}
 
+	// For every value, check if it came from a reference
+	// Record the raw reference path - let consumers decide how to interpret it
+	if fieldPath != "" {
+		if refPath := safeReferencePath(v); refPath != "" {
+			metaKey := fmt.Sprintf("%s/%s", instancePath, fieldPath)
+			refs[metaKey] = refPath
+		}
+	}
+
+	// Recurse into children
 	switch v.Kind() {
 	case cue.StructKind:
 		iter, _ := v.Fields(cue.All())
@@ -572,43 +577,13 @@ func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, ref
 			if fieldPath != "" {
 				childPath = fieldPath + "." + label
 			}
-
-			// For dependsOn arrays, extract reference paths using ReferencePath
-			if label == "dependsOn" {
-				extractDependsOnRefs(iter.Value(), instancePath, childPath, refs)
-			} else if label == "task" {
-				// For pipeline MatrixTask.task field, extract reference path
-				extractTaskFieldRef(iter.Value(), instancePath, childPath, refs)
-			} else {
-				extractReferencesFromValue(iter.Value(), instancePath, childPath, refs)
-			}
+			extractReferencesFromValue(iter.Value(), instancePath, childPath, refs)
 		}
 	case cue.ListKind:
 		list, _ := v.List()
 		for i := 0; list.Next(); i++ {
 			childPath := fmt.Sprintf("%s[%d]", fieldPath, i)
 			extractReferencesFromValue(list.Value(), instancePath, childPath, refs)
-		}
-	}
-}
-
-// extractDependsOnRefs extracts canonical reference paths for dependsOn array elements.
-// Uses CUE's ReferencePath() to get the resolved canonical path, stripping the "tasks." prefix.
-func extractDependsOnRefs(v cue.Value, instancePath, arrayPath string, refs map[string]string) {
-	if v.Kind() != cue.ListKind {
-		return
-	}
-
-	list, _ := v.List()
-	for i := 0; list.Next(); i++ {
-		elem := list.Value()
-		metaKey := fmt.Sprintf("%s/%s[%d]", instancePath, arrayPath, i)
-
-		// Use ReferencePath to get the canonical path
-		// Note: ReferencePath can panic on certain value types, so we use a helper
-		refPath := safeReferencePath(elem)
-		if refPath != "" {
-			refs[metaKey] = stripTasksPrefix(refPath)
 		}
 	}
 }
@@ -628,24 +603,6 @@ func safeReferencePath(v cue.Value) (result string) {
 		return path.String()
 	}
 	return ""
-}
-
-// extractTaskFieldRef extracts canonical reference path for a MatrixTask.task field.
-// Uses CUE's ReferencePath() to get the resolved canonical path.
-func extractTaskFieldRef(v cue.Value, instancePath, fieldPath string, refs map[string]string) {
-	// Only call ReferencePath on struct values (task definitions)
-	// Skip if it's not a struct - v.Kind() returns BottomKind for error values
-	if v.Kind() != cue.StructKind {
-		return
-	}
-
-	metaKey := fmt.Sprintf("%s/%s", instancePath, fieldPath)
-
-	// Use safeReferencePath to handle potential panics
-	refPath := safeReferencePath(v)
-	if refPath != "" {
-		refs[metaKey] = stripTasksPrefix(refPath)
-	}
 }
 
 // buildJSONClean builds a JSON representation without any _meta injection.
