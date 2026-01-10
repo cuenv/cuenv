@@ -267,7 +267,7 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
     );
 
     let path = if dir == "examples" {
-        // Use a bdd_test_runs directory in the repo root so CUE can find the module
+        // Use a .cache/bdd directory in the repo root so CUE can find the module
         // NOTE: Must NOT start with '.' because CUE's loader ignores hidden directories
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest_dir
@@ -277,7 +277,7 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
             .unwrap()
             .to_path_buf();
         let test_dir = repo_root
-            .join("bdd_test_runs")
+            .join(".cache/bdd")
             .join(format!("test_{unique_id}"));
         if !test_dir.exists() {
             fs::create_dir_all(&test_dir).await.unwrap();
@@ -295,7 +295,7 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
             .unwrap()
             .to_path_buf();
         let test_dir = repo_root
-            .join("bdd_test_runs")
+            .join(".cache/bdd")
             .join(format!("test_{unique_id}"));
         test_dir.join(dir)
     };
@@ -1002,22 +1002,12 @@ async fn given_project_with_tasks(world: &mut TestWorld, step: &cucumber::gherki
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join(".cache/bdd")
         .join(format!("task_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
     world.current_dir.clone_from(&test_dir);
-
-    // Create the CUE module structure
-    let cue_mod_dir = test_dir.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).await.unwrap();
-    fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"test.example/task-test\"\nlanguage: version: \"v0.14.1\"\n",
-    )
-    .await
-    .unwrap();
 
     // Generate and write the CUE file
     let cue_content = generate_task_cue(&tasks);
@@ -1067,22 +1057,13 @@ tasks: {{
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join(".cache/bdd")
         .join(format!("parallel_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
     world.current_dir.clone_from(&test_dir);
 
-    // Create CUE module structure
-    let cue_mod_dir = test_dir.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).await.unwrap();
-    fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"test.example/parallel-test\"\nlanguage: version: \"v0.14.1\"\n",
-    )
-    .await
-    .unwrap();
     fs::write(test_dir.join("env.cue"), &cue_content)
         .await
         .unwrap();
@@ -1134,22 +1115,13 @@ tasks: {{
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join(".cache/bdd")
         .join(format!("group_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
     world.current_dir.clone_from(&test_dir);
 
-    // Create CUE module structure
-    let cue_mod_dir = test_dir.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).await.unwrap();
-    fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"test.example/group-test\"\nlanguage: version: \"v0.14.1\"\n",
-    )
-    .await
-    .unwrap();
     fs::write(test_dir.join("env.cue"), &cue_content)
         .await
         .unwrap();
@@ -1324,22 +1296,12 @@ async fn given_project_with_env_vars(world: &mut TestWorld, step: &cucumber::ghe
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join(".cache/bdd")
         .join(format!("env_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
     world.current_dir.clone_from(&test_dir);
-
-    // Create the CUE module structure
-    let cue_mod_dir = test_dir.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).await.unwrap();
-    fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"test.example/env-test\"\nlanguage: version: \"v0.14.1\"\n",
-    )
-    .await
-    .unwrap();
 
     // Generate and write the CUE file
     let cue_content = generate_env_cue(&vars);
@@ -1373,22 +1335,13 @@ name: "empty-env-test"
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join(".cache/bdd")
         .join(format!("empty_env_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
     world.current_dir.clone_from(&test_dir);
 
-    // Create the CUE module structure
-    let cue_mod_dir = test_dir.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).await.unwrap();
-    fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"test.example/empty-env\"\nlanguage: version: \"v0.14.1\"\n",
-    )
-    .await
-    .unwrap();
     fs::write(test_dir.join("env.cue"), cue_content)
         .await
         .unwrap();
@@ -1439,22 +1392,13 @@ environments: {{
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join(".cache/bdd")
         .join(format!("env_inherit_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
     world.current_dir.clone_from(&test_dir);
 
-    // Create the CUE module structure
-    let cue_mod_dir = test_dir.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).await.unwrap();
-    fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"test.example/env-inherit\"\nlanguage: version: \"v0.14.1\"\n",
-    )
-    .await
-    .unwrap();
     fs::write(test_dir.join("env.cue"), cue_content)
         .await
         .unwrap();
@@ -1562,22 +1506,13 @@ env: {
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join(".cache/bdd")
         .join(format!("invalid_cue_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
     world.current_dir.clone_from(&test_dir);
 
-    // Create the CUE module structure
-    let cue_mod_dir = test_dir.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).await.unwrap();
-    fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"test.example/invalid-cue\"\nlanguage: version: \"v0.14.1\"\n",
-    )
-    .await
-    .unwrap();
     fs::write(test_dir.join("env.cue"), cue_content)
         .await
         .unwrap();
@@ -1608,22 +1543,13 @@ name: "empty-project"
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join(".cache/bdd")
         .join(format!("empty_project_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
     world.test_base_dir = Some(test_dir.clone());
     world.current_dir.clone_from(&test_dir);
 
-    // Create the CUE module structure
-    let cue_mod_dir = test_dir.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).await.unwrap();
-    fs::write(
-        cue_mod_dir.join("module.cue"),
-        "module: \"test.example/empty-project\"\nlanguage: version: \"v0.14.1\"\n",
-    )
-    .await
-    .unwrap();
     fs::write(test_dir.join("env.cue"), cue_content)
         .await
         .unwrap();
