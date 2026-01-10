@@ -545,6 +545,66 @@ func selectorToPath(sel *ast.SelectorExpr) string {
 	return strings.Join(parts, ".")
 }
 
+// extractReferencesFromValue walks evaluated values to find reference paths.
+// Uses CUE's ReferencePath() API which resolves through let bindings and aliases.
+// This is schema-agnostic - it extracts reference paths for ALL values that have them.
+func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, refs map[string]string) {
+	// Skip invalid or error values
+	if v.Err() != nil {
+		return
+	}
+
+	// For every value, check if it came from a reference
+	// Record the raw reference path - let consumers decide how to interpret it
+	if fieldPath != "" {
+		if refPath := safeReferencePath(v); refPath != "" {
+			metaKey := fmt.Sprintf("%s/%s", instancePath, fieldPath)
+			refs[metaKey] = refPath
+		}
+	}
+
+	// Recurse into children
+	switch v.Kind() {
+	case cue.StructKind:
+		iter, _ := v.Fields(cue.All())
+		for iter.Next() {
+			label := iter.Label()
+			// Skip hidden fields (start with _) - they're internal to CUE
+			if strings.HasPrefix(label, "_") {
+				continue
+			}
+			childPath := label
+			if fieldPath != "" {
+				childPath = fieldPath + "." + label
+			}
+			extractReferencesFromValue(iter.Value(), instancePath, childPath, refs)
+		}
+	case cue.ListKind:
+		list, _ := v.List()
+		for i := 0; list.Next(); i++ {
+			childPath := fmt.Sprintf("%s[%d]", fieldPath, i)
+			extractReferencesFromValue(list.Value(), instancePath, childPath, refs)
+		}
+	}
+}
+
+// safeReferencePath safely extracts the reference path from a CUE value.
+// Returns empty string if the value is not a reference or if extraction fails.
+func safeReferencePath(v cue.Value) (result string) {
+	// Use recover to handle panics from ReferencePath on non-reference values
+	defer func() {
+		if r := recover(); r != nil {
+			result = ""
+		}
+	}()
+
+	root, path := v.ReferencePath()
+	if root.Exists() {
+		return path.String()
+	}
+	return ""
+}
+
 // buildJSONClean builds a JSON representation without any _meta injection.
 // This returns clean JSON that can be correlated with the separate meta map.
 func buildJSONClean(v cue.Value) ([]byte, error) {
@@ -978,10 +1038,19 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 				meta = extractFieldMetaSeparate(b.inst, moduleRoot, b.relPath)
 			}
 
-			// Extract reference paths from AST if requested - thread-safe (read-only)
+			// Extract reference paths if requested - thread-safe (read-only)
 			var refs map[string]string
 			if withReferences {
-				refs = extractReferencesFromAST(b.inst, b.relPath)
+				refs = make(map[string]string)
+				// Extract from evaluated value for canonical paths (resolves let bindings)
+				extractReferencesFromValue(b.value, b.relPath, "", refs)
+				// Fall back to AST extraction for other references (backwards compat)
+				astRefs := extractReferencesFromAST(b.inst, b.relPath)
+				for k, v := range astRefs {
+					if _, exists := refs[k]; !exists {
+						refs[k] = v
+					}
+				}
 			}
 
 			results <- instanceResult{

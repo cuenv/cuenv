@@ -9,9 +9,20 @@
 // Integration tests can use unwrap/expect for cleaner assertions
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::ffi::OsStr;
 use std::process::Command;
 use std::time::Instant;
 use tempfile::TempDir;
+
+/// Create a Command with a clean environment (no CI vars leaking).
+fn clean_environment_command(bin: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("USER", std::env::var("USER").unwrap_or_default());
+    cmd
+}
 
 /// Export with no env.cue must complete quickly.
 ///
@@ -22,13 +33,13 @@ fn test_export_no_env_cue_fast() {
     let temp_dir = TempDir::new().unwrap();
 
     // Warm up (first run may be slower due to process/disk cache)
-    let _ = Command::new(env!("CARGO_BIN_EXE_cuenv"))
+    let _ = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
         .args(["export", "--shell", "fish", "--package", "cuenv"])
         .current_dir(temp_dir.path())
         .output();
 
     let start = Instant::now();
-    let output = Command::new(env!("CARGO_BIN_EXE_cuenv"))
+    let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
         .args(["export", "--shell", "fish", "--package", "cuenv"])
         .current_dir(temp_dir.path())
         .output()
@@ -60,7 +71,7 @@ fn test_export_performance_threshold() {
     let temp_dir = TempDir::new().unwrap();
 
     // Warm up run
-    let _ = Command::new(env!("CARGO_BIN_EXE_cuenv"))
+    let _ = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
         .args(["export", "--shell", "fish", "--package", "cuenv"])
         .current_dir(temp_dir.path())
         .output();
@@ -69,7 +80,7 @@ fn test_export_performance_threshold() {
     let mut times = Vec::new();
     for _ in 0..10 {
         let start = Instant::now();
-        let _ = Command::new(env!("CARGO_BIN_EXE_cuenv"))
+        let _ = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
             .args(["export", "--shell", "fish", "--package", "cuenv"])
             .current_dir(temp_dir.path())
             .output()
@@ -98,13 +109,13 @@ fn test_export_all_shells_fast() {
 
     for shell in shells {
         // Warm up
-        let _ = Command::new(env!("CARGO_BIN_EXE_cuenv"))
+        let _ = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
             .args(["export", "--shell", shell, "--package", "cuenv"])
             .current_dir(temp_dir.path())
             .output();
 
         let start = Instant::now();
-        let output = Command::new(env!("CARGO_BIN_EXE_cuenv"))
+        let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
             .args(["export", "--shell", shell, "--package", "cuenv"])
             .current_dir(temp_dir.path())
             .output()

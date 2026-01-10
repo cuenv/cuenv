@@ -24,6 +24,9 @@ let _baseInputs = [
 schema.#Project & {
 	name: "cuenv"
 
+	// Alias to avoid scoping conflict with pipeline's tasks field
+	let _t = tasks
+
 	// ============================================================================
 	// Runtime Configuration
 	// ============================================================================
@@ -166,7 +169,7 @@ schema.#Project & {
 					pullRequest: true
 				}
 				provider: github: permissions: "id-token": "write"
-				tasks: ["ci.sync-check"]
+				tasks: [_t.ci."sync-check"]
 			}
 
 			ci: {
@@ -175,7 +178,7 @@ schema.#Project & {
 					pullRequest: true
 				}
 				provider: github: permissions: "id-token": "write"
-				tasks: ["check"]
+				tasks: [_t.check]
 			}
 
 			release: {
@@ -194,11 +197,11 @@ schema.#Project & {
 				}
 				tasks: [
 					{
-						task: "cargo.build"
+						task:   _t.cargo.build
 						matrix: arch: ["linux-x64", "darwin-arm64"]
 					},
 					{
-						task: "publish"
+						task: _t.publish.github
 						artifacts: [{
 							from:   "cargo.build"
 							to:     "dist"
@@ -209,7 +212,7 @@ schema.#Project & {
 							paths: "dist/**/*"
 						}
 					},
-					"docs.deploy",
+					_t.docs.deploy,
 				]
 			}
 		}
@@ -220,6 +223,17 @@ schema.#Project & {
 	// ============================================================================
 
 	tasks: {
+		// --- CI Internal ---
+		ci: {
+			type: "group"
+
+			"sync-check": schema.#Task & {
+				command: "cuenv"
+				args: ["sync", "--check"]
+				inputs: ["env.cue", "schema/**", "contrib/**"]
+			}
+		}
+
 		// --- CI Check (runs lint, tests, security) ---
 		check: schema.#Task & {
 			command: "echo"
@@ -231,11 +245,13 @@ schema.#Project & {
 		lint: #cargo & {
 			args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 			inputs: _baseInputs
+			dependsOn: [cargo.compile]
 		}
 
 		// --- Testing ---
 		tests: {
 			type: "group"
+			dependsOn: [cargo.compile]
 
 			unit: #cargo & {
 				args: ["nextest", "run", "--workspace", "--all-features"]
@@ -309,6 +325,11 @@ schema.#Project & {
 		// --- Build & Release ---
 		cargo: {
 			type: "group"
+
+			compile: #cargo & {
+				args: ["build", "--workspace", "--all-targets", "--all-features"]
+				inputs: _baseInputs
+			}
 
 			build: #cargo & {
 				args: ["build", "--release", "-p", "cuenv"]

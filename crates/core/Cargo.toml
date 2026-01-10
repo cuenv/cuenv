@@ -56,5 +56,5 @@ tempfile = { workspace = true }
 cucumber = { workspace = true }
 tokio-test = { workspace = true }
 eyre = "0.6"
-temp-env = "0.3"
+temp-env = { workspace = true }
 proptest = { workspace = true }
