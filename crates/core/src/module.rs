@@ -14,12 +14,19 @@ use crate::Error;
 /// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference paths (e.g., "tasks.build").
 pub type ReferenceMap = HashMap<String, String>;
 
-/// Strip the "tasks." prefix from a reference path to get the canonical task name.
+/// Strip known task reference prefixes from a reference path to get the canonical task name.
 ///
-/// The CUE bridge exports raw reference paths (e.g., "tasks.build", "tasks.ci.deploy").
-/// This function strips the "tasks." prefix to get the task name used for enrichment.
+/// The CUE bridge exports raw reference paths which may include:
+/// - Direct task references: "tasks.build", "tasks.ci.deploy"
+/// - Let binding aliases: "_t.build", "_tasks.deploy"
 fn strip_tasks_prefix(path: &str) -> &str {
-    path.strip_prefix("tasks.").unwrap_or(path)
+    const TASK_PREFIXES: &[&str] = &["tasks.", "_tasks.", "_t."];
+    for prefix in TASK_PREFIXES {
+        if let Some(stripped) = path.strip_prefix(prefix) {
+            return stripped;
+        }
+    }
+    path
 }
 
 /// Enrich task references in a JSON value with _name fields using reference metadata.
@@ -704,5 +711,27 @@ mod tests {
 
         assert_eq!(base, InstanceKind::Base);
         assert_eq!(project, InstanceKind::Project);
+    }
+
+    // ==========================================================================
+    // strip_tasks_prefix tests
+    // ==========================================================================
+
+    #[test]
+    fn test_strip_tasks_prefix() {
+        // Standard tasks prefix
+        assert_eq!(strip_tasks_prefix("tasks.build"), "build");
+        assert_eq!(strip_tasks_prefix("tasks.ci.deploy"), "ci.deploy");
+
+        // Common _t alias (used in env.cue for scope conflict avoidance)
+        assert_eq!(strip_tasks_prefix("_t.cargo.build"), "cargo.build");
+        assert_eq!(strip_tasks_prefix("_t.release.publish"), "release.publish");
+
+        // Hidden _tasks alias
+        assert_eq!(strip_tasks_prefix("_tasks.internal"), "internal");
+
+        // No prefix (already canonical)
+        assert_eq!(strip_tasks_prefix("build"), "build");
+        assert_eq!(strip_tasks_prefix("ci.deploy"), "ci.deploy");
     }
 }

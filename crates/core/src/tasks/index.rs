@@ -122,8 +122,7 @@ impl TaskIndex {
             let source_file = extract_source_file(node);
 
             let path = TaskPath::parse(&display_name)?;
-            let _ =
-                canonicalize_node(node, &path, &mut entries, original_name, source_file, tasks)?;
+            let _ = canonicalize_node(node, &path, &mut entries, original_name, source_file)?;
         }
 
         Ok(Self { entries })
@@ -195,14 +194,12 @@ fn extract_source_file(node: &TaskNode) -> Option<String> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn canonicalize_node(
     node: &TaskNode,
     path: &TaskPath,
     entries: &mut BTreeMap<String, IndexedTask>,
     original_name: String,
     source_file: Option<String>,
-    _all_tasks: &HashMap<String, TaskNode>,
 ) -> Result<TaskNode> {
     match node {
         TaskNode::Task(task) => {
@@ -247,7 +244,6 @@ fn canonicalize_node(
                     entries,
                     child_original,
                     child_source,
-                    _all_tasks,
                 )?;
                 canon_children.insert(child_name.clone(), canon_child);
             }
@@ -281,14 +277,8 @@ fn canonicalize_node(
                 // rewrite names with numeric indices to avoid changing existing graph semantics.
                 // For sequential children, extract their source file
                 let child_source = extract_source_file(child);
-                let canon_child = canonicalize_node(
-                    child,
-                    path,
-                    entries,
-                    original_name.clone(),
-                    child_source,
-                    _all_tasks,
-                )?;
+                let canon_child =
+                    canonicalize_node(child, path, entries, original_name.clone(), child_source)?;
                 canon_children.push(canon_child);
             }
 
