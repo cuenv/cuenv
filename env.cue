@@ -245,11 +245,13 @@ schema.#Project & {
 		lint: #cargo & {
 			args: ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
 			inputs: _baseInputs
+			dependsOn: [cargo.compile]
 		}
 
 		// --- Testing ---
 		tests: {
 			type: "group"
+			dependsOn: [cargo.compile]
 
 			unit: #cargo & {
 				args: ["nextest", "run", "--workspace", "--all-features"]
@@ -323,6 +325,11 @@ schema.#Project & {
 		// --- Build & Release ---
 		cargo: {
 			type: "group"
+
+			compile: #cargo & {
+				args: ["build", "--workspace", "--all-targets", "--all-features"]
+				inputs: _baseInputs
+			}
 
 			build: #cargo & {
 				args: ["build", "--release", "-p", "cuenv"]
