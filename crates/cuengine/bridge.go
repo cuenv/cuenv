@@ -545,6 +545,117 @@ func selectorToPath(sel *ast.SelectorExpr) string {
 	return strings.Join(parts, ".")
 }
 
+// extractReferencesFromValue walks evaluated values to find reference paths.
+// Unlike AST extraction, this gives us the canonical resolved path by using
+// CUE's ReferencePath() API which resolves through let bindings and aliases.
+func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, refs map[string]string) {
+	// Skip invalid or error values
+	if v.Err() != nil {
+		return
+	}
+
+	switch v.Kind() {
+	case cue.StructKind:
+		iter, _ := v.Fields(cue.All())
+		for iter.Next() {
+			label := iter.Label()
+			// Skip hidden fields (start with _) - they're internal to CUE
+			if strings.HasPrefix(label, "_") {
+				continue
+			}
+			childPath := label
+			if fieldPath != "" {
+				childPath = fieldPath + "." + label
+			}
+
+			// For dependsOn arrays, extract reference paths using ReferencePath
+			if label == "dependsOn" {
+				extractDependsOnRefs(iter.Value(), instancePath, childPath, refs)
+			} else if label == "task" {
+				// For pipeline MatrixTask.task field, extract reference path
+				extractTaskFieldRef(iter.Value(), instancePath, childPath, refs)
+			} else {
+				extractReferencesFromValue(iter.Value(), instancePath, childPath, refs)
+			}
+		}
+	case cue.ListKind:
+		list, _ := v.List()
+		for i := 0; list.Next(); i++ {
+			childPath := fmt.Sprintf("%s[%d]", fieldPath, i)
+			extractReferencesFromValue(list.Value(), instancePath, childPath, refs)
+		}
+	}
+}
+
+// extractDependsOnRefs extracts canonical reference paths for dependsOn array elements.
+// Uses CUE's ReferencePath() to get the resolved canonical path, stripping the "tasks." prefix.
+func extractDependsOnRefs(v cue.Value, instancePath, arrayPath string, refs map[string]string) {
+	if v.Kind() != cue.ListKind {
+		return
+	}
+
+	list, _ := v.List()
+	for i := 0; list.Next(); i++ {
+		elem := list.Value()
+		metaKey := fmt.Sprintf("%s/%s[%d]", instancePath, arrayPath, i)
+
+		// Use ReferencePath to get the canonical path
+		// Note: ReferencePath can panic on certain value types, so we use a helper
+		refPath := safeReferencePath(elem)
+		if refPath != "" {
+			// Strip the "tasks." prefix to get canonical task name
+			if strings.HasPrefix(refPath, "tasks.") {
+				refPath = strings.TrimPrefix(refPath, "tasks.")
+			}
+			refs[metaKey] = refPath
+		}
+	}
+}
+
+// safeReferencePath safely extracts the reference path from a CUE value.
+// Returns empty string if the value is not a reference or if extraction fails.
+func safeReferencePath(v cue.Value) (result string) {
+	// Use recover to handle panics from ReferencePath on non-reference values
+	defer func() {
+		if r := recover(); r != nil {
+			result = ""
+		}
+	}()
+
+	root, path := v.ReferencePath()
+	if root.Exists() {
+		return path.String()
+	}
+	return ""
+}
+
+// extractTaskFieldRef extracts canonical reference path for a MatrixTask.task field.
+// Uses CUE's ReferencePath() to get the resolved canonical path.
+func extractTaskFieldRef(v cue.Value, instancePath, fieldPath string, refs map[string]string) {
+	// Skip invalid values
+	if v.Err() != nil {
+		return
+	}
+
+	// Only call ReferencePath on struct values (task definitions)
+	// Skip if it's not a struct - it might be a literal or other type
+	if v.Kind() != cue.StructKind {
+		return
+	}
+
+	metaKey := fmt.Sprintf("%s/%s", instancePath, fieldPath)
+
+	// Use safeReferencePath to handle potential panics
+	refPath := safeReferencePath(v)
+	if refPath != "" {
+		// Strip the "tasks." prefix to get canonical task name
+		if strings.HasPrefix(refPath, "tasks.") {
+			refPath = strings.TrimPrefix(refPath, "tasks.")
+		}
+		refs[metaKey] = refPath
+	}
+}
+
 // buildJSONClean builds a JSON representation without any _meta injection.
 // This returns clean JSON that can be correlated with the separate meta map.
 func buildJSONClean(v cue.Value) ([]byte, error) {
@@ -978,10 +1089,19 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 				meta = extractFieldMetaSeparate(b.inst, moduleRoot, b.relPath)
 			}
 
-			// Extract reference paths from AST if requested - thread-safe (read-only)
+			// Extract reference paths if requested - thread-safe (read-only)
 			var refs map[string]string
 			if withReferences {
-				refs = extractReferencesFromAST(b.inst, b.relPath)
+				refs = make(map[string]string)
+				// Extract from evaluated value for canonical paths (resolves let bindings)
+				extractReferencesFromValue(b.value, b.relPath, "", refs)
+				// Fall back to AST extraction for other references (backwards compat)
+				astRefs := extractReferencesFromAST(b.inst, b.relPath)
+				for k, v := range astRefs {
+					if _, exists := refs[k]; !exists {
+						refs[k] = v
+					}
+				}
 			}
 
 			results <- instanceResult{

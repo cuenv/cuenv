@@ -58,3 +58,4 @@ tokio-test = { workspace = true }
 eyre = "0.6"
 temp-env = "0.3"
 proptest = { workspace = true }
+serial_test = { workspace = true }

@@ -214,7 +214,7 @@ fn canonicalize_node(
                 let mut clone = task.as_ref().clone();
                 let mut canonical_deps = Vec::new();
                 for dep in &task.depends_on {
-                    let canonical_name = canonicalize_dep(dep.task_name(), path, all_tasks)?;
+                    let canonical_name = canonicalize_dep(dep.task_name())?;
                     canonical_deps.push(super::TaskDependency::from_name(canonical_name));
                 }
                 clone.depends_on = canonical_deps;
@@ -310,63 +310,11 @@ fn canonicalize_node(
     }
 }
 
-/// Check if a task exists at the given canonical path.
-/// Handles both flat keys (e.g., "build") and nested lookups (e.g., "deploy.preview").
-fn task_exists_at_path(path: &str, all_tasks: &HashMap<String, TaskNode>) -> bool {
-    // Direct lookup first
-    if all_tasks.contains_key(path) {
-        return true;
-    }
-
-    // Walk nested path for groups
-    let segments: Vec<&str> = path.split('.').collect();
-    if segments.len() < 2 {
-        return false;
-    }
-
-    let mut current = all_tasks.get(segments[0]);
-    for segment in &segments[1..] {
-        match current {
-            Some(TaskNode::Group(group)) => {
-                current = group.children.get(*segment);
-            }
-            _ => return false,
-        }
-    }
-
-    current.is_some()
-}
-
-fn canonicalize_dep(
-    dep: &str,
-    current_path: &TaskPath,
-    all_tasks: &HashMap<String, TaskNode>,
-) -> Result<String> {
-    // If contains separators, treat as absolute path
-    if dep.contains('.') || dep.contains(':') {
-        return Ok(TaskPath::parse(dep)?.canonical());
-    }
-
-    // 1. Check if it exists as a top-level task
-    if all_tasks.contains_key(dep) {
-        return Ok(dep.to_string());
-    }
-
-    // 2. Check as sibling in current namespace
-    let mut segments: Vec<String> = current_path.segments().to_vec();
-    segments.pop(); // relative to the parent namespace
-    segments.push(dep.to_string());
-
-    let sibling_path = TaskPath { segments };
-    let sibling_canonical = sibling_path.canonical();
-
-    if task_exists_at_path(&sibling_canonical, all_tasks) {
-        return Ok(sibling_canonical);
-    }
-
-    // 3. Fallback to sibling path for backwards compatibility
-    // (will fail later with a proper "task not found" error during graph building)
-    Ok(sibling_canonical)
+fn canonicalize_dep(dep: &str) -> Result<String> {
+    // The Go bridge now provides canonical task paths via ReferencePath(),
+    // so we simply parse and normalize the dependency name.
+    // No lookups needed - trust the _name injected by CUE evaluation.
+    Ok(TaskPath::parse(dep)?.canonical())
 }
 
 /// Check if two task names are similar (for typo suggestions)
@@ -877,7 +825,8 @@ mod tests {
 
     #[test]
     fn test_group_child_depends_on_sibling() {
-        // deploy.activate depends on "upload" -> should resolve to "deploy.upload"
+        // deploy.activate depends on "deploy.upload" (canonical path from CUE)
+        // CUE's ReferencePath() resolves sibling references to canonical paths
 
         let mut tasks = HashMap::new();
 
@@ -893,7 +842,8 @@ mod tests {
             "activate".to_string(),
             TaskNode::Task(Box::new(Task {
                 command: "activate".to_string(),
-                depends_on: vec![TaskDependency::from_name("upload")],
+                // CUE provides canonical path via _name injection
+                depends_on: vec![TaskDependency::from_name("deploy.upload")],
                 ..Default::default()
             })),
         );
@@ -1039,9 +989,10 @@ mod tests {
     }
 
     #[test]
-    fn test_fallback_without_matching_task() {
-        // When task doesn't exist at either location, fall back to sibling behavior
-        // This maintains backwards compatibility
+    fn test_dependency_name_preserved_as_provided() {
+        // CUE provides canonical paths via _name injection
+        // Rust side trusts and preserves whatever CUE provides
+        // Invalid references are caught later during graph building
 
         let mut tasks = HashMap::new();
 
@@ -1050,6 +1001,7 @@ mod tests {
             "preview".to_string(),
             TaskNode::Task(Box::new(Task {
                 command: "deploy preview".to_string(),
+                // CUE provides the name as-is (could be invalid reference)
                 depends_on: vec![TaskDependency::from_name("nonexistent")],
                 ..Default::default()
             })),
@@ -1070,9 +1022,9 @@ mod tests {
 
         match &preview_task.node {
             TaskNode::Task(task) => {
-                // Falls back to sibling path for backwards compatibility
+                // Name is preserved exactly as CUE provided it
                 // Error will be caught later when building the task graph
-                assert_eq!(task.depends_on[0].task_name(), "deploy.nonexistent");
+                assert_eq!(task.depends_on[0].task_name(), "nonexistent");
             }
             _ => panic!("Expected Task"),
         }

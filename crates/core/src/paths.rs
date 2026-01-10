@@ -145,8 +145,10 @@ pub fn coordinator_lock() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    #[serial]
     fn test_state_dir_default() {
         // Clear override to test default behavior
         unsafe { std::env::remove_var("CUENV_STATE_DIR") };
@@ -155,6 +157,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_state_dir_override() {
         let test_dir = "/tmp/cuenv-test-state";
         unsafe { std::env::set_var("CUENV_STATE_DIR", test_dir) };
@@ -164,6 +167,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cache_dir_default() {
         unsafe { std::env::remove_var("CUENV_CACHE_DIR") };
         let dir = cache_dir().expect("cache_dir should succeed");
@@ -171,6 +175,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cache_dir_override() {
         let test_dir = "/tmp/cuenv-test-cache";
         unsafe { std::env::set_var("CUENV_CACHE_DIR", test_dir) };
@@ -180,6 +185,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_runtime_dir_default() {
         unsafe { std::env::remove_var("CUENV_RUNTIME_DIR") };
         let dir = runtime_dir().expect("runtime_dir should succeed");
@@ -187,6 +193,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_runtime_dir_override() {
         let test_dir = "/tmp/cuenv-test-runtime";
         unsafe { std::env::set_var("CUENV_RUNTIME_DIR", test_dir) };
@@ -196,6 +203,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_hook_state_dir() {
         unsafe { std::env::remove_var("CUENV_STATE_DIR") };
         let dir = hook_state_dir().expect("hook_state_dir should succeed");
@@ -203,6 +211,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_approvals_file() {
         unsafe { std::env::remove_var("CUENV_STATE_DIR") };
         let file = approvals_file().expect("approvals_file should succeed");
@@ -214,6 +223,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_task_cache_dir() {
         unsafe { std::env::remove_var("CUENV_CACHE_DIR") };
         let dir = task_cache_dir().expect("task_cache_dir should succeed");
@@ -221,6 +231,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_coordinator_paths() {
         unsafe { std::env::remove_var("CUENV_RUNTIME_DIR") };
         let socket = coordinator_socket().expect("coordinator_socket should succeed");
