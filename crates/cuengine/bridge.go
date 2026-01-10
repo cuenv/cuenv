@@ -545,6 +545,11 @@ func selectorToPath(sel *ast.SelectorExpr) string {
 	return strings.Join(parts, ".")
 }
 
+// stripTasksPrefix removes the "tasks." prefix from a reference path to get the canonical task name.
+func stripTasksPrefix(path string) string {
+	return strings.TrimPrefix(path, "tasks.")
+}
+
 // extractReferencesFromValue walks evaluated values to find reference paths.
 // Unlike AST extraction, this gives us the canonical resolved path by using
 // CUE's ReferencePath() API which resolves through let bindings and aliases.
@@ -603,11 +608,7 @@ func extractDependsOnRefs(v cue.Value, instancePath, arrayPath string, refs map[
 		// Note: ReferencePath can panic on certain value types, so we use a helper
 		refPath := safeReferencePath(elem)
 		if refPath != "" {
-			// Strip the "tasks." prefix to get canonical task name
-			if strings.HasPrefix(refPath, "tasks.") {
-				refPath = strings.TrimPrefix(refPath, "tasks.")
-			}
-			refs[metaKey] = refPath
+			refs[metaKey] = stripTasksPrefix(refPath)
 		}
 	}
 }
@@ -632,13 +633,8 @@ func safeReferencePath(v cue.Value) (result string) {
 // extractTaskFieldRef extracts canonical reference path for a MatrixTask.task field.
 // Uses CUE's ReferencePath() to get the resolved canonical path.
 func extractTaskFieldRef(v cue.Value, instancePath, fieldPath string, refs map[string]string) {
-	// Skip invalid values
-	if v.Err() != nil {
-		return
-	}
-
 	// Only call ReferencePath on struct values (task definitions)
-	// Skip if it's not a struct - it might be a literal or other type
+	// Skip if it's not a struct - v.Kind() returns BottomKind for error values
 	if v.Kind() != cue.StructKind {
 		return
 	}
@@ -648,11 +644,7 @@ func extractTaskFieldRef(v cue.Value, instancePath, fieldPath string, refs map[s
 	// Use safeReferencePath to handle potential panics
 	refPath := safeReferencePath(v)
 	if refPath != "" {
-		// Strip the "tasks." prefix to get canonical task name
-		if strings.HasPrefix(refPath, "tasks.") {
-			refPath = strings.TrimPrefix(refPath, "tasks.")
-		}
-		refs[metaKey] = refPath
+		refs[metaKey] = stripTasksPrefix(refPath)
 	}
 }
 
