@@ -13,8 +13,21 @@
 mod trace_testing;
 
 use serde::Deserialize;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Create a Command with a clean environment (no CI vars leaking).
+/// This prevents tests from hanging when run in CI environments where
+/// variables like GITHUB_ACTIONS=true would trigger CI-specific code paths.
+fn clean_environment_command(bin: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("USER", std::env::var("USER").unwrap_or_default());
+    cmd
+}
 
 /// DAG export structure matching the --dry-run output
 #[derive(Debug, Deserialize)]
@@ -80,7 +93,7 @@ fn run_dry_run(example: &str, task: &str) -> Result<DagExport, String> {
     let examples_dir = get_examples_dir();
     let example_path = examples_dir.join(example);
 
-    let output = Command::new(&bin)
+    let output = clean_environment_command(&bin)
         .args([
             "task",
             task,
@@ -327,7 +340,7 @@ fn test_dry_run_with_nonexistent_example_fails() {
     let examples_dir = get_examples_dir();
     let example_path = examples_dir.join("nonexistent-example-12345");
 
-    let output = Command::new(&bin)
+    let output = clean_environment_command(&bin)
         .args([
             "task",
             "test",

@@ -145,10 +145,8 @@ pub fn coordinator_lock() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     #[test]
-    #[serial]
     fn test_state_dir_default() {
         // Clear override to test default behavior
         temp_env::with_var_unset("CUENV_STATE_DIR", || {
@@ -158,7 +156,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_state_dir_override() {
         let test_dir = "/tmp/cuenv-test-state";
         temp_env::with_var("CUENV_STATE_DIR", Some(test_dir), || {
@@ -168,7 +165,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_cache_dir_default() {
         temp_env::with_var_unset("CUENV_CACHE_DIR", || {
             let dir = cache_dir().expect("cache_dir should succeed");
@@ -177,7 +173,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_cache_dir_override() {
         let test_dir = "/tmp/cuenv-test-cache";
         temp_env::with_var("CUENV_CACHE_DIR", Some(test_dir), || {
@@ -187,7 +182,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_runtime_dir_default() {
         temp_env::with_var_unset("CUENV_RUNTIME_DIR", || {
             let dir = runtime_dir().expect("runtime_dir should succeed");
@@ -196,7 +190,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_runtime_dir_override() {
         let test_dir = "/tmp/cuenv-test-runtime";
         temp_env::with_var("CUENV_RUNTIME_DIR", Some(test_dir), || {
@@ -206,7 +199,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_hook_state_dir() {
         temp_env::with_var_unset("CUENV_STATE_DIR", || {
             let dir = hook_state_dir().expect("hook_state_dir should succeed");
@@ -215,7 +207,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_approvals_file() {
         temp_env::with_var_unset("CUENV_STATE_DIR", || {
             let file = approvals_file().expect("approvals_file should succeed");
@@ -228,7 +219,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_task_cache_dir() {
         temp_env::with_var_unset("CUENV_CACHE_DIR", || {
             let dir = task_cache_dir().expect("task_cache_dir should succeed");
@@ -237,7 +227,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_coordinator_paths() {
         temp_env::with_var_unset("CUENV_RUNTIME_DIR", || {
             let socket = coordinator_socket().expect("coordinator_socket should succeed");

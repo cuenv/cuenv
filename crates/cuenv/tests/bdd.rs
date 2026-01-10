@@ -107,7 +107,12 @@ impl TestWorld {
     /// Run cuenv command with arguments
     async fn run_cuenv(&mut self, args: &[&str]) -> Result<(), String> {
         let mut cmd = Command::new(&self.cuenv_binary);
-        cmd.args(args)
+        // Clear inherited env vars to prevent CI environment from affecting tests
+        cmd.env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("USER", std::env::var("USER").unwrap_or_default())
+            .args(args)
             .current_dir(&self.current_dir)
             .env("CUENV_STATE_DIR", &self.state_dir)
             .env(

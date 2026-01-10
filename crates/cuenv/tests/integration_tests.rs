@@ -6,9 +6,22 @@
 // Integration tests can use unwrap/expect for cleaner assertions
 #![allow(clippy::print_stdout, clippy::unwrap_used, clippy::expect_used)]
 
+use std::ffi::OsStr;
 use std::fs;
 use std::process::Command;
 use std::str;
+
+/// Create a Command with a clean environment (no CI vars leaking).
+/// This prevents tests from hanging when run in CI environments where
+/// variables like GITHUB_ACTIONS=true would trigger CI-specific code paths.
+fn clean_environment_command(bin: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("USER", std::env::var("USER").unwrap_or_default());
+    cmd
+}
 
 const EXPECTED_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -17,7 +30,7 @@ const CUENV_BIN: &str = env!("CARGO_BIN_EXE_cuenv");
 
 /// Test helper to run cuenv CLI commands
 fn run_cuenv_command(args: &[&str]) -> Result<(String, String, bool), Box<dyn std::error::Error>> {
-    let mut cmd = Command::new(CUENV_BIN);
+    let mut cmd = clean_environment_command(CUENV_BIN);
 
     for arg in args {
         cmd.arg(arg);
@@ -762,7 +775,7 @@ fn run_cuenv_command_in_dir(
     args: &[&str],
     dir: &str,
 ) -> Result<(String, String, bool), Box<dyn std::error::Error>> {
-    let mut cmd = Command::new(CUENV_BIN);
+    let mut cmd = clean_environment_command(CUENV_BIN);
 
     for arg in args {
         cmd.arg(arg);

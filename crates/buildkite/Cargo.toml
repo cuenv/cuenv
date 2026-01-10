@@ -26,4 +26,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-temp-env = "0.3"
+temp-env = { workspace = true }

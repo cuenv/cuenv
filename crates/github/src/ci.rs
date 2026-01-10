@@ -361,7 +361,6 @@ impl CIProvider for GitHubCIProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     #[test]
     fn test_parse_repo() {
@@ -468,91 +467,48 @@ mod tests {
     }
 
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn test_get_before_sha_filters_null_sha() {
         // The NULL_SHA should be filtered out
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::set_var("GITHUB_BEFORE", NULL_SHA);
-        }
-        assert!(GitHubCIProvider::get_before_sha().is_none());
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_BEFORE");
-        }
+        temp_env::with_var("GITHUB_BEFORE", Some(NULL_SHA), || {
+            assert!(GitHubCIProvider::get_before_sha().is_none());
+        });
     }
 
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn test_get_before_sha_filters_empty() {
         // Empty string should be filtered out
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::set_var("GITHUB_BEFORE", "");
-        }
-        assert!(GitHubCIProvider::get_before_sha().is_none());
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_BEFORE");
-        }
+        temp_env::with_var("GITHUB_BEFORE", Some(""), || {
+            assert!(GitHubCIProvider::get_before_sha().is_none());
+        });
     }
 
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn test_get_before_sha_valid() {
         // A valid SHA should be returned
         let valid_sha = "abc123def456";
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::set_var("GITHUB_BEFORE", valid_sha);
-        }
-        assert_eq!(
-            GitHubCIProvider::get_before_sha(),
-            Some(valid_sha.to_string())
-        );
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_BEFORE");
-        }
+        temp_env::with_var("GITHUB_BEFORE", Some(valid_sha), || {
+            assert_eq!(
+                GitHubCIProvider::get_before_sha(),
+                Some(valid_sha.to_string())
+            );
+        });
     }
 
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn test_detect_not_github_actions() {
         // Clear GitHub Actions environment variables
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_ACTIONS");
-            std::env::remove_var("GITHUB_REPOSITORY");
-        }
-
-        let provider = GitHubCIProvider::detect();
-        assert!(provider.is_none());
+        temp_env::with_vars_unset(["GITHUB_ACTIONS", "GITHUB_REPOSITORY"], || {
+            let provider = GitHubCIProvider::detect();
+            assert!(provider.is_none());
+        });
     }
 
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn test_detect_github_actions_false() {
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::set_var("GITHUB_ACTIONS", "false");
-        }
-
-        let provider = GitHubCIProvider::detect();
-        assert!(provider.is_none());
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_ACTIONS");
-        }
+        temp_env::with_var("GITHUB_ACTIONS", Some("false"), || {
+            let provider = GitHubCIProvider::detect();
+            assert!(provider.is_none());
+        });
     }
 
     #[test]
