@@ -343,6 +343,8 @@ name: "test"
 
 env: {}
 
+let _t = tasks
+
 tasks: {
     bun: {
         type: "group"
@@ -353,7 +355,7 @@ tasks: {
         test: {
             command: "echo"
             args: ["bun test"]
-            dependsOn: ["install"]
+            dependsOn: [_t.bun.install]
         }
     }
 }
@@ -577,6 +579,8 @@ env: {
     COUNTER: "0"
 }
 
+let _t = tasks
+
 tasks: {
     init: {
         command: "echo"
@@ -586,19 +590,19 @@ tasks: {
     build: {
         command: "echo"
         args: ["Building after init"]
-        dependsOn: ["init"]
+        dependsOn: [_t.init]
     }
 
     test: {
         command: "echo"
         args: ["Testing after build"]
-        dependsOn: ["build"]
+        dependsOn: [_t.build]
     }
 
     deploy: {
         command: "echo"
         args: ["Deploying after test"]
-        dependsOn: ["test"]
+        dependsOn: [_t.test]
     }
 }"#;
 

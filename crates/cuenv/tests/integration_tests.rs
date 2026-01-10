@@ -700,6 +700,8 @@ ci: {
     ]
 }
 
+let _t = tasks
+
 tasks: {
     build: {
         command: "cargo"
@@ -709,7 +711,7 @@ tasks: {
     test: {
         command: "cargo"
         args: ["test"]
-        dependsOn: ["build"]
+        dependsOn: [_t.build]
     }
 }
 "#,
