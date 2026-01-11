@@ -67,6 +67,22 @@ fn main() {
     // Check for special internal commands that always need async
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && (args[1] == "__hook-supervisor" || args[1] == "__coordinator") {
+        // For supervisor, detach from controlling terminal if on Unix
+        // This is done here instead of via pre_exec in the parent to avoid
+        // fork-safety issues when the parent is multi-threaded (Go runtime)
+        #[cfg(unix)]
+        if args[1] == "__hook-supervisor" {
+            // SAFETY: setsid() creates a new session and process group.
+            // This is safe to call at startup. We ignore errors (e.g. if already leader).
+            #[expect(
+                unsafe_code,
+                reason = "Required for POSIX process detachment via setsid()"
+            )]
+            unsafe {
+                libc::setsid();
+            }
+        }
+
         // These internal commands always need tokio
         let exit_code = run_with_tokio();
         std::process::exit(exit_code);
