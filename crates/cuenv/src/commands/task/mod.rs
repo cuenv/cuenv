@@ -498,38 +498,48 @@ async fn execute_task_legacy(
 
         task_node = selected_task_node;
 
-        // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
-        // This enables cross-project dependency graphs and proper cycle detection.
-        let (global_tasks, task_root_name) = if let Some(module_root) = &cue_module_root {
-            let (mut global, current_project_id) =
-                build_global_tasks(module_root, &project_root, &manifest, executor)?;
-
-            // If we interpolated args for the invoked task, patch that task node in the
-            // global registry so execution matches the CLI-resolved definition.
-            // (We avoid patching otherwise, because the global registry has normalized
-            // dependsOn entries to FQDNs.)
-            if !task_args.is_empty()
-                && let TaskNode::Task(ref t) = task_node
-            {
-                let fqdn = task_fqdn(&current_project_id, &display_task_name);
-                if let Some(TaskNode::Task(existing)) = global.tasks.get_mut(&fqdn) {
-                    existing.command.clone_from(&t.command);
-                    existing.args.clone_from(&t.args);
-                }
-            }
-
-            let root = task_fqdn(&current_project_id, &display_task_name);
-            (global, root)
+        // For dry-run mode, use local tasks to avoid subprocess spawning in build_global_tasks().
+        // The Go FFI runtime is already initialized (fork-unsafe), so we must avoid any
+        // code paths that could spawn subprocesses before we return.
+        if dry_run {
+            all_tasks = tasks;
+            task_graph_root_name = display_task_name.clone();
         } else {
-            (tasks, display_task_name.clone())
-        };
+            // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
+            // This enables cross-project dependency graphs and proper cycle detection.
+            let (global_tasks, task_root_name) = if let Some(module_root) = &cue_module_root {
+                let (mut global, current_project_id) =
+                    build_global_tasks(module_root, &project_root, &manifest, executor)?;
 
-        all_tasks = global_tasks;
-        task_graph_root_name = task_root_name;
+                // If we interpolated args for the invoked task, patch that task node in the
+                // global registry so execution matches the CLI-resolved definition.
+                // (We avoid patching otherwise, because the global registry has normalized
+                // dependsOn entries to FQDNs.)
+                if !task_args.is_empty()
+                    && let TaskNode::Task(ref t) = task_node
+                {
+                    let fqdn = task_fqdn(&current_project_id, &display_task_name);
+                    if let Some(TaskNode::Task(existing)) = global.tasks.get_mut(&fqdn) {
+                        existing.command.clone_from(&t.command);
+                        existing.args.clone_from(&t.args);
+                    }
+                }
+
+                let root = task_fqdn(&current_project_id, &display_task_name);
+                (global, root)
+            } else {
+                (tasks, display_task_name.clone())
+            };
+
+            all_tasks = global_tasks;
+            task_graph_root_name = task_root_name;
+        }
     } else {
         // Execute tasks by label
-        let (mut tasks_in_scope, _current_project_id) = if let Some(module_root) = &cue_module_root
-        {
+        // For dry-run mode, use local tasks to avoid subprocess spawning in build_global_tasks().
+        let (mut tasks_in_scope, _current_project_id) = if dry_run {
+            (local_tasks.clone(), String::new())
+        } else if let Some(module_root) = &cue_module_root {
             build_global_tasks(module_root, &project_root, &manifest, executor).map_err(|e| {
                 cuenv_core::Error::configuration(format!(
                     "Failed to discover tasks for label execution: {e}"
