@@ -582,7 +582,46 @@ async fn execute_task_legacy(
         all_tasks = tasks_in_scope;
     }
 
+    // Build task graph for dependency-aware execution
+    // This is done BEFORE environment setup so dry-run mode can skip subprocess spawning
+    tracing::debug!("Building task graph for task: {}", task_graph_root_name);
+    let mut task_graph = TaskGraph::new();
+
+    if skip_dependencies {
+        // When skipping dependencies, just add the target task without its dependency tree.
+        // This is used by CI orchestrators (like GitHub Actions) that handle dependencies externally.
+        tracing::debug!("Skipping dependencies - adding only the target task");
+        if let Some(TaskNode::Task(task)) = all_tasks.get(&task_graph_root_name) {
+            task_graph.add_task(&task_graph_root_name, (**task).clone())?;
+        }
+    } else {
+        task_graph
+            .build_for_task(&task_graph_root_name, &all_tasks)
+            .map_err(|e| {
+                tracing::error!("Failed to build task graph: {}", e);
+                e
+            })?;
+    }
+
+    tracing::debug!(
+        "Successfully built task graph with {} tasks",
+        task_graph.task_count()
+    );
+
+    // Handle dry-run mode: export DAG as JSON without executing
+    // IMPORTANT: This must happen BEFORE get_environment_with_hooks() to avoid
+    // spawning subprocess (hook supervisor) after Go runtime initialization,
+    // which can cause fork-safety deadlocks in the child process.
+    if dry_run {
+        let dag_export = dag_export::DagExport::from_task_graph(&task_graph)?;
+        return serde_json::to_string_pretty(&dag_export).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to serialize DAG: {e}"))
+        });
+    }
+
     // Get environment with hook-generated vars merged in
+    // Note: This may spawn a hook supervisor subprocess, so it must happen
+    // AFTER the dry-run check to avoid fork-safety issues.
     let directory = project_root.clone();
     let base_env_vars =
         get_environment_with_hooks(&directory, &manifest, package, executor).await?;
@@ -705,39 +744,6 @@ async fn execute_task_legacy(
     };
 
     let executor = TaskExecutor::with_dagger_factory(config, get_dagger_factory());
-
-    // Build task graph for dependency-aware execution
-    tracing::debug!("Building task graph for task: {}", task_graph_root_name);
-    let mut task_graph = TaskGraph::new();
-
-    if skip_dependencies {
-        // When skipping dependencies, just add the target task without its dependency tree.
-        // This is used by CI orchestrators (like GitHub Actions) that handle dependencies externally.
-        tracing::debug!("Skipping dependencies - adding only the target task");
-        if let Some(TaskNode::Task(task)) = all_tasks.get(&task_graph_root_name) {
-            task_graph.add_task(&task_graph_root_name, (**task).clone())?;
-        }
-    } else {
-        task_graph
-            .build_for_task(&task_graph_root_name, &all_tasks)
-            .map_err(|e| {
-                tracing::error!("Failed to build task graph: {}", e);
-                e
-            })?;
-    }
-
-    tracing::debug!(
-        "Successfully built task graph with {} tasks",
-        task_graph.task_count()
-    );
-
-    // Handle dry-run mode: export DAG as JSON without executing
-    if dry_run {
-        let dag_export = dag_export::DagExport::from_task_graph(&task_graph)?;
-        return serde_json::to_string_pretty(&dag_export).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to serialize DAG: {e}"))
-        });
-    }
 
     // If TUI is requested and we have a task graph, launch the rich TUI
     if tui && task_graph.task_count() > 0 {
