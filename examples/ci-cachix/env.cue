@@ -4,6 +4,8 @@ import "github.com/cuenv/cuenv/schema"
 
 schema.#Project
 
+let _t = tasks
+
 name: "ci-cachix"
 
 // Nix runtime (required for Cachix)
@@ -19,7 +21,7 @@ ci: {
 	}
 	pipelines: {
 		build: {
-			tasks: ["build"]
+			tasks: [_t.build]
 			when: branch: "main"
 		}
 	}

@@ -143,9 +143,19 @@ async fn execute_task_legacy(
     task_args: &[String],
     executor: Option<&CommandExecutor>,
 ) -> Result<String> {
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("[DEBUG-HANG] execute_task_legacy ENTRY");
+    }
+
     // Handle CLI help immediately if no task specified
     if task_name.is_none() && help {
         return Ok(get_task_cli_help());
+    }
+
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("[DEBUG-HANG] Before CUE evaluation");
     }
 
     tracing::info!(
@@ -157,6 +167,11 @@ async fn execute_task_legacy(
 
     // Evaluate CUE to get tasks and environment using module-wide evaluation
     let mut manifest: Project = evaluate_manifest(Path::new(path), package, executor)?;
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("[DEBUG-HANG] CUE evaluation COMPLETE");
+    }
+    tracing::error!("[DEBUG-HANG] CUE evaluation complete");
     tracing::debug!("CUE evaluation successful");
 
     tracing::debug!(
@@ -170,8 +185,16 @@ async fn execute_task_legacy(
     let cue_module_root = find_cue_module_root(&project_root);
 
     // Build a canonical index to support nested task paths (with auto-detected workspace tasks)
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("[DEBUG-HANG] Building task index...");
+    }
     let task_index = prepare_task_index(&mut manifest, &project_root)?;
     let local_tasks = task_index.to_tasks();
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("[DEBUG-HANG] Task index prepared with {} tasks", local_tasks.tasks.len());
+    }
 
     // Handle workspace-wide task listing for IDE completions
     if all && task_name.is_none() && labels.is_empty() {
@@ -442,7 +465,9 @@ async fn execute_task_legacy(
         }
 
         // Resolve task via canonical index (supports nested paths and ':' alias)
+        tracing::error!("[DEBUG-HANG] Resolving task: {}", requested_task);
         let task_entry = task_index.resolve(requested_task)?;
+        tracing::error!("[DEBUG-HANG] Task resolved to: {}", task_entry.name);
         let canonical_task_name = task_entry.name.clone();
         tracing::debug!(
             "Task index entries: {:?}",
@@ -594,6 +619,10 @@ async fn execute_task_legacy(
 
     // Build task graph for dependency-aware execution
     // This is done BEFORE environment setup so dry-run mode can skip subprocess spawning
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("[DEBUG-HANG] About to build task graph for: {}", task_graph_root_name);
+    }
     tracing::debug!("Building task graph for task: {}", task_graph_root_name);
     let mut task_graph = TaskGraph::new();
 
@@ -605,14 +634,26 @@ async fn execute_task_legacy(
             task_graph.add_task(&task_graph_root_name, (**task).clone())?;
         }
     } else {
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("[DEBUG-HANG] Calling build_for_task with {} tasks in scope", all_tasks.tasks.len());
+        }
         task_graph
             .build_for_task(&task_graph_root_name, &all_tasks)
             .map_err(|e| {
                 tracing::error!("Failed to build task graph: {}", e);
                 e
             })?;
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("[DEBUG-HANG] build_for_task completed");
+        }
     }
 
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("[DEBUG-HANG] Task graph built with {} tasks", task_graph.task_count());
+    }
     tracing::debug!(
         "Successfully built task graph with {} tasks",
         task_graph.task_count()
@@ -623,7 +664,9 @@ async fn execute_task_legacy(
     // spawning subprocess (hook supervisor) after Go runtime initialization,
     // which can cause fork-safety deadlocks in the child process.
     if dry_run {
+        tracing::error!("[DEBUG-HANG] Entering dry-run export...");
         let dag_export = dag_export::DagExport::from_task_graph(&task_graph)?;
+        tracing::error!("[DEBUG-HANG] DAG export created, serializing...");
         return serde_json::to_string_pretty(&dag_export).map_err(|e| {
             cuenv_core::Error::configuration(format!("Failed to serialize DAG: {e}"))
         });

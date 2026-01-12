@@ -4,6 +4,8 @@ import "github.com/cuenv/cuenv/schema"
 
 schema.#Project
 
+let _t = tasks
+
 name: "ci-cuenv-homebrew"
 
 // Use Homebrew to install cuenv in CI - no Nix required
@@ -14,7 +16,7 @@ config: ci: cuenv: {
 
 ci: pipelines: {
 	build: {
-		tasks: ["build"]
+		tasks: [_t.build]
 	}
 }
 

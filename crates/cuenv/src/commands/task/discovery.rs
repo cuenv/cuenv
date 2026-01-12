@@ -121,8 +121,11 @@ pub fn evaluate_manifest(
         ))
     })?;
 
+    // Use target_dir to evaluate just the specific directory, not the entire module.
+    // This avoids loading all CUE files in ./... which can be very slow for large modules.
     let options = ModuleEvalOptions {
-        recursive: true,
+        recursive: false,
+        target_dir: Some(target_path.to_string_lossy().to_string()),
         ..Default::default()
     };
     let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))

@@ -925,7 +925,9 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// Instead, we filter by package name in post-processing below.
 
 	// Load CUE instances using native CUE loader
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Loading instances with pattern '%s' from '%s'\n", loadPattern, goModuleRoot)
 	loadedInstances := load.Instances([]string{loadPattern}, cfg)
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Loaded %d instances\n", len(loadedInstances))
 	if len(loadedInstances) == 0 {
 		hint := "No CUE files found matching the load pattern"
 		result = createErrorResponse(ErrorCodeLoadInstance, "No CUE instances found", &hint)
@@ -938,6 +940,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// "name" field (Projects have name!, Bases don't) instead of expensive schema unification.
 
 	// Pre-filter valid instances (cheap filtering before parallelization)
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Pre-filtering %d instances for package '%s'\n", len(loadedInstances), effectivePackageName)
 	var validInstances []*build.Instance
 	var loadErrors []string
 	var packageMismatches []string
@@ -952,6 +955,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		}
 		validInstances = append(validInstances, inst)
 	}
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Filtered to %d valid instances (errors: %d, mismatches: %d)\n", len(validInstances), len(loadErrors), len(packageMismatches))
 
 	// Prepare result containers
 	instances := make(map[string]json.RawMessage)
@@ -972,7 +976,13 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	var builtInstances []builtInstance
 
 	ctx := cuecontext.New()
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Starting sequential build of %d instances\n", len(validInstances))
+	buildCount := 0
 	for _, inst := range validInstances {
+		buildCount++
+		if buildCount%10 == 0 {
+			fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Building instance %d/%d: %s\n", buildCount, len(validInstances), inst.Dir)
+		}
 		// Calculate relative path from module root
 		relPath, err := filepath.Rel(goModuleRoot, inst.Dir)
 		if err != nil {
@@ -1004,6 +1014,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 			inst:      inst,
 		})
 	}
+	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Sequential build complete: %d built, %d errors\n", len(builtInstances), len(buildErrors))
 
 	// Parallel JSON serialization with worker pool
 	// JSON marshaling is expensive but thread-safe, so we parallelize this part.

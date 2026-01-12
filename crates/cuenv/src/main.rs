@@ -747,6 +747,11 @@ async fn real_main() -> Result<(), CliError> {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     }
 
+    // Shut down the global event bus BEFORE the tokio runtime exits.
+    // This closes the mpsc channel that the forwarding task waits on,
+    // allowing the task to exit and preventing a runtime shutdown deadlock.
+    tracing::shutdown_global_events();
+
     result
 }
 

@@ -4,6 +4,8 @@ import "github.com/cuenv/cuenv/schema"
 
 schema.#Project
 
+let _t = tasks
+
 name: "ci-cuenv-nix"
 
 // Use Nix flake to install cuenv in CI with Cachix binary cache
@@ -14,7 +16,7 @@ config: ci: cuenv: {
 
 ci: pipelines: {
 	build: {
-		tasks: ["build"]
+		tasks: [_t.build]
 	}
 }
 
