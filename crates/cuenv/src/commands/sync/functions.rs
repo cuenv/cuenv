@@ -1803,6 +1803,7 @@ mod tests {
         );
 
         let tasks = vec![PipelineTask::Matrix(MatrixTask {
+            task_type: Some("matrix".to_string()),
             task: TaskRef::from_name("cargo.build"),
             matrix,
             artifacts: None,
@@ -1815,6 +1816,7 @@ mod tests {
     fn test_has_matrix_tasks_aggregation_only() {
         // Aggregation task has empty matrix but artifacts
         let tasks = vec![PipelineTask::Matrix(MatrixTask {
+            task_type: Some("matrix".to_string()),
             task: TaskRef::from_name("publish"),
             matrix: BTreeMap::new(),
             artifacts: Some(vec![]),
@@ -1832,6 +1834,7 @@ mod tests {
         let tasks = vec![
             PipelineTask::Simple(TaskRef::from_name("check")),
             PipelineTask::Matrix(MatrixTask {
+                task_type: Some("matrix".to_string()),
                 task: TaskRef::from_name("build"),
                 matrix,
                 artifacts: None,

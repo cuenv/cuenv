@@ -82,6 +82,7 @@ package schema
 
 // Matrix task configuration for pipeline
 #MatrixTask: close({
+	type:   "matrix"                          // Discriminator for CUE disjunction (distinguishes from #TaskNode)
 	task!:  #TaskNode                         // Task reference (CUE ref for compile-time validation)
 	matrix: [string]: [...string]             // Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
 	artifacts?: [...#ArtifactDownload]        // Artifacts to download before running
