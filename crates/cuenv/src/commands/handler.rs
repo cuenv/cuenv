@@ -49,7 +49,7 @@ impl CommandRunner for CommandExecutor {
         match cmd.execute(self).await {
             Ok(output) => {
                 if cmd.should_print_output() && !output.is_empty() {
-                    println!("{output}");
+                    cuenv_events::println_redacted(&output);
                 }
                 self.send_event(Event::CommandComplete {
                     command: name.to_string(),

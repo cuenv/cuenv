@@ -7,19 +7,31 @@ on:
     branches:
     - main
     paths:
-    - '**'
     - .github/workflows/cuenv-ci.yml
+    - Cargo.lock
+    - Cargo.toml
+    - _tests/**
+    - crates/**
     - cue.mod/**
+    - deny.toml
     - env.cue
+    - examples/**
+    - features/**
     - schema/**
   pull_request:
     branches:
     - main
     paths:
-    - '**'
     - .github/workflows/cuenv-ci.yml
+    - Cargo.lock
+    - Cargo.toml
+    - _tests/**
+    - crates/**
     - cue.mod/**
+    - deny.toml
     - env.cue
+    - examples/**
+    - features/**
     - schema/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

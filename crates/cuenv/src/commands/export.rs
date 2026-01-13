@@ -637,14 +637,20 @@ pub async fn get_environment_with_hooks(
                 let hook_name = state
                     .current_hook_display()
                     .unwrap_or_else(|| "hook".to_string());
-                eprint!("\r\x1b[KWaiting for hook `{hook_name}` to complete... [{elapsed}s]");
+                #[allow(clippy::print_stderr)] // TTY progress indicator, no secrets
+                {
+                    eprint!("\r\x1b[KWaiting for hook `{hook_name}` to complete... [{elapsed}s]");
+                }
                 let _ = std::io::stderr().flush();
             }
 
             if state.is_complete() {
                 // Clear the progress line
                 if is_tty {
-                    eprint!("\r\x1b[K");
+                    #[allow(clippy::print_stderr)] // TTY clear line, no secrets
+                    {
+                        eprint!("\r\x1b[K");
+                    }
                     let _ = std::io::stderr().flush();
                 }
 
@@ -676,7 +682,10 @@ pub async fn get_environment_with_hooks(
         // Check timeout
         if start_time.elapsed().as_secs() >= timeout_seconds {
             if is_tty {
-                eprint!("\r\x1b[K");
+                #[allow(clippy::print_stderr)] // TTY clear line, no secrets
+                {
+                    eprint!("\r\x1b[K");
+                }
                 let _ = std::io::stderr().flush();
             }
             tracing::warn!(
