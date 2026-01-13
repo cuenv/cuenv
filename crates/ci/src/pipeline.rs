@@ -118,7 +118,8 @@ pub fn expand_task_groups(
                         .any(|dep| group_task_ids.contains(dep.as_str()));
 
                     match pipeline_task {
-                        PipelineTask::Simple(_) => {
+                        PipelineTask::Simple(_) | PipelineTask::Node(_) => {
+                            // For simple refs and inline nodes, expand to simple task references
                             PipelineTask::Simple(TaskRef::from_name(&ir_task.id))
                         }
                         PipelineTask::Matrix(matrix_task) => {

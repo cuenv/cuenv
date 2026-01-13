@@ -1218,7 +1218,7 @@ fn build_pipeline_jobs(
         let job_id = task_name.replace(['.', ' '], "-");
 
         match pipeline_task {
-            cuenv_core::ci::PipelineTask::Simple(_) => {
+            cuenv_core::ci::PipelineTask::Simple(_) | cuenv_core::ci::PipelineTask::Node(_) => {
                 if let Some(ir_task) = ctx.tasks.iter().find(|t| t.id == task_name) {
                     // Use emitter method directly
                     let mut job = emitter.build_simple_job(
