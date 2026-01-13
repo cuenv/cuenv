@@ -107,7 +107,12 @@ impl TestWorld {
     /// Run cuenv command with arguments
     async fn run_cuenv(&mut self, args: &[&str]) -> Result<(), String> {
         let mut cmd = Command::new(&self.cuenv_binary);
-        cmd.args(args)
+        // Clear inherited env vars to prevent CI environment from affecting tests
+        cmd.env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", std::env::var("HOME").unwrap_or_default())
+            .env("USER", std::env::var("USER").unwrap_or_default())
+            .args(args)
             .current_dir(&self.current_dir)
             .env("CUENV_STATE_DIR", &self.state_dir)
             .env(
@@ -267,7 +272,7 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
     );
 
     let path = if dir == "examples" {
-        // Use a bdd_test_runs directory in the repo root so CUE can find the module
+        // Use a _tests/bdd directory in the repo root so CUE can find the module
         // NOTE: Must NOT start with '.' because CUE's loader ignores hidden directories
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest_dir
@@ -277,10 +282,19 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
             .unwrap()
             .to_path_buf();
         let test_dir = repo_root
-            .join("bdd_test_runs")
+            .join("_tests/bdd")
             .join(format!("test_{unique_id}"));
         if !test_dir.exists() {
             fs::create_dir_all(&test_dir).await.unwrap();
+            // Create the CUE module structure for test isolation
+            let cue_mod_dir = test_dir.join("cue.mod");
+            fs::create_dir_all(&cue_mod_dir).await.unwrap();
+            fs::write(
+                cue_mod_dir.join("module.cue"),
+                "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
+            )
+            .await
+            .unwrap();
         }
         // Store the unique test dir for cleanup later
         world.test_base_dir = Some(test_dir.clone());
@@ -295,7 +309,7 @@ async fn in_directory(world: &mut TestWorld, dir: String) {
             .unwrap()
             .to_path_buf();
         let test_dir = repo_root
-            .join("bdd_test_runs")
+            .join("_tests/bdd")
             .join(format!("test_{unique_id}"));
         test_dir.join(dir)
     };
@@ -332,12 +346,8 @@ async fn in_directory_with_completed_hooks(world: &mut TestWorld, dir: String) {
 
 #[given(expr = "cuenv is allowed in {string} directory")]
 async fn cuenv_allowed_in_dir(world: &mut TestWorld, dir: String) {
-    // Create a valid CUE file for the hook test
+    // Create a valid CUE file for the hook test (schema-free for test isolation)
     let cue_content = r#"package examples
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "hook-test"
 
@@ -700,12 +710,8 @@ fn command_has_env_access(world: &mut TestWorld) {
 // Failure scenario steps
 #[given(expr = "cuenv is allowed in {string} directory with failing hooks")]
 async fn cuenv_allowed_with_failing_hooks(world: &mut TestWorld, dir: String) {
-    // Create a CUE file with hooks that will fail
+    // Create a CUE file with hooks that will fail (schema-free for test isolation)
     let cue_content = r#"package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "failing-hook-test"
 
@@ -896,20 +902,32 @@ async fn hooks_should_not_reexecute(world: &mut TestWorld) {
 // Task Execution Step Definitions
 // =============================================================================
 
-/// Generate a CUE file for task testing
+/// Generate a CUE file for task testing (schema-free for test isolation)
 fn generate_task_cue(tasks: &[(String, String, Vec<String>)]) -> String {
-    let mut cue = String::from(
-        r#"package test
+    // Only include `let _t = tasks` if any task has dependencies (CUE requires let clauses to be used)
+    let has_deps = tasks.iter().any(|(_, _, deps)| !deps.is_empty());
 
-import "github.com/cuenv/cuenv/schema"
+    let mut cue = if has_deps {
+        String::from(
+            r#"package test
 
-schema.#Project
+name: "task-test"
+
+let _t = tasks
+
+tasks: {
+"#,
+        )
+    } else {
+        String::from(
+            r#"package test
 
 name: "task-test"
 
 tasks: {
 "#,
-    );
+        )
+    };
 
     for (name, command, deps) in tasks {
         // Parse command - if it contains spaces, split into command and args
@@ -944,9 +962,10 @@ tasks: {
         }
 
         if !deps.is_empty() {
+            // Use CUE refs for dependsOn (e.g., _t.build instead of "build")
             let deps_str = deps
                 .iter()
-                .map(|d| format!("\"{d}\""))
+                .map(|d| format!("_t.{d}"))
                 .collect::<Vec<_>>()
                 .join(", ");
             let _ = writeln!(cue, "        dependsOn: [{deps_str}]");
@@ -1002,22 +1021,22 @@ async fn given_project_with_tasks(world: &mut TestWorld, step: &cucumber::gherki
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join("_tests/bdd")
         .join(format!("task_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
-    world.test_base_dir = Some(test_dir.clone());
-    world.current_dir.clone_from(&test_dir);
-
-    // Create the CUE module structure
+    // Create the CUE module structure for test isolation
     let cue_mod_dir = test_dir.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/task-test\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
+
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir.clone_from(&test_dir);
 
     // Generate and write the CUE file
     let cue_content = generate_task_cue(&tasks);
@@ -1028,12 +1047,9 @@ async fn given_project_with_tasks(world: &mut TestWorld, step: &cucumber::gherki
 
 #[given(expr = "a project with parallel tasks {string} and {string}")]
 async fn given_project_with_parallel_tasks(world: &mut TestWorld, task1: String, task2: String) {
+    // Schema-free for test isolation
     let cue_content = format!(
         r#"package test
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "parallel-task-test"
 
@@ -1067,22 +1083,23 @@ tasks: {{
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join("_tests/bdd")
         .join(format!("parallel_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
-    world.test_base_dir = Some(test_dir.clone());
-    world.current_dir.clone_from(&test_dir);
-
-    // Create CUE module structure
+    // Create the CUE module structure for test isolation
     let cue_mod_dir = test_dir.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/parallel-test\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
+
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir.clone_from(&test_dir);
+
     fs::write(test_dir.join("env.cue"), &cue_content)
         .await
         .unwrap();
@@ -1095,12 +1112,9 @@ async fn given_project_with_parallel_group(
     task1: String,
     task2: String,
 ) {
+    // Schema-free for test isolation
     let cue_content = format!(
         r#"package test
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "group-task-test"
 
@@ -1134,22 +1148,23 @@ tasks: {{
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join("_tests/bdd")
         .join(format!("group_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
-    world.test_base_dir = Some(test_dir.clone());
-    world.current_dir.clone_from(&test_dir);
-
-    // Create CUE module structure
+    // Create the CUE module structure for test isolation
     let cue_mod_dir = test_dir.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/group-test\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
+
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir.clone_from(&test_dir);
+
     fs::write(test_dir.join("env.cue"), &cue_content)
         .await
         .unwrap();
@@ -1157,11 +1172,29 @@ tasks: {{
 
 #[when(expr = "I run {string}")]
 async fn when_i_run_command(world: &mut TestWorld, command: String) {
-    // Parse the command - expecting "cuenv task <args>"
+    // Parse the command - expecting "cuenv task <args>" or "cuenv env <args>"
     let parts: Vec<&str> = command.split_whitespace().collect();
 
     if parts.first() == Some(&"cuenv") {
-        let args: Vec<&str> = parts[1..].to_vec();
+        // Build args with --path and --package before the command args
+        let path = world.current_dir.to_str().unwrap().to_string();
+        let path_str: &'static str = Box::leak(path.into_boxed_str());
+
+        // Get the subcommand (e.g., "task" or "env")
+        let subcommand = parts.get(1).copied().unwrap_or("");
+
+        // Build the full args list with path/package options in correct position
+        let mut args = vec![subcommand];
+
+        // Add remaining args from the command
+        args.extend(parts[2..].iter().copied());
+
+        // Add --path and --package at the end (they're global options)
+        args.push("--path");
+        args.push(path_str);
+        args.push("--package");
+        args.push("test");
+
         world.run_cuenv(&args).await.unwrap();
     } else {
         panic!("Expected command to start with 'cuenv', got: {}", command);
@@ -1276,14 +1309,10 @@ fn then_exit_code_is_not(world: &mut TestWorld, code: i32) {
 // Environment Step Definitions
 // =============================================================================
 
-/// Generate a CUE file for environment testing
+/// Generate a CUE file for environment testing (schema-free for test isolation)
 fn generate_env_cue(vars: &[(String, String)]) -> String {
     let mut cue = String::from(
         r#"package test
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "env-test"
 
@@ -1324,22 +1353,22 @@ async fn given_project_with_env_vars(world: &mut TestWorld, step: &cucumber::ghe
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join("_tests/bdd")
         .join(format!("env_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
-    world.test_base_dir = Some(test_dir.clone());
-    world.current_dir.clone_from(&test_dir);
-
-    // Create the CUE module structure
+    // Create the CUE module structure for test isolation
     let cue_mod_dir = test_dir.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/env-test\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
+
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir.clone_from(&test_dir);
 
     // Generate and write the CUE file
     let cue_content = generate_env_cue(&vars);
@@ -1350,11 +1379,8 @@ async fn given_project_with_env_vars(world: &mut TestWorld, step: &cucumber::ghe
 
 #[given(expr = "a project with no environment variables")]
 async fn given_project_with_no_env_vars(world: &mut TestWorld) {
+    // Schema-free for test isolation
     let cue_content = r#"package test
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "empty-env-test"
 "#;
@@ -1373,22 +1399,23 @@ name: "empty-env-test"
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join("_tests/bdd")
         .join(format!("empty_env_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
-    world.test_base_dir = Some(test_dir.clone());
-    world.current_dir.clone_from(&test_dir);
-
-    // Create the CUE module structure
+    // Create the CUE module structure for test isolation
     let cue_mod_dir = test_dir.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/empty-env\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
+
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir.clone_from(&test_dir);
+
     fs::write(test_dir.join("env.cue"), cue_content)
         .await
         .unwrap();
@@ -1404,12 +1431,9 @@ async fn given_project_with_base_env(world: &mut TestWorld, base_env: String) {
         ("BASE_VAR", "base")
     };
 
+    // Schema-free for test isolation
     let cue_content = format!(
         r#"package test
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "env-inheritance-test"
 
@@ -1439,22 +1463,23 @@ environments: {{
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join("_tests/bdd")
         .join(format!("env_inherit_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
-    world.test_base_dir = Some(test_dir.clone());
-    world.current_dir.clone_from(&test_dir);
-
-    // Create the CUE module structure
+    // Create the CUE module structure for test isolation
     let cue_mod_dir = test_dir.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/env-inherit\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
+
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir.clone_from(&test_dir);
+
     fs::write(test_dir.join("env.cue"), cue_content)
         .await
         .unwrap();
@@ -1489,12 +1514,9 @@ async fn given_derived_environment(world: &mut TestWorld, env_name: String, env_
         .cloned()
         .unwrap_or("base".to_string());
 
+    // Schema-free for test isolation
     let cue_content = format!(
         r#"package test
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "env-inheritance-test"
 
@@ -1533,12 +1555,8 @@ fn then_output_is_valid_json(world: &mut TestWorld) {
 
 #[given(expr = "a project with invalid CUE syntax")]
 async fn given_project_with_invalid_cue(world: &mut TestWorld) {
-    // Create a CUE file with intentionally broken syntax
+    // Create a CUE file with intentionally broken syntax (schema-free for test isolation)
     let cue_content = r#"package test
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "invalid-syntax-test"
 
@@ -1562,22 +1580,23 @@ env: {
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join("_tests/bdd")
         .join(format!("invalid_cue_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
-    world.test_base_dir = Some(test_dir.clone());
-    world.current_dir.clone_from(&test_dir);
-
-    // Create the CUE module structure
+    // Create the CUE module structure for test isolation
     let cue_mod_dir = test_dir.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/invalid-cue\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
+
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir.clone_from(&test_dir);
+
     fs::write(test_dir.join("env.cue"), cue_content)
         .await
         .unwrap();
@@ -1585,11 +1604,8 @@ env: {
 
 #[given(expr = "a project with no tasks or environment")]
 async fn given_project_with_no_tasks_or_env(world: &mut TestWorld) {
+    // Schema-free for test isolation
     let cue_content = r#"package test
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project
 
 name: "empty-project"
 "#;
@@ -1608,22 +1624,23 @@ name: "empty-project"
         .unwrap()
         .to_path_buf();
     let test_dir = repo_root
-        .join("bdd_test_runs")
+        .join("_tests/bdd")
         .join(format!("empty_project_test_{unique_id}"));
 
     fs::create_dir_all(&test_dir).await.unwrap();
-    world.test_base_dir = Some(test_dir.clone());
-    world.current_dir.clone_from(&test_dir);
-
-    // Create the CUE module structure
+    // Create the CUE module structure for test isolation
     let cue_mod_dir = test_dir.join("cue.mod");
     fs::create_dir_all(&cue_mod_dir).await.unwrap();
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"test.example/empty-project\"\nlanguage: version: \"v0.14.1\"\n",
+        "module: \"test.example\"\nlanguage: version: \"v0.14.1\"\n",
     )
     .await
     .unwrap();
+
+    world.test_base_dir = Some(test_dir.clone());
+    world.current_dir.clone_from(&test_dir);
+
     fs::write(test_dir.join("env.cue"), cue_content)
         .await
         .unwrap();

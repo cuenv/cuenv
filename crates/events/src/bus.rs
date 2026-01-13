@@ -4,6 +4,7 @@
 //! to receive events concurrently.
 
 use crate::event::CuenvEvent;
+use std::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
 
 /// Default channel capacity for the broadcast channel.
@@ -15,8 +16,10 @@ const DEFAULT_BROADCAST_CAPACITY: usize = 1000;
 /// Uses tokio's broadcast channel for fan-out delivery.
 #[derive(Debug)]
 pub struct EventBus {
-    /// Sender for submitting events.
-    sender: mpsc::UnboundedSender<CuenvEvent>,
+    /// Sender for submitting events (wrapped in Option for shutdown support).
+    /// When `shutdown()` is called, this is set to None, which drops the sender
+    /// and causes the forwarding task to exit gracefully.
+    sender: Mutex<Option<mpsc::UnboundedSender<CuenvEvent>>>,
     /// Broadcast sender for fan-out.
     broadcast_tx: broadcast::Sender<CuenvEvent>,
 }
@@ -46,16 +49,32 @@ impl EventBus {
         });
 
         Self {
-            sender,
+            sender: Mutex::new(Some(sender)),
             broadcast_tx,
         }
     }
 
     /// Get a sender for submitting events to the bus.
+    ///
+    /// Returns `None` if the bus has been shut down.
     #[must_use]
-    pub fn sender(&self) -> EventSender {
-        EventSender {
-            inner: self.sender.clone(),
+    pub fn sender(&self) -> Option<EventSender> {
+        self.sender
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|s| EventSender { inner: s.clone() }))
+    }
+
+    /// Shut down the event bus.
+    ///
+    /// This drops the internal sender, causing the forwarding task to exit.
+    /// After shutdown, no more events can be sent and `sender()` returns `None`.
+    ///
+    /// This method is safe to call multiple times.
+    pub fn shutdown(&self) {
+        if let Ok(mut guard) = self.sender.lock() {
+            // Take and drop the sender to signal the forwarding task to exit
+            let _ = guard.take();
         }
     }
 
@@ -194,14 +213,14 @@ mod tests {
     #[tokio::test]
     async fn test_event_bus_creation() {
         let bus = EventBus::new();
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         assert!(!sender.is_closed());
     }
 
     #[tokio::test]
     async fn test_event_bus_send_receive() {
         let bus = EventBus::new();
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         let mut receiver = bus.subscribe();
 
         let event = make_test_event();
@@ -216,7 +235,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_bus_multiple_subscribers() {
         let bus = EventBus::new();
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         let mut receiver1 = bus.subscribe();
         let mut receiver2 = bus.subscribe();
 
@@ -241,7 +260,7 @@ mod tests {
         // are independent handles that can outlive the bus.
         let sender = {
             let bus = EventBus::new();
-            bus.sender()
+            bus.sender().expect("sender should be available")
         };
 
         // Give time for the bus to be dropped
@@ -256,7 +275,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_bus_with_capacity() {
         let bus = EventBus::with_capacity(10);
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         assert!(!sender.is_closed());
         assert_eq!(bus.subscriber_count(), 0);
     }
@@ -264,14 +283,14 @@ mod tests {
     #[tokio::test]
     async fn test_event_bus_default() {
         let bus = EventBus::default();
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         assert!(!sender.is_closed());
     }
 
     #[tokio::test]
     async fn test_event_receiver_try_recv_empty() {
         let bus = EventBus::new();
-        let _sender = bus.sender();
+        let _sender = bus.sender().expect("sender should be available");
         let mut receiver = bus.subscribe();
 
         // No events sent yet
@@ -282,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_receiver_try_recv_with_event() {
         let bus = EventBus::new();
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         let mut receiver = bus.subscribe();
 
         let event = make_test_event();
@@ -324,7 +343,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_sender_into_inner() {
         let bus = EventBus::new();
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         let inner = sender.into_inner();
         assert!(!inner.is_closed());
     }
@@ -339,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_sender_debug() {
         let bus = EventBus::new();
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         let debug_str = format!("{sender:?}");
         assert!(debug_str.contains("EventSender"));
     }
@@ -355,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_events_in_order() {
         let bus = EventBus::new();
-        let sender = bus.sender();
+        let sender = bus.sender().expect("sender should be available");
         let mut receiver = bus.subscribe();
 
         let event1 = make_test_event();
@@ -382,7 +401,7 @@ mod tests {
     #[tokio::test]
     async fn test_sender_clone() {
         let bus = EventBus::new();
-        let sender1 = bus.sender();
+        let sender1 = bus.sender().expect("sender should be available");
         let sender2 = sender1.clone();
 
         let mut receiver = bus.subscribe();

@@ -3,19 +3,16 @@
 //! Provides commands for listing and printing environment variables
 //! from CUE configurations.
 
-use crate::commands::env_file::find_cue_module_root;
-use crate::commands::{CommandExecutor, convert_engine_error, relative_path_from_root};
-use cuengine::ModuleEvalOptions;
+use crate::commands::{CommandExecutor, relative_path_from_root};
 use cuenv_core::manifest::Base;
-use cuenv_core::{ModuleEvaluation, Result};
+use cuenv_core::Result;
 use std::path::Path;
 use tracing::instrument;
 
 /// Load the module and get the Base configuration at the specified path.
 ///
-/// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
-fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor>) -> Result<Base> {
+/// Uses the executor's cached module evaluation (single CUE eval per process).
+fn load_base_config(path: &str, executor: &CommandExecutor) -> Result<Base> {
     let target_path = Path::new(path)
         .canonicalize()
         .map_err(|e| cuenv_core::Error::Io {
@@ -24,54 +21,10 @@ fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor
             operation: "canonicalize path".to_string(),
         })?;
 
-    // Use executor's cached module if available, otherwise fresh evaluation
-    if let Some(exec) = executor {
-        tracing::debug!("Using cached module evaluation from executor");
-        let module = exec.get_module(&target_path)?;
-        let relative_path = relative_path_from_root(&module.root, &target_path);
+    tracing::debug!("Using cached module evaluation from executor");
+    let module = executor.get_module(&target_path)?;
+    let relative_path = relative_path_from_root(&module.root, &target_path);
 
-        let instance = module.get(&relative_path).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "No CUE instance found at path: {} (relative: {})",
-                target_path.display(),
-                relative_path.display()
-            ))
-        })?;
-
-        return instance.deserialize();
-    }
-
-    // Legacy path: fresh evaluation
-    tracing::debug!("Using fresh single-instance evaluation (no executor)");
-
-    // Find the CUE module root
-    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE module found (looking for cue.mod/) starting from: {}",
-            target_path.display()
-        ))
-    })?;
-
-    // Evaluate only the target directory (non-recursive) since env commands
-    // only need the current project's configuration, not cross-project references
-    let options = ModuleEvalOptions {
-        recursive: false,
-        target_dir: Some(target_path.to_string_lossy().to_string()),
-        ..Default::default()
-    };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
-        .map_err(convert_engine_error)?;
-
-    // Build ModuleEvaluation
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        raw_result.instances,
-        raw_result.projects,
-        None,
-    );
-
-    // Get the instance at the target path
-    let relative_path = relative_path_from_root(&module_root, &target_path);
     let instance = module.get(&relative_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "No CUE instance found at path: {} (relative: {})",
@@ -80,7 +33,6 @@ fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor
         ))
     })?;
 
-    // Deserialize to Base schema
     instance.deserialize()
 }
 
@@ -92,19 +44,14 @@ fn load_base_config(path: &str, package: &str, executor: Option<&CommandExecutor
 #[instrument(name = "env_list", skip(executor))]
 pub async fn execute_env_list(
     path: &str,
-    package: &str,
     format: &str,
-    executor: Option<&CommandExecutor>,
+    executor: &CommandExecutor,
 ) -> Result<String> {
     tracing::info!("Starting env list command");
 
     // Load Base configuration using module-wide evaluation
-    tracing::debug!(
-        "Loading CUE config for package '{}' at path '{}'",
-        package,
-        path
-    );
-    let manifest: Base = load_base_config(path, package, executor)?;
+    tracing::debug!("Loading CUE config at path '{}'", path);
+    let manifest: Base = load_base_config(path, executor)?;
 
     let environments: Vec<String> = manifest
         .env
@@ -143,20 +90,15 @@ pub async fn execute_env_list(
 #[instrument(name = "env_print", skip(executor))]
 pub async fn execute_env_print(
     path: &str,
-    package: &str,
     format: &str,
     environment: Option<&str>,
-    executor: Option<&CommandExecutor>,
+    executor: &CommandExecutor,
 ) -> Result<String> {
     tracing::info!("Starting env print command");
 
     // Load Base configuration using module-wide evaluation
-    tracing::debug!(
-        "Loading CUE config for package '{}' at path '{}'",
-        package,
-        path
-    );
-    let manifest: Base = load_base_config(path, package, executor)?;
+    tracing::debug!("Loading CUE config at path '{}'", path);
+    let manifest: Base = load_base_config(path, executor)?;
 
     // Extract the env field
     let env = manifest.env.ok_or_else(|| {

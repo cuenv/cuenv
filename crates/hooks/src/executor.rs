@@ -212,29 +212,6 @@ impl HookExecutor {
         }
 
         // Platform-specific detachment configuration
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // Detach from parent process group using setsid
-            // SAFETY: setsid() is a standard POSIX function that creates a new session
-            // and process group. This is needed to properly detach background hook
-            // processes from the parent terminal. The only failure case is EPERM
-            // (already a session leader), which we propagate as an io::Error.
-            #[expect(
-                unsafe_code,
-                reason = "Required for POSIX process detachment via setsid()"
-            )]
-            unsafe {
-                cmd.pre_exec(|| {
-                    // Create a new session, detaching from controlling terminal
-                    if libc::setsid() == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

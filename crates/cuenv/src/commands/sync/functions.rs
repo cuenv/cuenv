@@ -1776,7 +1776,7 @@ steps:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::ci::{MatrixTask, PipelineTask};
+    use cuenv_core::ci::{MatrixTask, PipelineTask, TaskRef};
     use std::collections::BTreeMap;
 
     #[test]
@@ -1788,8 +1788,8 @@ mod tests {
     #[test]
     fn test_has_matrix_tasks_simple_only() {
         let tasks = vec![
-            PipelineTask::Simple("build".to_string()),
-            PipelineTask::Simple("test".to_string()),
+            PipelineTask::Simple(TaskRef::from_name("build")),
+            PipelineTask::Simple(TaskRef::from_name("test")),
         ];
         assert!(!has_matrix_tasks(&tasks));
     }
@@ -1803,7 +1803,7 @@ mod tests {
         );
 
         let tasks = vec![PipelineTask::Matrix(MatrixTask {
-            task: "cargo.build".to_string(),
+            task: TaskRef::from_name("cargo.build"),
             matrix,
             artifacts: None,
             params: None,
@@ -1815,7 +1815,7 @@ mod tests {
     fn test_has_matrix_tasks_aggregation_only() {
         // Aggregation task has empty matrix but artifacts
         let tasks = vec![PipelineTask::Matrix(MatrixTask {
-            task: "publish".to_string(),
+            task: TaskRef::from_name("publish"),
             matrix: BTreeMap::new(),
             artifacts: Some(vec![]),
             params: None,
@@ -1830,14 +1830,14 @@ mod tests {
         matrix.insert("arch".to_string(), vec!["linux-x64".to_string()]);
 
         let tasks = vec![
-            PipelineTask::Simple("check".to_string()),
+            PipelineTask::Simple(TaskRef::from_name("check")),
             PipelineTask::Matrix(MatrixTask {
-                task: "build".to_string(),
+                task: TaskRef::from_name("build"),
                 matrix,
                 artifacts: None,
                 params: None,
             }),
-            PipelineTask::Simple("deploy".to_string()),
+            PipelineTask::Simple(TaskRef::from_name("deploy")),
         ];
         assert!(has_matrix_tasks(&tasks));
     }

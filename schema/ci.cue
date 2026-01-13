@@ -82,14 +82,14 @@ package schema
 
 // Matrix task configuration for pipeline
 #MatrixTask: close({
-	task!:  string                            // Task name to run
+	task!:  #TaskNode                         // Task reference (CUE ref for compile-time validation)
 	matrix: [string]: [...string]             // Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
 	artifacts?: [...#ArtifactDownload]        // Artifacts to download before running
 	params?: [string]: string                 // Parameters to pass to the task
 })
 
-// Pipeline task reference - either a simple task name or a matrix task
-#PipelineTask: string | #MatrixTask
+// Pipeline task reference - either a direct task reference or a matrix task
+#PipelineTask: #TaskNode | #MatrixTask
 
 // GitHub Action configuration for contributor tasks
 #GitHubActionConfig: close({

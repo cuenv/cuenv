@@ -191,6 +191,11 @@ impl OnePasswordResolver {
         name: &str,
         config: &OnePasswordConfig,
     ) -> Result<String, SecretError> {
+        tracing::debug!(
+            name = name,
+            reference = config.reference,
+            "1Password resolve_cli"
+        );
         let output = Command::new("op")
             .args(["read", &config.reference])
             .output()

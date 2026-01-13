@@ -84,12 +84,84 @@ pub struct ArtifactDownload {
     pub filter: String,
 }
 
+/// A task reference - an embedded task with `_name` field injected by enrichment.
+///
+/// When CUE evaluates a task reference (e.g., `task: build`), it embeds the full
+/// task definition. The Rust enrichment layer injects `_name` to identify the task.
+///
+/// Only accepts objects with `_name` field - string task names are not supported.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct TaskRef {
+    /// The task name (injected during enrichment based on CUE reference)
+    #[serde(rename = "_name")]
+    pub name: String,
+
+    // Other fields are captured but not used - we only need the name
+    #[serde(flatten)]
+    _rest: serde_json::Value,
+}
+
+impl<'de> serde::Deserialize<'de> for TaskRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct TaskRefVisitor;
+
+        impl<'de> Visitor<'de> for TaskRefVisitor {
+            type Value = TaskRef;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an object with _name field (task reference)")
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                // Deserialize as a JSON object and extract _name
+                let value: serde_json::Value =
+                    serde::Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))?;
+
+                let name = value
+                    .get("_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| de::Error::missing_field("_name"))?
+                    .to_string();
+
+                Ok(TaskRef { name, _rest: value })
+            }
+        }
+
+        deserializer.deserialize_map(TaskRefVisitor)
+    }
+}
+
+impl TaskRef {
+    /// Create a new TaskRef from a task name (for testing only)
+    #[must_use]
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            _rest: serde_json::Value::Null,
+        }
+    }
+
+    /// Get the task name
+    #[must_use]
+    pub fn task_name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Matrix task configuration for pipeline
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MatrixTask {
-    /// Task name to run
-    pub task: String,
+    /// Task reference (CUE ref enriched with _name)
+    pub task: TaskRef,
     /// Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
     pub matrix: BTreeMap<String, Vec<String>>,
     /// Artifacts to download before running
@@ -100,22 +172,23 @@ pub struct MatrixTask {
     pub params: Option<BTreeMap<String, String>>,
 }
 
-/// Pipeline task reference - either a simple task name or a matrix task
+/// Pipeline task reference - either a direct task reference or a matrix task
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum PipelineTask {
-    /// Simple task reference by name
-    Simple(String),
     /// Matrix task with dimensions and optional artifacts/params
+    /// Note: Matrix must come first in untagged enum because it has more specific fields
     Matrix(MatrixTask),
+    /// Simple task reference (enriched CUE ref with _name)
+    Simple(TaskRef),
 }
 
 impl PipelineTask {
     /// Get the task name regardless of variant
     pub fn task_name(&self) -> &str {
         match self {
-            PipelineTask::Simple(name) => name,
-            PipelineTask::Matrix(matrix) => &matrix.task,
+            PipelineTask::Simple(task_ref) => task_ref.task_name(),
+            PipelineTask::Matrix(matrix) => matrix.task.task_name(),
         }
     }
 
@@ -577,24 +650,26 @@ mod tests {
 
     #[test]
     fn test_pipeline_derive_paths() {
-        let json = r#"{"tasks": ["test"], "derivePaths": true}"#;
+        // Tasks are CUE refs (objects with _name) after enrichment
+        let json = r#"{"tasks": [{"_name": "test"}], "derivePaths": true}"#;
         let pipeline: Pipeline = serde_json::from_str(json).unwrap();
         assert_eq!(pipeline.derive_paths, Some(true));
 
-        let json = r#"{"tasks": ["sync"], "derivePaths": false}"#;
+        let json = r#"{"tasks": [{"_name": "sync"}], "derivePaths": false}"#;
         let pipeline: Pipeline = serde_json::from_str(json).unwrap();
         assert_eq!(pipeline.derive_paths, Some(false));
 
-        let json = r#"{"tasks": ["build"]}"#;
+        let json = r#"{"tasks": [{"_name": "build"}]}"#;
         let pipeline: Pipeline = serde_json::from_str(json).unwrap();
         assert_eq!(pipeline.derive_paths, None);
     }
 
     #[test]
     fn test_pipeline_task_simple() {
-        let json = r#""build""#;
+        // CUE ref enriched with _name
+        let json = r#"{"_name": "build", "command": "cargo build"}"#;
         let task: PipelineTask = serde_json::from_str(json).unwrap();
-        assert!(matches!(task, PipelineTask::Simple(ref s) if s == "build"));
+        assert!(matches!(task, PipelineTask::Simple(_)));
         assert_eq!(task.task_name(), "build");
         assert!(!task.is_matrix());
         assert!(task.matrix().is_none());
@@ -602,8 +677,8 @@ mod tests {
 
     #[test]
     fn test_pipeline_task_matrix() {
-        let json =
-            r#"{"task": "release.build", "matrix": {"arch": ["linux-x64", "darwin-arm64"]}}"#;
+        // Matrix task with CUE ref (object with _name)
+        let json = r#"{"task": {"_name": "release.build"}, "matrix": {"arch": ["linux-x64", "darwin-arm64"]}}"#;
         let task: PipelineTask = serde_json::from_str(json).unwrap();
         assert!(task.is_matrix());
         assert_eq!(task.task_name(), "release.build");
@@ -616,7 +691,7 @@ mod tests {
     #[test]
     fn test_pipeline_task_matrix_with_artifacts() {
         let json = r#"{
-            "task": "release.publish",
+            "task": {"_name": "release.publish"},
             "matrix": {},
             "artifacts": [{"from": "release.build", "to": "dist", "filter": "*stable"}],
             "params": {"tag": "v1.0.0"}
@@ -624,7 +699,7 @@ mod tests {
         let task: PipelineTask = serde_json::from_str(json).unwrap();
 
         if let PipelineTask::Matrix(m) = task {
-            assert_eq!(m.task, "release.publish");
+            assert_eq!(m.task.task_name(), "release.publish");
             let artifacts = m.artifacts.unwrap();
             assert_eq!(artifacts.len(), 1);
             assert_eq!(artifacts[0].from, "release.build");
@@ -640,11 +715,12 @@ mod tests {
 
     #[test]
     fn test_pipeline_mixed_tasks() {
+        // Mix of matrix and simple tasks (CUE ref format only)
         let json = r#"{
             "tasks": [
-                {"task": "release.build", "matrix": {"arch": ["linux-x64", "darwin-arm64"]}},
-                "release.publish:github",
-                "docs.deploy"
+                {"task": {"_name": "release.build"}, "matrix": {"arch": ["linux-x64", "darwin-arm64"]}},
+                {"_name": "release.publish:github"},
+                {"_name": "docs.deploy"}
             ]
         }"#;
         let pipeline: Pipeline = serde_json::from_str(json).unwrap();

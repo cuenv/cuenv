@@ -23,6 +23,18 @@ pub fn subscribe_global_events() -> Option<EventReceiver> {
     GLOBAL_EVENT_BUS.get().map(EventBus::subscribe)
 }
 
+/// Shut down the global event bus.
+///
+/// This must be called before the tokio runtime shuts down to prevent deadlocks.
+/// After calling this, the forwarding task will exit and no more events can be sent.
+///
+/// This function is safe to call multiple times or if the event bus was never initialized.
+pub fn shutdown_global_events() {
+    if let Some(bus) = GLOBAL_EVENT_BUS.get() {
+        bus.shutdown();
+    }
+}
+
 /// Tracing output format options
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum TracingFormat {
@@ -225,7 +237,10 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
 
     // Create event bus and layer
     let event_bus = EventBus::new();
-    let event_layer = CuenvEventLayer::new(event_bus.sender().into_inner());
+    let sender = event_bus
+        .sender()
+        .ok_or_else(|| miette::miette!("EventBus sender unavailable"))?;
+    let event_layer = CuenvEventLayer::new(sender.into_inner());
 
     // Get a receiver for the main renderer before storing the bus globally
     let main_receiver = event_bus.subscribe();
