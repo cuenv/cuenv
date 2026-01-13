@@ -236,13 +236,21 @@ pub fn render_error(err: &CliError, json_mode: bool) {
         }));
 
         match serde_json::to_string(&error_envelope) {
-            Ok(json) => println!("{json}"),
-            Err(_) => eprintln!("Error serializing error response"),
+            Ok(json) => cuenv_events::println_redacted(&json),
+            Err(_) => {
+                #[allow(clippy::print_stderr)] // Fixed error message, no secrets
+                {
+                    eprintln!("Error serializing error response");
+                }
+            }
         }
     } else {
         // Use miette for human-friendly error display
         let report = Report::new(err.clone());
-        eprintln!("{report:?}");
+        #[allow(clippy::print_stderr)] // Error display via miette
+        {
+            eprintln!("{report:?}");
+        }
         // Ensure output is flushed before potential process exit
         let _ = io::stderr().flush();
     }
@@ -1686,6 +1694,7 @@ impl Commands {
 ///
 /// The binary itself handles completion requests via environment variables.
 /// This function outputs instructions for the user to set up completions.
+#[allow(clippy::print_stdout)] // Static completion instructions, no secrets
 pub fn generate_completions(shell: Shell) {
     let shell_name = match shell {
         Shell::Bash => "bash",

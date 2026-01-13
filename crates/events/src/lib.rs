@@ -420,6 +420,24 @@ macro_rules! emit_stderr {
     };
 }
 
+/// Print to stdout with automatic secret redaction (with newline).
+///
+/// Use this instead of `println!` when output might contain secrets.
+/// This function applies `redact()` to the input before printing,
+/// ensuring any registered secrets are replaced with `*_*`.
+#[allow(clippy::print_stdout)]
+pub fn println_redacted(content: &str) {
+    println!("{}", redact(content));
+}
+
+/// Print to stdout with automatic secret redaction (no newline).
+///
+/// Use this instead of `print!` when output might contain secrets.
+#[allow(clippy::print_stdout)]
+pub fn print_redacted(content: &str) {
+    print!("{}", redact(content));
+}
+
 #[cfg(test)]
 #[allow(clippy::cognitive_complexity)]
 mod tests {

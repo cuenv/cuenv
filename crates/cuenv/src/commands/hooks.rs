@@ -562,15 +562,18 @@ pub async fn execute_allow(
     if !yes {
         let hooks = extract_hooks_from_config(&config);
         if !hooks.is_empty() {
-            println!("The following hooks will be allowed:");
-            for hook in &hooks {
-                println!("  - Command: {}", hook.command);
-                if !hook.args.is_empty() {
-                    println!("    Args: {:?}", hook.args);
+            #[allow(clippy::print_stdout)] // User-facing approval prompt, intentional display
+            {
+                println!("The following hooks will be allowed:");
+                for hook in &hooks {
+                    println!("  - Command: {}", hook.command);
+                    if !hook.args.is_empty() {
+                        println!("    Args: {:?}", hook.args);
+                    }
                 }
+                println!();
+                print!("Do you want to allow this configuration? [y/N] ");
             }
-            println!();
-            print!("Do you want to allow this configuration? [y/N] ");
             io::stdout()
                 .flush()
                 .map_err(|e| cuenv_core::Error::configuration(format!("IO error: {e}")))?;
