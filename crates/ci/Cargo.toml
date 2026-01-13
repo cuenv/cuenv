@@ -44,7 +44,7 @@ petgraph = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
-temp-env = "0.3"
+temp-env = { workspace = true }
 proptest = "1.4"
 
 # We'll stick to shelling out to git for now as per spec preference for "native reporting"

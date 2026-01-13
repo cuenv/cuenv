@@ -15,7 +15,6 @@ description = "Workspace scanning and TaskRef resolution for cuenv"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 regex = "1.10"
-ignore = "0.4"
 
 # Core types - Task, Project, TaskIndex, TaskMatcher, ArgMatcher, TaskRef
 cuenv-core = { workspace = true }

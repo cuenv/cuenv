@@ -149,98 +149,105 @@ mod tests {
     #[test]
     fn test_state_dir_default() {
         // Clear override to test default behavior
-        unsafe { std::env::remove_var("CUENV_STATE_DIR") };
-        let dir = state_dir().expect("state_dir should succeed");
-        assert!(dir.ends_with("cuenv"), "Should end with cuenv: {:?}", dir);
+        temp_env::with_var_unset("CUENV_STATE_DIR", || {
+            let dir = state_dir().expect("state_dir should succeed");
+            assert!(dir.ends_with("cuenv"), "Should end with cuenv: {:?}", dir);
+        });
     }
 
     #[test]
     fn test_state_dir_override() {
         let test_dir = "/tmp/cuenv-test-state";
-        unsafe { std::env::set_var("CUENV_STATE_DIR", test_dir) };
-        let dir = state_dir().expect("state_dir should succeed");
-        assert_eq!(dir, PathBuf::from(test_dir));
-        unsafe { std::env::remove_var("CUENV_STATE_DIR") };
+        temp_env::with_var("CUENV_STATE_DIR", Some(test_dir), || {
+            let dir = state_dir().expect("state_dir should succeed");
+            assert_eq!(dir, PathBuf::from(test_dir));
+        });
     }
 
     #[test]
     fn test_cache_dir_default() {
-        unsafe { std::env::remove_var("CUENV_CACHE_DIR") };
-        let dir = cache_dir().expect("cache_dir should succeed");
-        assert!(dir.ends_with("cuenv"), "Should end with cuenv: {:?}", dir);
+        temp_env::with_var_unset("CUENV_CACHE_DIR", || {
+            let dir = cache_dir().expect("cache_dir should succeed");
+            assert!(dir.ends_with("cuenv"), "Should end with cuenv: {:?}", dir);
+        });
     }
 
     #[test]
     fn test_cache_dir_override() {
         let test_dir = "/tmp/cuenv-test-cache";
-        unsafe { std::env::set_var("CUENV_CACHE_DIR", test_dir) };
-        let dir = cache_dir().expect("cache_dir should succeed");
-        assert_eq!(dir, PathBuf::from(test_dir));
-        unsafe { std::env::remove_var("CUENV_CACHE_DIR") };
+        temp_env::with_var("CUENV_CACHE_DIR", Some(test_dir), || {
+            let dir = cache_dir().expect("cache_dir should succeed");
+            assert_eq!(dir, PathBuf::from(test_dir));
+        });
     }
 
     #[test]
     fn test_runtime_dir_default() {
-        unsafe { std::env::remove_var("CUENV_RUNTIME_DIR") };
-        let dir = runtime_dir().expect("runtime_dir should succeed");
-        assert!(dir.ends_with("cuenv"), "Should end with cuenv: {:?}", dir);
+        temp_env::with_var_unset("CUENV_RUNTIME_DIR", || {
+            let dir = runtime_dir().expect("runtime_dir should succeed");
+            assert!(dir.ends_with("cuenv"), "Should end with cuenv: {:?}", dir);
+        });
     }
 
     #[test]
     fn test_runtime_dir_override() {
         let test_dir = "/tmp/cuenv-test-runtime";
-        unsafe { std::env::set_var("CUENV_RUNTIME_DIR", test_dir) };
-        let dir = runtime_dir().expect("runtime_dir should succeed");
-        assert_eq!(dir, PathBuf::from(test_dir));
-        unsafe { std::env::remove_var("CUENV_RUNTIME_DIR") };
+        temp_env::with_var("CUENV_RUNTIME_DIR", Some(test_dir), || {
+            let dir = runtime_dir().expect("runtime_dir should succeed");
+            assert_eq!(dir, PathBuf::from(test_dir));
+        });
     }
 
     #[test]
     fn test_hook_state_dir() {
-        unsafe { std::env::remove_var("CUENV_STATE_DIR") };
-        let dir = hook_state_dir().expect("hook_state_dir should succeed");
-        assert!(dir.ends_with("state"), "Should end with state: {:?}", dir);
+        temp_env::with_var_unset("CUENV_STATE_DIR", || {
+            let dir = hook_state_dir().expect("hook_state_dir should succeed");
+            assert!(dir.ends_with("state"), "Should end with state: {:?}", dir);
+        });
     }
 
     #[test]
     fn test_approvals_file() {
-        unsafe { std::env::remove_var("CUENV_STATE_DIR") };
-        let file = approvals_file().expect("approvals_file should succeed");
-        assert!(
-            file.ends_with("approved.json"),
-            "Should end with approved.json: {:?}",
-            file
-        );
+        temp_env::with_var_unset("CUENV_STATE_DIR", || {
+            let file = approvals_file().expect("approvals_file should succeed");
+            assert!(
+                file.ends_with("approved.json"),
+                "Should end with approved.json: {:?}",
+                file
+            );
+        });
     }
 
     #[test]
     fn test_task_cache_dir() {
-        unsafe { std::env::remove_var("CUENV_CACHE_DIR") };
-        let dir = task_cache_dir().expect("task_cache_dir should succeed");
-        assert!(dir.ends_with("tasks"), "Should end with tasks: {:?}", dir);
+        temp_env::with_var_unset("CUENV_CACHE_DIR", || {
+            let dir = task_cache_dir().expect("task_cache_dir should succeed");
+            assert!(dir.ends_with("tasks"), "Should end with tasks: {:?}", dir);
+        });
     }
 
     #[test]
     fn test_coordinator_paths() {
-        unsafe { std::env::remove_var("CUENV_RUNTIME_DIR") };
-        let socket = coordinator_socket().expect("coordinator_socket should succeed");
-        let pid = coordinator_pid().expect("coordinator_pid should succeed");
-        let lock = coordinator_lock().expect("coordinator_lock should succeed");
+        temp_env::with_var_unset("CUENV_RUNTIME_DIR", || {
+            let socket = coordinator_socket().expect("coordinator_socket should succeed");
+            let pid = coordinator_pid().expect("coordinator_pid should succeed");
+            let lock = coordinator_lock().expect("coordinator_lock should succeed");
 
-        assert!(
-            socket.ends_with("coordinator.sock"),
-            "Socket should end with coordinator.sock: {:?}",
-            socket
-        );
-        assert!(
-            pid.ends_with("coordinator.pid"),
-            "PID should end with coordinator.pid: {:?}",
-            pid
-        );
-        assert!(
-            lock.ends_with("coordinator.lock"),
-            "Lock should end with coordinator.lock: {:?}",
-            lock
-        );
+            assert!(
+                socket.ends_with("coordinator.sock"),
+                "Socket should end with coordinator.sock: {:?}",
+                socket
+            );
+            assert!(
+                pid.ends_with("coordinator.pid"),
+                "PID should end with coordinator.pid: {:?}",
+                pid
+            );
+            assert!(
+                lock.ends_with("coordinator.lock"),
+                "Lock should end with coordinator.lock: {:?}",
+                lock
+            );
+        });
     }
 }

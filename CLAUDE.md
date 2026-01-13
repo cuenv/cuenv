@@ -10,6 +10,10 @@
 
 cuenv is a CUE-powered environment management and task orchestration system built in Rust with a Go FFI bridge for CUE evaluation. It provides type-safe environments with runtime secret resolution and parallel task execution with content-aware caching.
 
+## Coding Standards
+
+- No boolean function parameters and never more than 3 function parameters before adopting a options struct
+
 ## Build Commands
 
 **CRITICAL: Build operations take significant time. Never cancel these commands.**
@@ -43,24 +47,24 @@ cuenv fmt
 
 ### Crate Structure
 
-| Crate                             | Purpose                                                       |
-| --------------------------------- | ------------------------------------------------------------- |
-| **cuengine**                      | Go-Rust FFI bridge for CUE evaluation                         |
-| **cuenv-core**                    | Shared types, task execution, environment management          |
-| **cuenv-hooks**                   | Hook execution, state management, and approval system         |
-| **cuenv-cache**                   | Content-addressed task caching infrastructure                 |
-| **cuenv-task-graph**              | Task graph DAG algorithms and dependency resolution           |
-| **cuenv-task-discovery**          | Workspace scanning and TaskRef resolution                     |
-| **cuenv**                         | CLI binary with TUI (clap + ratatui)                          |
-| **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)            |
-| **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.)  |
-| **cuenv-ci**                      | CI pipeline integration                                       |
-| **cuenv-release**                 | Version management and publishing                             |
-| **cuenv-dagger**                  | Optional containerized task execution backend                 |
-| **cuenv-codegen**                 | CUE-based code generation                                     |
-| **cuenv-ignore**                  | .gitignore/.dockerignore generation                           |
-| **cuenv-codeowners**              | CODEOWNERS file generation                                    |
-| **cuenv-github/gitlab/bitbucket** | VCS provider integrations                                     |
+| Crate                             | Purpose                                                      |
+| --------------------------------- | ------------------------------------------------------------ |
+| **cuengine**                      | Go-Rust FFI bridge for CUE evaluation                        |
+| **cuenv-core**                    | Shared types, task execution, environment management         |
+| **cuenv-hooks**                   | Hook execution, state management, and approval system        |
+| **cuenv-cache**                   | Content-addressed task caching infrastructure                |
+| **cuenv-task-graph**              | Task graph DAG algorithms and dependency resolution          |
+| **cuenv-task-discovery**          | Workspace scanning and TaskRef resolution                    |
+| **cuenv**                         | CLI binary with TUI (clap + ratatui)                         |
+| **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)           |
+| **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.) |
+| **cuenv-ci**                      | CI pipeline integration                                      |
+| **cuenv-release**                 | Version management and publishing                            |
+| **cuenv-dagger**                  | Optional containerized task execution backend                |
+| **cuenv-codegen**                 | CUE-based code generation                                    |
+| **cuenv-ignore**                  | .gitignore/.dockerignore generation                          |
+| **cuenv-codeowners**              | CODEOWNERS file generation                                   |
+| **cuenv-github/gitlab/bitbucket** | VCS provider integrations                                    |
 
 ### Key Data Flow
 

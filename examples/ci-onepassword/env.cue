@@ -4,13 +4,15 @@ import "github.com/cuenv/cuenv/schema"
 
 schema.#Project
 
+let _t = tasks
+
 name: "ci-onepassword"
 
 // Environment with 1Password secret references
 // This triggers the OnePasswordContributor to inject setup steps
 env: {
 	environment: production: {
-		API_TOKEN:  schema.#OnePasswordRef & {ref: "op://vault/api/token"}
+		API_TOKEN: schema.#OnePasswordRef & {ref: "op://vault/api/token"}
 		DEPLOY_KEY: schema.#OnePasswordRef & {ref: "op://vault/deploy/key"}
 	}
 }
@@ -26,7 +28,7 @@ tasks: {
 ci: pipelines: {
 	deploy: {
 		environment: "production"
-		tasks: ["deploy"]
+		tasks: [_t.deploy]
 		when: branch: "main"
 	}
 }

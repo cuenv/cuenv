@@ -4,10 +4,21 @@
 
 use cuengine::evaluate_cue_package_typed;
 use cuenv_core::manifest::{Base, Project};
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
+
+/// Create a Command with a clean environment (no CI vars leaking).
+fn clean_environment_command(bin: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("USER", std::env::var("USER").unwrap_or_default());
+    cmd
+}
 
 /// Create a test directory with non-hidden prefix for CUE loader compatibility.
 fn create_test_dir() -> TempDir {
@@ -148,7 +159,7 @@ schema.#Base & {
 
     // Try to execute task command (which requires schema.#Project)
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
-    let output = Command::new(cuenv_bin)
+    let output = clean_environment_command(cuenv_bin)
         .args(["task", "--path", root.to_str().unwrap()])
         .output()
         .expect("Failed to run cuenv");

@@ -114,7 +114,7 @@ impl GitHubConfigExt for CI {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::ci::{Pipeline, PipelineTask};
+    use cuenv_core::ci::{Pipeline, PipelineTask, TaskRef};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -136,7 +136,7 @@ mod tests {
                 (
                     "ci".to_string(),
                     Pipeline {
-                        tasks: vec![PipelineTask::Simple("test".to_string())],
+                        tasks: vec![PipelineTask::Simple(TaskRef::from_name("test"))],
                         provider: Some(
                             serde_json::from_value(json!({
                                 "github": {
@@ -151,7 +151,7 @@ mod tests {
                 (
                     "release".to_string(),
                     Pipeline {
-                        tasks: vec![PipelineTask::Simple("deploy".to_string())],
+                        tasks: vec![PipelineTask::Simple(TaskRef::from_name("deploy"))],
                         ..Default::default()
                     },
                 ),

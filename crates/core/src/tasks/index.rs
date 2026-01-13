@@ -1,4 +1,4 @@
-use super::{Task, TaskGroup, TaskNode, Tasks};
+use super::{TaskGroup, TaskNode, Tasks};
 use crate::{Error, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
@@ -203,7 +203,21 @@ fn canonicalize_node(
 ) -> Result<TaskNode> {
     match node {
         TaskNode::Task(task) => {
-            let canon_task = canonicalize_task(task.as_ref(), path)?;
+            // Inline from canonicalize_task: Tasks resolved from TaskRef placeholders have
+            // their own dependency context. Avoid re-canonicalizing under placeholder namespace.
+            let canon_task = if task.project_root.is_some() && task.task_ref.is_none() {
+                task.as_ref().clone()
+            } else {
+                let mut clone = task.as_ref().clone();
+                let mut canonical_deps = Vec::new();
+                for dep in &task.depends_on {
+                    let canonical_name = canonicalize_dep(dep.task_name())?;
+                    canonical_deps.push(super::TaskDependency::from_name(canonical_name));
+                }
+                clone.depends_on = canonical_deps;
+                clone
+            };
+
             let name = path.canonical();
             entries.insert(
                 name.clone(),
@@ -286,35 +300,11 @@ fn canonicalize_node(
     }
 }
 
-fn canonicalize_task(task: &Task, path: &TaskPath) -> Result<Task> {
-    // Tasks resolved from TaskRef placeholders have their own dependency context (their
-    // deps are relative to the referenced task name, not the placeholder name). Avoid
-    // re-canonicalizing dependencies under the placeholder namespace.
-    if task.project_root.is_some() && task.task_ref.is_none() {
-        return Ok(task.clone());
-    }
-
-    let mut clone = task.clone();
-    let mut canonical_deps = Vec::new();
-    for dep in &task.depends_on {
-        let canonical_name = canonicalize_dep(dep.task_name(), path)?;
-        canonical_deps.push(super::TaskDependency::from_name(canonical_name));
-    }
-    clone.depends_on = canonical_deps;
-    Ok(clone)
-}
-
-fn canonicalize_dep(dep: &str, current_path: &TaskPath) -> Result<String> {
-    if dep.contains('.') || dep.contains(':') {
-        return Ok(TaskPath::parse(dep)?.canonical());
-    }
-
-    let mut segments: Vec<String> = current_path.segments().to_vec();
-    segments.pop(); // relative to the parent namespace
-    segments.push(dep.to_string());
-
-    let rel = TaskPath { segments };
-    Ok(rel.canonical())
+fn canonicalize_dep(dep: &str) -> Result<String> {
+    // The Go bridge now provides canonical task paths via ReferencePath(),
+    // so we simply parse and normalize the dependency name.
+    // No lookups needed - trust the _name injected by CUE evaluation.
+    Ok(TaskPath::parse(dep)?.canonical())
 }
 
 /// Check if two task names are similar (for typo suggestions)
@@ -383,6 +373,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tasks::{Task, TaskDependency};
 
     // ==========================================================================
     // TaskPath tests
@@ -768,5 +759,268 @@ mod tests {
         let json = serde_json::to_string(&path).unwrap();
         assert!(json.contains("test"));
         assert!(json.contains("unit"));
+    }
+
+    // ==========================================================================
+    // Dependency resolution tests (bug fix: group child -> top-level task)
+    // ==========================================================================
+
+    #[test]
+    fn test_task_index_preserves_dependency_names_as_given() {
+        // TaskIndex preserves whatever dependency name it receives.
+        // Reference resolution happens BEFORE TaskIndex (in module.rs enrichment).
+        // This test validates TaskIndex's raw behavior in isolation.
+
+        let mut tasks = HashMap::new();
+
+        // Top-level build task
+        tasks.insert(
+            "build".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "cargo build".to_string(),
+                ..Default::default()
+            })),
+        );
+
+        // Deploy group with preview child - dependency name is pre-resolved
+        let mut deploy_children = HashMap::new();
+        deploy_children.insert(
+            "preview".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "deploy preview".to_string(),
+                // In practice, enrichment resolves this before TaskIndex sees it.
+                // This tests that TaskIndex preserves the name as given.
+                depends_on: vec![TaskDependency::from_name("build")],
+                ..Default::default()
+            })),
+        );
+        tasks.insert(
+            "deploy".to_string(),
+            TaskNode::Group(TaskGroup {
+                type_: "group".to_string(),
+                children: deploy_children,
+                depends_on: vec![],
+                max_concurrency: None,
+                description: None,
+            }),
+        );
+
+        let index = TaskIndex::build(&tasks).unwrap();
+        let preview_task = index.resolve("deploy.preview").unwrap();
+
+        match &preview_task.node {
+            TaskNode::Task(task) => {
+                assert_eq!(task.depends_on.len(), 1);
+                // TaskIndex preserves names as given - resolution happens earlier
+                assert_eq!(task.depends_on[0].task_name(), "build");
+            }
+            _ => panic!("Expected Task"),
+        }
+    }
+
+    #[test]
+    fn test_group_child_depends_on_sibling_qualified() {
+        // When using a qualified path like "deploy.upload", TaskIndex preserves it as-is.
+        // Enrichment (module.rs) resolves short names to qualified paths before TaskIndex.
+
+        let mut tasks = HashMap::new();
+
+        let mut deploy_children = HashMap::new();
+        deploy_children.insert(
+            "upload".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "upload".to_string(),
+                ..Default::default()
+            })),
+        );
+        deploy_children.insert(
+            "activate".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "activate".to_string(),
+                // Qualified path - either from CUE source or enrichment resolution
+                depends_on: vec![TaskDependency::from_name("deploy.upload")],
+                ..Default::default()
+            })),
+        );
+        tasks.insert(
+            "deploy".to_string(),
+            TaskNode::Group(TaskGroup {
+                type_: "group".to_string(),
+                children: deploy_children,
+                depends_on: vec![],
+                max_concurrency: None,
+                description: None,
+            }),
+        );
+
+        let index = TaskIndex::build(&tasks).unwrap();
+        let activate_task = index.resolve("deploy.activate").unwrap();
+
+        match &activate_task.node {
+            TaskNode::Task(task) => {
+                assert_eq!(task.depends_on.len(), 1);
+                assert_eq!(task.depends_on[0].task_name(), "deploy.upload");
+            }
+            _ => panic!("Expected Task"),
+        }
+    }
+
+    #[test]
+    fn test_dotted_dependency_treated_as_absolute() {
+        // deploy.preview depends on "other.task" -> treated as absolute path
+
+        let mut tasks = HashMap::new();
+
+        // other.task (as group child)
+        let mut other_children = HashMap::new();
+        other_children.insert(
+            "task".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "other task".to_string(),
+                ..Default::default()
+            })),
+        );
+        tasks.insert(
+            "other".to_string(),
+            TaskNode::Group(TaskGroup {
+                type_: "group".to_string(),
+                children: other_children,
+                depends_on: vec![],
+                max_concurrency: None,
+                description: None,
+            }),
+        );
+
+        // Deploy group
+        let mut deploy_children = HashMap::new();
+        deploy_children.insert(
+            "preview".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "deploy preview".to_string(),
+                depends_on: vec![TaskDependency::from_name("other.task")],
+                ..Default::default()
+            })),
+        );
+        tasks.insert(
+            "deploy".to_string(),
+            TaskNode::Group(TaskGroup {
+                type_: "group".to_string(),
+                children: deploy_children,
+                depends_on: vec![],
+                max_concurrency: None,
+                description: None,
+            }),
+        );
+
+        let index = TaskIndex::build(&tasks).unwrap();
+        let preview_task = index.resolve("deploy.preview").unwrap();
+
+        match &preview_task.node {
+            TaskNode::Task(task) => {
+                assert_eq!(task.depends_on.len(), 1);
+                assert_eq!(task.depends_on[0].task_name(), "other.task");
+            }
+            _ => panic!("Expected Task"),
+        }
+    }
+
+    #[test]
+    fn test_cross_group_dependency() {
+        // deploy.run depends on "build.compile" -> absolute path to build.compile
+
+        let mut tasks = HashMap::new();
+
+        // Build group
+        let mut build_children = HashMap::new();
+        build_children.insert(
+            "compile".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "compile".to_string(),
+                ..Default::default()
+            })),
+        );
+        tasks.insert(
+            "build".to_string(),
+            TaskNode::Group(TaskGroup {
+                type_: "group".to_string(),
+                children: build_children,
+                depends_on: vec![],
+                max_concurrency: None,
+                description: None,
+            }),
+        );
+
+        // Deploy group
+        let mut deploy_children = HashMap::new();
+        deploy_children.insert(
+            "run".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "deploy run".to_string(),
+                depends_on: vec![TaskDependency::from_name("build.compile")],
+                ..Default::default()
+            })),
+        );
+        tasks.insert(
+            "deploy".to_string(),
+            TaskNode::Group(TaskGroup {
+                type_: "group".to_string(),
+                children: deploy_children,
+                depends_on: vec![],
+                max_concurrency: None,
+                description: None,
+            }),
+        );
+
+        let index = TaskIndex::build(&tasks).unwrap();
+        let run_task = index.resolve("deploy.run").unwrap();
+
+        match &run_task.node {
+            TaskNode::Task(task) => {
+                assert_eq!(task.depends_on.len(), 1);
+                assert_eq!(task.depends_on[0].task_name(), "build.compile");
+            }
+            _ => panic!("Expected Task"),
+        }
+    }
+
+    #[test]
+    fn test_task_index_preserves_invalid_references() {
+        // TaskIndex preserves all dependency names as given, even invalid ones.
+        // Validation (missing task detection) happens later during graph building.
+        // This tests TaskIndex in isolation.
+
+        let mut tasks = HashMap::new();
+
+        let mut deploy_children = HashMap::new();
+        deploy_children.insert(
+            "preview".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "deploy preview".to_string(),
+                // Invalid reference - no such task exists
+                depends_on: vec![TaskDependency::from_name("nonexistent")],
+                ..Default::default()
+            })),
+        );
+        tasks.insert(
+            "deploy".to_string(),
+            TaskNode::Group(TaskGroup {
+                type_: "group".to_string(),
+                children: deploy_children,
+                depends_on: vec![],
+                max_concurrency: None,
+                description: None,
+            }),
+        );
+
+        let index = TaskIndex::build(&tasks).unwrap();
+        let preview_task = index.resolve("deploy.preview").unwrap();
+
+        match &preview_task.node {
+            TaskNode::Task(task) => {
+                // TaskIndex preserves names as given - validation happens at graph build time
+                assert_eq!(task.depends_on[0].task_name(), "nonexistent");
+            }
+            _ => panic!("Expected Task"),
+        }
     }
 }
