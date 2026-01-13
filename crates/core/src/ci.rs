@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 
+use crate::tasks::TaskNode;
+
 /// Workflow dispatch input definition for manual triggers
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -177,22 +179,77 @@ pub struct MatrixTask {
 }
 
 /// Pipeline task reference - either a direct task reference or a matrix task
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum PipelineTask {
     /// Matrix task with dimensions and optional artifacts/params
     /// Note: Matrix must come first in untagged enum because it has more specific fields
     Matrix(MatrixTask),
     /// Simple task reference (enriched CUE ref with _name)
+    /// Note: Simple must come before Node because TaskRef requires _name field
     Simple(TaskRef),
+    /// Task node (Task, TaskGroup, or Sequence) - for inline task definitions
+    Node(TaskNode),
 }
 
 impl PipelineTask {
-    /// Get the task name regardless of variant
+    /// Get the task name regardless of variant.
+    ///
+    /// For `Simple`, this returns the task reference name.
+    /// For `Node(TaskNode::Task)` and `Node(TaskNode::Group)`, this returns the first child task name.
+    /// For `Node(TaskNode::Sequence)`, this returns the first task's name.
+    /// This allows task group expansion to work with inline task definitions.
     pub fn task_name(&self) -> &str {
         match self {
-            PipelineTask::Simple(task_ref) => task_ref.task_name(),
             PipelineTask::Matrix(matrix) => matrix.task.task_name(),
+            PipelineTask::Simple(task_ref) => task_ref.task_name(),
+            PipelineTask::Node(node) => Self::extract_task_name_from_node(node),
+        }
+    }
+
+    /// Extract a task name from a TaskNode
+    fn extract_task_name_from_node(node: &TaskNode) -> &str {
+        match node {
+            TaskNode::Task(task) => {
+                // For inline tasks, use description as a fallback name
+                task.description.as_deref().unwrap_or("unnamed-task")
+            }
+            TaskNode::Group(group) => {
+                // For groups, use the first child's name
+                group
+                    .children
+                    .keys()
+                    .next()
+                    .map(String::as_str)
+                    .unwrap_or("unnamed-group")
+            }
+            TaskNode::Sequence(sequence) => {
+                // For sequences, recursively get the first task's name
+                sequence
+                    .first()
+                    .map(Self::extract_task_name_from_node)
+                    .unwrap_or("unnamed-sequence")
+            }
+        }
+    }
+
+    /// Get all child task names for groups, or empty vec for simple tasks
+    pub fn child_task_names(&self) -> Vec<&str> {
+        match self {
+            PipelineTask::Matrix(_) | PipelineTask::Simple(_) => vec![],
+            PipelineTask::Node(node) => Self::extract_child_names_from_node(node),
+        }
+    }
+
+    /// Extract child task names from a TaskNode
+    fn extract_child_names_from_node(node: &TaskNode) -> Vec<&str> {
+        match node {
+            TaskNode::Task(_) => vec![],
+            TaskNode::Group(group) => group.children.keys().map(String::as_str).collect(),
+            TaskNode::Sequence(sequence) => sequence
+                .iter()
+                .flat_map(Self::extract_child_names_from_node)
+                .collect(),
         }
     }
 
@@ -201,13 +258,18 @@ impl PipelineTask {
         matches!(self, PipelineTask::Matrix(_))
     }
 
+    /// Check if this is a task node (inline definition)
+    pub fn is_node(&self) -> bool {
+        matches!(self, PipelineTask::Node(_))
+    }
+
     /// Check if this task has actual matrix dimensions that require expansion.
     ///
     /// Returns true only for Matrix tasks with non-empty matrix map.
     /// Aggregation tasks (empty matrix with artifacts) return false.
     pub fn has_matrix_dimensions(&self) -> bool {
         match self {
-            PipelineTask::Simple(_) => false,
+            PipelineTask::Simple(_) | PipelineTask::Node(_) => false,
             PipelineTask::Matrix(m) => !m.matrix.is_empty(),
         }
     }
@@ -215,9 +277,22 @@ impl PipelineTask {
     /// Get matrix dimensions if this is a matrix task
     pub fn matrix(&self) -> Option<&BTreeMap<String, Vec<String>>> {
         match self {
-            PipelineTask::Simple(_) => None,
+            PipelineTask::Simple(_) | PipelineTask::Node(_) => None,
             PipelineTask::Matrix(m) => Some(&m.matrix),
         }
+    }
+
+    /// Get the TaskNode if this is a Node variant
+    pub fn as_node(&self) -> Option<&TaskNode> {
+        match self {
+            PipelineTask::Node(node) => Some(node),
+            PipelineTask::Matrix(_) | PipelineTask::Simple(_) => None,
+        }
+    }
+
+    /// Check if this is a simple task reference
+    pub fn is_simple(&self) -> bool {
+        matches!(self, PipelineTask::Simple(_))
     }
 }
 
@@ -872,5 +947,57 @@ mod tests {
         };
         // Non-existent pipeline falls back to global
         assert_eq!(ci.providers_for_pipeline("nonexistent"), &["github"]);
+    }
+
+    #[test]
+    fn test_pipeline_task_node_task_group() {
+        // Inline TaskGroup definition (has type: "group" and child tasks)
+        let json = r#"{
+            "type": "group",
+            "http": {
+                "command": "bun",
+                "args": ["x", "wrangler", "deploy"]
+            }
+        }"#;
+        let task: PipelineTask = serde_json::from_str(json).unwrap();
+        assert!(task.is_node());
+        assert!(!task.is_matrix());
+        assert!(!task.is_simple());
+        // For groups, task_name returns the first child's name
+        assert_eq!(task.task_name(), "http");
+        // Child task names should include "http"
+        let children = task.child_task_names();
+        assert!(children.contains(&"http"));
+    }
+
+    #[test]
+    fn test_pipeline_task_node_inline_task() {
+        // Inline Task definition (no _name, has command)
+        let json = r#"{
+            "command": "echo",
+            "args": ["hello"],
+            "description": "Say hello"
+        }"#;
+        let task: PipelineTask = serde_json::from_str(json).unwrap();
+        assert!(task.is_node());
+        // For inline tasks without _name, task_name falls back to description
+        assert_eq!(task.task_name(), "Say hello");
+    }
+
+    #[test]
+    fn test_pipeline_mixed_with_node() {
+        // Mix of Simple, Matrix, and Node tasks
+        let json = r#"{
+            "tasks": [
+                {"_name": "build"},
+                {"type": "matrix", "task": {"_name": "release"}, "matrix": {}},
+                {"type": "group", "deploy": {"command": "deploy"}}
+            ]
+        }"#;
+        let pipeline: Pipeline = serde_json::from_str(json).unwrap();
+        assert_eq!(pipeline.tasks.len(), 3);
+        assert!(pipeline.tasks[0].is_simple());
+        assert!(pipeline.tasks[1].is_matrix());
+        assert!(pipeline.tasks[2].is_node());
     }
 }

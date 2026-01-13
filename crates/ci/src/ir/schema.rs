@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 pub const IR_VERSION: &str = "1.5";
 
 /// Root IR document
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IntermediateRepresentation {
     /// IR version (always "1.5")
     pub version: String,
@@ -80,7 +80,7 @@ impl IntermediateRepresentation {
 }
 
 /// Pipeline metadata and trigger configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PipelineMetadata {
     /// Pipeline name
     pub name: String,
