@@ -127,6 +127,7 @@ pub fn expand_task_groups(
                             } else {
                                 // Empty matrix signals artifact aggregation mode
                                 PipelineTask::Matrix(MatrixTask {
+                                    task_type: matrix_task.task_type.clone(),
                                     task: TaskRef::from_name(&ir_task.id),
                                     artifacts: matrix_task.artifacts.clone(),
                                     params: matrix_task.params.clone(),
@@ -250,6 +251,7 @@ mod tests {
             make_task("build.macos", &["build.linux"]), // has internal dep
         ];
         let pipeline_tasks = vec![PipelineTask::Matrix(MatrixTask {
+            task_type: Some("matrix".to_string()),
             task: TaskRef::from_name("build"),
             artifacts: None,
             params: None,
