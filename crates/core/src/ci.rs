@@ -160,6 +160,10 @@ impl TaskRef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MatrixTask {
+    /// Type discriminator (always "matrix" for MatrixTask)
+    /// Used by CUE to distinguish from #TaskNode in the #PipelineTask disjunction
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub task_type: Option<String>,
     /// Task reference (CUE ref enriched with _name)
     pub task: TaskRef,
     /// Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
@@ -677,8 +681,8 @@ mod tests {
 
     #[test]
     fn test_pipeline_task_matrix() {
-        // Matrix task with CUE ref (object with _name)
-        let json = r#"{"task": {"_name": "release.build"}, "matrix": {"arch": ["linux-x64", "darwin-arm64"]}}"#;
+        // Matrix task with CUE ref (object with _name) and type discriminator
+        let json = r#"{"type": "matrix", "task": {"_name": "release.build"}, "matrix": {"arch": ["linux-x64", "darwin-arm64"]}}"#;
         let task: PipelineTask = serde_json::from_str(json).unwrap();
         assert!(task.is_matrix());
         assert_eq!(task.task_name(), "release.build");
@@ -691,6 +695,7 @@ mod tests {
     #[test]
     fn test_pipeline_task_matrix_with_artifacts() {
         let json = r#"{
+            "type": "matrix",
             "task": {"_name": "release.publish"},
             "matrix": {},
             "artifacts": [{"from": "release.build", "to": "dist", "filter": "*stable"}],
@@ -718,7 +723,7 @@ mod tests {
         // Mix of matrix and simple tasks (CUE ref format only)
         let json = r#"{
             "tasks": [
-                {"task": {"_name": "release.build"}, "matrix": {"arch": ["linux-x64", "darwin-arm64"]}},
+                {"type": "matrix", "task": {"_name": "release.build"}, "matrix": {"arch": ["linux-x64", "darwin-arm64"]}},
                 {"_name": "release.publish:github"},
                 {"_name": "docs.deploy"}
             ]
