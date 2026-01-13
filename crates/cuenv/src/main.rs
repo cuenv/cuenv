@@ -20,9 +20,8 @@
 //! Currently, the CLI logic remains here while the library infrastructure
 //! is being developed. See `cuenv::Cuenv` for the library API.
 
-// CLI binary needs to output to stdout/stderr - this is intentional
 // expect_used is allowed for infallible operations like writing to strings
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)]
+#![allow(clippy::expect_used)]
 
 // Import everything from the library
 use crossterm::ExecutableCommand;
@@ -226,7 +225,10 @@ fn run_sync(cli: cli::Cli) -> i32 {
 
     // Handle --llms flag
     if cli.llms {
-        print!("{LLMS_CONTENT}");
+        #[allow(clippy::print_stdout)] // LLMS_CONTENT is static documentation, no secrets
+        {
+            print!("{LLMS_CONTENT}");
+        }
         return EXIT_OK;
     }
 
@@ -267,7 +269,10 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
     match command {
         Command::Version { format: _ } => {
             let version_info = commands::version::get_version_info();
-            println!("{version_info}");
+            #[allow(clippy::print_stdout)] // Version info contains no secrets
+            {
+                println!("{version_info}");
+            }
             Ok(())
         }
 
@@ -277,7 +282,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             meta,
         } => match commands::info::execute_info(path.as_deref(), &package, json_mode, meta) {
             Ok(output) => {
-                print!("{output}");
+                cuenv_events::print_redacted(&output);
                 Ok(())
             }
             Err(e) => Err(CliError::eval_with_help(
@@ -301,13 +306,13 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                         "status": output
                     }));
                     match serde_json::to_string(&envelope) {
-                        Ok(json) => println!("{json}"),
+                        Ok(json) => cuenv_events::println_redacted(&json),
                         Err(e) => {
                             return Err(CliError::other(format!("JSON serialization failed: {e}")));
                         }
                     }
                 } else {
-                    println!("{output}");
+                    cuenv_events::println_redacted(&output);
                 }
                 Ok(())
             }
@@ -340,7 +345,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                 .await
                 {
                     Ok(result) => {
-                        println!("{result}");
+                        cuenv_events::println_redacted(&result);
                         Ok(())
                     }
                     Err(e) => {
@@ -365,7 +370,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             rt.block_on(async {
                 match commands::env::execute_env_list(&path, &format, &executor).await {
                     Ok(result) => {
-                        println!("{result}");
+                        cuenv_events::println_redacted(&result);
                         Ok(())
                     }
                     Err(e) => {
@@ -391,13 +396,13 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                 if json_mode {
                     let envelope = OkEnvelope::new(serde_json::json!({ "message": output }));
                     match serde_json::to_string(&envelope) {
-                        Ok(json) => println!("{json}"),
+                        Ok(json) => cuenv_events::println_redacted(&json),
                         Err(e) => {
                             return Err(CliError::other(format!("JSON serialization failed: {e}")));
                         }
                     }
                 } else {
-                    println!("{output}");
+                    cuenv_events::println_redacted(&output);
                 }
                 Ok(())
             }
@@ -411,7 +416,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             let use_json = json || json_mode;
             match commands::release::execute_changeset_status_with_format(&path, use_json) {
                 Ok(output) => {
-                    println!("{output}");
+                    cuenv_events::println_redacted(&output);
                     Ok(())
                 }
                 Err(e) => Err(CliError::eval_with_help(
@@ -427,7 +432,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                     if json_mode {
                         let envelope = OkEnvelope::new(serde_json::json!({ "message": output }));
                         match serde_json::to_string(&envelope) {
-                            Ok(json) => println!("{json}"),
+                            Ok(json) => cuenv_events::println_redacted(&json),
                             Err(e) => {
                                 return Err(CliError::other(format!(
                                     "JSON serialization failed: {e}"
@@ -435,7 +440,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                             }
                         }
                     } else {
-                        println!("{output}");
+                        cuenv_events::println_redacted(&output);
                     }
                     Ok(())
                 }
@@ -465,7 +470,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                     if json_mode {
                         let envelope = OkEnvelope::new(serde_json::json!({ "result": output }));
                         match serde_json::to_string(&envelope) {
-                            Ok(json) => println!("{json}"),
+                            Ok(json) => cuenv_events::println_redacted(&json),
                             Err(e) => {
                                 return Err(CliError::other(format!(
                                     "JSON serialization failed: {e}"
@@ -473,7 +478,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                             }
                         }
                     } else {
-                        println!("{output}");
+                        cuenv_events::println_redacted(&output);
                     }
                     Ok(())
                 }
@@ -490,7 +495,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                     if json_mode {
                         let envelope = OkEnvelope::new(serde_json::json!({ "result": output }));
                         match serde_json::to_string(&envelope) {
-                            Ok(json) => println!("{json}"),
+                            Ok(json) => cuenv_events::println_redacted(&json),
                             Err(e) => {
                                 return Err(CliError::other(format!(
                                     "JSON serialization failed: {e}"
@@ -498,7 +503,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                             }
                         }
                     } else {
-                        println!("{output}");
+                        cuenv_events::println_redacted(&output);
                     }
                     Ok(())
                 }
@@ -520,7 +525,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                     if json_mode {
                         let envelope = OkEnvelope::new(serde_json::json!({ "result": output }));
                         match serde_json::to_string(&envelope) {
-                            Ok(json) => println!("{json}"),
+                            Ok(json) => cuenv_events::println_redacted(&json),
                             Err(e) => {
                                 return Err(CliError::other(format!(
                                     "JSON serialization failed: {e}"
@@ -528,7 +533,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                             }
                         }
                     } else {
-                        println!("{output}");
+                        cuenv_events::println_redacted(&output);
                     }
                     Ok(())
                 }
@@ -557,7 +562,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             only,
         } => match commands::fmt::execute_fmt(&path, &package, fix, only.as_deref()) {
             Ok(output) => {
-                println!("{output}");
+                cuenv_events::println_redacted(&output);
                 Ok(())
             }
             Err(e) => Err(CliError::eval_with_help(
@@ -574,8 +579,8 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             // Try sync fast path first (handles no-env-cue, running, failed states)
             match commands::export::execute_export_sync(shell.as_deref(), &path, &package) {
                 Ok(Some(output)) => {
-                    // Fast path succeeded - output directly
-                    print!("{output}");
+                    // Fast path succeeded - output directly (may contain env vars)
+                    cuenv_events::print_redacted(&output);
                     Ok(())
                 }
                 Ok(None) => {
@@ -596,7 +601,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
                         .await
                         {
                             Ok(result) => {
-                                print!("{result}");
+                                cuenv_events::print_redacted(&result);
                                 Ok(())
                             }
                             Err(e) => {
@@ -730,7 +735,10 @@ async fn real_main() -> Result<(), CliError> {
 
     // Handle --llms flag (print LLM context and exit)
     if init_result.cli.llms {
-        print!("{LLMS_CONTENT}");
+        #[allow(clippy::print_stdout)] // LLMS_CONTENT is static documentation, no secrets
+        {
+            print!("{LLMS_CONTENT}");
+        }
         return Ok(());
     }
 
@@ -919,7 +927,7 @@ async fn execute_command_safe(
         } => {
             return match commands::info::execute_info(path.as_deref(), package, json_mode, *meta) {
                 Ok(output) => {
-                    print!("{output}");
+                    cuenv_events::print_redacted(&output);
                     Ok(())
                 }
                 Err(e) => Err(CliError::eval_with_help(
@@ -1077,11 +1085,11 @@ fn execute_shell_init_command_safe(shell: cli::ShellType, json_mode: bool) -> Re
             "script": output
         }));
         match serde_json::to_string(&envelope) {
-            Ok(json) => println!("{json}"),
+            Ok(json) => cuenv_events::println_redacted(&json),
             Err(e) => return Err(CliError::other(format!("JSON serialization failed: {e}"))),
         }
     } else {
-        println!("{output}");
+        cuenv_events::println_redacted(&output);
     }
     Ok(())
 }
@@ -1173,7 +1181,10 @@ async fn run_oci_activate() -> Result<(), CliError> {
                 // Extract binary - requires explicit path in CUE config
                 // For now, skip OCI images without explicit extract paths
                 if layer_paths.is_empty() {
-                    eprintln!("Warning: OCI image '{}' has no layers to extract", image);
+                    #[allow(clippy::print_stderr)] // Diagnostic warning, no secrets
+                    {
+                        eprintln!("Warning: OCI image '{}' has no layers to extract", image);
+                    }
                     continue;
                 }
 
@@ -1189,7 +1200,10 @@ async fn run_oci_activate() -> Result<(), CliError> {
     if !bin_dirs.is_empty() {
         let path_additions: Vec<String> =
             bin_dirs.iter().map(|p| p.display().to_string()).collect();
-        println!("export PATH=\"{}:$PATH\"", path_additions.join(":"));
+        #[allow(clippy::print_stdout)] // PATH export contains no secrets
+        {
+            println!("export PATH=\"{}:$PATH\"", path_additions.join(":"));
+        }
     }
 
     Ok(())
@@ -1412,13 +1426,13 @@ async fn execute_changeset_add_safe(
                     "message": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => cuenv_events::println_redacted(&json),
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
+                cuenv_events::println_redacted(&output);
             }
             Ok(())
         }
@@ -1435,7 +1449,7 @@ async fn execute_changeset_status_safe(path: String, json_mode: bool) -> Result<
     // Use the format-aware function that returns proper JSON structure
     match commands::release::execute_changeset_status_with_format(&path, json_mode) {
         Ok(output) => {
-            println!("{output}");
+            cuenv_events::println_redacted(&output);
             Ok(())
         }
         Err(e) => Err(CliError::eval_with_help(
@@ -1459,13 +1473,13 @@ async fn execute_changeset_from_commits_safe(
                     "message": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => cuenv_events::println_redacted(&json),
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
+                cuenv_events::println_redacted(&output);
             }
             Ok(())
         }
@@ -1500,13 +1514,13 @@ async fn execute_release_prepare_safe(
                     "result": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => cuenv_events::println_redacted(&json),
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
+                cuenv_events::println_redacted(&output);
             }
             Ok(())
         }
@@ -1531,13 +1545,13 @@ async fn execute_release_version_safe(
                     "result": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => cuenv_events::println_redacted(&json),
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
+                cuenv_events::println_redacted(&output);
             }
             Ok(())
         }
@@ -1568,13 +1582,13 @@ async fn execute_release_publish_safe(
                     "result": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => cuenv_events::println_redacted(&json),
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
+                cuenv_events::println_redacted(&output);
             }
             Ok(())
         }
@@ -1596,13 +1610,13 @@ async fn execute_release_binaries_safe(
                     "result": output
                 }));
                 match serde_json::to_string(&envelope) {
-                    Ok(json) => println!("{json}"),
+                    Ok(json) => cuenv_events::println_redacted(&json),
                     Err(e) => {
                         return Err(CliError::other(format!("JSON serialization failed: {e}")));
                     }
                 }
             } else {
-                println!("{output}");
+                cuenv_events::println_redacted(&output);
             }
             Ok(())
         }

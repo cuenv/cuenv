@@ -32,6 +32,7 @@ fn create_registry() -> ToolRegistry {
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found or if any tool download fails.
+#[allow(clippy::print_stdout, clippy::print_stderr)] // Download progress messages, no secrets
 pub async fn execute_tools_download() -> Result<(), CliError> {
     // Find the lockfile
     let lockfile_path = find_lockfile(None).ok_or_else(|| {
@@ -645,6 +646,7 @@ pub fn get_tool_paths(project_path: Option<&Path>) -> Result<Option<ToolPaths>, 
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found.
+#[allow(clippy::print_stdout)] // Shell export statements, no secrets
 pub fn execute_tools_activate() -> Result<(), CliError> {
     let tool_paths = get_tool_paths(None)?.ok_or_else(|| {
         CliError::config_with_help(
@@ -678,6 +680,7 @@ pub fn execute_tools_activate() -> Result<(), CliError> {
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found.
+#[allow(clippy::print_stdout)] // Tool listing info, no secrets
 pub fn execute_tools_list() -> Result<(), CliError> {
     // Find the lockfile
     let lockfile_path = find_lockfile(None).ok_or_else(|| {

@@ -21,6 +21,7 @@ pub fn execute_secrets_setup(
 }
 
 /// Set up 1Password by downloading the WASM SDK
+#[allow(clippy::print_stdout)] // Download progress messages, no secrets
 fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     let url = wasm_url.unwrap_or(ONEPASSWORD_WASM_URL);
 

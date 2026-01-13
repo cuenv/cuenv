@@ -49,9 +49,8 @@
 //! // Implement both SyncCapability and RuntimeCapability...
 //! ```
 
-// CLI binary needs to output to stdout/stderr - this is intentional
 // expect_used is allowed for infallible operations like writing to strings
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::expect_used)]
+#![allow(clippy::expect_used)]
 
 mod builder;
 /// CLI argument parsing and exit codes.
