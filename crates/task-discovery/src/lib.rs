@@ -4,9 +4,8 @@
 //! supporting TaskRef resolution and TaskMatcher-based task discovery.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use ignore::WalkBuilder;
 use regex::Regex;
 
 use cuenv_core::manifest::{ArgMatcher, Project, TaskMatcher, TaskRef};
@@ -36,118 +35,24 @@ pub struct MatchedTask {
     pub project_name: Option<String>,
 }
 
-/// Function type for evaluating env.cue files
-pub type EvalFn = Box<dyn Fn(&Path) -> Result<Project, cuenv_core::Error> + Send + Sync>;
-
 /// Discovers tasks across a monorepo workspace
 pub struct TaskDiscovery {
-    /// Root directory of the workspace
-    workspace_root: PathBuf,
     /// Cached project index: name -> project
     name_index: HashMap<String, DiscoveredProject>,
     /// All discovered projects
     projects: Vec<DiscoveredProject>,
-    /// Function to evaluate env.cue files
-    eval_fn: Option<EvalFn>,
 }
 
 impl TaskDiscovery {
-    /// Create a new TaskDiscovery for the given workspace root
-    pub fn new(workspace_root: PathBuf) -> Self {
+    /// Create a new TaskDiscovery
+    ///
+    /// The workspace root parameter is kept for API compatibility but unused.
+    /// Projects are added explicitly via `add_project()`.
+    pub fn new(_workspace_root: PathBuf) -> Self {
         Self {
-            workspace_root,
             name_index: HashMap::new(),
             projects: Vec::new(),
-            eval_fn: None,
         }
-    }
-
-    /// Set the evaluation function for loading env.cue files
-    pub fn with_eval_fn(mut self, eval_fn: EvalFn) -> Self {
-        self.eval_fn = Some(eval_fn);
-        self
-    }
-
-    /// Discover all projects in the workspace
-    ///
-    /// This scans for env.cue files using the ignore crate to respect .gitignore
-    /// and builds the name -> project index.
-    /// Requires an eval function to be set via `with_eval_fn`.
-    ///
-    /// Projects that fail to load are logged as warnings but don't stop discovery.
-    /// A summary of failures is logged at the end if any occurred.
-    pub fn discover(&mut self) -> Result<(), DiscoveryError> {
-        self.projects.clear();
-        self.name_index.clear();
-
-        let eval_fn = self
-            .eval_fn
-            .as_ref()
-            .ok_or(DiscoveryError::NoEvalFunction)?;
-
-        // Build a walker that respects gitignore
-        // We start from workspace_root
-        let walker = WalkBuilder::new(&self.workspace_root)
-            .follow_links(true)
-            .standard_filters(true) // Enable .gitignore, .ignore, hidden file filtering
-            .build();
-
-        // Track failures for summary
-        let mut load_failures: Vec<(PathBuf, String)> = Vec::new();
-
-        for result in walker {
-            match result {
-                Ok(entry) => {
-                    let path = entry.path();
-                    if path.file_name() == Some("env.cue".as_ref()) {
-                        match Self::load_project(path, eval_fn) {
-                            Ok(project) => {
-                                // Build name index
-                                let name = project.manifest.name.trim();
-                                if !name.is_empty() {
-                                    self.name_index.insert(name.to_string(), project.clone());
-                                }
-                                self.projects.push(project);
-                            }
-                            Err(e) => {
-                                let error_msg = e.to_string();
-                                tracing::warn!(
-                                    path = %path.display(),
-                                    error = %error_msg,
-                                    "Failed to load project - tasks from this project will not be available"
-                                );
-                                load_failures.push((path.to_path_buf(), error_msg));
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        "Error during workspace scan - some projects may not be discovered"
-                    );
-                }
-            }
-        }
-
-        // Log summary of failures
-        if !load_failures.is_empty() {
-            tracing::warn!(
-                count = load_failures.len(),
-                "Some projects failed to load during discovery. \
-                 Fix CUE errors in these projects or add them to .gitignore to exclude. \
-                 Run with RUST_LOG=debug for details."
-            );
-        }
-
-        tracing::debug!(
-            discovered = self.projects.len(),
-            named = self.name_index.len(),
-            failures = load_failures.len(),
-            "Workspace discovery complete"
-        );
-
-        Ok(())
     }
 
     /// Add a pre-loaded project to the discovery
@@ -167,27 +72,6 @@ impl TaskDiscovery {
             self.name_index.insert(name.to_string(), project.clone());
         }
         self.projects.push(project);
-    }
-
-    /// Load a single project from its env.cue path
-    fn load_project(
-        env_cue_path: &Path,
-        eval_fn: &EvalFn,
-    ) -> Result<DiscoveredProject, DiscoveryError> {
-        let project_root = env_cue_path
-            .parent()
-            .ok_or_else(|| DiscoveryError::InvalidPath(env_cue_path.to_path_buf()))?
-            .to_path_buf();
-
-        // Use provided eval function to evaluate the env.cue file
-        let manifest = eval_fn(&project_root)
-            .map_err(|e| DiscoveryError::EvalError(env_cue_path.to_path_buf(), Box::new(e)))?;
-
-        Ok(DiscoveredProject {
-            env_cue_path: env_cue_path.to_path_buf(),
-            project_root,
-            manifest,
-        })
     }
 
     /// Resolve a TaskRef to its actual task definition
@@ -377,9 +261,6 @@ pub enum DiscoveryError {
     #[error("Task {0}:{1} is a group, not a single task")]
     TaskIsGroup(String, String),
 
-    #[error("No evaluation function provided - use with_eval_fn()")]
-    NoEvalFunction,
-
     #[error("Invalid regex pattern '{0}': {1}")]
     InvalidRegex(String, String),
 
@@ -526,17 +407,6 @@ mod tests {
         let discovery = TaskDiscovery::new(PathBuf::from("/workspace"));
         assert!(discovery.projects().is_empty());
         assert!(discovery.get_project("anything").is_none());
-    }
-
-    #[test]
-    fn test_task_discovery_discover_without_eval_fn() {
-        let mut discovery = TaskDiscovery::new(PathBuf::from("/tmp"));
-        let result = discovery.discover();
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            DiscoveryError::NoEvalFunction
-        ));
     }
 
     #[test]
@@ -852,9 +722,6 @@ mod tests {
 
         let err = DiscoveryError::TaskIsGroup("proj".to_string(), "task".to_string());
         assert!(err.to_string().contains("is a group"));
-
-        let err = DiscoveryError::NoEvalFunction;
-        assert!(err.to_string().contains("No evaluation function"));
 
         let err = DiscoveryError::InvalidRegex("bad".to_string(), "error".to_string());
         assert!(err.to_string().contains("Invalid regex"));

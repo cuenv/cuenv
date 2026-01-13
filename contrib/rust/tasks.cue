@@ -20,42 +20,42 @@ import "github.com/cuenv/cuenv/schema"
 #BaseInputs: [...string] | *["Cargo.toml", "Cargo.lock", "src"]
 
 // #Build runs 'cargo build'
-#Build: schema.#Command & {
+#Build: schema.#Task & {
 	command: "cargo"
 	args: ["build", ...string]
 	inputs: #BaseInputs
 }
 
 // #Test runs 'cargo test'
-#Test: schema.#Command & {
+#Test: schema.#Task & {
 	command: "cargo"
 	args: ["test", ...string]
 	inputs: #BaseInputs
 }
 
 // #Clippy runs 'cargo clippy'
-#Clippy: schema.#Command & {
+#Clippy: schema.#Task & {
 	command: "cargo"
 	args: ["clippy", ...string]
 	inputs: #BaseInputs
 }
 
 // #Fmt runs 'cargo fmt'
-#Fmt: schema.#Command & {
+#Fmt: schema.#Task & {
 	command: "cargo"
 	args: ["fmt", ...string]
 	inputs: #BaseInputs
 }
 
 // #Check runs 'cargo check' (faster than build)
-#Check: schema.#Command & {
+#Check: schema.#Task & {
 	command: "cargo"
 	args: ["check", ...string]
 	inputs: #BaseInputs
 }
 
 // #Doc runs 'cargo doc'
-#Doc: schema.#Command & {
+#Doc: schema.#Task & {
 	command: "cargo"
 	args: ["doc", ...string]
 	inputs: #BaseInputs

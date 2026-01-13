@@ -67,6 +67,22 @@ fn main() {
     // Check for special internal commands that always need async
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && (args[1] == "__hook-supervisor" || args[1] == "__coordinator") {
+        // For supervisor, detach from controlling terminal if on Unix
+        // This is done here instead of via pre_exec in the parent to avoid
+        // fork-safety issues when the parent is multi-threaded (Go runtime)
+        #[cfg(unix)]
+        if args[1] == "__hook-supervisor" {
+            // SAFETY: setsid() creates a new session and process group.
+            // This is safe to call at startup. We ignore errors (e.g. if already leader).
+            #[expect(
+                unsafe_code,
+                reason = "Required for POSIX process detachment via setsid()"
+            )]
+            unsafe {
+                libc::setsid();
+            }
+        }
+
         // These internal commands always need tokio
         let exit_code = run_with_tokio();
         std::process::exit(exit_code);
@@ -170,6 +186,20 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
 fn run_sync(cli: cli::Cli) -> i32 {
     // Set up signal handler for sync path
     let _ = ctrlc::set_handler(|| {
+        // Terminate all child processes gracefully before exiting.
+        // Need a mini runtime since terminate_all is async.
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            rt.block_on(async {
+                let registry = cuenv_core::tasks::global_registry();
+                registry
+                    .terminate_all(std::time::Duration::from_secs(3))
+                    .await;
+            });
+        }
+
         cleanup_terminal();
         std::process::exit(EXIT_SIGINT);
     });
@@ -295,16 +325,17 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         } => {
             // CUE evaluation is sync FFI, so we can call the async function via a mini runtime
             let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
                 .build()
                 .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
+            let executor = create_executor(&package);
             rt.block_on(async {
                 match commands::env::execute_env_print(
                     &path,
-                    &package,
                     &format,
                     environment.as_deref(),
-                    None,
+                    &executor,
                 )
                 .await
                 {
@@ -326,11 +357,13 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             format,
         } => {
             let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
                 .build()
                 .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
+            let executor = create_executor(&package);
             rt.block_on(async {
-                match commands::env::execute_env_list(&path, &package, &format, None).await {
+                match commands::env::execute_env_list(&path, &format, &executor).await {
                     Ok(result) => {
                         println!("{result}");
                         Ok(())
@@ -596,6 +629,10 @@ async fn run() -> i32 {
         biased;
 
         _ = tokio::signal::ctrl_c() => {
+            // Terminate all child processes gracefully before exiting
+            let registry = cuenv_core::tasks::global_registry();
+            registry.terminate_all(std::time::Duration::from_secs(5)).await;
+
             // Clean up terminal state to prevent escape sequence garbage
             cleanup_terminal();
             EXIT_SIGINT
@@ -730,6 +767,11 @@ async fn real_main() -> Result<(), CliError> {
         // Give renderer time to process final events, then abort if stuck
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
     }
+
+    // Shut down the global event bus BEFORE the tokio runtime exits.
+    // This closes the mpsc channel that the forwarding task waits on,
+    // allowing the task to exit and preventing a runtime shutdown deadlock.
+    tracing::shutdown_global_events();
 
     result
 }

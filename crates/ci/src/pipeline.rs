@@ -4,7 +4,7 @@
 //! These utilities are shared across different CI emitters.
 
 use crate::ir::Task;
-use cuenv_core::ci::{MatrixTask, PipelineTask};
+use cuenv_core::ci::{MatrixTask, PipelineTask, TaskRef};
 use cuenv_task_graph::compute_transitive_closure;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -118,14 +118,16 @@ pub fn expand_task_groups(
                         .any(|dep| group_task_ids.contains(dep.as_str()));
 
                     match pipeline_task {
-                        PipelineTask::Simple(_) => PipelineTask::Simple(ir_task.id.clone()),
+                        PipelineTask::Simple(_) => {
+                            PipelineTask::Simple(TaskRef::from_name(&ir_task.id))
+                        }
                         PipelineTask::Matrix(matrix_task) => {
                             if has_internal_deps {
-                                PipelineTask::Simple(ir_task.id.clone())
+                                PipelineTask::Simple(TaskRef::from_name(&ir_task.id))
                             } else {
                                 // Empty matrix signals artifact aggregation mode
                                 PipelineTask::Matrix(MatrixTask {
-                                    task: ir_task.id.clone(),
+                                    task: TaskRef::from_name(&ir_task.id),
                                     artifacts: matrix_task.artifacts.clone(),
                                     params: matrix_task.params.clone(),
                                     matrix: BTreeMap::new(),
@@ -230,7 +232,7 @@ mod tests {
     #[test]
     fn test_expand_task_groups_simple() {
         let ir_tasks = vec![make_task("build.linux", &[]), make_task("build.macos", &[])];
-        let pipeline_tasks = vec![PipelineTask::Simple("build".to_string())];
+        let pipeline_tasks = vec![PipelineTask::Simple(TaskRef::from_name("build"))];
         let explicit: HashSet<String> = HashSet::new();
 
         let result = expand_task_groups(&pipeline_tasks, &ir_tasks, &explicit);
@@ -248,7 +250,7 @@ mod tests {
             make_task("build.macos", &["build.linux"]), // has internal dep
         ];
         let pipeline_tasks = vec![PipelineTask::Matrix(MatrixTask {
-            task: "build".to_string(),
+            task: TaskRef::from_name("build"),
             artifacts: None,
             params: None,
             matrix: [("os".to_string(), vec!["linux".to_string()])]
@@ -265,11 +267,11 @@ mod tests {
         // build.macos should be Simple (has internal dep)
         for task in &result {
             match task {
-                PipelineTask::Matrix(m) if m.task == "build.linux" => {
+                PipelineTask::Matrix(m) if m.task.task_name() == "build.linux" => {
                     // Entry point gets empty matrix (artifact aggregation mode)
                     assert!(m.matrix.is_empty());
                 }
-                PipelineTask::Simple(name) if name == "build.macos" => {
+                PipelineTask::Simple(task_ref) if task_ref.task_name() == "build.macos" => {
                     // Has internal dep, becomes Simple
                 }
                 _ => panic!("Unexpected task configuration: {:?}", task),

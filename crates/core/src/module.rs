@@ -11,23 +11,74 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 
 /// Reference metadata extracted from CUE evaluation.
-/// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference names (e.g., "build").
+/// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference paths (e.g., "tasks.build").
 pub type ReferenceMap = HashMap<String, String>;
 
-/// Enrich dependsOn arrays in a JSON value with _name fields using reference metadata.
+/// Strip known task reference prefixes from a reference path to get the canonical task name.
 ///
-/// Walks the JSON structure recursively, finding `dependsOn` arrays and injecting
-/// `_name` fields based on the CUE reference metadata extracted during evaluation.
-fn enrich_depends_on(
-    value: &mut serde_json::Value,
-    instance_path: &str,
-    references: &ReferenceMap,
-) {
-    enrich_depends_on_recursive(value, instance_path, "", references);
+/// The CUE bridge exports raw reference paths which may include:
+/// - Direct task references: "tasks.build", "tasks.ci.deploy"
+/// - Let binding aliases: "_t.build", "_tasks.deploy"
+fn strip_tasks_prefix(path: &str) -> &str {
+    const TASK_PREFIXES: &[&str] = &["tasks.", "_tasks.", "_t."];
+    for prefix in TASK_PREFIXES {
+        if let Some(stripped) = path.strip_prefix(prefix) {
+            return stripped;
+        }
+    }
+    path
 }
 
-/// Recursively walk JSON and enrich dependsOn arrays
-fn enrich_depends_on_recursive(
+/// Resolve a potentially short task reference to its full path.
+///
+/// If the reference is a short name (no dots), resolve it relative to
+/// the parent scope of the containing task.
+///
+/// # Example
+///
+/// - `array_path`: `"tasks.docs.deploy.dependsOn"`
+/// - `reference`: `"build"`
+/// - result: `"docs.build"` (sibling in docs group)
+fn resolve_task_reference(reference: &str, array_path: &str) -> String {
+    // Already qualified (has a dot) - return as-is
+    if reference.contains('.') {
+        return reference.to_string();
+    }
+
+    // Extract task path from array_path (strip ".dependsOn" or ".tasks")
+    let task_path = array_path
+        .strip_suffix(".dependsOn")
+        .or_else(|| array_path.strip_suffix(".tasks"))
+        .unwrap_or(array_path);
+
+    // Strip "tasks." prefix to get canonical path
+    let canonical = strip_tasks_prefix(task_path);
+
+    // Get parent scope (e.g., "docs.deploy" -> "docs")
+    if let Some(dot_pos) = canonical.rfind('.') {
+        let parent = &canonical[..dot_pos];
+        format!("{}.{}", parent, reference)
+    } else {
+        // No parent (top-level task) - return as-is
+        reference.to_string()
+    }
+}
+
+/// Enrich task references in a JSON value with _name fields using reference metadata.
+///
+/// Walks the JSON structure recursively, finding task references and injecting
+/// `_name` fields based on the CUE reference metadata extracted during evaluation.
+///
+/// Handles:
+/// - `dependsOn` arrays (task dependencies)
+/// - `task` fields (pipeline MatrixTask references)
+/// - Pipeline task arrays (`ci.pipelines.*.tasks`)
+fn enrich_task_refs(value: &mut serde_json::Value, instance_path: &str, references: &ReferenceMap) {
+    enrich_task_refs_recursive(value, instance_path, "", references);
+}
+
+/// Recursively walk JSON and enrich task references
+fn enrich_task_refs_recursive(
     value: &mut serde_json::Value,
     instance_path: &str,
     field_path: &str,
@@ -35,7 +86,7 @@ fn enrich_depends_on_recursive(
 ) {
     match value {
         serde_json::Value::Object(obj) => {
-            // Check if this object has a dependsOn array
+            // Handle dependsOn arrays (task dependencies)
             if let Some(serde_json::Value::Array(deps)) = obj.get_mut("dependsOn") {
                 let depends_on_path = if field_path.is_empty() {
                     "dependsOn".to_string()
@@ -43,30 +94,33 @@ fn enrich_depends_on_recursive(
                     format!("{}.dependsOn", field_path)
                 };
 
-                // Enrich each dependency with _name from reference metadata
-                for (i, dep) in deps.iter_mut().enumerate() {
-                    if let serde_json::Value::Object(dep_obj) = dep {
-                        // Skip if _name already set
-                        if dep_obj.contains_key("_name") {
-                            continue;
-                        }
+                enrich_task_ref_array(deps, instance_path, &depends_on_path, references);
+            }
 
-                        // Look up the reference in metadata
-                        let meta_key = format!("{}/{}[{}]", instance_path, depends_on_path, i);
-                        if let Some(reference) = references.get(&meta_key) {
-                            // The reference is the task name (e.g., "build" or "docs.build")
-                            dep_obj.insert(
-                                "_name".to_string(),
-                                serde_json::Value::String(reference.clone()),
-                            );
-                        }
+            // Handle "task" field (pipeline MatrixTask references)
+            if let Some(serde_json::Value::Object(task_obj)) = obj.get_mut("task") {
+                // Skip if _name already set
+                if !task_obj.contains_key("_name") {
+                    let task_path = if field_path.is_empty() {
+                        "task".to_string()
+                    } else {
+                        format!("{}.task", field_path)
+                    };
+                    let meta_key = format!("{}/{}", instance_path, task_path);
+                    if let Some(reference) = references.get(&meta_key) {
+                        // Strip "tasks." prefix from the raw CUE reference path
+                        let task_name = strip_tasks_prefix(reference);
+                        task_obj.insert(
+                            "_name".to_string(),
+                            serde_json::Value::String(task_name.to_string()),
+                        );
                     }
                 }
             }
 
             // Recurse into all object fields
             for (key, child) in obj.iter_mut() {
-                if key == "dependsOn" {
+                if key == "dependsOn" || key == "task" {
                     continue; // Already handled above
                 }
                 let child_path = if field_path.is_empty() {
@@ -74,16 +128,51 @@ fn enrich_depends_on_recursive(
                 } else {
                     format!("{}.{}", field_path, key)
                 };
-                enrich_depends_on_recursive(child, instance_path, &child_path, references);
+                enrich_task_refs_recursive(child, instance_path, &child_path, references);
             }
         }
         serde_json::Value::Array(arr) => {
+            // Check if this is a pipeline tasks array (ci.pipelines.*.tasks)
+            // by seeing if any element is a task ref object
+            let is_pipeline_tasks =
+                field_path.contains("pipelines.") && field_path.ends_with(".tasks");
+
+            if is_pipeline_tasks {
+                enrich_task_ref_array(arr, instance_path, field_path, references);
+            }
+
             for (i, child) in arr.iter_mut().enumerate() {
                 let child_path = format!("{}[{}]", field_path, i);
-                enrich_depends_on_recursive(child, instance_path, &child_path, references);
+                enrich_task_refs_recursive(child, instance_path, &child_path, references);
             }
         }
         _ => {}
+    }
+}
+
+/// Enrich task reference objects in an array with _name from reference metadata
+fn enrich_task_ref_array(
+    arr: &mut [serde_json::Value],
+    instance_path: &str,
+    array_path: &str,
+    references: &ReferenceMap,
+) {
+    for (i, element) in arr.iter_mut().enumerate() {
+        if let serde_json::Value::Object(obj) = element {
+            // Skip if _name already set
+            if obj.contains_key("_name") {
+                continue;
+            }
+
+            // Look up the reference in metadata
+            let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
+            if let Some(reference) = references.get(&meta_key) {
+                // Strip "tasks." prefix and resolve short names relative to parent scope
+                let stripped = strip_tasks_prefix(reference);
+                let task_name = resolve_task_reference(stripped, array_path);
+                obj.insert("_name".to_string(), serde_json::Value::String(task_name));
+            }
+        }
     }
 }
 
@@ -131,7 +220,7 @@ impl ModuleEvaluation {
 
                 // Enrich dependsOn arrays with _name using reference metadata
                 if let Some(ref refs) = references {
-                    enrich_depends_on(&mut value, &path, refs);
+                    enrich_task_refs(&mut value, &path, refs);
                 }
 
                 let instance = Instance {
@@ -655,5 +744,80 @@ mod tests {
 
         assert_eq!(base, InstanceKind::Base);
         assert_eq!(project, InstanceKind::Project);
+    }
+
+    // ==========================================================================
+    // strip_tasks_prefix tests
+    // ==========================================================================
+
+    #[test]
+    fn test_strip_tasks_prefix() {
+        // Standard tasks prefix
+        assert_eq!(strip_tasks_prefix("tasks.build"), "build");
+        assert_eq!(strip_tasks_prefix("tasks.ci.deploy"), "ci.deploy");
+
+        // Common _t alias (used in env.cue for scope conflict avoidance)
+        assert_eq!(strip_tasks_prefix("_t.cargo.build"), "cargo.build");
+        assert_eq!(strip_tasks_prefix("_t.release.publish"), "release.publish");
+
+        // Hidden _tasks alias
+        assert_eq!(strip_tasks_prefix("_tasks.internal"), "internal");
+
+        // No prefix (already canonical)
+        assert_eq!(strip_tasks_prefix("build"), "build");
+        assert_eq!(strip_tasks_prefix("ci.deploy"), "ci.deploy");
+    }
+
+    // ==========================================================================
+    // resolve_task_reference tests
+    // ==========================================================================
+
+    #[test]
+    fn test_resolve_task_reference_short_name_in_group() {
+        // Sibling reference: docs.deploy depends on "build" -> "docs.build"
+        assert_eq!(
+            resolve_task_reference("build", "tasks.docs.deploy.dependsOn"),
+            "docs.build"
+        );
+    }
+
+    #[test]
+    fn test_resolve_task_reference_already_qualified() {
+        // Already qualified reference should be preserved
+        assert_eq!(
+            resolve_task_reference("cargo.build", "tasks.docs.deploy.dependsOn"),
+            "cargo.build"
+        );
+        assert_eq!(
+            resolve_task_reference("docs.build", "tasks.docs.deploy.dependsOn"),
+            "docs.build"
+        );
+    }
+
+    #[test]
+    fn test_resolve_task_reference_top_level_task() {
+        // Top-level task (no parent group) - short name stays as-is
+        assert_eq!(
+            resolve_task_reference("sibling", "tasks.toplevel.dependsOn"),
+            "sibling"
+        );
+    }
+
+    #[test]
+    fn test_resolve_task_reference_deeply_nested() {
+        // Deeply nested: ci.pipelines.release.tasks -> parent is ci.pipelines
+        assert_eq!(
+            resolve_task_reference("build", "tasks.ci.pipelines.release.dependsOn"),
+            "ci.pipelines.build"
+        );
+    }
+
+    #[test]
+    fn test_resolve_task_reference_with_alias_prefix() {
+        // Should work even when array_path has _t prefix (handled by strip_tasks_prefix)
+        assert_eq!(
+            resolve_task_reference("build", "_t.docs.deploy.dependsOn"),
+            "docs.build"
+        );
     }
 }

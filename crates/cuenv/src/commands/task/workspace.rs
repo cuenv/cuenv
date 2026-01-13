@@ -20,11 +20,10 @@ use cuenv_core::contributors::{
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskIndex, TaskNode, Tasks};
-use cuenv_task_discovery::{EvalFn, TaskDiscovery};
+use cuenv_task_discovery::TaskDiscovery;
 
 use crate::commands::CommandExecutor;
 
-use super::discovery::evaluate_manifest;
 use super::normalization::{
     compute_project_id, normalize_node_deps, set_default_project_root, task_fqdn,
 };
@@ -90,42 +89,30 @@ pub fn build_global_tasks(
     module_root: &Path,
     current_project_root: &Path,
     current_manifest: &Project,
-    executor: Option<&CommandExecutor>,
+    executor: &CommandExecutor,
 ) -> Result<(Tasks, String)> {
     let mut discovery = TaskDiscovery::new(module_root.to_path_buf());
 
-    // Use executor's cached module if available (single evaluation for all projects).
+    // Use executor's cached module (single CUE evaluation per process).
     // All projects must use `package cuenv` - this is enforced by the CUE schema.
-    if let Some(exec) = executor {
-        tracing::debug!("Using cached module for global task registry build");
-        let module = exec.get_module(module_root)?;
+    tracing::debug!("Using cached module for global task registry build");
+    let module = executor.get_module(module_root)?;
 
-        // Iterate through all Project instances and add them directly
-        for instance in module.projects() {
-            match instance.deserialize::<Project>() {
-                Ok(project) => {
-                    let project_root = module.root.join(&instance.path);
-                    discovery.add_project(project_root, project);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %instance.path.display(),
-                        error = %e,
-                        "Failed to deserialize project for global task registry"
-                    );
-                }
+    // Iterate through all Project instances and add them directly
+    for instance in module.projects() {
+        match instance.deserialize::<Project>() {
+            Ok(project) => {
+                let project_root = module.root.join(&instance.path);
+                discovery.add_project(project_root, project);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %instance.path.display(),
+                    error = %e,
+                    "Failed to deserialize project for global task registry"
+                );
             }
         }
-    } else {
-        // Legacy path: use EvalFn for per-project evaluation (when no executor available)
-        tracing::debug!("Using legacy EvalFn for global task registry build");
-        let eval_fn: EvalFn =
-            Box::new(move |project_path: &Path| evaluate_manifest(project_path, "cuenv", None));
-
-        discovery = discovery.with_eval_fn(eval_fn);
-        discovery.discover().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to discover projects: {e}"))
-        })?;
     }
 
     let current_root = fs::canonicalize(current_project_root)

@@ -5,14 +5,11 @@
 
 use std::path::Path;
 
-use cuengine::ModuleEvalOptions;
-use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskNode, Tasks};
 
-use crate::commands::env_file::find_cue_module_root;
-use crate::commands::{CommandExecutor, convert_engine_error, relative_path_from_root};
+use crate::commands::{CommandExecutor, relative_path_from_root};
 
 /// Normalize a list of labels by sorting, deduplicating, and filtering empty strings.
 ///
@@ -74,68 +71,22 @@ pub fn format_label_root(labels: &[String]) -> String {
 pub fn evaluate_manifest(
     dir: &Path,
     package: &str,
-    executor: Option<&CommandExecutor>,
+    executor: &CommandExecutor,
 ) -> Result<Project> {
+    // Suppress unused parameter warning - package is kept for API compatibility
+    let _ = package;
+
     let target_path = dir.canonicalize().map_err(|e| cuenv_core::Error::Io {
         source: e,
         path: Some(dir.to_path_buf().into_boxed_path()),
         operation: "canonicalize path".to_string(),
     })?;
 
-    // Use executor's cached module if available
-    if let Some(exec) = executor {
-        tracing::debug!("Using cached module evaluation from executor");
-        let module = exec.get_module(&target_path)?;
-        let rel_path = relative_path_from_root(&module.root, &target_path);
+    // Use executor's cached module (single CUE evaluation per process)
+    tracing::debug!("Using cached module evaluation from executor");
+    let module = executor.get_module(&target_path)?;
+    let rel_path = relative_path_from_root(&module.root, &target_path);
 
-        let instance = module.get(&rel_path).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "No CUE instance found at path: {} (relative: {})",
-                target_path.display(),
-                rel_path.display()
-            ))
-        })?;
-
-        // Check if this is a Project (has name field) or Base (no name)
-        return match instance.kind {
-            cuenv_core::InstanceKind::Project => instance.deserialize(),
-            cuenv_core::InstanceKind::Base => {
-                // Valid Base config, but this command needs Project
-                Err(cuenv_core::Error::configuration(
-                    "This directory uses schema.#Base which doesn't support tasks.\n\
-                     To use tasks, update your env.cue to use schema.#Project:\n\n\
-                     schema.#Project\n\
-                     name: \"your-project-name\"",
-                ))
-            }
-        };
-    }
-
-    // Legacy path: fresh evaluation
-    tracing::debug!("Using fresh module evaluation (no executor)");
-
-    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE module found (looking for cue.mod/) starting from: {}",
-            target_path.display()
-        ))
-    })?;
-
-    let options = ModuleEvalOptions {
-        recursive: true,
-        ..Default::default()
-    };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
-        .map_err(convert_engine_error)?;
-
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        raw_result.instances,
-        raw_result.projects,
-        None,
-    );
-
-    let rel_path = relative_path_from_root(&module_root, &target_path);
     let instance = module.get(&rel_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "No CUE instance found at path: {} (relative: {})",

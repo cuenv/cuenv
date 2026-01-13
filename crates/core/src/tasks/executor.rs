@@ -5,6 +5,7 @@
 //! - Host execution; isolation/caching is delegated to other backends
 
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
+use super::process_registry::global_registry;
 use super::{Task, TaskGraph, TaskGroup, TaskNode, Tasks};
 use crate::config::BackendConfig;
 use crate::environment::Environment;
@@ -17,6 +18,30 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::instrument;
+
+// Unix process group setup requires CommandExt trait for pre_exec method.
+// The unused_imports warning is a false positive - the trait is used via cmd.pre_exec().
+#[cfg(unix)]
+#[allow(unused_imports)]
+use std::os::unix::process::CommandExt;
+
+/// Set up process group on Unix so we can kill the entire process tree on Ctrl-C.
+///
+/// This creates a new process group with the spawned process as the leader,
+/// allowing us to send signals to all descendants when terminating.
+#[cfg(unix)]
+fn setup_process_group(cmd: &mut Command) {
+    // SAFETY: setpgid(0, 0) creates a new process group with this process as leader.
+    // This is safe to call in the pre-spawn hook as it only affects the child process.
+    // It allows us to send signals to the entire process group when terminating.
+    #[expect(unsafe_code, reason = "Required for POSIX process group management")]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+}
 
 /// Task execution result
 #[derive(Debug, Clone)]
@@ -294,6 +319,10 @@ impl TaskExecutor {
 
             let start_time = std::time::Instant::now();
 
+            // Set up process group on Unix so we can kill the entire tree on Ctrl-C
+            #[cfg(unix)]
+            setup_process_group(&mut cmd);
+
             // Spawn with piped stdout/stderr for streaming
             let mut child = cmd
                 .stdout(Stdio::piped())
@@ -304,6 +333,12 @@ impl TaskExecutor {
                     path: None,
                     operation: format!("spawn task {}", name),
                 })?;
+
+            // Register process with global registry for cleanup on Ctrl-C
+            let child_pid = child.id();
+            if let Some(pid) = child_pid {
+                global_registry().register(pid, name.to_string()).await;
+            }
 
             // Take ownership of stdout/stderr handles
             let stdout_handle = child.stdout.take();
@@ -348,6 +383,11 @@ impl TaskExecutor {
                 operation: format!("wait for task {}", name),
             })?;
 
+            // Unregister process from global registry now that it has completed
+            if let Some(pid) = child_pid {
+                global_registry().unregister(pid).await;
+            }
+
             // Collect streamed output
             if let Ok(lines) = stdout_task.await {
                 stdout_lines = lines;
@@ -380,16 +420,39 @@ impl TaskExecutor {
             })
         } else {
             // Stream output directly to terminal (interactive mode)
-            let status = cmd
+
+            // Set up process group on Unix so we can kill the entire tree on Ctrl-C
+            #[cfg(unix)]
+            setup_process_group(&mut cmd);
+
+            // Use spawn + wait instead of status() to get access to the PID
+            let mut child = cmd
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit())
-                .status()
-                .await
+                .stdin(Stdio::inherit())
+                .spawn()
                 .map_err(|e| Error::Io {
                     source: e,
                     path: None,
                     operation: format!("spawn task {}", name),
                 })?;
+
+            // Register process with global registry for cleanup on Ctrl-C
+            let child_pid = child.id();
+            if let Some(pid) = child_pid {
+                global_registry().register(pid, name.to_string()).await;
+            }
+
+            let status = child.wait().await.map_err(|e| Error::Io {
+                source: e,
+                path: None,
+                operation: format!("wait for task {}", name),
+            })?;
+
+            // Unregister process from global registry
+            if let Some(pid) = child_pid {
+                global_registry().unregister(pid).await;
+            }
 
             let exit_code = status.code().unwrap_or(-1);
             let success = status.success();

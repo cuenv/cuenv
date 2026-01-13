@@ -3,8 +3,6 @@
 //! These tests verify the GitHub CI provider's pure functions and behavior
 //! without requiring actual GitHub API calls.
 
-use serial_test::serial;
-
 /// Tests for PR number parsing from GitHub refs.
 ///
 /// The `GITHUB_REF` environment variable contains the full ref for the event
@@ -159,97 +157,74 @@ mod repo_parsing {
 
 /// Tests for CI context creation and environment detection.
 mod ci_context {
-    use super::*;
-
     /// Verify provider detection when not in GitHub Actions.
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn detect_returns_none_outside_github_actions() {
         // Clear all GitHub-related environment variables
-        // SAFETY: Test runs in isolation with serial_test
-        unsafe {
-            std::env::remove_var("GITHUB_ACTIONS");
-            std::env::remove_var("GITHUB_REPOSITORY");
-            std::env::remove_var("GITHUB_REF");
-            std::env::remove_var("GITHUB_REF_NAME");
-            std::env::remove_var("GITHUB_BASE_REF");
-            std::env::remove_var("GITHUB_SHA");
-            std::env::remove_var("GITHUB_EVENT_NAME");
-            std::env::remove_var("GITHUB_TOKEN");
-        }
-
-        // Detection should fail when not in GitHub Actions
-        let is_github_actions = std::env::var("GITHUB_ACTIONS").ok();
-        assert!(is_github_actions.is_none() || is_github_actions.as_deref() != Some("true"));
+        temp_env::with_vars_unset(
+            [
+                "GITHUB_ACTIONS",
+                "GITHUB_REPOSITORY",
+                "GITHUB_REF",
+                "GITHUB_REF_NAME",
+                "GITHUB_BASE_REF",
+                "GITHUB_SHA",
+                "GITHUB_EVENT_NAME",
+                "GITHUB_TOKEN",
+            ],
+            || {
+                // Detection should fail when not in GitHub Actions
+                let is_github_actions = std::env::var("GITHUB_ACTIONS").ok();
+                assert!(
+                    is_github_actions.is_none() || is_github_actions.as_deref() != Some("true")
+                );
+            },
+        );
     }
 
     /// Verify detection fails when GITHUB_ACTIONS is "false".
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn detect_returns_none_when_github_actions_false() {
-        // SAFETY: Test runs in isolation with serial_test
-        unsafe {
-            std::env::set_var("GITHUB_ACTIONS", "false");
-        }
-
-        let is_github = std::env::var("GITHUB_ACTIONS").ok();
-        assert_ne!(is_github.as_deref(), Some("true"));
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_ACTIONS");
-        }
+        temp_env::with_var("GITHUB_ACTIONS", Some("false"), || {
+            let is_github = std::env::var("GITHUB_ACTIONS").ok();
+            assert_ne!(is_github.as_deref(), Some("true"));
+        });
     }
 
     /// Verify context fields are populated from environment.
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn context_populated_from_environment() {
-        // SAFETY: Test runs in isolation with serial_test
-        unsafe {
-            std::env::set_var("GITHUB_ACTIONS", "true");
-            std::env::set_var("GITHUB_REPOSITORY", "test-org/test-repo");
-            std::env::set_var("GITHUB_REF", "refs/pull/123/merge");
-            std::env::set_var("GITHUB_REF_NAME", "123/merge");
-            std::env::set_var("GITHUB_BASE_REF", "main");
-            std::env::set_var("GITHUB_SHA", "abc123def456");
-            std::env::set_var("GITHUB_EVENT_NAME", "pull_request");
-        }
-
-        // Verify environment is set correctly
-        assert_eq!(
-            std::env::var("GITHUB_ACTIONS").ok(),
-            Some("true".to_string())
+        temp_env::with_vars(
+            [
+                ("GITHUB_ACTIONS", Some("true")),
+                ("GITHUB_REPOSITORY", Some("test-org/test-repo")),
+                ("GITHUB_REF", Some("refs/pull/123/merge")),
+                ("GITHUB_REF_NAME", Some("123/merge")),
+                ("GITHUB_BASE_REF", Some("main")),
+                ("GITHUB_SHA", Some("abc123def456")),
+                ("GITHUB_EVENT_NAME", Some("pull_request")),
+            ],
+            || {
+                // Verify environment is set correctly
+                assert_eq!(
+                    std::env::var("GITHUB_ACTIONS").ok(),
+                    Some("true".to_string())
+                );
+                assert_eq!(
+                    std::env::var("GITHUB_REPOSITORY").ok(),
+                    Some("test-org/test-repo".to_string())
+                );
+                assert_eq!(
+                    std::env::var("GITHUB_EVENT_NAME").ok(),
+                    Some("pull_request".to_string())
+                );
+            },
         );
-        assert_eq!(
-            std::env::var("GITHUB_REPOSITORY").ok(),
-            Some("test-org/test-repo".to_string())
-        );
-        assert_eq!(
-            std::env::var("GITHUB_EVENT_NAME").ok(),
-            Some("pull_request".to_string())
-        );
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_ACTIONS");
-            std::env::remove_var("GITHUB_REPOSITORY");
-            std::env::remove_var("GITHUB_REF");
-            std::env::remove_var("GITHUB_REF_NAME");
-            std::env::remove_var("GITHUB_BASE_REF");
-            std::env::remove_var("GITHUB_SHA");
-            std::env::remove_var("GITHUB_EVENT_NAME");
-        }
     }
 }
 
 /// Tests for the NULL_SHA constant and before SHA filtering.
 mod before_sha_handling {
-    use super::*;
-
     const NULL_SHA: &str = "0000000000000000000000000000000000000000";
 
     /// Verify NULL_SHA is correctly formatted (40 zeros).
@@ -261,64 +236,33 @@ mod before_sha_handling {
 
     /// Verify NULL_SHA is filtered out from before SHA.
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn filters_null_sha() {
-        // SAFETY: Test runs in isolation with serial_test
-        unsafe {
-            std::env::set_var("GITHUB_BEFORE", NULL_SHA);
-        }
-
-        let before = get_before_sha();
-        assert!(before.is_none(), "NULL_SHA should be filtered out");
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_BEFORE");
-        }
+        temp_env::with_var("GITHUB_BEFORE", Some(NULL_SHA), || {
+            let before = get_before_sha();
+            assert!(before.is_none(), "NULL_SHA should be filtered out");
+        });
     }
 
     /// Verify empty GITHUB_BEFORE is filtered out.
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn filters_empty_before_sha() {
-        // SAFETY: Test runs in isolation with serial_test
-        unsafe {
-            std::env::set_var("GITHUB_BEFORE", "");
-        }
-
-        let before = get_before_sha();
-        assert!(
-            before.is_none(),
-            "Empty GITHUB_BEFORE should be filtered out"
-        );
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_BEFORE");
-        }
+        temp_env::with_var("GITHUB_BEFORE", Some(""), || {
+            let before = get_before_sha();
+            assert!(
+                before.is_none(),
+                "Empty GITHUB_BEFORE should be filtered out"
+            );
+        });
     }
 
     /// Verify valid SHA is returned.
     #[test]
-    #[serial]
-    #[allow(unsafe_code)]
     fn returns_valid_sha() {
         let valid_sha = "abc123def456789012345678901234567890abcd";
-
-        // SAFETY: Test runs in isolation with serial_test
-        unsafe {
-            std::env::set_var("GITHUB_BEFORE", valid_sha);
-        }
-
-        let before = get_before_sha();
-        assert_eq!(before, Some(valid_sha.to_string()));
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_BEFORE");
-        }
+        temp_env::with_var("GITHUB_BEFORE", Some(valid_sha), || {
+            let before = get_before_sha();
+            assert_eq!(before, Some(valid_sha.to_string()));
+        });
     }
 
     /// Get before SHA, filtering out null and empty values.

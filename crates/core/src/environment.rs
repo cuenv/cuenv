@@ -468,10 +468,22 @@ impl Environment {
         let mut resolved = HashMap::new();
         let mut secrets = Vec::new();
 
+        tracing::debug!(
+            task = task_name,
+            env_count = env_vars.len(),
+            "resolve_for_task_with_secrets"
+        );
         for (key, value) in env_vars {
+            tracing::debug!(
+                key = key,
+                is_secret = value.is_secret(),
+                accessible = value.is_accessible_by_task(task_name),
+                "checking env var"
+            );
             if value.is_accessible_by_task(task_name) {
                 let resolved_value = value.resolve().await?;
                 if value.is_secret() {
+                    tracing::debug!(key = key, "resolved secret");
                     secrets.push(resolved_value.clone());
                 }
                 resolved.insert(key.clone(), resolved_value);

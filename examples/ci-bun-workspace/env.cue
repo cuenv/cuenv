@@ -8,6 +8,8 @@ import (
 
 schema.#Project
 
+let _t = tasks
+
 name: "ci-bun-workspace"
 
 runtime: schema.#ToolsRuntime & {
@@ -21,7 +23,7 @@ ci: {
 	contributors: [c.#Cuenv, c.#BunWorkspace]
 	pipelines: {
 		default: {
-			tasks: ["version"]
+			tasks: [_t.version]
 			when: branch: "main"
 		}
 	}

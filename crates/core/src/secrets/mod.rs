@@ -164,6 +164,7 @@ impl Secret {
     /// # Errors
     /// Returns error if resolution fails
     pub async fn resolve(&self) -> Result<String> {
+        tracing::debug!(resolver = %self.resolver, op_ref = ?self.op_ref, "Secret::resolve() called");
         let registry = create_default_registry()?;
         self.resolve_with_registry(&registry).await
     }

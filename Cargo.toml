@@ -123,7 +123,7 @@ glob = "0.3"
 proptest = "1.0"
 criterion = "0.8"
 tempfile = "3.0"
-serial_test = "3.2"
+temp-env = { version = "0.3", features = ["async_closure"] }
 
 # BDD testing dependencies
 cucumber = "0.22"
