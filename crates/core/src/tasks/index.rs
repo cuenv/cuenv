@@ -766,8 +766,10 @@ mod tests {
     // ==========================================================================
 
     #[test]
-    fn test_group_child_depends_on_top_level_task() {
-        // deploy.preview depends on "build" (simple name) -> should resolve to top-level "build"
+    fn test_task_index_preserves_dependency_names_as_given() {
+        // TaskIndex preserves whatever dependency name it receives.
+        // Reference resolution happens BEFORE TaskIndex (in module.rs enrichment).
+        // This test validates TaskIndex's raw behavior in isolation.
 
         let mut tasks = HashMap::new();
 
@@ -780,12 +782,14 @@ mod tests {
             })),
         );
 
-        // Deploy group with preview child that depends on build
+        // Deploy group with preview child - dependency name is pre-resolved
         let mut deploy_children = HashMap::new();
         deploy_children.insert(
             "preview".to_string(),
             TaskNode::Task(Box::new(Task {
                 command: "deploy preview".to_string(),
+                // In practice, enrichment resolves this before TaskIndex sees it.
+                // This tests that TaskIndex preserves the name as given.
                 depends_on: vec![TaskDependency::from_name("build")],
                 ..Default::default()
             })),
@@ -807,16 +811,17 @@ mod tests {
         match &preview_task.node {
             TaskNode::Task(task) => {
                 assert_eq!(task.depends_on.len(), 1);
-                assert_eq!(task.depends_on[0].task_name(), "build"); // NOT "deploy.build"
+                // TaskIndex preserves names as given - resolution happens earlier
+                assert_eq!(task.depends_on[0].task_name(), "build");
             }
             _ => panic!("Expected Task"),
         }
     }
 
     #[test]
-    fn test_group_child_depends_on_sibling() {
-        // deploy.activate depends on "deploy.upload" (canonical path from CUE)
-        // CUE's ReferencePath() resolves sibling references to canonical paths
+    fn test_group_child_depends_on_sibling_qualified() {
+        // When using a qualified path like "deploy.upload", TaskIndex preserves it as-is.
+        // Enrichment (module.rs) resolves short names to qualified paths before TaskIndex.
 
         let mut tasks = HashMap::new();
 
@@ -832,7 +837,7 @@ mod tests {
             "activate".to_string(),
             TaskNode::Task(Box::new(Task {
                 command: "activate".to_string(),
-                // CUE provides canonical path via _name injection
+                // Qualified path - either from CUE source or enrichment resolution
                 depends_on: vec![TaskDependency::from_name("deploy.upload")],
                 ..Default::default()
             })),
@@ -979,10 +984,10 @@ mod tests {
     }
 
     #[test]
-    fn test_dependency_name_preserved_as_provided() {
-        // CUE provides canonical paths via _name injection
-        // Rust side trusts and preserves whatever CUE provides
-        // Invalid references are caught later during graph building
+    fn test_task_index_preserves_invalid_references() {
+        // TaskIndex preserves all dependency names as given, even invalid ones.
+        // Validation (missing task detection) happens later during graph building.
+        // This tests TaskIndex in isolation.
 
         let mut tasks = HashMap::new();
 
@@ -991,7 +996,7 @@ mod tests {
             "preview".to_string(),
             TaskNode::Task(Box::new(Task {
                 command: "deploy preview".to_string(),
-                // CUE provides the name as-is (could be invalid reference)
+                // Invalid reference - no such task exists
                 depends_on: vec![TaskDependency::from_name("nonexistent")],
                 ..Default::default()
             })),
@@ -1012,8 +1017,7 @@ mod tests {
 
         match &preview_task.node {
             TaskNode::Task(task) => {
-                // Name is preserved exactly as CUE provided it
-                // Error will be caught later when building the task graph
+                // TaskIndex preserves names as given - validation happens at graph build time
                 assert_eq!(task.depends_on[0].task_name(), "nonexistent");
             }
             _ => panic!("Expected Task"),

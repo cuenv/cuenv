@@ -99,13 +99,6 @@ func createSuccessResponse(data string) *C.char {
 	return C.CString(string(responseBytes))
 }
 
-// TaskSourcePos holds the source position of a task definition
-type TaskSourcePos struct {
-	File   string
-	Line   int
-	Column int
-}
-
 // ValueMeta holds source location metadata for a concrete value
 type ValueMeta struct {
 	Directory string `json:"directory"`
@@ -118,89 +111,6 @@ type ValueMeta struct {
 type MetaValue struct {
 	Value interface{} `json:"_value"`
 	Meta  ValueMeta   `json:"_meta"`
-}
-
-// extractTaskPositions walks the AST files to find where each task is defined.
-// CUE's evaluated Pos() returns schema positions, but AST gives actual definition locations.
-func extractTaskPositions(inst *build.Instance, moduleRoot string) map[string]TaskSourcePos {
-	positions := make(map[string]TaskSourcePos)
-
-	for _, f := range inst.Files {
-		for _, decl := range f.Decls {
-			field, ok := decl.(*ast.Field)
-			if !ok {
-				continue
-			}
-
-			label, _, _ := ast.LabelName(field.Label)
-			if label != "tasks" {
-				continue
-			}
-
-			// Found tasks field, extract nested task positions
-			st, ok := field.Value.(*ast.StructLit)
-			if !ok {
-				continue
-			}
-
-			extractTaskPositionsFromStruct(st, "", f.Filename, moduleRoot, positions)
-		}
-	}
-
-	return positions
-}
-
-// extractTaskPositionsFromStruct recursively extracts task positions from a struct literal
-func extractTaskPositionsFromStruct(st *ast.StructLit, prefix, filename, moduleRoot string, positions map[string]TaskSourcePos) {
-	for _, elem := range st.Elts {
-		taskField, ok := elem.(*ast.Field)
-		if !ok {
-			continue
-		}
-
-		taskLabel, _, _ := ast.LabelName(taskField.Label)
-		fullName := taskLabel
-		if prefix != "" {
-			fullName = prefix + "." + taskLabel
-		}
-
-		// Make path relative to moduleRoot
-		relPath := filename
-		if moduleRoot != "" && strings.HasPrefix(filename, moduleRoot) {
-			relPath = strings.TrimPrefix(filename, moduleRoot)
-			relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
-		}
-		if relPath == "" {
-			relPath = "env.cue"
-		}
-
-		pos := taskField.Pos()
-		positions[fullName] = TaskSourcePos{
-			File:   relPath,
-			Line:   pos.Line(),
-			Column: pos.Column(),
-		}
-
-		// Check if this is a TaskGroup (has "type": "group") - recurse into children
-		if nestedSt, ok := taskField.Value.(*ast.StructLit); ok {
-			isTaskGroup := false
-			for _, nestedElem := range nestedSt.Elts {
-				if nestedField, ok := nestedElem.(*ast.Field); ok {
-					nestedLabel, _, _ := ast.LabelName(nestedField.Label)
-					if nestedLabel == "type" {
-						if lit, ok := nestedField.Value.(*ast.BasicLit); ok && lit.Value == `"group"` {
-							isTaskGroup = true
-							break
-						}
-					}
-				}
-			}
-			if isTaskGroup {
-				// Recurse into flattened child tasks
-				extractTaskPositionsFromStruct(nestedSt, fullName, filename, moduleRoot, positions)
-			}
-		}
-	}
 }
 
 // extractAllFieldPositions walks the AST to extract source positions for ALL fields.
@@ -566,7 +476,10 @@ func extractReferencesFromValue(v cue.Value, instancePath, fieldPath string, ref
 	// Recurse into children
 	switch v.Kind() {
 	case cue.StructKind:
-		iter, _ := v.Fields(cue.All())
+		// Use cue.Definitions(false) to exclude schema definitions (like #Task, #Project)
+		// which can have recursive type hierarchies that cause hangs.
+		// This matches buildValueClean() which also uses cue.Definitions(false).
+		iter, _ := v.Fields(cue.Definitions(false))
 		for iter.Next() {
 			label := iter.Label()
 			// Skip hidden fields (start with _) - they're internal to CUE
@@ -651,154 +564,6 @@ func buildValueClean(v cue.Value) interface{} {
 		return val
 	}
 }
-
-// buildJSONWithMeta builds a JSON representation with _meta attached to all concrete values
-func buildJSONWithMeta(v cue.Value, positions map[string]ValueMeta) ([]byte, error) {
-	result := buildValueWithMeta(v, "", positions)
-	return json.Marshal(result)
-}
-
-// buildValueWithMeta recursively builds a value with _meta annotations
-func buildValueWithMeta(v cue.Value, path string, positions map[string]ValueMeta) interface{} {
-	// Check the kind of value
-	switch v.Kind() {
-	case cue.StructKind:
-		result := make(map[string]interface{})
-		iter, _ := v.Fields(cue.Definitions(false))
-		for iter.Next() {
-			sel := iter.Selector()
-			fieldName := unquoteSelector(sel.String())
-			childPath := fieldName
-			if path != "" {
-				childPath = path + "." + fieldName
-			}
-			result[fieldName] = buildValueWithMeta(iter.Value(), childPath, positions)
-		}
-		return result
-
-	case cue.ListKind:
-		// For lists, check if we have position info for the list itself
-		var items []interface{}
-		iter, _ := v.List()
-		i := 0
-		for iter.Next() {
-			indexPath := fmt.Sprintf("%s[%d]", path, i)
-			items = append(items, buildValueWithMeta(iter.Value(), indexPath, positions))
-			i++
-		}
-		// Wrap the list with _meta if we have position info
-		if meta, ok := positions[path]; ok {
-			return MetaValue{Value: items, Meta: meta}
-		}
-		return items
-
-	default:
-		// Concrete value (string, number, bool, null)
-		var val interface{}
-		v.Decode(&val)
-
-		// Look up position from AST
-		if meta, ok := positions[path]; ok {
-			return MetaValue{Value: val, Meta: meta}
-		}
-		return val
-	}
-}
-
-// buildJSON builds a JSON representation of a CUE value.
-// This excludes hidden fields (_foo) and definitions (#Foo) which are
-// internal CUE constructs not meant for export.
-func buildJSON(v cue.Value, moduleRoot string, taskPositions map[string]TaskSourcePos) ([]byte, error) {
-	result := make(map[string]interface{})
-
-	iter, err := v.Fields(cue.Definitions(false))
-	if err != nil {
-		return nil, err
-	}
-
-	for iter.Next() {
-		sel := iter.Selector()
-		fieldName := unquoteSelector(sel.String())
-		fieldValue := iter.Value()
-
-		// Build value recursively, excluding definitions at every level
-		val := buildValueClean(fieldValue)
-
-		// For tasks field, enrich with source position metadata from AST
-		if fieldName == "tasks" {
-			val = enrichTasksWithSource(val, "", taskPositions)
-		}
-
-		result[fieldName] = val
-	}
-
-	return json.Marshal(result)
-}
-
-// enrichTasksWithSource adds _source and _name metadata to each task in the tasks map
-func enrichTasksWithSource(decoded interface{}, prefix string, positions map[string]TaskSourcePos) interface{} {
-	tasksMap, ok := decoded.(map[string]interface{})
-	if !ok {
-		return decoded
-	}
-
-	// Inject _name and _source into all tasks
-	for taskName, taskDef := range tasksMap {
-		fullName := taskName
-		if prefix != "" {
-			fullName = prefix + "." + taskName
-		}
-		enrichTaskWithSourceAndName(taskDef, fullName, positions)
-	}
-
-	return tasksMap
-}
-
-// enrichTaskWithSourceAndName adds _source and _name metadata to a single task definition
-func enrichTaskWithSourceAndName(taskDef interface{}, fullName string, positions map[string]TaskSourcePos) {
-	taskObj, ok := taskDef.(map[string]interface{})
-	if !ok {
-		return
-	}
-
-	// Check if this is a TaskGroup (has "type": "group") - recurse into children
-	if typeVal, ok := taskObj["type"].(string); ok && typeVal == "group" {
-		for childName, childDef := range taskObj {
-			// Skip non-child fields (metadata fields of TaskGroup)
-			if childName == "type" || childName == "dependsOn" ||
-				childName == "maxConcurrency" || childName == "description" {
-				continue
-			}
-			childFullName := fullName + "." + childName
-			enrichTaskWithSourceAndName(childDef, childFullName, positions)
-		}
-		return
-	}
-
-	// This is a leaf task (has command or script) - add _source and _name metadata
-	_, hasCommand := taskObj["command"]
-	_, hasScript := taskObj["script"]
-	_, hasTaskRef := taskObj["task_ref"]
-
-	if !hasCommand && !hasScript && !hasTaskRef {
-		// Not a valid leaf task, skip
-		return
-	}
-
-	// Inject _name with the full task path
-	taskObj["_name"] = fullName
-
-	// Look up position from AST-extracted map
-	if pos, ok := positions[fullName]; ok {
-		taskObj["_source"] = map[string]interface{}{
-			"file":   pos.File,
-			"line":   pos.Line,
-			"column": pos.Column,
-		}
-	}
-}
-
-
 
 // ModuleInstance represents a single evaluated CUE instance within a module
 type ModuleInstance struct {
@@ -925,9 +690,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// Instead, we filter by package name in post-processing below.
 
 	// Load CUE instances using native CUE loader
-	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Loading instances with pattern '%s' from '%s'\n", loadPattern, goModuleRoot)
 	loadedInstances := load.Instances([]string{loadPattern}, cfg)
-	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Loaded %d instances\n", len(loadedInstances))
 	if len(loadedInstances) == 0 {
 		hint := "No CUE files found matching the load pattern"
 		result = createErrorResponse(ErrorCodeLoadInstance, "No CUE instances found", &hint)
@@ -940,7 +703,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// "name" field (Projects have name!, Bases don't) instead of expensive schema unification.
 
 	// Pre-filter valid instances (cheap filtering before parallelization)
-	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Pre-filtering %d instances for package '%s'\n", len(loadedInstances), effectivePackageName)
 	var validInstances []*build.Instance
 	var loadErrors []string
 	var packageMismatches []string
@@ -955,7 +717,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		}
 		validInstances = append(validInstances, inst)
 	}
-	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Filtered to %d valid instances (errors: %d, mismatches: %d)\n", len(validInstances), len(loadErrors), len(packageMismatches))
 
 	// Prepare result containers
 	instances := make(map[string]json.RawMessage)
@@ -976,13 +737,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	var builtInstances []builtInstance
 
 	ctx := cuecontext.New()
-	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Starting sequential build of %d instances\n", len(validInstances))
-	buildCount := 0
 	for _, inst := range validInstances {
-		buildCount++
-		if buildCount%10 == 0 {
-			fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Building instance %d/%d: %s\n", buildCount, len(validInstances), inst.Dir)
-		}
 		// Calculate relative path from module root
 		relPath, err := filepath.Rel(goModuleRoot, inst.Dir)
 		if err != nil {
@@ -1014,7 +769,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 			inst:      inst,
 		})
 	}
-	fmt.Fprintf(os.Stderr, "[DEBUG-HANG-GO] Sequential build complete: %d built, %d errors\n", len(builtInstances), len(buildErrors))
 
 	// Parallel JSON serialization with worker pool
 	// JSON marshaling is expensive but thread-safe, so we parallelize this part.
@@ -1130,99 +884,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 
 	result = createSuccessResponse(string(resultBytes))
 	return result
-}
-
-// findEnvCueDirectories walks the module root and finds all directories containing env.cue
-// files that declare the specified package
-func findEnvCueDirectories(moduleRoot, packageName string) ([]string, error) {
-	var dirs []string
-
-	err := filepath.Walk(moduleRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip directories we can't access
-		}
-
-		// Skip hidden directories and cue.mod
-		if info.IsDir() {
-			name := info.Name()
-			if strings.HasPrefix(name, ".") || name == "cue.mod" || name == "node_modules" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		// Check for env.cue files
-		if info.Name() == "env.cue" {
-			// Verify it has the right package declaration
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-
-			// Simple package detection - look for "package <name>"
-			if containsPackageDecl(string(content), packageName) {
-				dirs = append(dirs, filepath.Dir(path))
-			}
-		}
-
-		return nil
-	})
-
-	return dirs, err
-}
-
-// containsPackageDecl checks if file content declares the given package
-func containsPackageDecl(content, packageName string) bool {
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		// Skip comments
-		if strings.HasPrefix(line, "//") {
-			continue
-		}
-		// Check for package declaration
-		if strings.HasPrefix(line, "package ") {
-			parts := strings.Fields(line)
-			if len(parts) >= 2 && parts[1] == packageName {
-				return true
-			}
-		}
-		// Stop after we've passed the package declaration area
-		if strings.HasPrefix(line, "import") || strings.Contains(line, "{") {
-			break
-		}
-	}
-	return false
-}
-
-// resolveCueModuleRoot attempts to find the nearest cue.mod root so imports work from nested directories
-func resolveCueModuleRoot(startDir string) string {
-	// Environment override takes precedence for packaged binaries
-	if envRoot := os.Getenv("CUENV_CUE_MODULE_ROOT"); envRoot != "" {
-		if info, err := os.Stat(filepath.Join(envRoot, "cue.mod", "module.cue")); err == nil && !info.IsDir() {
-			return envRoot
-		}
-	}
-
-	dir, err := filepath.Abs(startDir)
-	if err != nil {
-		dir = startDir
-	}
-
-	for {
-		moduleFile := filepath.Join(dir, "cue.mod", "module.cue")
-		if info, err := os.Stat(moduleFile); err == nil && !info.IsDir() {
-			return dir
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-
-	return ""
 }
 
 func main() {}

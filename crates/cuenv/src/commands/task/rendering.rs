@@ -5,7 +5,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write;
-use std::path::Path;
 
 use cuenv_core::tasks::{TaskNode, WorkspaceTask};
 use cuenv_task_discovery::TaskDiscovery;
@@ -116,13 +115,7 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
 }
 
 /// Collect all tasks from discovered projects into `WorkspaceTask` format
-///
-/// The `module_root` parameter is unused but kept for API compatibility.
-#[allow(unused_variables)]
-pub fn collect_workspace_tasks(
-    discovery: &TaskDiscovery,
-    module_root: &Path,
-) -> Vec<WorkspaceTask> {
+pub fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<WorkspaceTask> {
     let mut result = Vec::new();
 
     for project in discovery.projects() {

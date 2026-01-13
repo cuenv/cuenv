@@ -97,14 +97,8 @@ impl CommandHandler for EnvPrintHandler {
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        env::execute_env_print(
-            &self.path,
-            &self.package,
-            &self.format,
-            self.environment.as_deref(),
-            Some(executor),
-        )
-        .await
+        env::execute_env_print(&self.path, &self.format, self.environment.as_deref(), executor)
+            .await
     }
 }
 
@@ -129,7 +123,7 @@ impl CommandHandler for EnvListHandler {
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        env::execute_env_list(&self.path, &self.package, &self.format, Some(executor)).await
+        env::execute_env_list(&self.path, &self.format, executor).await
     }
 }
 
@@ -435,17 +429,17 @@ impl CommandHandler for TaskHandler {
         // Build request using the builder pattern
         let mut request = match (&self.name, &self.labels, self.interactive, self.all) {
             (Some(name), _, _, _) => {
-                task::TaskExecutionRequest::named(&self.path, &self.package, name)
+                task::TaskExecutionRequest::named(&self.path, &self.package, name, executor)
                     .with_args(self.task_args.clone())
             }
             (None, labels, _, _) if !labels.is_empty() => {
-                task::TaskExecutionRequest::labels(&self.path, &self.package, labels.clone())
+                task::TaskExecutionRequest::labels(&self.path, &self.package, labels.clone(), executor)
             }
             (None, _, true, _) => {
-                task::TaskExecutionRequest::interactive(&self.path, &self.package)
+                task::TaskExecutionRequest::interactive(&self.path, &self.package, executor)
             }
-            (None, _, _, true) => task::TaskExecutionRequest::all(&self.path, &self.package),
-            (None, _, _, _) => task::TaskExecutionRequest::list(&self.path, &self.package),
+            (None, _, _, true) => task::TaskExecutionRequest::all(&self.path, &self.package, executor),
+            (None, _, _, _) => task::TaskExecutionRequest::list(&self.path, &self.package, executor),
         };
 
         // Apply optional settings
@@ -475,7 +469,6 @@ impl CommandHandler for TaskHandler {
             request = request.with_dry_run();
         }
 
-        let request = request.with_executor(executor);
         task::execute(request).await
     }
 }

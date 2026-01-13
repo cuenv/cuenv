@@ -331,21 +331,9 @@ impl<T: TaskNodeData> TaskGraph<T> {
         let mut pending_group_deps: HashMap<String, Vec<String>> = HashMap::new();
 
         debug!("Building graph with resolver for '{}'", task_name);
-        #[allow(clippy::print_stderr)]
-        {
-            eprintln!("[DEBUG-HANG-GRAPH] Starting build_for_task_with_resolver for '{}'", task_name);
-        }
 
         // First pass: Collect all tasks and track sequential groups
-        let mut loop_count = 0_u32;
         while let Some(current_name) = to_process.pop() {
-            loop_count += 1;
-            if loop_count % 100 == 0 {
-                #[allow(clippy::print_stderr)]
-                {
-                    eprintln!("[DEBUG-HANG-GRAPH] Loop iteration {}, processing '{}', queue size: {}", loop_count, current_name, to_process.len());
-                }
-            }
             if processed.contains(&current_name) {
                 continue;
             }
@@ -419,10 +407,6 @@ impl<T: TaskNodeData> TaskGraph<T> {
                 }
             }
         }
-        #[allow(clippy::print_stderr)]
-        {
-            eprintln!("[DEBUG-HANG-GRAPH] First pass complete after {} iterations, processed {} tasks", loop_count, processed.len());
-        }
 
         // Second pass: Add sequential ordering edges
         for ordering in sequential_orderings {
@@ -438,22 +422,8 @@ impl<T: TaskNodeData> TaskGraph<T> {
             }
         }
 
-        #[allow(clippy::print_stderr)]
-        {
-            eprintln!("[DEBUG-HANG-GRAPH] Second pass (sequential ordering) complete");
-        }
-
         // Third pass: Add dependency edges from task.depends_on
-        #[allow(clippy::print_stderr)]
-        {
-            eprintln!("[DEBUG-HANG-GRAPH] Starting third pass (dependency edges)...");
-        }
-        let result = self.add_dependency_edges();
-        #[allow(clippy::print_stderr)]
-        {
-            eprintln!("[DEBUG-HANG-GRAPH] Third pass complete");
-        }
-        result
+        self.add_dependency_edges()
     }
 
     /// Compute which tasks from a pipeline are affected, using transitive dependency propagation.

@@ -217,11 +217,6 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Download docs-build-artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: docs-build-artifacts
-        path: docs/dist
     - name: docs.deploy
       run: cuenv task docs.deploy -e production --skip-dependencies
       working-directory: .

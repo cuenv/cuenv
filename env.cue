@@ -110,7 +110,7 @@ schema.#Project & {
 	// ============================================================================
 
 	env: {
-		CLOUDFLARE_ACCOUNT_ID: "340c8fced324c509d19e79ada8f049db"
+		CLOUDFLARE_ACCOUNT_ID: "0aeb879de8e3cdde5fb3d413025222ce"
 
 		environment: production: {
 			CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
@@ -318,7 +318,6 @@ schema.#Project & {
 				command: "bash"
 				args: ["-c", "cd docs && npx wrangler deploy"]
 				dependsOn: [build]
-				inputs: [{task: "docs.build"}]
 			}
 		}
 

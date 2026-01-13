@@ -31,7 +31,7 @@ use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_fai
 use cuenv_core::tasks::{
     BackendFactory, ExecutorConfig, Task, TaskExecutor, TaskGraph, TaskNode, Tasks,
 };
-use cuenv_task_discovery::{EvalFn, TaskDiscovery};
+use cuenv_task_discovery::TaskDiscovery;
 
 use super::CommandExecutor;
 use super::env_file::find_cue_module_root;
@@ -141,21 +141,11 @@ async fn execute_task_legacy(
     skip_dependencies: bool,
     dry_run: bool,
     task_args: &[String],
-    executor: Option<&CommandExecutor>,
+    executor: &CommandExecutor,
 ) -> Result<String> {
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("[DEBUG-HANG] execute_task_legacy ENTRY");
-    }
-
     // Handle CLI help immediately if no task specified
     if task_name.is_none() && help {
         return Ok(get_task_cli_help());
-    }
-
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("[DEBUG-HANG] Before CUE evaluation");
     }
 
     tracing::info!(
@@ -167,11 +157,6 @@ async fn execute_task_legacy(
 
     // Evaluate CUE to get tasks and environment using module-wide evaluation
     let mut manifest: Project = evaluate_manifest(Path::new(path), package, executor)?;
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("[DEBUG-HANG] CUE evaluation COMPLETE");
-    }
-    tracing::error!("[DEBUG-HANG] CUE evaluation complete");
     tracing::debug!("CUE evaluation successful");
 
     tracing::debug!(
@@ -185,16 +170,8 @@ async fn execute_task_legacy(
     let cue_module_root = find_cue_module_root(&project_root);
 
     // Build a canonical index to support nested task paths (with auto-detected workspace tasks)
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("[DEBUG-HANG] Building task index...");
-    }
     let task_index = prepare_task_index(&mut manifest, &project_root)?;
     let local_tasks = task_index.to_tasks();
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("[DEBUG-HANG] Task index prepared with {} tasks", local_tasks.tasks.len());
-    }
 
     // Handle workspace-wide task listing for IDE completions
     if all && task_name.is_none() && labels.is_empty() {
@@ -208,40 +185,28 @@ async fn execute_task_legacy(
 
         let mut discovery = TaskDiscovery::new(cue_mod_root.clone());
 
-        // Use executor's cached module if available (single evaluation for all projects)
-        if let Some(exec) = executor {
-            tracing::debug!("Using cached module for workspace task discovery");
-            let module = exec.get_module(cue_mod_root)?;
+        // Use executor's cached module (single CUE evaluation per process)
+        tracing::debug!("Using cached module for workspace task discovery");
+        let module = executor.get_module(cue_mod_root)?;
 
-            // Iterate through all Project instances and add them directly
-            for instance in module.projects() {
-                match instance.deserialize::<Project>() {
-                    Ok(project) => {
-                        let project_root = module.root.join(&instance.path);
-                        discovery.add_project(project_root, project);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            path = %instance.path.display(),
-                            error = %e,
-                            "Failed to deserialize project - tasks will not be available"
-                        );
-                    }
+        // Iterate through all Project instances and add them directly
+        for instance in module.projects() {
+            match instance.deserialize::<Project>() {
+                Ok(project) => {
+                    let project_root = module.root.join(&instance.path);
+                    discovery.add_project(project_root, project);
                 }
-            }
-        } else {
-            // Legacy path: use EvalFn for per-project evaluation
-            tracing::debug!("Using legacy EvalFn for workspace task discovery");
-            let pkg = package.to_string();
-            let eval_fn: EvalFn = Box::new(move |p: &Path| evaluate_manifest(p, &pkg, None));
-
-            discovery = discovery.with_eval_fn(eval_fn);
-            if let Err(e) = discovery.discover() {
-                tracing::warn!("Workspace discovery had errors: {}", e);
+                Err(e) => {
+                    tracing::warn!(
+                        path = %instance.path.display(),
+                        error = %e,
+                        "Failed to deserialize project - tasks will not be available"
+                    );
+                }
             }
         }
 
-        let workspace_tasks = collect_workspace_tasks(&discovery, cue_mod_root);
+        let workspace_tasks = collect_workspace_tasks(&discovery);
 
         if format == "json" {
             return serde_json::to_string(&workspace_tasks).map_err(|e| {
@@ -279,7 +244,8 @@ async fn execute_task_legacy(
             Ok(PickerResult::Selected(selected_task)) => {
                 // Build a new request for the selected task
                 let mut request =
-                    TaskExecutionRequest::named(path, package, &selected_task).with_format(format);
+                    TaskExecutionRequest::named(path, package, &selected_task, executor)
+                        .with_format(format);
 
                 if let Some(env) = environment {
                     request = request.with_environment(env);
@@ -304,9 +270,6 @@ async fn execute_task_legacy(
                 }
                 if skip_dependencies {
                     request = request.with_skip_dependencies();
-                }
-                if let Some(exec) = executor {
-                    request = request.with_executor(exec);
                 }
 
                 return Box::pin(execute(request)).await;
@@ -465,9 +428,7 @@ async fn execute_task_legacy(
         }
 
         // Resolve task via canonical index (supports nested paths and ':' alias)
-        tracing::error!("[DEBUG-HANG] Resolving task: {}", requested_task);
         let task_entry = task_index.resolve(requested_task)?;
-        tracing::error!("[DEBUG-HANG] Task resolved to: {}", task_entry.name);
         let canonical_task_name = task_entry.name.clone();
         tracing::debug!(
             "Task index entries: {:?}",
@@ -523,48 +484,40 @@ async fn execute_task_legacy(
 
         task_node = selected_task_node;
 
-        // For dry-run mode, use local tasks to avoid subprocess spawning in build_global_tasks().
-        // The Go FFI runtime is already initialized (fork-unsafe), so we must avoid any
-        // code paths that could spawn subprocesses before we return.
-        if dry_run {
-            all_tasks = tasks;
-            task_graph_root_name = display_task_name.clone();
-        } else {
-            // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
-            // This enables cross-project dependency graphs and proper cycle detection.
-            let (global_tasks, task_root_name) = if let Some(module_root) = &cue_module_root {
-                let (mut global, current_project_id) =
-                    build_global_tasks(module_root, &project_root, &manifest, executor)?;
+        // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
+        // This enables cross-project dependency graphs and proper cycle detection.
+        // The executor's cached module ensures no subprocess spawning (single CUE eval per process).
+        let (global_tasks, task_root_name) = if let Some(module_root) = &cue_module_root {
+            let (mut global, current_project_id) =
+                build_global_tasks(module_root, &project_root, &manifest, executor)?;
 
-                // If we interpolated args for the invoked task, patch that task node in the
-                // global registry so execution matches the CLI-resolved definition.
-                // (We avoid patching otherwise, because the global registry has normalized
-                // dependsOn entries to FQDNs.)
-                if !task_args.is_empty()
-                    && let TaskNode::Task(ref t) = task_node
-                {
-                    let fqdn = task_fqdn(&current_project_id, &display_task_name);
-                    if let Some(TaskNode::Task(existing)) = global.tasks.get_mut(&fqdn) {
-                        existing.command.clone_from(&t.command);
-                        existing.args.clone_from(&t.args);
-                    }
+            // If we interpolated args for the invoked task, patch that task node in the
+            // global registry so execution matches the CLI-resolved definition.
+            // (We avoid patching otherwise, because the global registry has normalized
+            // dependsOn entries to FQDNs.)
+            if !task_args.is_empty()
+                && let TaskNode::Task(ref t) = task_node
+            {
+                let fqdn = task_fqdn(&current_project_id, &display_task_name);
+                if let Some(TaskNode::Task(existing)) = global.tasks.get_mut(&fqdn) {
+                    existing.command.clone_from(&t.command);
+                    existing.args.clone_from(&t.args);
                 }
+            }
 
-                let root = task_fqdn(&current_project_id, &display_task_name);
-                (global, root)
-            } else {
-                (tasks, display_task_name.clone())
-            };
+            let root = task_fqdn(&current_project_id, &display_task_name);
+            (global, root)
+        } else {
+            (tasks, display_task_name.clone())
+        };
 
-            all_tasks = global_tasks;
-            task_graph_root_name = task_root_name;
-        }
+        all_tasks = global_tasks;
+        task_graph_root_name = task_root_name;
     } else {
         // Execute tasks by label
-        // For dry-run mode, use local tasks to avoid subprocess spawning in build_global_tasks().
-        let (mut tasks_in_scope, _current_project_id) = if dry_run {
-            (local_tasks.clone(), String::new())
-        } else if let Some(module_root) = &cue_module_root {
+        // The executor's cached module ensures no subprocess spawning (single CUE eval per process).
+        let (mut tasks_in_scope, _current_project_id) = if let Some(module_root) = &cue_module_root
+        {
             build_global_tasks(module_root, &project_root, &manifest, executor).map_err(|e| {
                 cuenv_core::Error::configuration(format!(
                     "Failed to discover tasks for label execution: {e}"
@@ -618,11 +571,6 @@ async fn execute_task_legacy(
     }
 
     // Build task graph for dependency-aware execution
-    // This is done BEFORE environment setup so dry-run mode can skip subprocess spawning
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("[DEBUG-HANG] About to build task graph for: {}", task_graph_root_name);
-    }
     tracing::debug!("Building task graph for task: {}", task_graph_root_name);
     let mut task_graph = TaskGraph::new();
 
@@ -634,39 +582,22 @@ async fn execute_task_legacy(
             task_graph.add_task(&task_graph_root_name, (**task).clone())?;
         }
     } else {
-        #[allow(clippy::print_stderr)]
-        {
-            eprintln!("[DEBUG-HANG] Calling build_for_task with {} tasks in scope", all_tasks.tasks.len());
-        }
         task_graph
             .build_for_task(&task_graph_root_name, &all_tasks)
             .map_err(|e| {
                 tracing::error!("Failed to build task graph: {}", e);
                 e
             })?;
-        #[allow(clippy::print_stderr)]
-        {
-            eprintln!("[DEBUG-HANG] build_for_task completed");
-        }
     }
 
-    #[allow(clippy::print_stderr)]
-    {
-        eprintln!("[DEBUG-HANG] Task graph built with {} tasks", task_graph.task_count());
-    }
     tracing::debug!(
         "Successfully built task graph with {} tasks",
         task_graph.task_count()
     );
 
     // Handle dry-run mode: export DAG as JSON without executing
-    // IMPORTANT: This must happen BEFORE get_environment_with_hooks() to avoid
-    // spawning subprocess (hook supervisor) after Go runtime initialization,
-    // which can cause fork-safety deadlocks in the child process.
     if dry_run {
-        tracing::error!("[DEBUG-HANG] Entering dry-run export...");
         let dag_export = dag_export::DagExport::from_task_graph(&task_graph)?;
-        tracing::error!("[DEBUG-HANG] DAG export created, serializing...");
         return serde_json::to_string_pretty(&dag_export).map_err(|e| {
             cuenv_core::Error::configuration(format!("Failed to serialize DAG: {e}"))
         });
@@ -677,7 +608,7 @@ async fn execute_task_legacy(
     // AFTER the dry-run check to avoid fork-safety issues.
     let directory = project_root.clone();
     let base_env_vars =
-        get_environment_with_hooks(&directory, &manifest, package, executor).await?;
+        get_environment_with_hooks(&directory, &manifest, package, Some(executor)).await?;
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut runtime_env = Environment::new();
@@ -1067,10 +998,17 @@ mod tests {
     use super::*;
     use cuenv_core::tasks::{TaskDependency, TaskNode};
     use resolution::resolve_task_refs_in_node;
+    use tokio::sync::mpsc;
 
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
+
+    /// Create a test executor for unit tests.
+    fn create_test_executor() -> CommandExecutor {
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        CommandExecutor::new(sender, "cuenv".to_string())
+    }
 
     #[tokio::test]
     async fn test_list_tasks_empty() {
@@ -1081,7 +1019,8 @@ env: {
 }"#;
         fs::write(temp_dir.path().join("env.cue"), cue_content).expect("write to string");
 
-        let request = TaskExecutionRequest::list(temp_dir.path().to_str().unwrap(), "test");
+        let executor = create_test_executor();
+        let request = TaskExecutionRequest::list(temp_dir.path().to_str().unwrap(), "test", &executor);
         let result = execute(request).await;
 
         // The result depends on FFI availability
@@ -1115,10 +1054,8 @@ env: {
             TaskNode::Task(Box::new(referenced_task.clone())),
         );
 
-        let manifest_for_eval = manifest.clone();
-        let mut discovery = TaskDiscovery::new(tmp.path().to_path_buf())
-            .with_eval_fn(Box::new(move |_| Ok(manifest_for_eval.clone())));
-        discovery.discover().expect("discovery should succeed");
+        let mut discovery = TaskDiscovery::new(tmp.path().to_path_buf());
+        discovery.add_project(tmp.path().to_path_buf(), manifest.clone());
 
         let placeholder_task = Task {
             task_ref: Some("#proj:run".into()),

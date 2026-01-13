@@ -1970,7 +1970,6 @@ name = "cuenv-task-discovery"
 version = "0.26.2"
 dependencies = [
  "cuenv-core",
- "ignore",
  "regex",
  "thiserror 2.0.17",
  "tracing",

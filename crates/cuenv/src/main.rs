@@ -186,6 +186,20 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
 fn run_sync(cli: cli::Cli) -> i32 {
     // Set up signal handler for sync path
     let _ = ctrlc::set_handler(|| {
+        // Terminate all child processes gracefully before exiting.
+        // Need a mini runtime since terminate_all is async.
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            rt.block_on(async {
+                let registry = cuenv_core::tasks::global_registry();
+                registry
+                    .terminate_all(std::time::Duration::from_secs(3))
+                    .await;
+            });
+        }
+
         cleanup_terminal();
         std::process::exit(EXIT_SIGINT);
     });
@@ -311,16 +325,17 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         } => {
             // CUE evaluation is sync FFI, so we can call the async function via a mini runtime
             let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
                 .build()
                 .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
+            let executor = create_executor(&package);
             rt.block_on(async {
                 match commands::env::execute_env_print(
                     &path,
-                    &package,
                     &format,
                     environment.as_deref(),
-                    None,
+                    &executor,
                 )
                 .await
                 {
@@ -342,11 +357,13 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             format,
         } => {
             let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
                 .build()
                 .map_err(|e| CliError::other(format!("Runtime error: {e}")))?;
 
+            let executor = create_executor(&package);
             rt.block_on(async {
-                match commands::env::execute_env_list(&path, &package, &format, None).await {
+                match commands::env::execute_env_list(&path, &format, &executor).await {
                     Ok(result) => {
                         println!("{result}");
                         Ok(())
@@ -612,6 +629,10 @@ async fn run() -> i32 {
         biased;
 
         _ = tokio::signal::ctrl_c() => {
+            // Terminate all child processes gracefully before exiting
+            let registry = cuenv_core::tasks::global_registry();
+            registry.terminate_all(std::time::Duration::from_secs(5)).await;
+
             // Clean up terminal state to prevent escape sequence garbage
             cleanup_terminal();
             EXIT_SIGINT
