@@ -68,11 +68,7 @@ pub fn format_label_root(labels: &[String]) -> String {
 ///
 /// When an `executor` is provided, uses its cached module evaluation.
 /// Otherwise, falls back to fresh evaluation (legacy behavior).
-pub fn evaluate_manifest(
-    dir: &Path,
-    package: &str,
-    executor: &CommandExecutor,
-) -> Result<Project> {
+pub fn evaluate_manifest(dir: &Path, package: &str, executor: &CommandExecutor) -> Result<Project> {
     // Suppress unused parameter warning - package is kept for API compatibility
     let _ = package;
 

@@ -97,8 +97,13 @@ impl CommandHandler for EnvPrintHandler {
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        env::execute_env_print(&self.path, &self.format, self.environment.as_deref(), executor)
-            .await
+        env::execute_env_print(
+            &self.path,
+            &self.format,
+            self.environment.as_deref(),
+            executor,
+        )
+        .await
     }
 }
 
@@ -432,14 +437,21 @@ impl CommandHandler for TaskHandler {
                 task::TaskExecutionRequest::named(&self.path, &self.package, name, executor)
                     .with_args(self.task_args.clone())
             }
-            (None, labels, _, _) if !labels.is_empty() => {
-                task::TaskExecutionRequest::labels(&self.path, &self.package, labels.clone(), executor)
-            }
+            (None, labels, _, _) if !labels.is_empty() => task::TaskExecutionRequest::labels(
+                &self.path,
+                &self.package,
+                labels.clone(),
+                executor,
+            ),
             (None, _, true, _) => {
                 task::TaskExecutionRequest::interactive(&self.path, &self.package, executor)
             }
-            (None, _, _, true) => task::TaskExecutionRequest::all(&self.path, &self.package, executor),
-            (None, _, _, _) => task::TaskExecutionRequest::list(&self.path, &self.package, executor),
+            (None, _, _, true) => {
+                task::TaskExecutionRequest::all(&self.path, &self.package, executor)
+            }
+            (None, _, _, _) => {
+                task::TaskExecutionRequest::list(&self.path, &self.package, executor)
+            }
         };
 
         // Apply optional settings

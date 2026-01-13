@@ -4,8 +4,8 @@
 //! from CUE configurations.
 
 use crate::commands::{CommandExecutor, relative_path_from_root};
-use cuenv_core::manifest::Base;
 use cuenv_core::Result;
+use cuenv_core::manifest::Base;
 use std::path::Path;
 use tracing::instrument;
 

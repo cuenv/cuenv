@@ -1020,7 +1020,8 @@ env: {
         fs::write(temp_dir.path().join("env.cue"), cue_content).expect("write to string");
 
         let executor = create_test_executor();
-        let request = TaskExecutionRequest::list(temp_dir.path().to_str().unwrap(), "test", &executor);
+        let request =
+            TaskExecutionRequest::list(temp_dir.path().to_str().unwrap(), "test", &executor);
         let result = execute(request).await;
 
         // The result depends on FFI availability
