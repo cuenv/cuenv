@@ -83,7 +83,7 @@ crossterm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-indexmap = { version = "2.7", features = ["serde"] }
+indexmap = { version = "2.13", features = ["serde"] }
 thiserror = { workspace = true }
 miette = { workspace = true }
 uuid = { workspace = true }
