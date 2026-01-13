@@ -83,7 +83,10 @@ import "github.com/cuenv/cuenv/schema"
 			priority: 6
 			provider: github: {
 				uses: "actions/setup-go@v5"
-				with: "go-version": "1.24"
+				with: {
+					"go-version":            "1.24"
+					"cache-dependency-path": "crates/cuengine/go.sum"
+				}
 			}
 		},
 		{
