@@ -212,6 +212,7 @@ schema.#Project & {
 							paths: "dist/**/*"
 						}
 					},
+					_t.publish.cue,
 					_t.docs.deploy,
 				]
 			}
