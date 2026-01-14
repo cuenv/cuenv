@@ -4,7 +4,7 @@ go 1.24.0
 
 toolchain go1.24.6
 
-require cuelang.org/go v0.15.0
+require cuelang.org/go v0.15.3
 
 require (
 	cuelabs.dev/go/oci/ociregistry v0.0.0-20250722084951-074d06050084 // indirect
